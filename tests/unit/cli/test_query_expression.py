@@ -2322,6 +2322,244 @@ class TestBooleanQueryExpression:
             )
         ]
 
+    def test_file_unit_source_parses_terminal_and_exists_forms(self) -> None:
+        terminal = parse_unit_source_expression("files where action:file_edit AND path:archive/query")
+        assert terminal is not None
+        assert terminal.unit == "file"
+
+        spec = compile_expression("exists file(action:file_edit AND path:archive/query)")
+        assert spec.boolean_predicate is not None
+
+    def test_terminal_file_source_returns_distinct_path_rows(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("claude-code")
+            .title("file hit")
+            .add_message(
+                "m-edit-1",
+                role="assistant",
+                text="edited file",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_id": "tool-1",
+                        "input": {"file_path": "polylogue/archive/query/expression.py"},
+                        "semantic_type": "file_edit",
+                    }
+                ],
+            )
+            .add_message(
+                "m-edit-2",
+                role="assistant",
+                text="edited file again",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_id": "tool-2",
+                        "input": {"file_path": "polylogue/archive/query/expression.py"},
+                        "semantic_type": "file_edit",
+                    }
+                ],
+            )
+            .add_message(
+                "m-read",
+                role="assistant",
+                text="read other file",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Read",
+                        "tool_id": "tool-3",
+                        "input": {"file_path": "README.md"},
+                        "semantic_type": "file_read",
+                    }
+                ],
+            )
+            .save()
+        )
+
+        source = parse_unit_source_expression("files where action:file_edit AND path:archive/query")
+        assert source is not None
+        assert source.unit == "file"
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            rows = archive.query_files(source.predicate, limit=100)
+
+        assert [(row.session_id, row.path, row.action_count) for row in rows] == [
+            ("claude-code-session:ext-hit", "polylogue/archive/query/expression.py", 2)
+        ]
+        assert rows[0].first_tool_use_block_id == "claude-code-session:ext-hit:m-edit-1:0"
+
+    def test_exists_file_source_filters_sessions(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("claude-code")
+            .title("file exists hit")
+            .add_message(
+                "m-edit",
+                role="assistant",
+                text="edited file",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_id": "tool-hit",
+                        "input": {"file_path": "polylogue/archive/query/expression.py"},
+                        "semantic_type": "file_edit",
+                    }
+                ],
+            )
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "miss")
+            .provider("claude-code")
+            .title("file exists miss")
+            .add_message(
+                "m-read",
+                role="assistant",
+                text="read file",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Read",
+                        "tool_id": "tool-miss",
+                        "input": {"file_path": "polylogue/archive/query/expression.py"},
+                        "semantic_type": "file_read",
+                    }
+                ],
+            )
+            .save()
+        )
+
+        spec = compile_expression("exists file(action:file_edit AND path:archive/query)")
+        assert spec.boolean_predicate is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
+
+        assert [row.session_id for row in rows] == ["claude-code-session:ext-hit"]
+
+    def test_file_unit_aggregate_counts_distinct_paths(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.surfaces.payloads import QueryUnitAggregateEnvelope
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("claude-code")
+            .git_repository_url("polylogue")
+            .title("file aggregate")
+            .add_message(
+                "m-edit-1",
+                role="assistant",
+                text="edited file",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_id": "tool-1",
+                        "input": {"file_path": "polylogue/archive/query/expression.py"},
+                        "semantic_type": "file_edit",
+                    }
+                ],
+            )
+            .add_message(
+                "m-edit-2",
+                role="assistant",
+                text="edited same file",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_id": "tool-2",
+                        "input": {"file_path": "polylogue/archive/query/expression.py"},
+                        "semantic_type": "file_edit",
+                    }
+                ],
+            )
+            .add_message(
+                "m-edit-3",
+                role="assistant",
+                text="edited other file",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_id": "tool-3",
+                        "input": {"file_path": "polylogue/cli/archive_query.py"},
+                        "semantic_type": "file_edit",
+                    }
+                ],
+            )
+            .save()
+        )
+
+        source = parse_unit_source_expression(
+            "files where session.repo:polylogue AND action:file_edit | group by path | count | sort by key asc"
+        )
+        assert source is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            envelope = query_unit_rows(archive, source, query="file-aggregate", limit=20)
+
+        assert isinstance(envelope, QueryUnitAggregateEnvelope)
+        assert [(row.group_key, row.count) for row in envelope.items] == [
+            ("polylogue/archive/query/expression.py", 1),
+            ("polylogue/cli/archive_query.py", 1),
+        ]
+
+    def test_cli_json_reports_file_unit_rows(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.cli import cli
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("claude-code")
+            .title("file cli")
+            .add_message(
+                "m-edit",
+                role="assistant",
+                text="edited file",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_id": "tool-hit",
+                        "input": {"file_path": "polylogue/archive/query/expression.py"},
+                        "semantic_type": "file_edit",
+                    }
+                ],
+            )
+            .save()
+        )
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--plain",
+                "--format",
+                "json",
+                "find",
+                "files where action:file_edit AND path:archive/query",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["unit"] == "file"
+        assert payload["items"][0]["path"] == "polylogue/archive/query/expression.py"
+
     def test_terminal_action_source_filters_by_row_time(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from tests.infra.storage_records import SessionBuilder

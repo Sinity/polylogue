@@ -43,11 +43,11 @@ and explicit Boolean session predicates:
     messages where time >= 2026-01-01T00:00:00+00:00
     sessions where repo:polylogue | messages where role:assistant | group by role | count | sort by count desc
 
-Unit-scoped ``messages/actions/blocks/assertions/runs/observed-events/context-snapshots where ...`` predicates are executable
+Unit-scoped ``messages/actions/blocks/assertions/files/runs/observed-events/context-snapshots where ...`` predicates are executable
 in two shared paths: ``compile_expression`` keeps the compatibility session
 selector behavior by lowering them to correlated ``exists <unit>(...)``
 predicates, while terminal query-unit surfaces preserve the selected unit and
-return raw message/action/block/assertion/observed-event/context-snapshot rows from the same predicate semantics.
+return raw message/action/block/assertion/file/observed-event/context-snapshot rows from the same predicate semantics.
 SQL-backed terminal units also support exact ``group by FIELD | count``
 aggregate pipelines for the closed aggregate fields declared in this module,
 plus aggregate ``sort by count|key [asc|desc]`` before ``limit``/``offset``.
@@ -123,6 +123,7 @@ from polylogue.archive.query.predicate import (
     QueryBoolPredicate,
     QueryCompareOp,
     QueryExistsPredicate,
+    QueryExistsUnit,
     QueryFieldPredicate,
     QueryFieldRef,
     QueryLineagePredicate,
@@ -435,7 +436,7 @@ _QUERY_GRAMMAR = rf"""
     EXISTS: /exists/i
     SEQ: /seq/i
     ARROW: "->"
-    STRUCT_UNIT: /(message|action|block|assertion)/i
+    STRUCT_UNIT: /(message|action|block|assertion|file)/i
     OR: /or/i
     AND: /and/i
     NOT: /not/i
@@ -1100,11 +1101,9 @@ class _BooleanQueryTransformer(Transformer[Token, QueryPredicate]):
 
     def exists_leaf(self, _exists: Token, unit: Token, child: QueryPredicate) -> QueryPredicate:
         unit_value = str(unit).lower()
-        if unit_value not in {"message", "action", "block", "assertion"}:
+        if unit_value not in {"message", "action", "block", "assertion", "file"}:
             raise ExpressionCompileError(f"unsupported structural query unit {unit_value!r}", field=None)
-        return QueryExistsPredicate(
-            unit=cast(Literal["message", "action", "block", "assertion"], unit_value), child=child
-        )
+        return QueryExistsPredicate(unit=cast(QueryExistsUnit, unit_value), child=child)
 
     def sequence_step(self, *items: object) -> QueryPredicate:
         predicates = _predicate_children(items)

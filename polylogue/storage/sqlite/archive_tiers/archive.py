@@ -229,6 +229,22 @@ class ArchiveActionQueryRow:
 
 
 @dataclass(frozen=True, slots=True)
+class ArchiveFileQueryRow:
+    """Terminal query projection over affected file-path evidence."""
+
+    session_id: str
+    origin: str
+    title: str | None
+    path: str
+    action_count: int
+    first_message_id: str | None
+    first_tool_use_block_id: str | None
+    last_tool_use_block_id: str | None
+    first_seen_ms: int | None
+    last_seen_ms: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class ArchiveBlockQueryRow:
     """Terminal query projection over archive content blocks."""
 
@@ -320,6 +336,9 @@ def _query_unit_group_expression(unit: str, row_alias: str, group_by: str | None
             "tool": f"COALESCE(NULLIF({row_alias}.tool_name, ''), 'unknown')",
             "action": f"COALESCE(NULLIF({row_alias}.semantic_type, ''), 'unknown')",
             "type": f"COALESCE(NULLIF({row_alias}.semantic_type, ''), 'unknown')",
+        },
+        "file": {
+            "path": f"COALESCE(NULLIF({row_alias}.path, ''), 'unknown')",
         },
         "block": {
             "type": f"COALESCE(NULLIF({row_alias}.block_type, ''), 'unknown')",
@@ -3433,10 +3452,21 @@ class ArchiveStore:
             "message": "m",
             "action": "a",
             "block": "b",
+            "file": "f",
             "assertion": "a",
         }.get(unit)
         if row_alias is None:
             raise ValueError(f"Query unit {unit!r} is not wired to SQL aggregate counts")
+        if unit == "file":
+            return self._query_file_counts(
+                predicate,
+                group_by=group_by,
+                sort=sort,
+                sort_direction=sort_direction,
+                limit=normalized_limit,
+                offset=normalized_offset,
+                session_filters=session_filters,
+            )
         group_expr = _query_unit_group_expression(unit, row_alias, group_by)
         clause, params = _structural_predicate_clause(unit, row_alias, predicate, session_alias="s")
         where_clause = clause or "1=1"
@@ -3538,6 +3568,139 @@ class ArchiveStore:
                 tool_command=str(row["tool_command"]) if row["tool_command"] is not None else None,
                 tool_path=str(row["tool_path"]) if row["tool_path"] is not None else None,
                 output_text=str(row["output_text"]) if row["output_text"] is not None else None,
+            )
+            for row in rows
+        ]
+
+    def query_files(
+        self,
+        predicate: QueryPredicate,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        session_filters: Mapping[str, object] | None = None,
+        sort: Literal["time"] | None = None,
+        sort_direction: Literal["asc", "desc"] = "asc",
+    ) -> list[ArchiveFileQueryRow]:
+        """Return affected file-path rows matching a unit-scoped query predicate."""
+
+        normalized_limit = max(int(limit), 0)
+        normalized_offset = max(int(offset), 0)
+        order_direction = _query_unit_order_direction(sort_direction)
+        if sort == "time":
+            order_by = f"COALESCE(f.first_seen_ms, 0) {order_direction}, f.path {order_direction}"
+        else:
+            order_by = "f.path, COALESCE(f.first_seen_ms, 0)"
+        clause, params = _structural_predicate_clause("file", "a", predicate, session_alias="s")
+        session_clause = ""
+        session_params: list[object] = []
+        if session_filters:
+            session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
+        rows = self._conn.execute(
+            f"""
+            SELECT
+                f.session_id,
+                s.origin,
+                s.title,
+                f.path,
+                f.action_count,
+                f.first_message_id,
+                f.first_tool_use_block_id,
+                f.last_tool_use_block_id,
+                f.first_seen_ms,
+                f.last_seen_ms
+            FROM (
+                SELECT
+                    a.session_id,
+                    REPLACE(a.tool_path, char(92), '/') AS path,
+                    COUNT(*) AS action_count,
+                    MIN(a.message_id) AS first_message_id,
+                    MIN(a.tool_use_block_id) AS first_tool_use_block_id,
+                    MAX(a.tool_use_block_id) AS last_tool_use_block_id,
+                    MIN(COALESCE(m.occurred_at_ms, s.sort_key_ms, 0)) AS first_seen_ms,
+                    MAX(COALESCE(m.occurred_at_ms, s.sort_key_ms, 0)) AS last_seen_ms
+                FROM actions a
+                JOIN sessions s ON s.session_id = a.session_id
+                JOIN messages m ON m.message_id = a.message_id
+                WHERE a.tool_path IS NOT NULL
+                AND a.tool_path != ''
+                AND {clause}
+                {session_clause}
+                GROUP BY a.session_id, path
+            ) f
+            JOIN sessions s ON s.session_id = f.session_id
+            ORDER BY {order_by}
+            LIMIT ? OFFSET ?
+            """,
+            [*params, *session_params, normalized_limit, normalized_offset],
+        ).fetchall()
+        return [
+            ArchiveFileQueryRow(
+                session_id=str(row["session_id"]),
+                origin=str(row["origin"]),
+                title=str(row["title"]) if row["title"] is not None else None,
+                path=str(row["path"]),
+                action_count=int(row["action_count"]),
+                first_message_id=str(row["first_message_id"]) if row["first_message_id"] is not None else None,
+                first_tool_use_block_id=str(row["first_tool_use_block_id"])
+                if row["first_tool_use_block_id"] is not None
+                else None,
+                last_tool_use_block_id=str(row["last_tool_use_block_id"])
+                if row["last_tool_use_block_id"] is not None
+                else None,
+                first_seen_ms=int(row["first_seen_ms"]) if row["first_seen_ms"] is not None else None,
+                last_seen_ms=int(row["last_seen_ms"]) if row["last_seen_ms"] is not None else None,
+            )
+            for row in rows
+        ]
+
+    def _query_file_counts(
+        self,
+        predicate: QueryPredicate,
+        *,
+        group_by: str | None,
+        sort: Literal["count", "key"] | None,
+        sort_direction: Literal["asc", "desc"],
+        limit: int,
+        offset: int,
+        session_filters: Mapping[str, object] | None,
+    ) -> list[ArchiveQueryUnitAggregateRow]:
+        group_expr = _query_unit_group_expression("file", "f", group_by)
+        clause, params = _structural_predicate_clause("file", "a", predicate, session_alias="s")
+        session_clause = ""
+        session_params: list[object] = []
+        if session_filters:
+            session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
+        order_clause = _query_unit_aggregate_order(sort, sort_direction)
+        rows = self._conn.execute(
+            f"""
+            SELECT {group_expr} AS group_key, COUNT(*) AS count
+            FROM (
+                SELECT
+                    a.session_id,
+                    REPLACE(a.tool_path, char(92), '/') AS path
+                FROM actions a
+                JOIN sessions s ON s.session_id = a.session_id
+                JOIN messages m ON m.message_id = a.message_id
+                WHERE a.tool_path IS NOT NULL
+                AND a.tool_path != ''
+                AND {clause}
+                {session_clause}
+                GROUP BY a.session_id, path
+            ) f
+            JOIN sessions s ON s.session_id = f.session_id
+            GROUP BY group_key
+            ORDER BY {order_clause}
+            LIMIT ? OFFSET ?
+            """,
+            [*params, *session_params, limit, offset],
+        ).fetchall()
+        return [
+            ArchiveQueryUnitAggregateRow(
+                unit="file",
+                group_by=group_by,
+                group_key=str(row["group_key"]) if row["group_key"] is not None else None,
+                count=int(row["count"]),
             )
             for row in rows
         ]
@@ -4852,6 +5015,8 @@ def _query_unit_time_expression(unit: str, row_alias: str) -> str:
             f"WHERE time_messages.message_id = {row_alias}.message_id "
             f"LIMIT 1)"
         )
+    if unit == "file":
+        return f"COALESCE({row_alias}.first_seen_ms, 0)"
     if unit == "assertion":
         return f"COALESCE({row_alias}.updated_at_ms, {row_alias}.created_at_ms, 0)"
     raise ValueError(f"unsupported time predicate unit: {unit}")
@@ -4967,6 +5132,25 @@ def _action_field_predicate_clause(action_alias: str, predicate: QueryFieldPredi
     raise ValueError(f"unsupported action predicate field: {field}")
 
 
+def _file_field_predicate_clause(action_alias: str, predicate: QueryFieldPredicate) -> tuple[str, list[object]]:
+    field = predicate.bound_field_name(context="lowering file predicates")
+    if field in {"tool", "action", "type", "command", "time"}:
+        return _action_field_predicate_clause(action_alias, predicate)
+    if field == "path":
+        return _like_clause(f"REPLACE(COALESCE({action_alias}.tool_path, ''), char(92), '/')", predicate.values)
+    if field == "text":
+        return _like_clause(
+            f"""
+            REPLACE(COALESCE({action_alias}.tool_path, ''), char(92), '/') || ' ' ||
+            COALESCE({action_alias}.tool_name, '') || ' ' ||
+            COALESCE({action_alias}.semantic_type, '') || ' ' ||
+            COALESCE({action_alias}.tool_command, '')
+            """.strip(),
+            predicate.values,
+        )
+    raise ValueError(f"unsupported file predicate field: {field}")
+
+
 def _block_field_predicate_clause(block_alias: str, predicate: QueryFieldPredicate) -> tuple[str, list[object]]:
     field = predicate.bound_field_name(context="lowering block predicates")
     if field == "type":
@@ -5049,6 +5233,8 @@ def _structural_predicate_clause(
             return _message_field_predicate_clause(row_alias, predicate)
         if unit == "action":
             return _action_field_predicate_clause(row_alias, predicate)
+        if unit == "file":
+            return _file_field_predicate_clause(row_alias, predicate)
         if unit == "block":
             return _block_field_predicate_clause(row_alias, predicate)
         if unit == "assertion":
@@ -5111,6 +5297,27 @@ def _exists_predicate_clause(table_alias: str, predicate: QueryExistsPredicate) 
                 SELECT 1
                 FROM actions {row_alias}
                 WHERE {row_alias}.session_id = {table_alias}.session_id
+                  AND {child_clause}
+            )
+            """.strip(),
+            params,
+        )
+    if predicate.unit == "file":
+        row_alias = "exists_files"
+        child_clause, params = _structural_predicate_clause(
+            predicate.unit,
+            row_alias,
+            predicate.child,
+            session_alias=table_alias,
+        )
+        return (
+            f"""
+            EXISTS (
+                SELECT 1
+                FROM actions {row_alias}
+                WHERE {row_alias}.session_id = {table_alias}.session_id
+                  AND {row_alias}.tool_path IS NOT NULL
+                  AND {row_alias}.tool_path != ''
                   AND {child_clause}
             )
             """.strip(),
@@ -6308,4 +6515,4 @@ def _provider_for_origin(origin: str) -> Provider:
     }.get(origin, Provider.UNKNOWN)
 
 
-__all__ = ["ArchiveStore", "ArchiveSessionSearchHit", "ArchiveSessionSummary"]
+__all__ = ["ArchiveFileQueryRow", "ArchiveStore", "ArchiveSessionSearchHit", "ArchiveSessionSummary"]

@@ -38,6 +38,7 @@
             "action",
             "block",
             "assertion",
+            "file",
             "run",
             "observed-event",
             "context-snapshot"
@@ -149,6 +150,7 @@
         "action",
         "block",
         "assertion",
+        "file",
         "run",
         "observed-event",
         "context-snapshot"

@@ -89,7 +89,7 @@ paths:
   /api/query-units:
     get:
       summary: Terminal query-unit rows
-      description: Returns terminal row results for explicit ``messages/actions/blocks/assertions/runs/observed-events/context-snapshots
+      description: Returns terminal row results for explicit ``messages/actions/blocks/assertions/files/runs/observed-events/context-snapshots
         where ...`` expressions. This endpoint shares the query-unit row and aggregate envelope contracts with CLI JSON output,
         MCP ``query_units``, and ``Polylogue.query_units()``.
       operationId: queryUnits
@@ -98,9 +98,10 @@ paths:
         in: query
         description: 'Explicit unit-source expression. Examples: ``messages where session.repo:polylogue AND role:assistant
           AND text:timeout``; ``actions where session.repo:polylogue AND tool:bash AND text:pytest``; ``blocks where session.origin:codex-session
-          AND type:code AND text:timeout``; ``assertions where kind:decision AND status:active AND text:review``; ``runs where
-          session.repo:polylogue AND role:main``; ``observed-events where session.repo:polylogue AND delivery_state:acted_on``;
-          ``context-snapshots where session.repo:polylogue AND boundary:session_start``.'
+          AND type:code AND text:timeout``; ``assertions where kind:decision AND status:active AND text:review``; ``files
+          where session.repo:polylogue AND action:file_edit AND path:archive/query``; ``runs where session.repo:polylogue
+          AND role:main``; ``observed-events where session.repo:polylogue AND delivery_state:acted_on``; ``context-snapshots
+          where session.repo:polylogue AND boundary:session_start``.'
         required: true
         schema:
           type: string
@@ -1178,6 +1179,70 @@ components:
       - metadata
       title: ContextSnapshotQueryRowPayload
       type: object
+    FileQueryRowPayload:
+      additionalProperties: false
+      description: Shared terminal-query row for affected file-path evidence.
+      properties:
+        unit:
+          const: file
+          default: file
+          title: Unit
+          type: string
+        session_id:
+          title: Session Id
+          type: string
+        origin:
+          title: Origin
+          type: string
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Title
+        path:
+          title: Path
+          type: string
+        action_count:
+          title: Action Count
+          type: integer
+        first_message_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: First Message Id
+        first_tool_use_block_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: First Tool Use Block Id
+        last_tool_use_block_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Last Tool Use Block Id
+        first_seen_ms:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: First Seen Ms
+        last_seen_ms:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Last Seen Ms
+      required:
+      - session_id
+      - origin
+      - path
+      - action_count
+      title: FileQueryRowPayload
+      type: object
     MessageQueryRowPayload:
       additionalProperties: false
       description: Shared terminal-query row for archive messages.
@@ -1413,6 +1478,7 @@ components:
           - action
           - block
           - assertion
+          - file
           - run
           - observed-event
           - context-snapshot
@@ -1428,6 +1494,7 @@ components:
             - $ref: '#/components/schemas/ActionQueryRowPayload'
             - $ref: '#/components/schemas/BlockQueryRowPayload'
             - $ref: '#/components/schemas/AssertionQueryRowPayload'
+            - $ref: '#/components/schemas/FileQueryRowPayload'
             - $ref: '#/components/schemas/RunQueryRowPayload'
             - $ref: '#/components/schemas/ObservedEventQueryRowPayload'
             - $ref: '#/components/schemas/ContextSnapshotQueryRowPayload'
@@ -1498,6 +1565,7 @@ components:
           - action
           - block
           - assertion
+          - file
           - run
           - observed-event
           - context-snapshot
@@ -1538,6 +1606,7 @@ components:
           - action
           - block
           - assertion
+          - file
           - run
           - observed-event
           - context-snapshot

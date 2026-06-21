@@ -1606,6 +1606,14 @@ def _block_query_line(item: dict[str, object]) -> str:
     return f"{item['block_id']} [{item['block_type']}] {_snippet(detail)}"
 
 
+def _file_query_line(item: dict[str, object]) -> str:
+    detail = f"actions={item.get('action_count', 0)}"
+    first_ref = item.get("first_tool_use_block_id") or item.get("first_message_id") or item.get("session_id")
+    if first_ref:
+        detail = f"{detail} first={first_ref}"
+    return f"{item['path']} [{item['origin']}] {_snippet(detail)}"
+
+
 def _assertion_query_line(item: dict[str, object]) -> str:
     detail = item.get("body_text") or item.get("key") or item.get("value") or item.get("target_ref") or ""
     return f"{item['assertion_id']} [{item['kind']}/{item['status']}] {_snippet(detail)}"
@@ -1637,6 +1645,7 @@ _QUERY_UNIT_TEXT_LINES: dict[str, _QueryUnitTextLine] = {
     "message": _message_query_line,
     "action": _action_query_line,
     "block": _block_query_line,
+    "file": _file_query_line,
     "assertion": _assertion_query_line,
     "run": _run_query_line,
     "observed-event": _observed_event_query_line,

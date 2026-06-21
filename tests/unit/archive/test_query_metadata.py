@@ -72,10 +72,13 @@ def test_query_unit_descriptors_own_terminal_aliases() -> None:
     observed_descriptor = query_unit_descriptor("observed-events")
     context_descriptor = query_unit_descriptor("context-snapshot")
     message_descriptor = query_unit_descriptor("messages")
+    file_descriptor = query_unit_descriptor("files")
     assert observed_descriptor is not None
     assert context_descriptor is not None
     assert message_descriptor is not None
+    assert file_descriptor is not None
     assert terminal_query_unit("messages") == "message"
+    assert terminal_query_unit("files") == "file"
     assert terminal_query_unit("context-snapshots") == "context-snapshot"
     assert observed_descriptor.plural_source == "observed-events"
     assert observed_descriptor.exists_supported is False
@@ -84,15 +87,21 @@ def test_query_unit_descriptors_own_terminal_aliases() -> None:
     assert message_descriptor.exists_supported is True
     assert message_descriptor.lowerer_kind == "sql"
     assert message_descriptor.payload_model == "MessageQueryRowPayload"
+    assert file_descriptor.exists_supported is True
+    assert file_descriptor.lowerer_kind == "sql"
+    assert file_descriptor.payload_model == "FileQueryRowPayload"
     assert context_descriptor.source_aliases == ("context-snapshot", "context-snapshots")
-    assert terminal_query_source_list() == "messages/actions/blocks/assertions/runs/observed-events/context-snapshots"
+    assert terminal_query_source_list() == "/".join(descriptor.plural_source for descriptor in query_unit_descriptors())
+    assert "files" in terminal_query_source_list().split("/")
     assert ("assertions", "assertion") in terminal_query_source_pairs()
-    assert structural_query_units() == ("action", "assertion", "block", "message")
+    assert ("files", "file") in terminal_query_source_pairs()
+    assert structural_query_units() == ("action", "assertion", "block", "file", "message")
     assert tuple(descriptor.unit for descriptor in query_unit_descriptors(exists_supported=True)) == (
         "message",
         "action",
         "block",
         "assertion",
+        "file",
     )
     assert tuple(descriptor.unit for descriptor in query_unit_descriptors(lowerer_kind="runtime_transform")) == (
         "run",

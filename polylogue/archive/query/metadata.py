@@ -5,7 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-QueryUnitName = Literal["message", "action", "block", "assertion", "run", "observed-event", "context-snapshot"]
+QueryUnitName = Literal[
+    "message",
+    "action",
+    "block",
+    "assertion",
+    "file",
+    "run",
+    "observed-event",
+    "context-snapshot",
+]
 QueryUnitLowererKind = Literal["sql", "runtime_transform"]
 
 
@@ -287,6 +296,7 @@ _MESSAGE_STRUCTURAL_FIELDS = {
 }
 _ACTION_STRUCTURAL_FIELDS = {"tool", "action", "type", "command", "path", "output", "text", "time"}
 _BLOCK_STRUCTURAL_FIELDS = {"type", "text", "tool", "action", "command", "path", "time"}
+_FILE_STRUCTURAL_FIELDS = {"tool", "action", "type", "command", "path", "text", "time"}
 _ASSERTION_STRUCTURAL_FIELDS = {
     "kind",
     "status",
@@ -663,6 +673,11 @@ STRUCTURAL_QUERY_UNIT_REGISTRY: dict[str, StructuralQueryUnitInfo] = {
         fields=_structural_field_infos(*_BLOCK_STRUCTURAL_FIELDS),
         example="exists block(session.origin:codex-session AND type:code AND text:timeout)",
     ),
+    "file": StructuralQueryUnitInfo(
+        description="Match sessions with at least one affected file path satisfying the child predicate.",
+        fields=_structural_field_infos(*_FILE_STRUCTURAL_FIELDS),
+        example="exists file(session.repo:polylogue AND action:file_edit AND path:archive/query)",
+    ),
     "message": StructuralQueryUnitInfo(
         description="Match sessions with at least one message satisfying the child predicate.",
         fields=_structural_field_infos(*_MESSAGE_STRUCTURAL_FIELDS),
@@ -751,6 +766,20 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         description=_unit_info("assertion").description,
         example=_unit_info("assertion").example,
         terminal_example="assertions where kind:decision AND status:active AND text:review",
+    ),
+    QueryUnitDescriptor(
+        "file",
+        "file",
+        "files",
+        exists_supported=True,
+        payload_model="FileQueryRowPayload",
+        sql_query_method="query_files",
+        cli_plain_renderer="file",
+        aggregate_group_fields=("path", "session.origin", "session.repo"),
+        fields=_unit_info("file").fields,
+        description=_unit_info("file").description,
+        example=_unit_info("file").example,
+        terminal_example="files where session.repo:polylogue AND action:file_edit AND path:archive/query",
     ),
     QueryUnitDescriptor(
         "run",
