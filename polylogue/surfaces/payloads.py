@@ -27,6 +27,7 @@ if TYPE_CHECKING:
         ArchiveActionQueryRow,
         ArchiveAssertionQueryRow,
         ArchiveBlockQueryRow,
+        ArchiveFileQueryRow,
         ArchiveMessageQueryRow,
         ArchiveQueryUnitAggregateRow,
     )
@@ -1020,6 +1021,7 @@ QueryUnitKind: TypeAlias = Literal[
     "action",
     "block",
     "assertion",
+    "file",
     "run",
     "observed-event",
     "context-snapshot",
@@ -1121,6 +1123,37 @@ class BlockQueryRowPayload(SurfacePayloadModel):
             semantic_type=row.semantic_type,
             tool_command=row.tool_command,
             tool_path=row.tool_path,
+        )
+
+
+class FileQueryRowPayload(SurfacePayloadModel):
+    """Shared terminal-query row for affected file-path evidence."""
+
+    unit: Literal["file"] = "file"
+    session_id: str
+    origin: str
+    title: str | None = None
+    path: str
+    action_count: int
+    first_message_id: str | None = None
+    first_tool_use_block_id: str | None = None
+    last_tool_use_block_id: str | None = None
+    first_seen_ms: int | None = None
+    last_seen_ms: int | None = None
+
+    @classmethod
+    def from_row(cls, row: ArchiveFileQueryRow) -> FileQueryRowPayload:
+        return cls(
+            session_id=row.session_id,
+            origin=row.origin,
+            title=row.title,
+            path=row.path,
+            action_count=row.action_count,
+            first_message_id=row.first_message_id,
+            first_tool_use_block_id=row.first_tool_use_block_id,
+            last_tool_use_block_id=row.last_tool_use_block_id,
+            first_seen_ms=row.first_seen_ms,
+            last_seen_ms=row.last_seen_ms,
         )
 
 
@@ -1553,6 +1586,7 @@ QueryUnitRowPayload: TypeAlias = (
     | ActionQueryRowPayload
     | BlockQueryRowPayload
     | AssertionQueryRowPayload
+    | FileQueryRowPayload
     | RunQueryRowPayload
     | ObservedEventQueryRowPayload
     | ContextSnapshotQueryRowPayload
@@ -2395,6 +2429,7 @@ __all__ = [
     "QueryUnitAggregateEnvelope",
     "QueryUnitAggregateRowPayload",
     "QueryUnitEnvelope",
+    "FileQueryRowPayload",
     "QueryUnitKind",
     "QueryUnitResultEnvelope",
     "QueryUnitRowPayload",

@@ -437,6 +437,114 @@
       "title": "ContextSnapshotQueryRowPayload",
       "type": "object"
     },
+    "FileQueryRowPayload": {
+      "additionalProperties": false,
+      "description": "Shared terminal-query row for affected file-path evidence.",
+      "properties": {
+        "action_count": {
+          "title": "Action Count",
+          "type": "integer"
+        },
+        "first_message_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "First Message Id"
+        },
+        "first_seen_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "First Seen Ms"
+        },
+        "first_tool_use_block_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "First Tool Use Block Id"
+        },
+        "last_seen_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Last Seen Ms"
+        },
+        "last_tool_use_block_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Last Tool Use Block Id"
+        },
+        "origin": {
+          "title": "Origin",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "unit": {
+          "const": "file",
+          "default": "file",
+          "title": "Unit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "origin",
+        "path",
+        "action_count"
+      ],
+      "title": "FileQueryRowPayload",
+      "type": "object"
+    },
     "MessageQueryRowPayload": {
       "additionalProperties": false,
       "description": "Shared terminal-query row for archive messages.",
@@ -775,7 +883,7 @@
   "$id": "https://polylogue.dev/schemas/cli-output/query-unit-envelope.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Terminal row envelope for explicit `messages/actions/blocks/assertions/runs/observed-events/context-snapshots where ...` query-unit expressions. Shared by CLI JSON output, Python API, MCP, and daemon HTTP.\n\nGenerated from `polylogue.surfaces.payloads.QueryUnitEnvelope` by `devtools render cli-output-schemas`. Do not edit by hand.",
+  "description": "Terminal row envelope for explicit `messages/actions/blocks/assertions/files/runs/observed-events/context-snapshots where ...` query-unit expressions. Shared by CLI JSON output, Python API, MCP, and daemon HTTP.\n\nGenerated from `polylogue.surfaces.payloads.QueryUnitEnvelope` by `devtools render cli-output-schemas`. Do not edit by hand.",
   "properties": {
     "items": {
       "items": {
@@ -791,6 +899,9 @@
           },
           {
             "$ref": "#/$defs/AssertionQueryRowPayload"
+          },
+          {
+            "$ref": "#/$defs/FileQueryRowPayload"
           },
           {
             "$ref": "#/$defs/RunQueryRowPayload"
@@ -889,6 +1000,7 @@
         "action",
         "block",
         "assertion",
+        "file",
         "run",
         "observed-event",
         "context-snapshot"
@@ -912,6 +1024,7 @@
     "polylogue --format json actions where ...",
     "polylogue --format json blocks where ...",
     "polylogue --format json assertions where ...",
+    "polylogue --format json files where ...",
     "polylogue --format json runs where ...",
     "polylogue --format json observed-events where ...",
     "polylogue --format json context-snapshots where ...",

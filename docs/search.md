@@ -4,7 +4,7 @@
 
 Polylogue uses a query-first grammar over archive units. Bare tokens are
 full-text terms, field clauses narrow the selected unit, explicit
-`sessions/messages/actions/blocks/assertions/runs/observed-events/context-snapshots where ...`
+`sessions/messages/actions/blocks/files/assertions/runs/observed-events/context-snapshots where ...`
 forms opt into Boolean predicates,
 and trailing CLI verbs render or mutate the selected session set. The same
 query semantics — filters, retrieval lanes, ranking policy, and typed response
@@ -15,7 +15,8 @@ Quick links:
 - [Retrieval Lanes](#retrieval-lanes) — `dialogue`, `actions`, `hybrid`,
   `semantic`, and how `auto` elevates.
 - [Terminal Unit Queries](#terminal-unit-queries) — `messages/actions/blocks/
-  assertions/runs/observed-events/context-snapshots where ...` row results.
+  files/assertions/runs/observed-events/context-snapshots where ...` row
+  results.
 - [Ranking Policy](#ranking-policy) — current `mixed-bm25-rrf-vector`
   policy and version contract.
 - [SearchEnvelope Contract](#searchenvelope-contract) — the typed
@@ -33,7 +34,7 @@ through the same typed AST and query planner:
 ```text
 compact-query      ::= compact-clause*
 boolean-query      ::= ["sessions" "where"] predicate
-unit-query         ::= ("messages" | "actions" | "blocks" | "assertions" | "runs" | "observed-events" | "context-snapshots") "where" predicate
+unit-query         ::= ("messages" | "actions" | "blocks" | "files" | "assertions" | "runs" | "observed-events" | "context-snapshots") "where" predicate
 pipeline-query     ::= unit-query ("|" pipeline-stage)+
                      | "sessions" "where" predicate "|" unit-query ("|" pipeline-stage)*
 
@@ -54,7 +55,7 @@ predicate          ::= predicate "OR" predicate
                      | "exists" structural-unit "(" predicate ")"
                      | "seq" "(" sequence-step "->" sequence-step+ ")"
 
-structural-unit    ::= "message" | "action" | "block" | "assertion"
+structural-unit    ::= "message" | "action" | "block" | "file" | "assertion"
 sequence-step      ::= action-field-clause ("AND" action-field-clause)*
 action-field-clause ::= "action:" value | "tool:" value | "command:" value
                       | "path:" value | "output:" value | "text:" value
@@ -103,6 +104,7 @@ Unit queries select terminal rows instead of sessions:
 polylogue messages where 'role:assistant AND text:timeout'
 polylogue actions where 'session.repo:polylogue AND action:file_edit AND path:polylogue/archive'
 polylogue blocks where 'type:code AND text:sqlite'
+polylogue files where 'action:file_edit AND path:polylogue/archive/query'
 polylogue assertions where 'kind:decision AND status:active AND text:review'
 polylogue runs where 'role:subagent AND status:completed AND agent:Explore'
 polylogue observed-events where 'delivery_state:acted_on AND text:#2100'
@@ -117,6 +119,7 @@ polylogue 'messages where role:assistant | sort by time desc | limit 10'
 polylogue 'actions where action:file_edit | limit 20 | offset 40'
 polylogue 'sessions where repo:polylogue AND origin:claude-code-session | messages where role:assistant'
 polylogue 'sessions where origin:(codex-session|claude-code-session) | actions where action:file_edit'
+polylogue 'sessions where repo:polylogue | files where action:file_edit | group by path | count'
 polylogue 'sessions where ~"timeout failure" | messages where role:user'
 polylogue 'sessions where exists block(type:code) | messages where role:user'
 polylogue 'sessions where seq(action:file_edit -> action:shell) | messages where role:user'
@@ -127,7 +130,7 @@ polylogue 'sessions where repo:polylogue | messages where role:assistant | sort 
 
 When a pipeline starts with `sessions where ...`, the left stage is lowered into
 predicates on the terminal unit query, so it uses the same row executor as direct
-`messages/actions/...` pipelines. Field/count/date predicates become
+`messages/actions/files/...` pipelines. Field/count/date predicates become
 `session.<field>` row predicates. FTS (`~"..."`), `exists ...`, sequence
 (`seq(...)`), and `lineage:id:<session-id>` stages lower through the existing
 session Boolean lowerers against the terminal row's owning session. Semantic
@@ -136,7 +139,7 @@ queries have explicit ranked-result semantics. Terminal pipeline stages
 currently support `sort by time [asc|desc]`,
 `group by FIELD | count`, aggregate `sort by count|key [asc|desc]`, `limit N`,
 and `offset N` for SQL-backed terminal rows (`messages`, `actions`, `blocks`,
-`assertions`). Query-string limits narrow the surface limit instead of expanding
+`files`, `assertions`). Query-string limits narrow the surface limit instead of expanding
 caller/API caps, and query-string offsets are added to the caller offset.
 Runtime-transform terminal rows (`runs`, `observed-events`, `context-snapshots`)
 reject sort/aggregate stages until they have streaming or aggregate lowerers;
@@ -238,6 +241,7 @@ one child row matching the nested predicate.
 | `message` | `action`, `cache_read_tokens`, `cache_write_tokens`, `command`, `duration_ms`, `input_tokens`, `output`, `output_tokens`, `path`, `role`, `text`, `time`, `tool`, `type`, `words` |
 | `action` | `action`, `command`, `output`, `path`, `text`, `time`, `tool`, `type` |
 | `block` | `action`, `command`, `path`, `text`, `time`, `tool`, `type` |
+| `file` | `action`, `command`, `path`, `text`, `time`, `tool`, `type` |
 | `assertion` | `author`, `author_kind`, `author_ref`, `body`, `context`, `evidence`, `key`, `kind`, `scope`, `scope_ref`, `status`, `target`, `target_ref`, `text`, `value`, `visibility` |
 
 Structural units also accept `session.<field>` predicates for the owning
@@ -263,6 +267,7 @@ Examples:
 
 ```bash
 polylogue sessions where 'exists action(session.repo:polylogue AND tool:bash AND text:pytest)'
+polylogue sessions where 'exists file(session.repo:polylogue AND action:file_edit AND path:archive/query)'
 polylogue sessions where 'exists block(type:code AND text:timeout)'
 ```
 
@@ -290,6 +295,7 @@ rows instead:
 polylogue --format json messages where role:assistant AND text:timeout
 polylogue --format ndjson actions where session.repo:polylogue AND action:file_edit AND path:polylogue/archive
 polylogue --format yaml blocks where type:code AND text:sqlite
+polylogue --format json files where action:file_edit AND path:polylogue/archive/query
 polylogue --format json assertions where kind:decision AND status:active AND text:review
 polylogue --format json runs where role:subagent AND status:completed AND agent:Explore
 polylogue --format json observed-events where delivery_state:acted_on AND text:#2100
@@ -300,11 +306,12 @@ polylogue --format json messages where text:timeout | group by role | count
 The row shape is the shared `QueryUnitEnvelope` used by CLI JSON/NDJSON/YAML,
 Python `Polylogue.query_units()`, MCP `query_units`, and daemon
 `GET /api/query-units?expression=...`. Plain and CSV CLI output are
-transport-specific renderings of the same message/action/block/assertion/run/
+transport-specific renderings of the same message/action/block/file/assertion/run/
 observed-event/context-snapshot row payloads.
 Aggregate pipelines over SQL-backed terminal rows use the sibling
 `QueryUnitAggregateEnvelope` and currently support `group by FIELD | count`
 over closed unit fields such as message role, action tool/action, block type,
+file path,
 assertion kind/status, and owning-session origin/repo.
 Aggregate rows can be ordered with `sort by count [asc|desc]` or
 `sort by key [asc|desc]` before `limit`/`offset`; the default order is count
@@ -320,11 +327,17 @@ by their owning session:
 polylogue messages where session.origin:claude-code-session AND role:assistant
 polylogue actions where session.repo:polylogue AND action:file_edit
 polylogue blocks where session.since:7d AND session.words:<=500 AND type:code
+polylogue files where session.repo:polylogue AND action:file_edit AND path:archive/query
 polylogue assertions where session.repo:polylogue AND kind:caveat
 polylogue runs where session.repo:polylogue AND role:subagent AND status:completed
 polylogue observed-events where session.origin:codex-session AND object_ref:github-review
 polylogue context-snapshots where session.messages:>=2 AND session.date:>=2026-01-02 AND boundary:subagent_start
 ```
+
+`files where ...` is an affected-path evidence projection over action rows with
+non-empty `tool_path`. It returns one row per owning session and normalized path,
+with action counts and first/last tool-use refs. It is not a global filesystem
+inventory and does not claim that a file still exists on disk.
 
 `runs`, `observed-events`, and `context-snapshots` are runtime-transform row
 sources. They return projected evidence from existing recovery/run-projection

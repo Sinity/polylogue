@@ -9,6 +9,7 @@ from typing import Literal, TypeAlias
 QueryBoolOp: TypeAlias = Literal["and", "or"]
 QueryCompareOp: TypeAlias = Literal["=", ">", ">=", "<", "<="]
 QueryFieldScope: TypeAlias = Literal["session", "unit"]
+QueryExistsUnit: TypeAlias = Literal["message", "action", "block", "assertion", "file"]
 
 
 @dataclass(frozen=True)
@@ -96,7 +97,7 @@ class QueryBoolPredicate:
 class QueryExistsPredicate:
     """Correlated structural predicate over a child archive unit."""
 
-    unit: Literal["message", "action", "block", "assertion"]
+    unit: QueryExistsUnit
     child: QueryPredicate
 
     def to_payload(self) -> dict[str, object]:
@@ -193,6 +194,7 @@ __all__ = [
     "QueryBoolPredicate",
     "QueryCompareOp",
     "QueryExistsPredicate",
+    "QueryExistsUnit",
     "QueryFieldRef",
     "QueryFieldPredicate",
     "QueryFieldScope",
