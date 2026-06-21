@@ -529,13 +529,12 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "lab scenario",
         "verification lab",
-        "Run verification-lab showcase scenario sets and baseline checks.",
+        "Run verification-lab showcase scenario sets.",
         "devtools.lab_scenario",
-        use_when="Run showcase exercise smoke scenarios and committed baseline checks outside the archive CLI.",
+        use_when="Run showcase exercise smoke scenarios outside the archive CLI.",
         examples=(
             "devtools lab scenario list",
             "devtools lab scenario run archive-smoke --tier 0",
-            "devtools lab scenario verify-baselines",
         ),
     ),
     CommandSpec(

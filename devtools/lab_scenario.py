@@ -3,25 +3,32 @@
 from __future__ import annotations
 
 import argparse
-import difflib
 import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Protocol
 
 from devtools import repo_root as _get_root
+from polylogue.core.outcomes import OutcomeStatus
 from polylogue.showcase.cli_boundary import invoke_showcase_cli
 from polylogue.showcase.exercises import EXERCISES, Exercise
-from polylogue.showcase.qa_runner_reporting import format_qa_summary
 from polylogue.showcase.qa_runner_request import QAStage, build_qa_session_request
 from polylogue.showcase.qa_runner_workflow import run_qa_session
 from polylogue.showcase.qa_session_payload import generate_qa_session
 from polylogue.showcase.showcase_runner_support import run_exercise
 
 _SCENARIO_NAMES = ("archive-smoke", "reader-visual-smoke")
-BASELINE_DIR = _get_root() / "tests" / "baselines" / "showcase"
 TIER_0_GROUPS = frozenset({"structural"})
 _ENV_DEPENDENT: frozenset[str] = frozenset({"version"})
+
+
+class _ScenarioResult(Protocol):
+    report_dir: Path | None
+
+    def stage_statuses(self) -> dict[str, OutcomeStatus]: ...
+
+    def failed_stages(self) -> tuple[str, ...]: ...
 
 
 def get_tier_0_exercises() -> list[Exercise]:
@@ -53,88 +60,6 @@ def run_tier_0() -> dict[str, str]:
     return results
 
 
-def load_baselines() -> dict[str, str]:
-    """Load committed showcase baselines."""
-    if not BASELINE_DIR.exists():
-        return {}
-
-    baselines: dict[str, str] = {}
-    for path in sorted(BASELINE_DIR.glob("*.txt")):
-        baselines[path.stem] = path.read_text(encoding="utf-8")
-    return baselines
-
-
-def save_baselines(outputs: dict[str, str]) -> None:
-    """Persist showcase baselines."""
-    BASELINE_DIR.mkdir(parents=True, exist_ok=True)
-    for name, output in sorted(outputs.items()):
-        (BASELINE_DIR / f"{name}.txt").write_text(output, encoding="utf-8")
-
-
-def compare_outputs(
-    current: dict[str, str],
-    baselines: dict[str, str],
-) -> list[str]:
-    """Compare current exercise output against committed baselines."""
-    drifts: list[str] = []
-
-    for name in sorted(set(baselines) - set(current)):
-        drifts.append(f"REMOVED: {name} (in baseline but not in current run)")
-
-    for name in sorted(set(current) - set(baselines)):
-        drifts.append(f"NEW: {name} (no baseline yet)")
-
-    for name in sorted(set(current) & set(baselines)):
-        if current[name] != baselines[name]:
-            diff = difflib.unified_diff(
-                baselines[name].splitlines(keepends=True),
-                current[name].splitlines(keepends=True),
-                fromfile=f"baseline/{name}",
-                tofile=f"current/{name}",
-                n=3,
-            )
-            drifts.append(f"CHANGED: {name}\n{''.join(diff)}")
-    return drifts
-
-
-def verify_showcase_baselines(*, update: bool) -> int:
-    """Verify or update committed tier-0 showcase baselines.
-
-    Checks baseline existence before running exercises when *update* is
-    False so that the "no baselines" path fails in <1 ms instead of
-    after running all tier-0 subprocesses (#1026).
-    """
-    baselines: dict[str, str] = {}
-    if not update:
-        baselines = load_baselines()
-        if not baselines:
-            print("ERROR: No baselines found. Run with --update to create them.")
-            return 1
-
-    print("Running tier 0 showcase exercises...")
-    try:
-        current = run_tier_0()
-    except RuntimeError as exc:
-        print(f"ERROR: {exc}")
-        return 1
-    print(f"  Ran {len(current)} exercises")
-
-    if update:
-        save_baselines(current)
-        print(f"  Updated baselines in {BASELINE_DIR}")
-        return 0
-
-    drifts = compare_outputs(current, baselines)
-    if not drifts:
-        print("  All baselines match.")
-        return 0
-
-    print(f"\n  DRIFT DETECTED ({len(drifts)} differences):\n")
-    for drift in drifts:
-        print(f"  {drift}")
-    return 1
-
-
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run verification-lab showcase scenarios.")
     subparsers = parser.add_subparsers(dest="action", required=True)
@@ -149,13 +74,6 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--verbose", action="store_true", help="Print exercise outputs.")
     run_parser.add_argument("--fail-fast", action="store_true", help="Stop on first exercise failure.")
 
-    baseline_parser = subparsers.add_parser("verify-baselines", help="Verify committed showcase baselines.")
-    baseline_parser.add_argument(
-        "--update",
-        action="store_true",
-        help="Update baselines to current output instead of comparing.",
-    )
-
     list_parser = subparsers.add_parser("list", help="List available showcase scenarios.")
     list_parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     return parser
@@ -169,17 +87,11 @@ def list_scenarios(*, as_json: bool) -> int:
             "name": "archive-smoke",
             "kind": "showcase",
             "tier_0_exercise_count": len(tier_0),
-            "baseline_dir": str(BASELINE_DIR.relative_to(BASELINE_DIR.parent.parent.parent))
-            if BASELINE_DIR.exists()
-            else None,
-            "baselines_committed": len(list(BASELINE_DIR.glob("*.txt"))) if BASELINE_DIR.exists() else 0,
         },
         {
             "name": "reader-visual-smoke",
             "kind": "reader-visual",
             "command": f"{sys.executable} -m pytest -q tests/visual",
-            "baseline_dir": None,
-            "baselines_committed": 0,
         },
     ]
     payload = {"scenarios": scenarios}
@@ -192,8 +104,6 @@ def list_scenarios(*, as_json: bool) -> int:
             print(f"{name:<20s}  command: {entry['command']}")
             continue
         print(f"{name:<20s}  tier-0 exercises: {entry['tier_0_exercise_count']}")
-        if entry["baselines_committed"]:
-            print(f"  baselines: {entry['baselines_committed']} ({entry['baseline_dir']})")
     return 0
 
 
@@ -228,11 +138,25 @@ def run_reader_visual_smoke(*, report_dir: Path | None, as_json: bool) -> int:
     return result.returncode
 
 
+def _format_scenario_summary(result: _ScenarioResult) -> str:
+    """Format the scenario runner's direct stage result without QA reports."""
+    stage_statuses = result.stage_statuses()
+    failed_stages = result.failed_stages()
+    lines = ["Scenario stages:"]
+    for name, status in stage_statuses.items():
+        lines.append(f"  {name}: {status.value}")
+    if failed_stages:
+        lines.append(f"Failed stages: {', '.join(failed_stages)}")
+    else:
+        lines.append("Failed stages: none")
+    if result.report_dir is not None:
+        lines.append(f"Artifacts: {result.report_dir}")
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
-    if args.action == "verify-baselines":
-        return verify_showcase_baselines(update=bool(args.update))
     if args.action == "list":
         return list_scenarios(as_json=bool(args.json))
     if args.action != "run":
@@ -257,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         print(json.dumps(generate_qa_session(result), indent=2))
     else:
-        print(format_qa_summary(result))
+        print(_format_scenario_summary(result))
     return 0 if result.all_passed else 1
 
 

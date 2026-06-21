@@ -221,7 +221,6 @@ def test_run_audit_stage_records_exception_and_returns_early_result(tmp_path: Pa
     with (
         patch("polylogue.schemas.audit.workflow.audit_all_providers", side_effect=RuntimeError("boom")),
         patch("polylogue.showcase.qa_runner_workflow.populate_artifact_coverage") as mock_artifact_coverage,
-        patch("polylogue.showcase.qa_runner_workflow.save_qa_reports") as mock_save,
     ):
         returned = _run_audit_stage(
             result,
@@ -236,7 +235,6 @@ def test_run_audit_stage_records_exception_and_returns_early_result(tmp_path: Pa
     assert result.invariants_skipped is True
     assert result.report_dir == tmp_path / "report"
     mock_artifact_coverage.assert_called_once_with(result, workspace_env={"XDG_CONFIG_HOME": str(tmp_path / "config")})
-    mock_save.assert_called_once_with(result, tmp_path / "report")
 
 
 def test_run_audit_stage_returns_none_when_audit_passes() -> None:
@@ -318,7 +316,6 @@ def test_run_qa_session_executes_full_success_path(tmp_path: Path) -> None:
         patch(
             "polylogue.showcase.qa_runner_workflow.check_invariants", return_value=[invariant_result]
         ) as mock_invariants,
-        patch("polylogue.showcase.qa_runner_workflow.save_qa_reports") as mock_save,
     ):
         result = run_qa_session(request)
 
@@ -335,7 +332,6 @@ def test_run_qa_session_executes_full_success_path(tmp_path: Path) -> None:
     )
     assert isinstance(mock_runner_class.call_args.kwargs["extra_exercises"], list)
     mock_invariants.assert_called_once_with(showcase_result.results)
-    mock_save.assert_called_once_with(result, tmp_path / "report")
     assert result.showcase_result is showcase_result
     assert result.invariant_results == [invariant_result]
 

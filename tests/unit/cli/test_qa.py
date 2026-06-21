@@ -1,20 +1,13 @@
-"""Tests for showcase QA report and JSON envelope contracts.
-
-Validates that showcase results produce valid JSON reports
-and that output directories can be customized.
-"""
+"""Tests for showcase JSON envelope contracts."""
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from polylogue.scenarios import AssertionSpec, polylogue_execution
 from polylogue.showcase.exercises import Exercise
-from polylogue.showcase.report_files import save_reports
 from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
 from polylogue.showcase.showcase_report_payloads import generate_json_report
-from polylogue.showcase.showcase_report_text import generate_cookbook, generate_summary
 
 
 def _make_result(exercises: list[Exercise] | None = None) -> ShowcaseResult:
@@ -96,45 +89,3 @@ class TestJsonEnvelopeValidation:
         assert data["passed"] == 1
         assert data["failed"] == 1
         assert data["skipped"] == 0
-
-
-class TestCustomOutputRoot:
-    """Reports can be saved to a custom output directory."""
-
-    def test_save_reports_creates_files(self: object, tmp_path: Path) -> None:
-        """save_reports writes all three report files."""
-        result = _make_result()
-        result.output_dir = tmp_path
-
-        save_reports(result)
-
-        assert (tmp_path / "showcase-summary.txt").exists()
-        assert (tmp_path / "showcase-report.json").exists()
-        assert (tmp_path / "showcase-cookbook.md").exists()
-
-    def test_save_reports_json_is_valid(self: object, tmp_path: Path) -> None:
-        """Saved JSON report is parseable."""
-        result = _make_result()
-        result.output_dir = tmp_path
-
-        save_reports(result)
-
-        data = json.loads((tmp_path / "showcase-report.json").read_text())
-        assert data["total"] == 2
-
-    def test_summary_contains_group_counts(self: object) -> None:
-        """Summary text includes group-level pass/fail counts."""
-        result = _make_result()
-        summary = generate_summary(result)
-
-        assert "structural" in summary
-        assert "sources" in summary
-        assert "TOTAL" in summary
-
-    def test_cookbook_includes_exercise_output(self: object) -> None:
-        """Cookbook contains exercise descriptions and commands."""
-        result = _make_result()
-        cookbook = generate_cookbook(result)
-
-        assert "Test one" in cookbook
-        assert "polylogue" in cookbook

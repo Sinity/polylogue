@@ -278,7 +278,8 @@ Operators choose focused checks via the verification baseline:
 
 ```bash
 devtools verify --quick
-devtools lab scenario verify-baselines
+devtools lab scenario run archive-smoke --tier 0
+devtools lab scenario run reader-visual-smoke
 ```
 
 <!-- BEGIN GENERATED: docs-surface -->
