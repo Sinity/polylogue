@@ -64,6 +64,13 @@ polylogued browser-capture status
 Then navigate to `chatgpt.com` or `claude.ai`. The extension badge should
 turn green. Start a conversation — each exchange is captured as you type.
 
+For branch-local development, point **Local receiver URL** in the popup at the
+URL printed by `devtools workspace dev-loop`, usually
+`http://127.0.0.1:8875` when the production receiver is still running on the
+default port. Each status/archive/capture request sends `X-Request-ID` and the
+popup shows the receiver's echoed request id. Use that value to correlate the
+popup/service-worker result with browser network traces and receiver logs.
+
 ## Supported Sites
 
 | Site | Provider | Notes |
