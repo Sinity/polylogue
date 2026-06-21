@@ -2192,6 +2192,7 @@ class TestSharedQueryPayloads:
         assert d["time_range"]["min"] == "2024-01-01"
 
     def test_assertion_claim_payloads_are_shared_surface_dtos(self) -> None:
+        from polylogue.core.enums import AssertionKind
         from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
         from polylogue.surfaces.payloads import AssertionClaimListPayload, AssertionClaimPayload
 
@@ -2200,7 +2201,7 @@ class TestSharedQueryPayloads:
             scope_ref="repo:polylogue",
             target_ref="session:c1",
             key=None,
-            kind="decision",
+            kind=AssertionKind.DECISION,
             value=None,
             body_text="Keep assertion payloads shared.",
             author_ref="agent:test",

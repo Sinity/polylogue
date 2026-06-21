@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing_extensions import TypedDict
 
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
+from polylogue.core.enums import AssertionKind
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document
 from polylogue.core.refs import normalize_object_ref_text, normalize_public_ref_text
 
@@ -1164,7 +1165,7 @@ class AssertionQueryRowPayload(SurfacePayloadModel):
     assertion_id: str
     target_ref: str
     scope_ref: str | None = None
-    kind: str
+    kind: AssertionKind
     key: str | None = None
     body_text: str | None = None
     value: object
@@ -1199,7 +1200,7 @@ class AssertionQueryRowPayload(SurfacePayloadModel):
             assertion_id=row.assertion_id,
             target_ref=row.target_ref,
             scope_ref=row.scope_ref,
-            kind=row.kind,
+            kind=AssertionKind.from_string(row.kind),
             key=row.key,
             body_text=row.body_text,
             value=row.value,
@@ -1222,7 +1223,7 @@ class AssertionClaimPayload(SurfacePayloadModel):
     scope_ref: str | None = None
     target_ref: str
     key: str | None = None
-    kind: str
+    kind: AssertionKind
     value: object | None = None
     body_text: str | None = None
     author_ref: str | None = None
@@ -1259,7 +1260,7 @@ class AssertionClaimPayload(SurfacePayloadModel):
             scope_ref=envelope.scope_ref,
             target_ref=envelope.target_ref,
             key=envelope.key,
-            kind=envelope.kind,
+            kind=AssertionKind.from_string(envelope.kind),
             value=envelope.value,
             body_text=envelope.body_text,
             author_ref=envelope.author_ref,

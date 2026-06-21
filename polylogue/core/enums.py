@@ -329,7 +329,45 @@ class ExerciseIOMode(PolylogueStrEnum):
         return cls(str(value).strip().lower())
 
 
+class AssertionKind(PolylogueStrEnum):
+    """Closed vocabulary for ``user.db`` assertion rows.
+
+    The unified assertions table collapses the old user-tier overlay
+    mini-systems. The SQLite column is stored as ``TEXT`` so the vocabulary can
+    grow without forcing a user-tier schema bump; this enum is the typed
+    runtime and surface boundary.
+    """
+
+    MARK = "mark"
+    HIGHLIGHT = "highlight"
+    ANNOTATION = "annotation"
+    CORRECTION = "correction"
+    SUPPRESSION = "suppression"
+    TAG = "tag"
+    METADATA = "metadata"
+    SAVED_QUERY = "saved_query"
+    RECALL_PACK = "recall_pack"
+    WORKSPACE_NOTE = "workspace_note"
+    NOTE = "note"
+    DECISION = "decision"
+    CAVEAT = "caveat"
+    LESSON = "lesson"
+    BLOCKER = "blocker"
+    HANDOFF = "handoff"
+    JUDGMENT = "judgment"
+    RUN_STATE = "run_state"
+    PROMPT_EVAL = "prompt_eval"
+    TRANSFORM_CANDIDATE = "transform_candidate"
+
+    @classmethod
+    def from_string(cls, value: str | AssertionKind) -> AssertionKind:
+        if isinstance(value, cls):
+            return value
+        return cls(str(value).strip().lower())
+
+
 __all__ = [
+    "AssertionKind",
     "ArtifactSupportStatus",
     "BlockType",
     "BranchType",

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from polylogue.core.enums import AssertionKind
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async, make_polylogue_mock
 
 
@@ -424,7 +425,7 @@ class TestContextPreambleModel:
             guidance=ContextPreambleGuidance(
                 assertions=[
                     ContextPreambleAssertionGuidance(
-                        kind="decision",
+                        kind=AssertionKind.DECISION,
                         text="Use the shared context-preamble builder.",
                         target_ref="session:target",
                         scope_ref="repo:polylogue",

@@ -966,6 +966,40 @@ components:
       - tool_use_block_id
       title: ActionQueryRowPayload
       type: object
+    AssertionKind:
+      description: 'Closed vocabulary for ``user.db`` assertion rows.
+
+
+        The unified assertions table collapses the old user-tier overlay
+
+        mini-systems. The SQLite column is stored as ``TEXT`` so the vocabulary can
+
+        grow without forcing a user-tier schema bump; this enum is the typed
+
+        runtime and surface boundary.'
+      enum:
+      - mark
+      - highlight
+      - annotation
+      - correction
+      - suppression
+      - tag
+      - metadata
+      - saved_query
+      - recall_pack
+      - workspace_note
+      - note
+      - decision
+      - caveat
+      - lesson
+      - blocker
+      - handoff
+      - judgment
+      - run_state
+      - prompt_eval
+      - transform_candidate
+      title: AssertionKind
+      type: string
     AssertionQueryRowPayload:
       additionalProperties: false
       description: Shared terminal-query row for user-tier assertions.
@@ -988,8 +1022,7 @@ components:
           default: null
           title: Scope Ref
         kind:
-          title: Kind
-          type: string
+          $ref: '#/components/schemas/AssertionKind'
         key:
           anyOf:
           - type: string
@@ -1821,8 +1854,7 @@ components:
           default: null
           title: Key
         kind:
-          title: Kind
-          type: string
+          $ref: '#/components/schemas/AssertionKind'
         value:
           anyOf:
           - {}
