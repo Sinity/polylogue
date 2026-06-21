@@ -137,7 +137,7 @@ def build_synthetic_corpus_specs(
     messages_max: int = 19,
     seed: int = 42,
 ) -> tuple[CorpusSpec, ...]:
-    """Resolve synthetic corpus specs for showcase and demo workflows."""
+    """Resolve synthetic corpus specs for verification-lab and demo workflows."""
     resolved_request = _resolved_corpus_request(
         request=request,
         providers=providers,
@@ -162,7 +162,7 @@ def build_synthetic_corpus_scenarios(
     messages_max: int = 19,
     seed: int = 42,
 ) -> tuple[CorpusScenario, ...]:
-    """Resolve named synthetic corpus scenarios for showcase and demo workflows."""
+    """Resolve named synthetic corpus scenarios for verification-lab and demo workflows."""
     resolved_request = _resolved_corpus_request(
         request=request,
         providers=providers,

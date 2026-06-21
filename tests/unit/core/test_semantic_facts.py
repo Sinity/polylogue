@@ -37,7 +37,6 @@ EXPECTED_REPO_NAME = REPO_ROOT.name
 README_PATH = REPO_ROOT / "README.md"
 ARCHIVE_SESSION_PATH = REPO_ROOT / "polylogue" / "archive" / "session"
 ARCHIVE_ACTION_EVENTS_PATH = REPO_ROOT / "polylogue" / "archive" / "action" / "events.py"
-SHOWCASE_REPORT_PATH = REPO_ROOT / "polylogue" / "showcase" / "report.py"
 
 
 def _semantic_session() -> SessionModel:

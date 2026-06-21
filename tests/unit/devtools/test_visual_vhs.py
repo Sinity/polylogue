@@ -4,21 +4,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.showcase.vhs import VHSTapeSpec, default_tape_specs, generate_all_tapes, generate_tape
+from devtools.visual_vhs import VHSTapeSpec, default_tape_specs, generate_all_tapes, generate_tape
 
 
 class TestGenerateTape:
     """generate_tape produces valid tape content."""
 
     def test_basic_tape_has_output_directive(self) -> None:
-        spec = VHSTapeSpec(name="test-ex", description="Test exercise", display_command=("polylogue", "--help"))
+        spec = VHSTapeSpec(name="test-flow", description="Test flow", display_command=("polylogue", "--help"))
 
         tape = generate_tape(spec)
 
-        assert "Output test-ex.gif" in tape
+        assert "Output test-flow.gif" in tape
 
     def test_tape_has_set_directives(self) -> None:
-        spec = VHSTapeSpec(name="test-ex", description="Test exercise", display_command=("polylogue", "--help"))
+        spec = VHSTapeSpec(name="test-flow", description="Test flow", display_command=("polylogue", "--help"))
 
         tape = generate_tape(spec)
 

@@ -232,14 +232,17 @@ domains:
 
   # -- Verification -------------------------------------------------------
 
-  - domain: showcase
+  - domain: verification-lab-support
     production_modules:
-      - polylogue/showcase/
+      - polylogue/demo/
+      - devtools/cli_boundary.py
+      - devtools/lab_scenario.py
+      - devtools/visual_vhs.py
     covering_tests:
-      - tests/unit/showcase/test_cli_boundary.py
-      - tests/unit/showcase/test_verification_lane.py
-      - tests/unit/showcase/test_vhs_generation.py
-      - tests/unit/showcase/test_workspace.py
+      - tests/unit/demo/test_workspace.py
+      - tests/unit/devtools/test_cli_boundary.py
+      - tests/unit/devtools/test_lab_scenario.py
+      - tests/unit/devtools/test_visual_vhs.py
     notes: covered — smoke CLI boundary, lab scenario path, VHS tape generation, workspace helpers
 
   - domain: scenarios

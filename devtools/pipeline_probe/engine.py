@@ -45,6 +45,7 @@ from polylogue.config import Config, Source
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, is_json_document, loads, require_json_document
 from polylogue.core.metrics import PipelineMetrics
+from polylogue.demo.workspace import VerificationWorkspace, create_verification_workspace
 from polylogue.paths import active_index_db_path, blob_store_root
 from polylogue.pipeline.run_stages import execute_index_stage, execute_materialize_stage
 from polylogue.pipeline.services.parsing import ParsingService
@@ -52,7 +53,6 @@ from polylogue.scenarios import (
     PipelineProbeInputMode,
     PipelineProbeRequest,
 )
-from polylogue.showcase.workspace import VerificationWorkspace, create_verification_workspace
 from polylogue.storage.blob_store import BlobStore, reset_blob_store
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import RawSessionRecord

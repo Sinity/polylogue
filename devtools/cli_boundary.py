@@ -8,9 +8,10 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from devtools import repo_root as _get_root
 from polylogue.scenarios import ExecutionSpec, run_execution
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_PROJECT_ROOT = _get_root()
 
 
 def _project_polylogue_cli() -> str | None:
@@ -22,7 +23,7 @@ def _project_polylogue_cli() -> str | None:
 
 
 @dataclass(frozen=True, slots=True)
-class ShowcaseCliResult:
+class CliInvocationResult:
     exit_code: int
     stdout: str
     stderr: str
@@ -36,14 +37,14 @@ class ShowcaseCliResult:
         return self.exit_code == 0
 
 
-def invoke_showcase_cli(
+def invoke_polylogue_cli(
     execution: ExecutionSpec,
     *,
     env: dict[str, str] | None = None,
     cwd: Path | None = None,
     timeout: float = 60.0,
-) -> ShowcaseCliResult:
-    """Run the real public CLI entrypoint for showcase verification."""
+) -> CliInvocationResult:
+    """Run the real public CLI entrypoint for verification-lab smoke checks."""
     cli_path = _project_polylogue_cli()
     if cli_path is None:
         return _invoke_python_polylogue_cli(execution, env=env, cwd=cwd or _PROJECT_ROOT, timeout=timeout)
@@ -55,7 +56,7 @@ def invoke_showcase_cli(
         env=env,
         timeout=timeout,
     )
-    return ShowcaseCliResult(
+    return CliInvocationResult(
         exit_code=process.exit_code,
         stdout=process.stdout,
         stderr=process.stderr,
@@ -68,14 +69,14 @@ def _invoke_python_polylogue_cli(
     env: dict[str, str] | None,
     cwd: Path,
     timeout: float,
-) -> ShowcaseCliResult:
+) -> CliInvocationResult:
     """Run the checkout's Click app when a worktree has no console script."""
     command = execution.command
     if command is None:
         raise ValueError(f"{execution.kind.value} execution has no direct command")
     head, *args = command
     if head != "polylogue":
-        raise ValueError(f"showcase CLI boundary only supports polylogue executions, got {head!r}")
+        raise ValueError(f"CLI boundary only supports polylogue executions, got {head!r}")
 
     command_env = dict(os.environ)
     if env:
@@ -94,11 +95,11 @@ def _invoke_python_polylogue_cli(
         timeout=timeout,
         check=False,
     )
-    return ShowcaseCliResult(
+    return CliInvocationResult(
         exit_code=completed.returncode,
         stdout=completed.stdout or "",
         stderr=completed.stderr or "",
     )
 
 
-__all__ = ["ShowcaseCliResult", "invoke_showcase_cli"]
+__all__ = ["CliInvocationResult", "invoke_polylogue_cli"]

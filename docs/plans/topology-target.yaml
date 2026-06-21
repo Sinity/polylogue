@@ -1395,6 +1395,10 @@ files:
     loc: 126
     target: polylogue/demo/verify.py
     owner: stable
+  - path: polylogue/demo/workspace.py
+    loc: 432
+    target: polylogue/demo/workspace.py
+    owner: stable
   - path: polylogue/errors.py
     loc: 97
     target: polylogue/errors.py
@@ -1899,7 +1903,7 @@ files:
     target: polylogue/scenarios/assertions.py
     owner: stable
   - path: polylogue/scenarios/cli_surfaces.py
-    loc: 112
+    loc: 114
     target: polylogue/scenarios/cli_surfaces.py
     owner: stable
   - path: polylogue/scenarios/corpus.py
@@ -1927,7 +1931,7 @@ files:
     target: polylogue/scenarios/operational_surfaces.py
     owner: stable
   - path: polylogue/scenarios/projections.py
-    loc: 94
+    loc: 93
     target: polylogue/scenarios/projections.py
     owner: stable
   - path: polylogue/scenarios/runtime.py
@@ -2323,31 +2327,6 @@ files:
     target: polylogue/services.py
     owner: kernel
     reason: kernel root rule
-  - path: polylogue/showcase/cli_boundary.py
-    loc: 104
-    target: polylogue/showcase/cli_boundary.py
-    owner: stable
-    reason: verification-lab showcase substrate retained
-  - path: polylogue/showcase/corpus_requests.py
-    loc: 43
-    target: polylogue/showcase/corpus_requests.py
-    owner: stable
-    reason: verification-lab showcase substrate retained
-  - path: polylogue/showcase/lab_corpus.py
-    loc: 161
-    target: polylogue/showcase/lab_corpus.py
-    owner: stable
-    reason: verification-lab showcase substrate retained
-  - path: polylogue/showcase/vhs.py
-    loc: 179
-    target: polylogue/showcase/vhs.py
-    owner: stable
-    reason: verification-lab showcase substrate retained
-  - path: polylogue/showcase/workspace.py
-    loc: 432
-    target: polylogue/showcase/workspace.py
-    owner: stable
-    reason: verification-lab showcase substrate retained
   - path: polylogue/sources/__init__.py
     loc: 40
     target: polylogue/sources/__init__.py

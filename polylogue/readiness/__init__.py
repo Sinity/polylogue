@@ -694,7 +694,7 @@ def run_runtime_readiness(config: Config) -> ReadinessReport:
         ReadinessCheck(
             "vhs",
             VerifyStatus.OK if vhs_available else VerifyStatus.WARNING,
-            summary="VHS available" if vhs_available else "VHS not found (showcase capture unavailable)",
+            summary="VHS available" if vhs_available else "VHS not found (visual capture unavailable)",
         )
     )
 

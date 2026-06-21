@@ -12,9 +12,9 @@ from pathlib import Path
 from typing import Protocol, TextIO
 
 from devtools import repo_root as _get_root
+from devtools.cli_boundary import invoke_polylogue_cli
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.scenarios import AssertionSpec, ExecutionSpec, polylogue_execution
-from polylogue.showcase.cli_boundary import invoke_showcase_cli
 
 _SCENARIO_NAMES = ("archive-smoke", "reader-visual-smoke")
 _ARCHIVE_SMOKE_TIER = 0
@@ -223,7 +223,7 @@ def run_archive_smoke(
     fail_fast: bool,
     as_json: bool = False,
 ) -> ArchiveSmokeResult:
-    """Run direct archive-smoke CLI checks without showcase catalog wrapping."""
+    """Run direct archive-smoke CLI checks without catalog wrapping."""
     if tier not in (None, _ARCHIVE_SMOKE_TIER):
         return ArchiveSmokeResult(
             check_results=[],
@@ -258,7 +258,7 @@ def _scenario_payload(result: _ScenarioResult) -> dict[str, object]:
 def _run_archive_smoke_check(check: ArchiveSmokeCheck) -> ArchiveSmokeCheckResult:
     started = time.monotonic()
     try:
-        cli_result = invoke_showcase_cli(check.execution, env={"POLYLOGUE_FORCE_PLAIN": "1"}, timeout=check.timeout_s)
+        cli_result = invoke_polylogue_cli(check.execution, env={"POLYLOGUE_FORCE_PLAIN": "1"}, timeout=check.timeout_s)
     except subprocess.TimeoutExpired:
         duration_ms = (time.monotonic() - started) * 1000
         return ArchiveSmokeCheckResult(

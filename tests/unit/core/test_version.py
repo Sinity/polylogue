@@ -5,6 +5,8 @@ from dataclasses import fields
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as importlib_metadata_version
 from pathlib import Path
+from types import ModuleType
+from typing import cast
 
 import pytest
 
@@ -39,6 +41,14 @@ def test_lazy_import_unknown_raises_root() -> None:
 
     with pytest.raises(AttributeError, match="has no attribute"):
         _ = polylogue.NonExistentThing
+
+
+def test_lazy_import_demo_module_root() -> None:
+    import polylogue
+
+    demo_module = cast(ModuleType, polylogue.demo)
+
+    assert demo_module.__name__ == "polylogue.demo"
 
 
 @pytest.mark.parametrize(
