@@ -2324,7 +2324,7 @@ files:
     owner: kernel
     reason: kernel root rule
   - path: polylogue/showcase/catalog_loader.py
-    loc: 195
+    loc: 193
     target: polylogue/showcase/catalog_loader.py
     owner: stable
     reason: verification-lab showcase substrate retained
@@ -2344,13 +2344,13 @@ files:
     owner: stable
     reason: verification-lab showcase substrate retained
   - path: polylogue/showcase/exercise_models.py
-    loc: 71
+    loc: 69
     target: polylogue/showcase/exercise_models.py
     owner: stable
     reason: verification-lab showcase substrate retained
     cross_cut: { lifecycle: model }
   - path: polylogue/showcase/exercises.py
-    loc: 85
+    loc: 79
     target: polylogue/showcase/exercises.py
     owner: stable
     reason: verification-lab showcase substrate retained
@@ -2359,39 +2359,18 @@ files:
     target: polylogue/showcase/generators.py
     owner: stable
     reason: verification-lab showcase substrate retained
-  - path: polylogue/showcase/invariants.py
-    loc: 140
-    target: polylogue/showcase/invariants.py
-    owner: stable
-    reason: verification-lab showcase substrate retained
   - path: polylogue/showcase/lab_corpus.py
     loc: 161
     target: polylogue/showcase/lab_corpus.py
     owner: stable
     reason: verification-lab showcase substrate retained
-  - path: polylogue/showcase/runner.py
-    loc: 133
-    target: polylogue/showcase/runner.py
-    owner: stable
-    reason: verification-lab showcase substrate retained
-  - path: polylogue/showcase/showcase_runner_models.py
-    loc: 124
-    target: polylogue/showcase/showcase_runner_models.py
-    owner: stable
-    reason: verification-lab showcase substrate retained
-    cross_cut: { lifecycle: model }
-  - path: polylogue/showcase/showcase_runner_support.py
-    loc: 181
-    target: polylogue/showcase/showcase_runner_support.py
-    owner: stable
-    reason: verification-lab showcase substrate retained
   - path: polylogue/showcase/vhs.py
-    loc: 128
+    loc: 179
     target: polylogue/showcase/vhs.py
     owner: stable
     reason: verification-lab showcase substrate retained
   - path: polylogue/showcase/workspace.py
-    loc: 432
+    loc: 468
     target: polylogue/showcase/workspace.py
     owner: stable
     reason: verification-lab showcase substrate retained

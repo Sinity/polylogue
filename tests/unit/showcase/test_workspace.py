@@ -9,7 +9,6 @@ from polylogue.config import Config, Source
 from polylogue.scenarios import CorpusProfile, CorpusRequest, CorpusSpec
 from polylogue.showcase.corpus_requests import showcase_corpus_request
 from polylogue.showcase.exercises import Exercise
-from polylogue.showcase.showcase_runner_support import seed_workspace_with
 from polylogue.showcase.workspace import (
     build_synthetic_corpus_scenarios,
     build_synthetic_corpus_specs,
@@ -21,6 +20,7 @@ from polylogue.showcase.workspace import (
     seed_workspace_from_corpus_options,
     seed_workspace_from_corpus_request,
     seed_workspace_from_scenarios,
+    seed_workspace_with,
 )
 
 
@@ -282,7 +282,7 @@ def test_seed_workspace_with_uses_compiled_corpus_specs(tmp_path: Path) -> None:
         corpus_specs=(corpus_spec,),
     )
 
-    with patch("polylogue.showcase.showcase_runner_support.seed_workspace_from_specs") as mock_seed_from_specs:
+    with patch("polylogue.showcase.workspace.seed_workspace_from_specs") as mock_seed_from_specs:
         seed_workspace_with(
             workspace_dir,
             corpus_request=showcase_corpus_request(count=3),
