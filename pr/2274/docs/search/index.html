@@ -646,6 +646,12 @@ fields accept compact comparison prefixes such as <code>session.messages:&gt;=2<
 <code>session.words:&lt;=500</code>, and <code>session.date:&gt;=2026-01-02</code>. This lets a unit query
 carry its session scope inline instead of splitting selection between the
 query string and parallel parameters.</p>
+<p>Boolean and terminal predicates preserve comparison semantics: <code>&gt;</code>, <code>&gt;=</code>, <code>&lt;</code>,
+<code>&lt;=</code>, and <code>=</code> are distinct for count and numeric fields, while <code>date</code> and
+terminal <code>time</code> accept the four ordered comparisons plus <code>between</code>. The legacy
+flat root filters (<code>messages &gt; 10</code>, <code>words &lt; 500</code>) still compile into inclusive
+<code>SessionQuerySpec</code> min/max bounds because that older request object has no
+exclusive-bound fields.</p>
 <p>Examples:</p>
 <pre><code class="language-bash">polylogue sessions where 'exists action(session.repo:polylogue AND tool:bash AND text:pytest)'
 polylogue sessions where 'exists block(type:code AND text:timeout)'
