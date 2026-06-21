@@ -24,6 +24,9 @@ def test_probe_reports_missing_python_binding_and_binary(
     rows = cast(list[dict[str, object]], payload["results"])
     results = {row["name"]: row for row in rows}
     assert results["python_binding"]["status"] == "skip"
+    assert results["python_runtime_api"]["status"] == "skip"
+    assert results["python_readonly_uri"]["status"] == "skip"
+    assert results["python_multiprocess_wal"]["status"] == "skip"
     assert results["tursodb_binary"]["status"] == "skip"
 
 
@@ -62,6 +65,63 @@ def test_probe_classifies_polylogue_sql_compatibility(
     assert results["fts5_virtual_table"]["status"] == "fail"
     assert results["wal_journal_size_limit"]["status"] == "fail"
     assert results["attach_experimental"]["status"] == "pass"
+
+
+def test_python_readonly_uri_failure_is_a_compatibility_blocker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        turso_probe,
+        "_python_binding_probe",
+        lambda: turso_probe.ProbeResult(
+            name="python_binding",
+            status="pass",
+            expected_status="pass",
+            summary="available",
+            command=["python", "-c", "import turso"],
+        ),
+    )
+    monkeypatch.setattr(
+        turso_probe,
+        "_python_runtime_api_probe",
+        lambda: turso_probe.ProbeResult(
+            name="python_runtime_api",
+            status="pass",
+            expected_status="pass",
+            summary="runtime ok",
+            command=["python", "-c", "import turso"],
+        ),
+    )
+    monkeypatch.setattr(
+        turso_probe,
+        "_python_readonly_uri_probe",
+        lambda *, scratch_dir: turso_probe.ProbeResult(
+            name="python_readonly_uri",
+            status="fail",
+            expected_status="fail",
+            summary=f"readonly incompatible in {scratch_dir}",
+            command=["python", "-c", "import turso"],
+        ),
+    )
+    monkeypatch.setattr(
+        turso_probe,
+        "_python_multiprocess_probe",
+        lambda *, scratch_dir: turso_probe.ProbeResult(
+            name="python_multiprocess_wal",
+            status="pass",
+            expected_status="pass",
+            summary=f"multiprocess ok in {scratch_dir}",
+            command=["python", "-c", "import turso"],
+        ),
+    )
+    monkeypatch.setattr(turso_probe, "_find_tursodb", lambda: None)
+
+    payload = turso_probe.run_probe(scratch_dir=tmp_path)
+
+    assert payload["ok"] is True
+    assert payload["unexpected"] == []
+    assert payload["compatibility_blockers"] == ["python_readonly_uri"]
 
 
 def test_main_json_emits_probe_payload(
