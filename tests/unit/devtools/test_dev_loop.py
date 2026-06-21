@@ -190,6 +190,56 @@ def test_receiver_smoke_cli_outputs_combined_payload(
     assert payload["receiver_smoke"]["ok"] is True
 
 
+def test_extension_smoke_runs_background_worker_against_receiver(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(dev_loop, "system_service_status", lambda: {"active": False})
+    monkeypatch.setattr(
+        dev_loop,
+        "port_status",
+        lambda port: {"port": port, "connectable": False, "owner_count": 0, "owners": []},
+    )
+    monkeypatch.setattr(
+        dev_loop, "_git_value", lambda args, *, cwd: "feature/dev-loop" if args[0] == "branch" else "abc1234"
+    )
+
+    assert (
+        dev_loop.main(
+            [
+                "--json",
+                "--log-dir",
+                str(tmp_path / "dev-loop-logs"),
+                "--archive-root",
+                str(tmp_path / "archive"),
+                "--extension-smoke",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    smoke = payload["extension_smoke"]
+    assert smoke["ok"] is True
+    assert smoke["exit_code"] == 0
+    assert smoke["artifact_ref"] == "chatgpt/dev-loop-extension-smoke-17055bf60522.json"
+    assert Path(smoke["artifact_path"]).is_file()
+    artifacts = smoke["artifacts"]
+    assert Path(artifacts["summary"]).is_file()
+    assert Path(artifacts["stdout"]).read_text(encoding="utf-8").strip().startswith("{")
+    event_path = Path(payload["preflight"]["artifacts"]["dev_events"])
+    event_rows = [json.loads(line) for line in event_path.read_text(encoding="utf-8").splitlines()]
+    extension_events = event_rows[-2:]
+    assert [row["event_type"] for row in extension_events] == [
+        "extension_smoke_requested",
+        "extension_smoke_finished",
+    ]
+    assert extension_events[0]["surface"] == "browser_extension"
+    assert extension_events[1]["status"] == "ok"
+    assert extension_events[1]["payload"]["artifact_ref"] == smoke["artifact_ref"]
+
+
 def test_cli_capture_runs_command_with_branch_local_artifacts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

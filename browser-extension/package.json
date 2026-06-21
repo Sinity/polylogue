@@ -9,6 +9,7 @@
     "test:watch": "vitest",
     "lint": "eslint src/ tests/",
     "validate": "node scripts/validate-manifest.mjs",
+    "dev-loop-smoke": "node scripts/dev-loop-smoke.mjs",
     "build": "node scripts/build.mjs",
     "screenshots": "node scripts/screenshots.mjs",
     "sync-version": "node scripts/build.mjs --sync-only"
