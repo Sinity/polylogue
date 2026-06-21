@@ -78,9 +78,9 @@ LIVE_LANES: dict[str, LaneEntry] = {
         ),
         tags=("live", "probe", "parse"),
     ),
-    "live-exercises": LaneEntry(
-        name="live-exercises",
-        description="Manual verification-lab archive-smoke exercise lane",
+    "live-archive-smoke": LaneEntry(
+        name="live-archive-smoke",
+        description="Manual verification-lab archive-smoke lane",
         timeout_s=1800,
         category="live",
         execution=devtools_execution("lab scenario", "run", "archive-smoke", "--live", "--tier", "0", "--json"),

@@ -220,7 +220,7 @@ def build_document(registry: QualityRegistry, *, runtime_coverage: RuntimeScenar
         "```bash",
         control_plane_command("lab lanes", "--list"),
         control_plane_command("lab lanes", "--lane", "frontier-local"),
-        control_plane_command("lab lanes", "--lane", "live-exercises", "--dry-run"),
+        control_plane_command("lab lanes", "--lane", "live-archive-smoke", "--dry-run"),
         "```",
         "",
         "### Schema upgrade lane (#1302)",

@@ -14,7 +14,7 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert any(entry.name == "schema-explain-contract" for entry in registry.contract_lanes)
     assert any(entry.name == "frontier-local" for entry in registry.composite_lanes)
     assert any(entry.name == "machine-contract" for entry in registry.contract_lanes)
-    assert any(entry.name == "live-exercises" for entry in registry.live_lanes)
+    assert any(entry.name == "live-archive-smoke" for entry in registry.live_lanes)
     assert any(entry.name == "filters" for entry in registry.mutation_campaigns)
     assert any(entry.name == "search-filters" for entry in registry.benchmark_campaigns)
     assert any(entry.name == "pipeline" for entry in registry.benchmark_campaigns)

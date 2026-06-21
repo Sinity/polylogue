@@ -625,7 +625,7 @@ COMPOSITE_LANES: dict[str, LaneEntry] = {
         timeout_s=2400,
         category="composite",
         origin=_COMPOSITE_ORIGIN,
-        execution=composite_execution("live-archive-small", "live-exercises"),
+        execution=composite_execution("live-archive-small", "live-archive-smoke"),
     ),
     "archive-intelligence": LaneEntry(
         name="archive-intelligence",

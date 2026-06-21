@@ -33,8 +33,8 @@ def test_build_document_includes_live_registry_sections() -> None:
                     execution=pytest_execution("-m", "machine_contract"),
                 ),
                 LaneEntry(
-                    name="live-exercises",
-                    description="Read-only live archive exercises.",
+                    name="live-archive-smoke",
+                    description="Read-only live archive smoke lane.",
                     timeout_s=300,
                     category="live",
                     execution=devtools_execution("lab scenario", "run", "archive-smoke", "--live", "--tier", "0"),
@@ -44,7 +44,7 @@ def test_build_document_includes_live_registry_sections() -> None:
                     description="Runtime substrate hardening lane.",
                     timeout_s=900,
                     category="composite",
-                    execution=composite_execution("machine-contract", "live-exercises"),
+                    execution=composite_execution("machine-contract", "live-archive-smoke"),
                     family="runtime-substrate",
                 ),
                 LaneEntry(
