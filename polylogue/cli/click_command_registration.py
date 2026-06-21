@@ -52,7 +52,7 @@ class _LazyGroup(_LazyCommand, click.Group):
     """Lazy proxy for Click groups that need nested command dispatch."""
 
     def invoke(self, ctx: click.Context) -> object:
-        return click.Group.invoke(self, ctx)
+        return self._resolve().invoke(ctx)
 
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
         return click.Group.parse_args(self, ctx, args)

@@ -60,7 +60,13 @@ def _split_query_mode_args(group: click.Group, args: list[str]) -> tuple[list[st
             arg = args[index]
             via_then = True
         if arg in VERB_NAMES:
-            if arg == "mark" and index + 1 < len(args) and args[index + 1] == "candidates":
+            if (
+                arg == "mark"
+                and index + 1 < len(args)
+                and args[index + 1] == "candidates"
+                and not explicit_query
+                and not query_terms
+            ):
                 return args, (), True, explicit_query
             # After an explicit `find`, a verb word sitting in query position —
             # no `then`, nothing collected yet — is the search term itself:
