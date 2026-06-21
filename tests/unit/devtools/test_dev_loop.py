@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -184,3 +185,202 @@ def test_receiver_smoke_cli_outputs_combined_payload(
     assert payload["preflight"]["prepared"] is True
     assert payload["preflight"]["preflight_json_written"] is True
     assert payload["receiver_smoke"]["ok"] is True
+
+
+def test_cli_capture_runs_command_with_branch_local_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(dev_loop, "system_service_status", lambda: {"active": False})
+    monkeypatch.setattr(
+        dev_loop,
+        "port_status",
+        lambda port: {"port": port, "connectable": False, "owner_count": 0, "owners": []},
+    )
+    monkeypatch.setattr(
+        dev_loop, "_git_value", lambda args, *, cwd: "feature/dev-loop" if args[0] == "branch" else "abc1234"
+    )
+    monkeypatch.setenv("POLYLOGUE_API_AUTH_TOKEN", "should-not-be-written")
+    monkeypatch.setenv("POLYLOGUE_NOTIFICATION_EMAIL_PASSWORD", "should-not-be-written")
+
+    command = [
+        sys.executable,
+        "-c",
+        "import os; print(os.environ['POLYLOGUE_DEV_LOOP_RUN_ID'])",
+    ]
+    assert (
+        dev_loop.main(
+            [
+                "--json",
+                "--archive-root",
+                str(tmp_path / "archive"),
+                "--capture-cli",
+                "--",
+                *command,
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    capture = payload["cli_capture"]
+    run_id = payload["preflight"]["run_id"]
+
+    assert capture["ok"] is True
+    assert capture["exit_code"] == 0
+    artifacts = capture["artifacts"]
+    stdout_path = Path(artifacts["stdout"])
+    transcript_path = Path(artifacts["transcript"])
+    env_path = Path(artifacts["env"])
+    summary_path = Path(artifacts["summary"])
+
+    assert stdout_path.read_text(encoding="utf-8").strip() == run_id
+    assert f"run_id={run_id}" in transcript_path.read_text(encoding="utf-8")
+    env_payload = json.loads(env_path.read_text(encoding="utf-8"))
+    assert env_payload["POLYLOGUE_ARCHIVE_ROOT"] == str(tmp_path / "archive")
+    assert env_payload["POLYLOGUE_API_AUTH_TOKEN"] == "[redacted]"
+    assert env_payload["POLYLOGUE_NOTIFICATION_EMAIL_PASSWORD"] == "[redacted]"
+    assert json.loads(summary_path.read_text(encoding="utf-8"))["exit_code"] == 0
+
+
+def test_cli_capture_rejects_missing_command(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        dev_loop.main(["--capture-cli"])
+    assert exc.value.code == 2
+    assert "capture command must not be empty" in capsys.readouterr().err
+
+
+def test_cli_capture_treats_forwarded_trailing_json_as_wrapper_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(dev_loop, "system_service_status", lambda: {"active": False})
+    monkeypatch.setattr(
+        dev_loop,
+        "port_status",
+        lambda port: {"port": port, "connectable": False, "owner_count": 0, "owners": []},
+    )
+    monkeypatch.setattr(
+        dev_loop, "_git_value", lambda args, *, cwd: "feature/dev-loop" if args[0] == "branch" else "abc1234"
+    )
+
+    assert (
+        dev_loop.main(
+            [
+                "--archive-root",
+                str(tmp_path / "archive"),
+                "--capture-cli",
+                sys.executable,
+                "-c",
+                "import sys; print(sys.argv[1:])",
+                "--json",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    stdout_path = Path(payload["cli_capture"]["artifacts"]["stdout"])
+    assert stdout_path.read_text(encoding="utf-8").strip() == "[]"
+
+
+def test_daemon_launch_writes_branch_local_process_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(dev_loop, "system_service_status", lambda: {"active": False})
+    monkeypatch.setattr(
+        dev_loop,
+        "port_status",
+        lambda port: {"port": port, "connectable": False, "owner_count": 0, "owners": []},
+    )
+    monkeypatch.setattr(
+        dev_loop, "_git_value", lambda args, *, cwd: "feature/dev-loop" if args[0] == "branch" else "abc1234"
+    )
+    monkeypatch.setattr(dev_loop, "_socket_connectable", lambda port: True)
+
+    launched: dict[str, object] = {}
+
+    class FakeProcess:
+        pid = 4242
+
+        def poll(self) -> int | None:
+            return None
+
+    def fake_start_daemon_process(
+        command: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        log_file: object,
+    ) -> FakeProcess:
+        launched["command"] = command
+        launched["cwd"] = cwd
+        launched["env"] = env
+        launched["log_file"] = log_file
+        return FakeProcess()
+
+    monkeypatch.setattr(dev_loop, "_start_daemon_process", fake_start_daemon_process)
+
+    assert (
+        dev_loop.main(
+            [
+                "--json",
+                "--archive-root",
+                str(tmp_path / "archive"),
+                "--api-port",
+                "9876",
+                "--browser-capture-port",
+                "9875",
+                "--launch-daemon",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    launch = payload["daemon_launch"]
+    command = launch["command"]
+    assert command[:2] == ["polylogued", "run"]
+    assert "--no-watch" in command
+    assert command[command.index("--api-port") : command.index("--api-port") + 2] == ["--api-port", "9876"]
+    assert command[command.index("--port") : command.index("--port") + 2] == ["--port", "9875"]
+    assert launch["pid"] == 4242
+    assert launch["api_ready"] is True
+    assert launch["browser_capture_ready"] is True
+
+    env = launched["env"]
+    assert isinstance(env, dict)
+    assert env["POLYLOGUE_ARCHIVE_ROOT"] == str(tmp_path / "archive")
+    assert launched["cwd"] == Path(payload["preflight"]["repo_root"])
+
+    artifacts = launch["artifacts"]
+    assert Path(artifacts["pid"]).read_text(encoding="utf-8") == "4242\n"
+    assert json.loads(Path(artifacts["summary"]).read_text(encoding="utf-8"))["pid"] == 4242
+    assert json.loads(Path(artifacts["env"]).read_text(encoding="utf-8"))["POLYLOGUE_API_PORT"] == "9876"
+    assert Path(artifacts["log"]).read_text(encoding="utf-8").startswith("\n# dev-loop launch")
+
+
+def test_daemon_launch_rejects_occupied_branch_local_ports(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(dev_loop, "system_service_status", lambda: {"active": False})
+    monkeypatch.setattr(
+        dev_loop,
+        "port_status",
+        lambda port: {"port": port, "connectable": True, "owner_count": 1, "owners": [{"pid": 1234}]},
+    )
+    monkeypatch.setattr(
+        dev_loop, "_git_value", lambda args, *, cwd: "feature/dev-loop" if args[0] == "branch" else "abc1234"
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        dev_loop.main(["--archive-root", str(tmp_path / "archive"), "--launch-daemon"])
+
+    assert exc.value.code == 2
+    assert "selected branch-local ports already have listeners" in capsys.readouterr().err

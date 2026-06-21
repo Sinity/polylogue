@@ -65,7 +65,18 @@ preflight output before starting the branch daemon:
 devtools workspace dev-loop --api-port 8876 --browser-capture-port 8875
 ```
 
-Then run the command printed by the preflight. The important variables are:
+Then launch the branch-local daemon with the managed helper:
+
+```bash
+devtools workspace dev-loop --api-port 8876 --browser-capture-port 8875 --launch-daemon
+```
+
+The helper refuses to start if the selected API or browser-capture port already
+has a listener. It starts `polylogued run --no-watch` in a separate process
+group, writes `polylogued.pid`, `polylogued.env.json`,
+`polylogued.launch.json`, and the daemon log into the run-local directory, and
+waits briefly for both the API and receiver ports to become reachable. The
+important variables are:
 
 ```bash
 POLYLOGUE_ARCHIVE_ROOT=.local/dev-archive
@@ -82,9 +93,9 @@ process. Open the URL printed by the preflight, usually:
 http://127.0.0.1:8766/
 ```
 
-For web shell work, keep the daemon output tee'd into `.cache/dev-loop/` so UI
-errors can be correlated with route logs and request failures. The development
-loop should make these facts obvious before an agent starts debugging:
+For web shell work, use the run-local daemon log so UI errors can be correlated
+with route logs and request failures. The development loop should make these
+facts obvious before an agent starts debugging:
 
 - which checkout started the daemon;
 - which run id ties together the daemon log, browser artifacts, and receiver
@@ -104,10 +115,23 @@ JSON payloads. The preflight reserves run-local directories for those artifacts:
 .cache/dev-loop/<run-id>/tui/
 ```
 
-The `commands.capture_cli_status` entry shows a concrete terminal transcript
-capture for `polylogue ops status` against the branch-local archive. Use the
-same pattern for other CLI commands whose layout, colors, wrapping, or progress
-behavior matters.
+Use the managed capture helper for normal command-line runs:
+
+```bash
+devtools workspace dev-loop --capture-cli -- polylogue ops status
+devtools workspace dev-loop --capture-cli -- polylogue analyze insights profiles --limit 5
+```
+
+The helper runs the command with the branch-local `POLYLOGUE_*` environment and
+writes stdout, stderr, a combined transcript, the relevant environment snapshot,
+and a JSON summary under:
+
+```text
+.cache/dev-loop/<run-id>/terminal/
+```
+
+The preflight payload still includes `commands.capture_cli_status` as a
+copy-pastable `script` example when an actual terminal typescript is useful.
 
 For TUI or full-screen terminal work, record into the run-local `tui/`
 directory using the local terminal-control surface, `script`, or VHS-style
