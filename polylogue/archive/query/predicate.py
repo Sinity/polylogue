@@ -20,6 +20,16 @@ class QueryFieldRef:
     source_name: str
     unit: str | None = None
 
+    def to_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "scope": self.scope,
+            "name": self.name,
+            "source_name": self.source_name,
+        }
+        if self.unit is not None:
+            payload["unit"] = self.unit
+        return payload
+
 
 @dataclass(frozen=True)
 class QueryFieldPredicate:
@@ -41,7 +51,10 @@ class QueryFieldPredicate:
         )
 
     def to_payload(self) -> dict[str, object]:
-        return {"kind": "field", "field": self.field, "op": self.op, "values": list(self.values)}
+        payload: dict[str, object] = {"kind": "field", "field": self.field, "op": self.op, "values": list(self.values)}
+        if self.field_ref is not None:
+            payload["field_ref"] = self.field_ref.to_payload()
+        return payload
 
 
 @dataclass(frozen=True)
