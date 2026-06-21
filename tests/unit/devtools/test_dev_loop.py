@@ -201,6 +201,8 @@ def test_cli_capture_runs_command_with_branch_local_artifacts(
     monkeypatch.setattr(
         dev_loop, "_git_value", lambda args, *, cwd: "feature/dev-loop" if args[0] == "branch" else "abc1234"
     )
+    monkeypatch.setenv("POLYLOGUE_API_AUTH_TOKEN", "should-not-be-written")
+    monkeypatch.setenv("POLYLOGUE_NOTIFICATION_EMAIL_PASSWORD", "should-not-be-written")
 
     command = [
         sys.executable,
@@ -237,6 +239,8 @@ def test_cli_capture_runs_command_with_branch_local_artifacts(
     assert f"run_id={run_id}" in transcript_path.read_text(encoding="utf-8")
     env_payload = json.loads(env_path.read_text(encoding="utf-8"))
     assert env_payload["POLYLOGUE_ARCHIVE_ROOT"] == str(tmp_path / "archive")
+    assert env_payload["POLYLOGUE_API_AUTH_TOKEN"] == "[redacted]"
+    assert env_payload["POLYLOGUE_NOTIFICATION_EMAIL_PASSWORD"] == "[redacted]"
     assert json.loads(summary_path.read_text(encoding="utf-8"))["exit_code"] == 0
 
 
@@ -245,6 +249,41 @@ def test_cli_capture_rejects_missing_command(capsys: pytest.CaptureFixture[str])
         dev_loop.main(["--capture-cli"])
     assert exc.value.code == 2
     assert "capture command must not be empty" in capsys.readouterr().err
+
+
+def test_cli_capture_treats_forwarded_trailing_json_as_wrapper_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(dev_loop, "system_service_status", lambda: {"active": False})
+    monkeypatch.setattr(
+        dev_loop,
+        "port_status",
+        lambda port: {"port": port, "connectable": False, "owner_count": 0, "owners": []},
+    )
+    monkeypatch.setattr(
+        dev_loop, "_git_value", lambda args, *, cwd: "feature/dev-loop" if args[0] == "branch" else "abc1234"
+    )
+
+    assert (
+        dev_loop.main(
+            [
+                "--archive-root",
+                str(tmp_path / "archive"),
+                "--capture-cli",
+                sys.executable,
+                "-c",
+                "import sys; print(sys.argv[1:])",
+                "--json",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    stdout_path = Path(payload["cli_capture"]["artifacts"]["stdout"])
+    assert stdout_path.read_text(encoding="utf-8").strip() == "[]"
 
 
 def test_daemon_launch_writes_branch_local_process_artifacts(

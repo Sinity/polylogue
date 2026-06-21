@@ -25,6 +25,7 @@ DEFAULT_API_PORT = 8766
 DEFAULT_BROWSER_CAPTURE_PORT = 8765
 _RECEIVER_SMOKE_ORIGIN = "chrome-extension://polylogue-dev-loop"
 _RECEIVER_SMOKE_TOKEN = "polylogue-dev-loop-token"
+_SENSITIVE_ENV_NAME_RE = re.compile(r"(TOKEN|SECRET|PASSWORD|PASS|KEY|CREDENTIAL|AUTH)", re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +53,15 @@ def _safe_artifact_name(command: list[str]) -> str:
     raw = "-".join(Path(part).name if index == 0 else part for index, part in enumerate(command))
     name = _RUN_ID_SAFE_RE.sub("-", raw).strip("-").lower()
     return name[:80] or "command"
+
+
+def _dev_loop_env_snapshot(env: dict[str, str]) -> dict[str, str]:
+    snapshot: dict[str, str] = {}
+    for key in sorted(env):
+        if not (key.startswith("POLYLOGUE_") or key in {"PATH", "PYTHONPATH"}):
+            continue
+        snapshot[key] = "[redacted]" if _SENSITIVE_ENV_NAME_RE.search(key) else env[key]
+    return snapshot
 
 
 def _git_value(args: list[str], *, cwd: Path) -> str | None:
@@ -349,9 +359,7 @@ def run_cli_capture(
         f"\n[exit {exit_code}]\n"
     )
     transcript_path.write_text(transcript, encoding="utf-8")
-    env_snapshot = {
-        key: env[key] for key in sorted(env) if key.startswith("POLYLOGUE_") or key in {"PATH", "PYTHONPATH"}
-    }
+    env_snapshot = _dev_loop_env_snapshot(env)
     env_path.write_text(json.dumps(env_snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     payload: dict[str, object] = {
@@ -436,9 +444,7 @@ def launch_branch_daemon(
         str(spool_path),
     ]
 
-    env_snapshot = {
-        key: env[key] for key in sorted(env) if key.startswith("POLYLOGUE_") or key in {"PATH", "PYTHONPATH"}
-    }
+    env_snapshot = _dev_loop_env_snapshot(env)
     env_path.write_text(json.dumps(env_snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     started_at = datetime.now(UTC)
     with daemon_log.open("a", encoding="utf-8") as log_file:
@@ -682,6 +688,7 @@ def _print_daemon_launch(payload: dict[str, Any]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    original_argv = list(argv) if argv is not None else sys.argv[1:]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     parser.add_argument("--api-port", type=int, default=int(os.environ.get("POLYLOGUE_API_PORT", DEFAULT_API_PORT)))
@@ -722,6 +729,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("capture_command", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    capture_command = list(args.capture_command)
+    if args.capture_cli and not args.json and "--" not in original_argv and capture_command[-1:] == ["--json"]:
+        args.json = True
+        capture_command = capture_command[:-1]
     payload = build_dev_loop_status(
         api_port=args.api_port,
         browser_capture_port=args.browser_capture_port,
@@ -744,7 +755,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             capture_payload = run_cli_capture(
                 preflight=payload,
-                command=list(args.capture_command),
+                command=capture_command,
                 timeout_s=args.capture_timeout_s,
             )
         except ValueError as exc:
