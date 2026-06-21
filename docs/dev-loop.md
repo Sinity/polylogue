@@ -202,6 +202,29 @@ recording when visual playback is needed. Polylogue only provides the
 branch-local environment and artifact locations; visual inspection and terminal
 control remain local agent/operator capabilities.
 
+Generate the run-local visual inspection plan with:
+
+```bash
+devtools workspace dev-loop --tui-plan
+devtools workspace dev-loop --tui-plan --json
+```
+
+The plan writes:
+
+```text
+.cache/dev-loop/<run-id>/tui/tui-plan.json
+.cache/dev-loop/<run-id>/tui/tui-plan.md
+.cache/dev-loop/<run-id>/tui/polylogue-status.tape
+.cache/dev-loop/<run-id>/tui/polylogue-status.gif
+.cache/dev-loop/<run-id>/tui/screenshots/
+```
+
+It records the branch-local `POLYLOGUE_*` environment, a `script` command for a
+plain CLI transcript, and a starter VHS cassette for visual playback. Edit the
+cassette or drive the terminal through the local control plane when the target
+flow is richer than `polylogue ops status`; keep generated recordings under the
+ignored run-local directory.
+
 ## Browser-Capture Extension Development
 
 Load `browser-extension/` unpacked into a development Chrome profile and point
@@ -303,9 +326,27 @@ logs, capture screenshots, or test authenticated ChatGPT/Claude.ai pages with
 an operator-approved copied profile. Copied profiles remain local ignored
 artifacts; they are never CI/cloud inputs and are not Polylogue repo state.
 
+## Run Inspection
+
+After a branch-local run has produced artifacts, summarize the run directory:
+
+```bash
+devtools workspace dev-loop --inspect-run .cache/dev-loop/<run-id>
+devtools workspace dev-loop --inspect-run .cache/dev-loop/<run-id> --json
+```
+
+The summary reads `preflight.json`, `dev-loop.events.jsonl`, daemon launch
+summaries, browser/extension/TUI plans, and terminal capture summaries. It
+reports event counts by status/surface, the last event, failed or blocked
+events, missing core artifacts, and captured terminal command summaries. Use it
+as the first stop when a daemon/web/extension loop looks stuck: it tells you
+which artifact to open next instead of making you scan the whole run directory.
+
 ## Current Boundary
 
-`devtools workspace dev-loop` is a preflight and directory-preparation command.
-It does not start or stop services for you. That keeps destructive/runtime acts
-explicit while still giving agents a single place to discover the active ports,
-service state, and branch-local paths before they start a daemon/browser loop.
+`devtools workspace dev-loop` owns branch-local preparation and local debug
+artifacts. It can launch a branch-local daemon, run synthetic receiver and
+extension smokes, write browser/TUI handoff plans, capture CLI commands, and
+summarize a run directory. It still does not start or stop the deployed
+`polylogued.service`; stopping production service state remains an explicit
+operator action.
