@@ -372,6 +372,16 @@ def test_insights_profiles_inherit_root_format_json(cli_workspace: CliWorkspace)
     assert json_int(payload["total"]) == 1
 
 
+def test_analyze_rejects_aggregate_options_before_insights_subcommand(cli_workspace: CliWorkspace) -> None:
+    _seed_products(cli_workspace)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["analyze", "--format", "json", "insights", "profiles"], catch_exceptions=False)
+
+    assert result.exit_code == 2
+    assert "put read-model options after `analyze insights <command>`" in result.output
+
+
 def test_insights_status_json(cli_workspace: CliWorkspace) -> None:
     _seed_products(cli_workspace)
 

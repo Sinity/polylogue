@@ -13,7 +13,7 @@ from .cli_surfaces import (
 INSIGHT_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
     CliSurfaceFamily(
         slug="profiles",
-        command_args=("ops", "insights", "profiles"),
+        command_args=("analyze", "insights", "profiles"),
         tags=("insights", "session-profiles"),
         exercise=CliSurfaceVariant(
             name="json-insights-profiles",
@@ -36,7 +36,7 @@ INSIGHT_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
     ),
     CliSurfaceFamily(
         slug="work-events",
-        command_args=("ops", "insights", "work-events"),
+        command_args=("analyze", "insights", "work-events"),
         tags=("insights", "work-events"),
         exercise=CliSurfaceVariant(
             name="json-insights-work-events",
@@ -53,7 +53,7 @@ INSIGHT_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
     ),
     CliSurfaceFamily(
         slug="phases",
-        command_args=("ops", "insights", "phases"),
+        command_args=("analyze", "insights", "phases"),
         tags=("insights", "phases"),
         exercise=CliSurfaceVariant(
             name="json-insights-phases",
@@ -70,7 +70,7 @@ INSIGHT_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
     ),
     CliSurfaceFamily(
         slug="threads",
-        command_args=("ops", "insights", "threads"),
+        command_args=("analyze", "insights", "threads"),
         tags=("insights", "threads"),
         exercise=CliSurfaceVariant(
             name="json-insights-threads",
@@ -79,7 +79,7 @@ INSIGHT_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
     ),
     CliSurfaceFamily(
         slug="tags",
-        command_args=("ops", "insights", "tags"),
+        command_args=("analyze", "insights", "tags"),
         tags=("insights", "tags"),
         exercise=CliSurfaceVariant(
             name="json-insights-tags",
@@ -96,7 +96,7 @@ INSIGHT_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
     ),
     CliSurfaceFamily(
         slug="coverage",
-        command_args=("ops", "insights", "coverage"),
+        command_args=("analyze", "insights", "coverage"),
         tags=("insights", "coverage"),
         exercise=CliSurfaceVariant(
             name="json-insights-coverage",
@@ -132,7 +132,7 @@ INSIGHT_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
     ),
     CliSurfaceFamily(
         slug="debt",
-        command_args=("ops", "insights", "debt"),
+        command_args=("analyze", "insights", "debt"),
         tags=("insights", "debt"),
         live_variants=(
             CliSurfaceVariant(

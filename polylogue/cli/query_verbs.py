@@ -1088,6 +1088,23 @@ def analyze_verb(
         polylogue analyze --cost-outlook --plan claude-pro --format json
     """
     if ctx.invoked_subcommand is not None:
+        if any(
+            (
+                count_only,
+                stats_by is not None,
+                show_facets,
+                cost_outlook,
+                plan_name is not None,
+                method != "linear",
+                no_idf,
+                output_format is not None,
+                limit is not None,
+            )
+        ):
+            raise click.UsageError(
+                "`analyze` options apply to the aggregate analyze view; "
+                "put read-model options after `analyze insights <command>`."
+            )
         return
 
     import json as _json

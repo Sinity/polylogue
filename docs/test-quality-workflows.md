@@ -14,10 +14,10 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `7`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `246`
+- scenario projections: `252`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `7`
-  - exercise: `139`
+  - exercise: `145`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
@@ -409,6 +409,12 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-tutorial` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | tutorial help |
 | `exercise` | `json-doctor` | `message-fts-readiness-loop`<br>`retrieval-band-readiness-loop` | `message_fts`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`archive_readiness` | `cli.json-contract`<br>`project-archive-readiness` | — | `generated`<br>`json-contract`<br>`maintenance`<br>`readiness` | doctor JSON contract |
 | `exercise` | `json-doctor-session-insights-preview` | `session-insight-repair-loop` | `session_insight_rows`<br>`session_insight_fts`<br>`session_insight_readiness` | `cli.json-contract`<br>`project-session-insight-readiness` | — | `generated`<br>`json-contract`<br>`maintenance`<br>`session-insights` | doctor JSON contract |
+| `exercise` | `json-insights-coverage` | `archive-coverage-query-loop` | `archive_session_rows`<br>`session_profile_rows`<br>`archive_coverage_results` | `cli.json-contract`<br>`query-archive-coverage` | — | `generated`<br>`json-contract`<br>`insights`<br>`coverage` | insights coverage JSON contract |
+| `exercise` | `json-insights-phases` | `session-phase-query-loop` | `session_phase_rows`<br>`session_phase_results` | `cli.json-contract`<br>`query-session-phases` | — | `generated`<br>`json-contract`<br>`insights`<br>`phases` | insights phases JSON contract |
+| `exercise` | `json-insights-profiles` | `session-profile-query-loop` | `session_profile_rows`<br>`session_profile_results` | `cli.json-contract`<br>`query-session-profiles` | — | `generated`<br>`json-contract`<br>`insights`<br>`session-profiles` | insights profiles JSON contract |
+| `exercise` | `json-insights-tags` | `session-tag-rollup-query-loop` | `session_tag_rollup_rows`<br>`session_tag_rollup_results` | `cli.json-contract`<br>`query-session-tag-rollups` | — | `generated`<br>`json-contract`<br>`insights`<br>`tags` | insights tags JSON contract |
+| `exercise` | `json-insights-threads` | `thread-query-loop` | `thread_rows`<br>`thread_fts`<br>`thread_results` | `cli.json-contract`<br>`query-threads` | — | `generated`<br>`json-contract`<br>`insights`<br>`threads` | insights threads JSON contract |
+| `exercise` | `json-insights-work-events` | `session-work-event-query-loop` | `session_work_event_rows`<br>`session_work_event_fts`<br>`session_work_event_results` | `cli.json-contract`<br>`query-session-work-events` | — | `generated`<br>`json-contract`<br>`insights`<br>`work-events` | insights work-events JSON contract |
 | `exercise` | `query-count` | — | — | — | — | — | Count sessions |
 | `exercise` | `query-dialogue-only` | — | — | — | — | — | Latest with dialogue only |
 | `exercise` | `query-filter-provider` | — | — | — | — | — | Filter by provider |
