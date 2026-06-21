@@ -444,10 +444,10 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `query-stream-latest` | — | — | — | — | — | Stream latest session |
 | `exercise` | `reverse-sort` | — | — | — | — | — | Reverse sort by date |
 | `exercise` | `sample-random` | — | — | — | — | — | Random sample of sessions |
-| `exercise` | `set-meta` | — | — | — | — | — | Set metadata on session |
+| `exercise` | `set-meta` | — | — | — | — | — | Add a note to a matched session |
 | `exercise` | `stats-default` | — | — | — | — | — | Default archive statistics |
 | `exercise` | `stats-verbose` | — | — | — | — | — | Verbose statistics |
-| `exercise` | `tag-add` | — | — | — | — | — | Add tag to latest session |
+| `exercise` | `tag-add` | — | — | — | — | — | Add tag to one matched session |
 | `exercise` | `tag-verify` | — | — | — | — | — | Verify tag was added |
 | `exercise` | `tags-after-add` | — | — | — | — | — | List tags after add |
 | `exercise` | `tags-json` | — | — | — | — | — | Tags as JSON |

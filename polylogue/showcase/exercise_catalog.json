@@ -370,9 +370,10 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
-          "-p",
-          "chatgpt",
-          "list"
+          "--origin",
+          "chatgpt-export",
+          "read",
+          "--all"
         ]
       },
       "needs_data": true
@@ -386,7 +387,8 @@
         "argv": [
           "--since",
           "2020-01-01",
-          "count"
+          "analyze",
+          "--count"
         ]
       },
       "assertion": {
@@ -405,7 +407,8 @@
         "argv": [
           "--sort",
           "tokens",
-          "list",
+          "read",
+          "--all",
           "-n",
           "3"
         ]
@@ -421,7 +424,8 @@
         "argv": [
           "--sort",
           "messages",
-          "list",
+          "read",
+          "--all",
           "-n",
           "3"
         ]
@@ -447,7 +451,7 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
-          "stats",
+          "analyze",
           "--by",
           "provider"
         ]
@@ -461,7 +465,7 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
-          "stats",
+          "analyze",
           "--by",
           "month"
         ]
@@ -542,13 +546,17 @@
     {
       "name": "tag-add",
       "group": "query-write",
-      "description": "Add tag to latest session",
+      "description": "Add tag to one matched session",
       "execution": {
         "kind": "polylogue",
         "argv": [
-          "--latest",
-          "--add-tag",
-          "showcase-test"
+          "find",
+          "implementation",
+          "then",
+          "mark",
+          "--tag-add",
+          "showcase-test",
+          "--first"
         ]
       },
       "needs_data": true,
@@ -566,7 +574,8 @@
         "argv": [
           "-t",
           "showcase-test",
-          "count"
+          "analyze",
+          "--count"
         ]
       },
       "assertion": {
@@ -601,14 +610,17 @@
     {
       "name": "set-meta",
       "group": "query-write",
-      "description": "Set metadata on session",
+      "description": "Add a note to a matched session",
       "execution": {
         "kind": "polylogue",
         "argv": [
-          "--latest",
-          "--set",
-          "note",
-          "exercise"
+          "find",
+          "implementation",
+          "then",
+          "mark",
+          "--note",
+          "exercise",
+          "--first"
         ]
       },
       "needs_data": true,
@@ -624,9 +636,9 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
-          "-p",
-          "chatgpt",
-          "--latest",
+          "find",
+          "implementation",
+          "then",
           "delete",
           "--dry-run"
         ]
@@ -644,12 +656,12 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
-          "-p",
-          "chatgpt",
-          "-n",
-          "1",
+          "find",
+          "implementation",
+          "then",
           "delete",
-          "--force"
+          "--yes",
+          "--all"
         ]
       },
       "needs_data": true,
@@ -687,6 +699,7 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
+          "ops",
           "doctor"
         ]
       },
@@ -704,6 +717,7 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
+          "ops",
           "doctor",
           "--format",
           "json"
@@ -722,6 +736,7 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
+          "ops",
           "doctor",
           "-v"
         ]
@@ -735,6 +750,7 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
+          "ops",
           "doctor",
           "--format",
           "json",
@@ -754,6 +770,7 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
+          "ops",
           "doctor",
           "--format",
           "json",
@@ -773,6 +790,7 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
+          "ops",
           "status",
           "--format",
           "json"
@@ -813,11 +831,12 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
-          "-p",
-          "chatgpt",
+          "--origin",
+          "chatgpt-export",
           "--since",
           "2020-01-01",
-          "list",
+          "read",
+          "--all",
           "-f",
           "json"
         ]
@@ -841,7 +860,8 @@
           "--sort",
           "date",
           "--reverse",
-          "list",
+          "read",
+          "--all",
           "-n",
           "3"
         ]
@@ -856,9 +876,10 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
-          "--exclude-provider",
-          "gemini",
-          "count"
+          "--exclude-origin",
+          "aistudio-drive",
+          "analyze",
+          "--count"
         ]
       },
       "assertion": {
@@ -876,7 +897,8 @@
       "execution": {
         "kind": "polylogue",
         "argv": [
-          "list",
+          "read",
+          "--all",
           "-f",
           "json",
           "--fields",
@@ -922,7 +944,8 @@
         "argv": [
           "--sample",
           "2",
-          "list"
+          "read",
+          "--all"
         ]
       },
       "needs_data": true,
@@ -936,7 +959,9 @@
         "kind": "polylogue",
         "argv": [
           "implementation",
-          "list"
+          "then",
+          "read",
+          "--all"
         ]
       },
       "assertion": {
