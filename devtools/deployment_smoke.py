@@ -27,6 +27,20 @@ REQUIRED_DAEMON_ROUTES = (
     "/api/read-view-profiles",
 )
 REQUIRED_RECEIVER_ROUTES = ("/v1/status",)
+COMPLETION_PROBES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("query-then-connector", "polylogue find id:abc t", ("then",)),
+    ("query-action", "polylogue find id:abc then s", ("select",)),
+    (
+        "read-views",
+        "polylogue find id:abc then read --view ",
+        ("summary", "messages", "raw", "context-pack"),
+    ),
+    (
+        "message-formats",
+        "polylogue find id:abc then read --view messages --format ",
+        ("json", "ndjson", "text"),
+    ),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +64,19 @@ class RouteProbe:
 
 
 @dataclass(frozen=True, slots=True)
+class CompletionProbe:
+    name: str
+    comp_words: str
+    exit_code: int | None
+    candidates: list[str]
+    expected: list[str]
+    missing: list[str]
+    ok: bool
+    stderr: str
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class DeploymentSmokeReport:
     ok: bool
     path: str
@@ -58,6 +85,7 @@ class DeploymentSmokeReport:
     receiver_base_url: str
     commands: list[CommandProbe]
     routes: list[RouteProbe]
+    completions: list[CompletionProbe]
     diagnostics: dict[str, Any]
     failures: list[str]
 
@@ -79,6 +107,26 @@ def _run_command(command: list[str], *, path: str, timeout_s: float) -> subproce
         text=True,
         timeout=timeout_s,
         env=_command_env(path),
+    )
+
+
+def _run_completion_command(
+    *,
+    path: str,
+    timeout_s: float,
+    comp_words: str,
+) -> subprocess.CompletedProcess[str]:
+    env = _command_env(path)
+    words = comp_words.split()
+    env["COMP_WORDS"] = comp_words
+    env["COMP_CWORD"] = str(len(words) if comp_words.endswith(" ") else max(0, len(words) - 1))
+    env["_POLYLOGUE_COMPLETE"] = "bash_complete"
+    return subprocess.run(
+        ["polylogue"],
+        capture_output=True,
+        text=True,
+        timeout=timeout_s,
+        env=env,
     )
 
 
@@ -155,6 +203,77 @@ def _probe_command(command: list[str], *, path: str, timeout_s: float) -> Comman
     )
 
 
+def _completion_candidates(stdout: str) -> list[str]:
+    candidates: list[str] = []
+    for line in stdout.splitlines():
+        kind, sep, value = line.partition(",")
+        if kind == "plain" and sep and value:
+            candidates.append(value)
+    return candidates
+
+
+def _probe_completion(
+    *,
+    name: str,
+    comp_words: str,
+    expected: tuple[str, ...],
+    path: str,
+    timeout_s: float,
+) -> CompletionProbe:
+    resolved = _resolve_command("polylogue", path=path)
+    if resolved is None:
+        return CompletionProbe(
+            name=name,
+            comp_words=comp_words,
+            exit_code=None,
+            candidates=[],
+            expected=list(expected),
+            missing=list(expected),
+            ok=False,
+            stderr="",
+            error="polylogue_not_found_on_path",
+        )
+    try:
+        result = _run_completion_command(path=path, timeout_s=timeout_s, comp_words=comp_words)
+    except subprocess.TimeoutExpired as exc:
+        return CompletionProbe(
+            name=name,
+            comp_words=comp_words,
+            exit_code=None,
+            candidates=_completion_candidates(_timeout_stream(exc.stdout)),
+            expected=list(expected),
+            missing=list(expected),
+            ok=False,
+            stderr=_timeout_stream(exc.stderr),
+            error="timeout",
+        )
+    except OSError as exc:
+        return CompletionProbe(
+            name=name,
+            comp_words=comp_words,
+            exit_code=None,
+            candidates=[],
+            expected=list(expected),
+            missing=list(expected),
+            ok=False,
+            stderr="",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+    candidates = _completion_candidates(result.stdout)
+    missing = [candidate for candidate in expected if candidate not in candidates]
+    return CompletionProbe(
+        name=name,
+        comp_words=comp_words,
+        exit_code=result.returncode,
+        candidates=candidates,
+        expected=list(expected),
+        missing=missing,
+        ok=result.returncode == 0 and not missing,
+        stderr=result.stderr.strip(),
+        error=None,
+    )
+
+
 def _probe_route(url: str, *, timeout_s: float) -> RouteProbe:
     try:
         with _open_url(url, timeout_s=timeout_s) as response:
@@ -226,6 +345,10 @@ def build_report(
         _probe_command(["polylogue", "--version"], path=path, timeout_s=timeout_s),
         _probe_command(["polylogued", "--version"], path=path, timeout_s=timeout_s),
     ]
+    completions = [
+        _probe_completion(name=name, comp_words=comp_words, expected=expected, path=path, timeout_s=timeout_s)
+        for name, comp_words, expected in COMPLETION_PROBES
+    ]
     routes = [
         *(
             _probe_route(f"{daemon_base_url.rstrip('/')}{route}", timeout_s=timeout_s)
@@ -239,6 +362,11 @@ def build_report(
     failures: list[str] = []
     failures.extend(f"command:{probe.name}:{probe.error or probe.exit_code}" for probe in commands if not probe.ok)
     failures.extend(f"route:{probe.url}:{probe.error or probe.status}" for probe in routes if not probe.ok)
+    failures.extend(
+        f"completion:{probe.name}:{probe.error or 'missing=' + ','.join(probe.missing)}"
+        for probe in completions
+        if not probe.ok
+    )
     repo_head = _repo_head()
     return DeploymentSmokeReport(
         ok=not failures,
@@ -248,6 +376,7 @@ def build_report(
         receiver_base_url=receiver_base_url,
         commands=commands,
         routes=routes,
+        completions=completions,
         diagnostics=_diagnose(commands, routes, repo_head),
         failures=failures,
     )
@@ -271,6 +400,14 @@ def _print_human(report: DeploymentSmokeReport) -> None:
     for route_probe in report.routes:
         marker = "ok" if route_probe.ok else "FAIL"
         print(f"  {marker} {route_probe.url} status={route_probe.status} error={route_probe.error or ''}")
+    print("")
+    print("Completions:")
+    for completion_probe in report.completions:
+        marker = "ok" if completion_probe.ok else "FAIL"
+        detail = ", ".join(completion_probe.candidates[:8])
+        if completion_probe.missing:
+            detail = f"missing={','.join(completion_probe.missing)} candidates={detail}"
+        print(f"  {marker} {completion_probe.name}: {detail}")
     if report.failures:
         print("")
         print("Failures:")
