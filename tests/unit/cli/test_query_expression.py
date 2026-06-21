@@ -4429,6 +4429,24 @@ class TestCLIRootRequestWiring:
         assert spec.has_filters()
         assert spec.query_terms == ()
 
+    @pytest.mark.parametrize(
+        ("expression", "unit"),
+        [
+            ("exists file(path:archive/query)", "file"),
+            ("exists assertion(kind:decision)", "assertion"),
+        ],
+    )
+    def test_shell_quoted_extended_exists_units_compile_as_structural_query(self, expression: str, unit: str) -> None:
+        from polylogue.cli.root_request import RootModeRequest
+
+        request = RootModeRequest(params={}, query_terms=(expression,))
+        spec = request.query_spec()
+
+        assert isinstance(spec.boolean_predicate, QueryExistsPredicate)
+        assert spec.boolean_predicate.unit == unit
+        assert spec.has_filters()
+        assert spec.query_terms == ()
+
     def test_unknown_field_raises(self) -> None:
         from polylogue.cli.root_request import RootModeRequest
 
