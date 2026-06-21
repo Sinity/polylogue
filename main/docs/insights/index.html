@@ -362,8 +362,8 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <p><a href="README.md">← Back to Docs</a></p>
 <h1>Insights</h1>
 <p>Polylogue derives structured read models from raw session data. These are
-materialized in the database and queried through the <code>polylogue ops insights</code>
-subcommand group.</p>
+materialized in the database and queried through <code>polylogue analyze insights</code>.
+Operational readiness, audit, and export stay under <code>polylogue ops insights</code>.</p>
 <h2>Overview</h2>
 <table>
 <thead>
@@ -376,22 +376,22 @@ subcommand group.</p>
 <tbody>
 <tr>
 <td>Session Profiles</td>
-<td><code>insights profiles</code></td>
+<td><code>analyze insights profiles</code></td>
 <td>Per-session evidence, inference, and probabilistic enrichment: repos, tools, costs, durations, message counts, workflow shape, terminal state, summaries</td>
 </tr>
 <tr>
 <td>Work Events</td>
-<td><code>insights work-events</code></td>
+<td><code>analyze insights work-events</code></td>
 <td>File-level operations detected within sessions</td>
 </tr>
 <tr>
 <td>Work Phases</td>
-<td><code>insights phases</code></td>
+<td><code>analyze insights phases</code></td>
 <td>Session segment classification: planning, implementation, verification, exploration</td>
 </tr>
 <tr>
 <td>Work Threads</td>
-<td><code>insights threads</code></td>
+<td><code>analyze insights threads</code></td>
 <td>Multi-session groupings by repo and work continuity</td>
 </tr>
 <tr>
@@ -401,32 +401,17 @@ subcommand group.</p>
 </tr>
 <tr>
 <td>Tag Rollups</td>
-<td><code>insights tags</code></td>
+<td><code>analyze insights tags</code></td>
 <td>Tag usage across sessions</td>
 </tr>
 <tr>
-<td>Day Summaries</td>
-<td><code>insights day-summaries</code></td>
-<td>Per-day session and message counts</td>
-</tr>
-<tr>
-<td>Week Summaries</td>
-<td><code>insights week-summaries</code></td>
-<td>Per-week session and message counts</td>
-</tr>
-<tr>
-<td>Provider Analytics</td>
-<td><code>insights analytics</code></td>
-<td>Per-provider message, tool, and thinking stats</td>
-</tr>
-<tr>
 <td>Session Costs</td>
-<td><code>insights costs</code></td>
+<td><code>analyze insights costs</code></td>
 <td>Per-session cost estimates with model identification</td>
 </tr>
 <tr>
 <td>Cost Rollups</td>
-<td><code>insights cost-rollups</code></td>
+<td><code>analyze insights cost-rollups</code></td>
 <td>Provider/model-level cost aggregation</td>
 </tr>
 <tr>
@@ -437,15 +422,15 @@ subcommand group.</p>
 </tbody>
 </table>
 <p>All insight commands support <code>--limit</code>, <code>--offset</code>, <code>--format json</code>, and
-inherit root-level filters (<code>--provider</code>, <code>--since</code>, <code>--until</code>).</p>
+inherit root-level filters (<code>--origin</code>, <code>--since</code>, <code>--until</code>).</p>
 <p>The per-product evidence / inference / fallback semantics, plus the
 <code>polylogue ops insights audit</code> CLI, are documented in
 <a href="insights-rigor-matrix.md">insights-rigor-matrix.md</a>.</p>
 <h2>Session Profiles</h2>
 <p>Per-session derived aggregates. Materialized in the <code>session_profiles</code> table.</p>
-<pre><code class="language-bash">polylogue ops insights profiles
-polylogue ops insights profiles --tier merged --sort first-message
-polylogue --provider claude-code insights profiles --min-wallclock-seconds 300
+<pre><code class="language-bash">polylogue analyze insights profiles
+polylogue analyze insights profiles --tier merged --sort first-message
+polylogue --origin claude-code-session analyze insights profiles --min-wallclock-seconds 300
 </code></pre>
 <p>Fields: session ID, provider, raw title, inferred topic, session date,
 first/last session timestamp, timestamp source, wall clock duration, message
@@ -535,9 +520,9 @@ or <code>review</code>; it is not a durable workflow taxonomy and should not be 
 as the session-level semantic contract. Use <code>workflow_shape</code> and
 <code>terminal_state</code> on session profiles when the question is about the whole
 session.</p>
-<pre><code class="language-bash">polylogue ops insights work-events
-polylogue ops insights work-events --heuristic-label implementation
-polylogue ops insights work-events --session-id claude-ai:abc123
+<pre><code class="language-bash">polylogue analyze insights work-events
+polylogue analyze insights work-events --heuristic-label implementation
+polylogue analyze insights work-events --session-id claude-ai:abc123
 </code></pre>
 <p>Each event has: start/end time, duration, file paths, tools used, a short
 summary, and the heuristic event label plus confidence/evidence. File/tool
@@ -545,8 +530,8 @@ categories such as <code>file_read</code>, <code>file_edit</code>, or <code>shel
 surfaces, not in <code>session_work_events.heuristic_label</code>.</p>
 <h2>Work Phases</h2>
 <p>Sessions are segmented into phases based on activity patterns.</p>
-<pre><code class="language-bash">polylogue ops insights phases
-polylogue ops insights phases --kind implementation
+<pre><code class="language-bash">polylogue analyze insights phases
+polylogue analyze insights phases --kind implementation
 </code></pre>
 <p>Phase kinds:</p>
 <table>
@@ -578,34 +563,23 @@ polylogue ops insights phases --kind implementation
 <h2>Work Threads</h2>
 <p>Multi-session groupings connected by repo, branch relationships, and work
 continuity.</p>
-<pre><code class="language-bash">polylogue ops insights threads
+<pre><code class="language-bash">polylogue analyze insights threads
 </code></pre>
 <p>Fields: thread ID, dominant repo, session count, total messages, depth,
 session IDs.</p>
-<h2>Day and Week Summaries</h2>
-<p>Pre-aggregated rollups for calendar views.</p>
-<pre><code class="language-bash">polylogue ops insights day-summaries
-polylogue ops insights week-summaries
-</code></pre>
-<h2>Provider Analytics</h2>
-<p>Per-provider message counts, tool use percentages, and thinking block
-percentages.</p>
-<pre><code class="language-bash">polylogue ops insights analytics
-polylogue ops insights analytics --format json
-</code></pre>
 <h2>Cost Tracking</h2>
 <p>Polylogue includes a 23-model pricing catalog covering Anthropic, OpenAI, and
 Google models.</p>
 <h3>Session Costs</h3>
-<pre><code class="language-bash">polylogue ops insights costs
-polylogue ops insights costs --model claude-opus-4-6
-polylogue ops insights costs --status exact
+<pre><code class="language-bash">polylogue analyze insights costs
+polylogue analyze insights costs --model claude-opus-4-6
+polylogue analyze insights costs --status exact
 </code></pre>
 <p>Cost statuses: <code>exact</code> (API-reported tokens), <code>priced</code> (inferred tokens),
 <code>partial</code> (incomplete data), <code>unavailable</code> (no usage data).</p>
 <h3>Cost Rollups</h3>
-<pre><code class="language-bash">polylogue ops insights cost-rollups
-polylogue ops insights cost-rollups --model gpt-4o
+<pre><code class="language-bash">polylogue analyze insights cost-rollups
+polylogue analyze insights cost-rollups --model gpt-4o
 </code></pre>
 <h3>Pricing Catalog</h3>
 <pre><code>Anthropic: claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5,
@@ -617,8 +591,8 @@ Google:    gemini-1.5-pro, gemini-1.5-flash, gemini-2.0-flash, gemini-2.5-pro
 <p>Cost estimates include input tokens, output tokens, cache-read tokens (for
 models that support prompt caching), and cache-write tokens.</p>
 <h2>Tags</h2>
-<pre><code class="language-bash">polylogue ops insights tags
-polylogue ops insights tags --query polylogue
+<pre><code class="language-bash">polylogue analyze insights tags
+polylogue analyze insights tags --query polylogue
 </code></pre>
 <p>Shows tag names with session counts, explicit count (user-assigned), and
 auto count (derived from session content).</p>
