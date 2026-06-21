@@ -385,6 +385,57 @@ def test_browser_plan_writes_local_extension_launch_artifacts(
     assert event_rows[-1]["payload"]["receiver_url"] == "http://127.0.0.1:9875"
 
 
+def test_browser_plan_and_extension_smoke_can_share_one_dev_loop_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(dev_loop, "system_service_status", lambda: {"active": False})
+    monkeypatch.setattr(
+        dev_loop,
+        "port_status",
+        lambda port: {"port": port, "connectable": False, "owner_count": 0, "owners": []},
+    )
+    monkeypatch.setattr(
+        dev_loop, "_git_value", lambda args, *, cwd: "feature/dev-loop" if args[0] == "branch" else "abc1234"
+    )
+
+    assert (
+        dev_loop.main(
+            [
+                "--json",
+                "--log-dir",
+                str(tmp_path / "dev-loop-logs"),
+                "--archive-root",
+                str(tmp_path / "archive"),
+                "--api-port",
+                "9876",
+                "--browser-capture-port",
+                "9875",
+                "--browser-plan",
+                "--extension-smoke",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["browser_plan"]["ok"] is True
+    assert payload["extension_smoke"]["ok"] is True
+    browser_artifacts = payload["browser_plan"]["artifacts"]
+    smoke_artifacts = payload["extension_smoke"]["artifacts"]
+    assert Path(browser_artifacts["json"]).is_file()
+    assert Path(smoke_artifacts["summary"]).is_file()
+
+    event_rows = [
+        json.loads(line)
+        for line in Path(payload["preflight"]["artifacts"]["dev_events"]).read_text(encoding="utf-8").splitlines()
+    ]
+    event_types = [row["event_type"] for row in event_rows]
+    assert "browser_plan_written" in event_types
+    assert event_types[-3:] == ["extension_smoke_requested", "extension_smoke_finished", "browser_plan_written"]
+
+
 def test_tui_plan_writes_visual_inspection_artifacts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -1494,17 +1494,6 @@ def main(argv: list[str] | None = None) -> int:
         or args.tui_plan,
         port_selection=port_selection,
     )
-    if args.receiver_smoke:
-        smoke_payload: dict[str, Any] = {
-            "preflight": payload,
-            "receiver_smoke": run_receiver_smoke(spool_path=Path(str(payload["run_log_dir"])) / "receiver-smoke-spool"),
-        }
-        if args.json:
-            json.dump(smoke_payload, sys.stdout, indent=2, sort_keys=True)
-            sys.stdout.write("\n")
-        else:
-            _print_receiver_smoke(smoke_payload)
-        return 0 if smoke_payload["receiver_smoke"]["ok"] else 1
     if args.capture_cli:
         try:
             capture_payload = run_cli_capture(
@@ -1514,15 +1503,15 @@ def main(argv: list[str] | None = None) -> int:
             )
         except ValueError as exc:
             parser.error(str(exc))
-        combined_payload: dict[str, Any] = {
+        cli_payload: dict[str, Any] = {
             "preflight": payload,
             "cli_capture": capture_payload,
         }
         if args.json:
-            json.dump(combined_payload, sys.stdout, indent=2, sort_keys=True)
+            json.dump(cli_payload, sys.stdout, indent=2, sort_keys=True)
             sys.stdout.write("\n")
         else:
-            _print_cli_capture(combined_payload)
+            _print_cli_capture(cli_payload)
         capture_exit = capture_payload["exit_code"]
         if not isinstance(capture_exit, int):
             capture_exit = 1
@@ -1535,58 +1524,55 @@ def main(argv: list[str] | None = None) -> int:
             )
         except ValueError as exc:
             parser.error(str(exc))
-        combined_payload = {
+        daemon_payload = {
             "preflight": payload,
             "daemon_launch": launch_payload,
         }
         if args.json:
-            json.dump(combined_payload, sys.stdout, indent=2, sort_keys=True)
+            json.dump(daemon_payload, sys.stdout, indent=2, sort_keys=True)
             sys.stdout.write("\n")
         else:
-            _print_daemon_launch(combined_payload)
+            _print_daemon_launch(daemon_payload)
         return 0 if launch_payload.get("ok") is True else 1
+
+    combined_payload: dict[str, Any] = {"preflight": payload}
+    combined_ok = True
+    if args.receiver_smoke:
+        receiver_smoke = run_receiver_smoke(spool_path=Path(str(payload["run_log_dir"])) / "receiver-smoke-spool")
+        combined_payload["receiver_smoke"] = receiver_smoke
+        combined_ok = combined_ok and receiver_smoke.get("ok") is True
     if args.extension_smoke:
         smoke_payload = run_extension_smoke(preflight=payload)
-        combined_payload = {
-            "preflight": payload,
-            "extension_smoke": smoke_payload,
-        }
-        if args.json:
-            json.dump(combined_payload, sys.stdout, indent=2, sort_keys=True)
-            sys.stdout.write("\n")
-        else:
-            _print_extension_smoke(combined_payload)
-        return 0 if smoke_payload.get("ok") is True else 1
+        combined_payload["extension_smoke"] = smoke_payload
+        combined_ok = combined_ok and smoke_payload.get("ok") is True
     if args.browser_plan:
         try:
             browser_plan = build_browser_plan(preflight=payload)
         except ValueError as exc:
             parser.error(str(exc))
-        combined_payload = {
-            "preflight": payload,
-            "browser_plan": browser_plan,
-        }
-        if args.json:
-            json.dump(combined_payload, sys.stdout, indent=2, sort_keys=True)
-            sys.stdout.write("\n")
-        else:
-            _print_browser_plan(combined_payload)
-        return 0 if browser_plan.get("ok") is True else 1
+        combined_payload["browser_plan"] = browser_plan
+        combined_ok = combined_ok and browser_plan.get("ok") is True
     if args.tui_plan:
         try:
             tui_plan = build_tui_plan(preflight=payload)
         except ValueError as exc:
             parser.error(str(exc))
-        combined_payload = {
-            "preflight": payload,
-            "tui_plan": tui_plan,
-        }
+        combined_payload["tui_plan"] = tui_plan
+        combined_ok = combined_ok and tui_plan.get("ok") is True
+    if len(combined_payload) > 1:
         if args.json:
             json.dump(combined_payload, sys.stdout, indent=2, sort_keys=True)
             sys.stdout.write("\n")
         else:
-            _print_tui_plan(combined_payload)
-        return 0 if tui_plan.get("ok") is True else 1
+            if "receiver_smoke" in combined_payload:
+                _print_receiver_smoke(combined_payload)
+            if "extension_smoke" in combined_payload:
+                _print_extension_smoke(combined_payload)
+            if "browser_plan" in combined_payload:
+                _print_browser_plan(combined_payload)
+            if "tui_plan" in combined_payload:
+                _print_tui_plan(combined_payload)
+        return 0 if combined_ok else 1
     if args.json:
         json.dump(payload, sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")
