@@ -2065,6 +2065,13 @@ x-polylogue-route-contracts:
   auth_policy: bearer_if_configured
   response_contract: Daemon status JSON
 - method: GET
+  pattern: /api/dev-loop
+  kind: operational
+  stability: shell_supported
+  auth_policy: bearer_if_configured
+  response_contract: DevLoopDebugPayload
+  notes: Branch-local launcher metadata for the web shell; allowlisted fields only, no raw environment dump.
+- method: GET
   pattern: /api/events
   kind: operational
   stability: stable

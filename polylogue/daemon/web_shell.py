@@ -266,6 +266,7 @@ __ATTACHMENT_CSS__
     <span class="chip" id="status-insights" title="Session insight freshness" style="display:none">insights: --</span>
     <span class="chip" id="status-ingest" style="display:none">live</span>
     <span class="chip" id="status-browser-capture" title="Browser capture readiness" style="display:none">capture: --</span>
+    <span class="chip" id="status-dev-loop" title="Branch-local dev loop" style="display:none">dev: --</span>
     <span class="chip" id="status-live" title="Realtime channel">live: --</span>
   </div>
   <div id="sidebar">
@@ -551,6 +552,9 @@ async function loadStatus() {
     renderIngestChip(readiness.daemon_ingest || null, s.live || {});
     renderBrowserCaptureChip(readiness.browser_capture || null, s.browser_capture || {});
   } catch(e) {}
+  try {
+    renderDevLoopChip(await fetchJSON('/api/dev-loop'));
+  } catch(e) { renderDevLoopChip(null); }
 }
 
 // Apply an MK3 data-quality class to a chip element (canonical, partial, stale,
@@ -671,6 +675,26 @@ function renderBrowserCaptureChip(component, capture) {
     + '; spool ' + (spoolReady ? 'ready' : 'unavailable')
     + '; auth ' + (authRequired ? 'required' : 'not required')
     + '; origins ' + originText;
+}
+
+function renderDevLoopChip(payload) {
+  var el = document.getElementById('status-dev-loop');
+  if (!el) return;
+  if (!payload || !payload.enabled) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  var runId = payload.run_id || 'local';
+  var label = String(runId);
+  if (label.length > 14) label = label.slice(0, 11) + '...';
+  el.textContent = 'dev: ' + label;
+  setChipQuality(el, 'partial');
+  var details = [];
+  if (payload.archive_root) details.push('archive ' + payload.archive_root);
+  if (payload.log_dir) details.push('logs ' + payload.log_dir);
+  if (payload.api_port) details.push('api :' + payload.api_port);
+  if (payload.browser_capture_port) details.push('capture :' + payload.browser_capture_port);
+  el.title = 'Branch-local dev loop'
+    + (payload.run_id ? ' ' + payload.run_id : '')
+    + (details.length ? '; ' + details.join('; ') : '');
 }
 
 function renderSidebarState(kind, msg) {

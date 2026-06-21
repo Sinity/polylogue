@@ -82,6 +82,8 @@ important variables are:
 POLYLOGUE_ARCHIVE_ROOT=.local/dev-archive
 POLYLOGUE_API_PORT=8876
 POLYLOGUE_BROWSER_CAPTURE_PORT=8875
+POLYLOGUE_DEV_LOOP_RUN_ID=<run-id>
+POLYLOGUE_DEV_LOOP_LOG_DIR=.cache/dev-loop/<run-id>
 ```
 
 ## Web Shell Debugging
@@ -92,6 +94,19 @@ process. Open the URL printed by the preflight, usually:
 ```text
 http://127.0.0.1:8766/
 ```
+
+Managed branch-local daemons also expose:
+
+```text
+GET /api/dev-loop
+```
+
+The route uses the same bearer-if-configured API posture as the other daemon
+JSON routes. It returns only allowlisted debug fields: dev-loop run id, run log
+directory, archive root, selected API/browser-capture ports, daemon PID, and
+current working directory. It does not dump process environment or secrets. The
+web shell reads this endpoint and shows a compact `dev:` status chip only when
+`POLYLOGUE_DEV_LOOP_RUN_ID` or `POLYLOGUE_DEV_LOOP_LOG_DIR` is present.
 
 For web shell work, use the run-local daemon log so UI errors can be correlated
 with route logs and request failures. The development loop should make these

@@ -226,6 +226,7 @@ def _static_get_routes() -> tuple[_StaticGetRoute, ...]:
         _static_get_route("/api/health/check", "_handle_health_check"),
         _static_get_route("/api/health", "_handle_health"),
         _static_get_route("/api/status", "_handle_status", passes_params=True),
+        _static_get_route("/api/dev-loop", "_handle_dev_loop"),
         _static_get_route("/api/events", "_handle_events", passes_params=True),
         _static_get_route("/api/sessions", "_handle_list_sessions", passes_params=True),
         _static_get_route("/api/facets", "_handle_facets", passes_params=True),
@@ -275,6 +276,34 @@ def _observability_post_routes() -> tuple[_StaticPostRoute, ...]:
         _StaticPostRoute("/v1/metrics", ("v1", "metrics"), "_handle_otlp_post", passes_path=True),
         _StaticPostRoute("/v1/logs", ("v1", "logs"), "_handle_otlp_post", passes_path=True),
     )
+
+
+def _parse_optional_int_env(name: str) -> int | None:
+    value = os.environ.get(name)
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _dev_loop_payload() -> JSONDocument:
+    run_id = os.environ.get("POLYLOGUE_DEV_LOOP_RUN_ID")
+    log_dir = os.environ.get("POLYLOGUE_DEV_LOOP_LOG_DIR")
+    archive_root = os.environ.get("POLYLOGUE_ARCHIVE_ROOT")
+    enabled = any((run_id, log_dir))
+    return {
+        "ok": True,
+        "enabled": enabled,
+        "run_id": run_id,
+        "log_dir": log_dir,
+        "archive_root": archive_root,
+        "api_port": _parse_optional_int_env("POLYLOGUE_API_PORT"),
+        "browser_capture_port": _parse_optional_int_env("POLYLOGUE_BROWSER_CAPTURE_PORT"),
+        "pid": os.getpid(),
+        "cwd": os.getcwd(),
+    }
 
 
 def _authenticated_post_routes() -> tuple[_StaticPostRoute, ...]:
@@ -1495,6 +1524,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
                 status["daemon_liveness"] = _check_daemon_liveness()
         self._send_json(HTTPStatus.OK, status, extra_headers={"ETag": etag})
+
+    @daemon_safe_handler
+    def _handle_dev_loop(self) -> None:
+        self._send_json(HTTPStatus.OK, _dev_loop_payload())
 
     # ------------------------------------------------------------------
     # Handlers: events (SSE + JSON poll) — implementation in events_http
