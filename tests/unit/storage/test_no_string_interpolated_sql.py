@@ -51,43 +51,6 @@ _AUDITED_SITES: Final[dict[tuple[str, int], str]] = {
     ("polylogue/storage/repository/archive/sessions.py", 300): (
         "chunked IN-clause: literal scoped_sql template + '?,?' placeholders, values bound"
     ),
-    # #1743 readiness fallback degraded row count:
-    #   degraded_row = self._conn.execute(f"SELECT ... FROM {table_name} ... WHERE ({any_terms}){clause}", ...)
-    # ``table_name`` is a closed insight table name; ``any_terms`` is built
-    # immediately above from closed ``(column, path)`` fallback specs; ``clause``
-    # values are bound.
-    ("polylogue/storage/sqlite/archive_tiers/archive.py", 2686): (
-        "readiness fallback reason counts: closed insight-table + _INSIGHT_FALLBACK_PAYLOAD column/path; values bound"
-    ),
-    # #1743 readiness fallback reason breakdown:
-    #   rows = self._conn.execute(f"... FROM {table_name} ... json_each(... '{path}') ...{clause}")
-    # ``table_name``/``column``/``path`` are closed fallback specs; ``clause``
-    # values are bound.
-    ("polylogue/storage/sqlite/archive_tiers/archive.py", 2695): (
-        "readiness fallback reason breakdown: closed insight-table + fallback payload column/path; values bound"
-    ),
-    # Terminal unit row readers:
-    #   rows = self._conn.execute(f"""... WHERE ({clause}){session_clause} ...""", ...)
-    # ``clause`` comes from the structural predicate lowerer, which returns SQL
-    # fragments plus bound params from closed field metadata; ``session_clause``
-    # comes from the shared session filter lowerer; pagination values are bound.
-    # ``order_by`` is a closed literal fragment selected from the parsed
-    # pipeline sort stage and bounded ASC/DESC tokens.
-    ("polylogue/storage/sqlite/archive_tiers/archive.py", 3365): (
-        "message query rows: structural predicate/session filter/order fragments from lowerers; values bound"
-    ),
-    ("polylogue/storage/sqlite/archive_tiers/archive.py", 3453): (
-        "query-unit aggregate counts: closed unit/group/order/session fragments from lowerers; values bound"
-    ),
-    ("polylogue/storage/sqlite/archive_tiers/archive.py", 3501): (
-        "action query rows: structural predicate/session filter/order fragments from lowerers; values bound"
-    ),
-    ("polylogue/storage/sqlite/archive_tiers/archive.py", 3568): (
-        "block query rows: structural predicate/session filter/order fragments from lowerers; values bound"
-    ),
-    ("polylogue/storage/sqlite/archive_tiers/archive.py", 3640): (
-        "assertion query rows: structural predicate/session filter/order fragments from lowerers; values bound"
-    ),
     # Assertion readers:
     #   rows = conn.execute(f"SELECT {_ASSERTION_COLUMNS} FROM assertions ...", ...)
     # ``_ASSERTION_COLUMNS`` is a module-level literal projection list; all
@@ -212,6 +175,12 @@ _TRUSTED_IDENTIFIER_NAMES: frozenset[str] = frozenset(
         "clauses",
         "where_sql",
         "clause",
+        "any_terms",
+        "session_clause",
+        "group_expr",
+        "from_sql",
+        "order_clause",
+        "path",
         "scope_clause",
         "scope_sql",
         "json_where",
