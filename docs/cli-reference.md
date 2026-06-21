@@ -215,6 +215,9 @@ Options:
 
 Commands:
   insights  Inspect durable archive insight read models.
+  pace      Show inter-turn gap analysis for one or more sessions.
+  tools     Show top tools by invocation count across filtered sessions.
+  turns     Show per-turn cost and duration for one session.
 ```
 
 ## Read Verb

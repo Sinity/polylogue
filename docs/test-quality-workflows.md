@@ -348,6 +348,9 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-analyze-insights-timeline` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | analyze insights timeline help |
 | `exercise` | `help-analyze-insights-tool-usage` | `tool-usage-query-loop` | `archive_session_rows`<br>`tool_usage_results` | `cli.help`<br>`query-tool-usage` | — | `generated`<br>`help`<br>`structural` | analyze insights tool-usage help |
 | `exercise` | `help-analyze-insights-work-events` | `session-work-event-query-loop` | `session_work_event_rows`<br>`session_work_event_fts`<br>`session_work_event_results` | `cli.help`<br>`query-session-work-events` | — | `generated`<br>`help`<br>`structural` | analyze insights work-events help |
+| `exercise` | `help-analyze-pace` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | analyze pace help |
+| `exercise` | `help-analyze-tools` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | analyze tools help |
+| `exercise` | `help-analyze-turns` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | analyze turns help |
 | `exercise` | `help-config` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | config help |
 | `exercise` | `help-config-completions` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | config completions help |
 | `exercise` | `help-config-paths` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | config paths help |
@@ -374,10 +377,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `exercise` | `help-ops-debt` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops debt help |
 | `exercise` | `help-ops-debt-list` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops debt list help |
 | `exercise` | `help-ops-diagnostics` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops diagnostics help |
-| `exercise` | `help-ops-diagnostics-pace` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops diagnostics pace help |
 | `exercise` | `help-ops-diagnostics-space` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops diagnostics space help |
-| `exercise` | `help-ops-diagnostics-tools` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops diagnostics tools help |
-| `exercise` | `help-ops-diagnostics-turns` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops diagnostics turns help |
 | `exercise` | `help-ops-diagnostics-workload` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops diagnostics workload help |
 | `exercise` | `help-ops-doctor` | `message-fts-readiness-loop`<br>`retrieval-band-readiness-loop` | `message_fts`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`archive_readiness` | `cli.help`<br>`project-archive-readiness` | — | `generated`<br>`help`<br>`structural` | ops doctor help |
 | `exercise` | `help-ops-embed` | `embedding-materialization-loop` | `archive_session_rows`<br>`embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors` | `cli.help`<br>`materialize-transcript-embeddings` | — | `generated`<br>`help`<br>`structural` | ops embed help |

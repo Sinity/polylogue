@@ -1,4 +1,4 @@
-"""Archive and temporal diagnostics for the ops command surface."""
+"""Archive diagnostics plus session-analysis command implementations."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from polylogue.cli.shared.helpers import fail
 from polylogue.cli.shared.types import AppEnv
 
 
-@click.group("diagnostics", help="Run archive and session diagnostics.")
+@click.group("diagnostics", help="Run archive and daemon diagnostics.")
 def diagnostics_group() -> None:
     pass
 
@@ -87,7 +87,7 @@ def space_command(db: Path | None, limit: int, objects: bool, json_output: bool)
     raise click.exceptions.Exit(space_main(argv))
 
 
-@diagnostics_group.command("pace")
+@click.command("pace")
 @click.argument("session_id", required=False)
 @click.option("--limit", "-l", "-n", type=int, default=10, help="Number of recent sessions to analyze")
 @click.option("--threshold", type=int, default=60, help="Gap threshold in seconds for classification")
@@ -159,7 +159,7 @@ async def _pace(env: AppEnv, session_id: str | None, limit: int, threshold: int)
             env.ui.console.print(f"    {from_idx:3d}→{to_idx:3d}  {timedelta(seconds=seconds)!s:>10s}  [{kind}]")
 
 
-@diagnostics_group.command("turns")
+@click.command("turns")
 @click.argument("session_id", required=False)
 @click.option("--limit", "-l", "-n", type=int, default=20, help="Max turns to show")
 @click.pass_context
@@ -214,7 +214,7 @@ async def _turns(env: AppEnv, session_id: str, limit: int) -> None:
         )
 
 
-@diagnostics_group.command("tools")
+@click.command("tools")
 @click.option("--origin", help="Filter by origin")
 @click.option("--limit", "-l", "-n", type=int, default=20, help="Max tools to show")
 @click.pass_context
