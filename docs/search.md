@@ -117,16 +117,23 @@ polylogue 'messages where role:assistant | sort by time desc | limit 10'
 polylogue 'actions where action:file_edit | limit 20 | offset 40'
 polylogue 'sessions where repo:polylogue AND origin:claude-code-session | messages where role:assistant'
 polylogue 'sessions where origin:(codex-session|claude-code-session) | actions where action:file_edit'
+polylogue 'sessions where ~"timeout failure" | messages where role:user'
+polylogue 'sessions where exists block(type:code) | messages where role:user'
+polylogue 'sessions where seq(action:file_edit -> action:shell) | messages where role:user'
+polylogue 'sessions where lineage:id:chatgpt-export:ext-child | messages where role:user'
 polylogue 'sessions where repo:polylogue | messages where role:assistant | limit 10 | offset 20'
 polylogue 'sessions where repo:polylogue | messages where role:assistant | sort by time desc | limit 10'
 ```
 
 When a pipeline starts with `sessions where ...`, the left stage is lowered into
-`session.<field>` predicates on the terminal unit query, so it uses the same row
-executor as direct `messages/actions/...` pipelines. For now the session stage
-accepts field/count/date predicates only; FTS, semantic, `exists`, lineage, and
-sequence stages are typed errors until they have dedicated unit-changing
-lowerers. Terminal pipeline stages currently support `sort by time [asc|desc]`,
+predicates on the terminal unit query, so it uses the same row executor as direct
+`messages/actions/...` pipelines. Field/count/date predicates become
+`session.<field>` row predicates. FTS (`~"..."`), `exists ...`, sequence
+(`seq(...)`), and `lineage:id:<session-id>` stages lower through the existing
+session Boolean lowerers against the terminal row's owning session. Semantic
+vector predicates still reject in a session pipeline stage until terminal row
+queries have explicit ranked-result semantics. Terminal pipeline stages
+currently support `sort by time [asc|desc]`,
 `group by FIELD | count`, aggregate `sort by count|key [asc|desc]`, `limit N`,
 and `offset N` for SQL-backed terminal rows (`messages`, `actions`, `blocks`,
 `assertions`). Query-string limits narrow the surface limit instead of expanding
