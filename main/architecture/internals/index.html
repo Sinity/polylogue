@@ -938,7 +938,7 @@ running an operator CLI command. Missing tables degrade to zero samples
 rather than 5xx-ing, so a fresh archive still emits the discovery
 skeleton.</p>
 <p>Archive layout observability is emitted on the same scrape. The
-<code>polylogue_archive_storage_layout</code> gauge mirrors <code>polylogue ops paths</code>
+<code>polylogue_archive_storage_layout</code> gauge mirrors <code>polylogue config paths</code>
 with bounded labels for <code>archive_missing</code>, <code>archive_partial</code>, and
 <code>archive_complete</code>; <code>polylogue_archive_tier_count</code> and
 <code>polylogue_archive_blocker_count</code> provide compact alerting
