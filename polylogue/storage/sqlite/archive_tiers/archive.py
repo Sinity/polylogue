@@ -4728,10 +4728,15 @@ def _field_predicate_clause(
         kwargs["title"] = " ".join(values)
     elif field == "date":
         if values:
+            session_time_expr = f"COALESCE({table_alias}.updated_at_ms, {table_alias}.created_at_ms)"
             if predicate.op == ">=":
                 kwargs["since_ms"] = _date_ms(values[-1], field="date")
+            elif predicate.op == ">":
+                return f"{session_time_expr} > ?", [_date_ms(values[-1], field="date")]
             elif predicate.op == "<=":
                 kwargs["until_ms"] = _date_ms(values[-1], field="date")
+            elif predicate.op == "<":
+                return f"{session_time_expr} < ?", [_date_ms(values[-1], field="date")]
             else:
                 raise ValueError("unsupported Boolean query operator for date")
     elif field == "since":
@@ -4782,8 +4787,12 @@ def _count_predicate_clause(column: str, predicate: QueryFieldPredicate) -> tupl
     if not predicate.values:
         return "", []
     value = int(predicate.values[-1])
+    if predicate.op == ">":
+        return f"{column} > ?", [value]
     if predicate.op == ">=":
         return f"{column} >= ?", [value]
+    if predicate.op == "<":
+        return f"{column} < ?", [value]
     if predicate.op == "<=":
         return f"{column} <= ?", [value]
     return f"{column} = ?", [value]
@@ -4796,8 +4805,12 @@ def _numeric_predicate_clause(
     if not predicate.values:
         return "", []
     value = int(predicate.values[-1])
+    if predicate.op == ">":
+        return f"{column} > ?", [value]
     if predicate.op == ">=":
         return f"{column} >= ?", [value]
+    if predicate.op == "<":
+        return f"{column} < ?", [value]
     if predicate.op == "<=":
         return f"{column} <= ?", [value]
     return f"{column} = ?", [value]
@@ -4807,8 +4820,12 @@ def _time_predicate_clause(expression: str, predicate: QueryFieldPredicate) -> t
     if not predicate.values:
         return "", []
     value_ms = _date_ms(predicate.values[-1], field="time")
+    if predicate.op == ">":
+        return f"{expression} > ?", [value_ms]
     if predicate.op == ">=":
         return f"{expression} >= ?", [value_ms]
+    if predicate.op == "<":
+        return f"{expression} < ?", [value_ms]
     if predicate.op == "<=":
         return f"{expression} <= ?", [value_ms]
     raise ValueError("unsupported Boolean query operator for time")

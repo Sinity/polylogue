@@ -196,7 +196,7 @@ class _CountToken:
     """Readable count comparison such as ``messages:>=10``."""
 
     field: str
-    op: Literal[">=", "<=", "="]
+    op: QueryCompareOp
     number: int
 
 
@@ -213,7 +213,7 @@ class _CountRangeToken:
 class _DateComparisonToken:
     """``date >= 2026-01-01`` or ``date < 7d``."""
 
-    op: Literal[">=", "<="]
+    op: Literal[">", ">=", "<", "<="]
     value: str
 
 
@@ -321,7 +321,7 @@ class QueryExpressionExplainClause:
     value: str | None = None
     negated: bool = False
     quoted: bool = False
-    op: Literal[">=", "<=", "="] | None = None
+    op: QueryCompareOp | None = None
     number: int | None = None
     min_number: int | None = None
     max_number: int | None = None
@@ -449,7 +449,7 @@ _QUERY_GRAMMAR = rf"""
     SEMANTIC_BARE_TEXT.6: /(?:semantic|near:text):[^\s"()]+/i
     FTS_QUOTED_TEXT.6: /~"(\\.|[^"\\])*"/
     FTS_BARE_TEXT.5: /~[^\s"()]+/
-    COUNT_CLAUSE.8: /({_COUNT_FIELD_REGEX}):(>=|<=|=)\d+(?!\S)/
+    COUNT_CLAUSE.8: /({_COUNT_FIELD_REGEX}):(>=|<=|=|>|<)\d+(?!\S)/
     FIELD_CLAUSE.4: /-?[a-zA-Z_][a-zA-Z0-9_.]*:(?:"(\\.|[^"\\])*"|\([^)]*\)|[^\s"()\[\]{{}}]+)/
     NEG_QUOTED_TEXT.3: /-"(\\.|[^"\\])*"/
     QUOTED_TEXT.2: /"(\\.|[^"\\])*"/
@@ -544,13 +544,7 @@ def _normalize_count_comparison(
 ) -> _CountToken:
     field = field_name.lower()
     number = int(number_text)
-    if op_text == ">":
-        return _CountToken(field=field, op=">=", number=number + 1)
-    if op_text == "<":
-        if number == 0:
-            raise ExpressionCompileError(f"{field} < 0 is not representable as a non-negative count bound", field=field)
-        return _CountToken(field=field, op="<=", number=number - 1)
-    op: Literal[">=", "<=", "="] = ">=" if op_text == ">=" else "<=" if op_text == "<=" else "="
+    op = cast(QueryCompareOp, op_text if op_text in {">", ">=", "<", "<=", "="} else "=")
     return _CountToken(field=field, op=op, number=number)
 
 
@@ -567,10 +561,10 @@ def _normalize_count_range(field_name: str, min_text: str, max_text: str) -> _Co
 
 
 def _normalize_date_comparison(op_text: str, value_text: str) -> _DateComparisonToken:
-    if op_text in {">=", ">"}:
-        return _DateComparisonToken(op=">=", value=_parse_relative_date(value_text))
-    if op_text in {"<=", "<"}:
-        return _DateComparisonToken(op="<=", value=_parse_relative_date(value_text))
+    if op_text in {">=", ">", "<=", "<"}:
+        return _DateComparisonToken(
+            op=cast(Literal[">", ">=", "<", "<="], op_text), value=_parse_relative_date(value_text)
+        )
     raise ExpressionCompileError("date equality is not supported; use date between A and B", field="date")
 
 
@@ -579,10 +573,10 @@ def _normalize_date_range(min_text: str, max_text: str) -> _DateRangeToken:
 
 
 def _normalize_time_comparison(op_text: str, value_text: str) -> QueryFieldPredicate:
-    if op_text in {">=", ">"}:
-        return QueryFieldPredicate(field="time", values=(_parse_relative_date(value_text),), op=">=")
-    if op_text in {"<=", "<"}:
-        return QueryFieldPredicate(field="time", values=(_parse_relative_date(value_text),), op="<=")
+    if op_text in {">=", ">", "<=", "<"}:
+        return QueryFieldPredicate(
+            field="time", values=(_parse_relative_date(value_text),), op=cast(QueryCompareOp, op_text)
+        )
     raise ExpressionCompileError("time equality is not supported; use time between A and B", field="time")
 
 
@@ -712,11 +706,11 @@ def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
     elif validation_field in COUNT_QUERY_FIELD_REGISTRY or validation_field in NUMERIC_QUERY_FIELD_REGISTRY:
         if not values:
             raise ExpressionCompileError(f"field {field_name!r} requires a numeric value", field=field_name)
-        match = re.fullmatch(r"(>=|<=|=)?(\d+)", values[-1].strip())
+        match = re.fullmatch(r"(>=|<=|=|>|<)?(\d+)", values[-1].strip())
         if match is None:
             raise ExpressionCompileError(f"field {field_name!r} requires a numeric value", field=field_name)
         raw_op = match.group(1) or "="
-        op_text: QueryCompareOp = ">=" if raw_op == ">=" else "<=" if raw_op == "<=" else "="
+        op_text = cast(QueryCompareOp, raw_op)
         values = (match.group(2),)
         count_predicate = QueryFieldPredicate(field=field_name, values=values, op=op_text)
         return QueryNotPredicate(count_predicate) if token.negated else count_predicate
@@ -725,7 +719,7 @@ def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
         match = re.fullmatch(r"(>=|<=|>|<)?(.+)", raw_value)
         if match is not None:
             raw_op = match.group(1) or "="
-            normalized_op: QueryCompareOp = ">=" if raw_op in {">", ">="} else "<=" if raw_op in {"<", "<="} else "="
+            normalized_op = cast(QueryCompareOp, raw_op)
             values = (_parse_relative_date(match.group(2).strip()),)
             date_predicate = QueryFieldPredicate(field=field_name, values=values, op=normalized_op)
             return QueryNotPredicate(date_predicate) if token.negated else date_predicate
@@ -895,7 +889,7 @@ def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["ses
         if validation_field == "date":
             if not predicate.values:
                 raise ExpressionCompileError("field 'date' requires a value", field="date")
-            if predicate.op not in {">=", "<="}:
+            if predicate.op not in {">", ">=", "<", "<="}:
                 raise ExpressionCompileError("field 'date' supports only >=, <=, >, <, and between", field="date")
         if validation_field == "time":
             if unit == "session":
@@ -904,7 +898,7 @@ def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["ses
                 )
             if not predicate.values:
                 raise ExpressionCompileError("field 'time' requires a value", field="time")
-            if predicate.op not in {">=", "<="}:
+            if predicate.op not in {">", ">=", "<", "<="}:
                 raise ExpressionCompileError("field 'time' supports only >=, <=, >, <, and between", field="time")
         if validation_field in COUNT_QUERY_FIELD_REGISTRY or validation_field in NUMERIC_QUERY_FIELD_REGISTRY:
             if not predicate.values:
@@ -2033,16 +2027,34 @@ class _SpecAccumulator:
 
         if isinstance(tok, _CountToken):
             if tok.field == "messages":
-                if tok.op == ">=":
+                if tok.op == ">":
+                    self.min_messages = tok.number + 1
+                elif tok.op == ">=":
                     self.min_messages = tok.number
+                elif tok.op == "<":
+                    if tok.number == 0:
+                        raise ExpressionCompileError(
+                            "messages < 0 is not representable as a non-negative count bound",
+                            field="messages",
+                        )
+                    self.max_messages = tok.number - 1
                 elif tok.op == "<=":
                     self.max_messages = tok.number
                 else:
                     self.min_messages = tok.number
                     self.max_messages = tok.number
             elif tok.field == "words":
-                if tok.op == ">=":
+                if tok.op == ">":
+                    self.min_words = tok.number + 1
+                elif tok.op == ">=":
                     self.min_words = tok.number
+                elif tok.op == "<":
+                    if tok.number == 0:
+                        raise ExpressionCompileError(
+                            "words < 0 is not representable as a non-negative count bound",
+                            field="words",
+                        )
+                    self.max_words = tok.number - 1
                 elif tok.op == "<=":
                     self.max_words = tok.number
                 else:  # "="
@@ -2070,7 +2082,7 @@ class _SpecAccumulator:
             return
 
         if isinstance(tok, _DateComparisonToken):
-            if tok.op == ">=":
+            if tok.op in {">", ">="}:
                 self.since = tok.value
             else:
                 self.until = tok.value

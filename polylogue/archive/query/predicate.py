@@ -7,7 +7,7 @@ from dataclasses import field as dataclass_field
 from typing import Literal, TypeAlias
 
 QueryBoolOp: TypeAlias = Literal["and", "or"]
-QueryCompareOp: TypeAlias = Literal["=", ">=", "<="]
+QueryCompareOp: TypeAlias = Literal["=", ">", ">=", "<", "<="]
 QueryFieldScope: TypeAlias = Literal["session", "unit"]
 
 

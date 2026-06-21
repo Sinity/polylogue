@@ -126,10 +126,10 @@ class TestLexer:
         )
 
     def test_parse_expression_ast_exposes_readable_count_clauses(self) -> None:
-        ast = parse_expression_ast("messages >= 10 words between 100 and 500 tool_use_messages:>=1")
+        ast = parse_expression_ast("messages > 10 words between 100 and 500 tool_use_messages:>=1")
 
         assert ast.clauses == (
-            _CountToken(field="messages", op=">=", number=10),
+            _CountToken(field="messages", op=">", number=10),
             _CountRangeToken(field="words", min_number=100, max_number=500),
             _CountToken(field="tool_use_messages", op=">=", number=1),
         )
@@ -444,7 +444,7 @@ class TestBooleanQueryExpression:
             op="and",
             children=(
                 QueryFieldPredicate(field="duration_ms", values=("60000",), op=">="),
-                QueryFieldPredicate(field="duration_ms", values=("119999",), op="<="),
+                QueryFieldPredicate(field="duration_ms", values=("120000",), op="<"),
             ),
         )
 
@@ -539,14 +539,14 @@ class TestBooleanQueryExpression:
         )
 
     def test_terminal_source_time_comparison_is_parsed(self) -> None:
-        source = parse_unit_source_expression("messages where time >= 2026-01-02T00:00:00+00:00")
+        source = parse_unit_source_expression("messages where time > 2026-01-02T00:00:00+00:00")
 
         assert source is not None
         assert source.unit == "message"
         assert source.predicate == QueryFieldPredicate(
             field="time",
             values=("2026-01-02T00:00:00+00:00",),
-            op=">=",
+            op=">",
         )
 
     def test_terminal_source_time_range_is_parsed(self) -> None:
@@ -1405,6 +1405,13 @@ class TestBooleanQueryExpression:
             .save()
         )
         (
+            SessionBuilder(index_db, "duration-boundary")
+            .provider("chatgpt")
+            .title("duration boundary")
+            .add_message("m-boundary", role="assistant", text="exact threshold")
+            .save()
+        )
+        (
             SessionBuilder(index_db, "duration-null")
             .provider("chatgpt")
             .title("duration null")
@@ -1420,6 +1427,10 @@ class TestBooleanQueryExpression:
                 "UPDATE sessions SET reported_duration_ms = ? WHERE session_id = ?",
                 (5_000, "chatgpt-export:ext-duration-miss"),
             )
+            conn.execute(
+                "UPDATE sessions SET reported_duration_ms = ? WHERE session_id = ?",
+                (60_000, "chatgpt-export:ext-duration-boundary"),
+            )
             conn.commit()
 
         with ArchiveStore.open_existing(index_db.parent) as archive:
@@ -1427,7 +1438,10 @@ class TestBooleanQueryExpression:
             assert spec.boolean_predicate is not None
             rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
 
-        assert [row.session_id for row in rows] == ["chatgpt-export:ext-duration-hit"]
+        assert [row.session_id for row in rows] == [
+            "chatgpt-export:ext-duration-boundary",
+            "chatgpt-export:ext-duration-hit",
+        ]
 
         with ArchiveStore.open_existing(index_db.parent) as archive:
             spec = compile_expression("sessions where NOT duration_ms >= 60000")
@@ -1435,6 +1449,13 @@ class TestBooleanQueryExpression:
             rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
 
         assert [row.session_id for row in rows] == ["chatgpt-export:ext-duration-miss"]
+
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            spec = compile_expression("sessions where duration_ms > 60000")
+            assert spec.boolean_predicate is not None
+            rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
+
+        assert [row.session_id for row in rows] == ["chatgpt-export:ext-duration-hit"]
 
     def test_message_numeric_comparisons_execute_against_archive(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.archive.query.unit_results import query_unit_rows
@@ -1466,12 +1487,32 @@ class TestBooleanQueryExpression:
                 cache_write_tokens=0,
                 duration_ms=100,
             )
+            .add_message(
+                "m-lower-boundary",
+                role="assistant",
+                text="token lower boundary",
+                input_tokens=1200,
+                output_tokens=400,
+                cache_read_tokens=300,
+                cache_write_tokens=20,
+                duration_ms=2000,
+            )
+            .add_message(
+                "m-upper-boundary",
+                role="assistant",
+                text="token upper boundary",
+                input_tokens=1200,
+                output_tokens=400,
+                cache_read_tokens=300,
+                cache_write_tokens=20,
+                duration_ms=3000,
+            )
             .save()
         )
 
         source = parse_unit_source_expression(
             "messages where input_tokens >= 1000 AND output_tokens >= 300 "
-            "AND cache_read_tokens >= 100 AND duration_ms between 2000 and 3000"
+            "AND cache_read_tokens >= 100 AND duration_ms > 2000 AND duration_ms < 3000"
         )
         assert source is not None
         with ArchiveStore.open_existing(index_db.parent) as archive:
@@ -2025,10 +2066,25 @@ class TestBooleanQueryExpression:
                 ],
             )
             .add_message(
+                "m-boundary",
+                role="assistant",
+                text="boundary edit",
+                timestamp="2026-01-02T00:00:00+00:00",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_id": "tool-boundary",
+                        "input": {"file_path": "polylogue/archive/boundary.py"},
+                        "semantic_type": "file_edit",
+                    }
+                ],
+            )
+            .add_message(
                 "m-new",
                 role="assistant",
                 text="new edit",
-                timestamp="2026-01-02T00:00:00+00:00",
+                timestamp="2026-01-03T00:00:00+00:00",
                 blocks=[
                     {
                         "type": "tool_use",
@@ -2042,7 +2098,7 @@ class TestBooleanQueryExpression:
             .save()
         )
 
-        source = parse_unit_source_expression("actions where time >= 2026-01-02T00:00:00+00:00")
+        source = parse_unit_source_expression("actions where time > 2026-01-02T00:00:00+00:00")
         assert source is not None
         with ArchiveStore.open_existing(index_db.parent) as archive:
             rows = archive.query_actions(source.predicate, limit=100)
@@ -2682,6 +2738,24 @@ class TestBooleanQueryExpression:
             .add_message("m-control", role="user", text="one two three four five", has_paste=1)
             .save()
         )
+        (
+            SessionBuilder(index_db, "summary-boundary")
+            .provider("codex")
+            .created_at("2026-01-02T00:00:00+00:00")
+            .updated_at("2026-01-02T00:00:00+00:00")
+            .title("summary comparison boundary")
+            .add_message("m-boundary-1", role="user", text="one two")
+            .add_message(
+                "m-boundary-2",
+                role="assistant",
+                text="three four",
+                blocks=[
+                    {"type": "tool_use", "tool_name": "bash", "text": "pytest"},
+                    {"type": "thinking", "text": "plan"},
+                ],
+            )
+            .save()
+        )
         with sqlite3.connect(index_db) as conn:
             conn.execute(
                 "UPDATE sessions SET reported_duration_ms = ? WHERE session_id = ?",
@@ -2691,6 +2765,10 @@ class TestBooleanQueryExpression:
                 "UPDATE sessions SET reported_duration_ms = ? WHERE session_id = ?",
                 (5_000, "codex-session:ext-summary-control"),
             )
+            conn.execute(
+                "UPDATE sessions SET reported_duration_ms = ? WHERE session_id = ?",
+                (60_000, "codex-session:ext-summary-boundary"),
+            )
             conn.commit()
 
         source = parse_unit_source_expression(
@@ -2699,8 +2777,8 @@ class TestBooleanQueryExpression:
             "AND session.tool_use_messages:>=1 "
             "AND session.thinking_messages:>=1 "
             "AND session.paste_messages:=0 "
-            "AND session.duration_ms:>=60000 "
-            "AND session.date:>=2026-01-02 "
+            "AND session.duration_ms:>60000 "
+            "AND session.date:>2026-01-02 "
             "AND boundary:session_start"
         )
         assert source is not None
@@ -2714,8 +2792,8 @@ class TestBooleanQueryExpression:
                     "AND session.tool_use_messages:>=1 "
                     "AND session.thinking_messages:>=1 "
                     "AND session.paste_messages:=0 "
-                    "AND session.duration_ms:>=60000 "
-                    "AND session.date:>=2026-01-02 "
+                    "AND session.duration_ms:>60000 "
+                    "AND session.date:>2026-01-02 "
                     "AND boundary:session_start"
                 ),
                 limit=10,

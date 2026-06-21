@@ -245,6 +245,13 @@ fields accept compact comparison prefixes such as `session.messages:>=2`,
 carry its session scope inline instead of splitting selection between the
 query string and parallel parameters.
 
+Boolean and terminal predicates preserve comparison semantics: `>`, `>=`, `<`,
+`<=`, and `=` are distinct for count and numeric fields, while `date` and
+terminal `time` accept the four ordered comparisons plus `between`. The legacy
+flat root filters (`messages > 10`, `words < 500`) still compile into inclusive
+`SessionQuerySpec` min/max bounds because that older request object has no
+exclusive-bound fields.
+
 Examples:
 
 ```bash
