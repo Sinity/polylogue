@@ -12,7 +12,13 @@ from polylogue.archive.filter.types import SortField
 from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.archive.query.fields import describe_spec_fields, query_spec_has_selection_filters
 from polylogue.archive.query.plan import SessionQueryPlan
-from polylogue.archive.query.predicate import QueryPredicate
+from polylogue.archive.query.predicate import (
+    QueryBoolPredicate,
+    QueryExistsPredicate,
+    QueryNotPredicate,
+    QueryPredicate,
+    QuerySequencePredicate,
+)
 from polylogue.archive.viewport.viewports import ToolCategory
 from polylogue.core.dates import parse_date
 from polylogue.core.enums import Origin
@@ -354,11 +360,26 @@ def build_query_spec_from_params(
     )
 
 
+def _predicate_contains_action_sequence(predicate: QueryPredicate | None) -> bool:
+    if predicate is None:
+        return False
+    if isinstance(predicate, QuerySequencePredicate):
+        return True
+    if isinstance(predicate, QueryBoolPredicate):
+        return any(_predicate_contains_action_sequence(child) for child in predicate.children)
+    if isinstance(predicate, QueryNotPredicate):
+        return _predicate_contains_action_sequence(predicate.child)
+    if isinstance(predicate, QueryExistsPredicate):
+        return _predicate_contains_action_sequence(predicate.child)
+    return False
+
+
 def query_spec_to_plan(
     spec: SessionQuerySpec,
     *,
     vector_provider: VectorProvider | None = None,
 ) -> SessionQueryPlan:
+    action_sequence = () if _predicate_contains_action_sequence(spec.boolean_predicate) else spec.action_sequence
     plan = SessionQueryPlan(
         query_terms=spec.query_terms,
         contains_terms=spec.contains_terms,
@@ -368,7 +389,7 @@ def query_spec_to_plan(
         cwd_prefix=spec.cwd_prefix,
         action_terms=spec.action_terms,
         excluded_action_terms=spec.excluded_action_terms,
-        action_sequence=spec.action_sequence,
+        action_sequence=action_sequence,
         action_text_terms=spec.action_text_terms,
         tool_terms=spec.tool_terms,
         excluded_tool_terms=spec.excluded_tool_terms,

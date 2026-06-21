@@ -56,6 +56,20 @@ class QueryFieldPredicate:
             payload["field_ref"] = self.field_ref.to_payload()
         return payload
 
+    def require_field_ref(self, *, context: str) -> QueryFieldRef:
+        """Return the validated field identity or fail at an execution boundary."""
+
+        if self.field_ref is None:
+            raise ValueError(
+                f"unbound query field predicate {self.field!r}; bind query predicate context before {context}"
+            )
+        return self.field_ref
+
+    def bound_field_name(self, *, context: str) -> str:
+        """Return the validated field name for executable lowerers."""
+
+        return self.require_field_ref(context=context).name
+
 
 @dataclass(frozen=True)
 class QueryNotPredicate:
