@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Protocol, cast
 
 from polylogue.archive.query.archive_execution import _session_to_session
-from polylogue.archive.query.expression import QueryUnitSource
+from polylogue.archive.query.expression import QueryUnitPipeline, QueryUnitSource
 from polylogue.archive.query.metadata import (
     COUNT_QUERY_FIELD_REGISTRY,
     NUMERIC_QUERY_FIELD_REGISTRY,
@@ -41,6 +41,10 @@ from polylogue.surfaces.payloads import (
 )
 
 _SUMMARY_SCAN_BATCH_SIZE = 500
+
+
+def _pipeline_stage_payloads(pipeline: QueryUnitPipeline) -> tuple[dict[str, object], ...]:
+    return tuple(stage.to_payload() for stage in pipeline.stages)
 
 
 @dataclass(frozen=True)
@@ -667,7 +671,8 @@ def _build_runtime_transform_envelope(
     caller_offset: int,
     session_filters: Mapping[str, object] | None,
 ) -> QueryUnitResultEnvelope:
-    if source.aggregate is not None:
+    pipeline = source.pipeline
+    if pipeline.aggregate is not None:
         raise ValueError(f"Query unit {source.unit!r} aggregate execution requires a SQL lowerer")
     query_fn = _runtime_query(descriptor)
     if query_fn is None:
@@ -686,7 +691,8 @@ def _build_runtime_transform_envelope(
         limit=limit,
         offset=caller_offset,
         has_next=len(rows) > limit,
-        pipeline_stages=tuple(stage.to_payload() for stage in source.pipeline_stages),
+        pipeline=pipeline.to_payload(),
+        pipeline_stages=_pipeline_stage_payloads(pipeline),
     )
 
 
@@ -702,19 +708,20 @@ def _build_sql_envelope(
     fetch_limit: int,
     session_filters: Mapping[str, object] | None,
 ) -> QueryUnitResultEnvelope:
-    if source.aggregate == "count":
+    pipeline = source.pipeline
+    if pipeline.aggregate == "count":
         aggregate_sort = (
-            cast(Literal["count", "key"], source.sort.field)
-            if source.sort is not None and source.sort.field in {"count", "key"}
+            cast(Literal["count", "key"], pipeline.sort.field)
+            if pipeline.sort is not None and pipeline.sort.field in {"count", "key"}
             else None
         )
         aggregate_sort_direction: Literal["asc", "desc"] = (
-            source.sort.direction if aggregate_sort is not None and source.sort is not None else "desc"
+            pipeline.sort.direction if aggregate_sort is not None and pipeline.sort is not None else "desc"
         )
         aggregate_rows = archive.query_unit_counts(
-            source.unit,
-            source.predicate,
-            group_by=source.group_by,
+            pipeline.source_unit,
+            pipeline.predicate,
+            group_by=pipeline.group_by,
             sort=aggregate_sort,
             sort_direction=aggregate_sort_direction,
             limit=fetch_limit,
@@ -728,10 +735,11 @@ def _build_sql_envelope(
             limit=limit,
             offset=caller_offset,
             has_next=len(aggregate_rows) > limit,
-            pipeline_stages=tuple(stage.to_payload() for stage in source.pipeline_stages),
+            pipeline=pipeline.to_payload(),
+            pipeline_stages=_pipeline_stage_payloads(pipeline),
         )
-    sort = source.sort.field if source.sort is not None else None
-    sort_direction = source.sort.direction if source.sort is not None else "asc"
+    sort = pipeline.sort.field if pipeline.sort is not None else None
+    sort_direction = pipeline.sort.direction if pipeline.sort is not None else "asc"
     method_name = descriptor.sql_query_method
     payload_model = _row_payload_model(descriptor)
     if method_name is None or payload_model is None:
@@ -740,7 +748,7 @@ def _build_sql_envelope(
     rows = cast(
         Sequence[Any],
         query_method(
-            source.predicate,
+            pipeline.predicate,
             limit=fetch_limit,
             offset=offset,
             session_filters=session_filters,
@@ -755,7 +763,8 @@ def _build_sql_envelope(
         limit=limit,
         offset=caller_offset,
         has_next=len(rows) > limit,
-        pipeline_stages=tuple(stage.to_payload() for stage in source.pipeline_stages),
+        pipeline=pipeline.to_payload(),
+        pipeline_stages=_pipeline_stage_payloads(pipeline),
     )
 
 
@@ -771,10 +780,11 @@ def query_unit_rows(
     """Execute an explicit unit-source query."""
 
     caller_offset = offset
-    if source.limit is not None:
-        limit = min(limit, source.limit)
-    if source.offset is not None:
-        offset += source.offset
+    pipeline = source.pipeline
+    if pipeline.limit is not None:
+        limit = min(limit, pipeline.limit)
+    if pipeline.offset is not None:
+        offset += pipeline.offset
     fetch_limit = limit + 1
     descriptor = query_unit_descriptor(source.unit)
     if descriptor is None or not descriptor.terminal_supported:
