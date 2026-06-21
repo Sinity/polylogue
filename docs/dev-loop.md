@@ -269,6 +269,40 @@ prove GUI content-script injection. Use the same run id and receiver settings
 when you then load `browser-extension/` unpacked into an agent/private Chrome
 profile for real-page inspection.
 
+For GUI/browser inspection, generate a branch-local browser plan:
+
+```bash
+devtools workspace dev-loop --browser-plan
+devtools workspace dev-loop --browser-plan --json
+```
+
+The plan does not launch or certify an agent browser. It writes the local
+control-plane handoff under `.cache/dev-loop/<run-id>/browser/`:
+
+```text
+browser-plan.json
+browser-plan.md
+chrome-profile/
+screenshots/
+downloads/
+```
+
+The JSON and Markdown plans include:
+
+- the unpacked extension path (`browser-extension/`);
+- the branch-local receiver URL and whether a local receiver token is set;
+- the branch-local web-shell URL;
+- a `google-chrome-stable --user-data-dir=... --load-extension=...` command;
+- a `chromium` variant of the same command;
+- supported real-page probe URLs for `chatgpt.com` and `claude.ai`;
+- screenshot/download artifact directories for the browser-control layer.
+
+Use this when the local agent/operator browser-control surface is going to load
+the unpacked extension, inspect popup/options state, inspect service-worker
+logs, capture screenshots, or test authenticated ChatGPT/Claude.ai pages with
+an operator-approved copied profile. Copied profiles remain local ignored
+artifacts; they are never CI/cloud inputs and are not Polylogue repo state.
+
 ## Current Boundary
 
 `devtools workspace dev-loop` is a preflight and directory-preparation command.

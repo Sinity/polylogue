@@ -444,6 +444,143 @@ def _write_dev_loop_event(
     return event
 
 
+def build_browser_plan(*, preflight: dict[str, Any]) -> dict[str, object]:
+    """Write a browser-control plan for loading the unpacked extension locally."""
+
+    artifacts = preflight.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise ValueError("preflight payload is missing artifact paths")
+    browser_dir = Path(str(artifacts["browser_dir"]))
+    browser_dir.mkdir(parents=True, exist_ok=True)
+    event_path = Path(str(artifacts.get("dev_events", Path(str(preflight["run_log_dir"])) / "dev-loop.events.jsonl")))
+
+    extension_root = Path(str(preflight["repo_root"])) / "browser-extension"
+    profile_dir = browser_dir / "chrome-profile"
+    screenshot_dir = browser_dir / "screenshots"
+    downloads_dir = browser_dir / "downloads"
+    for path in (profile_dir, screenshot_dir, downloads_dir):
+        path.mkdir(parents=True, exist_ok=True)
+
+    ports = preflight.get("ports")
+    if not isinstance(ports, dict):
+        raise ValueError("preflight payload is missing port status")
+    api_status = ports.get("api")
+    receiver_status = ports.get("browser_capture")
+    if not isinstance(api_status, dict) or not isinstance(receiver_status, dict):
+        raise ValueError("preflight payload is missing API/browser-capture port status")
+    api_port = int(api_status["port"])
+    receiver_port = int(receiver_status["port"])
+    receiver_url = f"http://127.0.0.1:{receiver_port}"
+    web_shell_url = f"http://127.0.0.1:{api_port}/"
+    receiver_token = os.environ.get("POLYLOGUE_BROWSER_CAPTURE_AUTH_TOKEN", "")
+
+    chrome_command = [
+        "google-chrome-stable",
+        f"--user-data-dir={profile_dir}",
+        f"--unsafely-treat-insecure-origin-as-secure={receiver_url}",
+        f"--disable-extensions-except={extension_root}",
+        f"--load-extension={extension_root}",
+        "--new-window",
+        web_shell_url,
+    ]
+    chromium_command = ["chromium", *chrome_command[1:]]
+    configure_steps = [
+        "Open the extension popup.",
+        f"Set Local receiver URL to {receiver_url}.",
+        (
+            "Leave receiver token empty."
+            if not receiver_token
+            else "Set receiver token from POLYLOGUE_BROWSER_CAPTURE_AUTH_TOKEN in your local shell."
+        ),
+        "Open a supported ChatGPT or Claude.ai page with an operator-approved profile/cookie copy.",
+        "Use the browser/DevTools control plane to inspect popup state, service-worker logs, network requests, and screenshots.",
+    ]
+    plan_artifacts = {
+        "json": str(browser_dir / "browser-plan.json"),
+        "markdown": str(browser_dir / "browser-plan.md"),
+        "events": str(event_path),
+    }
+    payload: dict[str, object] = {
+        "ok": True,
+        "run_id": str(preflight["run_id"]),
+        "extension_root": str(extension_root),
+        "profile_dir": str(profile_dir),
+        "screenshot_dir": str(screenshot_dir),
+        "downloads_dir": str(downloads_dir),
+        "receiver_url": receiver_url,
+        "receiver_auth_configured": bool(receiver_token),
+        "web_shell_url": web_shell_url,
+        "commands": {
+            "chrome": chrome_command,
+            "chromium": chromium_command,
+        },
+        "supported_probe_urls": {
+            "chatgpt": "https://chatgpt.com/",
+            "claude": "https://claude.ai/",
+        },
+        "configure_steps": configure_steps,
+        "safety": {
+            "profile_dir_policy": "ignored local dev-loop artifact; never commit copied cookies or profile state",
+            "ci_policy": "not used in CI or cloud agents",
+            "repo_boundary": "Polylogue writes launch/config artifacts; browser control and visual inspection are local agent/operator capabilities",
+        },
+        "artifacts": plan_artifacts,
+    }
+    json_path = Path(plan_artifacts["json"])
+    markdown_path = Path(plan_artifacts["markdown"])
+    json_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    markdown = "\n".join(
+        [
+            "# Polylogue Browser Dev-Loop Plan",
+            "",
+            f"- Run id: `{payload['run_id']}`",
+            f"- Extension root: `{payload['extension_root']}`",
+            f"- Browser profile: `{payload['profile_dir']}`",
+            f"- Receiver URL: `{payload['receiver_url']}`",
+            f"- Web shell: `{payload['web_shell_url']}`",
+            "",
+            "## Launch",
+            "",
+            "```bash",
+            shlex.join(chrome_command),
+            "```",
+            "",
+            "If your Chromium binary is named `chromium`:",
+            "",
+            "```bash",
+            shlex.join(chromium_command),
+            "```",
+            "",
+            "## Configure",
+            "",
+            *[f"{index}. {step}" for index, step in enumerate(configure_steps, start=1)],
+            "",
+            "## Artifact Paths",
+            "",
+            f"- Screenshots: `{payload['screenshot_dir']}`",
+            f"- Downloads: `{payload['downloads_dir']}`",
+            f"- JSON plan: `{json_path}`",
+            "",
+        ]
+    )
+    markdown_path.write_text(markdown + "\n", encoding="utf-8")
+    _write_dev_loop_event(
+        event_path,
+        preflight=preflight,
+        surface="browser",
+        event_type="browser_plan_written",
+        status="ok",
+        payload={
+            "extension_root": str(extension_root),
+            "profile_dir": str(profile_dir),
+            "receiver_url": receiver_url,
+            "web_shell_url": web_shell_url,
+            "artifacts": payload["artifacts"],
+        },
+    )
+    return payload
+
+
 def run_cli_capture(
     *,
     preflight: dict[str, Any],
@@ -949,6 +1086,27 @@ def _print_extension_smoke(payload: dict[str, Any]) -> None:
     print(f"  summary:  {artifacts['summary']}")
 
 
+def _print_browser_plan(payload: dict[str, Any]) -> None:
+    preflight = payload["preflight"]
+    plan = payload["browser_plan"]
+    assert isinstance(preflight, dict)
+    assert isinstance(plan, dict)
+    artifacts = plan["artifacts"]
+    assert isinstance(artifacts, dict)
+    commands = plan["commands"]
+    assert isinstance(commands, dict)
+    chrome = commands["chrome"]
+    assert isinstance(chrome, list)
+    print("Polylogue dev-loop browser plan")
+    print(f"  run id:    {preflight['run_id']}")
+    print(f"  receiver:  {plan['receiver_url']}")
+    print(f"  web shell: {plan['web_shell_url']}")
+    print(f"  profile:   {plan['profile_dir']}")
+    print(f"  extension: {plan['extension_root']}")
+    print(f"  command:   {shlex.join([str(part) for part in chrome])}")
+    print(f"  plan:      {artifacts['markdown']}")
+
+
 def main(argv: list[str] | None = None) -> int:
     original_argv = list(argv) if argv is not None else sys.argv[1:]
     parser = argparse.ArgumentParser(description=__doc__)
@@ -989,6 +1147,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Run the browser-extension background worker against a temporary local receiver.",
     )
     parser.add_argument(
+        "--browser-plan",
+        action="store_true",
+        help="Write branch-local browser profile, extension load, receiver, and inspection plan artifacts.",
+    )
+    parser.add_argument(
         "--daemon-ready-timeout-s",
         type=float,
         default=10.0,
@@ -1005,7 +1168,7 @@ def main(argv: list[str] | None = None) -> int:
         browser_capture_port=args.browser_capture_port,
         archive_root=args.archive_root,
         log_dir=args.log_dir,
-        prepare=args.prepare or args.receiver_smoke or args.launch_daemon or args.extension_smoke,
+        prepare=args.prepare or args.receiver_smoke or args.launch_daemon or args.extension_smoke or args.browser_plan,
     )
     if args.receiver_smoke:
         smoke_payload: dict[str, Any] = {
@@ -1070,6 +1233,21 @@ def main(argv: list[str] | None = None) -> int:
         else:
             _print_extension_smoke(combined_payload)
         return 0 if smoke_payload.get("ok") is True else 1
+    if args.browser_plan:
+        try:
+            browser_plan = build_browser_plan(preflight=payload)
+        except ValueError as exc:
+            parser.error(str(exc))
+        combined_payload = {
+            "preflight": payload,
+            "browser_plan": browser_plan,
+        }
+        if args.json:
+            json.dump(combined_payload, sys.stdout, indent=2, sort_keys=True)
+            sys.stdout.write("\n")
+        else:
+            _print_browser_plan(combined_payload)
+        return 0 if browser_plan.get("ok") is True else 1
     if args.json:
         json.dump(payload, sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")

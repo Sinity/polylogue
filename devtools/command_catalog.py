@@ -324,6 +324,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace dev-loop --capture-cli -- polylogue ops status",
             "devtools workspace dev-loop --receiver-smoke --json",
             "devtools workspace dev-loop --extension-smoke --json",
+            "devtools workspace dev-loop --browser-plan --json",
         ),
     ),
     CommandSpec(
