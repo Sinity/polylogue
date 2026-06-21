@@ -73,7 +73,7 @@ def _looks_like_json_output(text: str) -> bool:
 #   - delete, ops reset    → destructive
 #   - import               → requires source config, modifies archive
 #   - tutorial, ops auth, init → interactive or requires external service
-#   - ops dashboard, open      → side effect (opens browser)
+#   - dashboard, open          → side effect (opens browser)
 #   - ops backup           → creates backup file; needs populated archive
 _COMMANDS: list[tuple[list[str], bool]] = [
     # ── Query verbs (root --json flows through to output_format) ──────
@@ -122,7 +122,7 @@ _EXCLUDED: list[str] = [
     "tutorial (interactive)",
     "ops auth (interactive, requires external service)",
     "init (interactive, writes config)",
-    "ops dashboard (side effect: opens browser)",
+    "dashboard (side effect: opens browser)",
     "open (side effect: opens browser)",
     "ops backup (creates backup file)",
     "recent (pre-existing bug: hardcoded sort=updated_at is invalid)",

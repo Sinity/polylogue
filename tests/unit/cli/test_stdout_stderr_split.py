@@ -60,7 +60,7 @@ _ALL_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("ops", "auth"),
     ("ops", "backup"),
     ("config", "completions"),
-    ("ops", "dashboard"),
+    ("dashboard",),
     ("ops", "diagnostics"),
     ("ops", "diagnostics", "pace"),
     ("ops", "diagnostics", "space"),

@@ -29,7 +29,7 @@ SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Reset", ("ops", "reset")),
     ("Schema", ("ops", "schema")),
     ("Completions", ("config", "completions")),
-    ("Dashboard", ("ops", "dashboard")),
+    ("Dashboard", ("dashboard",)),
     ("Tutorial", ("tutorial",)),
 )
 

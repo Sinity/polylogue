@@ -161,17 +161,18 @@ Options:
 
 Commands:
   analyze
-  config    Show resolved Polylogue configuration with precedence sources.
-  continue  Compile a successor-agent continuation report.
-  delete    Delete matched sessions.
-  demo      Seed and verify the deterministic demo archive.
-  import    Import sessions from configured sources.
-  init      Detect chat sources and write a starter polylogue.toml.
+  config     Show resolved Polylogue configuration with precedence sources.
+  continue   Compile a successor-agent continuation report.
+  dashboard  Open the local dashboard.
+  delete     Delete matched sessions.
+  demo       Seed and verify the deterministic demo archive.
+  import     Import sessions from configured sources.
+  init       Detect chat sources and write a starter polylogue.toml.
   mark
-  ops       Run operational archive and daemon commands.
-  read      Read matched sessions (route to view/destination).
+  ops        Run operational archive and daemon commands.
+  read       Read matched sessions (route to view/destination).
   select
-  tutorial  Interactive first-run walk-through.
+  tutorial   Interactive first-run walk-through.
 ```
 
 ## Analyze Verb
@@ -459,7 +460,6 @@ Options:
 Commands:
   auth         Authenticate optional external services.
   backup       Create a timestamped durability-tier backup.
-  dashboard    Open the local dashboard.
   debt         List archive work that needs operator attention.
   diagnostics  Run archive and session diagnostics.
   doctor       Run archive health checks and repairs.
@@ -668,7 +668,7 @@ Options:
 ## Dashboard
 
 ```text
-Usage: polylogue ops dashboard [OPTIONS]
+Usage: polylogue dashboard [OPTIONS]
 
   Launch the dashboard TUI.
 

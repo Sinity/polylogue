@@ -853,7 +853,7 @@ class TestDashboardCommand:
         with patch("polylogue.ui.tui.app.PolylogueApp") as mock_app_cls:
             mock_app = MagicMock()
             mock_app_cls.return_value = mock_app
-            result = cli_runner.invoke(click_cli, ["--plain", "ops", "dashboard"])
+            result = cli_runner.invoke(click_cli, ["--plain", "dashboard"])
         assert result.exit_code == 0
         mock_app.run.assert_called_once()
 
@@ -865,7 +865,7 @@ class TestDashboardCommand:
         with patch("polylogue.ui.tui.app.PolylogueApp") as mock_app_cls:
             mock_app = MagicMock()
             mock_app_cls.return_value = mock_app
-            result = cli_runner.invoke(click_cli, ["--plain", "ops", "dashboard"])
+            result = cli_runner.invoke(click_cli, ["--plain", "dashboard"])
         assert result.exit_code == 0
         kwargs = mock_app_cls.call_args.kwargs
         assert kwargs["polylogue"] is not None
@@ -874,17 +874,17 @@ class TestDashboardCommand:
 class TestCompletionsCommand:
     @pytest.mark.parametrize("shell", ["bash", "zsh", "fish"])
     def test_completion_generates_script(self, cli_runner: CliRunner, shell: str) -> None:
-        result = cli_runner.invoke(click_cli, ["ops", "completions", "--shell", shell])
+        result = cli_runner.invoke(click_cli, ["config", "completions", "--shell", shell])
         assert result.exit_code == 0
         assert "polylogue" in result.output.lower() or "complete" in result.output.lower()
 
     def test_shell_option_is_required(self, cli_runner: CliRunner) -> None:
-        result = cli_runner.invoke(click_cli, ["ops", "completions"])
+        result = cli_runner.invoke(click_cli, ["config", "completions"])
         assert result.exit_code != 0
         assert "missing option" in result.output.lower() or "required" in result.output.lower()
 
     def test_invalid_shell_rejected(self, cli_runner: CliRunner) -> None:
-        result = cli_runner.invoke(click_cli, ["ops", "completions", "--shell", "powershell"])
+        result = cli_runner.invoke(click_cli, ["config", "completions", "--shell", "powershell"])
         assert result.exit_code != 0
         assert "invalid value" in result.output.lower() or "choice" in result.output.lower()
 

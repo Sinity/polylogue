@@ -150,7 +150,7 @@ STAGES: tuple[TutorialStage, ...] = (
         number=5,
         title="Open reader",
         probe=_stage_open_reader,
-        action_text="Run `polylogue ops dashboard` to open the local reader.",
+        action_text="Run `polylogue dashboard` to open the local reader.",
     ),
 )
 

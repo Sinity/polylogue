@@ -1,6 +1,0 @@
-Usage: polylogue ops dashboard [OPTIONS]
-
-  Launch the dashboard TUI.
-
-Options:
-  -h, --help  Show this message and exit.
