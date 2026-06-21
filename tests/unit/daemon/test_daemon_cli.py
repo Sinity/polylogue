@@ -1193,10 +1193,46 @@ def test_run_daemon_services_stops_live_watcher_on_failure() -> None:
     assert stopped == [True]
 
 
+def test_emit_daemon_lifecycle_event_carries_dev_loop_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_emit(kind: str, **kwargs: object) -> None:
+        calls.append((kind, kwargs))
+
+    monkeypatch.setenv("POLYLOGUE_DEV_LOOP_RUN_ID", "dev-loop-run")
+    monkeypatch.setenv("POLYLOGUE_DEV_LOOP_LOG_DIR", str(tmp_path / "logs"))
+
+    with patch("polylogue.daemon.events.emit_daemon_event", side_effect=fake_emit):
+        daemon_cli._emit_daemon_lifecycle_event(
+            "component_started",
+            archive_root_path=tmp_path / "archive",
+            component="api",
+            payload={"port": 8766},
+        )
+
+    assert len(calls) == 1
+    kind, kwargs = calls[0]
+    assert kind == "daemon.lifecycle"
+    assert kwargs["operation_id"] == "dev-loop-run"
+    payload = cast(dict[str, object], kwargs["payload"])
+    assert payload["phase"] == "component_started"
+    assert payload["component"] == "api"
+    assert payload["port"] == 8766
+    assert payload["archive_root"] == str(tmp_path / "archive")
+    assert payload["dev_loop_run_id"] == "dev-loop-run"
+    assert payload["dev_loop_log_dir"] == str(tmp_path / "logs")
+
+
 def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
     from polylogue.daemon import cli as daemon_cli
 
     events: list[str] = []
+    lifecycle_payloads: list[dict[str, object]] = []
 
     class FakePolylogue:
         async def __aenter__(self) -> object:
@@ -1241,6 +1277,10 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         async def stop(self) -> None:
             events.append("converger-stop")
 
+    def fake_emit_daemon_event(kind: str, **kwargs: object) -> None:
+        assert kind == "daemon.lifecycle"
+        lifecycle_payloads.append(cast(dict[str, object], kwargs["payload"]))
+
     with (
         patch.object(daemon_cli, "Polylogue", FakePolylogue),
         patch.object(daemon_cli, "LiveWatcher", FakeWatcher),
@@ -1257,6 +1297,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         patch("polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check", lambda: fake_loop("embedding")),
         patch("polylogue.daemon.convergence.DaemonConverger", FakeConverger),
         patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=()),
+        patch("polylogue.daemon.events.emit_daemon_event", side_effect=fake_emit_daemon_event),
         pytest.raises(RuntimeError, match="watch stopped"),
     ):
         asyncio.run(
@@ -1277,6 +1318,12 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
     assert events.index("fts") < events.index("convergence")
     assert events.index("fts") < events.index("drive")
     assert events.index("fts") < events.index("converger")
+    lifecycle_phases = [str(payload["phase"]) for payload in lifecycle_payloads]
+    assert lifecycle_phases[0] == "startup"
+    assert "component_ready" in lifecycle_phases
+    assert lifecycle_phases[-2:] == ["shutdown_started", "shutdown_complete"]
+    lifecycle_components = {payload.get("component") for payload in lifecycle_payloads}
+    assert {"fts_startup", "converger", "watcher"}.issubset(lifecycle_components)
 
 
 def test_run_daemon_services_closes_browser_capture_server_on_failure() -> None:

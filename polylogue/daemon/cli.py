@@ -593,6 +593,40 @@ def _emit_live_batch_event(kind: str, payload: dict[str, object]) -> None:
     )
 
 
+def _emit_daemon_lifecycle_event(
+    phase: str,
+    *,
+    archive_root_path: Path,
+    status: str = "ok",
+    component: str | None = None,
+    payload: dict[str, object] | None = None,
+) -> None:
+    """Persist a daemon lifecycle event without making observability fatal."""
+    from polylogue.daemon.events import emit_daemon_event
+
+    run_id = os.environ.get("POLYLOGUE_DEV_LOOP_RUN_ID")
+    event_payload: dict[str, object] = {
+        "phase": phase,
+        "status": status,
+        "pid": os.getpid(),
+        "cwd": os.getcwd(),
+        "archive_root": str(archive_root_path),
+    }
+    if component is not None:
+        event_payload["component"] = component
+    log_dir = os.environ.get("POLYLOGUE_DEV_LOOP_LOG_DIR")
+    if run_id:
+        event_payload["dev_loop_run_id"] = run_id
+    if log_dir:
+        event_payload["dev_loop_log_dir"] = log_dir
+    if payload:
+        event_payload.update(payload)
+    try:
+        emit_daemon_event("daemon.lifecycle", operation_id=run_id, payload=event_payload)
+    except Exception:
+        logger.warning("daemon: failed to emit lifecycle event %s", phase, exc_info=True)
+
+
 async def run_live_watcher(
     *,
     sources: tuple[WatchSource, ...],
@@ -629,6 +663,7 @@ async def run_daemon_services(
 
     global _pidfile_path
     _process_start.started_at_wall()
+    archive_root_path = Path(archive_root())
 
     # Non-localhost API binding requires explicit opt-in AND an auth token.
     if enable_api and not is_loopback_host(api_host):
@@ -650,6 +685,7 @@ async def run_daemon_services(
     # heartbeat queries — that is the IO cost #1003 is meant to avoid.
     schema_alert = _check_schema_version_fast()
     watcher_blocked = enable_watch and schema_alert.severity == HealthSeverity.CRITICAL
+    lifecycle_events_enabled = not watcher_blocked
     if watcher_blocked:
         logger.error(
             "daemon: schema preflight CRITICAL — %s. Refusing to start the live watcher; "
@@ -664,7 +700,7 @@ async def run_daemon_services(
             )
         )
 
-    pidfile = Path(archive_root()) / "daemon.pid"
+    pidfile = archive_root_path / "daemon.pid"
     pidfile_fd: int | None = None
 
     # Prevent concurrent daemon instances: verify existing pidfile, then
@@ -686,6 +722,23 @@ async def run_daemon_services(
     # never-yet-used sources (e.g. hooks sidecar dir) as missing.
     for src in sources:
         src.root.mkdir(parents=True, exist_ok=True)
+
+    if lifecycle_events_enabled:
+        _emit_daemon_lifecycle_event(
+            "startup",
+            archive_root_path=archive_root_path,
+            status="starting",
+            payload={
+                "api_enabled": enable_api,
+                "api_host": api_host,
+                "api_port": api_port,
+                "browser_capture_enabled": enable_browser_capture,
+                "browser_capture_host": browser_capture_host,
+                "browser_capture_port": browser_capture_port,
+                "watch_enabled": enable_watch,
+                "source_roots": [str(src.root) for src in sources],
+            },
+        )
 
     # Periodic maintenance tasks. If schema preflight blocks the watcher, do
     # not start any background loop that opens the archive: a mismatched
@@ -719,6 +772,19 @@ async def run_daemon_services(
             )
             server_task = asyncio.create_task(asyncio.to_thread(server.serve_forever, 0.5))
             tasks.append(server_task)
+            if lifecycle_events_enabled:
+                _emit_daemon_lifecycle_event(
+                    "component_started",
+                    archive_root_path=archive_root_path,
+                    component="browser_capture",
+                    payload={
+                        "host": browser_capture_host,
+                        "port": browser_capture_port,
+                        "spool_path": str(browser_capture_spool_path)
+                        if browser_capture_spool_path is not None
+                        else None,
+                    },
+                )
 
         if enable_api:
             from polylogue.daemon.http import (
@@ -734,6 +800,13 @@ async def run_daemon_services(
             )
             api_server_task = asyncio.create_task(asyncio.to_thread(api_server.serve_forever, 0.5))
             tasks.append(api_server_task)
+            if lifecycle_events_enabled:
+                _emit_daemon_lifecycle_event(
+                    "component_started",
+                    archive_root_path=archive_root_path,
+                    component="api",
+                    payload={"host": api_host, "port": api_port, "auth_enabled": bool(api_auth_token)},
+                )
 
         # Ensure FTS structure after HTTP surfaces are bound and before live
         # catch-up starts. Startup FTS maintenance and catch-up ingestion are
@@ -745,6 +818,12 @@ async def run_daemon_services(
             from polylogue.daemon.embedding_backlog import periodic_embedding_backlog_check
 
             await _ensure_fts_startup_readiness()
+            if lifecycle_events_enabled:
+                _emit_daemon_lifecycle_event(
+                    "component_ready",
+                    archive_root_path=archive_root_path,
+                    component="fts_startup",
+                )
             # Disable per-write FTS5 automerge so each small ingest batch does
             # not trigger a merge of the full (hundreds-of-MB) existing
             # segments (#1851).  A periodic merge pass amortises the cost.
@@ -776,6 +855,12 @@ async def run_daemon_services(
                 max_workers=2,
             )
             await converger.start()
+            if lifecycle_events_enabled:
+                _emit_daemon_lifecycle_event(
+                    "component_started",
+                    archive_root_path=archive_root_path,
+                    component="converger",
+                )
 
         # Preflight already ran at the top of run_daemon_services (see
         # ``watcher_blocked`` above); reuse that result.
@@ -799,19 +884,52 @@ async def run_daemon_services(
                     )
                     watcher_task = asyncio.create_task(watcher.run())
                     tasks.append(watcher_task)
+                    if lifecycle_events_enabled:
+                        _emit_daemon_lifecycle_event(
+                            "component_started",
+                            archive_root_path=archive_root_path,
+                            component="watcher",
+                            payload={"source_count": len(sources), "debounce_s": debounce_s},
+                        )
                     all_tasks = tasks + maintenance_tasks
                     await asyncio.gather(*all_tasks)
             elif tasks:
                 # Watcher disabled or preflight-blocked: keep HTTP/health and
                 # other components serving so operators see the degraded state.
+                if lifecycle_events_enabled:
+                    _emit_daemon_lifecycle_event(
+                        "component_skipped",
+                        archive_root_path=archive_root_path,
+                        component="watcher",
+                        payload={
+                            "reason": "schema_blocked" if watcher_blocked else "disabled",
+                            "watch_enabled": enable_watch,
+                        },
+                    )
                 all_tasks = tasks + maintenance_tasks
                 await asyncio.gather(*all_tasks)
             else:
+                if lifecycle_events_enabled:
+                    _emit_daemon_lifecycle_event(
+                        "component_skipped",
+                        archive_root_path=archive_root_path,
+                        component="watcher",
+                        payload={
+                            "reason": "schema_blocked" if watcher_blocked else "disabled",
+                            "watch_enabled": enable_watch,
+                        },
+                    )
                 await asyncio.gather(*maintenance_tasks)
         except BaseException:
             _log_completed_daemon_tasks(tasks + maintenance_tasks)
             raise
     finally:
+        if lifecycle_events_enabled:
+            _emit_daemon_lifecycle_event(
+                "shutdown_started",
+                archive_root_path=archive_root_path,
+                status="stopping",
+            )
         if watcher is not None:
             watcher.stop()
         if converger is not None:
@@ -852,6 +970,12 @@ async def run_daemon_services(
             with contextlib.suppress(OSError):
                 os.close(pidfile_fd)
         _cleanup_pidfile()
+        if lifecycle_events_enabled:
+            _emit_daemon_lifecycle_event(
+                "shutdown_complete",
+                archive_root_path=archive_root_path,
+                status="stopped",
+            )
 
     logger.info("daemon stopped")
 
