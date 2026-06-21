@@ -12,7 +12,6 @@ from .metadata import ScenarioMetadata
 
 
 class ScenarioProjectionSourceKind(str, Enum):
-    EXERCISE = "exercise"
     VALIDATION_LANE = "validation-lane"
     MUTATION_CAMPAIGN = "mutation-campaign"
     BENCHMARK_CAMPAIGN = "benchmark-campaign"

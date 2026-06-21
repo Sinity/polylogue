@@ -6,7 +6,7 @@ from .cli_surfaces import (
     CliSurfaceFamily,
     CliSurfaceVariant,
     CompiledCliSurface,
-    build_cli_surface_exercises,
+    build_cli_surface_contracts,
     build_cli_surface_live_variants,
 )
 
@@ -15,7 +15,7 @@ INSIGHT_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
         slug="profiles",
         command_args=("analyze", "insights", "profiles"),
         tags=("insights", "session-profiles"),
-        exercise=CliSurfaceVariant(
+        contract_variant=CliSurfaceVariant(
             name="json-insights-profiles",
             description="insights profiles JSON contract",
         ),
@@ -38,7 +38,7 @@ INSIGHT_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
         slug="work-events",
         command_args=("analyze", "insights", "work-events"),
         tags=("insights", "work-events"),
-        exercise=CliSurfaceVariant(
+        contract_variant=CliSurfaceVariant(
             name="json-insights-work-events",
             description="insights work-events JSON contract",
         ),
@@ -55,7 +55,7 @@ INSIGHT_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
         slug="phases",
         command_args=("analyze", "insights", "phases"),
         tags=("insights", "phases"),
-        exercise=CliSurfaceVariant(
+        contract_variant=CliSurfaceVariant(
             name="json-insights-phases",
             description="insights phases JSON contract",
         ),
@@ -72,7 +72,7 @@ INSIGHT_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
         slug="threads",
         command_args=("analyze", "insights", "threads"),
         tags=("insights", "threads"),
-        exercise=CliSurfaceVariant(
+        contract_variant=CliSurfaceVariant(
             name="json-insights-threads",
             description="insights threads JSON contract",
         ),
@@ -81,7 +81,7 @@ INSIGHT_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
         slug="tags",
         command_args=("analyze", "insights", "tags"),
         tags=("insights", "tags"),
-        exercise=CliSurfaceVariant(
+        contract_variant=CliSurfaceVariant(
             name="json-insights-tags",
             description="insights tags JSON contract",
         ),
@@ -98,7 +98,7 @@ INSIGHT_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
         slug="coverage",
         command_args=("analyze", "insights", "coverage"),
         tags=("insights", "coverage"),
-        exercise=CliSurfaceVariant(
+        contract_variant=CliSurfaceVariant(
             name="json-insights-coverage",
             description="insights coverage JSON contract",
         ),
@@ -147,7 +147,7 @@ INSIGHT_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
 
 
 def build_insight_contract_surfaces() -> tuple[CompiledCliSurface, ...]:
-    return build_cli_surface_exercises(INSIGHT_SURFACE_FAMILIES)
+    return build_cli_surface_contracts(INSIGHT_SURFACE_FAMILIES)
 
 
 def build_live_insight_surface_lanes() -> tuple[CompiledCliSurface, ...]:

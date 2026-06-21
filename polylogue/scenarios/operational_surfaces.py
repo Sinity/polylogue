@@ -6,7 +6,7 @@ from .cli_surfaces import (
     CliSurfaceFamily,
     CliSurfaceVariant,
     CompiledCliSurface,
-    build_cli_surface_exercises,
+    build_cli_surface_contracts,
     build_cli_surface_live_variants,
     build_cli_surface_memory_budget_variants,
 )
@@ -16,7 +16,7 @@ OPERATIONAL_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
         slug="doctor-readiness",
         command_args=("ops", "doctor", "--format", "json"),
         tags=("maintenance", "readiness"),
-        exercise=CliSurfaceVariant(
+        contract_variant=CliSurfaceVariant(
             name="json-doctor",
             description="doctor JSON contract",
             suffix_args=(),
@@ -37,7 +37,7 @@ OPERATIONAL_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
         slug="doctor-session-insights-preview",
         command_args=("ops", "doctor", "--format", "json", "--repair", "--preview", "--target", "session_insights"),
         tags=("maintenance", "session-insights"),
-        exercise=CliSurfaceVariant(
+        contract_variant=CliSurfaceVariant(
             name="json-doctor-session-insights-preview",
             description="doctor JSON contract",
             suffix_args=(),
@@ -159,7 +159,7 @@ OPERATIONAL_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
 
 
 def build_operational_contract_surfaces() -> tuple[CompiledCliSurface, ...]:
-    return build_cli_surface_exercises(OPERATIONAL_SURFACE_FAMILIES)
+    return build_cli_surface_contracts(OPERATIONAL_SURFACE_FAMILIES)
 
 
 def build_live_operational_surface_lanes() -> tuple[CompiledCliSurface, ...]:

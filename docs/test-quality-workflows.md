@@ -77,7 +77,7 @@ per-suite JSON parsing, surface invocation, archive seeding, or cross-surface or
 ```bash
 devtools lab lanes --list
 devtools lab lanes --lane frontier-local
-devtools lab lanes --lane live-exercises --dry-run
+devtools lab lanes --lane live-archive-smoke --dry-run
 ```
 
 ### Schema upgrade lane (#1302)
@@ -176,9 +176,9 @@ Use the named lanes through the runner.
 
 | Lane | Timeout (s) | Description |
 | --- | ---: | --- |
+| `live-archive-smoke` | 1800 | Manual verification-lab archive-smoke lane |
 | `live-archive-subset-parse-probe` | 1800 | Live archive medium archive-subset parse probe with persisted manifest/workdir artifacts |
 | `live-embed-stats` | 120 | Live archive embedding status JSON view |
-| `live-exercises` | 1800 | Manual verification-lab archive-smoke exercise lane |
 | `live-insights-coverage-day` | 180 | Live archive day coverage insight surface over the recent semantic slice |
 | `live-insights-coverage-provider` | 180 | Live archive provider coverage insight surface |
 | `live-insights-debt` | 180 | Live archive debt and cleanup insight view |
@@ -210,7 +210,7 @@ Use the named lanes through the runner.
 | `evidence-live` | 2400 | `live-session-insight-repair`<br>`live-insights-status`<br>`live-insights-profiles-evidence`<br>`live-insights-profiles-inference`<br>`live-insights-work-events`<br>`live-insights-phases`<br>`live-embed-stats`<br>`live-readiness-json`<br>`maintenance-memory-budget` | Bounded live archive lane for tiered insight views, live repair, health, and retrieval-band budgets |
 | `frontier-extended` | 3600 | `frontier-local`<br>`pipeline-probe-chatgpt`<br>`scale-fast`<br>`long-haul-small` | Local closure lane plus fast scale and small long-haul campaign |
 | `frontier-local` | 1500 | `machine-contract`<br>`query-routing`<br>`demo-visual`<br>`semantic-stack`<br>`tui`<br>`chaos` | Non-live local closure lane for machine/query/semantic/TUI/chaos validation |
-| `live-archive-slow` | 2400 | `live-archive-small`<br>`live-exercises` | Broader live archive dogfood lane including retrieval/readiness and live scenario checks |
+| `live-archive-slow` | 2400 | `live-archive-small`<br>`live-archive-smoke` | Broader live archive dogfood lane including retrieval/readiness and live scenario checks |
 | `live-archive-small` | 480 | `live-embed-stats`<br>`live-retrieval-checks`<br>`live-insights-status`<br>`live-readiness-json` | Bounded live archive retrieval/readiness/health dogfood lane |
 | `live-insights-small` | 480 | `live-insights-status`<br>`live-insights-tags`<br>`live-project-stats` | Bounded live archive insight and grouped-stats lane |
 | `live-maintenance-small` | 720 | `live-readiness-json`<br>`live-maintenance-preview`<br>`maintenance-memory-budget` | Bounded live archive lane for health, maintenance preview, and maintenance memory budget |
@@ -359,9 +359,9 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `validation-lane` | `inference-tier-contracts` | — | — | — | — | — | Inference-tier work-event/phase/profile contracts with confidence/provenance-bearing semantic payloads |
 | `validation-lane` | `live-archive-slow` | `retrieval-band-readiness-loop`<br>`embedding-status-query-loop`<br>`session-query-loop`<br>`session-insight-status-query-loop`<br>`message-fts-readiness-loop` | `embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`embedding_status_results`<br>`message_fts`<br>`session_query_results`<br>`session_insight_status_results`<br>`archive_readiness` | `project-retrieval-band-readiness`<br>`query-embedding-status`<br>`cli.json-contract`<br>`query-sessions`<br>`query-session-insight-status`<br>`project-archive-readiness` | — | `live`<br>`embeddings`<br>`readiness`<br>`retrieval`<br>`insights`<br>`status`<br>`maintenance` | Broader live archive dogfood lane including retrieval/readiness and live scenario checks |
 | `validation-lane` | `live-archive-small` | `retrieval-band-readiness-loop`<br>`embedding-status-query-loop`<br>`session-query-loop`<br>`session-insight-status-query-loop`<br>`message-fts-readiness-loop` | `embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`embedding_status_results`<br>`message_fts`<br>`session_query_results`<br>`session_insight_status_results`<br>`archive_readiness` | `project-retrieval-band-readiness`<br>`query-embedding-status`<br>`cli.json-contract`<br>`query-sessions`<br>`query-session-insight-status`<br>`project-archive-readiness` | — | `live`<br>`embeddings`<br>`readiness`<br>`retrieval`<br>`insights`<br>`status`<br>`maintenance` | Bounded live archive retrieval/readiness/health dogfood lane |
+| `validation-lane` | `live-archive-smoke` | — | — | — | — | — | Manual verification-lab archive-smoke lane |
 | `validation-lane` | `live-archive-subset-parse-probe` | `source-acquisition-loop`<br>`raw-reparse-loop`<br>`raw-archive-ingest-loop` | `configured_sources`<br>`source_payload_stream`<br>`raw_validation_state`<br>`artifact_observation_rows`<br>`validation_backlog`<br>`parse_backlog`<br>`parse_quarantine`<br>`archive_session_rows` | `acquire-raw-sessions`<br>`plan-validation-backlog`<br>`plan-parse-backlog`<br>`ingest-archive-runtime` | — | `live`<br>`probe`<br>`parse` | Live archive medium archive-subset parse probe with persisted manifest/workdir artifacts |
 | `validation-lane` | `live-embed-stats` | `retrieval-band-readiness-loop`<br>`embedding-status-query-loop` | `embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`embedding_status_results` | `project-retrieval-band-readiness`<br>`query-embedding-status`<br>`cli.json-contract` | — | `live`<br>`embeddings`<br>`readiness` | Live archive embedding status JSON view |
-| `validation-lane` | `live-exercises` | — | — | — | — | — | Manual verification-lab archive-smoke exercise lane |
 | `validation-lane` | `live-insights-coverage-day` | `archive-coverage-query-loop` | `archive_session_rows`<br>`session_profile_rows`<br>`archive_coverage_results` | `query-archive-coverage` | — | `insights`<br>`coverage` | Live archive day coverage insight surface over the recent semantic slice |
 | `validation-lane` | `live-insights-coverage-provider` | `archive-coverage-query-loop` | `archive_session_rows`<br>`session_profile_rows`<br>`archive_coverage_results` | `query-archive-coverage` | — | `insights`<br>`coverage` | Live archive provider coverage insight surface |
 | `validation-lane` | `live-insights-debt` | `archive-debt-query-loop` | `archive_readiness`<br>`embedding_status_results`<br>`message_fts`<br>`archive_debt_results` | `query-archive-debt` | — | `insights`<br>`debt` | Live archive debt and cleanup insight view |

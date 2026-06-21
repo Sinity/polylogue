@@ -5,7 +5,7 @@ from .cli_surfaces import (
     CliSurfaceFamily,
     CliSurfaceVariant,
     CompiledCliSurface,
-    build_cli_surface_exercises,
+    build_cli_surface_contracts,
     build_cli_surface_live_variants,
     build_cli_surface_memory_budget_variants,
 )
@@ -90,7 +90,7 @@ __all__ = [
     "seed_demo_user_overlays",
     "build_corpus_scenarios",
     "build_inferred_corpus_specs",
-    "build_cli_surface_exercises",
+    "build_cli_surface_contracts",
     "build_cli_surface_live_variants",
     "build_cli_surface_memory_budget_variants",
     "composite_execution",

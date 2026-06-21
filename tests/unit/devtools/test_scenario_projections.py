@@ -29,7 +29,7 @@ class _PresentationScenario(ScenarioProjectionSource):
 
     @property
     def projection_source_kind(self) -> ScenarioProjectionSourceKind:
-        return ScenarioProjectionSourceKind.EXERCISE
+        return ScenarioProjectionSourceKind.VALIDATION_LANE
 
     @property
     def projection_name(self) -> str:
@@ -111,6 +111,7 @@ def test_validation_lane_projection_entries_include_composite_metadata_unions() 
 def test_projection_entries_preserve_presentation_metadata() -> None:
     entry = _PresentationScenario().to_projection_entry()
 
+    assert entry.source_kind is ScenarioProjectionSourceKind.VALIDATION_LANE
     assert entry.to_payload()["docs_role"] == "tour"
     assert entry.to_payload()["caption"] == "Query recall demo"
     assert entry.to_payload()["demonstrates"] == ["recall", "json-output"]

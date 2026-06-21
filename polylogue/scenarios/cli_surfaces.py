@@ -33,7 +33,7 @@ class CliSurfaceFamily:
     slug: str
     command_args: tuple[str, ...]
     tags: tuple[str, ...]
-    exercise: CliSurfaceVariant | None = None
+    contract_variant: CliSurfaceVariant | None = None
     live_variants: tuple[CliSurfaceVariant, ...] = ()
     memory_budget_variants: tuple[CliSurfaceVariant, ...] = ()
 
@@ -74,11 +74,13 @@ def compile_cli_surface_variant(family: CliSurfaceFamily, variant: CliSurfaceVar
     )
 
 
-def build_cli_surface_exercises(families: tuple[CliSurfaceFamily, ...]) -> tuple[CompiledCliSurface, ...]:
-    """Compile exercise projections from authored families."""
+def build_cli_surface_contracts(families: tuple[CliSurfaceFamily, ...]) -> tuple[CompiledCliSurface, ...]:
+    """Compile seeded JSON-contract surfaces from authored families."""
 
     return tuple(
-        compile_cli_surface_variant(family, family.exercise) for family in families if family.exercise is not None
+        compile_cli_surface_variant(family, family.contract_variant)
+        for family in families
+        if family.contract_variant is not None
     )
 
 
@@ -104,7 +106,7 @@ __all__ = [
     "CliSurfaceFamily",
     "CliSurfaceVariant",
     "CompiledCliSurface",
-    "build_cli_surface_exercises",
+    "build_cli_surface_contracts",
     "build_cli_surface_live_variants",
     "build_cli_surface_memory_budget_variants",
     "compile_cli_surface_variant",

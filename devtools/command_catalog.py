@@ -243,7 +243,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools lab lanes --list",
             "devtools lab lanes --lane frontier-local",
-            "devtools lab lanes --lane live-exercises --dry-run",
+            "devtools lab lanes --lane live-archive-smoke --dry-run",
         ),
     ),
     CommandSpec(
@@ -337,7 +337,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         use_when="Inspect the unified projection inventory that feeds runtime coverage, generated docs, and control-plane maps.",
         examples=(
             "devtools lab projections",
-            "devtools lab projections --source-kind exercise --artifact-target message_fts",
+            "devtools lab projections --source-kind validation-lane --artifact-target session_insight_rows",
             "devtools lab projections --json",
         ),
     ),
