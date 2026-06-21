@@ -636,13 +636,16 @@ one child row matching the nested predicate.</p>
 </tbody>
 </table>
 <p>Structural units also accept <code>session.&lt;field&gt;</code> predicates for the owning
-session fields, such as <code>session.repo</code>, <code>session.origin</code>,
-<code>session.tag</code>, <code>session.title</code>, <code>session.date</code>, <code>session.since</code>, and
-<code>session.until</code>. Count and date session fields accept compact comparison
-prefixes such as <code>session.messages:&gt;=2</code>, <code>session.words:&lt;=500</code>, and
-<code>session.date:&gt;=2026-01-02</code>. This lets a unit query carry its session scope
-inline instead of splitting selection between the query string and parallel
-parameters.</p>
+session fields that their lowerer can evaluate. SQL-backed units can use the
+full session filter surface, including action/tool/path/feature predicates.
+Runtime-transform units (<code>runs</code>, <code>observed-events</code>, <code>context-snapshots</code>) can
+only use fields present on the session-summary projection, such as
+<code>session.repo</code>, <code>session.origin</code>, <code>session.tag</code>, <code>session.title</code>,
+<code>session.date</code>, <code>session.since</code>, and <code>session.until</code>. Count and date session
+fields accept compact comparison prefixes such as <code>session.messages:&gt;=2</code>,
+<code>session.words:&lt;=500</code>, and <code>session.date:&gt;=2026-01-02</code>. This lets a unit query
+carry its session scope inline instead of splitting selection between the
+query string and parallel parameters.</p>
 <p>Examples:</p>
 <pre><code class="language-bash">polylogue sessions where 'exists action(session.repo:polylogue AND tool:bash AND text:pytest)'
 polylogue sessions where 'exists block(type:code AND text:timeout)'
@@ -698,7 +701,10 @@ polylogue context-snapshots where session.messages:&gt;=2 AND session.date:&gt;=
 sources. They return projected evidence from existing recovery/run-projection
 transforms, not durable SQL table rows, so they are terminal unit sources only;
 they do not act as <code>exists run(...)</code>, <code>exists observed-event(...)</code>, or
-<code>exists context-snapshot(...)</code> session selectors.</p>
+<code>exists context-snapshot(...)</code> session selectors. Their inline <code>session.*</code>
+predicates are limited to summary-backed fields; SQL-backed session predicates
+such as <code>session.action</code>, <code>session.tool</code>, <code>session.path</code>, and <code>session.has</code> are
+typed errors for these runtime sources rather than empty or broadened matches.</p>
 <p>Session filters such as <code>--origin</code>, <code>--tag</code>, <code>--repo</code>, <code>--since</code>, and <code>--until</code>
 still narrow the owning sessions before rows are returned. Session-only actions
 and result-shaping modes that do not have row semantics yet, such as
