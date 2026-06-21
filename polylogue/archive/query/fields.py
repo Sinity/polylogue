@@ -839,6 +839,8 @@ def describe_plan_fields(plan: object) -> list[str]:
 
 
 def query_spec_has_selection_filters(spec: object) -> bool:
+    if getattr(spec, "boolean_predicate", None) is not None:
+        return True
     return any(
         descriptor.selection_filter and descriptor.is_active_for_spec(spec) for descriptor in QUERY_FIELD_DESCRIPTORS
     )

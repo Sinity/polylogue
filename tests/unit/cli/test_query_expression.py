@@ -2560,6 +2560,54 @@ class TestBooleanQueryExpression:
         assert payload["unit"] == "file"
         assert payload["items"][0]["path"] == "polylogue/archive/query/expression.py"
 
+    def test_query_action_read_accepts_shell_quoted_terminal_action_source(
+        self, workspace_env: dict[str, Path]
+    ) -> None:
+        from polylogue.cli import cli
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("claude-code")
+            .title("action read hit")
+            .add_message(
+                "m-edit",
+                role="assistant",
+                text="edited file",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_id": "tool-hit",
+                        "input": {"file_path": "polylogue/cli/query_verbs.py"},
+                        "semantic_type": "file_edit",
+                    }
+                ],
+            )
+            .save()
+        )
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--plain",
+                "find",
+                "actions where action:file_edit AND path:query_verbs",
+                "then",
+                "read",
+                "--view",
+                "messages",
+                "--format",
+                "json",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["session_id"] == "claude-code-session:ext-hit"
+        assert payload["messages"][0]["id"] == "claude-code-session:ext-hit:m-edit"
+
     def test_terminal_action_source_filters_by_row_time(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from tests.infra.storage_records import SessionBuilder
@@ -4359,6 +4407,27 @@ class TestCLIRootRequestWiring:
         spec = request.query_spec()
         # Should end up in query_terms as the phrase "json envelope"
         assert any("json envelope" in t for t in spec.query_terms)
+
+    def test_shell_quoted_terminal_source_compiles_as_structural_query(self) -> None:
+        from polylogue.cli.root_request import RootModeRequest
+
+        request = RootModeRequest(params={}, query_terms=("actions where action:file_edit AND path:archive/query",))
+        spec = request.query_spec()
+
+        assert isinstance(spec.boolean_predicate, QueryExistsPredicate)
+        assert spec.boolean_predicate.unit == "action"
+        assert spec.has_filters()
+        assert spec.query_terms == ()
+
+    def test_shell_quoted_sessions_where_compiles_as_structural_query(self) -> None:
+        from polylogue.cli.root_request import RootModeRequest
+
+        request = RootModeRequest(params={}, query_terms=("sessions where origin:claude-code-session",))
+        spec = request.query_spec()
+
+        assert spec.boolean_predicate is not None
+        assert spec.has_filters()
+        assert spec.query_terms == ()
 
     def test_unknown_field_raises(self) -> None:
         from polylogue.cli.root_request import RootModeRequest
