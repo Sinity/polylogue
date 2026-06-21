@@ -2422,6 +2422,16 @@ class TestReaderInformability:
         assert "artifact_path" not in capture
         assert "browser_capture" in readiness
 
+    def test_dev_loop_chip_consumes_branch_local_metadata(self, workspace_env: dict[str, Path]) -> None:
+        """The web shell can surface branch-local run metadata when present."""
+
+        with _running_server(workspace_env) as (_, base_url):
+            _, _, body = _get_text(base_url, "/")
+
+        assert 'id="status-dev-loop"' in body
+        assert "function renderDevLoopChip(" in body
+        assert "/api/dev-loop" in body
+
     def test_insight_freshness_chip_keeps_legacy_fallback(self, workspace_env: dict[str, Path]) -> None:
         """Session insight freshness gets its own status-strip chip. It now
         prefers ``component_readiness.session_profiles`` and keeps the

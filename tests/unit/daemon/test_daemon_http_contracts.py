@@ -486,6 +486,68 @@ SECRET_ENV_NAMES = ("VOYAGE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
 class TestPrivacyContract:
     """Daemon HTTP surface never leaks secrets or adjacent sessions."""
 
+    def test_dev_loop_payload_reports_allowlisted_launcher_metadata(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Branch-local debug metadata is explicit and does not dump env."""
+
+        run_dir = tmp_path / "run"
+        archive_root = tmp_path / "archive"
+        monkeypatch.setenv("POLYLOGUE_DEV_LOOP_RUN_ID", "dev-run-123")
+        monkeypatch.setenv("POLYLOGUE_DEV_LOOP_LOG_DIR", str(run_dir))
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+        monkeypatch.setenv("POLYLOGUE_API_PORT", "8876")
+        monkeypatch.setenv("POLYLOGUE_BROWSER_CAPTURE_PORT", "8875")
+        monkeypatch.setenv("POLYLOGUE_API_AUTH_TOKEN", "SECRET-DEV-LOOP-TOKEN")
+        monkeypatch.setenv("POLYLOGUE_TEST_SENTINEL_ENV_DO_NOT_DUMP", "SECRET-ENV-DUMP-CANARY")
+
+        handler = _make_handler("GET", "/api/dev-loop")
+        _, send_json = _capture_responses(handler)
+        handler.do_GET()
+
+        status, payload = send_json.call_args.args
+        assert status == HTTPStatus.OK
+        assert payload == {
+            "ok": True,
+            "enabled": True,
+            "run_id": "dev-run-123",
+            "log_dir": str(run_dir),
+            "archive_root": str(archive_root),
+            "api_port": 8876,
+            "browser_capture_port": 8875,
+            "pid": os.getpid(),
+            "cwd": os.getcwd(),
+        }
+        serialized = json.dumps(payload)
+        assert "SECRET-DEV-LOOP-TOKEN" not in serialized
+        assert "SECRET-ENV-DUMP-CANARY" not in serialized
+        assert "POLYLOGUE_TEST_SENTINEL_ENV_DO_NOT_DUMP" not in serialized
+
+    def test_dev_loop_payload_is_disabled_without_launcher_metadata(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        for name in (
+            "POLYLOGUE_DEV_LOOP_RUN_ID",
+            "POLYLOGUE_DEV_LOOP_LOG_DIR",
+            "POLYLOGUE_ARCHIVE_ROOT",
+            "POLYLOGUE_API_PORT",
+            "POLYLOGUE_BROWSER_CAPTURE_PORT",
+        ):
+            monkeypatch.delenv(name, raising=False)
+
+        handler = _make_handler("GET", "/api/dev-loop")
+        _, send_json = _capture_responses(handler)
+        handler.do_GET()
+
+        status, payload = send_json.call_args.args
+        assert status == HTTPStatus.OK
+        assert payload["enabled"] is False
+        assert payload["run_id"] is None
+        assert payload["log_dir"] is None
+
     def test_status_payload_does_not_leak_secrets(
         self,
         workspace_env: dict[str, Path],
