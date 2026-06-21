@@ -89,6 +89,7 @@ class BrowserCaptureArchiveProbe:
     spooled_count: int
     latest_spooled_path: str | None
     latest_spooled_mtime: float | None
+    latest_spooled_mtime_ms: int | None
     raw_rows: int | None
     latest_raw_file_mtime_ms: int | None
     ok: bool
@@ -308,6 +309,7 @@ def _probe_browser_capture_archive(*, archive_root: Path) -> BrowserCaptureArchi
     )
     latest = files[0] if files else None
     latest_mtime = latest.stat().st_mtime if latest is not None else None
+    latest_mtime_ms = int(latest_mtime * 1000) if latest_mtime is not None else None
     raw_rows: int | None = None
     latest_raw_file_mtime_ms: int | None = None
     error: str | None = None
@@ -327,13 +329,24 @@ def _probe_browser_capture_archive(*, archive_root: Path) -> BrowserCaptureArchi
             error = f"{type(exc).__name__}: {exc}"
     elif files:
         error = "source_db_missing"
-    ok = error is None and (not files or (raw_rows is not None and raw_rows > 0))
+    if error is None and files and raw_rows == 0:
+        error = "spooled_without_raw_rows"
+    if (
+        error is None
+        and files
+        and latest_mtime_ms is not None
+        and latest_raw_file_mtime_ms is not None
+        and latest_mtime_ms > latest_raw_file_mtime_ms
+    ):
+        error = "spooled_newer_than_raw_rows"
+    ok = error is None
     return BrowserCaptureArchiveProbe(
         spool_path=str(spool_path),
         source_db_path=str(source_db_path),
         spooled_count=len(files),
         latest_spooled_path=str(latest) if latest is not None else None,
         latest_spooled_mtime=latest_mtime,
+        latest_spooled_mtime_ms=latest_mtime_ms,
         raw_rows=raw_rows,
         latest_raw_file_mtime_ms=latest_raw_file_mtime_ms,
         ok=ok,
@@ -396,7 +409,12 @@ def _diagnose(
     if facets_route is not None and not facets_route.ok:
         likely_causes.append("web-shell facets route exceeds the deployed smoke timeout")
         next_actions.append("profile /api/facets and move expensive facet aggregation behind caching or bounded reads")
-    if not browser_capture_archive.ok and browser_capture_archive.spooled_count > 0:
+    if browser_capture_archive.error == "spooled_newer_than_raw_rows":
+        likely_causes.append("browser-capture raw archive rows lag behind newer spooled artifacts")
+        next_actions.append(
+            "verify daemon watch/catch-up is draining the browser-capture spool after the latest capture"
+        )
+    elif not browser_capture_archive.ok and browser_capture_archive.spooled_count > 0:
         likely_causes.append("browser-capture artifacts are spooled but absent from raw archive rows")
         next_actions.append(
             "verify daemon watch/catch-up includes the browser-capture spool and restart the deployed daemon"

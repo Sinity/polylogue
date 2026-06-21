@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import subprocess
 import urllib.error
 from email.message import Message
@@ -9,6 +10,16 @@ from pathlib import Path
 import pytest
 
 from devtools import deployment_smoke
+
+
+def _create_browser_source_db(path: Path, *, file_mtime_ms: int | None = None) -> None:
+    with sqlite3.connect(path / "source.db") as conn:
+        conn.execute("CREATE TABLE raw_sessions (source_path TEXT, file_mtime_ms INTEGER)")
+        if file_mtime_ms is not None:
+            conn.execute(
+                "INSERT INTO raw_sessions (source_path, file_mtime_ms) VALUES (?, ?)",
+                (str(path / "browser-capture" / "chatgpt" / "capture.json"), file_mtime_ms),
+            )
 
 
 class _FakeResponse:
@@ -221,10 +232,44 @@ def test_deployment_smoke_reports_spooled_browser_capture_without_raw_rows(tmp_p
     capture_dir = tmp_path / "browser-capture" / "chatgpt"
     capture_dir.mkdir(parents=True)
     (capture_dir / "capture.json").write_text("{}", encoding="utf-8")
+    _create_browser_source_db(tmp_path)
 
     probe = deployment_smoke._probe_browser_capture_archive(archive_root=tmp_path)
 
     assert probe.ok is False
     assert probe.spooled_count == 1
-    assert probe.raw_rows is None
-    assert probe.error == "source_db_missing"
+    assert probe.raw_rows == 0
+    assert probe.error == "spooled_without_raw_rows"
+
+
+def test_deployment_smoke_reports_spooled_browser_capture_newer_than_raw_row(tmp_path: Path) -> None:
+    capture_dir = tmp_path / "browser-capture" / "chatgpt"
+    capture_dir.mkdir(parents=True)
+    capture = capture_dir / "capture.json"
+    capture.write_text("{}", encoding="utf-8")
+    _create_browser_source_db(tmp_path, file_mtime_ms=int(capture.stat().st_mtime * 1000) - 1000)
+
+    probe = deployment_smoke._probe_browser_capture_archive(archive_root=tmp_path)
+
+    assert probe.ok is False
+    assert probe.spooled_count == 1
+    assert probe.raw_rows == 1
+    assert probe.latest_spooled_mtime_ms is not None
+    assert probe.latest_raw_file_mtime_ms is not None
+    assert probe.latest_spooled_mtime_ms > probe.latest_raw_file_mtime_ms
+    assert probe.error == "spooled_newer_than_raw_rows"
+
+
+def test_deployment_smoke_accepts_browser_capture_raw_row_at_latest_mtime(tmp_path: Path) -> None:
+    capture_dir = tmp_path / "browser-capture" / "chatgpt"
+    capture_dir.mkdir(parents=True)
+    capture = capture_dir / "capture.json"
+    capture.write_text("{}", encoding="utf-8")
+    _create_browser_source_db(tmp_path, file_mtime_ms=int(capture.stat().st_mtime * 1000))
+
+    probe = deployment_smoke._probe_browser_capture_archive(archive_root=tmp_path)
+
+    assert probe.ok is True
+    assert probe.spooled_count == 1
+    assert probe.raw_rows == 1
+    assert probe.error is None
