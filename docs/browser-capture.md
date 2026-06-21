@@ -30,6 +30,14 @@ observation of the same web session replaces the same source artifact. Receiver
 responses expose this artifact as an `artifact_ref` relative to the spool root;
 absolute filesystem paths stay inside the receiver process.
 
+Every receiver response carries `X-Request-ID`. If the extension or a local
+debug probe sends a safe `X-Request-ID` header, the receiver echoes its
+sanitized value; otherwise it generates one. Receiver logs use the same id for
+origin rejection, token rejection, malformed payloads, write failures, accepted
+captures, and request timing. During branch-local extension work, copy that id
+from the browser network panel or curl output into the run-local daemon log to
+connect UI action, receiver decision, artifact ref, and duration.
+
 The extension lives in `browser-extension/` and can be loaded unpacked in
 Chrome. It includes ChatGPT and Claude.ai DOM adapters, a popup control panel,
 receiver configuration, current-page capture controls, badge state, and
