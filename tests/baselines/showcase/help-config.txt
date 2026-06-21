@@ -1,9 +1,0 @@
-Usage: polylogue config [OPTIONS]
-
-  Show resolved Polylogue configuration with precedence sources.
-
-Options:
-  -f, --format [toml|json]  Output format.
-  --show-layers             Show the layer source for each config key
-                            (default/site/user/env/cli).
-  -h, --help                Show this message and exit.

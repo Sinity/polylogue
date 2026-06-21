@@ -9,7 +9,6 @@ from pathlib import Path
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.showcase.invariants import check_invariants
 from polylogue.showcase.qa_runner_models import QAResult
-from polylogue.showcase.qa_runner_reporting import save_qa_reports
 from polylogue.showcase.qa_runner_request import QASessionRequest, QAWorkspaceMode
 from polylogue.showcase.qa_runner_stages import generate_extra_exercises, populate_artifact_coverage
 from polylogue.showcase.runner import ShowcaseRunner
@@ -32,7 +31,6 @@ class PreparedQARuntime:
 def _persist_and_return(result: QAResult, *, report_dir: Path | None) -> QAResult:
     if report_dir is not None:
         result.report_dir = report_dir
-        save_qa_reports(result, report_dir)
     return result
 
 

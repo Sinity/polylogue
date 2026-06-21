@@ -22,10 +22,8 @@ from polylogue.schemas.audit.models import AuditReport
 from polylogue.schemas.validation.models import ArtifactCoverageReport, ProviderArtifactCoverage
 from polylogue.showcase.exercise_models import Exercise
 from polylogue.showcase.invariants import InvariantResult
-from polylogue.showcase.qa_markdown import generate_qa_markdown
 from polylogue.showcase.qa_runner import QAResult
 from polylogue.showcase.qa_session_payload import build_qa_session_record
-from polylogue.showcase.qa_summary import generate_qa_summary
 from polylogue.showcase.runner import ExerciseResult, ShowcaseResult
 from polylogue.showcase.showcase_report_payloads import (
     build_showcase_session_record,
@@ -297,76 +295,3 @@ def test_full_qa_session_contains_composed_stage_payloads() -> None:
     }
     assert session.invariants.summary.to_payload() == {"passed": 1, "failed": 1, "skipped": 0}
     assert session.overall_status == "error"
-
-
-def test_generate_qa_summary_reports_stage_statuses() -> None:
-    """generate_qa_summary renders the composed session instead of hand-built counts."""
-    qa_result = QAResult(
-        audit_report=AuditReport(
-            checks=[
-                OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
-            ]
-        ),
-        coverage_report=ArtifactCoverageReport(
-            providers={
-                "chatgpt": ProviderArtifactCoverage(
-                    provider="chatgpt",
-                    total_records=1,
-                    contract_backed_records=1,
-                    package_versions={"v1": 1},
-                    element_kinds={"session_document": 1},
-                    resolution_reasons={"exact_structure": 1},
-                )
-            },
-            total_records=1,
-        ),
-        exercises_skipped=True,
-        invariants_skipped=True,
-    )
-
-    summary = generate_qa_summary(qa_result)
-
-    assert "Schema Audit: PASS" in summary
-    assert "Artifact Coverage: contract_backed=1" in summary
-    assert "Packages: v1=1" in summary
-    assert "Elements: session_document=1" in summary
-    assert "Exercises: SKIPPED" in summary
-    assert "Invariants: SKIPPED" in summary
-
-
-def test_generate_qa_markdown_includes_artifact_coverage_section() -> None:
-    qa_result = QAResult(
-        audit_report=AuditReport(
-            checks=[
-                OutcomeCheck(name="privacy", status=OutcomeStatus.OK, summary="ok"),
-            ]
-        ),
-        coverage_report=ArtifactCoverageReport(
-            providers={
-                "claude-code": ProviderArtifactCoverage(
-                    provider="claude-code",
-                    total_records=2,
-                    recognized_non_parseable_records=1,
-                    unsupported_parseable_records=1,
-                    package_versions={"v4": 1},
-                    element_kinds={"subagent_session_stream": 1},
-                    resolution_reasons={"bundle_scope": 1},
-                    linked_sidecars=1,
-                    subagent_streams=1,
-                    streams_with_sidecars=1,
-                )
-            },
-            total_records=2,
-        ),
-        exercises_skipped=True,
-        invariants_skipped=True,
-    )
-
-    markdown = generate_qa_markdown(qa_result)
-
-    assert "## Artifact Coverage" in markdown
-    assert "| Unsupported parseable | 1 |" in markdown
-    assert "| v4 | 1 |" in markdown
-    assert "| subagent_session_stream | 1 |" in markdown
-    assert "| bundle_scope | 1 |" in markdown
-    assert "| claude-code | 2 | 0 | 1 | 1 | 0 | 0 |" in markdown

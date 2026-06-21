@@ -1,9 +1,0 @@
-Usage: polylogue ops debt [OPTIONS] COMMAND [ARGS]...
-
-  Inspect archive work that needs operator attention.
-
-Options:
-  -h, --help  Show this message and exit.
-
-Commands:
-  list  List archive debt across assertions, tiers, convergence,...
