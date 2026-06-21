@@ -332,11 +332,12 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "workspace deployment-smoke",
         "workspace",
-        "Probe deployed Polylogue binaries, daemon routes, and browser-capture receiver.",
+        "Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow.",
         "devtools.deployment_smoke",
         use_when=(
             "After a system rebuild or before live UI probing, verify that the systemwide "
-            "polylogue/polylogued binaries and loopback daemon routes match the expected deployed surface."
+            "polylogue/polylogued binaries, loopback daemon routes, browser-capture receiver, "
+            "and browser-capture archive materialization match the expected deployed surface."
         ),
         examples=(
             "devtools workspace deployment-smoke",
