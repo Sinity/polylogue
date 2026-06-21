@@ -4,14 +4,14 @@ Polylogue import support is larger than a parser function. A provider/capture
 mode is product-ready only when the detector, parser, fixtures, schema/docs,
 query/read coverage, ImportExplain, and caveat surfaces are all visible.
 
-`devtools provider completeness` renders that readiness map from the current
+`devtools lab provider completeness` renders that readiness map from the current
 tree:
 
 ```bash
-devtools provider completeness
-devtools provider completeness --json
-devtools provider completeness --origin codex-session --json
-devtools provider completeness --check
+devtools lab provider completeness
+devtools lab provider completeness --json
+devtools lab provider completeness --origin codex-session --json
+devtools lab provider completeness --check
 ```
 
 Rows are keyed by public `origin` plus `capture_mode`. `provider_wire` is
@@ -68,8 +68,8 @@ When adding a provider/importer:
 6. Run:
 
 ```bash
-devtools provider completeness --json
-devtools provider completeness --check
+devtools lab provider completeness --json
+devtools lab provider completeness --check
 devtools render all --check
 ```
 

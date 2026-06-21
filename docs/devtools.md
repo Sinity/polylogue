@@ -48,6 +48,7 @@ repo verification checks and evidence records, not end-user archive workflows.
 | `devtools lab graph` | Inspect the authored runtime graph and see which scenarios currently cover declared artifacts and operations. |
 | `devtools lab lanes` | List, dry-run, or execute authored validation lanes from the verification lab registry. |
 | `devtools lab policy schema-versioning` | Enforce the policy boundary documented in docs/internals.md § 'Schema Versioning Model'. Polylogue intentionally has no in-place storage schema upgrade chain; archive-shape changes edit the canonical DDL and require a fresh rebuild from source. |
+| `devtools lab provider completeness` | Inspect detector, parser, fixture, schema, docs, ImportExplain, and caveat coverage before claiming a provider/importer mode is product-ready. |
 | `devtools lab probe capture-regression` | Turn a live or probe failure JSON summary into a replayable local regression artifact. |
 | `devtools lab probe pipeline` | Exercise real pipeline stages and optionally capture emitted summaries as regression cases. |
 | `devtools lab probe turso` | Collect executable evidence before changing production storage backends: Python binding availability, generated-column support, FTS compatibility, MVCC, CDC, vector functions, ATTACH, and WAL pragma behavior. |
@@ -98,7 +99,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools render openapi` | Render docs/openapi/search.yaml from typed daemon query payload models. |
 | `devtools render pages` | Build the GitHub Pages documentation site into .cache/site/. |
 | `devtools render quality-reference` | Render docs/test-quality-workflows.md from live validation, mutation, and benchmark registries. |
-| `devtools render readme-media` | Generate README media assets (architecture diagrams, flowcharts) under docs/media/. |
 | `devtools render topology-projection` | Generate docs/plans/topology-target.yaml from the current tree using placement rules. |
 | `devtools render topology-status` | Render docs/topology-status.md from the topology projection and realized tree. |
 
@@ -121,6 +121,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools lab probe pipeline` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
 | `devtools lab probe turso` | Probe Turso Database compatibility against Polylogue storage assumptions. |
 | `devtools lab projections` | Render the authored scenario-bearing verification projections. |
+| `devtools lab provider completeness` | Report provider/importer package completeness by origin and capture mode. |
 | `devtools lab scenario` | Run verification-lab showcase scenario sets and baseline checks. |
 | `devtools lab schema audit` | Run committed provider schema package quality checks. |
 | `devtools lab schema compare` | Compare two committed schema package versions for a provider. |
@@ -167,12 +168,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace failure-context` | Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope. |
 | `devtools workspace tasks` | Record and query local agent task execution history. |
 | `devtools workspace worktree-gc` | Safe worktree garbage collection — list and remove merged or abandoned git worktrees. |
-
-### Maintenance
-
-| Command | Description |
-| --- | --- |
-| `devtools provider completeness` | Report provider/importer package completeness by origin and capture mode. |
 
 <!-- END GENERATED: devtools-command-catalog -->
 
