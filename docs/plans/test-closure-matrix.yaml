@@ -339,9 +339,10 @@ rows:
     target_files:
       - polylogue/showcase/
     representative_tests:
-      - tests/unit/showcase/test_exercise_catalog.py
-      - tests/unit/showcase/test_catalog_loader_runtime.py
-      - tests/unit/showcase/test_scenario_models.py
+      - tests/unit/showcase/test_cli_boundary.py
+      - tests/unit/showcase/test_verification_lane.py
+      - tests/unit/showcase/test_vhs_generation.py
+      - tests/unit/showcase/test_workspace.py
     gate: required
 
   - domain: scenarios

@@ -236,10 +236,11 @@ domains:
     production_modules:
       - polylogue/showcase/
     covering_tests:
-      - tests/unit/showcase/test_exercise_catalog.py
-      - tests/unit/showcase/test_catalog_loader_runtime.py
-      - tests/unit/showcase/test_scenario_models.py
-    notes: covered — exercise catalog, loading, scenario models
+      - tests/unit/showcase/test_cli_boundary.py
+      - tests/unit/showcase/test_verification_lane.py
+      - tests/unit/showcase/test_vhs_generation.py
+      - tests/unit/showcase/test_workspace.py
+    notes: covered — smoke CLI boundary, lab scenario path, VHS tape generation, workspace helpers
 
   - domain: scenarios
     production_modules:

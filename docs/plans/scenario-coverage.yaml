@@ -49,7 +49,7 @@ families:
     notes: >
       CorpusScenario subclass generates synthetic archives for
       all 5 providers. Configurable profiles, source kinds, and
-      counts. Used by showcase exercises and pipeline probes.
+      counts. Used by verification workspaces and pipeline probes.
 
   - name: executable_scenarios
     description: Named executable scenario wrappers

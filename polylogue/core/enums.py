@@ -315,20 +315,6 @@ class PlanStage(PolylogueStrEnum):
         return cls(str(value).strip().lower())
 
 
-class ExerciseIOMode(PolylogueStrEnum):
-    """Showcase exercise input/output mutability mode."""
-
-    READ = "read"
-    WRITE = "write"
-    IDEMPOTENT = "idempotent"
-
-    @classmethod
-    def from_string(cls, value: str | ExerciseIOMode) -> ExerciseIOMode:
-        if isinstance(value, cls):
-            return value
-        return cls(str(value).strip().lower())
-
-
 class AssertionKind(PolylogueStrEnum):
     """Closed vocabulary for ``user.db`` assertion rows.
 
@@ -371,7 +357,6 @@ __all__ = [
     "ArtifactSupportStatus",
     "BlockType",
     "BranchType",
-    "ExerciseIOMode",
     "LinkType",
     "MessageType",
     "Origin",

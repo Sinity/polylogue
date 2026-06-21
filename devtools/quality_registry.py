@@ -10,21 +10,12 @@ from devtools.lane_models import LaneEntry
 from devtools.mutation_catalog import MutationCampaignEntry
 from devtools.scenario_projection_catalog import build_scenario_projection_entries
 from polylogue.scenarios import CorpusScenario, ScenarioProjectionEntry
-from polylogue.showcase.exercise_models import Exercise
 
 
 @dataclass(frozen=True)
 class QualityRegistry:
     catalog: AuthoredScenarioCatalog
     scenario_projections: tuple[ScenarioProjectionEntry, ...]
-
-    @property
-    def exercise_scenarios(self) -> tuple[Exercise, ...]:
-        return self.catalog.exercise_scenarios
-
-    @property
-    def supplemental_scenarios(self) -> tuple[Exercise, ...]:
-        return self.catalog.supplemental_scenarios
 
     @property
     def contract_lanes(self) -> tuple[LaneEntry, ...]:

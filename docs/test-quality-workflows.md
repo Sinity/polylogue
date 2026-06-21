@@ -14,10 +14,9 @@ Current registry snapshot:
 - mutation campaigns: `19`
 - benchmark campaigns: `7`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `255`
+- scenario projections: `109`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `7`
-  - exercise: `146`
   - inferred-corpus-scenario: `8`
   - mutation-campaign: `19`
   - synthetic-benchmark: `6`
@@ -25,16 +24,16 @@ Current registry snapshot:
 
 ## Runtime Coverage
 
-- covered runtime paths: `23`
-- covered runtime artifacts: `47`
-- covered runtime operations: `27`
+- covered runtime paths: `21`
+- covered runtime artifacts: `45`
+- covered runtime operations: `25`
 - covered maintenance targets: `3`
-- covered declared operation targets: `48`
-- uncovered runtime paths: —
-- uncovered runtime artifacts: —
-- uncovered runtime operations: `mutate-add-tag`, `mutate-bulk-tag-sessions`, `mutate-delete-metadata`, `mutate-delete-session`, `mutate-remove-tag`, `mutate-set-metadata`
+- covered declared operation targets: `46`
+- uncovered runtime paths: `thread-query-loop`, `tool-usage-query-loop`
+- uncovered runtime artifacts: `thread_results`, `tool_usage_results`
+- uncovered runtime operations: `mutate-add-tag`, `mutate-bulk-tag-sessions`, `mutate-delete-metadata`, `mutate-delete-session`, `mutate-remove-tag`, `mutate-set-metadata`, `query-threads`, `query-tool-usage`
 - uncovered maintenance targets: `empty_sessions`, `message_embeddings`, `message_type_backfill`, `orphaned_attachments`, `orphaned_messages`, `superseded_raw_snapshots`, `wal_checkpoint`
-- uncovered declared operation targets: `mutate-add-tag`, `mutate-bulk-tag-sessions`, `mutate-delete-metadata`, `mutate-delete-session`, `mutate-remove-tag`, `mutate-set-metadata`
+- uncovered declared operation targets: `mutate-add-tag`, `mutate-bulk-tag-sessions`, `mutate-delete-metadata`, `mutate-delete-session`, `mutate-remove-tag`, `mutate-set-metadata`, `query-threads`, `query-tool-usage`
 
 Inspect the full authored map with:
 
@@ -307,152 +306,6 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `benchmark-campaign` | `recovery-digest` | — | `recovery_digest`<br>`forensic_index`<br>`resume_bundle`<br>`recovery_report_markdown` | `compile-recovery-digest`<br>`render-recovery-report`<br>`benchmark.transform.recovery-digest`<br>`benchmark.transform.recovery-report` | — | `benchmark`<br>`transform`<br>`recovery` | Deterministic recovery digest transform/render benchmark domain |
 | `benchmark-campaign` | `search-filters` | — | `session_query_results`<br>`message_fts` | `query-sessions`<br>`benchmark.query.search-filters` | — | `benchmark`<br>`search`<br>`filters` | FTS and SessionFilter benchmark domain |
 | `benchmark-campaign` | `storage` | — | `session_rows`<br>`message_rows`<br>`raw_rows` | `benchmark.storage.crud` | — | `benchmark`<br>`storage` | Repository/backend list/get-many/save benchmark domain |
-| `exercise` | `combined-filters` | — | — | — | — | — | Combined provider + date filter |
-| `exercise` | `completions-bash` | — | — | — | — | — | Bash shell completions |
-| `exercise` | `count-baseline` | — | — | — | — | — | Baseline count before mutations |
-| `exercise` | `count-decreased` | — | — | — | — | — | Verify count decreased after delete |
-| `exercise` | `daemon-embedding-readiness` | — | — | — | — | — | Embedding readiness surfaced in daemon status |
-| `exercise` | `delete-dry-run` | — | — | — | — | — | Dry-run delete |
-| `exercise` | `delete-one` | — | — | — | — | — | Delete one session |
-| `exercise` | `doctor-artifact-coverage-json` | — | — | — | — | — | Artifact coverage as JSON |
-| `exercise` | `doctor-cohorts-json` | — | — | — | — | — | Artifact cohorts as JSON |
-| `exercise` | `doctor-json` | — | — | — | — | — | Health check as JSON |
-| `exercise` | `doctor-readiness` | — | — | — | — | — | Health check |
-| `exercise` | `doctor-verbose` | — | — | — | — | — | Verbose readiness check |
-| `exercise` | `exclude-provider` | — | — | — | — | — | Exclude a provider |
-| `exercise` | `fields-selector` | — | — | — | — | — | Select specific JSON fields |
-| `exercise` | `gen-fmt-csv-latest` | `session-query-loop` | `message_fts`<br>`session_query_results` | `query-sessions` | — | `generated`<br>`formats`<br>`csv`<br>`latest` | Generated: csv format in latest mode |
-| `exercise` | `gen-fmt-csv-list` | `session-query-loop` | `message_fts`<br>`session_query_results` | `query-sessions` | — | `generated`<br>`formats`<br>`csv`<br>`list` | Generated: csv format in list mode |
-| `exercise` | `gen-fmt-html-latest` | `session-query-loop` | `message_fts`<br>`session_query_results` | `query-sessions` | — | `generated`<br>`formats`<br>`html`<br>`latest` | Generated: html format in latest mode |
-| `exercise` | `gen-fmt-html-list` | `session-query-loop` | `message_fts`<br>`session_query_results` | `query-sessions` | — | `generated`<br>`formats`<br>`html`<br>`list` | Generated: html format in list mode |
-| `exercise` | `gen-fmt-json-latest` | `session-query-loop` | `message_fts`<br>`session_query_results` | `query-sessions` | — | `generated`<br>`formats`<br>`json`<br>`latest` | Generated: json format in latest mode |
-| `exercise` | `gen-fmt-json-list` | `session-query-loop` | `message_fts`<br>`session_query_results` | `query-sessions` | — | `generated`<br>`formats`<br>`json`<br>`list` | Generated: json format in list mode |
-| `exercise` | `gen-fmt-markdown-latest` | `session-query-loop` | `message_fts`<br>`session_query_results` | `query-sessions` | — | `generated`<br>`formats`<br>`markdown`<br>`latest` | Generated: markdown format in latest mode |
-| `exercise` | `gen-fmt-markdown-list` | `session-query-loop` | `message_fts`<br>`session_query_results` | `query-sessions` | — | `generated`<br>`formats`<br>`markdown`<br>`list` | Generated: markdown format in list mode |
-| `exercise` | `gen-fmt-obsidian-latest` | `session-query-loop` | `message_fts`<br>`session_query_results` | `query-sessions` | — | `generated`<br>`formats`<br>`obsidian`<br>`latest` | Generated: obsidian format in latest mode |
-| `exercise` | `gen-fmt-obsidian-list` | `session-query-loop` | `message_fts`<br>`session_query_results` | `query-sessions` | — | `generated`<br>`formats`<br>`obsidian`<br>`list` | Generated: obsidian format in list mode |
-| `exercise` | `gen-fmt-org-latest` | `session-query-loop` | `message_fts`<br>`session_query_results` | `query-sessions` | — | `generated`<br>`formats`<br>`org`<br>`latest` | Generated: org format in latest mode |
-| `exercise` | `gen-fmt-org-list` | `session-query-loop` | `message_fts`<br>`session_query_results` | `query-sessions` | — | `generated`<br>`formats`<br>`org`<br>`list` | Generated: org format in list mode |
-| `exercise` | `gen-fmt-plaintext-latest` | `session-query-loop` | `message_fts`<br>`session_query_results` | `query-sessions` | — | `generated`<br>`formats`<br>`plaintext`<br>`latest` | Generated: plaintext format in latest mode |
-| `exercise` | `gen-fmt-plaintext-list` | `session-query-loop` | `message_fts`<br>`session_query_results` | `query-sessions` | — | `generated`<br>`formats`<br>`plaintext`<br>`list` | Generated: plaintext format in list mode |
-| `exercise` | `gen-fmt-yaml-latest` | `session-query-loop` | `message_fts`<br>`session_query_results` | `query-sessions` | — | `generated`<br>`formats`<br>`yaml`<br>`latest` | Generated: yaml format in latest mode |
-| `exercise` | `gen-fmt-yaml-list` | `session-query-loop` | `message_fts`<br>`session_query_results` | `query-sessions` | — | `generated`<br>`formats`<br>`yaml`<br>`list` | Generated: yaml format in list mode |
-| `exercise` | `help-analyze` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | analyze help |
-| `exercise` | `help-analyze-insights` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | analyze insights help |
-| `exercise` | `help-analyze-insights-cost-rollups` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | analyze insights cost-rollups help |
-| `exercise` | `help-analyze-insights-costs` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | analyze insights costs help |
-| `exercise` | `help-analyze-insights-coverage` | `archive-coverage-query-loop` | `archive_session_rows`<br>`session_profile_rows`<br>`archive_coverage_results` | `cli.help`<br>`query-archive-coverage` | — | `generated`<br>`help`<br>`structural` | analyze insights coverage help |
-| `exercise` | `help-analyze-insights-debt` | `archive-debt-query-loop` | `archive_readiness`<br>`embedding_status_results`<br>`message_fts`<br>`archive_debt_results` | `cli.help`<br>`query-archive-debt` | — | `generated`<br>`help`<br>`structural` | analyze insights debt help |
-| `exercise` | `help-analyze-insights-phases` | `session-phase-query-loop` | `session_phase_rows`<br>`session_phase_results` | `cli.help`<br>`query-session-phases` | — | `generated`<br>`help`<br>`structural` | analyze insights phases help |
-| `exercise` | `help-analyze-insights-profiles` | `session-profile-query-loop` | `session_profile_rows`<br>`session_profile_results` | `cli.help`<br>`query-session-profiles` | — | `generated`<br>`help`<br>`structural` | analyze insights profiles help |
-| `exercise` | `help-analyze-insights-tags` | `session-tag-rollup-query-loop` | `session_tag_rollup_rows`<br>`session_tag_rollup_results` | `cli.help`<br>`query-session-tag-rollups` | — | `generated`<br>`help`<br>`structural` | analyze insights tags help |
-| `exercise` | `help-analyze-insights-threads` | `thread-query-loop` | `thread_rows`<br>`thread_fts`<br>`thread_results` | `cli.help`<br>`query-threads` | — | `generated`<br>`help`<br>`structural` | analyze insights threads help |
-| `exercise` | `help-analyze-insights-timeline` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | analyze insights timeline help |
-| `exercise` | `help-analyze-insights-tool-usage` | `tool-usage-query-loop` | `archive_session_rows`<br>`tool_usage_results` | `cli.help`<br>`query-tool-usage` | — | `generated`<br>`help`<br>`structural` | analyze insights tool-usage help |
-| `exercise` | `help-analyze-insights-work-events` | `session-work-event-query-loop` | `session_work_event_rows`<br>`session_work_event_fts`<br>`session_work_event_results` | `cli.help`<br>`query-session-work-events` | — | `generated`<br>`help`<br>`structural` | analyze insights work-events help |
-| `exercise` | `help-analyze-pace` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | analyze pace help |
-| `exercise` | `help-analyze-tools` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | analyze tools help |
-| `exercise` | `help-analyze-turns` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | analyze turns help |
-| `exercise` | `help-config` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | config help |
-| `exercise` | `help-config-completions` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | config completions help |
-| `exercise` | `help-config-paths` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | config paths help |
-| `exercise` | `help-config-query-completions` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | config query-completions help |
-| `exercise` | `help-continue` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | continue help |
-| `exercise` | `help-dashboard` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | dashboard help |
-| `exercise` | `help-delete` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | delete help |
-| `exercise` | `help-demo` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | demo help |
-| `exercise` | `help-demo-script` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | demo script help |
-| `exercise` | `help-demo-seed` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | demo seed help |
-| `exercise` | `help-demo-verify` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | demo verify help |
-| `exercise` | `help-import` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | import help |
-| `exercise` | `help-init` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | init help |
-| `exercise` | `help-main` | — | — | — | — | — | Main help screen |
-| `exercise` | `help-mark` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | mark help |
-| `exercise` | `help-mark-candidates` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | mark candidates help |
-| `exercise` | `help-mark-candidates-accept` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | mark candidates accept help |
-| `exercise` | `help-mark-candidates-defer` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | mark candidates defer help |
-| `exercise` | `help-mark-candidates-list` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | mark candidates list help |
-| `exercise` | `help-mark-candidates-reject` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | mark candidates reject help |
-| `exercise` | `help-mark-candidates-supersede` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | mark candidates supersede help |
-| `exercise` | `help-ops` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops help |
-| `exercise` | `help-ops-auth` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops auth help |
-| `exercise` | `help-ops-backup` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops backup help |
-| `exercise` | `help-ops-debt` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops debt help |
-| `exercise` | `help-ops-debt-list` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops debt list help |
-| `exercise` | `help-ops-diagnostics` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops diagnostics help |
-| `exercise` | `help-ops-diagnostics-space` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops diagnostics space help |
-| `exercise` | `help-ops-diagnostics-workload` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops diagnostics workload help |
-| `exercise` | `help-ops-doctor` | `message-fts-readiness-loop`<br>`retrieval-band-readiness-loop` | `message_fts`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`archive_readiness` | `cli.help`<br>`project-archive-readiness` | — | `generated`<br>`help`<br>`structural` | ops doctor help |
-| `exercise` | `help-ops-embed` | `embedding-materialization-loop` | `archive_session_rows`<br>`embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors` | `cli.help`<br>`materialize-transcript-embeddings` | — | `generated`<br>`help`<br>`structural` | ops embed help |
-| `exercise` | `help-ops-embed-backfill` | `embedding-materialization-loop` | `archive_session_rows`<br>`embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors` | `cli.help`<br>`materialize-transcript-embeddings` | — | `generated`<br>`help`<br>`structural` | ops embed backfill help |
-| `exercise` | `help-ops-embed-disable` | `embedding-materialization-loop` | `archive_session_rows`<br>`embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors` | `cli.help`<br>`materialize-transcript-embeddings` | — | `generated`<br>`help`<br>`structural` | ops embed disable help |
-| `exercise` | `help-ops-embed-enable` | `embedding-materialization-loop` | `archive_session_rows`<br>`embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors` | `cli.help`<br>`materialize-transcript-embeddings` | — | `generated`<br>`help`<br>`structural` | ops embed enable help |
-| `exercise` | `help-ops-embed-preflight` | `embedding-materialization-loop` | `archive_session_rows`<br>`embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors` | `cli.help`<br>`materialize-transcript-embeddings` | — | `generated`<br>`help`<br>`structural` | ops embed preflight help |
-| `exercise` | `help-ops-embed-status` | `embedding-materialization-loop` | `archive_session_rows`<br>`embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors` | `cli.help`<br>`materialize-transcript-embeddings` | — | `generated`<br>`help`<br>`structural` | ops embed status help |
-| `exercise` | `help-ops-insights` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops insights help |
-| `exercise` | `help-ops-insights-audit` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops insights audit help |
-| `exercise` | `help-ops-insights-export` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops insights export help |
-| `exercise` | `help-ops-insights-status` | `session-insight-status-query-loop` | `session_insight_readiness`<br>`session_insight_status_results` | `cli.help`<br>`query-session-insight-status` | — | `generated`<br>`help`<br>`structural` | ops insights status help |
-| `exercise` | `help-ops-maintenance` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops maintenance help |
-| `exercise` | `help-ops-maintenance-archive-init` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops maintenance archive-init help |
-| `exercise` | `help-ops-maintenance-archive-plan` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops maintenance archive-plan help |
-| `exercise` | `help-ops-maintenance-archive-read` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops maintenance archive-read help |
-| `exercise` | `help-ops-maintenance-assertion-export` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops maintenance assertion-export help |
-| `exercise` | `help-ops-maintenance-backup-plan` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops maintenance backup-plan help |
-| `exercise` | `help-ops-maintenance-blob-gc` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops maintenance blob-gc help |
-| `exercise` | `help-ops-maintenance-gc-history` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops maintenance gc-history help |
-| `exercise` | `help-ops-maintenance-plan` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops maintenance plan help |
-| `exercise` | `help-ops-maintenance-preview` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops maintenance preview help |
-| `exercise` | `help-ops-maintenance-run` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops maintenance run help |
-| `exercise` | `help-ops-maintenance-status` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops maintenance status help |
-| `exercise` | `help-ops-reset` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops reset help |
-| `exercise` | `help-ops-status` | — | — | `cli.help` | — | `generated`<br>`help`<br>`structural` | ops status help |
-| `exercise` | `help-read` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | read help |
-| `exercise` | `help-select` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | select help |
-| `exercise` | `help-tutorial` | `session-query-loop` | `message_fts`<br>`session_query_results` | `cli.help`<br>`query-sessions` | — | `generated`<br>`help`<br>`structural` | tutorial help |
-| `exercise` | `json-doctor` | `message-fts-readiness-loop`<br>`retrieval-band-readiness-loop` | `message_fts`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`archive_readiness` | `cli.json-contract`<br>`project-archive-readiness` | — | `generated`<br>`json-contract`<br>`maintenance`<br>`readiness` | doctor JSON contract |
-| `exercise` | `json-doctor-session-insights-preview` | `session-insight-repair-loop` | `session_insight_rows`<br>`session_insight_fts`<br>`session_insight_readiness` | `cli.json-contract`<br>`project-session-insight-readiness` | — | `generated`<br>`json-contract`<br>`maintenance`<br>`session-insights` | doctor JSON contract |
-| `exercise` | `json-insights-coverage` | `archive-coverage-query-loop` | `archive_session_rows`<br>`session_profile_rows`<br>`archive_coverage_results` | `cli.json-contract`<br>`query-archive-coverage` | — | `generated`<br>`json-contract`<br>`insights`<br>`coverage` | insights coverage JSON contract |
-| `exercise` | `json-insights-phases` | `session-phase-query-loop` | `session_phase_rows`<br>`session_phase_results` | `cli.json-contract`<br>`query-session-phases` | — | `generated`<br>`json-contract`<br>`insights`<br>`phases` | insights phases JSON contract |
-| `exercise` | `json-insights-profiles` | `session-profile-query-loop` | `session_profile_rows`<br>`session_profile_results` | `cli.json-contract`<br>`query-session-profiles` | — | `generated`<br>`json-contract`<br>`insights`<br>`session-profiles` | insights profiles JSON contract |
-| `exercise` | `json-insights-tags` | `session-tag-rollup-query-loop` | `session_tag_rollup_rows`<br>`session_tag_rollup_results` | `cli.json-contract`<br>`query-session-tag-rollups` | — | `generated`<br>`json-contract`<br>`insights`<br>`tags` | insights tags JSON contract |
-| `exercise` | `json-insights-threads` | `thread-query-loop` | `thread_rows`<br>`thread_fts`<br>`thread_results` | `cli.json-contract`<br>`query-threads` | — | `generated`<br>`json-contract`<br>`insights`<br>`threads` | insights threads JSON contract |
-| `exercise` | `json-insights-work-events` | `session-work-event-query-loop` | `session_work_event_rows`<br>`session_work_event_fts`<br>`session_work_event_results` | `cli.json-contract`<br>`query-session-work-events` | — | `generated`<br>`json-contract`<br>`insights`<br>`work-events` | insights work-events JSON contract |
-| `exercise` | `query-count` | — | — | — | — | — | Count sessions |
-| `exercise` | `query-dialogue-only` | — | — | — | — | — | Latest with dialogue only |
-| `exercise` | `query-filter-provider` | — | — | — | — | — | Filter by provider |
-| `exercise` | `query-filter-since` | — | — | — | — | — | Filter by date |
-| `exercise` | `query-latest` | — | — | — | — | — | Show latest session |
-| `exercise` | `query-latest-csv` | — | — | — | — | — | Latest session as CSV |
-| `exercise` | `query-latest-html` | — | — | — | — | — | Latest session as HTML |
-| `exercise` | `query-latest-json` | — | — | — | — | — | Latest session as JSON |
-| `exercise` | `query-latest-md` | — | — | — | — | — | Latest session as Markdown |
-| `exercise` | `query-latest-obsidian` | — | — | — | — | — | Latest session as Obsidian note |
-| `exercise` | `query-latest-org` | — | — | — | — | — | Latest session as Org-mode |
-| `exercise` | `query-latest-plaintext` | — | — | — | — | — | Latest session as plaintext |
-| `exercise` | `query-list` | — | — | — | — | — | List sessions |
-| `exercise` | `query-list-csv` | — | — | — | — | — | List sessions as CSV |
-| `exercise` | `query-list-json` | — | — | — | — | — | List sessions as JSON |
-| `exercise` | `query-list-yaml` | — | — | — | — | — | List sessions as YAML |
-| `exercise` | `query-search-term` | — | — | — | — | — | Full-text search |
-| `exercise` | `query-sort-messages` | — | — | — | — | — | Sort by message count |
-| `exercise` | `query-sort-tokens` | — | — | — | — | — | Sort by token count |
-| `exercise` | `query-stats` | — | — | — | — | — | Session statistics |
-| `exercise` | `query-stats-by-month` | — | — | — | — | — | Statistics by month |
-| `exercise` | `query-stats-by-provider` | — | — | — | — | — | Statistics by provider |
-| `exercise` | `query-stream-json` | — | — | — | — | — | Stream latest as JSON lines |
-| `exercise` | `query-stream-latest` | — | — | — | — | — | Stream latest session |
-| `exercise` | `reverse-sort` | — | — | — | — | — | Reverse sort by date |
-| `exercise` | `sample-random` | — | — | — | — | — | Random sample of sessions |
-| `exercise` | `set-meta` | — | — | — | — | — | Add a note to a matched session |
-| `exercise` | `stats-default` | — | — | — | — | — | Default archive statistics |
-| `exercise` | `stats-verbose` | — | — | — | — | — | Verbose statistics |
-| `exercise` | `tag-add` | — | — | — | — | — | Add tag to one matched session |
-| `exercise` | `tag-verify` | — | — | — | — | — | Verify tag was added |
-| `exercise` | `tags-after-add` | — | — | — | — | — | List tags after add |
-| `exercise` | `tags-json` | — | — | — | — | — | Tags as JSON |
-| `exercise` | `transform-strip` | — | — | — | — | — | Strip tool calls from output |
-| `exercise` | `version` | — | — | — | — | — | Version output |
 | `inferred-corpus-scenario` | `antigravity:v1` | `inferred-corpus-compilation-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios` | `compile-inferred-corpus-specs`<br>`compile-inferred-corpus-scenarios` | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for antigravity v1 across 1 corpus variant(s). |
 | `inferred-corpus-scenario` | `chatgpt:v1` | `inferred-corpus-compilation-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios` | `compile-inferred-corpus-specs`<br>`compile-inferred-corpus-scenarios` | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for chatgpt v1 across 1 corpus variant(s). |
 | `inferred-corpus-scenario` | `claude-ai:v1` | `inferred-corpus-compilation-loop` | `schema_packages`<br>`schema_cluster_manifests`<br>`inferred_corpus_specs`<br>`inferred_corpus_scenarios` | `compile-inferred-corpus-specs`<br>`compile-inferred-corpus-scenarios` | — | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` | Compiled inferred corpus scenario for claude-ai v1 across 1 corpus variant(s). |

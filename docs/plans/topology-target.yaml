@@ -1056,7 +1056,7 @@ files:
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/enums.py
-    loc: 393
+    loc: 378
     target: polylogue/core/enums.py
     owner: core-primitive
     reason: core primitive
@@ -2323,11 +2323,6 @@ files:
     target: polylogue/services.py
     owner: kernel
     reason: kernel root rule
-  - path: polylogue/showcase/catalog_loader.py
-    loc: 193
-    target: polylogue/showcase/catalog_loader.py
-    owner: stable
-    reason: verification-lab showcase substrate retained
   - path: polylogue/showcase/cli_boundary.py
     loc: 104
     target: polylogue/showcase/cli_boundary.py
@@ -2336,27 +2331,6 @@ files:
   - path: polylogue/showcase/corpus_requests.py
     loc: 43
     target: polylogue/showcase/corpus_requests.py
-    owner: stable
-    reason: verification-lab showcase substrate retained
-  - path: polylogue/showcase/dimensions.py
-    loc: 105
-    target: polylogue/showcase/dimensions.py
-    owner: stable
-    reason: verification-lab showcase substrate retained
-  - path: polylogue/showcase/exercise_models.py
-    loc: 69
-    target: polylogue/showcase/exercise_models.py
-    owner: stable
-    reason: verification-lab showcase substrate retained
-    cross_cut: { lifecycle: model }
-  - path: polylogue/showcase/exercises.py
-    loc: 79
-    target: polylogue/showcase/exercises.py
-    owner: stable
-    reason: verification-lab showcase substrate retained
-  - path: polylogue/showcase/generators.py
-    loc: 515
-    target: polylogue/showcase/generators.py
     owner: stable
     reason: verification-lab showcase substrate retained
   - path: polylogue/showcase/lab_corpus.py
@@ -2370,7 +2344,7 @@ files:
     owner: stable
     reason: verification-lab showcase substrate retained
   - path: polylogue/showcase/workspace.py
-    loc: 468
+    loc: 432
     target: polylogue/showcase/workspace.py
     owner: stable
     reason: verification-lab showcase substrate retained

@@ -39,12 +39,11 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
     assert "query-archive-debt" in rendered
     assert "project-session-insight-readiness" in rendered
     assert "project-archive-readiness" in rendered
-    assert "json-doctor-session-insights-preview" in rendered
     assert "startup-readiness" in rendered
     assert "retrieval-checks" in rendered
     assert "synthetic-benchmark:session-insight-materialization" in rendered
-    assert "exercise:json-insights-profiles" in rendered
-    assert "exercise:json-insights-work-events" in rendered
+    assert "validation-lane:live-insights-profiles-evidence" in rendered
+    assert "validation-lane:live-insights-work-events" in rendered
     assert "validation-lane:live-insights-status" in rendered
     assert "validation-lane:live-insights-debt" in rendered
     assert "maintenance dangling_fts:" in rendered
@@ -53,7 +52,7 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
         "uncovered maintenance targets: empty_sessions, message_embeddings, message_type_backfill, orphaned_attachments, orphaned_messages, superseded_raw_snapshots, wal_checkpoint"
         in rendered
     )
-    assert "uncovered artifacts:" not in rendered
+    assert "uncovered artifacts: thread_results, tool_usage_results" in rendered
 
 
 def test_render_artifact_graph_json_is_machine_readable() -> None:
@@ -89,22 +88,14 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         (ref["source"], ref["name"], ref["origin"])
         for ref in payload["scenario_coverage"]["artifacts"]["session_insight_rows"]
     } >= {
-        ("exercise", "json-doctor-session-insights-preview", "generated.json-contract"),
         ("synthetic-benchmark", "session-insight-materialization", "authored.synthetic-benchmark"),
+        ("validation-lane", "live-session-insight-repair", "authored.validation-lane"),
     }
-    assert (
-        "exercise",
-        "json-doctor-session-insights-preview",
-        "generated.json-contract",
-    ) in {
+    assert ("validation-lane", "live-session-insight-repair", "authored.validation-lane") in {
         (ref["source"], ref["name"], ref["origin"])
         for ref in payload["scenario_coverage"]["operations"]["project-session-insight-readiness"]
     }
-    assert (
-        "exercise",
-        "json-doctor-session-insights-preview",
-        "generated.json-contract",
-    ) in {
+    assert ("validation-lane", "live-session-insight-repair", "authored.validation-lane") in {
         (ref["source"], ref["name"], ref["origin"])
         for ref in payload["scenario_coverage"]["maintenance_targets"]["session_insights"]
     }
@@ -170,28 +161,20 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         for ref in payload["scenario_coverage"]["operations"]["materialize-session-insights"]
     }
     assert (
-        "exercise",
-        "json-insights-profiles",
-        "generated.json-contract",
+        "validation-lane",
+        "live-insights-profiles-evidence",
+        "authored.validation-lane",
     ) in {
         (ref["source"], ref["name"], ref["origin"])
         for ref in payload["scenario_coverage"]["operations"]["query-session-profiles"]
     }
     assert (
-        "exercise",
-        "json-insights-work-events",
-        "generated.json-contract",
+        "validation-lane",
+        "live-insights-work-events",
+        "authored.validation-lane",
     ) in {
         (ref["source"], ref["name"], ref["origin"])
         for ref in payload["scenario_coverage"]["operations"]["query-session-work-events"]
-    }
-    assert (
-        "exercise",
-        "json-insights-threads",
-        "generated.json-contract",
-    ) in {
-        (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["operations"]["query-threads"]
     }
     assert (
         "validation-lane",
@@ -212,7 +195,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     assert payload["scenario_coverage"]["paths"]["session-profile-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["session-work-event-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["session-phase-query-loop"]["complete"] is True
-    assert payload["scenario_coverage"]["paths"]["thread-query-loop"]["complete"] is True
+    assert payload["scenario_coverage"]["paths"]["thread-query-loop"]["complete"] is False
     assert payload["scenario_coverage"]["paths"]["session-tag-rollup-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["archive-coverage-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["uncovered_maintenance_targets"] == [
@@ -231,7 +214,14 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     assert payload["scenario_coverage"]["paths"]["raw-reparse-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["raw-archive-ingest-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["session-insight-repair-loop"]["complete"] is True
-    assert payload["scenario_coverage"]["uncovered_artifacts"] == []
-    # Mutation operations (mutate-add-tag, mutate-remove-tag, mutate-set-metadata,
-    # etc.) are runtime mutations not covered by the scenario coverage graph.
-    assert all(name.startswith("mutate-") for name in payload["scenario_coverage"]["uncovered_operations"])
+    assert payload["scenario_coverage"]["uncovered_artifacts"] == ["thread_results", "tool_usage_results"]
+    assert payload["scenario_coverage"]["uncovered_operations"] == [
+        "mutate-add-tag",
+        "mutate-bulk-tag-sessions",
+        "mutate-delete-metadata",
+        "mutate-delete-session",
+        "mutate-remove-tag",
+        "mutate-set-metadata",
+        "query-threads",
+        "query-tool-usage",
+    ]
