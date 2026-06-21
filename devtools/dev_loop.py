@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import shlex
@@ -26,6 +27,7 @@ DEFAULT_BROWSER_CAPTURE_PORT = 8765
 _RECEIVER_SMOKE_ORIGIN = "chrome-extension://polylogue-dev-loop"
 _RECEIVER_SMOKE_TOKEN = "polylogue-dev-loop-token"
 _SENSITIVE_ENV_NAME_RE = re.compile(r"(TOKEN|SECRET|PASSWORD|PASS|KEY|CREDENTIAL|AUTH)", re.IGNORECASE)
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -711,22 +713,26 @@ def _read_json_file(path: Path) -> object | None:
         return None
 
 
-def _read_event_rows(path: Path) -> list[dict[str, object]]:
+def _read_event_rows(path: Path) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     rows: list[dict[str, object]] = []
+    malformed: list[dict[str, object]] = []
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return rows
-    for line in lines:
+        return rows, malformed
+    for line_number, line in enumerate(lines, start=1):
         if not line.strip():
             continue
         try:
             row = json.loads(line)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
+            preview = line[:500]
+            _LOG.warning("Skipping malformed dev-loop event row in %s:%s: %r", path, line_number, preview)
+            malformed.append({"line": line_number, "error": str(exc), "text": preview})
             continue
         if isinstance(row, dict):
             rows.append(row)
-    return rows
+    return rows, malformed
 
 
 def summarize_dev_loop_run(run_dir: Path) -> dict[str, object]:
@@ -736,7 +742,7 @@ def summarize_dev_loop_run(run_dir: Path) -> dict[str, object]:
     preflight_path = run_dir / "preflight.json"
     events_path = run_dir / "dev-loop.events.jsonl"
     preflight = _read_json_file(preflight_path)
-    events = _read_event_rows(events_path)
+    events, malformed_event_lines = _read_event_rows(events_path)
     event_status_counts: dict[str, int] = {}
     event_surface_counts: dict[str, int] = {}
     problem_events: list[dict[str, object]] = []
@@ -773,6 +779,8 @@ def summarize_dev_loop_run(run_dir: Path) -> dict[str, object]:
         warnings.append("preflight.json is missing or unreadable")
     if not events:
         warnings.append("dev-loop.events.jsonl is missing or empty")
+    if malformed_event_lines:
+        warnings.append(f"{len(malformed_event_lines)} malformed dev-loop event row(s) were skipped")
     if problem_events:
         warnings.append(f"{len(problem_events)} event(s) have failed/blocked status")
     return {
@@ -785,6 +793,7 @@ def summarize_dev_loop_run(run_dir: Path) -> dict[str, object]:
         "event_surface_counts": event_surface_counts,
         "last_event": events[-1] if events else None,
         "problem_events": problem_events,
+        "malformed_event_lines": malformed_event_lines,
         "summaries": loaded_summaries,
         "terminal_captures": loaded_terminal,
         "terminal_capture_count": len(loaded_terminal),

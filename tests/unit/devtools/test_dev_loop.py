@@ -444,7 +444,7 @@ def test_inspect_run_summarizes_dev_loop_artifacts(
         {"surface": "browser_extension", "event_type": "extension_smoke_finished", "status": "failed"},
     ]
     (run_dir / "dev-loop.events.jsonl").write_text(
-        "\n".join(json.dumps(row) for row in events) + "\n",
+        "\n".join([json.dumps(events[0]), "{not-json", *(json.dumps(row) for row in events[1:])]) + "\n",
         encoding="utf-8",
     )
     (run_dir / "polylogued.log").write_text("daemon log\n", encoding="utf-8")
@@ -466,12 +466,17 @@ def test_inspect_run_summarizes_dev_loop_artifacts(
     assert payload["event_status_counts"] == {"failed": 1, "ok": 1, "starting": 1}
     assert payload["event_surface_counts"]["browser_extension"] == 1
     assert payload["problem_events"][0]["event_type"] == "extension_smoke_finished"
+    assert payload["malformed_event_lines"][0]["line"] == 2
+    assert payload["malformed_event_lines"][0]["text"] == "{not-json"
     assert payload["summaries"]["daemon_launch"]["pid"] == 1234
     assert payload["summaries"]["tui_plan"]["ok"] is True
     assert payload["terminal_capture_count"] == 1
     assert payload["terminal_captures"][0]["exit_code"] == 0
     assert payload["missing_artifacts"] == []
-    assert payload["warnings"] == ["1 event(s) have failed/blocked status"]
+    assert payload["warnings"] == [
+        "1 malformed dev-loop event row(s) were skipped",
+        "1 event(s) have failed/blocked status",
+    ]
 
 
 def test_cli_capture_rejects_missing_command(capsys: pytest.CaptureFixture[str]) -> None:
