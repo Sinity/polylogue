@@ -1103,7 +1103,7 @@ def analyze_verb(
         ):
             raise click.UsageError(
                 "`analyze` options apply to the aggregate analyze view; "
-                "put read-model options after `analyze insights <command>`."
+                "put subcommand options after `analyze <command>`."
             )
         return
 
@@ -1214,9 +1214,13 @@ def analyze_verb(
 
 
 def _attach_analyze_subcommands() -> None:
+    from polylogue.cli.commands.diagnostics import pace_command, tools_command, turns_command
     from polylogue.cli.commands.insights import analyze_insights_command
 
     analyze_verb.add_command(analyze_insights_command)
+    analyze_verb.add_command(pace_command)
+    analyze_verb.add_command(tools_command)
+    analyze_verb.add_command(turns_command)
 
 
 _attach_analyze_subcommands()

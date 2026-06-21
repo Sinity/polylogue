@@ -101,9 +101,9 @@ _COMMANDS: list[tuple[list[str], bool]] = [
     (["analyze", "insights", "tool-usage"], False),
     (["analyze", "insights", "tags"], False),
     # ── Diagnostics subcommands ──────────────────────────────────────
-    (["ops", "diagnostics", "pace"], False),
-    (["ops", "diagnostics", "tools"], False),
-    (["--latest", "ops", "diagnostics", "turns"], True),  # needs session; fails cleanly on empty
+    (["analyze", "pace"], False),
+    (["analyze", "tools"], False),
+    (["--latest", "analyze", "turns"], True),  # needs session; fails cleanly on empty
     # ── Embed, feedback, schema, maintenance ─────────────────────────
     (["ops", "embed", "status"], False),
     (["ops", "maintenance", "status"], False),

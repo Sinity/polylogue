@@ -1,8 +1,0 @@
-Usage: polylogue ops diagnostics tools [OPTIONS]
-
-  Show top tools by invocation count across filtered sessions.
-
-Options:
-  --origin TEXT            Filter by origin
-  -l, -n, --limit INTEGER  Max tools to show
-  -h, --help               Show this message and exit.

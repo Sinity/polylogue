@@ -1,14 +1,14 @@
 """Resolve a single session id from root filters (#1626, #1642).
 
 Used by single-session commands (``export``, ``messages``, ``raw``,
-``neighbors``, ``ops diagnostics turns``) so root-level filters like
+``neighbors``, ``analyze turns``) so root-level filters like
 ``--latest`` and ``--origin codex-session`` pick a session without forcing the
 operator to also pass an ``--id`` or positional.
 
 The query-verb tree's ``_resolve_target_session_id`` in
 ``polylogue/cli/query_verbs.py`` is the verb-tree adapter that wraps
 this with a ``RootModeRequest``. Top-level commands (``export``,
-``neighbors``, ``ops diagnostics turns``) call the param-dict variant
+``neighbors``, ``analyze turns``) call the param-dict variant
 directly because they don't run under the query group's typed request.
 """
 

@@ -1,8 +1,0 @@
-Usage: polylogue ops diagnostics pace [OPTIONS] [SESSION_ID]
-
-  Show inter-turn gap analysis for one or more sessions.
-
-Options:
-  -l, -n, --limit INTEGER  Number of recent sessions to analyze
-  --threshold INTEGER      Gap threshold in seconds for classification
-  -h, --help               Show this message and exit.
