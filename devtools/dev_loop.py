@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from http.client import HTTPConnection
 from pathlib import Path
 from threading import Thread
-from typing import Any
+from typing import Any, TextIO
 
 from devtools import repo_root as _repo_root
 from polylogue.browser_capture.server import make_server
@@ -254,6 +254,24 @@ def _decode_timeout_stream(value: bytes | str | None) -> str:
     return value
 
 
+def _start_daemon_process(
+    command: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    log_file: TextIO,
+) -> subprocess.Popen[str]:
+    return subprocess.Popen(
+        command,
+        cwd=str(cwd),
+        env=env,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
+
+
 def run_cli_capture(
     *,
     preflight: dict[str, Any],
@@ -352,6 +370,121 @@ def run_cli_capture(
             "stderr": str(stderr_path),
             "transcript": str(transcript_path),
             "env": str(env_path),
+            "summary": str(summary_path),
+        },
+    }
+    summary_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return payload
+
+
+def launch_branch_daemon(
+    *,
+    preflight: dict[str, Any],
+    readiness_timeout_s: float,
+) -> dict[str, object]:
+    """Launch a branch-local polylogued and persist process/debug artifacts."""
+
+    ports = preflight.get("ports")
+    if not isinstance(ports, dict):
+        raise ValueError("preflight payload is missing port status")
+    occupied_ports: list[str] = []
+    for name in ("api", "browser_capture"):
+        status = ports.get(name)
+        if isinstance(status, dict) and int(status.get("owner_count") or 0) > 0:
+            occupied_ports.append(f"{name} port {status.get('port')}")
+    if occupied_ports:
+        raise ValueError(
+            "selected branch-local ports already have listeners: "
+            + ", ".join(occupied_ports)
+            + "; stop the deployed service or choose isolated ports"
+        )
+
+    artifacts = preflight.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise ValueError("preflight payload is missing artifact paths")
+    run_log_dir = Path(str(preflight["run_log_dir"]))
+    run_log_dir.mkdir(parents=True, exist_ok=True)
+    daemon_log = Path(str(artifacts["daemon_log"]))
+    daemon_log.parent.mkdir(parents=True, exist_ok=True)
+    env_path = run_log_dir / "polylogued.env.json"
+    pid_path = run_log_dir / "polylogued.pid"
+    summary_path = run_log_dir / "polylogued.launch.json"
+
+    env = os.environ.copy()
+    suggested_env = preflight.get("suggested_env")
+    if isinstance(suggested_env, dict):
+        env.update({str(key): str(value) for key, value in suggested_env.items()})
+    env.setdefault("POLYLOGUE_FORCE_PLAIN", "1")
+
+    api_status = ports["api"]
+    receiver_status = ports["browser_capture"]
+    assert isinstance(api_status, dict)
+    assert isinstance(receiver_status, dict)
+    api_port = int(api_status["port"])
+    receiver_port = int(receiver_status["port"])
+    spool_path = run_log_dir / "browser-capture-spool"
+    spool_path.mkdir(parents=True, exist_ok=True)
+    command = [
+        "polylogued",
+        "run",
+        "--no-watch",
+        "--api-port",
+        str(api_port),
+        "--port",
+        str(receiver_port),
+        "--spool",
+        str(spool_path),
+    ]
+
+    env_snapshot = {
+        key: env[key] for key in sorted(env) if key.startswith("POLYLOGUE_") or key in {"PATH", "PYTHONPATH"}
+    }
+    env_path.write_text(json.dumps(env_snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    started_at = datetime.now(UTC)
+    with daemon_log.open("a", encoding="utf-8") as log_file:
+        log_file.write(
+            f"\n# dev-loop launch {started_at.isoformat()} run_id={preflight['run_id']}\n$ {shlex.join(command)}\n"
+        )
+        log_file.flush()
+        process = _start_daemon_process(
+            command,
+            cwd=Path(str(preflight["repo_root"])),
+            env=env,
+            log_file=log_file,
+        )
+    pid_path.write_text(f"{process.pid}\n", encoding="utf-8")
+
+    deadline = time.monotonic() + max(0.0, readiness_timeout_s)
+    api_ready = False
+    receiver_ready = False
+    exit_code: int | None = None
+    while time.monotonic() <= deadline:
+        exit_code = process.poll()
+        api_ready = _socket_connectable(api_port)
+        receiver_ready = _socket_connectable(receiver_port)
+        if exit_code is not None or (api_ready and receiver_ready):
+            break
+        time.sleep(0.1)
+    if exit_code is None:
+        exit_code = process.poll()
+
+    payload: dict[str, object] = {
+        "ok": exit_code is None and api_ready and receiver_ready,
+        "pid": process.pid,
+        "command": command,
+        "command_text": shlex.join(command),
+        "cwd": str(preflight["repo_root"]),
+        "run_id": str(preflight["run_id"]),
+        "started_at": started_at.isoformat(),
+        "exit_code": exit_code,
+        "api_ready": api_ready,
+        "browser_capture_ready": receiver_ready,
+        "readiness_timeout_s": readiness_timeout_s,
+        "spool_path": str(spool_path),
+        "artifacts": {
+            "log": str(daemon_log),
+            "env": str(env_path),
+            "pid": str(pid_path),
             "summary": str(summary_path),
         },
     }
@@ -531,6 +664,23 @@ def _print_cli_capture(payload: dict[str, Any]) -> None:
     print(f"  transcript: {artifacts['transcript']}")
 
 
+def _print_daemon_launch(payload: dict[str, Any]) -> None:
+    preflight = payload["preflight"]
+    launch = payload["daemon_launch"]
+    assert isinstance(preflight, dict)
+    assert isinstance(launch, dict)
+    artifacts = launch["artifacts"]
+    assert isinstance(artifacts, dict)
+    print("Polylogue dev-loop daemon launch")
+    print(f"  run id:   {preflight['run_id']}")
+    print(f"  pid:      {launch['pid']}")
+    print(f"  command:  {launch['command_text']}")
+    print(f"  api:      ready={launch['api_ready']}")
+    print(f"  capture:  ready={launch['browser_capture_ready']}")
+    print(f"  log:      {artifacts['log']}")
+    print(f"  summary:  {artifacts['summary']}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
@@ -559,6 +709,17 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Run a branch-local CLI command and write stdout/stderr/transcript artifacts.",
     )
+    parser.add_argument(
+        "--launch-daemon",
+        action="store_true",
+        help="Launch branch-local polylogued with --no-watch and write PID/log/summary artifacts.",
+    )
+    parser.add_argument(
+        "--daemon-ready-timeout-s",
+        type=float,
+        default=10.0,
+        help="Readiness wait for --launch-daemon.",
+    )
     parser.add_argument("capture_command", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     payload = build_dev_loop_status(
@@ -566,7 +727,7 @@ def main(argv: list[str] | None = None) -> int:
         browser_capture_port=args.browser_capture_port,
         archive_root=args.archive_root,
         log_dir=args.log_dir,
-        prepare=args.prepare or args.receiver_smoke,
+        prepare=args.prepare or args.receiver_smoke or args.launch_daemon,
     )
     if args.receiver_smoke:
         smoke_payload: dict[str, Any] = {
@@ -601,6 +762,24 @@ def main(argv: list[str] | None = None) -> int:
         if not isinstance(capture_exit, int):
             capture_exit = 1
         return 0 if capture_payload.get("ok") is True else capture_exit
+    if args.launch_daemon:
+        try:
+            launch_payload = launch_branch_daemon(
+                preflight=payload,
+                readiness_timeout_s=args.daemon_ready_timeout_s,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+        combined_payload = {
+            "preflight": payload,
+            "daemon_launch": launch_payload,
+        }
+        if args.json:
+            json.dump(combined_payload, sys.stdout, indent=2, sort_keys=True)
+            sys.stdout.write("\n")
+        else:
+            _print_daemon_launch(combined_payload)
+        return 0 if launch_payload.get("ok") is True else 1
     if args.json:
         json.dump(payload, sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")

@@ -245,3 +245,103 @@ def test_cli_capture_rejects_missing_command(capsys: pytest.CaptureFixture[str])
         dev_loop.main(["--capture-cli"])
     assert exc.value.code == 2
     assert "capture command must not be empty" in capsys.readouterr().err
+
+
+def test_daemon_launch_writes_branch_local_process_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(dev_loop, "system_service_status", lambda: {"active": False})
+    monkeypatch.setattr(
+        dev_loop,
+        "port_status",
+        lambda port: {"port": port, "connectable": False, "owner_count": 0, "owners": []},
+    )
+    monkeypatch.setattr(
+        dev_loop, "_git_value", lambda args, *, cwd: "feature/dev-loop" if args[0] == "branch" else "abc1234"
+    )
+    monkeypatch.setattr(dev_loop, "_socket_connectable", lambda port: True)
+
+    launched: dict[str, object] = {}
+
+    class FakeProcess:
+        pid = 4242
+
+        def poll(self) -> int | None:
+            return None
+
+    def fake_start_daemon_process(
+        command: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        log_file: object,
+    ) -> FakeProcess:
+        launched["command"] = command
+        launched["cwd"] = cwd
+        launched["env"] = env
+        launched["log_file"] = log_file
+        return FakeProcess()
+
+    monkeypatch.setattr(dev_loop, "_start_daemon_process", fake_start_daemon_process)
+
+    assert (
+        dev_loop.main(
+            [
+                "--json",
+                "--archive-root",
+                str(tmp_path / "archive"),
+                "--api-port",
+                "9876",
+                "--browser-capture-port",
+                "9875",
+                "--launch-daemon",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    launch = payload["daemon_launch"]
+    command = launch["command"]
+    assert command[:2] == ["polylogued", "run"]
+    assert "--no-watch" in command
+    assert command[command.index("--api-port") : command.index("--api-port") + 2] == ["--api-port", "9876"]
+    assert command[command.index("--port") : command.index("--port") + 2] == ["--port", "9875"]
+    assert launch["pid"] == 4242
+    assert launch["api_ready"] is True
+    assert launch["browser_capture_ready"] is True
+
+    env = launched["env"]
+    assert isinstance(env, dict)
+    assert env["POLYLOGUE_ARCHIVE_ROOT"] == str(tmp_path / "archive")
+    assert launched["cwd"] == Path(payload["preflight"]["repo_root"])
+
+    artifacts = launch["artifacts"]
+    assert Path(artifacts["pid"]).read_text(encoding="utf-8") == "4242\n"
+    assert json.loads(Path(artifacts["summary"]).read_text(encoding="utf-8"))["pid"] == 4242
+    assert json.loads(Path(artifacts["env"]).read_text(encoding="utf-8"))["POLYLOGUE_API_PORT"] == "9876"
+    assert Path(artifacts["log"]).read_text(encoding="utf-8").startswith("\n# dev-loop launch")
+
+
+def test_daemon_launch_rejects_occupied_branch_local_ports(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(dev_loop, "system_service_status", lambda: {"active": False})
+    monkeypatch.setattr(
+        dev_loop,
+        "port_status",
+        lambda port: {"port": port, "connectable": True, "owner_count": 1, "owners": [{"pid": 1234}]},
+    )
+    monkeypatch.setattr(
+        dev_loop, "_git_value", lambda args, *, cwd: "feature/dev-loop" if args[0] == "branch" else "abc1234"
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        dev_loop.main(["--archive-root", str(tmp_path / "archive"), "--launch-daemon"])
+
+    assert exc.value.code == 2
+    assert "selected branch-local ports already have listeners" in capsys.readouterr().err
