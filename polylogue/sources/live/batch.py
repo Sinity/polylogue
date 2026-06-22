@@ -1313,7 +1313,58 @@ class LiveBatchProcessor:
         return payload
 
     def _existing_provider_session_id(self, path: Path) -> str | None:
-        return self._existing_archive_session_native_id(path)
+        identity = self._existing_archive_session_native_id(path)
+        if identity is not None:
+            return identity
+        codex_identity = self._codex_session_meta_native_id(path)
+        if codex_identity is None:
+            return None
+        if self._archive_has_native_session("codex-session", codex_identity):
+            return codex_identity
+        return None
+
+    def _codex_session_meta_native_id(self, path: Path) -> str | None:
+        try:
+            with path.open("rb") as handle:
+                line = handle.readline(1024 * 1024)
+        except OSError:
+            return None
+        if not line:
+            return None
+        try:
+            record = json_loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, TypeError):
+            return None
+        if not isinstance(record, dict) or record.get("type") != "session_meta":
+            return None
+        payload = record.get("payload")
+        if not isinstance(payload, dict):
+            return None
+        value = payload.get("id")
+        return value if isinstance(value, str) and value.strip() else None
+
+    def _archive_has_native_session(self, origin: str, native_id: str) -> bool:
+        archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+        index_db = archive_root / "index.db"
+        if not index_db.exists():
+            return False
+        try:
+            conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+            try:
+                row = conn.execute(
+                    """
+                    SELECT 1
+                    FROM sessions
+                    WHERE origin = ? AND native_id = ?
+                    LIMIT 1
+                    """,
+                    (origin, native_id),
+                ).fetchone()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return False
+        return row is not None
 
     def _existing_archive_session_native_id(self, path: Path) -> str | None:
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
