@@ -49,11 +49,14 @@ function buildEnvelope({
   const sourceUrl = "https://chatgpt.com/c/test-conv";
   const stableProviderSessionId =
     providerSessionId || sessionIdFromUrl(provider, sourceUrl);
+  const stableCaptureId = stableProviderSessionId.startsWith(`${provider}:`)
+    ? stableProviderSessionId
+    : `${provider}:${stableProviderSessionId}`;
   const now = new Date().toISOString();
   const envelope = {
     polylogue_capture_kind: "browser_llm_session",
     schema_version: 1,
-    capture_id: `${provider}:${stableProviderSessionId}`,
+    capture_id: stableCaptureId,
     source: "browser-extension",
     provenance: {
       source_url: sourceUrl,
@@ -143,6 +146,16 @@ describe("sessionIdFromUrl", () => {
       "https://chatgpt.com/c/conv?q=1",
     );
     expect(id).toMatch(/^chatgpt:conv:/);
+  });
+
+  it("does not duplicate provider prefix in capture id", () => {
+    const envelope = buildEnvelope({
+      provider: "chatgpt",
+      adapterName: "chatgpt-dom-v1",
+      turns: [{ role: "user", text: "Hello" }],
+    });
+    expect(envelope.session.provider_session_id).toMatch(/^chatgpt:/);
+    expect(envelope.capture_id).toBe(envelope.session.provider_session_id);
   });
 });
 

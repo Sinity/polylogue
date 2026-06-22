@@ -36,11 +36,14 @@
   }) {
     const sourceUrl = window.location.href;
     const stableProviderSessionId = providerSessionId || sessionIdFromUrl(provider, sourceUrl);
+    const stableCaptureId = stableProviderSessionId.startsWith(`${provider}:`)
+      ? stableProviderSessionId
+      : `${provider}:${stableProviderSessionId}`;
     const now = new Date().toISOString();
     const envelope = {
       polylogue_capture_kind: CAPTURE_KIND,
       schema_version: SCHEMA_VERSION,
-      capture_id: `${provider}:${stableProviderSessionId}`,
+      capture_id: stableCaptureId,
       source: "browser-extension",
       provenance: {
         source_url: sourceUrl,
