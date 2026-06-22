@@ -921,9 +921,10 @@ Options:
   --help                    Show this message and exit.
 
 Commands:
-  completions        Generate shell completion scripts.
-  paths              Print canonical archive paths and filesystem topology.
-  query-completions  Print shared query-builder completion metadata as JSON.
+  action-affordances  Print shared query-action affordance metadata as JSON.
+  completions         Generate shell completion scripts.
+  paths               Print canonical archive paths and filesystem topology.
+  query-completions   Print shared query-builder completion metadata as...
 </code></pre>
 <h2>Completions</h2>
 <pre><code class="language-text">Usage: polylogue config completions [OPTIONS]
@@ -1232,6 +1233,11 @@ The schema files live under <code>docs/schemas/cli-output/</code>.</p>
 <td><code>mutation-result</code></td>
 <td><code>MutationResultPayload</code></td>
 <td><code>polylogue find &lt;query&gt; then delete --dry-run</code><br><code>polylogue find &lt;query&gt; then delete --yes</code><br><code>MCP mutation tools</code><br><code>daemon mutation endpoints</code></td>
+</tr>
+<tr>
+<td><code>action-affordance-list</code></td>
+<td><code>ActionAffordanceListPayload</code></td>
+<td><code>polylogue config action-affordances</code><br><code>future daemon/MCP action discovery</code></td>
 </tr>
 <tr>
 <td><code>machine-error</code></td>
