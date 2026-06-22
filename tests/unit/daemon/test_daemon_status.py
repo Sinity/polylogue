@@ -184,15 +184,19 @@ def test_daemon_status_uses_default_browser_capture_spool(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    expected_spool = tmp_path / "browser-capture"
     monkeypatch.setattr(
         BrowserCaptureReceiverConfig,
         "default",
-        classmethod(lambda cls: BrowserCaptureReceiverConfig(spool_path=tmp_path / "browser-capture")),
+        classmethod(lambda cls: BrowserCaptureReceiverConfig(spool_path=expected_spool)),
     )
 
     payload = daemon_status_payload(sources=())
 
     assert payload["browser_capture_active"] is True
+    browser_capture = payload["browser_capture"]
+    assert isinstance(browser_capture, dict)
+    assert browser_capture["spool_path"] == str(expected_spool)
     component_state = payload["component_state"]
     assert isinstance(component_state, dict)
     assert component_state["browser_capture"] == "running"

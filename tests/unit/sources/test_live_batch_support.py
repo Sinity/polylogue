@@ -411,10 +411,13 @@ def test_streaming_sized_browser_capture_json_uses_native_payload_detection(
         assert (
             conn.execute(
                 """
-            SELECT group_concat(messages.role || ':' || blocks.text, '|')
-            FROM messages
-            JOIN blocks USING (message_id)
-            ORDER BY messages.position, blocks.position
+            SELECT group_concat(item, '|')
+            FROM (
+                SELECT messages.role || ':' || blocks.text AS item
+                FROM messages
+                JOIN blocks USING (message_id)
+                ORDER BY messages.position, blocks.position
+            )
             """
             ).fetchone()[0]
             == "user:Native user text|assistant:Native answer text"
@@ -644,6 +647,34 @@ def test_append_plan_defers_when_tail_has_no_complete_line(tmp_path: Path) -> No
     )
 
     assert processor._append_plan(path) is _DEFER_APPEND
+
+
+def test_browser_capture_json_replacement_bypasses_append_plan(tmp_path: Path) -> None:
+    root = tmp_path / "browser-capture" / "chatgpt"
+    root.mkdir(parents=True)
+    path = root / "capture.json"
+    path.write_text('{"polylogue_capture_kind":"browser_llm_session"}', encoding="utf-8")
+    db_path = tmp_path / "archive.sqlite"
+    cursor = CursorStore(db_path)
+    old_size = path.stat().st_size
+    cursor.set(
+        path,
+        old_size,
+        byte_offset=old_size,
+        last_complete_newline=old_size,
+        parser_fingerprint="test-parser",
+        content_fingerprint="old-fingerprint",
+        source_name="chatgpt",
+    )
+    path.write_text('{"polylogue_capture_kind":"browser_llm_session","turns":["replacement"]}', encoding="utf-8")
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="browser-capture", root=root.parent, suffixes=(".json",)),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+
+    assert processor._append_plan(path) is None
 
 
 def test_incomplete_append_is_requeued_not_full_ingested(tmp_path: Path) -> None:

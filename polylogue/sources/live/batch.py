@@ -1278,6 +1278,8 @@ class LiveBatchProcessor:
         )
 
     def _append_plan(self, path: Path, *, cursor: CursorRecord | None = None) -> _AppendPlan | _DeferredAppend | None:
+        if self._source_name_for(path) == "browser-capture" and path.suffix.lower() == ".json":
+            return None
         cursor = cursor or self._cursor.get_record(path)
         if cursor is None or cursor.parser_fingerprint != self._current_parser_fingerprint():
             return None

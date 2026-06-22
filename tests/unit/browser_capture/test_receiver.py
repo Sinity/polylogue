@@ -150,7 +150,7 @@ def test_browser_capture_status_daemon_cli_json(cli_workspace: dict[str, Path]) 
     assert typed.spool_ready is True
     assert typed.auth_required is False
     assert typed.allowed_origins == ["chrome-extension://*"]
-    assert "spool_path" not in payload
+    assert typed.spool_path.endswith("browser-capture")
 
 
 def test_browser_capture_route_contracts_cover_receiver_boundary() -> None:

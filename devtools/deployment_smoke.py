@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import re
@@ -17,13 +18,17 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-SYSTEMWIDE_PATH = (
-    "/run/current-system/sw/bin:"
-    "/etc/profiles/per-user/sinity/bin:"
-    "/home/sinity/.nix-profile/bin:"
-    "/home/sinity/.local/bin:"
-    "/usr/bin:"
-    "/bin"
+_CURRENT_USER = getpass.getuser()
+_HOME = Path.home()
+SYSTEMWIDE_PATH = ":".join(
+    (
+        "/run/current-system/sw/bin",
+        f"/etc/profiles/per-user/{_CURRENT_USER}/bin",
+        str(_HOME / ".nix-profile" / "bin"),
+        str(_HOME / ".local" / "bin"),
+        "/usr/bin",
+        "/bin",
+    )
 )
 
 REQUIRED_DAEMON_ROUTES = (

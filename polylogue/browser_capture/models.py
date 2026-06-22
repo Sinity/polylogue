@@ -162,6 +162,7 @@ class BrowserCaptureReceiverStatusPayload(BaseModel):
     ok: Literal[True] = True
     receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
     schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
+    spool_path: str
     spool_ready: bool
     allowed_origins: list[str]
     allow_remote: bool
