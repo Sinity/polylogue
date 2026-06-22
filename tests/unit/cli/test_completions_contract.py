@@ -166,3 +166,11 @@ class TestActionAffordanceMetadata:
         delete = by_id["delete"]
         assert delete["safety_level"] == "destructive"
         assert delete["confirmation_command"] == "polylogue find QUERY then delete --dry-run"
+
+    @pytest.mark.parametrize("args", (["--json"], ["--format", "json"]))
+    def test_action_affordances_accepts_common_json_flags(self, runner: CliRunner, args: list[str]) -> None:
+        result = runner.invoke(cli, ["config", "action-affordances", *args])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["actions"][0]["id"] == "find"

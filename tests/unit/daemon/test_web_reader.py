@@ -524,6 +524,7 @@ class TestReaderSearchState:
         for region in (
             "renderSidebarState",
             "renderSessions",
+            "sessionsFromListPayload",
             "renderFacets",
             "renderMain",
             "renderWorkspaceToolbar",
@@ -619,6 +620,14 @@ class TestReaderSearchState:
         assert payload["retrieval_lane"] in {"dialogue", "auto"}
         assert payload["ranking_policy"] == "mixed-bm25-rrf-vector"
         assert payload["ranking_policy_version"] == "1"
+        assert [action["id"] for action in payload["action_affordances"]] == [
+            "read",
+            "continue",
+            "select",
+            "mark",
+            "analyze",
+            "delete",
+        ]
         hit = next(item for item in payload["hits"] if item["session"]["id"] == "claude-code-session:c1")
         assert hit["session"]["target_ref"]["identity_key"] == "session:claude-code-session:c1"
         assert hit["session"]["anchor"] == "session-claude-code-session-c1"
@@ -661,6 +670,14 @@ class TestReaderSearchState:
 
         assert isinstance(payload, dict)
         assert payload["total"] == 1
+        assert [action["id"] for action in payload["action_affordances"]] == [
+            "read",
+            "continue",
+            "select",
+            "mark",
+            "analyze",
+            "delete",
+        ]
         hit = payload["hits"][0]
         assert hit["session"]["id"] == session_id
         assert hit["match"]["target_ref"]["identity_key"].startswith(f"message:{session_id}:")

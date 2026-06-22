@@ -84,9 +84,22 @@ def query_completions_command(kind: str, incomplete: str, unit: str | None, fiel
 
 
 @click.command("action-affordances")
-def action_affordances_command() -> None:
+@click.option(
+    "--json",
+    "json_flag",
+    is_flag=True,
+    help="Emit JSON. Accepted for consistency with other machine-readable commands.",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["json"]),
+    help="Output format. Only JSON is currently supported.",
+)
+def action_affordances_command(json_flag: bool, output_format: str | None) -> None:
     """Print shared query-action affordance metadata as JSON."""
 
+    _ = (json_flag, output_format)
     click.echo(action_affordance_list_payload().model_dump_json(indent=2))
 
 

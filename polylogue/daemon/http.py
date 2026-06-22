@@ -1828,6 +1828,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     resolved_session_id = archive.resolve_session_id(spec_session_id)
                 except KeyError:
                     if fts_query:
+                        from polylogue.operations.action_contracts import query_result_action_affordance_payloads
+
                         return {
                             "query": fts_query,
                             "retrieval_lane": "dialogue",
@@ -1837,11 +1839,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                             "total": 0,
                             "limit": limit,
                             "offset": offset,
+                            "action_affordances": [
+                                action.model_dump(mode="json") for action in query_result_action_affordance_payloads()
+                            ],
                         }
                     return {"items": [], "total": 0, "limit": limit, "offset": offset}
                 except ValueError as exc:
                     raise QuerySpecError("id", spec_session_id) from exc
             if fts_query:
+                from polylogue.operations.action_contracts import query_result_action_affordance_payloads
+
                 hits = archive.search_summaries(
                     fts_query,
                     limit=limit,
@@ -1858,6 +1865,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "total": len(hits),
                     "limit": limit,
                     "offset": offset,
+                    "action_affordances": [
+                        action.model_dump(mode="json") for action in query_result_action_affordance_payloads()
+                    ],
                 }
                 if not hits:
                     # Zero-result query: attach a diagnostics envelope (matching

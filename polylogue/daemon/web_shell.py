@@ -505,6 +505,19 @@ function getSessionIdFromURL() {
   return m ? decodeURIComponent(m[1]) : null;
 }
 __WORKSPACE_JS__
+function sessionsFromListPayload(data) {
+  if (!data) return [];
+  if (Array.isArray(data.items)) return data.items;
+  if (Array.isArray(data.hits)) {
+    return data.hits.map(function(hit) {
+      var session = hit.session || {};
+      if (hit.match && !session.match) session.match = hit.match;
+      return session;
+    });
+  }
+  return [];
+}
+
 window.addEventListener('popstate', function() {
   var route = getWorkspaceRouteFromURL();
   if (route) { loadWorkspaceRoute(route, false); return; }
@@ -524,8 +537,9 @@ async function loadSessions(opts) {
   (state.sessions || []).forEach(function(c) { beforeIds[c.id] = true; });
   try {
     var data = await fetchJSON('/api/sessions?' + params);
-    state.sessions = data.items || [];
+    state.sessions = sessionsFromListPayload(data);
     state.total = data.total || 0;
+    state.actionAffordances = data.action_affordances || [];
     document.getElementById('footer-result').textContent =
       (state.total > 0) ? (state.total + ' results') : '';
   } catch(e) {
