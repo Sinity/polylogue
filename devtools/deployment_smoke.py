@@ -153,6 +153,7 @@ class DeploymentSmokeReport:
     browser_render: BrowserRenderProbe | None
     browser_capture_archive: BrowserCaptureArchiveProbe
     browser_capture_receiver_archive_state: BrowserCaptureReceiverArchiveStateProbe
+    runtime_evidence: dict[str, Any]
     diagnostics: dict[str, Any]
     failures: list[str]
 
@@ -841,6 +842,65 @@ def _diagnose(
     }
 
 
+def _runtime_evidence(
+    *,
+    path: str,
+    repo_head: str | None,
+    daemon_base_url: str,
+    receiver_base_url: str,
+    archive_root: Path,
+    commands: list[CommandProbe],
+    routes: list[RouteProbe],
+) -> dict[str, Any]:
+    command_versions = {
+        command.name: {
+            "path": command.path,
+            "stdout": command.stdout,
+            "commit": _version_commit(command.stdout),
+            "ok": command.ok,
+        }
+        for command in commands
+    }
+    installed_commits = sorted(
+        {
+            commit
+            for command in command_versions.values()
+            if isinstance((commit := command.get("commit")), str) and commit
+        }
+    )
+    status_payload = next(
+        (
+            route.payload
+            for route in routes
+            if route.url.rstrip("/") == f"{daemon_base_url.rstrip('/')}/api/status" and route.payload is not None
+        ),
+        {},
+    )
+    fts_readiness = status_payload.get("fts_readiness")
+    warnings: list[str] = []
+    if repo_head and installed_commits and all(not repo_head.startswith(commit) for commit in installed_commits):
+        warnings.append("installed command commits differ from source repo head")
+    return {
+        "path": path,
+        "source_repo_head": repo_head,
+        "installed_commits": installed_commits,
+        "command_versions": command_versions,
+        "daemon_base_url": daemon_base_url,
+        "receiver_base_url": receiver_base_url,
+        "archive_root": str(archive_root),
+        "daemon_status": {
+            "ok": status_payload.get("ok"),
+            "component_state": status_payload.get("component_state"),
+            "db_path": status_payload.get("db_path"),
+            "db_size_bytes": status_payload.get("db_size_bytes"),
+            "wal_size_bytes": status_payload.get("wal_size_bytes"),
+            "fts_messages_ready": fts_readiness.get("messages_ready") if isinstance(fts_readiness, dict) else None,
+            "fts_invariant_ready": fts_readiness.get("invariant_ready") if isinstance(fts_readiness, dict) else None,
+        },
+        "warnings": warnings,
+    }
+
+
 def build_report(
     *,
     path: str,
@@ -902,6 +962,15 @@ def build_report(
             f"{browser_capture_receiver_archive_state.error or browser_capture_receiver_archive_state.status}"
         )
     repo_head = _repo_head()
+    runtime_evidence = _runtime_evidence(
+        path=path,
+        repo_head=repo_head,
+        daemon_base_url=daemon_base_url,
+        receiver_base_url=receiver_base_url,
+        archive_root=archive_root,
+        commands=commands,
+        routes=routes,
+    )
     return DeploymentSmokeReport(
         ok=not failures,
         path=path,
@@ -914,6 +983,7 @@ def build_report(
         browser_render=browser_render,
         browser_capture_archive=browser_capture_archive,
         browser_capture_receiver_archive_state=browser_capture_receiver_archive_state,
+        runtime_evidence=runtime_evidence,
         diagnostics=_diagnose(
             commands,
             routes,
