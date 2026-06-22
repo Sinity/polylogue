@@ -660,6 +660,7 @@ async def run_daemon_services(
 ) -> None:
     """Run configured daemon components until interrupted."""
     from polylogue.daemon import process_start as _process_start
+    from polylogue.daemon.status_snapshot import configure_runtime_components
     from polylogue.paths import archive_root
 
     global _pidfile_path
@@ -678,6 +679,12 @@ async def run_daemon_services(
                 f"--api-host={api_host} with --insecure-allow-remote requires --api-auth-token. "
                 f"Remote binding without authentication is not supported."
             )
+    configure_runtime_components(
+        api_enabled=enable_api,
+        watcher_enabled=enable_watch,
+        browser_capture_enabled=enable_browser_capture,
+        browser_capture_spool_path=browser_capture_spool_path,
+    )
 
     logger.info("daemon started")
 

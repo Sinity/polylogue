@@ -128,9 +128,17 @@ def test_loopback_bind_passes_remote_check() -> None:
     from unittest.mock import patch
 
     api_port = _unused_loopback_port()
-    with patch(
-        "polylogue.daemon.cli._ensure_fts_startup_readiness",
-        side_effect=RuntimeError("post-gate sentinel"),
+    configured: list[dict[str, object]] = []
+
+    def record_runtime_components(**kwargs: object) -> None:
+        configured.append(kwargs)
+
+    with (
+        patch(
+            "polylogue.daemon.cli._ensure_fts_startup_readiness",
+            side_effect=RuntimeError("post-gate sentinel"),
+        ),
+        patch("polylogue.daemon.status_snapshot.configure_runtime_components", side_effect=record_runtime_components),
     ):
         with pytest.raises(RuntimeError, match="post-gate sentinel"):
             _run(
@@ -151,6 +159,15 @@ def test_loopback_bind_passes_remote_check() -> None:
                     api_auth_token=None,
                 )
             )
+
+    assert configured == [
+        {
+            "api_enabled": True,
+            "watcher_enabled": False,
+            "browser_capture_enabled": False,
+            "browser_capture_spool_path": None,
+        }
+    ]
 
 
 @pytest.mark.timeout(30)
