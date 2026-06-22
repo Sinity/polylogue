@@ -930,6 +930,26 @@ class LiveBatchProcessor:
                             current_path=path,
                             source_payload_read_bytes=source_payload_read_bytes,
                         )
+            elif source_name == "browser-capture" and path.suffix.lower() == ".json":
+                try:
+                    payload = path.read_bytes()
+                except OSError:
+                    failed.append(path)
+                    continue
+                provider = _detect_provider_from_raw_bytes(payload, path.name, fallback_provider)
+                source_name = provider.value
+                if not _parse_payload_as_session_artifact(path, provider=provider, payload=payload):
+                    self._mark_excluded_cursor(path, stat, source_name=source_name)
+                    continue
+                raw_id, blob_size = blob_store.write_from_bytes(payload)
+                raw_payloads[raw_id] = payload
+                source_payload_read_bytes += len(payload)
+                if heartbeat is not None:
+                    heartbeat(
+                        "full_blob_copy",
+                        current_path=path,
+                        source_payload_read_bytes=source_payload_read_bytes,
+                    )
             elif stat.st_size >= _STREAMING_FULL_INGEST_BYTES:
                 provider = _detect_provider_from_path_sample(path, fallback_provider)
                 source_name = provider.value
