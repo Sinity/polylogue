@@ -231,7 +231,7 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
         surfaces=(
             "polylogue config action-affordances",
             "GET /api/action-affordances",
-            "future MCP action discovery",
+            "MCP action_affordances",
         ),
     ),
     CliOutputSchema(

@@ -246,7 +246,7 @@
   "x-polylogue-cli-surfaces": [
     "polylogue config action-affordances",
     "GET /api/action-affordances",
-    "future MCP action discovery"
+    "MCP action_affordances"
   ],
   "x-polylogue-source-model": "ActionAffordanceListPayload"
 }

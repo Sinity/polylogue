@@ -1025,6 +1025,20 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         return await hooks.async_safe_call("query_completions", run)
 
+    @mcp.tool()
+    async def action_affordances() -> str:
+        """Return shared query-action affordance metadata for agents."""
+
+        async def run() -> str:
+            from polylogue.operations.action_contracts import action_affordance_list_payload
+
+            payload = action_affordance_list_payload()
+            return hooks.json_payload(
+                MCPRootPayload(root=cast(dict[str, object], {"action_affordances": payload.model_dump(mode="json")}))
+            )
+
+        return await hooks.async_safe_call("action_affordances", run)
+
 
 def register_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     register_query_tools(mcp, hooks)
