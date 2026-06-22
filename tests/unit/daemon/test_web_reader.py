@@ -591,6 +591,8 @@ class TestReaderSearchState:
         assert isinstance(payload, dict)
         assert "scoped_to_query" in payload
         assert "origins" in payload
+        assert "complete_families" in payload
+        assert "deferred_families" in payload
 
     def test_facets_origin_filter_scopes_counts(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
@@ -696,10 +698,30 @@ class TestReaderSearchState:
         assert global_payload["scoped_to_query"] is False
         assert global_payload["total_sessions"] == 1
         assert global_payload["origins"] == {"codex-session": 1}
+        assert "repos" in global_payload["deferred_families"]
+        assert "action_types" in global_payload["deferred_families"]
+        assert global_payload["repos"] == {}
+        assert global_payload["action_types"] == {}
         assert isinstance(scoped_payload, dict)
         assert scoped_payload["scoped_to_query"] is True
         assert scoped_payload["total_sessions"] == 1
         assert scoped_payload["origins"] == {"codex-session": 1}
+
+    def test_archive_file_set_facets_can_include_expensive_families(
+        self,
+        workspace_env: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _seed_archive_test_archive(workspace_env)
+        with _running_server_without_seed() as (_, base_url):
+            payload = _get_json(base_url, "/api/facets?include_expensive=1")
+
+        assert isinstance(payload, dict)
+        assert payload["deferred_families"] == []
+        assert "repos" in payload["complete_families"]
+        assert "action_types" in payload["complete_families"]
+        assert isinstance(payload["repos"], dict)
+        assert isinstance(payload["action_types"], dict)
 
 
 # ---------------------------------------------------------------------------

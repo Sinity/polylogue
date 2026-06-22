@@ -10,7 +10,7 @@ import os
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePath
@@ -3209,9 +3209,18 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         query = self._get_param(params, "query") or self._get_param(params, "contains") or ""
         origin, origins = _archive_origin_filter(params)
+        requested_families = self._requested_facet_families(params)
+        heavy_families = {"repos", "action_types"}
+        if requested_families & heavy_families:
+            requested_families.update(heavy_families)
+        include_heavy_families = bool(requested_families & heavy_families)
+        complete_families: tuple[str, ...] = ("origins", "tags", "total_sessions", "total_messages")
+        if include_heavy_families:
+            complete_families = (*complete_families, *tuple(sorted(requested_families & heavy_families)))
+        deferred_families = tuple(sorted(heavy_families - requested_families)) if not include_heavy_families else ()
         scoped_to_query = bool(query or origin or origins)
         with ArchiveStore.open_existing(archive_root) as archive:
-            global_payload = self._archive_facet_bucket(archive)
+            global_payload = self._archive_facet_bucket(archive, include_heavy_families=include_heavy_families)
             if scoped_to_query:
                 session_ids: tuple[str, ...] = ()
                 if query:
@@ -3225,9 +3234,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                             origin=origin,
                             origins=origins,
                             session_ids=session_ids,
+                            include_heavy_families=include_heavy_families,
                         )
                 else:
-                    scoped_payload = self._archive_facet_bucket(archive, origin=origin, origins=origins)
+                    scoped_payload = self._archive_facet_bucket(
+                        archive,
+                        origin=origin,
+                        origins=origins,
+                        include_heavy_families=include_heavy_families,
+                    )
             else:
                 scoped_payload = global_payload
         active = scoped_payload if scoped_to_query else global_payload
@@ -3244,8 +3259,30 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 "total_messages": active.total_messages,
                 "scoped": scoped_payload,
                 "global": global_payload,
+                "complete_families": complete_families,
+                "deferred_families": deferred_families,
+                "generated_at": datetime.now(UTC).isoformat(),
+                "budget_exceeded": bool(deferred_families),
             }
         ).model_dump(mode="json", by_alias=True)
+
+    def _requested_facet_families(self, params: dict[str, list[str]]) -> set[str]:
+        requested = {"origins", "tags"}
+        families_raw = self._get_param(params, "families") or ""
+        for family in families_raw.split(","):
+            normalized = family.strip().replace("-", "_")
+            if normalized in {"origin", "origins"}:
+                requested.add("origins")
+            elif normalized in {"tag", "tags"}:
+                requested.add("tags")
+            elif normalized in {"repo", "repos"}:
+                requested.add("repos")
+            elif normalized in {"action", "actions", "action_type", "action_types"}:
+                requested.add("action_types")
+        include_expensive = (self._get_param(params, "include_expensive") or "").strip().lower()
+        if include_expensive in {"1", "true", "yes", "on"}:
+            requested.update({"repos", "action_types"})
+        return requested
 
     def _archive_facet_bucket(
         self,
@@ -3254,6 +3291,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         origin: str | None = None,
         origins: tuple[str, ...] = (),
         session_ids: tuple[str, ...] = (),
+        include_heavy_families: bool = False,
     ) -> FacetBucketsPayload:
         from polylogue.surfaces.payloads import FacetBucketsPayload
 
@@ -3261,8 +3299,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         return FacetBucketsPayload(
             origins=archive.stats_by("origin", origin=origin, origins=origins, session_ids=session_ids),
             tags=archive.stats_by("tag", origin=origin, origins=origins, session_ids=session_ids),
-            repos=archive.stats_by("repo", origin=origin, origins=origins, session_ids=session_ids),
-            action_types=archive.stats_by("action", origin=origin, origins=origins, session_ids=session_ids),
+            repos=(
+                archive.stats_by("repo", origin=origin, origins=origins, session_ids=session_ids)
+                if include_heavy_families
+                else {}
+            ),
+            action_types=(
+                archive.stats_by("action", origin=origin, origins=origins, session_ids=session_ids)
+                if include_heavy_families
+                else {}
+            ),
             total_sessions=stats.total_sessions,
             total_messages=stats.total_messages,
         )

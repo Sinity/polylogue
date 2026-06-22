@@ -342,6 +342,7 @@ var state = {
   sessions: [], selected: null, selectedRaw: null,
   origin: '', query: '', offset: 0, limit: 100, total: 0,
   status: {}, facets: null, inspectorTab: 'info',
+  facetError: '',
   marks: {}, annotations: {}, savedViews: [], workspaces: [], userStateError: '',
   mode: 'single', stackPayload: null, comparePayload: null,
   // Bulk selection state (#1119). selection is a Set-like object keyed by
@@ -622,7 +623,14 @@ async function loadFacets() {
   if (state.query) params.set('query', state.query);
   if (state.origin) params.set('origin', state.origin);
   var qs = params.toString();
-  try { state.facets = await fetchJSON('/api/facets' + (qs ? '?' + qs : '')); renderFacets(); } catch(e) {}
+  try {
+    state.facets = await fetchJSON('/api/facets' + (qs ? '?' + qs : ''));
+    state.facetError = '';
+  } catch(e) {
+    state.facetError = 'Facets unavailable';
+    state.facets = null;
+  }
+  renderFacets();
 }
 
 async function loadStatus() {
@@ -882,8 +890,20 @@ __BULK_JS__
 
 function renderFacets() {
   var f = state.facets;
-  if (!f) { document.getElementById('facet-bar').innerHTML = ''; return; }
+  if (!f) {
+    document.getElementById('facet-bar').innerHTML = state.facetError
+      ? '<div class="facet-group"><div class="facet-group-label">' + esc(state.facetError) + '</div></div>'
+      : '';
+    return;
+  }
   var html = '';
+  if ((f.deferred_families || []).length > 0 || f.budget_exceeded) {
+    html += '<div class="facet-group"><div class="facet-group-label">Facet detail deferred</div><div class="facet-chips">';
+    (f.deferred_families || []).forEach(function(family) {
+      html += '<span class="facet-chip" title="Computed on demand to keep the reader responsive">' + esc(family) + '</span>';
+    });
+    html += '</div></div>';
+  }
   var providers = f.origins || {};
   var provKeys = Object.keys(providers);
   if (provKeys.length > 0) {

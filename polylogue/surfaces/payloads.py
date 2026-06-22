@@ -2229,6 +2229,10 @@ class FacetsResponse(SurfacePayloadModel):
         serialization_alias="global",
     )
     idf: dict[str, dict[str, float]] = Field(default_factory=dict)
+    complete_families: tuple[str, ...] = ()
+    deferred_families: tuple[str, ...] = ()
+    generated_at: str | None = None
+    budget_exceeded: bool = False
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
