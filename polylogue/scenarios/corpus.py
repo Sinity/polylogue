@@ -556,7 +556,7 @@ def build_demo_corpus_specs(
             messages_min=2,
             messages_max=3,
             seed=seed,
-            style="showcase",
+            style="demo",
             origin=origin,
             tags=tags,
         ),

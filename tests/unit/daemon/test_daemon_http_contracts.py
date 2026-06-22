@@ -283,6 +283,30 @@ class TestStatusEnvelopeContract:
         assert payload["quick_check"] in {"pass", "error"}
         assert isinstance(payload["ok"], bool)
 
+    def test_health_endpoint_uses_bounded_db_probe(
+        self,
+        workspace_env: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``GET /api/health`` must not run archive readiness scans."""
+        archive_root = workspace_env["archive_root"]
+        _init_archive(archive_root)
+
+        def fail_readiness(*_args: object, **_kwargs: object) -> object:
+            raise AssertionError("health endpoint must not call archive readiness")
+
+        monkeypatch.setattr("polylogue.readiness.get_readiness", fail_readiness)
+
+        handler = _make_handler("GET", "/api/health")
+        _, send_json = _capture_responses(handler)
+        handler.do_GET()
+
+        send_json.assert_called_once()
+        status, payload = send_json.call_args.args
+        assert status == HTTPStatus.OK
+        assert payload["quick_check"] == "pass"
+        assert payload["ok"] is True
+
 
 # ---------------------------------------------------------------------------
 # 2. Convergence/idempotency contracts at the HTTP layer

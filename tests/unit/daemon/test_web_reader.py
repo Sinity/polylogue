@@ -524,6 +524,7 @@ class TestReaderSearchState:
         for region in (
             "renderSidebarState",
             "renderSessions",
+            "sessionsFromListPayload",
             "renderFacets",
             "renderMain",
             "renderWorkspaceToolbar",
@@ -619,6 +620,14 @@ class TestReaderSearchState:
         assert payload["retrieval_lane"] in {"dialogue", "auto"}
         assert payload["ranking_policy"] == "mixed-bm25-rrf-vector"
         assert payload["ranking_policy_version"] == "1"
+        assert [action["id"] for action in payload["action_affordances"]] == [
+            "read",
+            "continue",
+            "select",
+            "mark",
+            "analyze",
+            "delete",
+        ]
         hit = next(item for item in payload["hits"] if item["session"]["id"] == "claude-code-session:c1")
         assert hit["session"]["target_ref"]["identity_key"] == "session:claude-code-session:c1"
         assert hit["session"]["anchor"] == "session-claude-code-session-c1"
@@ -661,6 +670,14 @@ class TestReaderSearchState:
 
         assert isinstance(payload, dict)
         assert payload["total"] == 1
+        assert [action["id"] for action in payload["action_affordances"]] == [
+            "read",
+            "continue",
+            "select",
+            "mark",
+            "analyze",
+            "delete",
+        ]
         hit = payload["hits"][0]
         assert hit["session"]["id"] == session_id
         assert hit["match"]["target_ref"]["identity_key"].startswith(f"message:{session_id}:")
@@ -1509,6 +1526,31 @@ class TestReaderQueryCompletions:
         assert {"sort by time", "sort by count", "sort by key"}.issubset(
             {candidate["value"] for candidate in candidate_payloads}
         )
+
+
+class TestReaderActionAffordances:
+    def test_action_affordances_endpoint_exposes_shared_payload(self) -> None:
+        with _running_server_without_seed() as (_server, base_url):
+            payload = _get_json(base_url, "/api/action-affordances")
+
+        assert isinstance(payload, dict)
+        payload_dict = cast(dict[str, object], payload)
+        actions = payload_dict["actions"]
+        assert isinstance(actions, list)
+        action_payloads = [cast(dict[str, object], action) for action in cast(list[object], actions)]
+        action_by_id = {str(action["id"]): action for action in action_payloads}
+
+        read = action_by_id["read"]
+        assert read["target"] == "selection"
+        assert read["safety_level"] == "safe"
+        assert read["selection_command"] == "polylogue find QUERY then select"
+        assert "terminal" in cast(list[object], read["destination_support"])
+
+        delete = action_by_id["delete"]
+        assert delete["target"] == "selection"
+        assert delete["safety_level"] == "destructive"
+        assert delete["confirmation_command"] == "polylogue find QUERY then delete --dry-run"
+        assert "find" in cast(list[object], delete["next_actions"])
 
 
 class TestReaderQueryUnits:

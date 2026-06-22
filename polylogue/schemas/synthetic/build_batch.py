@@ -6,6 +6,7 @@ import random
 from typing import Protocol
 
 from polylogue.core.json import JSONValue, is_json_value
+from polylogue.schemas.synthetic.demo_themes import _DEMO_THEMES, SessionTheme
 from polylogue.schemas.synthetic.models import (
     SchemaRecord,
     SyntheticArtifact,
@@ -15,7 +16,6 @@ from polylogue.schemas.synthetic.models import (
 )
 from polylogue.schemas.synthetic.relations import RelationConstraintSolver
 from polylogue.schemas.synthetic.semantic_values import SemanticValueGenerator
-from polylogue.schemas.synthetic.showcase import _SHOWCASE_THEMES, SessionTheme
 from polylogue.schemas.synthetic.wire_formats import WireFormat
 
 
@@ -62,8 +62,8 @@ class _SyntheticBatchContext(Protocol):
 def _resolve_style(style: str) -> SyntheticStyle:
     if style == "default":
         return "default"
-    if style == "showcase":
-        return "showcase"
+    if style == "demo":
+        return "demo"
     if style == "tool-heavy":
         return "tool-heavy"
     raise ValueError(f"Unknown synthetic style: {style}")
@@ -90,7 +90,7 @@ def generate_batch(
         self._relation_solver = RelationConstraintSolver(self.schema)
         self._semantic_gen = None
         n_messages = rng.choice(messages_per_session)
-        theme = rng.choice(_SHOWCASE_THEMES) if resolved_style == "showcase" else None
+        theme = rng.choice(_DEMO_THEMES) if resolved_style == "demo" else None
         data = _generate_session(self, n_messages, rng, theme=theme)
         if resolved_style == "tool-heavy":
             data = _add_tool_heavy_blocks(self.provider, data)

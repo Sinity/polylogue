@@ -38,6 +38,7 @@ import click
 from click.shell_completion import get_completion_class
 
 from polylogue.archive.query.completions import QUERY_COMPLETION_KINDS, QueryCompletionError, query_completion_payload
+from polylogue.operations.action_contracts import action_affordance_list_payload
 
 _INSTALL_EPILOG = """\
 \b
@@ -82,4 +83,25 @@ def query_completions_command(kind: str, incomplete: str, unit: str | None, fiel
     click.echo(json.dumps(payload, indent=2, sort_keys=True))
 
 
-__all__ = ["completions_command", "query_completions_command"]
+@click.command("action-affordances")
+@click.option(
+    "--json",
+    "json_flag",
+    is_flag=True,
+    help="Emit JSON. Accepted for consistency with other machine-readable commands.",
+)
+@click.option(
+    "--format",
+    "-f",
+    "output_format",
+    type=click.Choice(["json"]),
+    help="Output format. Only JSON is currently supported.",
+)
+def action_affordances_command(json_flag: bool, output_format: str | None) -> None:
+    """Print shared query-action affordance metadata as JSON."""
+
+    _ = (json_flag, output_format)
+    click.echo(action_affordance_list_payload().model_dump_json(indent=2))
+
+
+__all__ = ["action_affordances_command", "completions_command", "query_completions_command"]

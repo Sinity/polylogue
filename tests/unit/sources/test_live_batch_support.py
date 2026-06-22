@@ -311,6 +311,119 @@ def test_streaming_full_ingest_writes_archive_from_blob(
     assert raw_row[0] == result.raw_fingerprints[source]
 
 
+def test_streaming_sized_browser_capture_json_uses_native_payload_detection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    root = tmp_path / "browser-capture" / "chatgpt"
+    root.mkdir(parents=True)
+    source = root / "native-capture.json"
+    native_payload = {
+        "id": "native-large",
+        "title": "Native large capture",
+        "create_time": 1781442866.0,
+        "update_time": 1781442966.0,
+        "current_node": "assistant-node",
+        "mapping": {
+            "root": {"id": "root", "message": None, "parent": None, "children": ["user-node"]},
+            "user-node": {
+                "id": "user-node",
+                "parent": "root",
+                "children": ["assistant-node"],
+                "message": {
+                    "id": "native-u1",
+                    "author": {"role": "user"},
+                    "create_time": 1781442870.0,
+                    "content": {"content_type": "text", "parts": ["Native user text"]},
+                    "metadata": {},
+                },
+            },
+            "assistant-node": {
+                "id": "assistant-node",
+                "parent": "user-node",
+                "children": [],
+                "message": {
+                    "id": "native-a1",
+                    "author": {"role": "assistant"},
+                    "create_time": 1781442880.0,
+                    "content": {"content_type": "text", "parts": ["Native answer text"]},
+                    "metadata": {"model_slug": "gpt-native"},
+                },
+            },
+        },
+    }
+    capture_payload = {
+        "polylogue_capture_kind": "browser_llm_session",
+        "schema_version": 1,
+        "capture_id": "chatgpt:native-large",
+        "provenance": {
+            "source_url": "https://chatgpt.com/c/native-large",
+            "page_title": "ChatGPT - Native large capture",
+            "captured_at": "2026-04-24T00:00:00+00:00",
+            "adapter_name": "chatgpt-native-v1",
+            "capture_mode": "snapshot",
+        },
+        "session": {
+            "provider": "chatgpt",
+            "provider_session_id": "dom-fallback",
+            "title": "DOM fallback title",
+            "updated_at": "2026-04-24T00:00:01+00:00",
+            "turns": [{"provider_turn_id": "dom-u1", "role": "user", "text": "DOM fallback", "ordinal": 0}],
+        },
+        "raw_provider_payload": native_payload,
+        "padding": "x" * 256,
+    }
+    source.write_text(json.dumps(capture_payload), encoding="utf-8")
+    index_db = tmp_path / "index.db"
+    source_db = tmp_path / "source.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    cursor = CursorStore(index_db)
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="browser-capture", root=root.parent),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+
+    monkeypatch.setattr("polylogue.sources.live.batch._STREAMING_FULL_INGEST_BYTES", 1)
+
+    result = processor._ingest_full_paths_sync([source], source_name="browser-capture")
+
+    assert result.succeeded == [source]
+    assert result.failed == []
+    assert result.ingested_session_count == 1
+    assert result.ingested_message_count == 2
+    assert result.raw_source_names[source] == "chatgpt"
+    with sqlite3.connect(source_db) as conn:
+        assert conn.execute("SELECT origin, native_id FROM raw_sessions").fetchone() == (
+            "chatgpt-export",
+            "native-large",
+        )
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT native_id, title FROM sessions").fetchone() == (
+            "native-large",
+            "Native large capture",
+        )
+        assert (
+            conn.execute(
+                """
+            SELECT group_concat(item, '|')
+            FROM (
+                SELECT messages.role || ':' || blocks.text AS item
+                FROM messages
+                JOIN blocks USING (message_id)
+                ORDER BY messages.position, blocks.position
+            )
+            """
+            ).fetchone()[0]
+            == "user:Native user text|assistant:Native answer text"
+        )
+
+
 def test_full_ingest_bootstraps_archive_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -534,6 +647,34 @@ def test_append_plan_defers_when_tail_has_no_complete_line(tmp_path: Path) -> No
     )
 
     assert processor._append_plan(path) is _DEFER_APPEND
+
+
+def test_browser_capture_json_replacement_bypasses_append_plan(tmp_path: Path) -> None:
+    root = tmp_path / "browser-capture" / "chatgpt"
+    root.mkdir(parents=True)
+    path = root / "capture.json"
+    path.write_text('{"polylogue_capture_kind":"browser_llm_session"}', encoding="utf-8")
+    db_path = tmp_path / "archive.sqlite"
+    cursor = CursorStore(db_path)
+    old_size = path.stat().st_size
+    cursor.set(
+        path,
+        old_size,
+        byte_offset=old_size,
+        last_complete_newline=old_size,
+        parser_fingerprint="test-parser",
+        content_fingerprint="old-fingerprint",
+        source_name="chatgpt",
+    )
+    path.write_text('{"polylogue_capture_kind":"browser_llm_session","turns":["replacement"]}', encoding="utf-8")
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="browser-capture", root=root.parent, suffixes=(".json",)),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+
+    assert processor._append_plan(path) is None
 
 
 def test_incomplete_append_is_requeued_not_full_ingested(tmp_path: Path) -> None:

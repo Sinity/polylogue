@@ -79,6 +79,7 @@ _KNOWN_MINIMAL: dict[str, dict[str, object]] = {
     "get_recovery_work_packet": {"session_id": _SYNTHETIC_CONV_ID},
     "explain_query_expression": {"expression": "repo:polylogue"},
     "query_completions": {"kind": "field", "incomplete": "d"},
+    "action_affordances": {},
     "embedding_status": {},
     "embedding_preflight": {},
     "build_context_pack": {"project_repo": "test"},

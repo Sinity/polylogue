@@ -164,6 +164,7 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
+| `devtools workspace deployment-smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
 | `devtools workspace dev-loop` | Preflight branch-local daemon, web-shell, and browser-capture development loops. |
 | `devtools workspace failure-context` | Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope. |
 | `devtools workspace tasks` | Record and query local agent task execution history. |
@@ -188,7 +189,7 @@ Campaign outputs live under `.local/`, not in tracked docs trees.
 ## Local State Layout
 
 - `.cache/`: disposable cache state.
-- `.local/`: untracked local outputs such as campaigns, showcases, and reports.
+- `.local/`: untracked local outputs such as campaigns, demo artifacts, and reports.
 - `.venv/` and `.direnv/`: kept at the repo root because their tooling expects those locations.
 - `.local/result`: preferred repo-local out-link for `devtools release build-package`; a top-level `result` symlink is just Nix's default ad-hoc out-link.
 

@@ -7,6 +7,7 @@ import contextlib
 import functools
 import json
 import os
+import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -235,6 +236,7 @@ def _static_get_routes() -> tuple[_StaticGetRoute, ...]:
         _static_get_route("/api/import/explain", "_handle_import_explain", passes_params=True),
         _static_get_route("/api/refs/resolve", "_handle_ref_resolve", passes_params=True),
         _static_get_route("/api/query-completions", "_handle_query_completions", passes_params=True),
+        _static_get_route("/api/action-affordances", "_handle_action_affordances"),
         _static_get_route("/api/read-view-profiles", "_handle_read_view_profiles"),
         _static_get_route("/api/assertions", "_handle_assertions", passes_params=True),
         _static_get_route("/api/paste-browser", "_handle_paste_browser", passes_params=True),
@@ -1479,14 +1481,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         quick_check_ok = True
         try:
-            from polylogue.config import Config
-            from polylogue.paths import archive_root, render_root
-            from polylogue.readiness import get_readiness
-
-            cfg = Config(archive_root=archive_root(), render_root=render_root(), sources=[])
-            report = get_readiness(cfg, deep=False, probe_only=False)
-            quick_check_ok = report.counts().ok > 0
-        except Exception:
+            if not dbp.exists():
+                quick_check_ok = False
+            else:
+                with sqlite3.connect(f"file:{dbp}?mode=ro", uri=True, timeout=0.25) as conn:
+                    conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
+        except (OSError, sqlite3.Error):
             quick_check_ok = False
 
         self._send_json(
@@ -1828,6 +1828,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     resolved_session_id = archive.resolve_session_id(spec_session_id)
                 except KeyError:
                     if fts_query:
+                        from polylogue.operations.action_contracts import query_result_action_affordance_payloads
+
                         return {
                             "query": fts_query,
                             "retrieval_lane": "dialogue",
@@ -1837,11 +1839,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                             "total": 0,
                             "limit": limit,
                             "offset": offset,
+                            "action_affordances": [
+                                action.model_dump(mode="json") for action in query_result_action_affordance_payloads()
+                            ],
                         }
                     return {"items": [], "total": 0, "limit": limit, "offset": offset}
                 except ValueError as exc:
                     raise QuerySpecError("id", spec_session_id) from exc
             if fts_query:
+                from polylogue.operations.action_contracts import query_result_action_affordance_payloads
+
                 hits = archive.search_summaries(
                     fts_query,
                     limit=limit,
@@ -1858,6 +1865,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "total": len(hits),
                     "limit": limit,
                     "offset": offset,
+                    "action_affordances": [
+                        action.model_dump(mode="json") for action in query_result_action_affordance_payloads()
+                    ],
                 }
                 if not hits:
                     # Zero-result query: attach a diagnostics envelope (matching
@@ -2664,6 +2674,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_query_completion", "message": str(exc)})
             return
         self._send_json(HTTPStatus.OK, {"query_completions": payload})
+
+    @daemon_safe_handler
+    def _handle_action_affordances(self) -> None:
+        """``GET /api/action-affordances`` exposes shared query-action metadata."""
+
+        from polylogue.operations.action_contracts import action_affordance_list_payload
+
+        payload = action_affordance_list_payload()
+        self._send_json(HTTPStatus.OK, payload.model_dump(mode="json"))
 
     @daemon_safe_handler
     def _handle_read_view_profiles(self) -> None:

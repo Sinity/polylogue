@@ -88,8 +88,8 @@ ChatGPT/Claude.ai profile data.
 
 | Site | Provider | Notes |
 |------|----------|-------|
-| `chatgpt.com` | ChatGPT | DOM adapter for conversation thread |
-| `claude.ai` | Claude (web) | DOM adapter for chat messages |
+| `chatgpt.com` | ChatGPT | Provider adapter; prefer structured app payloads and fall back to DOM text |
+| `claude.ai` | Claude (web) | Provider adapter; DOM text fallback until a structured source is proven |
 
 The extension only captures content from supported pages. On unsupported
 pages the badge shows grey and no data is sent.
@@ -117,9 +117,9 @@ pages the badge shows grey and no data is sent.
 ## Architecture
 
 ```
-Browser (ChatGPT/Claude DOM)
+Browser (ChatGPT/Claude page/app state)
     │
-    │  content script reads the DOM
+    │  content script captures provider-native state or DOM fallback
     ▼
 Extension popup / background
     │

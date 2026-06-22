@@ -22,6 +22,7 @@ from polylogue.operations.action_contracts import (
     PUBLIC_ACTION_FLOOR,
     VIRTUAL_ACTION_PATHS,
     CliActionContract,
+    action_affordance_payloads,
     action_completion_contexts,
 )
 from tests.infra.app_env import make_app_env
@@ -82,6 +83,10 @@ def _choice_values(command: click.Command) -> set[str]:
         if "--json" in param.opts:
             values.add("json")
     return values
+
+
+def test_action_contract_paths_are_non_empty() -> None:
+    assert all(contract.path and all(contract.path) for contract in ACTION_CONTRACTS)
 
 
 def test_every_public_floor_action_has_exactly_one_contract() -> None:
@@ -165,15 +170,65 @@ def test_default_format_is_declared_for_every_contract() -> None:
     assert not invalid, f"Contracts have default_format outside formats: {invalid}"
 
 
+def test_action_contracts_emit_shared_affordance_payloads() -> None:
+    """The public floor exposes the #2305 affordance fields as JSON-native data."""
+    payloads = action_affordance_payloads()
+    by_id = {payload.id: payload for payload in payloads}
+
+    assert set(by_id) == {".".join(contract.path) for contract in ACTION_CONTRACTS}
+
+    read = by_id["read"]
+    assert read.target == "selection"
+    assert read.input_unit == "query_result_set"
+    assert read.cardinality_state == "explicit_multi"
+    assert read.safety_level == "safe"
+    assert read.selection_command == "polylogue find QUERY then select"
+    assert "browser" in read.destination_support
+    assert read.format_support == ("human", "json", "ndjson")
+    assert "continue" in read.next_actions
+
+    delete = by_id["delete"]
+    assert delete.safety_level == "destructive"
+    assert delete.confirmation_command == "polylogue find QUERY then delete --dry-run"
+    assert "dry_run_or_yes_required" in delete.guards
+
+
+def test_query_result_actions_declare_selection_or_confirmation_affordance() -> None:
+    """Singleton/multi query-result actions must expose how to disambiguate targets."""
+    missing = [
+        contract.path
+        for contract in ACTION_CONTRACTS
+        if contract.input_unit == "query_result_set"
+        and contract.cardinality in {"singleton", "explicit_multi", "destructive_multi"}
+        and contract.path != ("select",)
+        and contract.selection_command is None
+    ]
+    assert not missing
+
+
+def test_destructive_actions_declare_confirmation_affordance() -> None:
+    """Destructive actions must publish an explicit preview/confirmation command."""
+    missing = [
+        contract.path
+        for contract in ACTION_CONTRACTS
+        if contract.safety_level == "destructive" and contract.confirmation_command is None
+    ]
+    assert not missing
+
+
 def test_mutation_contracts_have_published_schema() -> None:
     """Mutation action contracts must be backed by a generated JSON Schema."""
     from devtools.render_cli_output_schemas import SCHEMAS
+    from polylogue.operations.action_contracts import ActionAffordanceListPayload
     from polylogue.surfaces.payloads import MutationResultPayload
 
     mutation_paths = sorted(entry.path for entry in ACTION_CONTRACTS if entry.machine_envelope == "mutation")
     assert mutation_paths == [("delete",), ("import",), ("mark",)]
 
     schema_by_name = {entry.name: entry for entry in SCHEMAS}
+    action_affordance_schema = schema_by_name.get("action-affordance-list")
+    assert action_affordance_schema is not None
+    assert action_affordance_schema.model is ActionAffordanceListPayload
     mutation_schema = schema_by_name.get("mutation-result")
     assert mutation_schema is not None, "mutation-result schema missing from render_cli_output_schemas.SCHEMAS"
     assert mutation_schema.model is MutationResultPayload

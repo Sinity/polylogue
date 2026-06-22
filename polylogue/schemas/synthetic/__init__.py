@@ -11,7 +11,7 @@ Submodules:
     - ``semantic_values`` — Semantic-role-driven value generation
     - ``relations`` — Relational constraint satisfaction
     - ``wire_formats`` — WireFormat, TreeConfig, PROVIDER_WIRE_FORMATS
-    - ``showcase`` — SessionTheme and curated synthetic themes
+    - ``demo`` — SessionTheme and curated synthetic themes
 """
 
 from polylogue.schemas.synthetic.core import (

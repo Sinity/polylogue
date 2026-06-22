@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from devtools.command_catalog import control_plane_command
 from devtools.render_support import write_if_changed
 from polylogue.archive.query.metadata import terminal_query_cli_surfaces, terminal_query_source_list
+from polylogue.operations.action_contracts import ActionAffordanceListPayload
 from polylogue.surfaces.payloads import (
     ArchiveDebtListPayload,
     ImportExplainPayload,
@@ -219,6 +220,21 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
         ),
     ),
     CliOutputSchema(
+        name="action-affordance-list",
+        title="Action Affordance List",
+        description=(
+            "Static query-action affordance inventory for public action surfaces. "
+            "Exposes target, cardinality, safety, destinations, formats, selection "
+            "and confirmation commands, guards, and next actions."
+        ),
+        model=ActionAffordanceListPayload,
+        surfaces=(
+            "polylogue config action-affordances",
+            "GET /api/action-affordances",
+            "MCP action_affordances",
+        ),
+    ),
+    CliOutputSchema(
         name="machine-error",
         title="Machine Error Envelope",
         description=(
@@ -266,7 +282,7 @@ def _build_schema(entry: CliOutputSchema) -> str:
     schema["description"] = (
         entry.description
         + "\n\nGenerated from "
-        + f"`polylogue.surfaces.payloads.{entry.model.__name__}` "
+        + f"`{entry.model.__module__}.{entry.model.__name__}` "
         + "by `devtools render cli-output-schemas`. Do not edit by hand."
     )
     schema["x-polylogue-cli-surfaces"] = list(entry.surfaces)

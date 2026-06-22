@@ -65,6 +65,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "list_assertion_claims": ("envelope", frozenset({"items", "total", "limit"})),
     "explain_query_expression": "single_object",
     "query_completions": "single_object",
+    "action_affordances": "single_object",
     "resolve_ref": "single_object",
     "explain_import": "typed_envelope",
     "raw_artifacts": ("envelope", frozenset({"raw_artifacts", "total"})),

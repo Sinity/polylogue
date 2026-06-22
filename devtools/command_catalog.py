@@ -330,6 +330,23 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace deployment-smoke",
+        "workspace",
+        "Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow.",
+        "devtools.deployment_smoke",
+        use_when=(
+            "After a system rebuild or before live UI probing, verify that the systemwide "
+            "polylogue/polylogued binaries, loopback daemon routes, browser-capture receiver, "
+            "and browser-capture archive materialization match the expected deployed surface."
+        ),
+        examples=(
+            "devtools workspace deployment-smoke",
+            "devtools workspace deployment-smoke --json",
+            "devtools workspace deployment-smoke --browser --browser-executable /etc/profiles/per-user/sinity/bin/google-chrome",
+            "devtools workspace deployment-smoke --daemon-url http://127.0.0.1:8766 --receiver-url http://127.0.0.1:8765",
+        ),
+    ),
+    CommandSpec(
         "lab projections",
         "verification lab",
         "Render the authored scenario-bearing verification projections.",

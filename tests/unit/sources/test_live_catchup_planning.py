@@ -12,6 +12,8 @@ import pytest
 
 import polylogue.sources.live.watcher as live_watcher
 from polylogue.sources.live import LiveWatcher, WatchSource
+from polylogue.sources.live.batch import LiveBatchProcessor
+from polylogue.sources.live.batch_support import _AppendPlan
 from polylogue.sources.live.cursor import CursorStore
 from tests.infra.frozen_clock import FrozenClock
 
@@ -91,6 +93,106 @@ def test_catch_up_repairs_missing_cursor_from_archive_source_row(tmp_path: Path)
     assert record.byte_size == archived.stat().st_size
     assert record.content_fingerprint == ("61" * 32)
     assert record.parser_fingerprint == live_watcher._PARSER_FINGERPRINT
+
+
+def test_catch_up_reconciles_browser_capture_cursor_from_archive_origin(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session_blob_ref
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    root = tmp_path / "browser-capture"
+    root.mkdir()
+    archived = root / "capture.json"
+    archived.write_text('{"polylogue_capture_kind":"browser_llm_session"}', encoding="utf-8")
+    polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    cursor = CursorStore(tmp_path / "ops.db")
+    source_db = tmp_path / "source.db"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    with sqlite3.connect(source_db) as conn:
+        write_source_raw_session_blob_ref(
+            conn,
+            origin="chatgpt-export",
+            source_path=str(archived),
+            source_index=0,
+            blob_hash=b"b" * 32,
+            blob_size=archived.stat().st_size,
+            acquired_at_ms=1,
+            native_id="capture",
+        )
+    watcher = LiveWatcher(
+        cast(Any, polylogue),
+        (WatchSource(name="browser-capture", root=root, suffixes=(".json",)),),
+        cursor=cursor,
+    )
+
+    plan = watcher._plan_catch_up(watcher._scan_catch_up_candidates([root]))
+    record = cursor.get_record(archived)
+
+    assert plan.needed == ()
+    assert plan.skipped_file_count == 1
+    assert record is not None
+    assert record.source_name == "chatgpt"
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        assert (
+            conn.execute("SELECT origin FROM ingest_cursor WHERE source_path = ?", (str(archived),)).fetchone()[0]
+            == "chatgpt-export"
+        )
+
+
+def test_codex_append_plan_recovers_identity_from_session_meta_when_source_row_missing(
+    tmp_path: Path,
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    root = tmp_path / "src"
+    root.mkdir()
+    source = root / "rollout-2026-06-18T02-59-46-conv-hot.jsonl"
+    prefix = b'{"timestamp":"2026-06-18T01:05:23.888Z","type":"session_meta","payload":{"id":"conv-hot"}}\n'
+    source.write_bytes(prefix + b'{"type":"message","payload":{"role":"user","content":"old"}}\n')
+    old_offset = source.stat().st_size
+    with source.open("ab") as handle:
+        handle.write(b'{"type":"message","payload":{"role":"assistant","content":"new"}}\n')
+    stat = source.stat()
+
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO sessions (
+                native_id, origin, raw_id, message_count, content_hash, created_at_ms, updated_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("conv-hot", "codex-session", "missing-source-raw", 1, b"b" * 32, 1, 1),
+        )
+
+    cursor = CursorStore(tmp_path / "ops.db")
+    cursor.set(
+        source,
+        old_offset,
+        byte_offset=old_offset,
+        last_complete_newline=old_offset,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint="already-known",
+        source_name="codex",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+
+    plan = processor._append_plan(source)
+
+    assert isinstance(plan, _AppendPlan)
+    assert plan.start_offset == old_offset
+    assert b'"type":"session_meta","payload":{"id":"conv-hot"}' in plan.payload
+    assert b'"content":"new"' in plan.payload
 
 
 def test_catch_up_ingests_needed_files_in_bounded_chunks(

@@ -6,7 +6,7 @@ generic text generation when no semantic role is present.
 
 Semantic roles handled:
     - message_role: choose from observed role values
-    - message_body: generate plausible content (themed in showcase mode)
+    - message_body: generate plausible content (themed in demo mode)
     - message_timestamp: sequential timestamps from a base
     - session_title: short titles aligned with theme
 """
@@ -16,8 +16,8 @@ from __future__ import annotations
 import random
 from collections.abc import Mapping
 
+from polylogue.schemas.synthetic.demo_themes import _DEMO_THEMES, SessionTheme
 from polylogue.schemas.synthetic.models import SchemaScalar
-from polylogue.schemas.synthetic.showcase import _SHOWCASE_THEMES, SessionTheme
 
 # =============================================================================
 # Role-based text generation (the original _text_for_role logic)
@@ -189,7 +189,7 @@ class SemanticValueGenerator:
             return str(self.rng.choice(values))
 
         # Fallback: pick a theme title
-        return self.rng.choice(_SHOWCASE_THEMES).title
+        return self.rng.choice(_DEMO_THEMES).title
 
 
 __all__ = [

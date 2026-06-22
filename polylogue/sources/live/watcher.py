@@ -22,6 +22,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.core.enums import Origin
+from polylogue.core.sources import provider_from_origin
 from polylogue.logging import get_logger
 from polylogue.sources.live.batch import LiveBatchEventEmitter, LiveBatchProcessor, fingerprint_file
 from polylogue.sources.live.batch_support import tail_hash_and_last_complete_newline_from_path, tail_hash_from_path
@@ -478,7 +480,7 @@ class LiveWatcher:
             with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=1.0) as conn:
                 row = conn.execute(
                     """
-                    SELECT blob_hash, blob_size
+                    SELECT origin, blob_hash, blob_size
                     FROM raw_sessions
                     WHERE source_path = ?
                       AND COALESCE(source_index, 0) >= 0
@@ -491,7 +493,7 @@ class LiveWatcher:
             return False
         if row is None:
             return False
-        blob_hash, blob_size = row
+        origin, blob_hash, blob_size = row
         archived_size = int(blob_size or 0)
         current_size = int(stat.st_size)
         if archived_size <= 0 or archived_size > current_size:
@@ -507,6 +509,8 @@ class LiveWatcher:
                 tail_hash, last_complete_newline, _bytes_read = tail_hash_and_last_complete_newline_from_path(
                     path, current_size
                 )
+                if path.suffix.lower() not in {".jsonl", ".ndjson"}:
+                    last_complete_newline = archived_size
             else:
                 tail_hash, _bytes_read = tail_hash_from_path(path, archived_size)
                 last_complete_newline = archived_size
@@ -520,7 +524,9 @@ class LiveWatcher:
             parser_fingerprint=_PARSER_FINGERPRINT,
             content_fingerprint=content_fingerprint,
             tail_hash=tail_hash,
-            source_name=self._source_name_for(path),
+            source_name=provider_from_origin(Origin.from_string(str(origin))).value
+            if origin is not None
+            else self._source_name_for(path),
             st_dev=stat.st_dev,
             st_ino=stat.st_ino,
             mtime_ns=stat.st_mtime_ns,
@@ -603,6 +609,7 @@ def default_sources() -> tuple[WatchSource, ...]:
     from polylogue.paths import (
         antigravity_path,
         archive_root,
+        browser_capture_spool_root,
         claude_code_path,
         codex_path,
         gemini_cli_path,
@@ -616,6 +623,7 @@ def default_sources() -> tuple[WatchSource, ...]:
         WatchSource(name="gemini-cli", root=gemini_cli_path(), suffixes=(".json", ".jsonl")),
         WatchSource(name="hermes", root=hermes_sessions_path(), suffixes=(".json",)),
         WatchSource(name="antigravity", root=antigravity_path(), suffixes=(".metadata.json",)),
+        WatchSource(name="browser-capture", root=browser_capture_spool_root(), suffixes=(".json",)),
         # #1683: inbox accepts archive, zip, and json-line formats so that
         # GDPR exports (typically .zip) and raw .json dumps are observed.
         WatchSource(name="inbox", root=archive_root() / "inbox", suffixes=INBOX_SOURCE_SUFFIXES),

@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig
 from polylogue.core.json import JSONDocument
 from polylogue.daemon import status as status_module
 from polylogue.daemon.status import (
@@ -16,7 +17,11 @@ from polylogue.daemon.status import (
     daemon_status_payload,
     format_daemon_status_lines,
 )
-from polylogue.daemon.status_snapshot import get_status_snapshot_payload, refresh_status_snapshot
+from polylogue.daemon.status_snapshot import (
+    configure_runtime_components,
+    get_status_snapshot_payload,
+    refresh_status_snapshot,
+)
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
@@ -88,6 +93,68 @@ def test_status_snapshot_refresh_default_prefers_archive(
     assert snapshot.payload["db_path"] == str(archive_db)
 
 
+def test_status_snapshot_uses_runtime_browser_capture_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = tmp_path / "index.db"
+    db.touch()
+    spool = tmp_path / "browser-capture"
+    monkeypatch.setattr("polylogue.daemon.status_snapshot.active_index_db_path", lambda: db)
+
+    configure_runtime_components(
+        api_enabled=True,
+        watcher_enabled=True,
+        browser_capture_enabled=True,
+        browser_capture_spool_path=spool,
+    )
+
+    snapshot = refresh_status_snapshot()
+
+    assert snapshot.payload["browser_capture_active"] is True
+    component_state = snapshot.payload["component_state"]
+    assert isinstance(component_state, dict)
+    assert component_state["browser_capture"] == "running"
+    browser_capture = snapshot.payload["browser_capture"]
+    assert isinstance(browser_capture, dict)
+    assert browser_capture["active"] is True
+    readiness = snapshot.payload["component_readiness"]
+    assert isinstance(readiness, dict)
+    browser_readiness = readiness["browser_capture"]
+    assert isinstance(browser_readiness, dict)
+    assert browser_readiness["state"] == "ready"
+
+
+def test_status_snapshot_marks_disabled_browser_capture_inactive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = tmp_path / "index.db"
+    db.touch()
+    monkeypatch.setattr("polylogue.daemon.status_snapshot.active_index_db_path", lambda: db)
+
+    configure_runtime_components(
+        api_enabled=True,
+        watcher_enabled=True,
+        browser_capture_enabled=False,
+    )
+
+    snapshot = refresh_status_snapshot()
+
+    assert snapshot.payload["browser_capture_active"] is False
+    component_state = snapshot.payload["component_state"]
+    assert isinstance(component_state, dict)
+    assert component_state["browser_capture"] == "stopped"
+    browser_capture = snapshot.payload["browser_capture"]
+    assert isinstance(browser_capture, dict)
+    assert browser_capture["active"] is False
+    readiness = snapshot.payload["component_readiness"]
+    assert isinstance(readiness, dict)
+    browser_readiness = readiness["browser_capture"]
+    assert isinstance(browser_readiness, dict)
+    assert browser_readiness["state"] == "missing"
+
+
 def test_build_daemon_status_reports_failed_live_cursor_files(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     failed = tmp_path / "failed.jsonl"
@@ -111,6 +178,45 @@ def test_build_daemon_status_reports_failed_live_cursor_files(tmp_path: Path) ->
     assert status.live_cursor.failing_files[0].source_path == str(failed)
     assert status.live_cursor.failing_files[0].failure_count == 1
     assert status.live_cursor.failing_files[0].next_retry_at is not None
+
+
+def test_daemon_status_uses_default_browser_capture_spool(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    expected_spool = tmp_path / "browser-capture"
+    monkeypatch.setattr(
+        BrowserCaptureReceiverConfig,
+        "default",
+        classmethod(lambda cls: BrowserCaptureReceiverConfig(spool_path=expected_spool)),
+    )
+
+    payload = daemon_status_payload(sources=())
+
+    assert payload["browser_capture_active"] is True
+    browser_capture = payload["browser_capture"]
+    assert isinstance(browser_capture, dict)
+    assert browser_capture["spool_path"] == str(expected_spool)
+    component_state = payload["component_state"]
+    assert isinstance(component_state, dict)
+    assert component_state["browser_capture"] == "running"
+
+
+def test_daemon_status_honors_explicit_disabled_browser_capture(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    expected_spool = tmp_path / "browser-capture"
+    monkeypatch.setattr(
+        BrowserCaptureReceiverConfig,
+        "default",
+        classmethod(lambda cls: BrowserCaptureReceiverConfig(spool_path=expected_spool)),
+    )
+
+    status = build_daemon_status(sources=(), browser_capture_enabled=False)
+
+    assert status.browser_capture_active is False
+    assert status.component_state.browser_capture == "stopped"
 
 
 def test_daemon_status_payload_and_plain_output_include_failed_files(tmp_path: Path) -> None:

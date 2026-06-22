@@ -4,8 +4,7 @@ When ``--diagnose`` is set on the root group, this module emits a short
 human-readable explanation of how the parser routed the current invocation:
 
 - which token was treated as a subcommand (if any),
-- which tokens were captured as query terms (and fell through to query-first
-  dispatch),
+- which tokens were captured as explicit or structured query terms,
 - which verb (if any) was applied to the matched sessions.
 
 The output goes to stderr so it never contaminates stdout pipelines (JSON
@@ -36,6 +35,7 @@ def emit_parser_decision(
     query_terms: Sequence[str],
     verb: str | None,
     registered_commands: Sequence[str],
+    strict_floor_refusal: bool = False,
 ) -> None:
     """Print a parser-decision explanation to stderr.
 
@@ -54,16 +54,21 @@ def emit_parser_decision(
         return
 
     if query_terms:
-        line("no registered subcommand matched leading positional token(s).")
+        if strict_floor_refusal:
+            line("plain unmarked root captured as query-like tokens, but strict command floor will refuse it.")
+            line(f"refused tokens: {_format_tokens(query_terms)}")
+            line("use `polylogue find QUERY` for search, or `polylogue --help` for registered commands.")
+            return
+        line("query tokens captured from the command line.")
         line(f"interpreting as search query: {_format_tokens(query_terms)}")
         if verb is not None:
             line(f"verb applied to matched sessions: {verb!r}")
         else:
             line("no verb supplied; default render selected for the matched set.")
         line(
-            "this is the query-first default. "
-            "pass `--help` for the full subcommand list, or quote your query like "
-            '`polylogue "your search"` to make the intent explicit.'
+            "this is the query-first path. "
+            "pass `--help` for the full subcommand list, or use `polylogue find QUERY` "
+            "when a plain token would otherwise look like an unknown command."
         )
         return
 
@@ -84,8 +89,8 @@ def looks_like_subcommand_typo(token: str, registered: Sequence[str]) -> list[st
 def format_unknown_subcommand_hint(token: str, registered: Sequence[str]) -> str:
     """Return the actionable hint shown when a bare token did not match any subcommand.
 
-    The hint always offers the query-first interpretation; if the token looks
-    like a typo of a real subcommand, it also offers ``did-you-mean`` style
+    The hint always offers the explicit query form; if the token looks like a
+    typo of a real subcommand, it also offers ``did-you-mean`` style
     suggestions before the query suggestion.
     """
     suggestions = looks_like_subcommand_typo(token, registered)
@@ -93,8 +98,8 @@ def format_unknown_subcommand_hint(token: str, registered: Sequence[str]) -> str
     if suggestions:
         parts.append("did you mean: " + ", ".join(f"`polylogue {s}`" for s in suggestions) + "?")
     parts.append(
-        f'did you mean to search? try: `polylogue "{token}"` '
-        "(query-first dispatch interprets any unrecognized leading token as a search query)."
+        f"did you mean to search? try: `polylogue find {token}` "
+        "(plain unmarked roots are refused unless they are structured query expressions)."
     )
     parts.append("run `polylogue --help` to list every registered subcommand.")
     return "\n  ".join(parts)

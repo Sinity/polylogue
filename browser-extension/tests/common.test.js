@@ -34,14 +34,26 @@ function visibleText(node) {
     .trim();
 }
 
-function buildEnvelope({ provider, adapterName, turns, model = null }) {
+function buildEnvelope({
+  provider,
+  adapterName,
+  turns,
+  model = null,
+  providerSessionId = null,
+  title = null,
+  createdAt = null,
+  updatedAt = null,
+  providerMeta = {},
+  rawProviderPayload = null,
+}) {
   const sourceUrl = "https://chatgpt.com/c/test-conv";
-  const providerSessionId = sessionIdFromUrl(provider, sourceUrl);
+  const stableProviderSessionId =
+    providerSessionId || sessionIdFromUrl(provider, sourceUrl);
   const now = new Date().toISOString();
-  return {
+  const envelope = {
     polylogue_capture_kind: "browser_llm_session",
     schema_version: 1,
-    capture_id: `${provider}:${providerSessionId}`,
+    capture_id: `${provider}:${stableProviderSessionId}`,
     source: "browser-extension",
     provenance: {
       source_url: sourceUrl,
@@ -54,21 +66,29 @@ function buildEnvelope({ provider, adapterName, turns, model = null }) {
     },
     session: {
       provider,
-      provider_session_id: providerSessionId,
-      title: "Test Page",
-      updated_at: now,
+      provider_session_id: stableProviderSessionId,
+      title: title || "Test Page",
+      created_at: createdAt,
+      updated_at: updatedAt || now,
       model,
+      provider_meta: providerMeta,
       turns: turns.map((turn, ordinal) => ({
         provider_turn_id:
           turn.provider_turn_id ||
-          `${providerSessionId}:turn:${ordinal}:${fnv1a(turn.role + ":" + turn.text)}`,
+          `${stableProviderSessionId}:turn:${ordinal}:${fnv1a(turn.role + ":" + turn.text)}`,
         role: turn.role,
         text: turn.text,
+        timestamp: turn.timestamp || null,
         ordinal,
+        parent_turn_id: turn.parent_turn_id || null,
         provider_meta: turn.provider_meta || {},
       })),
     },
   };
+  if (rawProviderPayload && typeof rawProviderPayload === "object") {
+    envelope.raw_provider_payload = rawProviderPayload;
+  }
+  return envelope;
 }
 
 // ---------------------------------------------------------------------------
@@ -247,5 +267,53 @@ describe("buildEnvelope", () => {
     });
 
     expect(envelope.session.model).toBeNull();
+  });
+
+  it("uses native provider ids and carries raw provider payloads", () => {
+    const rawProviderPayload = {
+      id: "native-conv",
+      mapping: {
+        node: {
+          message: {
+            id: "native-message",
+            author: { role: "user" },
+            content: { parts: ["Hello"] },
+          },
+        },
+      },
+    };
+    const envelope = buildEnvelope({
+      provider: "chatgpt",
+      adapterName: "chatgpt-native-v1",
+      providerSessionId: "native-conv",
+      title: "Native title",
+      createdAt: "2026-06-14T13:14:26.000Z",
+      updatedAt: "2026-06-21T12:04:19.000Z",
+      turns: [
+        {
+          provider_turn_id: "native-message",
+          role: "user",
+          text: "Hello",
+          timestamp: "2026-06-14T13:14:30.000Z",
+          parent_turn_id: "root",
+        },
+      ],
+      providerMeta: { capture_source: "chatgpt_backend_api" },
+      rawProviderPayload,
+    });
+
+    expect(envelope.capture_id).toBe("chatgpt:native-conv");
+    expect(envelope.session.provider_session_id).toBe("native-conv");
+    expect(envelope.session.title).toBe("Native title");
+    expect(envelope.session.created_at).toBe("2026-06-14T13:14:26.000Z");
+    expect(envelope.session.updated_at).toBe("2026-06-21T12:04:19.000Z");
+    expect(envelope.session.provider_meta).toEqual({
+      capture_source: "chatgpt_backend_api",
+    });
+    expect(envelope.session.turns[0].timestamp).toBe(
+      "2026-06-14T13:14:30.000Z",
+    );
+    expect(envelope.session.turns[0].parent_turn_id).toBe("root");
+    expect(envelope.raw_provider_payload).toBe(rawProviderPayload);
   });
 });

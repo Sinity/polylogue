@@ -62,7 +62,7 @@ def verify_demo_archive(
     require_overlays: bool = False,
     check_source_path_leaks: bool = True,
 ) -> DemoVerifyResult:
-    """Check semantic demo archive facts without a showcase catalog."""
+    """Check semantic demo archive facts without a demo catalog."""
 
     problems: list[str] = []
     leaks: list[str] = []

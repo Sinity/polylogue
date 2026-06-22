@@ -7,6 +7,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from polylogue.core.json import JSONDocument, json_document
@@ -16,7 +17,21 @@ from polylogue.paths import active_index_db_path
 _MAX_FRESH_AGE_S = 30.0
 _SNAPSHOT_LOCK = threading.Lock()
 _REFRESH_LOCK = threading.Lock()
+_RUNTIME_COMPONENT_LOCK = threading.Lock()
 _SNAPSHOT: StatusSnapshot | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeComponentState:
+    """Request-safe daemon component flags captured at daemon startup."""
+
+    api_enabled: bool | None = None
+    watcher_enabled: bool | None = None
+    browser_capture_enabled: bool | None = None
+    browser_capture_spool_path: Path | None = None
+
+
+_RUNTIME_COMPONENT_STATE = RuntimeComponentState()
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +56,37 @@ class StatusSnapshot:
         return json_document(payload)
 
 
+def configure_runtime_components(
+    *,
+    api_enabled: bool | None = None,
+    watcher_enabled: bool | None = None,
+    browser_capture_enabled: bool | None = None,
+    browser_capture_spool_path: Path | None = None,
+) -> None:
+    """Record daemon component switches for request-safe status snapshots."""
+    global _RUNTIME_COMPONENT_STATE
+    with _RUNTIME_COMPONENT_LOCK:
+        _RUNTIME_COMPONENT_STATE = RuntimeComponentState(
+            api_enabled=api_enabled,
+            watcher_enabled=watcher_enabled,
+            browser_capture_enabled=browser_capture_enabled,
+            browser_capture_spool_path=browser_capture_spool_path,
+        )
+
+
+def _runtime_component_state() -> RuntimeComponentState:
+    with _RUNTIME_COMPONENT_LOCK:
+        return _RUNTIME_COMPONENT_STATE
+
+
+def _component_state_from_flag(flag: bool | None, *, default_when_unknown: str = "unknown") -> str:
+    if flag is True:
+        return "running"
+    if flag is False:
+        return "stopped"
+    return default_when_unknown
+
+
 def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error: str | None = None) -> JSONDocument:
     """Return a request-safe status envelope with no archive-scale scans."""
     from polylogue.daemon.status import _check_daemon_liveness, browser_capture_status_payload
@@ -54,18 +100,22 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
         except Exception as exc:
             refresh_error = refresh_error or str(exc)
     now = datetime.now(UTC).isoformat()
+    runtime = _runtime_component_state()
+    browser_capture = dict(browser_capture_status_payload(runtime.browser_capture_spool_path))
+    browser_capture_enabled = runtime.browser_capture_enabled is True
+    browser_capture["active"] = browser_capture_enabled
     payload: dict[str, object] = {
         "ok": True,
         "daemon": "polylogued",
         "daemon_liveness": _check_daemon_liveness(),
         "checked_at": now,
         "component_state": {
-            "watcher": "running",
-            "api": "running",
-            "browser_capture": "unknown",
+            "watcher": _component_state_from_flag(runtime.watcher_enabled),
+            "api": _component_state_from_flag(runtime.api_enabled, default_when_unknown="running"),
+            "browser_capture": _component_state_from_flag(runtime.browser_capture_enabled),
         },
         "live": False,
-        "browser_capture": browser_capture_status_payload(None),
+        "browser_capture": json_document(browser_capture),
         "db_path": str(dbf),
         "db_size_bytes": dbf.stat().st_size if dbf.exists() else 0,
         "wal_size_bytes": wal.stat().st_size if wal.exists() else 0,
@@ -74,7 +124,7 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
         "quick_check_result": None,
         "quick_check_age_s": None,
         "watcher_roots": [],
-        "browser_capture_active": False,
+        "browser_capture_active": browser_capture_enabled,
         "failing_files": [],
         "live_cursor": {},
         "live_ingest_attempts": {},
@@ -217,9 +267,11 @@ def reset_status_snapshot() -> None:
     cached payload does not leak into unrelated status-surface tests in the same
     process. Exposed for test teardown; not used in production.
     """
-    global _SNAPSHOT
+    global _SNAPSHOT, _RUNTIME_COMPONENT_STATE
     with _SNAPSHOT_LOCK:
         _SNAPSHOT = None
+    with _RUNTIME_COMPONENT_LOCK:
+        _RUNTIME_COMPONENT_STATE = RuntimeComponentState()
 
 
 def snapshot_state_for_metrics() -> dict[str, Any]:
@@ -237,7 +289,9 @@ def snapshot_state_for_metrics() -> dict[str, Any]:
 
 
 __all__ = [
+    "configure_runtime_components",
     "get_status_snapshot_payload",
     "refresh_status_snapshot",
+    "reset_status_snapshot",
     "snapshot_state_for_metrics",
 ]

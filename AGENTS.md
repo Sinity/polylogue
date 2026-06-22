@@ -563,7 +563,7 @@ tests/
 │   ├── pipeline/            # Stage independence, resilience
 │   ├── cli/                 # Commands, terminal snapshots (syrupy)
 │   ├── mcp/                 # MCP tool contracts, edge cases
-│   ├── showcase/            # Verification-lab scenarios and reports
+│   ├── demo/                # Demo archive seed/verify workflows
 │   └── security/            # Protected — never delete
 ├── property/                # Hypothesis property tests
 ├── integration/             # End-to-end (slow, protected)
@@ -1566,7 +1566,7 @@ devtools test tests/unit/cli/test_demo_command.py tests/unit/demo/test_demo_seed
 ## Local State
 
 - `.cache/`: disposable caches (hypothesis, pytest, mypy, ruff)
-- `.local/`: untracked outputs (campaigns, showcases, build artifacts)
+- `.local/`: untracked outputs (campaigns, demo artifacts, build artifacts)
 - `.local/result`: out-link for `devtools release build-package`
 <!-- end include: docs/internals.md -->
 <!-- begin include: docs/devtools.md -->
@@ -1736,6 +1736,7 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
+| `devtools workspace deployment-smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
 | `devtools workspace dev-loop` | Preflight branch-local daemon, web-shell, and browser-capture development loops. |
 | `devtools workspace failure-context` | Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope. |
 | `devtools workspace tasks` | Record and query local agent task execution history. |
@@ -1760,7 +1761,7 @@ Campaign outputs live under `.local/`, not in tracked docs trees.
 ## Local State Layout
 
 - `.cache/`: disposable cache state.
-- `.local/`: untracked local outputs such as campaigns, showcases, and reports.
+- `.local/`: untracked local outputs such as campaigns, demo artifacts, and reports.
 - `.venv/` and `.direnv/`: kept at the repo root because their tooling expects those locations.
 - `.local/result`: preferred repo-local out-link for `devtools release build-package`; a top-level `result` symlink is just Nix's default ad-hoc out-link.
 

@@ -142,7 +142,7 @@ tests/
 │   ├── pipeline/            # Stage independence, resilience
 │   ├── cli/                 # Commands, terminal snapshots (syrupy)
 │   ├── mcp/                 # MCP tool contracts, edge cases
-│   ├── showcase/            # Verification-lab scenarios and reports
+│   ├── demo/                # Demo archive seed/verify workflows
 │   └── security/            # Protected — never delete
 ├── property/                # Hypothesis property tests
 ├── integration/             # End-to-end (slow, protected)

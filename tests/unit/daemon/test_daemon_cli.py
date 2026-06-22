@@ -40,6 +40,13 @@ def test_polylogued_help_lists_watch_command() -> None:
     assert "long-lived Polylogue local services" in result.output
 
 
+def test_polylogued_version_option_reports_version() -> None:
+    result = CliRunner().invoke(main, ["--version"])
+
+    assert result.exit_code == 0
+    assert result.output.startswith("polylogued, version ")
+
+
 @pytest.mark.contract
 def test_polylogued_status_json_reports_daemon_components(
     tmp_path: Path,

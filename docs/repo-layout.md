@@ -16,7 +16,7 @@ Every top-level entry has a reason.
 | `.githooks/` | Git hooks (format, lint, quick verify) | repo |
 | `.github/` | GitHub Actions workflows and templates | repo |
 | `.gitignore` | Git ignore rules | repo |
-| `.local/` | Untracked local outputs (campaigns, showcases, build artifacts) | tools |
+| `.local/` | Untracked local outputs (campaigns, demo artifacts, build artifacts) | tools |
 | `.release-please-manifest.json` | Release Please component version manifest | release tooling |
 | `.venv/` | Python virtual environment (uv) | uv |
 | `AGENTS.md` | Generated agent instructions from CLAUDE.md | devshell |

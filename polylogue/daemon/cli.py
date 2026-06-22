@@ -47,6 +47,7 @@ from polylogue.logging import configure_logging, get_logger
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.sources.live.watcher import INBOX_SOURCE_SUFFIXES, default_sources
+from polylogue.version import POLYLOGUE_VERSION
 
 logger = get_logger(__name__)
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
@@ -659,6 +660,7 @@ async def run_daemon_services(
 ) -> None:
     """Run configured daemon components until interrupted."""
     from polylogue.daemon import process_start as _process_start
+    from polylogue.daemon.status_snapshot import configure_runtime_components
     from polylogue.paths import archive_root
 
     global _pidfile_path
@@ -677,6 +679,12 @@ async def run_daemon_services(
                 f"--api-host={api_host} with --insecure-allow-remote requires --api-auth-token. "
                 f"Remote binding without authentication is not supported."
             )
+    configure_runtime_components(
+        api_enabled=enable_api,
+        watcher_enabled=enable_watch,
+        browser_capture_enabled=enable_browser_capture,
+        browser_capture_spool_path=browser_capture_spool_path,
+    )
 
     logger.info("daemon started")
 
@@ -1080,6 +1088,7 @@ async def _shutdown_server_if_serving(
 
 
 @click.group(help="Run long-lived Polylogue local services.")
+@click.version_option(version=POLYLOGUE_VERSION, prog_name="polylogued")
 def main() -> None:
     pass
 

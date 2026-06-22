@@ -638,7 +638,7 @@ def test_github_cli_and_failed_check_events_are_extracted() -> None:
                 Message(
                     id="m-gh",
                     role=Role.ASSISTANT,
-                    text=("✓ Created pull request #1930\nshowcase-verify ... FAILED (2.3s)\nAnalyze (python) ... ok"),
+                    text=("✓ Created pull request #1930\ndeployment-smoke ... FAILED (2.3s)\nAnalyze (python) ... ok"),
                 )
             ]
         ),
@@ -648,7 +648,7 @@ def test_github_cli_and_failed_check_events_are_extracted() -> None:
     events = {(event.kind, event.summary) for event in digest.events}
 
     assert ("pr_opened", "PR #1930 opened") in events
-    assert ("check_failed", "showcase-verify failed") in events
+    assert ("check_failed", "deployment-smoke failed") in events
     assert ("check_passed", "Analyze (python) passed") in events
 
 

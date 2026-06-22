@@ -115,6 +115,7 @@ def write_capture_envelope(
 def receiver_status_payload(config: BrowserCaptureReceiverConfig) -> dict[str, object]:
     """Return JSON status for extension health checks."""
     return BrowserCaptureReceiverStatusPayload(
+        spool_path=str(config.spool_path),
         spool_ready=True,
         allowed_origins=sorted(config.allowed_origins),
         allow_remote=config.allow_remote,

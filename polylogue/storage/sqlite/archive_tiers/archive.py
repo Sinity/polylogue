@@ -142,6 +142,7 @@ from polylogue.storage.sqlite.connection_profile import (
     READ_CONNECTION_PRAGMA_STATEMENTS,
     WRITE_CONNECTION_PRAGMA_STATEMENTS,
 )
+from polylogue.storage.sqlite.queries.sessions_identity import session_id_prefix_bounds
 from polylogue.storage.sqlite.queries.tool_usage import ToolUsageProviderCoverageRow, ToolUsageRow
 from polylogue.types import SessionId
 
@@ -1265,15 +1266,21 @@ class ArchiveStore:
             ).fetchone()
             if exact is not None:
                 return str(exact["session_id"])
+        lower_bound, upper_bound = session_id_prefix_bounds(token)
+        where = "session_id >= ?"
+        params: list[str] = [lower_bound]
+        if upper_bound is not None:
+            where = f"{where} AND session_id < ?"
+            params.append(upper_bound)
         rows = self._conn.execute(
-            """
+            f"""
             SELECT session_id
             FROM sessions
-            WHERE session_id LIKE ?
+            WHERE {where}
             ORDER BY session_id
             LIMIT 2
             """,
-            (f"{token}%",),
+            tuple(params),
         ).fetchall()
         if not rows:
             raise KeyError(token)
@@ -2348,6 +2355,7 @@ class ArchiveStore:
         max_messages: int | None = None,
         min_words: int | None = None,
         max_words: int | None = None,
+        session_id: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
         since_session_id: str | None = None,
@@ -2387,6 +2395,13 @@ class ArchiveStore:
             tags_relation=self._tags_relation,
         )
         where, params = _with_since_session_filter(self._conn, where, params, "s", since_session_id=since_session_id)
+        if session_id is not None:
+            try:
+                resolved_id = self.resolve_session_id(session_id)
+            except KeyError:
+                return 0
+            where = f"{where} AND s.session_id = ?" if where else "WHERE s.session_id = ?"
+            params.append(resolved_id)
         return int(self._conn.execute(f"SELECT COUNT(*) FROM sessions s {where}", params).fetchone()[0])
 
     def session_insight_status(self) -> SessionInsightStatusSnapshot:
@@ -2967,7 +2982,10 @@ class ArchiveStore:
         )
         where, params = _with_since_session_filter(self._conn, where, params, "s", since_session_id=since_session_id)
         if session_id is not None:
-            resolved_id = self.resolve_session_id(session_id)
+            try:
+                resolved_id = self.resolve_session_id(session_id)
+            except KeyError:
+                return []
             where = f"{where} AND s.session_id = ?" if where else "WHERE s.session_id = ?"
             params.append(resolved_id)
         order_by = _summary_order_by(sample=sample, sort=sort, reverse=reverse)
@@ -4201,19 +4219,25 @@ def _since_session_reference(
     conn: sqlite3.Connection,
     token: str,
 ) -> tuple[str, int | None, tuple[str, ...]] | None:
+    lower_bound, upper_bound = session_id_prefix_bounds(token)
+    prefix_clause = "s.session_id >= ?"
+    prefix_params: list[str] = [lower_bound]
+    if upper_bound is not None:
+        prefix_clause = f"{prefix_clause} AND s.session_id < ?"
+        prefix_params.append(upper_bound)
     rows = conn.execute(
-        """
+        f"""
         SELECT s.session_id,
                COALESCE(
                    (SELECT MAX(m.occurred_at_ms) FROM messages m WHERE m.session_id = s.session_id),
                    s.sort_key_ms
                ) AS anchor_ms
         FROM sessions s
-        WHERE s.session_id = ? OR s.session_id LIKE ?
+        WHERE s.session_id = ? OR ({prefix_clause})
         ORDER BY CASE WHEN s.session_id = ? THEN 0 ELSE 1 END, s.session_id
         LIMIT 2
         """,
-        (token, f"{token}%", token),
+        (token, *prefix_params, token),
     ).fetchall()
     if not rows:
         return None

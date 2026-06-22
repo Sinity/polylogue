@@ -1,7 +1,7 @@
-"""Showcase session themes for human-readable synthetic output.
+"""Demo session themes for human-readable synthetic output.
 
 Each theme provides a coherent narrative arc with user and assistant turns
-that produce visually appealing demo/showcase corpora.
+that produce visually appealing demo corpora.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ class SessionTheme:
     assistant_turns: tuple[str, ...]
 
 
-_SHOWCASE_THEMES: tuple[SessionTheme, ...] = (
+_DEMO_THEMES: tuple[SessionTheme, ...] = (
     SessionTheme(
         title="Debugging flaky async pipeline tests",
         instructions="You are a coding assistant focused on debugging async Python services.",
@@ -79,5 +79,5 @@ _SHOWCASE_THEMES: tuple[SessionTheme, ...] = (
 
 __all__ = [
     "SessionTheme",
-    "_SHOWCASE_THEMES",
+    "_DEMO_THEMES",
 ]

@@ -14,12 +14,18 @@ def test_report_is_derived_from_action_contracts() -> None:
         path = f"`polylogue {' '.join(contract.path)}`"
         assert path in rendered
         assert f"`{contract.effect}`" in rendered
+        assert f"`{contract.target}`" in rendered
         assert f"`{contract.input_unit}`" in rendered
+        assert f"`{contract.safety_level}`" in rendered
         assert f"`{contract.machine_envelope}`" in rendered
         for output_format in contract.formats:
             assert f"`{output_format}`" in rendered
+        for destination in contract.destination_support:
+            assert f"`{destination}`" in rendered
         for guard in contract.guards:
             assert f"`{guard}`" in rendered
+        for next_action in contract.next_actions:
+            assert f"`{next_action}`" in rendered
 
 
 def test_report_is_derived_from_published_output_schemas() -> None:

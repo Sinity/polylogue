@@ -15,6 +15,7 @@ from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -880,6 +881,27 @@ class TestQueryCompletionsTool:
         body = json.loads(result)
         assert body["query_completions"] == completions
         mock_poly.query_completions.assert_awaited_once_with("field", incomplete="d", unit=None, field=None)
+
+
+class TestActionAffordancesTool:
+    def test_action_affordances_returns_shared_payload(self, mcp_server: MCPServerUnderTest) -> None:
+        result = invoke_surface(mcp_server._tool_manager._tools["action_affordances"].fn)
+
+        body = json.loads(result)
+        affordances = body["action_affordances"]
+        assert isinstance(affordances, dict)
+        actions = affordances["actions"]
+        assert isinstance(actions, list)
+        action_payloads = cast(list[dict[str, object]], actions)
+        action_by_id = {str(action["id"]): action for action in action_payloads}
+
+        read = action_by_id["read"]
+        assert read["selection_command"] == "polylogue find QUERY then select"
+        assert read["safety_level"] == "safe"
+
+        delete = action_by_id["delete"]
+        assert delete["confirmation_command"] == "polylogue find QUERY then delete --dry-run"
+        assert delete["safety_level"] == "destructive"
 
 
 class TestInsightTools:

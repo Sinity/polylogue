@@ -5,7 +5,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal, NoReturn
 
@@ -15,8 +15,6 @@ from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.query.spec import QuerySpecError
 from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.cli.query_contracts import (
-    QueryPlanError,
-    build_query_execution_plan,
     result_date,
     result_id,
     result_origin,
@@ -154,14 +152,13 @@ async def _select_session_rows_from_store(
     from polylogue.cli.query import _create_query_vector_provider
     from polylogue.paths import archive_file_set_root_for_paths
 
-    request = request.with_param_updates(limit=limit, list_mode=True)
-    plan = build_query_execution_plan(request.query_params())
+    spec = replace(request.query_spec(), limit=limit)
     archive_root = archive_file_set_root_for_paths(
         archive_root_path=config.archive_root,
         db_anchor=config.db_path,
     )
     vector_provider = _create_query_vector_provider(config, db_path=archive_root / "embeddings.db")
-    filter_chain = plan.selection.build_filter(config, vector_provider=vector_provider)
+    filter_chain = spec.build_filter(config, vector_provider=vector_provider)
 
     if filter_chain.can_use_summaries():
         results: list[Session | SessionSummary] = list(await filter_chain.list_summaries())
@@ -179,7 +176,7 @@ async def select_session_rows(env: AppEnv, request: RootModeRequest, *, limit: i
     )
 
 
-def _raise_select_query_error(exc: QuerySpecError | QueryPlanError) -> NoReturn:
+def _raise_select_query_error(exc: QuerySpecError) -> NoReturn:
     if isinstance(exc, QuerySpecError):
         if exc.field in {"since", "until"}:
             click.echo(f"Error: Cannot parse date: '{exc.value}'", err=True)
@@ -189,8 +186,6 @@ def _raise_select_query_error(exc: QuerySpecError | QueryPlanError) -> NoReturn:
             )
         else:
             click.echo(f"Error: invalid {exc.field}: '{exc.value}'", err=True)
-    else:
-        click.echo(f"Error: {exc}", err=True)
     raise SystemExit(1) from exc
 
 
@@ -203,7 +198,7 @@ async def async_run_select(
 ) -> None:
     try:
         rows = await select_session_rows(env, request, limit=limit)
-    except (QuerySpecError, QueryPlanError) as exc:
+    except QuerySpecError as exc:
         _raise_select_query_error(exc)
     selected = choose_select_row(env, rows)
     if selected is None:

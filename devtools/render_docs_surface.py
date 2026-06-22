@@ -79,6 +79,7 @@ def build_docs_readme(
                     "Architecture Spine",
                     "Execution Plan",
                     "Design Direction",
+                    "Query-Action Workflows",
                     "Data Model",
                     "Archive Backup",
                     "Internals",

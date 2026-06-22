@@ -189,6 +189,15 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
     ),
     RouteContract(
         "GET",
+        "/api/action-affordances",
+        "read_query",
+        "stable",
+        "bearer_if_configured",
+        "ActionAffordanceListPayload",
+        "Shared query-action affordance inventory for CLI, daemon, and automation clients.",
+    ),
+    RouteContract(
+        "GET",
         "/api/read-view-profiles",
         "read_query",
         "stable",

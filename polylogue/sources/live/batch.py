@@ -429,6 +429,7 @@ class LiveBatchProcessor:
                         path,
                         raw_fingerprint=full_result.raw_fingerprints.get(path),
                         raw_byte_size=full_result.raw_byte_sizes.get(path),
+                        source_name=full_result.raw_source_names.get(path),
                     )
                     if self._last_cursor_write_stale:
                         stale_cursor_write_count += 1
@@ -644,6 +645,7 @@ class LiveBatchProcessor:
         *,
         raw_fingerprint: str | None = None,
         raw_byte_size: int | None = None,
+        source_name: str | None = None,
     ) -> int:
         self._last_cursor_write_stale = False
         try:
@@ -665,7 +667,7 @@ class LiveBatchProcessor:
             parser_fingerprint=self._current_parser_fingerprint(),
             content_fingerprint=fp,
             tail_hash=tail_hash,
-            source_name=self._source_name_for(path),
+            source_name=source_name or self._source_name_for(path),
             st_dev=stat.st_dev,
             st_ino=stat.st_ino,
             mtime_ns=stat.st_mtime_ns,
@@ -824,6 +826,7 @@ class LiveBatchProcessor:
         raw_by_id: dict[str, Path] = {}
         raw_byte_sizes: dict[Path, int] = {}
         raw_payloads: dict[str, bytes] = {}
+        raw_source_names: dict[Path, str] = {}
         failed: list[Path] = []
         ingested: list[Path] = []
         source_payload_read_bytes = 0
@@ -930,6 +933,26 @@ class LiveBatchProcessor:
                             current_path=path,
                             source_payload_read_bytes=source_payload_read_bytes,
                         )
+            elif source_name == "browser-capture" and path.suffix.lower() == ".json":
+                try:
+                    payload = path.read_bytes()
+                except OSError:
+                    failed.append(path)
+                    continue
+                provider = _detect_provider_from_raw_bytes(payload, path.name, fallback_provider)
+                source_name = provider.value
+                if not _parse_payload_as_session_artifact(path, provider=provider, payload=payload):
+                    self._mark_excluded_cursor(path, stat, source_name=source_name)
+                    continue
+                raw_id, blob_size = blob_store.write_from_bytes(payload)
+                raw_payloads[raw_id] = payload
+                source_payload_read_bytes += len(payload)
+                if heartbeat is not None:
+                    heartbeat(
+                        "full_blob_copy",
+                        current_path=path,
+                        source_payload_read_bytes=source_payload_read_bytes,
+                    )
             elif stat.st_size >= _STREAMING_FULL_INGEST_BYTES:
                 provider = _detect_provider_from_path_sample(path, fallback_provider)
                 source_name = provider.value
@@ -983,6 +1006,7 @@ class LiveBatchProcessor:
                     )
             ingested.append(path)
             raw_byte_sizes[path] = stat.st_size
+            raw_source_names[path] = source_name
             raw_records.append(
                 RawSessionRecord(
                     raw_id=raw_id,
@@ -1052,6 +1076,7 @@ class LiveBatchProcessor:
             source_payload_read_bytes=source_payload_read_bytes,
             raw_fingerprints=raw_fingerprints,
             raw_byte_sizes=raw_byte_sizes,
+            raw_source_names=raw_source_names,
             summary=summary,
         )
         raw_records.clear()
@@ -1253,6 +1278,8 @@ class LiveBatchProcessor:
         )
 
     def _append_plan(self, path: Path, *, cursor: CursorRecord | None = None) -> _AppendPlan | _DeferredAppend | None:
+        if self._source_name_for(path) == "browser-capture" and path.suffix.lower() == ".json":
+            return None
         cursor = cursor or self._cursor.get_record(path)
         if cursor is None or cursor.parser_fingerprint != self._current_parser_fingerprint():
             return None
@@ -1313,7 +1340,58 @@ class LiveBatchProcessor:
         return payload
 
     def _existing_provider_session_id(self, path: Path) -> str | None:
-        return self._existing_archive_session_native_id(path)
+        identity = self._existing_archive_session_native_id(path)
+        if identity is not None:
+            return identity
+        codex_identity = self._codex_session_meta_native_id(path)
+        if codex_identity is None:
+            return None
+        if self._archive_has_native_session("codex-session", codex_identity):
+            return codex_identity
+        return None
+
+    def _codex_session_meta_native_id(self, path: Path) -> str | None:
+        try:
+            with path.open("rb") as handle:
+                line = handle.readline(1024 * 1024)
+        except OSError:
+            return None
+        if not line:
+            return None
+        try:
+            record = json_loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, TypeError):
+            return None
+        if not isinstance(record, dict) or record.get("type") != "session_meta":
+            return None
+        payload = record.get("payload")
+        if not isinstance(payload, dict):
+            return None
+        value = payload.get("id")
+        return value if isinstance(value, str) and value.strip() else None
+
+    def _archive_has_native_session(self, origin: str, native_id: str) -> bool:
+        archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+        index_db = archive_root / "index.db"
+        if not index_db.exists():
+            return False
+        try:
+            conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+            try:
+                row = conn.execute(
+                    """
+                    SELECT 1
+                    FROM sessions
+                    WHERE origin = ? AND native_id = ?
+                    LIMIT 1
+                    """,
+                    (origin, native_id),
+                ).fetchone()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return False
+        return row is not None
 
     def _existing_archive_session_native_id(self, path: Path) -> str | None:
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))

@@ -49,6 +49,7 @@ Usage: polylogue [OPTIONS] COMMAND [ARGS]...
 
   See also:
       polylogue --help                  # this screen
+      polylogue find --help             # query workflow help
       polylogue <subcommand> --help     # per-subcommand help
       polylogue --diagnose <args>       # explain parser decisions
 
@@ -153,9 +154,9 @@ Options:
   -v, --verbose                   Verbose output
   --diagnose                      Explain CLI parser decisions on stderr
                                   before running. Useful when query-first
-                                  dispatch surprises you: shows whether a bare
-                                  token was routed to a subcommand or
-                                  interpreted as a search query.
+                                  dispatch surprises you: shows whether tokens
+                                  were routed to a subcommand, an explicit
+                                  query, or the strict command floor.
   --version                       Show the version and exit.
   --help                          Show this message and exit.
 
@@ -248,7 +249,7 @@ Usage: polylogue read [OPTIONS] [REF]
       polylogue --latest read --view correlation --otlp --format json
       polylogue read session:abc123 --format json
 
-  Deferred views (not yet implemented; note in PR body):
+  Reserved views (not yet implemented):
       timeline, tools, files, metadata, continuation
 
 Options:
@@ -605,9 +606,10 @@ Options:
   --help                    Show this message and exit.
 
 Commands:
-  completions        Generate shell completion scripts.
-  paths              Print canonical archive paths and filesystem topology.
-  query-completions  Print shared query-builder completion metadata as JSON.
+  action-affordances  Print shared query-action affordance metadata as JSON.
+  completions         Generate shell completion scripts.
+  paths               Print canonical archive paths and filesystem topology.
+  query-completions   Print shared query-builder completion metadata as...
 ```
 
 ## Completions
@@ -678,18 +680,18 @@ Options:
 This section is generated from `polylogue.operations.action_contracts.ACTION_CONTRACTS`.
 It records the public action floor, not every utility command in the Click tree.
 
-| Action | Effect | Input | Cardinality | Formats | Default | Machine envelope | Guards | Completion |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `polylogue find` | `read` | `none` | `any` | `human`, `json`, `ndjson` | `human` | `result_set` | `explicit_query_intent` | `query_expression` |
-| `polylogue read` | `read` | `query_result_set` | `explicit_multi` | `human`, `json`, `ndjson` | `human` | `item` | `single_match_unless_all`, `file_destination_requires_out` | `session_id` |
-| `polylogue continue` | `read` | `query_result_set` | `singleton` | `human` | `human` | `item` | - | `session_id` |
-| `polylogue select` | `read` | `query_result_set` | `singleton` | `human`, `json` | `human` | `item` | - | `session_id` |
-| `polylogue mark` | `write` | `query_result_set` | `explicit_multi` | `human` | `human` | `mutation` | `single_match_unless_all_or_first` | `session_id` |
-| `polylogue analyze` | `read` | `query_result_set` | `any` | `human`, `json`, `ndjson` | `human` | `result_set` | - | `query_expression` |
-| `polylogue delete` | `destructive` | `query_result_set` | `destructive_multi` | `human` | `human` | `mutation` | `dry_run_or_yes_required`, `single_match_unless_all` | `session_id` |
-| `polylogue import` | `import` | `path` | `singleton` | `human` | `human` | `mutation` | `path_exists_or_demo`, `daemon_accepts_schedule` | `filesystem_path` |
-| `polylogue config` | `config` | `config` | `any` | `human`, `json` | `human` | `item` | `secret_values_redacted` | `config_key` |
-| `polylogue ops` | `ops` | `runtime` | `any` | `human` | `human` | `item` | - | - |
+| Action | Effect | Target | Input | Cardinality | Safety | Formats | Destinations | Confirm | Select | Machine envelope | Guards | Next actions | Completion |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `polylogue find` | `read` | `none` | `none` | `any` | `safe` | `human`, `json`, `ndjson` | `terminal`, `stdout`, `file`, `api`, `mcp` | - | - | `result_set` | `explicit_query_intent` | `select`, `read`, `analyze`, `continue`, `mark`, `delete` | `query_expression` |
+| `polylogue read` | `read` | `selection` | `query_result_set` | `explicit_multi` | `safe` | `human`, `json`, `ndjson` | `terminal`, `stdout`, `browser`, `clipboard`, `file`, `api`, `mcp` | - | `polylogue find QUERY then select` | `item` | `single_match_unless_all`, `file_destination_requires_out` | `continue`, `mark`, `delete` | `session_id` |
+| `polylogue continue` | `read` | `selection` | `query_result_set` | `singleton` | `safe` | `human` | `terminal`, `stdout`, `clipboard`, `file`, `api`, `mcp` | - | `polylogue find QUERY then select` | `item` | - | `read`, `mark` | `session_id` |
+| `polylogue select` | `read` | `selection` | `query_result_set` | `singleton` | `safe` | `human`, `json` | `terminal`, `stdout`, `api`, `mcp` | - | - | `item` | - | `read`, `continue`, `analyze`, `mark`, `delete` | `session_id` |
+| `polylogue mark` | `write` | `selection` | `query_result_set` | `explicit_multi` | `mutating` | `human` | `terminal`, `stdout`, `api`, `mcp` | - | `polylogue find QUERY then select` | `mutation` | `single_match_unless_all_or_first` | `read`, `analyze` | `session_id` |
+| `polylogue analyze` | `read` | `selection` | `query_result_set` | `any` | `safe` | `human`, `json`, `ndjson` | `terminal`, `stdout`, `file`, `api`, `mcp` | - | - | `result_set` | - | `select`, `read` | `query_expression` |
+| `polylogue delete` | `destructive` | `selection` | `query_result_set` | `destructive_multi` | `destructive` | `human` | `terminal`, `stdout`, `api`, `mcp` | `polylogue find QUERY then delete --dry-run` | `polylogue find QUERY then select` | `mutation` | `dry_run_or_yes_required`, `single_match_unless_all` | `find` | `session_id` |
+| `polylogue import` | `import` | `path` | `path` | `singleton` | `mutating` | `human` | `terminal`, `stdout`, `api` | - | - | `mutation` | `path_exists_or_demo`, `daemon_accepts_schedule` | `ops`, `read`, `analyze` | `filesystem_path` |
+| `polylogue config` | `config` | `config` | `config` | `any` | `operational` | `human`, `json` | `terminal`, `stdout` | - | - | `item` | `secret_values_redacted` | `ops` | `config_key` |
+| `polylogue ops` | `ops` | `runtime` | `runtime` | `any` | `operational` | `human` | `terminal`, `stdout`, `api` | - | - | `item` | - | `find`, `read` | - |
 
 ## Published Machine Output Schemas
 
@@ -710,6 +712,7 @@ The schema files live under `docs/schemas/cli-output/`.
 | `archive-debt-list` | `ArchiveDebtListPayload` | `polylogue ops debt list --format json` |
 | `session-neighbor-candidate` | `SessionNeighborCandidatePayload` | `polylogue read --view neighbors --format json` |
 | `mutation-result` | `MutationResultPayload` | `polylogue find <query> then delete --dry-run`<br>`polylogue find <query> then delete --yes`<br>`MCP mutation tools`<br>`daemon mutation endpoints` |
+| `action-affordance-list` | `ActionAffordanceListPayload` | `polylogue config action-affordances`<br>`GET /api/action-affordances`<br>`MCP action_affordances` |
 | `machine-error` | `MachineErrorPayload` | `polylogue * --machine (error path)` |
 | `machine-success` | `MachineSuccessPayload` | `polylogue * --machine (success path)` |
 | `query-error` | `QueryErrorPayload` | `GET /api/sessions?query=... (error path)`<br>`daemon query/read error responses`<br>`MCP query/read error responses` |

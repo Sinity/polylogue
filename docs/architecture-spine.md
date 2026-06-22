@@ -62,6 +62,11 @@ Every `docs/plans/*.yaml` manifest is enforced by a lint in `devtools verify`.
 - **Constraint**: `polylogue-mcp` CLI entry point with `--role` flag.
 
 ### Browser capture: unpacked extension + local receiver
-- **Chosen**: MV3 Chrome extension captures DOM, posts to local Python receiver, receiver writes to archive.
+- **Chosen**: MV3 browser extension captures provider-native page/app evidence
+  where available, falls back to DOM snapshots when no structured source is
+  reachable, posts to the local Python receiver, and the receiver writes source
+  artifacts for archive ingestion.
 - **Rejected**: Cloud-based capture, headless automation — Cloudflare friction on Claude.ai, privacy concerns.
-- **Constraint**: Extension is opt-in per-site; no background capture.
+- **Constraint**: Extension is opt-in per-site; no background capture. DOM text
+  is a compatibility fallback, not the fidelity target for providers such as
+  ChatGPT that expose a full conversation payload to the authenticated page.

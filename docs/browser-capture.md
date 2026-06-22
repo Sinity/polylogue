@@ -39,17 +39,18 @@ from the browser network panel or curl output into the run-local daemon log to
 connect UI action, receiver decision, artifact ref, and duration.
 
 The extension lives in `browser-extension/` and can be loaded unpacked in
-Chrome. It includes ChatGPT and Claude.ai DOM adapters, a popup control panel,
-receiver configuration, current-page capture controls, badge state, and
-archive-state feedback. Provider adapters are intentionally thin; the shared
-envelope carries session, turn, attachment, provenance, and provider metadata
-semantics.
+Chrome. It includes ChatGPT and Claude.ai provider adapters, a popup control
+panel, receiver configuration, current-page capture controls, badge state, and
+archive-state feedback. Provider adapters should prefer provider-native
+structured page/app payloads where available and use DOM text extraction only
+as a compatibility fallback. The shared envelope carries session, turn,
+attachment, provenance, and provider metadata semantics.
 
 ## Dataflow and boundary
 
 ```text
-ChatGPT/Claude.ai DOM
-  -> extension content adapter (`browser-extension/src/content/*.js`)
+ChatGPT/Claude.ai page/app state
+  -> extension provider adapter (`browser-extension/src/content/*.js`)
   -> provider-neutral `BrowserCaptureEnvelope` (`browser-extension/src/common.js`)
   -> extension service worker POST `BrowserCaptureEnvelope`
   -> local receiver `POST /v1/browser-captures`

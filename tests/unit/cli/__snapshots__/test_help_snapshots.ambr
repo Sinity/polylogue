@@ -41,6 +41,7 @@
   
     See also:
         polylogue --help                  # this screen
+        polylogue find --help             # query workflow help
         polylogue <subcommand> --help     # per-subcommand help
         polylogue --diagnose <args>       # explain parser decisions
   
@@ -142,9 +143,9 @@
     -v, --verbose                   Verbose output
     --diagnose                      Explain CLI parser decisions on stderr before
                                     running. Useful when query-first dispatch
-                                    surprises you: shows whether a bare token was
-                                    routed to a subcommand or interpreted as a
-                                    search query.
+                                    surprises you: shows whether tokens were
+                                    routed to a subcommand, an explicit query, or
+                                    the strict command floor.
     --version                       Show the version and exit.
     -h, --help                      Show this message and exit.
   
