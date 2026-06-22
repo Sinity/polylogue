@@ -429,6 +429,7 @@ class LiveBatchProcessor:
                         path,
                         raw_fingerprint=full_result.raw_fingerprints.get(path),
                         raw_byte_size=full_result.raw_byte_sizes.get(path),
+                        source_name=full_result.raw_source_names.get(path),
                     )
                     if self._last_cursor_write_stale:
                         stale_cursor_write_count += 1
@@ -644,6 +645,7 @@ class LiveBatchProcessor:
         *,
         raw_fingerprint: str | None = None,
         raw_byte_size: int | None = None,
+        source_name: str | None = None,
     ) -> int:
         self._last_cursor_write_stale = False
         try:
@@ -665,7 +667,7 @@ class LiveBatchProcessor:
             parser_fingerprint=self._current_parser_fingerprint(),
             content_fingerprint=fp,
             tail_hash=tail_hash,
-            source_name=self._source_name_for(path),
+            source_name=source_name or self._source_name_for(path),
             st_dev=stat.st_dev,
             st_ino=stat.st_ino,
             mtime_ns=stat.st_mtime_ns,
@@ -824,6 +826,7 @@ class LiveBatchProcessor:
         raw_by_id: dict[str, Path] = {}
         raw_byte_sizes: dict[Path, int] = {}
         raw_payloads: dict[str, bytes] = {}
+        raw_source_names: dict[Path, str] = {}
         failed: list[Path] = []
         ingested: list[Path] = []
         source_payload_read_bytes = 0
@@ -1003,6 +1006,7 @@ class LiveBatchProcessor:
                     )
             ingested.append(path)
             raw_byte_sizes[path] = stat.st_size
+            raw_source_names[path] = source_name
             raw_records.append(
                 RawSessionRecord(
                     raw_id=raw_id,
@@ -1072,6 +1076,7 @@ class LiveBatchProcessor:
             source_payload_read_bytes=source_payload_read_bytes,
             raw_fingerprints=raw_fingerprints,
             raw_byte_sizes=raw_byte_sizes,
+            raw_source_names=raw_source_names,
             summary=summary,
         )
         raw_records.clear()

@@ -397,6 +397,7 @@ def test_streaming_sized_browser_capture_json_uses_native_payload_detection(
     assert result.failed == []
     assert result.ingested_session_count == 1
     assert result.ingested_message_count == 2
+    assert result.raw_source_names[source] == "chatgpt"
     with sqlite3.connect(source_db) as conn:
         assert conn.execute("SELECT origin, native_id FROM raw_sessions").fetchone() == (
             "chatgpt-export",
