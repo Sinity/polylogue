@@ -121,6 +121,7 @@ def _row_to_raw_session(row: sqlite3.Row) -> RawSessionRecord:
     provider = provider_from_origin(Origin.from_string(row["origin"]))
     return RawSessionRecord(
         raw_id=row["raw_id"],
+        blob_hash=bytes(row["blob_hash"]).hex(),
         payload_provider=provider,
         source_name=provider.value,
         source_path=row["source_path"],

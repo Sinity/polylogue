@@ -24,6 +24,8 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+_BULK_FTS_RAW_BATCH_BYTES = 64 * 1024 * 1024
+
 
 def _iter_raw_id_batches(
     headers: Iterable[tuple[str, int]],
@@ -51,6 +53,10 @@ def _iter_raw_id_batches(
 
     if batch_ids:
         yield batch_ids
+
+
+def _raw_batch_bytes(headers_by_raw_id: dict[str, int], batch_ids: Iterable[str]) -> int:
+    return sum(max(int(headers_by_raw_id.get(raw_id, 0)), 0) for raw_id in batch_ids)
 
 
 async def _iter_raw_id_batches_async(
@@ -307,6 +313,7 @@ async def parse_from_raw(
 
     if raw_ids is not None:
         raw_headers = await service.repository.get_raw_blob_sizes(raw_ids)
+        raw_blob_sizes = dict(raw_headers)
         total = len(raw_headers)
         if progress_callback is not None:
             progress_callback(0, desc=f"Ingesting ({total:,} raw)")
@@ -324,6 +331,7 @@ async def parse_from_raw(
                 result,
                 progress_callback,
                 force_write=force_write,
+                suspend_fts_triggers=_raw_batch_bytes(raw_blob_sizes, batch_ids) >= _BULK_FTS_RAW_BATCH_BYTES,
             )
             batches_processed += 1
             batch_elapsed = time.perf_counter() - t_batch

@@ -600,7 +600,7 @@ def ingest_record(
 
     resolved_blob_root = Path(blob_root_str) if blob_root_str is not None else blob_store_root()
     blob_store = BlobStore(resolved_blob_root)
-    raw_source = blob_store.blob_path(raw_record.raw_id)
+    raw_source = blob_store.blob_path(raw_record.blob_hash or raw_record.raw_id)
     context = _IngestContext(
         raw_record=raw_record,
         raw_source=raw_source,

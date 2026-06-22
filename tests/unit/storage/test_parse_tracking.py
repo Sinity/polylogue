@@ -92,6 +92,31 @@ class TestMarkRawParsed:
         assert len(rec.parse_error) == 2000
 
 
+class TestRawBlobAddress:
+    """Tests for raw row identity versus content-addressed blob identity."""
+
+    async def test_save_and_read_preserves_distinct_blob_hash(self, tmp_path: Path) -> None:
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        blob_hash = "a" * 64
+
+        await backend.save_raw_session(
+            RawSessionRecord(
+                raw_id="raw-row-identity",
+                blob_hash=blob_hash,
+                source_name="test",
+                source_path="/test.json",
+                blob_size=len(b'{"test": true}'),
+                acquired_at="2026-01-01T00:00:00Z",
+            )
+        )
+
+        rec = await backend.get_raw_session("raw-row-identity")
+
+        assert rec is not None
+        assert rec.raw_id == "raw-row-identity"
+        assert rec.blob_hash == blob_hash
+
+
 class TestUpdateRawState:
     """Tests for unified raw state update methods."""
 

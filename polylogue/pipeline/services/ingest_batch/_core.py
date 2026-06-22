@@ -654,6 +654,7 @@ def _consume_ingest_results(
             if not transaction_started:
                 conn.execute("BEGIN IMMEDIATE")
                 if suspend_fts_triggers:
+                    conn.execute("PRAGMA defer_foreign_keys = ON")
                     from polylogue.storage.fts.fts_lifecycle import suspend_fts_triggers_sync
 
                     suspend_fts_triggers_sync(conn, mark_stale=False)
@@ -839,6 +840,7 @@ async def process_ingest_batch(
     *,
     force_write: bool = False,
     ingest_result_chunk_size: int = 0,
+    suspend_fts_triggers: bool = False,
 ) -> ParseBatchObservation | None:
     """Process a batch of raw records through the unified ingest pipeline.
 
@@ -876,6 +878,7 @@ async def process_ingest_batch(
         measure_ingest_result_size=service.measure_ingest_result_size,
         force_write=force_write,
         ingest_result_chunk_size=ingest_result_chunk_size,
+        suspend_fts_triggers=suspend_fts_triggers,
     )
     heavy_batch = (
         batch_summary.total_blob_mb >= INGEST_RELEASE_BLOB_MB_THRESHOLD

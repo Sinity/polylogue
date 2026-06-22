@@ -1036,20 +1036,11 @@ def _write_messages(
     *,
     position_offset: int = 0,
 ) -> None:
-    for fallback_position, message in enumerate(messages):
-        position = position_offset + (message.position if message.position is not None else fallback_position)
-        variant_index = message.variant_index if message.variant_index is not None else 0
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO messages (
-                session_id, native_id, parent_message_id, position, role, message_type,
-                model_name, model_effort, has_tool_use, has_thinking, has_paste, paste_boundary,
-                variant_index, is_active_path, is_active_leaf, word_count,
-                input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-                duration_ms, content_hash, occurred_at_ms
-            ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
+    def rows() -> Iterable[tuple[object, ...]]:
+        for fallback_position, message in enumerate(messages):
+            position = position_offset + (message.position if message.position is not None else fallback_position)
+            variant_index = message.variant_index if message.variant_index is not None else 0
+            yield (
                 session_id,
                 _sqlite_text(message.provider_message_id) or None,
                 position,
@@ -1074,8 +1065,20 @@ def _write_messages(
                     "message", session_id, message.provider_message_id or "", str(position), str(variant_index)
                 ),
                 message.occurred_at_ms if message.occurred_at_ms is not None else _timestamp_ms(message.timestamp),
-            ),
-        )
+            )
+
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO messages (
+            session_id, native_id, parent_message_id, position, role, message_type,
+            model_name, model_effort, has_tool_use, has_thinking, has_paste, paste_boundary,
+            variant_index, is_active_path, is_active_leaf, word_count,
+            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+            duration_ms, content_hash, occurred_at_ms
+        ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        rows(),
+    )
 
 
 def _write_blocks(

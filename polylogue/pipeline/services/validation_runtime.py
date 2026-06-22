@@ -102,7 +102,7 @@ def _validate_record_sync(
     )
 
     blob_store = BlobStore(Path(blob_root_str))
-    raw_source = blob_store.blob_path(raw_record.raw_id)
+    raw_source = blob_store.blob_path(raw_record.blob_hash or raw_record.raw_id)
 
     try:
         envelope = _build_validation_envelope(

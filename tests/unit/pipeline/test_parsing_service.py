@@ -459,6 +459,8 @@ class TestParsingServiceStreaming:
         repository.get_raw_blob_sizes.assert_awaited_once_with(["raw-1", "raw-2", "raw-3"])
         assert mock_process.await_args_list[0].args[2] == ["raw-1"]
         assert mock_process.await_args_list[1].args[2] == ["raw-2", "raw-3"]
+        assert mock_process.await_args_list[0].kwargs["suspend_fts_triggers"] is True
+        assert mock_process.await_args_list[1].kwargs["suspend_fts_triggers"] is True
 
     async def test_parse_from_raw_splits_streamed_backlog_by_blob_budget(self, tmp_path: Path) -> None:
         backend = MagicMock()
