@@ -138,6 +138,7 @@ class BrowserRenderProbe:
     screenshot_bytes: int | None = None
     stderr_tail: str = ""
     error: str | None = None
+    caveats: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -730,7 +731,7 @@ def _probe_browser_render(
                     dom_bytes=dom_bytes,
                     screenshot_bytes=screenshot_bytes,
                     stderr_tail=stderr[-2000:],
-                    error="browser_timeout_after_capture",
+                    caveats=("browser_timeout_after_capture",),
                 )
             return BrowserRenderProbe(
                 url=url,
@@ -1030,7 +1031,7 @@ def _print_human(report: DeploymentSmokeReport) -> None:
         print(
             f"  {marker} executable={browser_probe.executable or ''} exit={browser_probe.exit_code} "
             f"dom_bytes={browser_probe.dom_bytes} screenshot_bytes={browser_probe.screenshot_bytes} "
-            f"error={browser_probe.error or ''}"
+            f"error={browser_probe.error or ''} caveats={','.join(browser_probe.caveats)}"
         )
     capture_probe = report.browser_capture_archive
     print("")

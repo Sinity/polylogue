@@ -471,7 +471,8 @@ def test_deployment_smoke_browser_render_accepts_timeout_after_capture(
     assert probe.ok is True
     assert probe.dom_bytes == len("<html>Polylogue</html>")
     assert probe.screenshot_bytes == 3
-    assert probe.error == "browser_timeout_after_capture"
+    assert probe.error is None
+    assert probe.caveats == ("browser_timeout_after_capture",)
 
 
 def test_deployment_smoke_report_includes_browser_render_failure(
