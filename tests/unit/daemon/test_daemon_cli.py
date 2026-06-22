@@ -716,6 +716,126 @@ def test_ensure_fts_startup_readiness_does_not_rebuild_old_non_blocks_shape(
     assert conn.closed is True
 
 
+def test_archive_message_fts_startup_large_drift_is_deferred(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.daemon import fts_startup
+
+    class FakeCursor:
+        def __init__(self, row: tuple[object, ...] | None, rows: list[tuple[object, ...]] | None = None) -> None:
+            self._row = row
+            self._rows = rows if rows is not None else ([] if row is None else [row])
+
+        def fetchone(self) -> tuple[object, ...] | None:
+            return self._row
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return self._rows
+
+    class FakeConnection:
+        def execute(self, sql: str, params: object = ()) -> FakeCursor:
+            query = " ".join(sql.split())
+            if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
+                name = str(params[0]) if isinstance(params, tuple) and params else ""
+                return (
+                    FakeCursor((1,)) if name in {"blocks", "messages_fts", "messages_fts_docsize"} else FakeCursor(None)
+                )
+            if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):
+                triggers: list[tuple[object, ...]] = [("messages_fts_ai",), ("messages_fts_ad",), ("messages_fts_au",)]
+                return FakeCursor(triggers[0], rows=triggers)
+            if query.startswith("SELECT state, source_rows, indexed_rows"):
+                return FakeCursor(None)
+            if query == "SELECT COUNT(*) FROM blocks WHERE search_text != ''":
+                return FakeCursor((250_000,))
+            if query == "SELECT COUNT(*) FROM messages_fts_docsize":
+                return FakeCursor((100_000,))
+            raise AssertionError(f"unexpected query: {query}")
+
+    rebuilds: list[FakeConnection] = []
+    records: list[dict[str, object]] = []
+
+    monkeypatch.setattr("polylogue.storage.sqlite.archive_tiers.bootstrap.initialize_archive_tier", lambda *_args: None)
+    monkeypatch.setattr("polylogue.storage.fts.freshness.ensure_fts_freshness_table_sync", lambda _conn: None)
+    monkeypatch.setattr(
+        "polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync", lambda conn: rebuilds.append(conn)
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.fts.freshness.record_fts_surface_state_sync",
+        lambda _conn, **kwargs: records.append(kwargs),
+    )
+
+    assert (
+        fts_startup._ensure_archive_messages_fts_startup_readiness_sync(cast(sqlite3.Connection, FakeConnection()))
+        is True
+    )
+
+    assert rebuilds == []
+    assert records == [
+        {
+            "surface": "messages_fts",
+            "state": "stale",
+            "source_rows": 250_000,
+            "indexed_rows": 100_000,
+            "missing_rows": 150_000,
+            "excess_rows": 0,
+            "detail": "archive message FTS drift exceeds startup repair budget; run explicit FTS repair to refresh search",
+        }
+    ]
+
+
+def test_archive_message_fts_startup_preserves_known_stale_ledger(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.daemon import fts_startup
+
+    class FakeCursor:
+        def __init__(self, row: tuple[object, ...] | None, rows: list[tuple[object, ...]] | None = None) -> None:
+            self._row = row
+            self._rows = rows if rows is not None else ([] if row is None else [row])
+
+        def fetchone(self) -> tuple[object, ...] | None:
+            return self._row
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return self._rows
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        def execute(self, sql: str, params: object = ()) -> FakeCursor:
+            query = " ".join(sql.split())
+            self.queries.append(query)
+            if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
+                name = str(params[0]) if isinstance(params, tuple) and params else ""
+                return (
+                    FakeCursor((1,)) if name in {"blocks", "messages_fts", "messages_fts_docsize"} else FakeCursor(None)
+                )
+            if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):
+                triggers: list[tuple[object, ...]] = [("messages_fts_ai",), ("messages_fts_ad",), ("messages_fts_au",)]
+                return FakeCursor(triggers[0], rows=triggers)
+            if query.startswith("SELECT state, source_rows, indexed_rows"):
+                return FakeCursor(("stale", 250_000, 100_000, 150_000, 0, 0))
+            raise AssertionError(f"unexpected query: {query}")
+
+    conn = FakeConnection()
+    rebuilds: list[FakeConnection] = []
+    records: list[dict[str, object]] = []
+
+    monkeypatch.setattr("polylogue.storage.sqlite.archive_tiers.bootstrap.initialize_archive_tier", lambda *_args: None)
+    monkeypatch.setattr("polylogue.storage.fts.freshness.ensure_fts_freshness_table_sync", lambda _conn: None)
+    monkeypatch.setattr(
+        "polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync", lambda fake_conn: rebuilds.append(fake_conn)
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.fts.freshness.record_fts_surface_state_sync",
+        lambda _conn, **kwargs: records.append(kwargs),
+    )
+
+    assert fts_startup._ensure_archive_messages_fts_startup_readiness_sync(cast(sqlite3.Connection, conn)) is True
+
+    assert rebuilds == []
+    assert records == []
+    assert "SELECT COUNT(*) FROM blocks WHERE search_text != ''" not in conn.queries
+    assert "SELECT COUNT(*) FROM messages_fts_docsize" not in conn.queries
+
+
 def test_ensure_fts_startup_readiness_skips_when_blocks_table_absent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
