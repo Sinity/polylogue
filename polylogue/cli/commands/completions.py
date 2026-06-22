@@ -92,6 +92,7 @@ def query_completions_command(kind: str, incomplete: str, unit: str | None, fiel
 )
 @click.option(
     "--format",
+    "-f",
     "output_format",
     type=click.Choice(["json"]),
     help="Output format. Only JSON is currently supported.",

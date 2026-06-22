@@ -79,12 +79,12 @@ def _runtime_component_state() -> RuntimeComponentState:
         return _RUNTIME_COMPONENT_STATE
 
 
-def _component_state_from_flag(flag: bool | None) -> str:
+def _component_state_from_flag(flag: bool | None, *, default_when_unknown: str = "unknown") -> str:
     if flag is True:
         return "running"
     if flag is False:
         return "stopped"
-    return "unknown"
+    return default_when_unknown
 
 
 def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error: str | None = None) -> JSONDocument:
@@ -111,7 +111,7 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
         "checked_at": now,
         "component_state": {
             "watcher": _component_state_from_flag(runtime.watcher_enabled),
-            "api": _component_state_from_flag(runtime.api_enabled),
+            "api": _component_state_from_flag(runtime.api_enabled, default_when_unknown="running"),
             "browser_capture": _component_state_from_flag(runtime.browser_capture_enabled),
         },
         "live": False,

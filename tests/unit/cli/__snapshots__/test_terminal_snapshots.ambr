@@ -287,6 +287,8 @@
         polylogue find "urgent" then mark --tag-add review
     See also:
         polylogue --help                  # this screen
+        polylogue find --help             # query workflow hel
+  p
         polylogue <subcommand> --help     # per-subcommand hel
   p
         polylogue --diagnose <args>       # explain parser dec
@@ -457,11 +459,11 @@
                                     before running. Useful whe
   n query-first
                                     dispatch surprises you: sh
-  ows whether a bare
-                                    token was routed to a subc
-  ommand or
-                                    interpreted as a search qu
-  ery.
+  ows whether tokens
+                                    were routed to a subcomman
+  d, an explicit
+                                    query, or the strict comma
+  nd floor.
     --version                       Show the version and exit.
     -h, --help                      Show this message and exit
   .
@@ -520,6 +522,7 @@
         polylogue find "urgent" then mark --tag-add review
     See also:
         polylogue --help                  # this screen
+        polylogue find --help             # query workflow help
         polylogue <subcommand> --help     # per-subcommand help
         polylogue --diagnose <args>       # explain parser decisions
   Options:
@@ -623,9 +626,9 @@
     -v, --verbose                   Verbose output
     --diagnose                      Explain CLI parser decisions on stderr
                                     before running. Useful when query-first
-                                    dispatch surprises you: shows whether a bare
-                                    token was routed to a subcommand or
-                                    interpreted as a search query.
+                                    dispatch surprises you: shows whether tokens
+                                    were routed to a subcommand, an explicit
+                                    query, or the strict command floor.
     --version                       Show the version and exit.
     -h, --help                      Show this message and exit.
   Commands:
