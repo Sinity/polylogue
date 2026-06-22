@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -22,6 +23,7 @@ from polylogue.cli.select import (
     select_row_from_result,
 )
 from polylogue.cli.shared.types import AppEnv
+from polylogue.config import Config
 from polylogue.core.enums import Origin
 from polylogue.types import SessionId
 
@@ -119,6 +121,55 @@ def test_choose_select_row_prefers_fzf_then_falls_back_to_ui() -> None:
 def test_parse_fzf_output_returns_selected_id() -> None:
     assert _parse_fzf_output("conv-1\tclaude-code | title\n") == "conv-1"
     assert _parse_fzf_output("\n") is None
+
+
+@pytest.mark.asyncio
+async def test_select_session_rows_compiles_query_terms_before_filtering(tmp_path: Path) -> None:
+    from polylogue.archive.query.spec import SessionQuerySpec
+    from polylogue.cli.select import select_session_rows
+
+    captured: dict[str, SessionQuerySpec] = {}
+
+    class _Filter:
+        def can_use_summaries(self) -> bool:
+            return True
+
+        async def list_summaries(self) -> list[SessionSummary]:
+            return []
+
+    def _build_filter(
+        self: SessionQuerySpec,
+        config: Config,
+        *,
+        vector_provider: object | None = None,
+    ) -> _Filter:
+        del config, vector_provider
+        captured["spec"] = self
+        return _Filter()
+
+    env = cast(
+        AppEnv,
+        SimpleNamespace(
+            config=Config(
+                archive_root=tmp_path,
+                db_path=tmp_path / "index.db",
+                render_root=tmp_path / "render",
+                sources=[],
+            )
+        ),
+    )
+    request = RootModeRequest.from_params({"query": ("id:abc",)})
+
+    with (
+        patch("polylogue.cli.query._create_query_vector_provider", return_value=None),
+        patch.object(SessionQuerySpec, "build_filter", _build_filter),
+    ):
+        assert await select_session_rows(env, request, limit=3) == []
+
+    spec = captured["spec"]
+    assert spec.session_id == "abc"
+    assert spec.query_terms == ()
+    assert spec.limit == 3
 
 
 @pytest.mark.asyncio

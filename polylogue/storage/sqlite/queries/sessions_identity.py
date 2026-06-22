@@ -10,6 +10,21 @@ from polylogue.core.json import JSONDocument
 from polylogue.storage.sqlite.connection import _build_source_scope_filter
 
 
+def session_id_prefix_bounds(prefix: str) -> tuple[str, str | None]:
+    """Return indexed lexicographic bounds for a session-id prefix."""
+
+    if prefix == "":
+        return "", None
+    chars = list(prefix)
+    while chars:
+        last = ord(chars[-1])
+        if last < 0x10FFFF:
+            chars[-1] = chr(last + 1)
+            return prefix, "".join(chars)
+        chars.pop()
+    return prefix, None
+
+
 async def resolve_id(conn: aiosqlite.Connection, id_prefix: str, *, strict: bool = False) -> str | None:
     cursor = await conn.execute(
         "SELECT session_id FROM sessions WHERE session_id = ?",
@@ -22,9 +37,15 @@ async def resolve_id(conn: aiosqlite.Connection, id_prefix: str, *, strict: bool
     if strict:
         return None
 
+    lower_bound, upper_bound = session_id_prefix_bounds(id_prefix)
+    where = "session_id >= ?"
+    params: list[str] = [lower_bound]
+    if upper_bound is not None:
+        where = f"{where} AND session_id < ?"
+        params.append(upper_bound)
     cursor = await conn.execute(
-        "SELECT session_id FROM sessions WHERE session_id LIKE ? LIMIT 2",
-        (f"{id_prefix}%",),
+        f"SELECT session_id FROM sessions WHERE {where} ORDER BY session_id LIMIT 2",
+        tuple(params),
     )
     rows = list(await cursor.fetchall())
     if len(rows) == 1:
@@ -152,6 +173,7 @@ __all__ = [
     "list_tags",
     "resolve_id",
     "session_id_query",
+    "session_id_prefix_bounds",
     "set_metadata",
     "update_metadata_raw",
 ]

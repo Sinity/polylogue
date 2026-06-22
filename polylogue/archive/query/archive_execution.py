@@ -149,6 +149,7 @@ class _ArchiveFilterKwargs(TypedDict):
     max_messages: int | None
     min_words: int | None
     max_words: int | None
+    session_id: str | None
     since_ms: int | None
     until_ms: int | None
     since_session_id: str | None
@@ -183,6 +184,7 @@ def _plan_filter_kwargs(plan: SessionQueryPlan) -> _ArchiveFilterKwargs:
         "max_messages": plan.max_messages,
         "min_words": plan.min_words,
         "max_words": plan.max_words,
+        "session_id": plan.session_id,
         "since_ms": _datetime_to_ms(plan.since),
         "until_ms": _datetime_to_ms(plan.until),
         "since_session_id": plan.since_session_id,

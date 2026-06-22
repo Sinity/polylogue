@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import webbrowser
+from dataclasses import replace
 from urllib.parse import quote
 
 from polylogue.cli.read_views.base import ReadViewInvocation, execute_query_request
@@ -35,19 +36,18 @@ def run_read_browser(env: AppEnv, request: RootModeRequest, invocation: ReadView
     from polylogue.api.sync.bridge import run_coroutine_sync
     from polylogue.archive.session.domain_models import Session, SessionSummary
     from polylogue.cli.query import _create_query_vector_provider
-    from polylogue.cli.query_contracts import build_query_execution_plan
     from polylogue.paths import archive_file_set_root_for_paths
 
     config = env.config
 
     async def _find_first() -> str | None:
-        plan = build_query_execution_plan(request.query_params())
+        spec = replace(request.query_spec(), limit=1)
         archive_root = archive_file_set_root_for_paths(
             archive_root_path=config.archive_root,
             db_anchor=config.db_path,
         )
         vector_provider = _create_query_vector_provider(config, db_path=archive_root / "embeddings.db")
-        filter_chain = plan.selection.build_filter(config, vector_provider=vector_provider)
+        filter_chain = spec.build_filter(config, vector_provider=vector_provider)
         first_id: str | None = None
         if filter_chain.can_use_summaries():
             summaries: list[SessionSummary] = list(await filter_chain.list_summaries())
