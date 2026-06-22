@@ -97,7 +97,8 @@
             "assertion-candidate",
             "convergence",
             "embedding",
-            "fts"
+            "fts",
+            "raw-materialization"
           ],
           "title": "Kind",
           "type": "string"

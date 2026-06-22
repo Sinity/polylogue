@@ -207,3 +207,111 @@ def test_archive_debt_converts_embedding_and_fts_readiness(
     assert "debt:fts:messages_fts" in refs
     assert payload.totals.total == 3
     assert payload.totals.critical == 2
+
+
+def _init_raw_materialization_fixture(root: Path) -> tuple[Path, Path, Path]:
+    source_db = root / "source.db"
+    index_db = root / "index.db"
+    blob_root = root / "blob"
+    blob_root.mkdir()
+    source_file = root / "source.json"
+    source_file.write_text("{}", encoding="utf-8")
+
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE raw_sessions (
+                raw_id TEXT PRIMARY KEY,
+                origin TEXT NOT NULL,
+                native_id TEXT,
+                source_path TEXT NOT NULL,
+                source_index INTEGER NOT NULL DEFAULT 0,
+                blob_hash BLOB NOT NULL,
+                blob_size INTEGER NOT NULL,
+                acquired_at_ms INTEGER NOT NULL,
+                file_mtime_ms INTEGER,
+                parsed_at_ms INTEGER,
+                parse_error TEXT,
+                validated_at_ms INTEGER,
+                validation_status TEXT,
+                validation_error TEXT,
+                validation_drift_count INTEGER NOT NULL DEFAULT 0,
+                validation_mode TEXT,
+                detection_warnings_json TEXT NOT NULL DEFAULT '[]'
+            )
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                acquired_at_ms, parsed_at_ms, parse_error, validated_at_ms,
+                validation_status
+            ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+            """,
+            (
+                (
+                    "raw-missing-blob",
+                    "codex-session",
+                    "codex-native",
+                    str(source_file),
+                    bytes.fromhex("aa" * 32),
+                    2048,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+                (
+                    "raw-parsed-no-session",
+                    "aistudio-drive",
+                    None,
+                    str(source_file),
+                    bytes.fromhex("bb" * 32),
+                    4096,
+                    123,
+                    None,
+                    123,
+                    "passed",
+                ),
+            ),
+        )
+    (blob_root / "bb").mkdir()
+    (blob_root / "bb" / ("bb" * 31)).write_bytes(b"payload")
+
+    with sqlite3.connect(index_db) as conn:
+        conn.execute("CREATE TABLE sessions (session_id TEXT, raw_id TEXT)")
+
+    return source_db, index_db, source_file
+
+
+def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
+    _init_raw_materialization_fixture(tmp_path)
+
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
+
+    by_ref = {row.debt_ref: row for row in payload.rows}
+    missing_blob = by_ref["debt:raw-materialization:codex-session:missing-blob"]
+    assert missing_blob.severity == "critical"
+    assert missing_blob.status == "actionable"
+    assert missing_blob.kind == "raw-materialization"
+    assert "missing blob payloads" in missing_blob.summary
+    assert any(ref.startswith("blob:") for ref in missing_blob.evidence_refs)
+
+    parsed_gap = by_ref["debt:raw-materialization:aistudio-drive:parsed-without-session"]
+    assert parsed_gap.severity == "warning"
+    assert "parsed but have no materialized session" in parsed_gap.summary
+    assert "passed=1" in (parsed_gap.details or "")
+
+
+def test_archive_debt_raw_materialization_ignores_materialized_rows(tmp_path: Path) -> None:
+    source_db, index_db, _source_file = _init_raw_materialization_fixture(tmp_path)
+    with sqlite3.connect(index_db) as conn:
+        conn.execute("INSERT INTO sessions (session_id, raw_id) VALUES ('s1', 'raw-parsed-no-session')")
+
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
+
+    refs = {row.debt_ref for row in payload.rows}
+    assert "debt:raw-materialization:aistudio-drive:parsed-without-session" not in refs
+    assert "debt:raw-materialization:codex-session:missing-blob" in refs
+    assert source_db.exists()

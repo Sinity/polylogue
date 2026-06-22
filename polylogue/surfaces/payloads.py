@@ -293,6 +293,7 @@ ArchiveDebtKind = Literal[
     "convergence",
     "embedding",
     "fts",
+    "raw-materialization",
 ]
 ArchiveDebtSeverity = Literal["info", "warning", "critical"]
 ArchiveDebtStatus = Literal["open", "actionable", "blocked"]

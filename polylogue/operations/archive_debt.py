@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
@@ -20,6 +21,7 @@ from polylogue.surfaces.payloads import (
     ArchiveDebtListPayload,
     ArchiveDebtRowPayload,
     ArchiveDebtSeverity,
+    ArchiveDebtStatus,
     ArchiveDebtTotalsPayload,
 )
 
@@ -49,6 +51,8 @@ def archive_debt_list(
         rows.extend(_tier_rows(archive_root))
     if _include("assertion-candidate", selected_kinds):
         rows.extend(_assertion_candidate_rows(archive_root / "user.db"))
+    if _include("raw-materialization", selected_kinds):
+        rows.extend(_raw_materialization_rows(archive_root))
     if _include("convergence", selected_kinds):
         rows.extend(_convergence_rows(index_db))
     if _include("embedding", selected_kinds):
@@ -197,6 +201,202 @@ def _read_user_version(path: Path) -> int | None:
         return None
     finally:
         conn.close()
+
+
+def _raw_materialization_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]:
+    source_db = archive_root / "source.db"
+    index_db = archive_root / "index.db"
+    if not source_db.exists() or not index_db.exists():
+        return []
+    try:
+        conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
+    except sqlite3.Error:
+        return []
+    try:
+        missing_rows = list(
+            conn.execute(
+                """
+                SELECT
+                    r.origin,
+                    r.raw_id,
+                    r.native_id,
+                    r.source_path,
+                    r.blob_hash,
+                    r.blob_size,
+                    r.parsed_at_ms,
+                    r.parse_error,
+                    r.validation_status,
+                    r.validation_error
+                FROM raw_sessions AS r
+                LEFT JOIN index_tier.sessions AS s ON s.raw_id = r.raw_id
+                WHERE s.session_id IS NULL
+                ORDER BY r.origin, r.blob_size DESC, r.raw_id
+                """
+            )
+        )
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+    if not missing_rows:
+        return []
+
+    grouped: dict[tuple[str, str], list[sqlite3.Row]] = {}
+    for row in missing_rows:
+        category = _raw_materialization_category(row, archive_root)
+        grouped.setdefault((str(row["origin"]), category), []).append(row)
+
+    rows: list[ArchiveDebtRowPayload] = []
+    for (origin, category), group_rows in grouped.items():
+        rows.append(_raw_materialization_debt_row(archive_root, origin=origin, category=category, rows=group_rows))
+    return rows
+
+
+def _raw_materialization_category(row: sqlite3.Row, archive_root: Path) -> str:
+    if not _raw_blob_path(archive_root, row).exists():
+        return "missing-blob"
+    if row["parse_error"]:
+        return "parse-failed"
+    if row["parsed_at_ms"] is not None:
+        return "parsed-without-session"
+    return "parse-pending"
+
+
+def _raw_materialization_debt_row(
+    archive_root: Path,
+    *,
+    origin: str,
+    category: str,
+    rows: list[sqlite3.Row],
+) -> ArchiveDebtRowPayload:
+    count = len(rows)
+    sample_rows = rows[:5]
+    max_blob_size = max(_int_value(row["blob_size"]) or 0 for row in rows)
+    validation_counts = _count_values(row["validation_status"] for row in rows)
+    source_available = any(_source_artifact_exists(str(row["source_path"])) for row in rows)
+    severity: ArchiveDebtSeverity
+    status: ArchiveDebtStatus = "actionable" if source_available else "blocked"
+    stage: str
+    summary: str
+    details: str
+    actions: tuple[ArchiveDebtActionPayload, ...]
+
+    if category == "missing-blob":
+        severity = "critical"
+        stage = "raw-blob"
+        summary = f"{count} {origin} raw artifact(s) reference missing blob payloads"
+        details = (
+            f"Max raw payload size: {max_blob_size} bytes; validation states: "
+            f"{_format_counts(validation_counts)}. Re-acquire from source before parsing."
+        )
+        actions = (
+            ArchiveDebtActionPayload(
+                label="Re-import source artifacts",
+                command=("polylogue", "import"),
+                description="Pass one of the sampled source paths to re-acquire the missing raw blob.",
+            ),
+        )
+    elif category == "parse-failed":
+        severity = "critical"
+        stage = "parse"
+        summary = f"{count} {origin} raw artifact(s) failed before materializing sessions"
+        details = (
+            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size} bytes."
+        )
+        actions = (
+            ArchiveDebtActionPayload(
+                label="Inspect source artifacts",
+                command=("polylogue", "import", "--explain"),
+                description="Pass one of the sampled source paths to inspect parser routing.",
+            ),
+        )
+    elif category == "parsed-without-session":
+        severity = "warning"
+        stage = "parse"
+        summary = f"{count} {origin} raw artifact(s) parsed but have no materialized session"
+        details = (
+            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size} bytes. "
+            "These may be duplicate/empty exports, but they need an auditable skip reason."
+        )
+        actions = (
+            ArchiveDebtActionPayload(
+                label="Re-import source artifacts",
+                command=("polylogue", "import"),
+                description="Pass one of the sampled source paths to force the normal acquisition/parse path.",
+            ),
+        )
+    else:
+        severity = "warning"
+        stage = "parse"
+        summary = f"{count} {origin} raw artifact(s) are acquired but not yet parsed"
+        details = (
+            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size} bytes."
+        )
+        actions = (
+            ArchiveDebtActionPayload(
+                label="Run daemon ingest",
+                command=("polylogued", "run"),
+            ),
+        )
+
+    return ArchiveDebtRowPayload(
+        debt_ref=f"debt:raw-materialization:{origin}:{category}",
+        kind="raw-materialization",
+        stage=stage,
+        subject_ref=f"raw-origin:{origin}",
+        severity=severity,
+        status=status,
+        owner="daemon",
+        summary=summary,
+        details=details,
+        source_family=origin,
+        evidence_refs=tuple(_raw_materialization_evidence_refs(archive_root, sample_rows)),
+        caveats=(
+            "Rows are grouped by origin and failure category; evidence refs include at most five sampled raw artifacts.",
+        ),
+        actions=actions if status == "actionable" else (),
+    )
+
+
+def _raw_materialization_evidence_refs(archive_root: Path, rows: list[sqlite3.Row]) -> list[str]:
+    refs: list[str] = []
+    for row in rows:
+        raw_id = str(row["raw_id"])
+        refs.append(f"raw:{raw_id}")
+        source_path = str(row["source_path"] or "")
+        if source_path:
+            refs.append(f"file:{source_path}")
+        blob_path = _raw_blob_path(archive_root, row)
+        refs.append(f"blob:{blob_path}")
+    return refs
+
+
+def _raw_blob_path(archive_root: Path, row: sqlite3.Row) -> Path:
+    blob_hash = row["blob_hash"]
+    hex_hash = blob_hash.hex() if isinstance(blob_hash, bytes) else str(blob_hash)
+    return archive_root / "blob" / hex_hash[:2] / hex_hash[2:]
+
+
+def _source_artifact_exists(source_path: str) -> bool:
+    if not source_path:
+        return False
+    outer_path = source_path.split(":", 1)[0]
+    return os.path.exists(outer_path)
+
+
+def _count_values(values: Iterable[Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for value in values:
+        key = str(value) if value is not None else "unknown"
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _format_counts(counts: Mapping[str, int]) -> str:
+    return ", ".join(f"{key}={counts[key]}" for key in sorted(counts)) or "none"
 
 
 def _convergence_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
