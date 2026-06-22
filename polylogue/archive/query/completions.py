@@ -401,9 +401,12 @@ def _action_description(contract: CliActionContract) -> str:
         f"effect={contract.effect}",
         f"input={contract.input_unit}",
         f"cardinality={contract.cardinality}",
+        f"safety={contract.safety_level}",
         f"default_format={contract.default_format}",
         f"machine_envelope={contract.machine_envelope}",
     ]
+    if contract.destination_support:
+        pieces.append(f"destinations={','.join(contract.destination_support)}")
     if contract.guards:
         pieces.append(f"guards={','.join(contract.guards)}")
     return "; ".join(pieces)

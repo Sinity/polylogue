@@ -10,6 +10,9 @@ InputUnit = Literal["none", "query_result_set", "session", "path", "config", "ru
 ActionCardinality = Literal["any", "singleton", "explicit_multi", "destructive_multi"]
 ActionFormat = Literal["human", "json", "ndjson"]
 MachineEnvelope = Literal["result_set", "item", "mutation", "error", "stream_item"]
+ActionTarget = Literal["none", "selection", "session", "path", "config", "runtime"]
+ActionSafetyLevel = Literal["safe", "mutating", "destructive", "operational"]
+ActionDestination = Literal["terminal", "stdout", "browser", "clipboard", "file", "api", "mcp"]
 CompletionContext = Literal[
     "config_key",
     "filesystem_path",
@@ -37,6 +40,51 @@ class CliActionContract:
     requires_daemon: bool
     guards: tuple[str, ...] = ()
     completion_context: CompletionContext | None = None
+    target: ActionTarget = "selection"
+    safety_level: ActionSafetyLevel = "safe"
+    confirmation_command: str | None = None
+    selection_command: str | None = None
+    destination_support: tuple[ActionDestination, ...] = ("terminal",)
+    disabled_reason: str | None = None
+    estimated_cost: str | None = None
+    next_actions: tuple[str, ...] = ()
+
+    @property
+    def action_id(self) -> str:
+        """Return the stable dot-path id used by affordance consumers."""
+
+        return ".".join(self.path)
+
+    def to_affordance_payload(self) -> dict[str, object]:
+        """Return the shared query-action affordance payload.
+
+        This is intentionally JSON-native and narrow: CLI, web, MCP, docs, and
+        completion adapters can consume the same metadata without importing
+        Click. Runtime availability remains a separate per-target concern; this
+        payload records the static contract and any known disabled reason.
+        """
+
+        return {
+            "id": self.action_id,
+            "path": list(self.path),
+            "effect": self.effect,
+            "target": self.target,
+            "input_unit": self.input_unit,
+            "cardinality_state": self.cardinality,
+            "safety_level": self.safety_level,
+            "confirmation_command": self.confirmation_command,
+            "selection_command": self.selection_command,
+            "destination_support": list(self.destination_support),
+            "format_support": sorted(self.formats, key=_format_order),
+            "default_format": self.default_format,
+            "machine_envelope": self.machine_envelope,
+            "disabled_reason": self.disabled_reason,
+            "estimated_cost": self.estimated_cost,
+            "next_actions": list(self.next_actions),
+            "guards": list(self.guards),
+            "completion_context": self.completion_context,
+            "requires_daemon": self.requires_daemon,
+        }
 
 
 VIRTUAL_ACTION_PATHS: frozenset[tuple[str, ...]] = frozenset(
@@ -74,6 +122,9 @@ ACTION_CONTRACTS: tuple[CliActionContract, ...] = (
         requires_daemon=False,
         guards=("explicit_query_intent",),
         completion_context="query_expression",
+        target="none",
+        destination_support=("terminal", "stdout", "file", "api", "mcp"),
+        next_actions=("select", "read", "analyze", "continue", "mark", "delete"),
     ),
     CliActionContract(
         path=("read",),
@@ -86,6 +137,10 @@ ACTION_CONTRACTS: tuple[CliActionContract, ...] = (
         requires_daemon=False,
         guards=("single_match_unless_all", "file_destination_requires_out"),
         completion_context="session_id",
+        confirmation_command=None,
+        selection_command="polylogue find QUERY then select",
+        destination_support=("terminal", "stdout", "browser", "clipboard", "file", "api", "mcp"),
+        next_actions=("continue", "mark", "delete"),
     ),
     CliActionContract(
         path=("continue",),
@@ -97,6 +152,10 @@ ACTION_CONTRACTS: tuple[CliActionContract, ...] = (
         machine_envelope="item",
         requires_daemon=False,
         completion_context="session_id",
+        confirmation_command=None,
+        selection_command="polylogue find QUERY then select",
+        destination_support=("terminal", "stdout", "clipboard", "file", "api", "mcp"),
+        next_actions=("read", "mark"),
     ),
     CliActionContract(
         path=("select",),
@@ -108,6 +167,8 @@ ACTION_CONTRACTS: tuple[CliActionContract, ...] = (
         machine_envelope="item",
         requires_daemon=False,
         completion_context="session_id",
+        destination_support=("terminal", "stdout", "api", "mcp"),
+        next_actions=("read", "continue", "analyze", "mark", "delete"),
     ),
     CliActionContract(
         path=("mark",),
@@ -120,6 +181,10 @@ ACTION_CONTRACTS: tuple[CliActionContract, ...] = (
         requires_daemon=False,
         guards=("single_match_unless_all_or_first",),
         completion_context="session_id",
+        safety_level="mutating",
+        selection_command="polylogue find QUERY then select",
+        destination_support=("terminal", "stdout", "api", "mcp"),
+        next_actions=("read", "analyze"),
     ),
     CliActionContract(
         path=("analyze",),
@@ -131,6 +196,8 @@ ACTION_CONTRACTS: tuple[CliActionContract, ...] = (
         machine_envelope="result_set",
         requires_daemon=False,
         completion_context="query_expression",
+        destination_support=("terminal", "stdout", "file", "api", "mcp"),
+        next_actions=("select", "read"),
     ),
     CliActionContract(
         path=("delete",),
@@ -143,6 +210,11 @@ ACTION_CONTRACTS: tuple[CliActionContract, ...] = (
         requires_daemon=False,
         guards=("dry_run_or_yes_required", "single_match_unless_all"),
         completion_context="session_id",
+        safety_level="destructive",
+        confirmation_command="polylogue find QUERY then delete --dry-run",
+        selection_command="polylogue find QUERY then select",
+        destination_support=("terminal", "stdout", "api", "mcp"),
+        next_actions=("find",),
     ),
     CliActionContract(
         path=("import",),
@@ -155,6 +227,11 @@ ACTION_CONTRACTS: tuple[CliActionContract, ...] = (
         requires_daemon=True,
         guards=("path_exists_or_demo", "daemon_accepts_schedule"),
         completion_context="filesystem_path",
+        target="path",
+        safety_level="mutating",
+        destination_support=("terminal", "stdout", "api"),
+        estimated_cost="archive write and downstream convergence work",
+        next_actions=("ops", "read", "analyze"),
     ),
     CliActionContract(
         path=("config",),
@@ -167,6 +244,10 @@ ACTION_CONTRACTS: tuple[CliActionContract, ...] = (
         requires_daemon=False,
         guards=("secret_values_redacted",),
         completion_context="config_key",
+        target="config",
+        safety_level="operational",
+        destination_support=("terminal", "stdout"),
+        next_actions=("ops",),
     ),
     CliActionContract(
         path=("ops",),
@@ -177,6 +258,10 @@ ACTION_CONTRACTS: tuple[CliActionContract, ...] = (
         default_format="human",
         machine_envelope="item",
         requires_daemon=False,
+        target="runtime",
+        safety_level="operational",
+        destination_support=("terminal", "stdout", "api"),
+        next_actions=("find", "read"),
     ),
 )
 
@@ -196,6 +281,17 @@ def action_completion_contexts() -> tuple[CompletionContext, ...]:
     )
 
 
+def action_affordance_payloads() -> list[dict[str, object]]:
+    """Return JSON-native action affordance metadata for public contracts."""
+
+    return [contract.to_affordance_payload() for contract in ACTION_CONTRACTS]
+
+
+def _format_order(value: str) -> int:
+    order = {"human": 0, "json": 1, "ndjson": 2}
+    return order[value]
+
+
 def _validate_contracts() -> None:
     duplicate_paths = len(ACTION_CONTRACT_BY_PATH) != len(ACTION_CONTRACTS)
     if duplicate_paths:
@@ -203,6 +299,17 @@ def _validate_contracts() -> None:
     for entry in ACTION_CONTRACTS:
         if entry.default_format not in entry.formats:
             raise ValueError(f"{entry.path!r} default_format is not declared in formats")
+        if entry.confirmation_command is not None and entry.safety_level not in {"destructive", "mutating"}:
+            raise ValueError(f"{entry.path!r} confirmation_command requires mutating/destructive safety")
+        if (
+            entry.cardinality in {"explicit_multi", "destructive_multi", "singleton"}
+            and entry.input_unit == "query_result_set"
+            and entry.path not in {("select",)}
+            and entry.selection_command is None
+        ):
+            raise ValueError(f"{entry.path!r} query-result action must declare selection_command")
+        if entry.safety_level == "destructive" and entry.confirmation_command is None:
+            raise ValueError(f"{entry.path!r} destructive action must declare confirmation_command")
 
 
 _validate_contracts()
@@ -220,6 +327,10 @@ __all__ = [
     "CompletionContext",
     "InputUnit",
     "MachineEnvelope",
+    "ActionDestination",
+    "ActionSafetyLevel",
+    "ActionTarget",
+    "action_affordance_payloads",
     "action_completion_contexts",
     "contract_for_path",
 ]

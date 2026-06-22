@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from io import StringIO
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from unittest.mock import patch
 
 import click
@@ -22,6 +22,7 @@ from polylogue.operations.action_contracts import (
     PUBLIC_ACTION_FLOOR,
     VIRTUAL_ACTION_PATHS,
     CliActionContract,
+    action_affordance_payloads,
     action_completion_contexts,
 )
 from tests.infra.app_env import make_app_env
@@ -163,6 +164,52 @@ def test_default_format_is_declared_for_every_contract() -> None:
     """The default format must be one of the contract's declared formats."""
     invalid = [entry.path for entry in ACTION_CONTRACTS if entry.default_format not in entry.formats]
     assert not invalid, f"Contracts have default_format outside formats: {invalid}"
+
+
+def test_action_contracts_emit_shared_affordance_payloads() -> None:
+    """The public floor exposes the #2305 affordance fields as JSON-native data."""
+    payloads = action_affordance_payloads()
+    by_id = {str(payload["id"]): payload for payload in payloads}
+
+    assert set(by_id) == {".".join(contract.path) for contract in ACTION_CONTRACTS}
+
+    read: dict[str, Any] = by_id["read"]
+    assert read["target"] == "selection"
+    assert read["input_unit"] == "query_result_set"
+    assert read["cardinality_state"] == "explicit_multi"
+    assert read["safety_level"] == "safe"
+    assert read["selection_command"] == "polylogue find QUERY then select"
+    assert "browser" in read["destination_support"]
+    assert read["format_support"] == ["human", "json", "ndjson"]
+    assert "continue" in read["next_actions"]
+
+    delete: dict[str, Any] = by_id["delete"]
+    assert delete["safety_level"] == "destructive"
+    assert delete["confirmation_command"] == "polylogue find QUERY then delete --dry-run"
+    assert "dry_run_or_yes_required" in delete["guards"]
+
+
+def test_query_result_actions_declare_selection_or_confirmation_affordance() -> None:
+    """Singleton/multi query-result actions must expose how to disambiguate targets."""
+    missing = [
+        contract.path
+        for contract in ACTION_CONTRACTS
+        if contract.input_unit == "query_result_set"
+        and contract.cardinality in {"singleton", "explicit_multi", "destructive_multi"}
+        and contract.path != ("select",)
+        and contract.selection_command is None
+    ]
+    assert not missing
+
+
+def test_destructive_actions_declare_confirmation_affordance() -> None:
+    """Destructive actions must publish an explicit preview/confirmation command."""
+    missing = [
+        contract.path
+        for contract in ACTION_CONTRACTS
+        if contract.safety_level == "destructive" and contract.confirmation_command is None
+    ]
+    assert not missing
 
 
 def test_mutation_contracts_have_published_schema() -> None:

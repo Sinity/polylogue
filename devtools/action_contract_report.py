@@ -28,8 +28,8 @@ def _format_set(values: frozenset[str]) -> tuple[str, ...]:
 
 def _contract_rows() -> list[str]:
     rows = [
-        "| Action | Effect | Input | Cardinality | Formats | Default | Machine envelope | Guards | Completion |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Action | Effect | Target | Input | Cardinality | Safety | Formats | Destinations | Confirm | Select | Machine envelope | Guards | Next actions | Completion |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for contract in ACTION_CONTRACTS:
         rows.append(
@@ -37,12 +37,17 @@ def _contract_rows() -> list[str]:
                 (
                     _path_cell(contract.path),
                     _code_cell(contract.effect),
+                    _code_cell(contract.target),
                     _code_cell(contract.input_unit),
                     _code_cell(contract.cardinality),
+                    _code_cell(contract.safety_level),
                     _list_cell(_format_set(contract.formats)),
-                    _code_cell(contract.default_format),
+                    _list_cell(contract.destination_support),
+                    _code_cell(contract.confirmation_command) if contract.confirmation_command else "-",
+                    _code_cell(contract.selection_command) if contract.selection_command else "-",
                     _code_cell(contract.machine_envelope),
                     _list_cell(contract.guards),
+                    _list_cell(contract.next_actions),
                     _code_cell(contract.completion_context) if contract.completion_context else "-",
                 )
             ).join(("| ", " |"))
