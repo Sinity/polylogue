@@ -212,8 +212,12 @@ def cursor_state_after_full_ingest(
     if raw_fingerprint is None:
         fp, last_nl = fingerprint_file(path)
         tail_hash, _tail_bytes = tail_hash_from_path(path, byte_size)
+        if path.suffix.lower() not in {".jsonl", ".ndjson"}:
+            last_nl = byte_size
         return fp, last_nl, tail_hash, byte_size
     tail_hash, last_nl, bytes_read = tail_hash_and_last_complete_newline_from_path(path, byte_size)
+    if path.suffix.lower() not in {".jsonl", ".ndjson"}:
+        last_nl = byte_size
     return raw_fingerprint, last_nl, tail_hash, bytes_read
 
 
