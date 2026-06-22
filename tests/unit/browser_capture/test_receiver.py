@@ -132,6 +132,7 @@ def test_existing_capture_state_reports_written_artifact(tmp_path: Path) -> None
     typed = BrowserCaptureArchiveStatePayload.model_validate(state)
 
     assert typed.captured is True
+    assert typed.lifecycle == "archived"
     assert typed.provider == "chatgpt"
     assert typed.artifact_ref == capture_artifact_ref(envelope, tmp_path)
     assert Path(typed.artifact_ref).is_absolute() is False
@@ -199,6 +200,34 @@ def test_receiver_accepts_extension_capture_and_reports_typed_dto(tmp_path: Path
     assert body.artifact_ref == capture_artifact_ref(BrowserCaptureEnvelope.model_validate(_payload()), tmp_path)
     assert Path(body.artifact_ref).is_absolute() is False
     assert (tmp_path / body.artifact_ref).exists()
+
+
+def test_receiver_does_not_double_prefix_prefixed_capture_id(tmp_path: Path) -> None:
+    payload = _payload()
+    payload["capture_id"] = "chatgpt:chatgpt:conv-123"
+
+    with _running_receiver(tmp_path) as (host, port):
+        response = _request(
+            host,
+            port,
+            "POST",
+            "/v1/browser-captures",
+            body=payload,
+            origin=_EXTENSION_ORIGIN,
+        )
+        accepted = BrowserCaptureAcceptedPayload.model_validate(json.loads(response.read()))
+        state_response = _request(
+            host,
+            port,
+            "GET",
+            "/v1/archive-state?provider=chatgpt&provider_session_id=conv-123",
+            origin=_EXTENSION_ORIGIN,
+        )
+        state = BrowserCaptureArchiveStatePayload.model_validate(json.loads(state_response.read()))
+
+    assert accepted.capture_id == "chatgpt:conv-123"
+    assert state.capture_id == "chatgpt:conv-123"
+    assert state.lifecycle == "archived"
 
 
 def test_receiver_echoes_safe_request_id_header(tmp_path: Path) -> None:

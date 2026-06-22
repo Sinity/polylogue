@@ -86,6 +86,15 @@ def capture_artifact_ref(envelope: BrowserCaptureEnvelope, spool_path: Path | No
     return capture_artifact_path(envelope, root).relative_to(root).as_posix()
 
 
+def capture_response_id(provider: str, provider_session_id: str, capture_id: str | None = None) -> str:
+    """Return a response capture id without double-prefixing the provider."""
+    prefix = f"{provider}:"
+    value = capture_id or provider_session_id
+    while value.startswith(f"{prefix}{prefix}"):
+        value = value[len(prefix) :]
+    return value if value.startswith(prefix) else f"{prefix}{value}"
+
+
 def write_capture_envelope(
     envelope: BrowserCaptureEnvelope,
     *,
@@ -150,7 +159,8 @@ def existing_capture_state(
     capture_id: str | None = None
     updated_at: str | None = None
     artifact_readable: bool | None = None
-    if path.exists():
+    captured = path.exists()
+    if captured:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
             raw_capture_id = payload.get("capture_id")
@@ -159,12 +169,16 @@ def existing_capture_state(
             updated_at = raw_updated_at if isinstance(raw_updated_at, str) else None
         except (OSError, json.JSONDecodeError, AttributeError):
             artifact_readable = False
+    lifecycle = "not_captured"
+    if captured:
+        lifecycle = "spooled_unreadable" if artifact_readable is False else "archived"
     return BrowserCaptureArchiveStatePayload(
         provider=envelope.provider.value,
         provider_session_id=envelope.provider_session_id,
-        captured=path.exists(),
+        lifecycle=lifecycle,
+        captured=captured,
         artifact_ref=capture_artifact_ref(envelope, spool_path),
-        capture_id=capture_id,
+        capture_id=capture_response_id(envelope.provider.value, envelope.provider_session_id, capture_id),
         updated_at=updated_at,
         artifact_readable=artifact_readable,
     ).model_dump(mode="json", exclude_none=True)
@@ -174,6 +188,7 @@ __all__ = [
     "BrowserCaptureReceiverConfig",
     "BrowserCaptureWriteResult",
     "capture_artifact_ref",
+    "capture_response_id",
     "_is_extension_origin_pattern",
     "capture_artifact_path",
     "existing_capture_state",

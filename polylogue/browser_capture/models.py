@@ -176,6 +176,7 @@ class BrowserCaptureArchiveStatePayload(BaseModel):
 
     provider: str
     provider_session_id: str
+    lifecycle: str
     captured: bool
     artifact_ref: str
     capture_id: str | None = None

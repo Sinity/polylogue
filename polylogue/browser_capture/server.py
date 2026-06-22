@@ -21,6 +21,7 @@ from polylogue.browser_capture.models import (
 )
 from polylogue.browser_capture.receiver import (
     BrowserCaptureReceiverConfig,
+    capture_response_id,
     existing_capture_state,
     receiver_status_payload,
     write_capture_envelope,
@@ -247,7 +248,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         self._send_json(
             HTTPStatus.ACCEPTED,
             BrowserCaptureAcceptedPayload(
-                capture_id=envelope.capture_id or f"{result.provider}:{result.provider_session_id}",
+                capture_id=capture_response_id(result.provider, result.provider_session_id, envelope.capture_id),
                 provider=result.provider,
                 provider_session_id=result.provider_session_id,
                 artifact_ref=result.artifact_ref,
