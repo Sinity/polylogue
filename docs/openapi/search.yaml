@@ -488,6 +488,168 @@ paths:
                 $ref: '#/components/schemas/AssertionClaimListPayload'
 components:
   schemas:
+    ActionAffordancePayload:
+      additionalProperties: false
+      description: Shared static action-affordance contract for public action surfaces.
+      properties:
+        id:
+          title: Id
+          type: string
+        path:
+          items:
+            type: string
+          title: Path
+          type: array
+        effect:
+          enum:
+          - read
+          - write
+          - destructive
+          - stream
+          - ops
+          - config
+          - import
+          title: Effect
+          type: string
+        target:
+          enum:
+          - none
+          - selection
+          - session
+          - path
+          - config
+          - runtime
+          title: Target
+          type: string
+        input_unit:
+          enum:
+          - none
+          - query_result_set
+          - session
+          - path
+          - config
+          - runtime
+          title: Input Unit
+          type: string
+        cardinality_state:
+          enum:
+          - any
+          - singleton
+          - explicit_multi
+          - destructive_multi
+          title: Cardinality State
+          type: string
+        safety_level:
+          enum:
+          - safe
+          - mutating
+          - destructive
+          - operational
+          title: Safety Level
+          type: string
+        confirmation_command:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Confirmation Command
+        selection_command:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Selection Command
+        destination_support:
+          items:
+            enum:
+            - terminal
+            - stdout
+            - browser
+            - clipboard
+            - file
+            - api
+            - mcp
+            type: string
+          title: Destination Support
+          type: array
+        format_support:
+          items:
+            enum:
+            - human
+            - json
+            - ndjson
+            type: string
+          title: Format Support
+          type: array
+        default_format:
+          enum:
+          - human
+          - json
+          - ndjson
+          title: Default Format
+          type: string
+        machine_envelope:
+          enum:
+          - result_set
+          - item
+          - mutation
+          - error
+          - stream_item
+          title: Machine Envelope
+          type: string
+        disabled_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Disabled Reason
+        estimated_cost:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Estimated Cost
+        next_actions:
+          default: []
+          items:
+            type: string
+          title: Next Actions
+          type: array
+        guards:
+          default: []
+          items:
+            type: string
+          title: Guards
+          type: array
+        completion_context:
+          anyOf:
+          - enum:
+            - config_key
+            - filesystem_path
+            - query_expression
+            - session_id
+            type: string
+          - type: 'null'
+          default: null
+          title: Completion Context
+        requires_daemon:
+          title: Requires Daemon
+          type: boolean
+      required:
+      - id
+      - path
+      - effect
+      - target
+      - input_unit
+      - cardinality_state
+      - safety_level
+      - destination_support
+      - format_support
+      - default_format
+      - machine_envelope
+      - requires_daemon
+      title: ActionAffordancePayload
+      type: object
     QueryMissDiagnosticsPayload:
       additionalProperties: false
       description: Shared diagnostics payload for zero-result queries.
@@ -832,7 +994,9 @@ components:
         \ but IS reported here as the\n  resolved lane for vector hits (#1749). ``auto`` means the surface\n  left the lane\
         \ to the planner.\n- ``ranking_policy``: policy identifier the lane used to order hits.\n  Currently always :data:`RANKING_POLICY_MIXED`.\n\
         - ``ranking_policy_version``: numeric version of the ranking policy\n  so external consumers can detect ordering changes.\n\
-        - ``diagnostics``: optional zero-result explanation when the query\n  produced no hits but filters were applied."
+        - ``action_affordances``: query-result actions clients may offer after\n  receiving this result set. This is intentionally\
+        \ top-level so it is not\n  confused with per-hit reader actions in ``hit.match.actions``.\n- ``diagnostics``: optional\
+        \ zero-result explanation when the query\n  produced no hits but filters were applied."
       properties:
         hits:
           items:
@@ -882,6 +1046,12 @@ components:
           default: '1'
           title: Ranking Policy Version
           type: string
+        action_affordances:
+          default: []
+          items:
+            $ref: '#/components/schemas/ActionAffordancePayload'
+          title: Action Affordances
+          type: array
         diagnostics:
           anyOf:
           - $ref: '#/components/schemas/QueryMissDiagnosticsPayload'

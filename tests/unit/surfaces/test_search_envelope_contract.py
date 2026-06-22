@@ -50,6 +50,7 @@ REQUIRED_ENVELOPE_FIELDS: frozenset[str] = frozenset(
         "retrieval_lane",
         "ranking_policy",
         "ranking_policy_version",
+        "action_affordances",
         "diagnostics",
     }
 )
@@ -150,6 +151,7 @@ def _normalise_envelope_dict(payload: dict[str, Any]) -> dict[str, Any]:
         "retrieval_lane": payload["retrieval_lane"],
         "ranking_policy": payload["ranking_policy"],
         "ranking_policy_version": payload["ranking_policy_version"],
+        "action_affordance_ids": tuple(action["id"] for action in payload["action_affordances"]),
         "hit_count": len(hits),
         "hit_session_ids": tuple(hit["session"]["id"] for hit in hits),
         "hit_ranks": tuple(hit["match"]["rank"] for hit in hits),
@@ -222,6 +224,8 @@ def test_all_surfaces_emit_semantically_equivalent_envelope() -> None:
         == cli_norm["ranking_policy_version"]
         == RANKING_POLICY_VERSION
     )
+    assert api_norm["action_affordance_ids"] == mcp_norm["action_affordance_ids"] == cli_norm["action_affordance_ids"]
+    assert set(api_norm["action_affordance_ids"]) == {"read", "continue", "select", "mark", "analyze", "delete"}
     assert api_norm["hit_count"] == mcp_norm["hit_count"] == cli_norm["hit_count"] == 2
     assert api_norm["hit_session_ids"] == mcp_norm["hit_session_ids"] == cli_norm["hit_session_ids"]
     assert api_norm["hit_ranks"] == mcp_norm["hit_ranks"] == cli_norm["hit_ranks"] == (1, 2)

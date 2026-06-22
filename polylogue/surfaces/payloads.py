@@ -17,6 +17,7 @@ from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.core.enums import AssertionKind
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document
 from polylogue.core.refs import normalize_object_ref_text, normalize_public_ref_text
+from polylogue.operations.action_contracts import ActionAffordancePayload
 
 MutationStatus: TypeAlias = Literal[
     "ok",
@@ -1043,6 +1044,9 @@ class SearchEnvelope(SurfacePayloadModel):
       Currently always :data:`RANKING_POLICY_MIXED`.
     - ``ranking_policy_version``: numeric version of the ranking policy
       so external consumers can detect ordering changes.
+    - ``action_affordances``: query-result actions clients may offer after
+      receiving this result set. This is intentionally top-level so it is not
+      confused with per-hit reader actions in ``hit.match.actions``.
     - ``diagnostics``: optional zero-result explanation when the query
       produced no hits but filters were applied.
     """
@@ -1058,6 +1062,7 @@ class SearchEnvelope(SurfacePayloadModel):
     retrieval_lane: str
     ranking_policy: str = RANKING_POLICY_MIXED
     ranking_policy_version: str = RANKING_POLICY_VERSION
+    action_affordances: tuple[ActionAffordancePayload, ...] = ()
     diagnostics: QueryMissDiagnosticsPayload | None = None
 
 
@@ -2026,6 +2031,7 @@ def build_search_envelope(
     retrieval_lane: str,
     sort: str | None = None,
     diagnostics: QueryMissDiagnosticsPayload | None = None,
+    action_affordances: Sequence[ActionAffordancePayload] | None = None,
     ranking_policy: str = RANKING_POLICY_MIXED,
     ranking_policy_version: str = RANKING_POLICY_VERSION,
     cursor: SearchCursor | None = None,
@@ -2053,6 +2059,10 @@ def build_search_envelope(
         # More results likely available; expose both pagination handles.
         next_offset = offset + limit
         next_cursor = build_search_cursor(hits_tuple)
+    if action_affordances is None:
+        from polylogue.operations.action_contracts import query_result_action_affordance_payloads
+
+        action_affordances = query_result_action_affordance_payloads()
     return SearchEnvelope(
         hits=hits_tuple,
         total=total,
@@ -2065,6 +2075,7 @@ def build_search_envelope(
         retrieval_lane=retrieval_lane,
         ranking_policy=ranking_policy,
         ranking_policy_version=ranking_policy_version,
+        action_affordances=tuple(action_affordances),
         diagnostics=diagnostics,
     )
 

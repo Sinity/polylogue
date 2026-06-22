@@ -323,6 +323,12 @@ def action_affordance_payloads() -> list[ActionAffordancePayload]:
     return [contract.to_affordance_payload() for contract in ACTION_CONTRACTS]
 
 
+def query_result_action_affordance_payloads() -> list[ActionAffordancePayload]:
+    """Return action affordances that operate on a query-result selection."""
+
+    return [payload for payload in action_affordance_payloads() if payload.target == "selection"]
+
+
 def action_affordance_list_payload() -> ActionAffordanceListPayload:
     """Return the public action-affordance inventory as one payload model."""
 
@@ -378,4 +384,5 @@ __all__ = [
     "action_affordance_payloads",
     "action_completion_contexts",
     "contract_for_path",
+    "query_result_action_affordance_payloads",
 ]
