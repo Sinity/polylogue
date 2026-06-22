@@ -12,13 +12,39 @@ import pytest
 from devtools import deployment_smoke
 
 
-def _create_browser_source_db(path: Path, *, file_mtime_ms: int | None = None) -> None:
+def _create_browser_source_db(
+    path: Path,
+    *,
+    file_mtime_ms: int | None = None,
+    raw_id: str = "raw-capture",
+    native_id: str = "capture",
+    capture_path: Path | None = None,
+) -> None:
     with sqlite3.connect(path / "source.db") as conn:
-        conn.execute("CREATE TABLE raw_sessions (source_path TEXT, file_mtime_ms INTEGER)")
+        conn.execute(
+            """
+            CREATE TABLE raw_sessions (
+                raw_id TEXT,
+                origin TEXT,
+                native_id TEXT,
+                source_path TEXT,
+                file_mtime_ms INTEGER
+            )
+            """
+        )
         if file_mtime_ms is not None:
             conn.execute(
-                "INSERT INTO raw_sessions (source_path, file_mtime_ms) VALUES (?, ?)",
-                (str(path / "browser-capture" / "chatgpt" / "capture.json"), file_mtime_ms),
+                """
+                INSERT INTO raw_sessions (raw_id, origin, native_id, source_path, file_mtime_ms)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    raw_id,
+                    "chatgpt-export",
+                    native_id,
+                    str(capture_path or path / "browser-capture" / "chatgpt" / "capture.json"),
+                    file_mtime_ms,
+                ),
             )
 
 
@@ -48,6 +74,40 @@ def _write_spooled_capture(path: Path, *, provider_session_id: str = "capture") 
         encoding="utf-8",
     )
     return capture
+
+
+def _create_browser_index_db(
+    path: Path,
+    *,
+    raw_id: str = "raw-capture",
+    native_id: str = "capture",
+    message_count: int = 1,
+) -> None:
+    with sqlite3.connect(path / "index.db") as conn:
+        conn.execute(
+            """
+            CREATE TABLE sessions (
+                session_id TEXT,
+                raw_id TEXT,
+                native_id TEXT,
+                title TEXT,
+                message_count INTEGER
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO sessions (session_id, raw_id, native_id, title, message_count)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                f"chatgpt-export:{native_id}",
+                raw_id,
+                native_id,
+                "Deployment smoke capture",
+                message_count,
+            ),
+        )
 
 
 class _FakeResponse:
@@ -430,9 +490,7 @@ def test_deployment_smoke_report_includes_browser_render_failure(
 
 
 def test_deployment_smoke_reports_spooled_browser_capture_without_raw_rows(tmp_path: Path) -> None:
-    capture_dir = tmp_path / "browser-capture" / "chatgpt"
-    capture_dir.mkdir(parents=True)
-    (capture_dir / "capture.json").write_text("{}", encoding="utf-8")
+    _write_spooled_capture(tmp_path)
     _create_browser_source_db(tmp_path)
 
     probe = deployment_smoke._probe_browser_capture_archive(archive_root=tmp_path)
@@ -444,11 +502,12 @@ def test_deployment_smoke_reports_spooled_browser_capture_without_raw_rows(tmp_p
 
 
 def test_deployment_smoke_reports_spooled_browser_capture_newer_than_raw_row(tmp_path: Path) -> None:
-    capture_dir = tmp_path / "browser-capture" / "chatgpt"
-    capture_dir.mkdir(parents=True)
-    capture = capture_dir / "capture.json"
-    capture.write_text("{}", encoding="utf-8")
-    _create_browser_source_db(tmp_path, file_mtime_ms=int(capture.stat().st_mtime * 1000) - 1000)
+    capture = _write_spooled_capture(tmp_path)
+    _create_browser_source_db(
+        tmp_path,
+        file_mtime_ms=int(capture.stat().st_mtime * 1000) - 1000,
+        capture_path=capture,
+    )
 
     probe = deployment_smoke._probe_browser_capture_archive(archive_root=tmp_path)
 
@@ -461,19 +520,88 @@ def test_deployment_smoke_reports_spooled_browser_capture_newer_than_raw_row(tmp
     assert probe.error == "spooled_newer_than_raw_rows"
 
 
-def test_deployment_smoke_accepts_browser_capture_raw_row_at_latest_mtime(tmp_path: Path) -> None:
-    capture_dir = tmp_path / "browser-capture" / "chatgpt"
-    capture_dir.mkdir(parents=True)
-    capture = capture_dir / "capture.json"
-    capture.write_text("{}", encoding="utf-8")
-    _create_browser_source_db(tmp_path, file_mtime_ms=int(capture.stat().st_mtime * 1000))
+def test_deployment_smoke_reports_latest_browser_capture_missing_index_row(tmp_path: Path) -> None:
+    capture = _write_spooled_capture(tmp_path)
+    _create_browser_source_db(
+        tmp_path,
+        file_mtime_ms=int(capture.stat().st_mtime * 1000),
+        capture_path=capture,
+    )
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute(
+            """
+            CREATE TABLE sessions (
+                session_id TEXT,
+                raw_id TEXT,
+                native_id TEXT,
+                title TEXT,
+                message_count INTEGER
+            )
+            """
+        )
+
+    probe = deployment_smoke._probe_browser_capture_archive(archive_root=tmp_path)
+
+    assert probe.ok is False
+    assert probe.raw_rows == 1
+    assert probe.latest_raw_id == "raw-capture"
+    assert probe.error == "latest_spooled_not_indexed"
+
+
+def test_deployment_smoke_reports_latest_browser_capture_indexed_without_messages(tmp_path: Path) -> None:
+    capture = _write_spooled_capture(tmp_path)
+    _create_browser_source_db(
+        tmp_path,
+        file_mtime_ms=int(capture.stat().st_mtime * 1000),
+        capture_path=capture,
+    )
+    _create_browser_index_db(tmp_path, message_count=0)
+
+    probe = deployment_smoke._probe_browser_capture_archive(archive_root=tmp_path)
+
+    assert probe.ok is False
+    assert probe.raw_rows == 1
+    assert probe.latest_indexed_message_count == 0
+    assert probe.error == "latest_spooled_indexed_without_messages"
+
+
+def test_deployment_smoke_accepts_materialized_browser_capture_at_latest_mtime(tmp_path: Path) -> None:
+    capture = _write_spooled_capture(tmp_path)
+    _create_browser_source_db(
+        tmp_path,
+        file_mtime_ms=int(capture.stat().st_mtime * 1000),
+        capture_path=capture,
+    )
+    _create_browser_index_db(tmp_path)
 
     probe = deployment_smoke._probe_browser_capture_archive(archive_root=tmp_path)
 
     assert probe.ok is True
     assert probe.spooled_count == 1
     assert probe.raw_rows == 1
+    assert probe.latest_capture_provider_session_id == "capture"
+    assert probe.latest_capture_turn_count == 1
+    assert probe.latest_raw_id == "raw-capture"
+    assert probe.latest_indexed_native_id == "capture"
+    assert probe.latest_indexed_message_count == 1
     assert probe.error is None
+
+
+def test_deployment_smoke_matches_latest_browser_capture_by_stable_suffix(tmp_path: Path) -> None:
+    capture = _write_spooled_capture(tmp_path)
+    source_path = Path("/alternate/archive/browser-capture/chatgpt/capture.json")
+    _create_browser_source_db(
+        tmp_path,
+        file_mtime_ms=int(capture.stat().st_mtime * 1000),
+        capture_path=source_path,
+    )
+    _create_browser_index_db(tmp_path)
+
+    probe = deployment_smoke._probe_browser_capture_archive(archive_root=tmp_path)
+
+    assert probe.ok is True
+    assert probe.latest_raw_source_path == str(source_path)
+    assert probe.latest_indexed_message_count == 1
 
 
 def test_deployment_smoke_accepts_current_receiver_archive_state_contract(

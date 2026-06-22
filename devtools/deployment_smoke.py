@@ -99,6 +99,17 @@ class BrowserCaptureArchiveProbe:
     latest_raw_file_mtime_ms: int | None
     ok: bool
     error: str | None = None
+    index_db_path: str | None = None
+    latest_capture_provider: str | None = None
+    latest_capture_provider_session_id: str | None = None
+    latest_capture_turn_count: int | None = None
+    latest_raw_id: str | None = None
+    latest_raw_native_id: str | None = None
+    latest_raw_source_path: str | None = None
+    latest_indexed_session_id: str | None = None
+    latest_indexed_native_id: str | None = None
+    latest_indexed_title: str | None = None
+    latest_indexed_message_count: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -333,6 +344,7 @@ def _probe_completion(
 def _probe_browser_capture_archive(*, archive_root: Path) -> BrowserCaptureArchiveProbe:
     spool_path = archive_root / "browser-capture"
     source_db_path = archive_root / "source.db"
+    index_db_path = archive_root / "index.db"
     files = (
         sorted(
             (path for path in spool_path.rglob("*.json") if path.is_file()),
@@ -347,25 +359,70 @@ def _probe_browser_capture_archive(*, archive_root: Path) -> BrowserCaptureArchi
     latest_mtime_ms = int(latest_mtime * 1000) if latest_mtime is not None else None
     raw_rows: int | None = None
     latest_raw_file_mtime_ms: int | None = None
+    latest_raw_id: str | None = None
+    latest_raw_native_id: str | None = None
+    latest_raw_source_path: str | None = None
+    latest_indexed_session_id: str | None = None
+    latest_indexed_native_id: str | None = None
+    latest_indexed_title: str | None = None
+    latest_indexed_message_count: int | None = None
     error: str | None = None
-    if source_db_path.exists():
-        try:
-            with sqlite3.connect(source_db_path) as conn:
-                row = conn.execute(
-                    """
-                    SELECT count(*), max(file_mtime_ms)
-                    FROM raw_sessions
-                    WHERE source_path LIKE '%browser-capture%'
-                    """
-                ).fetchone()
-            raw_rows = int(row[0]) if row is not None and row[0] is not None else 0
-            latest_raw_file_mtime_ms = int(row[1]) if row is not None and row[1] is not None else None
-        except sqlite3.Error as exc:
-            error = f"{type(exc).__name__}: {exc}"
-    elif files:
-        error = "source_db_missing"
+    latest_provider = None
+    latest_provider_session_id = None
+    latest_turn_count = None
+    if latest is not None:
+        latest_provider, latest_provider_session_id, latest_turn_count, identity_error = (
+            _latest_spooled_capture_summary(str(latest))
+        )
+        if identity_error is not None:
+            error = f"invalid_latest_spooled_capture:{identity_error}"
+    if error is None:
+        if source_db_path.exists():
+            try:
+                with sqlite3.connect(source_db_path) as conn:
+                    row = conn.execute(
+                        """
+                        SELECT count(*), max(file_mtime_ms)
+                        FROM raw_sessions
+                        WHERE source_path LIKE '%browser-capture%'
+                        """
+                    ).fetchone()
+                    raw_rows = int(row[0]) if row is not None and row[0] is not None else 0
+                    latest_raw_file_mtime_ms = int(row[1]) if row is not None and row[1] is not None else None
+                    if latest is not None:
+                        try:
+                            latest_relative = latest.relative_to(spool_path).as_posix()
+                        except ValueError:
+                            latest_relative = latest.name
+                        latest_suffix_pattern = f"%/browser-capture/{latest_relative}"
+                        latest_row = conn.execute(
+                            """
+                            SELECT raw_id, native_id, file_mtime_ms, source_path
+                            FROM raw_sessions
+                            WHERE source_path = ? OR source_path LIKE ?
+                            ORDER BY
+                                CASE WHEN source_path = ? THEN 0 ELSE 1 END,
+                                COALESCE(file_mtime_ms, 0) DESC,
+                                rowid DESC
+                            LIMIT 1
+                            """,
+                            (str(latest), latest_suffix_pattern, str(latest)),
+                        ).fetchone()
+                        if latest_row is not None:
+                            latest_raw_id = str(latest_row[0]) if latest_row[0] is not None else None
+                            latest_raw_native_id = str(latest_row[1]) if latest_row[1] is not None else None
+                            latest_raw_file_mtime_ms = (
+                                int(latest_row[2]) if latest_row[2] is not None else latest_raw_file_mtime_ms
+                            )
+                            latest_raw_source_path = str(latest_row[3]) if latest_row[3] is not None else None
+            except sqlite3.Error as exc:
+                error = f"{type(exc).__name__}: {exc}"
+        elif files:
+            error = "source_db_missing"
     if error is None and files and raw_rows == 0:
         error = "spooled_without_raw_rows"
+    if error is None and files and raw_rows is not None and raw_rows > 0 and latest_raw_id is None:
+        error = "latest_spooled_without_raw_row"
     if (
         error is None
         and files
@@ -374,6 +431,34 @@ def _probe_browser_capture_archive(*, archive_root: Path) -> BrowserCaptureArchi
         and latest_mtime_ms > latest_raw_file_mtime_ms
     ):
         error = "spooled_newer_than_raw_rows"
+    if error is None and files and not index_db_path.exists():
+        error = "index_db_missing"
+    if error is None and latest_raw_id is not None and index_db_path.exists():
+        try:
+            with sqlite3.connect(f"file:{index_db_path}?mode=ro", uri=True) as conn:
+                row = conn.execute(
+                    """
+                    SELECT session_id, native_id, title, message_count
+                    FROM sessions
+                    WHERE raw_id = ?
+                    ORDER BY message_count DESC, session_id
+                    LIMIT 1
+                    """,
+                    (latest_raw_id,),
+                ).fetchone()
+            if row is None:
+                error = "latest_spooled_not_indexed"
+            else:
+                latest_indexed_session_id = str(row[0])
+                latest_indexed_native_id = str(row[1])
+                latest_indexed_title = str(row[2]) if row[2] is not None else None
+                latest_indexed_message_count = int(row[3] or 0)
+                if latest_indexed_message_count <= 0:
+                    error = "latest_spooled_indexed_without_messages"
+                elif latest_provider_session_id is not None and latest_indexed_native_id != latest_provider_session_id:
+                    error = "latest_spooled_indexed_native_id_mismatch"
+        except sqlite3.Error as exc:
+            error = f"index:{type(exc).__name__}: {exc}"
     ok = error is None
     return BrowserCaptureArchiveProbe(
         spool_path=str(spool_path),
@@ -386,26 +471,44 @@ def _probe_browser_capture_archive(*, archive_root: Path) -> BrowserCaptureArchi
         latest_raw_file_mtime_ms=latest_raw_file_mtime_ms,
         ok=ok,
         error=error,
+        index_db_path=str(index_db_path),
+        latest_capture_provider=latest_provider,
+        latest_capture_provider_session_id=latest_provider_session_id,
+        latest_capture_turn_count=latest_turn_count,
+        latest_raw_id=latest_raw_id,
+        latest_raw_native_id=latest_raw_native_id,
+        latest_raw_source_path=latest_raw_source_path,
+        latest_indexed_session_id=latest_indexed_session_id,
+        latest_indexed_native_id=latest_indexed_native_id,
+        latest_indexed_title=latest_indexed_title,
+        latest_indexed_message_count=latest_indexed_message_count,
     )
 
 
-def _latest_spooled_capture_identity(path: str | None) -> tuple[str, str, str | None]:
+def _latest_spooled_capture_summary(path: str | None) -> tuple[str, str, int | None, str | None]:
     if path is None:
-        return "", "", None
+        return "", "", None, None
     try:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        return "", "", f"{type(exc).__name__}: {exc}"
+        return "", "", None, f"{type(exc).__name__}: {exc}"
     session = raw.get("session") if isinstance(raw, dict) else None
     if not isinstance(session, dict):
-        return "", "", "missing_session"
+        return "", "", None, "missing_session"
     provider = session.get("provider")
     provider_session_id = session.get("provider_session_id")
+    turns = session.get("turns")
     if not isinstance(provider, str) or not provider:
-        return "", "", "missing_provider"
+        return "", "", None, "missing_provider"
     if not isinstance(provider_session_id, str) or not provider_session_id:
-        return "", "", "missing_provider_session_id"
-    return provider, provider_session_id, None
+        return "", "", None, "missing_provider_session_id"
+    turn_count = len(turns) if isinstance(turns, list) else None
+    return provider, provider_session_id, turn_count, None
+
+
+def _latest_spooled_capture_identity(path: str | None) -> tuple[str, str, str | None]:
+    provider, provider_session_id, _turn_count, error = _latest_spooled_capture_summary(path)
+    return provider, provider_session_id, error
 
 
 def _probe_browser_capture_receiver_archive_state(
@@ -668,6 +771,20 @@ def _diagnose(
         next_actions.append(
             "verify daemon watch/catch-up is draining the browser-capture spool after the latest capture"
         )
+    elif browser_capture_archive.error in {
+        "latest_spooled_not_indexed",
+        "latest_spooled_indexed_without_messages",
+        "latest_spooled_indexed_native_id_mismatch",
+    }:
+        likely_causes.append("latest browser-capture artifact is present in raw archive but not queryable")
+        next_actions.append(
+            "trace browser-capture source rows through parse/materialization and verify the latest capture lands in index.db with messages"
+        )
+    elif browser_capture_archive.error == "latest_spooled_without_raw_row":
+        likely_causes.append("newer browser-capture artifact was not acquired as a raw archive row")
+        next_actions.append(
+            "verify source-path matching for the browser-capture spool and daemon catch-up cursor state"
+        )
     elif not browser_capture_archive.ok and browser_capture_archive.spooled_count > 0:
         likely_causes.append("browser-capture artifacts are spooled but absent from raw archive rows")
         next_actions.append(
@@ -820,6 +937,7 @@ def _print_human(report: DeploymentSmokeReport) -> None:
     marker = "ok" if capture_probe.ok else "FAIL"
     print(
         f"  {marker} spooled={capture_probe.spooled_count} raw_rows={capture_probe.raw_rows} "
+        f"indexed_messages={capture_probe.latest_indexed_message_count} "
         f"latest={capture_probe.latest_spooled_path or ''} error={capture_probe.error or ''}"
     )
     receiver_state_probe = report.browser_capture_receiver_archive_state
