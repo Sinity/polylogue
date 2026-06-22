@@ -120,6 +120,8 @@ def _detect_provider_from_sequence(payloads: PayloadSequence) -> Provider | None
 
     first_record = _payload_record(payloads[0])
     if first_record is not None:
+        if browser_capture.looks_like(first_record):
+            return _detect_provider_from_record(first_record)
         if is_json_document(first_record.get("mapping")):
             return Provider.CHATGPT
         if isinstance(first_record.get("chat_messages"), list):
@@ -439,6 +441,25 @@ def _lower_payload_specs(
                 payload=record,
             )
         ]
+    sequence = _payload_sequence(shaped_payload)
+    if sequence:
+        browser_capture_specs: list[LoweredPayloadSpec] = []
+        for index, item in enumerate(sequence):
+            item_record = _payload_record(item)
+            if item_record is None or not browser_capture.looks_like(item_record):
+                browser_capture_specs = []
+                break
+            provider = _detect_provider_from_record(item_record) or runtime_provider
+            browser_capture_specs.append(
+                LoweredPayloadSpec(
+                    provider=provider,
+                    fallback_id=fallback_id if len(sequence) == 1 else f"{fallback_id}-{index}",
+                    mode="browser_capture",
+                    payload=item_record,
+                )
+            )
+        if browser_capture_specs:
+            return browser_capture_specs
     if record is not None and (sessions := _record_sessions(record)):
         lowered_specs: list[LoweredPayloadSpec] = []
         for index, item in enumerate(sessions):

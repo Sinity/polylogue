@@ -57,6 +57,10 @@ def test_browser_capture_detects_inner_provider() -> None:
     assert detect_provider(_capture_payload()) is Provider.CHATGPT
 
 
+def test_browser_capture_detects_list_wrapped_inner_provider() -> None:
+    assert detect_provider([_capture_payload()]) is Provider.CHATGPT
+
+
 def test_browser_capture_parses_session_metadata_and_deduplicates_turns() -> None:
     parsed = parse_payload(Provider.CHATGPT, _capture_payload(), "fallback")
 
@@ -69,6 +73,16 @@ def test_browser_capture_parses_session_metadata_and_deduplicates_turns() -> Non
     assert len(session.attachments) == 1
     assert session.attachments[0].message_provider_id == "a1"
     assert session.attachments[0].source_url == "https://chatgpt.com/attachment/1"
+
+
+def test_browser_capture_parses_list_wrapped_live_decoder_shape() -> None:
+    parsed = parse_payload(Provider.CHATGPT, [_capture_payload()], "fallback")
+
+    assert len(parsed) == 1
+    session = parsed[0]
+    assert session.provider_session_id == "conv-123"
+    assert session.title == "Work plan"
+    assert [message.provider_message_id for message in session.messages] == ["u1", "a1"]
 
 
 def test_browser_capture_supports_claude_ai_provider() -> None:
