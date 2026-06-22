@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -114,7 +115,9 @@ def test_build_dev_loop_status_uses_branch_local_paths_and_warnings(
     assert payload["artifacts"]["dev_events"].endswith(
         ".cache/dev-loop/feature-dev-loop-abc1234-api9999-capture9998/dev-loop.events.jsonl"
     )
-    assert "polylogued run --api-port 9999 --port 9998" in payload["commands"]["run_daemon"]
+    assert f"PYTHONPATH={repo}" in payload["commands"]["run_daemon"]
+    assert "from polylogue.daemon.cli import main; main()" in payload["commands"]["run_daemon"]
+    assert "run --api-port 9999 --port 9998" in payload["commands"]["run_daemon"]
     assert "polylogue ops status" in payload["commands"]["capture_cli_status"]
     assert payload["commands"]["capture_cli_status"].endswith("terminal/polylogue-ops-status.typescript")
     assert payload["commands"]["capture_tui_placeholder"].endswith(
@@ -837,7 +840,12 @@ def test_daemon_launch_writes_branch_local_process_artifacts(
     payload = json.loads(capsys.readouterr().out)
     launch = payload["daemon_launch"]
     command = launch["command"]
-    assert command[:2] == ["polylogued", "run"]
+    assert command[:4] == [
+        sys.executable,
+        "-c",
+        "from polylogue.daemon.cli import main; main()",
+        "run",
+    ]
     assert "--no-watch" in command
     assert command[command.index("--api-port") : command.index("--api-port") + 2] == ["--api-port", "9876"]
     assert command[command.index("--port") : command.index("--port") + 2] == ["--port", "9875"]
@@ -848,6 +856,7 @@ def test_daemon_launch_writes_branch_local_process_artifacts(
     env = launched["env"]
     assert isinstance(env, dict)
     assert env["POLYLOGUE_ARCHIVE_ROOT"] == str(archive_root)
+    assert env["PYTHONPATH"].split(os.pathsep)[0] == str(Path(payload["preflight"]["repo_root"]))
     assert launched["cwd"] == Path(payload["preflight"]["repo_root"])
 
     artifacts = launch["artifacts"]

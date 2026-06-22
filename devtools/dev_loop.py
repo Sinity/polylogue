@@ -66,6 +66,18 @@ def _dev_loop_env_snapshot(env: dict[str, str]) -> dict[str, str]:
     return snapshot
 
 
+def _prepend_pythonpath(env: dict[str, str], path: Path) -> None:
+    existing = env.get("PYTHONPATH")
+    prefix = str(path)
+    if existing:
+        parts = existing.split(os.pathsep)
+        if parts and parts[0] == prefix:
+            return
+        env["PYTHONPATH"] = os.pathsep.join([prefix, *[part for part in parts if part != prefix]])
+    else:
+        env["PYTHONPATH"] = prefix
+
+
 def _git_value(args: list[str], *, cwd: Path) -> str | None:
     result = _run_command(["git", "-C", str(cwd), *args], timeout_s=2.0)
     if result.exit_code != 0:
@@ -1071,6 +1083,8 @@ def run_cli_capture(
     if isinstance(suggested_env, dict):
         env.update({str(key): str(value) for key, value in suggested_env.items()})
     env.setdefault("POLYLOGUE_FORCE_PLAIN", "1")
+    repo_root = Path(str(preflight["repo_root"]))
+    _prepend_pythonpath(env, repo_root)
 
     artifact_name = _safe_artifact_name(command)
     stdout_path = terminal_dir / f"{artifact_name}.stdout"
@@ -1223,6 +1237,8 @@ def launch_branch_daemon(
     if isinstance(suggested_env, dict):
         env.update({str(key): str(value) for key, value in suggested_env.items()})
     env.setdefault("POLYLOGUE_FORCE_PLAIN", "1")
+    repo_root = Path(str(preflight["repo_root"]))
+    _prepend_pythonpath(env, repo_root)
 
     api_status = ports["api"]
     receiver_status = ports["browser_capture"]
@@ -1233,7 +1249,9 @@ def launch_branch_daemon(
     spool_path = run_log_dir / "browser-capture-spool"
     spool_path.mkdir(parents=True, exist_ok=True)
     command = [
-        "polylogued",
+        sys.executable,
+        "-c",
+        "from polylogue.daemon.cli import main; main()",
         "run",
         "--no-watch",
         "--api-port",
@@ -1256,7 +1274,7 @@ def launch_branch_daemon(
         status="starting",
         payload={
             "command": command,
-            "cwd": str(preflight["repo_root"]),
+            "cwd": str(repo_root),
             "api_port": api_port,
             "browser_capture_port": receiver_port,
             "spool_path": str(spool_path),
@@ -1270,7 +1288,7 @@ def launch_branch_daemon(
         log_file.flush()
         process = _start_daemon_process(
             command,
-            cwd=Path(str(preflight["repo_root"])),
+            cwd=repo_root,
             env=env,
             log_file=log_file,
         )
@@ -1321,7 +1339,7 @@ def launch_branch_daemon(
         "pid": process.pid,
         "command": command,
         "command_text": shlex.join(command),
-        "cwd": str(preflight["repo_root"]),
+        "cwd": str(repo_root),
         "run_id": str(preflight["run_id"]),
         "started_at": started_at.isoformat(),
         "ended_at": ended_at.isoformat(),
@@ -1447,7 +1465,9 @@ def build_dev_loop_status(
                 f"POLYLOGUE_BROWSER_CAPTURE_PORT={browser_capture_port} "
                 f"POLYLOGUE_DEV_LOOP_RUN_ID={run_id} "
                 f"POLYLOGUE_DEV_LOOP_LOG_DIR={run_log_dir} "
-                f"polylogued run --api-port {api_port} --port {browser_capture_port} 2>&1 | tee {daemon_log}"
+                f"PYTHONPATH={root}${{PYTHONPATH:+:${{PYTHONPATH}}}} "
+                f"{shlex.quote(sys.executable)} -c 'from polylogue.daemon.cli import main; main()' "
+                f"run --api-port {api_port} --port {browser_capture_port} 2>&1 | tee {daemon_log}"
             ),
             "open_web_shell": f"http://127.0.0.1:{api_port}/",
             "receiver_status": f"curl -sf http://127.0.0.1:{browser_capture_port}/v1/status",
