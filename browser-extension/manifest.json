@@ -21,7 +21,7 @@
     {
       "matches": ["https://chatgpt.com/*"],
       "js": ["src/common.js", "src/content/chatgpt.js"],
-      "run_at": "document_idle"
+      "run_at": "document_start"
     },
     {
       "matches": ["https://claude.ai/*"],

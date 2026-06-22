@@ -75,6 +75,55 @@ def test_browser_capture_parses_session_metadata_and_deduplicates_turns() -> Non
     assert session.attachments[0].source_url == "https://chatgpt.com/attachment/1"
 
 
+def test_browser_capture_prefers_raw_chatgpt_payload_when_present() -> None:
+    payload = _capture_payload()
+    payload["raw_provider_payload"] = {
+        "id": "native-conv",
+        "title": "Native ChatGPT title",
+        "create_time": 1781442866.0,
+        "update_time": 1781442966.0,
+        "current_node": "assistant-node",
+        "mapping": {
+            "root": {"id": "root", "message": None, "parent": None, "children": ["user-node"]},
+            "user-node": {
+                "id": "user-node",
+                "parent": "root",
+                "children": ["assistant-node"],
+                "message": {
+                    "id": "native-u1",
+                    "author": {"role": "user"},
+                    "create_time": 1781442870.0,
+                    "content": {"content_type": "text", "parts": ["Native user text"]},
+                    "metadata": {},
+                },
+            },
+            "assistant-node": {
+                "id": "assistant-node",
+                "parent": "user-node",
+                "children": [],
+                "message": {
+                    "id": "native-a1",
+                    "author": {"role": "assistant"},
+                    "create_time": 1781442880.0,
+                    "content": {"content_type": "code", "text": "print('native')"},
+                    "metadata": {"model_slug": "gpt-native"},
+                },
+            },
+        },
+    }
+
+    parsed = parse_payload(Provider.CHATGPT, payload, "fallback")
+
+    assert len(parsed) == 1
+    session = parsed[0]
+    assert session.provider_session_id == "native-conv"
+    assert session.title == "Native ChatGPT title"
+    assert [message.provider_message_id for message in session.messages] == ["native-u1", "native-a1"]
+    assert [message.text for message in session.messages] == ["Native user text", "print('native')"]
+    assert session.messages[1].model_name == "gpt-native"
+    assert session.messages[1].blocks[0].type.value == "code"
+
+
 def test_browser_capture_parses_list_wrapped_live_decoder_shape() -> None:
     parsed = parse_payload(Provider.CHATGPT, [_capture_payload()], "fallback")
 

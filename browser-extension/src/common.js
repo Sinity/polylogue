@@ -22,14 +22,25 @@
     return (node?.innerText || node?.textContent || "").replace(/\s+\n/g, "\n").trim();
   }
 
-  function buildEnvelope({ provider, adapterName, turns, model = null }) {
+  function buildEnvelope({
+    provider,
+    adapterName,
+    turns,
+    model = null,
+    providerSessionId = null,
+    title = null,
+    createdAt = null,
+    updatedAt = null,
+    providerMeta = {},
+    rawProviderPayload = null
+  }) {
     const sourceUrl = window.location.href;
-    const providerSessionId = sessionIdFromUrl(provider, sourceUrl);
+    const stableProviderSessionId = providerSessionId || sessionIdFromUrl(provider, sourceUrl);
     const now = new Date().toISOString();
-    return {
+    const envelope = {
       polylogue_capture_kind: CAPTURE_KIND,
       schema_version: SCHEMA_VERSION,
-      capture_id: `${provider}:${providerSessionId}`,
+      capture_id: `${provider}:${stableProviderSessionId}`,
       source: "browser-extension",
       provenance: {
         source_url: sourceUrl,
@@ -42,19 +53,27 @@
       },
       session: {
         provider,
-        provider_session_id: providerSessionId,
-        title: document.title || providerSessionId,
-        updated_at: now,
+        provider_session_id: stableProviderSessionId,
+        title: title || document.title || stableProviderSessionId,
+        created_at: createdAt,
+        updated_at: updatedAt || now,
         model,
+        provider_meta: providerMeta,
         turns: turns.map((turn, ordinal) => ({
-          provider_turn_id: turn.provider_turn_id || `${providerSessionId}:turn:${ordinal}:${fnv1a(turn.role + ":" + turn.text)}`,
+          provider_turn_id: turn.provider_turn_id || `${stableProviderSessionId}:turn:${ordinal}:${fnv1a(turn.role + ":" + turn.text)}`,
           role: turn.role,
           text: turn.text,
+          timestamp: turn.timestamp || null,
           ordinal,
+          parent_turn_id: turn.parent_turn_id || null,
           provider_meta: turn.provider_meta || {}
         }))
       }
     };
+    if (rawProviderPayload && typeof rawProviderPayload === "object") {
+      envelope.raw_provider_payload = rawProviderPayload;
+    }
+    return envelope;
   }
 
   async function sendCapture(envelope) {

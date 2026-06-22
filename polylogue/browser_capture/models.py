@@ -126,11 +126,20 @@ class BrowserCaptureEnvelope(BaseModel):
     provenance: BrowserCaptureProvenance
     session: BrowserCaptureSession
     provider_meta: dict[str, object] = Field(default_factory=dict)
+    raw_provider_payload: dict[str, object] | None = None
 
     @field_validator("provider_meta", mode="before")
     @classmethod
     def coerce_provider_meta(cls, value: object) -> dict[str, object]:
         return dict(json_document(value))
+
+    @field_validator("raw_provider_payload", mode="before")
+    @classmethod
+    def coerce_raw_provider_payload(cls, value: object) -> dict[str, object] | None:
+        if value is None:
+            return None
+        payload: dict[str, object] = dict(json_document(value))
+        return payload
 
     @model_validator(mode="after")
     def fill_capture_id(self) -> BrowserCaptureEnvelope:

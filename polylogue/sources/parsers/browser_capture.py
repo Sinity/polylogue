@@ -15,6 +15,11 @@ def looks_like(payload: object) -> bool:
 def parse(payload: object, fallback_id: str) -> ParsedSession:
     """Parse a browser-capture envelope into the canonical parser contract."""
     envelope = BrowserCaptureEnvelope.model_validate(payload)
+    if envelope.session.provider is Provider.CHATGPT and envelope.raw_provider_payload:
+        from polylogue.sources.parsers.chatgpt import parse as parse_chatgpt
+
+        return parse_chatgpt(envelope.raw_provider_payload, fallback_id)
+
     seen_turns: set[str] = set()
     messages: list[ParsedMessage] = []
     attachments: list[ParsedAttachment] = []
