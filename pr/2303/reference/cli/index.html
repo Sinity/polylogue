@@ -984,12 +984,17 @@ It records the public action floor, not every utility command in the Click tree.
 <tr>
 <th>Action</th>
 <th>Effect</th>
+<th>Target</th>
 <th>Input</th>
 <th>Cardinality</th>
+<th>Safety</th>
 <th>Formats</th>
-<th>Default</th>
+<th>Destinations</th>
+<th>Confirm</th>
+<th>Select</th>
 <th>Machine envelope</th>
 <th>Guards</th>
+<th>Next actions</th>
 <th>Completion</th>
 </tr>
 </thead>
@@ -998,110 +1003,160 @@ It records the public action floor, not every utility command in the Click tree.
 <td><code>polylogue find</code></td>
 <td><code>read</code></td>
 <td><code>none</code></td>
+<td><code>none</code></td>
 <td><code>any</code></td>
+<td><code>safe</code></td>
 <td><code>human</code>, <code>json</code>, <code>ndjson</code></td>
-<td><code>human</code></td>
+<td><code>terminal</code>, <code>stdout</code>, <code>file</code>, <code>api</code>, <code>mcp</code></td>
+<td>-</td>
+<td>-</td>
 <td><code>result_set</code></td>
 <td><code>explicit_query_intent</code></td>
+<td><code>select</code>, <code>read</code>, <code>analyze</code>, <code>continue</code>, <code>mark</code>, <code>delete</code></td>
 <td><code>query_expression</code></td>
 </tr>
 <tr>
 <td><code>polylogue read</code></td>
 <td><code>read</code></td>
+<td><code>selection</code></td>
 <td><code>query_result_set</code></td>
 <td><code>explicit_multi</code></td>
+<td><code>safe</code></td>
 <td><code>human</code>, <code>json</code>, <code>ndjson</code></td>
-<td><code>human</code></td>
+<td><code>terminal</code>, <code>stdout</code>, <code>browser</code>, <code>clipboard</code>, <code>file</code>, <code>api</code>, <code>mcp</code></td>
+<td>-</td>
+<td><code>polylogue find QUERY then select</code></td>
 <td><code>item</code></td>
 <td><code>single_match_unless_all</code>, <code>file_destination_requires_out</code></td>
+<td><code>continue</code>, <code>mark</code>, <code>delete</code></td>
 <td><code>session_id</code></td>
 </tr>
 <tr>
 <td><code>polylogue continue</code></td>
 <td><code>read</code></td>
+<td><code>selection</code></td>
 <td><code>query_result_set</code></td>
 <td><code>singleton</code></td>
+<td><code>safe</code></td>
 <td><code>human</code></td>
-<td><code>human</code></td>
+<td><code>terminal</code>, <code>stdout</code>, <code>clipboard</code>, <code>file</code>, <code>api</code>, <code>mcp</code></td>
+<td>-</td>
+<td><code>polylogue find QUERY then select</code></td>
 <td><code>item</code></td>
 <td>-</td>
+<td><code>read</code>, <code>mark</code></td>
 <td><code>session_id</code></td>
 </tr>
 <tr>
 <td><code>polylogue select</code></td>
 <td><code>read</code></td>
+<td><code>selection</code></td>
 <td><code>query_result_set</code></td>
 <td><code>singleton</code></td>
+<td><code>safe</code></td>
 <td><code>human</code>, <code>json</code></td>
-<td><code>human</code></td>
+<td><code>terminal</code>, <code>stdout</code>, <code>api</code>, <code>mcp</code></td>
+<td>-</td>
+<td>-</td>
 <td><code>item</code></td>
 <td>-</td>
+<td><code>read</code>, <code>continue</code>, <code>analyze</code>, <code>mark</code>, <code>delete</code></td>
 <td><code>session_id</code></td>
 </tr>
 <tr>
 <td><code>polylogue mark</code></td>
 <td><code>write</code></td>
+<td><code>selection</code></td>
 <td><code>query_result_set</code></td>
 <td><code>explicit_multi</code></td>
+<td><code>mutating</code></td>
 <td><code>human</code></td>
-<td><code>human</code></td>
+<td><code>terminal</code>, <code>stdout</code>, <code>api</code>, <code>mcp</code></td>
+<td>-</td>
+<td><code>polylogue find QUERY then select</code></td>
 <td><code>mutation</code></td>
 <td><code>single_match_unless_all_or_first</code></td>
+<td><code>read</code>, <code>analyze</code></td>
 <td><code>session_id</code></td>
 </tr>
 <tr>
 <td><code>polylogue analyze</code></td>
 <td><code>read</code></td>
+<td><code>selection</code></td>
 <td><code>query_result_set</code></td>
 <td><code>any</code></td>
+<td><code>safe</code></td>
 <td><code>human</code>, <code>json</code>, <code>ndjson</code></td>
-<td><code>human</code></td>
+<td><code>terminal</code>, <code>stdout</code>, <code>file</code>, <code>api</code>, <code>mcp</code></td>
+<td>-</td>
+<td>-</td>
 <td><code>result_set</code></td>
 <td>-</td>
+<td><code>select</code>, <code>read</code></td>
 <td><code>query_expression</code></td>
 </tr>
 <tr>
 <td><code>polylogue delete</code></td>
 <td><code>destructive</code></td>
+<td><code>selection</code></td>
 <td><code>query_result_set</code></td>
 <td><code>destructive_multi</code></td>
+<td><code>destructive</code></td>
 <td><code>human</code></td>
-<td><code>human</code></td>
+<td><code>terminal</code>, <code>stdout</code>, <code>api</code>, <code>mcp</code></td>
+<td><code>polylogue find QUERY then delete --dry-run</code></td>
+<td><code>polylogue find QUERY then select</code></td>
 <td><code>mutation</code></td>
 <td><code>dry_run_or_yes_required</code>, <code>single_match_unless_all</code></td>
+<td><code>find</code></td>
 <td><code>session_id</code></td>
 </tr>
 <tr>
 <td><code>polylogue import</code></td>
 <td><code>import</code></td>
 <td><code>path</code></td>
+<td><code>path</code></td>
 <td><code>singleton</code></td>
+<td><code>mutating</code></td>
 <td><code>human</code></td>
-<td><code>human</code></td>
+<td><code>terminal</code>, <code>stdout</code>, <code>api</code></td>
+<td>-</td>
+<td>-</td>
 <td><code>mutation</code></td>
 <td><code>path_exists_or_demo</code>, <code>daemon_accepts_schedule</code></td>
+<td><code>ops</code>, <code>read</code>, <code>analyze</code></td>
 <td><code>filesystem_path</code></td>
 </tr>
 <tr>
 <td><code>polylogue config</code></td>
 <td><code>config</code></td>
 <td><code>config</code></td>
+<td><code>config</code></td>
 <td><code>any</code></td>
+<td><code>operational</code></td>
 <td><code>human</code>, <code>json</code></td>
-<td><code>human</code></td>
+<td><code>terminal</code>, <code>stdout</code></td>
+<td>-</td>
+<td>-</td>
 <td><code>item</code></td>
 <td><code>secret_values_redacted</code></td>
+<td><code>ops</code></td>
 <td><code>config_key</code></td>
 </tr>
 <tr>
 <td><code>polylogue ops</code></td>
 <td><code>ops</code></td>
 <td><code>runtime</code></td>
+<td><code>runtime</code></td>
 <td><code>any</code></td>
+<td><code>operational</code></td>
 <td><code>human</code></td>
-<td><code>human</code></td>
+<td><code>terminal</code>, <code>stdout</code>, <code>api</code></td>
+<td>-</td>
+<td>-</td>
 <td><code>item</code></td>
 <td>-</td>
+<td><code>find</code>, <code>read</code></td>
 <td>-</td>
 </tr>
 </tbody>
