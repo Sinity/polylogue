@@ -105,7 +105,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         super().send_response(code, message)
 
     def _finish_observed_request(self, method: str, started_at: float) -> None:
-        logger.info(
+        logger.debug(
             "browser_capture.request",
             request_id=self._request_id(),
             method=method,
@@ -236,7 +236,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             logger.warning("browser_capture.write_failed", request_id=self._request_id(), error=repr(exc))
             self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
             return
-        logger.info(
+        logger.debug(
             "browser_capture.capture_accepted",
             request_id=self._request_id(),
             provider=result.provider,
