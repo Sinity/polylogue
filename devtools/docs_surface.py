@@ -75,6 +75,11 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "docs/design/README.md",
         "Historical design inputs and current guidance for using them without treating them as parallel roadmaps.",
     ),
+    DocsEntry(
+        "Query-Action Workflows",
+        "docs/design/query-action-workflows.md",
+        "`find QUERY then ACTION` contract for cardinality, affordances, rendering, completions, and golden paths.",
+    ),
     DocsEntry("Internals", "docs/internals.md", "Working implementation reference and debugging landmarks."),
     DocsEntry("MCP Integration", "docs/mcp-integration.md", "Model Context Protocol server setup and usage."),
     DocsEntry(
@@ -112,6 +117,7 @@ README_DOC_TITLES: tuple[str, ...] = (
     "Architecture Spine",
     "Execution Plan",
     "Design Direction",
+    "Query-Action Workflows",
     "CLI Reference",
     "Search & Query",
     "Browser Capture",
