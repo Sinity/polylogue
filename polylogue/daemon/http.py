@@ -7,6 +7,7 @@ import contextlib
 import functools
 import json
 import os
+import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -1479,14 +1480,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         quick_check_ok = True
         try:
-            from polylogue.config import Config
-            from polylogue.paths import archive_root, render_root
-            from polylogue.readiness import get_readiness
-
-            cfg = Config(archive_root=archive_root(), render_root=render_root(), sources=[])
-            report = get_readiness(cfg, deep=False, probe_only=False)
-            quick_check_ok = report.counts().ok > 0
-        except Exception:
+            if not dbp.exists():
+                quick_check_ok = False
+            else:
+                with sqlite3.connect(f"file:{dbp}?mode=ro", uri=True, timeout=0.25) as conn:
+                    conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
+        except (OSError, sqlite3.Error):
             quick_check_ok = False
 
         self._send_json(
