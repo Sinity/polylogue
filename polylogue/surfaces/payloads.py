@@ -17,7 +17,7 @@ from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.core.enums import AssertionKind
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document
 from polylogue.core.refs import normalize_object_ref_text, normalize_public_ref_text
-from polylogue.operations.action_contracts import ActionAffordancePayload
+from polylogue.surfaces.action_affordances import ActionAffordancePayload
 
 MutationStatus: TypeAlias = Literal[
     "ok",
