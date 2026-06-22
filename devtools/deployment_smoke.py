@@ -686,8 +686,6 @@ def _probe_browser_render(
             f"--user-data-dir={profile_dir}",
             f"--screenshot={screenshot_path}",
             "--window-size=1440,1000",
-            f"--timeout={int(timeout_s * 1000)}",
-            f"--virtual-time-budget={int(timeout_s * 1000)}",
             "--dump-dom",
             url,
         ]
@@ -700,13 +698,26 @@ def _probe_browser_render(
         except subprocess.TimeoutExpired as exc:
             stderr = _timeout_output_text(exc.stderr)
             stdout = _timeout_output_text(exc.stdout)
+            dom_bytes = len(stdout.encode())
+            screenshot_bytes = screenshot_path.stat().st_size if screenshot_path.exists() else None
+            if dom_bytes > 0 and screenshot_bytes:
+                return BrowserRenderProbe(
+                    url=url,
+                    executable=resolved,
+                    exit_code=None,
+                    ok=True,
+                    dom_bytes=dom_bytes,
+                    screenshot_bytes=screenshot_bytes,
+                    stderr_tail=stderr[-2000:],
+                    error="browser_timeout_after_capture",
+                )
             return BrowserRenderProbe(
                 url=url,
                 executable=resolved,
                 exit_code=None,
                 ok=False,
-                dom_bytes=len(stdout.encode()),
-                screenshot_bytes=screenshot_path.stat().st_size if screenshot_path.exists() else None,
+                dom_bytes=dom_bytes,
+                screenshot_bytes=screenshot_bytes,
                 stderr_tail=stderr[-2000:],
                 error="browser_timeout",
             )

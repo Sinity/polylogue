@@ -360,6 +360,8 @@ def test_deployment_smoke_browser_render_probe_success(monkeypatch: pytest.Monke
         timeout_s: float,
     ) -> subprocess.CompletedProcess[str]:
         del path, timeout_s
+        assert not any(arg.startswith("--timeout=") for arg in command)
+        assert not any(arg.startswith("--virtual-time-budget=") for arg in command)
         screenshot_arg = next(arg for arg in command if arg.startswith("--screenshot="))
         Path(screenshot_arg.split("=", 1)[1]).write_bytes(b"png")
         return subprocess.CompletedProcess(command, 0, "<html>Polylogue</html>", "")
@@ -423,6 +425,46 @@ def test_deployment_smoke_browser_render_probe_reports_timeout(monkeypatch: pyte
     assert probe.error == "browser_timeout"
     assert probe.dom_bytes == len("<html>")
     assert "still loading" in probe.stderr_tail
+
+
+def test_deployment_smoke_browser_render_accepts_timeout_after_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        deployment_smoke,
+        "_resolve_browser_executable",
+        lambda path, executable: "/bin/google-chrome",
+    )
+
+    def fake_run(
+        command: list[str],
+        *,
+        path: str,
+        timeout_s: float,
+    ) -> subprocess.CompletedProcess[str]:
+        del path, timeout_s
+        screenshot_arg = next(arg for arg in command if arg.startswith("--screenshot="))
+        Path(screenshot_arg.split("=", 1)[1]).write_bytes(b"png")
+        raise subprocess.TimeoutExpired(
+            cmd=command,
+            timeout=1,
+            output="<html>Polylogue</html>",
+            stderr="DevTools listening",
+        )
+
+    monkeypatch.setattr(deployment_smoke, "_run_browser_command", fake_run)
+
+    probe = deployment_smoke._probe_browser_render(
+        "http://daemon/",
+        path="/bin",
+        timeout_s=1,
+        executable=None,
+    )
+
+    assert probe.ok is True
+    assert probe.dom_bytes == len("<html>Polylogue</html>")
+    assert probe.screenshot_bytes == 3
+    assert probe.error == "browser_timeout_after_capture"
 
 
 def test_deployment_smoke_report_includes_browser_render_failure(
