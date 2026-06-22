@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from pydantic import BaseModel, ConfigDict
+
 ActionEffect = Literal["read", "write", "destructive", "stream", "ops", "config", "import"]
 InputUnit = Literal["none", "query_result_set", "session", "path", "config", "runtime"]
 ActionCardinality = Literal["any", "singleton", "explicit_multi", "destructive_multi"]
@@ -19,6 +21,40 @@ CompletionContext = Literal[
     "query_expression",
     "session_id",
 ]
+
+
+class ActionAffordancePayload(BaseModel):
+    """Shared static action-affordance contract for public action surfaces."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str
+    path: tuple[str, ...]
+    effect: ActionEffect
+    target: ActionTarget
+    input_unit: InputUnit
+    cardinality_state: ActionCardinality
+    safety_level: ActionSafetyLevel
+    confirmation_command: str | None = None
+    selection_command: str | None = None
+    destination_support: tuple[ActionDestination, ...]
+    format_support: tuple[ActionFormat, ...]
+    default_format: ActionFormat
+    machine_envelope: MachineEnvelope
+    disabled_reason: str | None = None
+    estimated_cost: str | None = None
+    next_actions: tuple[str, ...] = ()
+    guards: tuple[str, ...] = ()
+    completion_context: CompletionContext | None = None
+    requires_daemon: bool
+
+
+class ActionAffordanceListPayload(BaseModel):
+    """Machine-readable inventory for public query/action affordances."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    actions: tuple[ActionAffordancePayload, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,36 +91,36 @@ class CliActionContract:
 
         return ".".join(self.path)
 
-    def to_affordance_payload(self) -> dict[str, object]:
+    def to_affordance_payload(self) -> ActionAffordancePayload:
         """Return the shared query-action affordance payload.
 
-        This is intentionally JSON-native and narrow: CLI, web, MCP, docs, and
+        This is intentionally typed and narrow: CLI, web, MCP, docs, and
         completion adapters can consume the same metadata without importing
         Click. Runtime availability remains a separate per-target concern; this
         payload records the static contract and any known disabled reason.
         """
 
-        return {
-            "id": self.action_id,
-            "path": list(self.path),
-            "effect": self.effect,
-            "target": self.target,
-            "input_unit": self.input_unit,
-            "cardinality_state": self.cardinality,
-            "safety_level": self.safety_level,
-            "confirmation_command": self.confirmation_command,
-            "selection_command": self.selection_command,
-            "destination_support": list(self.destination_support),
-            "format_support": sorted(self.formats, key=_format_order),
-            "default_format": self.default_format,
-            "machine_envelope": self.machine_envelope,
-            "disabled_reason": self.disabled_reason,
-            "estimated_cost": self.estimated_cost,
-            "next_actions": list(self.next_actions),
-            "guards": list(self.guards),
-            "completion_context": self.completion_context,
-            "requires_daemon": self.requires_daemon,
-        }
+        return ActionAffordancePayload(
+            id=self.action_id,
+            path=self.path,
+            effect=self.effect,
+            target=self.target,
+            input_unit=self.input_unit,
+            cardinality_state=self.cardinality,
+            safety_level=self.safety_level,
+            confirmation_command=self.confirmation_command,
+            selection_command=self.selection_command,
+            destination_support=self.destination_support,
+            format_support=tuple(sorted(self.formats, key=_format_order)),
+            default_format=self.default_format,
+            machine_envelope=self.machine_envelope,
+            disabled_reason=self.disabled_reason,
+            estimated_cost=self.estimated_cost,
+            next_actions=self.next_actions,
+            guards=self.guards,
+            completion_context=self.completion_context,
+            requires_daemon=self.requires_daemon,
+        )
 
 
 VIRTUAL_ACTION_PATHS: frozenset[tuple[str, ...]] = frozenset(
@@ -281,10 +317,16 @@ def action_completion_contexts() -> tuple[CompletionContext, ...]:
     )
 
 
-def action_affordance_payloads() -> list[dict[str, object]]:
-    """Return JSON-native action affordance metadata for public contracts."""
+def action_affordance_payloads() -> list[ActionAffordancePayload]:
+    """Return typed action affordance metadata for public contracts."""
 
     return [contract.to_affordance_payload() for contract in ACTION_CONTRACTS]
+
+
+def action_affordance_list_payload() -> ActionAffordanceListPayload:
+    """Return the public action-affordance inventory as one payload model."""
+
+    return ActionAffordanceListPayload(actions=tuple(action_affordance_payloads()))
 
 
 def _format_order(value: str) -> int:
@@ -321,6 +363,8 @@ __all__ = [
     "PUBLIC_ACTION_FLOOR",
     "VIRTUAL_ACTION_PATHS",
     "ActionCardinality",
+    "ActionAffordanceListPayload",
+    "ActionAffordancePayload",
     "ActionEffect",
     "ActionFormat",
     "CliActionContract",
@@ -330,6 +374,7 @@ __all__ = [
     "ActionDestination",
     "ActionSafetyLevel",
     "ActionTarget",
+    "action_affordance_list_payload",
     "action_affordance_payloads",
     "action_completion_contexts",
     "contract_for_path",

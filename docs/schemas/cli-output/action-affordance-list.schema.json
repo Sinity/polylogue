@@ -1,0 +1,251 @@
+{
+  "$defs": {
+    "ActionAffordancePayload": {
+      "additionalProperties": false,
+      "description": "Shared static action-affordance contract for public action surfaces.",
+      "properties": {
+        "cardinality_state": {
+          "enum": [
+            "any",
+            "singleton",
+            "explicit_multi",
+            "destructive_multi"
+          ],
+          "title": "Cardinality State",
+          "type": "string"
+        },
+        "completion_context": {
+          "anyOf": [
+            {
+              "enum": [
+                "config_key",
+                "filesystem_path",
+                "query_expression",
+                "session_id"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completion Context"
+        },
+        "confirmation_command": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confirmation Command"
+        },
+        "default_format": {
+          "enum": [
+            "human",
+            "json",
+            "ndjson"
+          ],
+          "title": "Default Format",
+          "type": "string"
+        },
+        "destination_support": {
+          "items": {
+            "enum": [
+              "terminal",
+              "stdout",
+              "browser",
+              "clipboard",
+              "file",
+              "api",
+              "mcp"
+            ],
+            "type": "string"
+          },
+          "title": "Destination Support",
+          "type": "array"
+        },
+        "disabled_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Disabled Reason"
+        },
+        "effect": {
+          "enum": [
+            "read",
+            "write",
+            "destructive",
+            "stream",
+            "ops",
+            "config",
+            "import"
+          ],
+          "title": "Effect",
+          "type": "string"
+        },
+        "estimated_cost": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimated Cost"
+        },
+        "format_support": {
+          "items": {
+            "enum": [
+              "human",
+              "json",
+              "ndjson"
+            ],
+            "type": "string"
+          },
+          "title": "Format Support",
+          "type": "array"
+        },
+        "guards": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Guards",
+          "type": "array"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "input_unit": {
+          "enum": [
+            "none",
+            "query_result_set",
+            "session",
+            "path",
+            "config",
+            "runtime"
+          ],
+          "title": "Input Unit",
+          "type": "string"
+        },
+        "machine_envelope": {
+          "enum": [
+            "result_set",
+            "item",
+            "mutation",
+            "error",
+            "stream_item"
+          ],
+          "title": "Machine Envelope",
+          "type": "string"
+        },
+        "next_actions": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Next Actions",
+          "type": "array"
+        },
+        "path": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Path",
+          "type": "array"
+        },
+        "requires_daemon": {
+          "title": "Requires Daemon",
+          "type": "boolean"
+        },
+        "safety_level": {
+          "enum": [
+            "safe",
+            "mutating",
+            "destructive",
+            "operational"
+          ],
+          "title": "Safety Level",
+          "type": "string"
+        },
+        "selection_command": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Selection Command"
+        },
+        "target": {
+          "enum": [
+            "none",
+            "selection",
+            "session",
+            "path",
+            "config",
+            "runtime"
+          ],
+          "title": "Target",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "path",
+        "effect",
+        "target",
+        "input_unit",
+        "cardinality_state",
+        "safety_level",
+        "destination_support",
+        "format_support",
+        "default_format",
+        "machine_envelope",
+        "requires_daemon"
+      ],
+      "title": "ActionAffordancePayload",
+      "type": "object"
+    }
+  },
+  "$id": "https://polylogue.dev/schemas/cli-output/action-affordance-list.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Static query-action affordance inventory for public action surfaces. Exposes target, cardinality, safety, destinations, formats, selection and confirmation commands, guards, and next actions.\n\nGenerated from `polylogue.surfaces.payloads.ActionAffordanceListPayload` by `devtools render cli-output-schemas`. Do not edit by hand.",
+  "properties": {
+    "actions": {
+      "items": {
+        "$ref": "#/$defs/ActionAffordancePayload"
+      },
+      "title": "Actions",
+      "type": "array"
+    }
+  },
+  "required": [
+    "actions"
+  ],
+  "title": "Action Affordance List",
+  "type": "object",
+  "x-polylogue-cli-surfaces": [
+    "polylogue config action-affordances",
+    "future daemon/MCP action discovery"
+  ],
+  "x-polylogue-source-model": "ActionAffordanceListPayload"
+}

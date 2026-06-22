@@ -145,3 +145,24 @@ class TestQueryCompletionMetadata:
         assert result.exit_code != 0
         assert "--unit is required for terminal-field completion" in result.output
         assert TRACEBACK_SENTINEL not in result.output
+
+
+class TestActionAffordanceMetadata:
+    """The CLI exposes shared query-action affordances directly."""
+
+    def test_action_affordances_prints_shared_payload(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli, ["config", "action-affordances"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        actions = payload["actions"]
+        assert isinstance(actions, list)
+        by_id = {item["id"]: item for item in actions}
+        assert {"find", "read", "select", "continue", "analyze", "mark", "delete"}.issubset(by_id)
+        read = by_id["read"]
+        assert read["cardinality_state"] == "explicit_multi"
+        assert read["selection_command"] == "polylogue find QUERY then select"
+        assert "browser" in read["destination_support"]
+        delete = by_id["delete"]
+        assert delete["safety_level"] == "destructive"
+        assert delete["confirmation_command"] == "polylogue find QUERY then delete --dry-run"

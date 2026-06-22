@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from devtools.command_catalog import control_plane_command
 from devtools.render_support import write_if_changed
 from polylogue.archive.query.metadata import terminal_query_cli_surfaces, terminal_query_source_list
+from polylogue.operations.action_contracts import ActionAffordanceListPayload
 from polylogue.surfaces.payloads import (
     ArchiveDebtListPayload,
     ImportExplainPayload,
@@ -216,6 +217,20 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
             "polylogue find <query> then delete --yes",
             "MCP mutation tools",
             "daemon mutation endpoints",
+        ),
+    ),
+    CliOutputSchema(
+        name="action-affordance-list",
+        title="Action Affordance List",
+        description=(
+            "Static query-action affordance inventory for public action surfaces. "
+            "Exposes target, cardinality, safety, destinations, formats, selection "
+            "and confirmation commands, guards, and next actions."
+        ),
+        model=ActionAffordanceListPayload,
+        surfaces=(
+            "polylogue config action-affordances",
+            "future daemon/MCP action discovery",
         ),
     ),
     CliOutputSchema(
