@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
+from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +27,8 @@ from polylogue.sources.parsers.base import (
     ParsedSessionEvent,
 )
 from polylogue.storage.search.query_support import normalize_fts5_query
+
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,7 +191,13 @@ def write_parsed_session_to_archive(
     native_id = session.provider_session_id
     session_id = archive_session_id(origin.value, native_id)
     messages = _normalized_messages(session.messages)
-    active_leaf_message_id = _active_leaf_message_id(session_id, messages, session.active_leaf_message_provider_id)
+    duplicate_message_native_ids = _duplicate_message_native_ids(messages)
+    active_leaf_message_id = _active_leaf_message_id(
+        session_id,
+        messages,
+        session.active_leaf_message_provider_id,
+        duplicate_native_ids=duplicate_message_native_ids,
+    )
     session_content_hash = (
         bytes.fromhex(content_hash) if content_hash is not None else _hash_bytes("session", origin.value, native_id)
     )
@@ -261,6 +271,7 @@ def write_parsed_session_to_archive(
                 messages,
                 session.active_leaf_message_provider_id,
                 position_offset=position_offset,
+                duplicate_native_ids=duplicate_message_native_ids,
             )
             conn.execute(
                 "UPDATE sessions SET active_leaf_message_id = ? WHERE session_id = ?",
@@ -269,13 +280,51 @@ def write_parsed_session_to_archive(
         else:
             _clear_session_projection_rows(conn, session_id)
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
-        _write_messages(conn, session_id, messages, position_offset=position_offset)
-        _write_blocks(conn, session_id, messages, position_offset=position_offset)
-        _write_attachments(conn, session_id, messages, session.attachments, position_offset=position_offset)
-        _write_paste_spans(conn, session_id, messages, position_offset=position_offset)
-        _write_parent_links(conn, session_id, messages, position_offset=position_offset)
+        _write_messages(
+            conn,
+            session_id,
+            messages,
+            position_offset=position_offset,
+            duplicate_native_ids=duplicate_message_native_ids,
+        )
+        _write_blocks(
+            conn,
+            session_id,
+            messages,
+            position_offset=position_offset,
+            duplicate_native_ids=duplicate_message_native_ids,
+        )
+        _write_attachments(
+            conn,
+            session_id,
+            messages,
+            session.attachments,
+            position_offset=position_offset,
+            duplicate_native_ids=duplicate_message_native_ids,
+        )
+        _write_paste_spans(
+            conn,
+            session_id,
+            messages,
+            position_offset=position_offset,
+            duplicate_native_ids=duplicate_message_native_ids,
+        )
+        _write_parent_links(
+            conn,
+            session_id,
+            messages,
+            position_offset=position_offset,
+            duplicate_native_ids=duplicate_message_native_ids,
+        )
         _write_session_link(conn, session_id, session)
-        _write_session_events(conn, session_id, messages, session.session_events, position_offset=position_offset)
+        _write_session_events(
+            conn,
+            session_id,
+            messages,
+            session.session_events,
+            position_offset=position_offset,
+            duplicate_native_ids=duplicate_message_native_ids,
+        )
         _write_working_dirs(conn, session_id, session.working_directories)
         _write_repo_edges(conn, session_id, session)
         _write_reported_costs(conn, session_id, session)
@@ -312,8 +361,20 @@ def _write_ingest_flag_tags(conn: sqlite3.Connection, session_id: str, flags: li
 
 def _clear_session_projection_rows(conn: sqlite3.Connection, session_id: str) -> None:
     """Clear rows owned by parsed-session replacement before rewriting it."""
+    conn.execute(
+        """
+        UPDATE messages
+        SET parent_message_id = NULL
+        WHERE parent_message_id IN (
+            SELECT message_id FROM messages WHERE session_id = ?
+        )
+        """,
+        (session_id,),
+    )
     for table in (
+        "blocks",
         "attachment_refs",
+        "paste_spans",
         "session_events",
         "session_agent_policies",
         "session_working_dirs",
@@ -1035,6 +1096,7 @@ def _write_messages(
     messages: list[ParsedMessage],
     *,
     position_offset: int = 0,
+    duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> None:
     def rows() -> Iterable[tuple[object, ...]]:
         for fallback_position, message in enumerate(messages):
@@ -1042,7 +1104,7 @@ def _write_messages(
             variant_index = message.variant_index if message.variant_index is not None else 0
             yield (
                 session_id,
-                _sqlite_text(message.provider_message_id) or None,
+                _sqlite_text(_effective_message_native_id(message, duplicate_native_ids)) or None,
                 position,
                 _enum_value(message.role),
                 _enum_value(message.message_type),
@@ -1087,19 +1149,20 @@ def _write_blocks(
     messages: list[ParsedMessage],
     *,
     position_offset: int = 0,
+    duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> None:
-    for fallback_position, message in enumerate(messages):
-        message_id = _message_id(session_id, message, fallback_position, position_offset=position_offset)
-        blocks = _message_blocks(message)
-        for position, block in enumerate(blocks):
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO blocks (
-                    message_id, session_id, position, block_type, text, tool_name,
-                    tool_id, tool_input, semantic_type, media_type, language
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
+    def rows() -> Iterable[tuple[object, ...]]:
+        for fallback_position, message in enumerate(messages):
+            message_id = _message_id(
+                session_id,
+                message,
+                fallback_position,
+                position_offset=position_offset,
+                duplicate_native_ids=duplicate_native_ids,
+            )
+            blocks = _message_blocks(message)
+            for position, block in enumerate(blocks):
+                yield (
                     message_id,
                     session_id,
                     position,
@@ -1111,8 +1174,17 @@ def _write_blocks(
                     _sqlite_text(_semantic_type(block)),
                     _sqlite_text(block.media_type),
                     _sqlite_text(_block_language(block)),
-                ),
-            )
+                )
+
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO blocks (
+            message_id, session_id, position, block_type, text, tool_name,
+            tool_id, tool_input, semantic_type, media_type, language
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        rows(),
+    )
 
 
 def _refresh_session_counts(conn: sqlite3.Connection, session_id: str) -> None:
@@ -1155,13 +1227,18 @@ def _write_attachments(
     attachments: Iterable[ParsedAttachment],
     *,
     position_offset: int = 0,
+    duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> None:
     by_native_message_id = {
         message.provider_message_id: _message_id(
-            session_id, message, fallback_position, position_offset=position_offset
+            session_id,
+            message,
+            fallback_position,
+            position_offset=position_offset,
+            duplicate_native_ids=duplicate_native_ids,
         )
         for fallback_position, message in enumerate(messages)
-        if message.provider_message_id
+        if message.provider_message_id and message.provider_message_id not in duplicate_native_ids
     }
     for attachment in attachments:
         attachment_id = _attachment_id(session_id, attachment)
@@ -1224,11 +1301,18 @@ def _write_paste_spans(
     messages: list[ParsedMessage],
     *,
     position_offset: int = 0,
+    duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> None:
     for fallback_position, message in enumerate(messages):
         if not _has_paste(message):
             continue
-        message_id = _message_id(session_id, message, fallback_position, position_offset=position_offset)
+        message_id = _message_id(
+            session_id,
+            message,
+            fallback_position,
+            position_offset=position_offset,
+            duplicate_native_ids=duplicate_native_ids,
+        )
         text = message.text or ""
         for evidence in message.paste_spans:
             boundary = PasteBoundary(evidence.boundary_state)
@@ -1266,13 +1350,18 @@ def _write_parent_links(
     messages: list[ParsedMessage],
     *,
     position_offset: int = 0,
+    duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> None:
     by_native_id = {
         message.provider_message_id: _message_id(
-            session_id, message, fallback_position, position_offset=position_offset
+            session_id,
+            message,
+            fallback_position,
+            position_offset=position_offset,
+            duplicate_native_ids=duplicate_native_ids,
         )
         for fallback_position, message in enumerate(messages)
-        if message.provider_message_id
+        if message.provider_message_id and message.provider_message_id not in duplicate_native_ids
     }
     for fallback_position, message in enumerate(messages):
         if not message.parent_message_provider_id:
@@ -1288,7 +1377,13 @@ def _write_parent_links(
             """,
             (
                 parent_message_id,
-                _message_id(session_id, message, fallback_position, position_offset=position_offset),
+                _message_id(
+                    session_id,
+                    message,
+                    fallback_position,
+                    position_offset=position_offset,
+                    duplicate_native_ids=duplicate_native_ids,
+                ),
             ),
         )
 
@@ -1528,13 +1623,18 @@ def _write_session_events(
     events: Iterable[ParsedSessionEvent],
     *,
     position_offset: int = 0,
+    duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> None:
     by_native_id = {
         message.provider_message_id: _message_id(
-            session_id, message, fallback_position, position_offset=position_offset
+            session_id,
+            message,
+            fallback_position,
+            position_offset=position_offset,
+            duplicate_native_ids=duplicate_native_ids,
         )
         for fallback_position, message in enumerate(messages)
-        if message.provider_message_id
+        if message.provider_message_id and message.provider_message_id not in duplicate_native_ids
     }
     position = 0
     for event in events:
@@ -1811,16 +1911,37 @@ def _active_leaf_message_id(
     explicit_native_id: str | None,
     *,
     position_offset: int = 0,
+    duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> str | None:
     if explicit_native_id:
         for fallback_position, message in enumerate(messages):
             if message.provider_message_id == explicit_native_id:
-                return _message_id(session_id, message, fallback_position, position_offset=position_offset)
+                return _message_id(
+                    session_id,
+                    message,
+                    fallback_position,
+                    position_offset=position_offset,
+                    duplicate_native_ids=duplicate_native_ids,
+                )
     for fallback_position, message in enumerate(messages):
         if message.is_active_leaf:
-            return _message_id(session_id, message, fallback_position, position_offset=position_offset)
+            return _message_id(
+                session_id,
+                message,
+                fallback_position,
+                position_offset=position_offset,
+                duplicate_native_ids=duplicate_native_ids,
+            )
     return (
-        _message_id(session_id, messages[-1], len(messages) - 1, position_offset=position_offset) if messages else None
+        _message_id(
+            session_id,
+            messages[-1],
+            len(messages) - 1,
+            position_offset=position_offset,
+            duplicate_native_ids=duplicate_native_ids,
+        )
+        if messages
+        else None
     )
 
 
@@ -1830,15 +1951,28 @@ def _message_id(
     fallback_position: int,
     *,
     position_offset: int = 0,
+    duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> str:
     position = position_offset + (message.position if message.position is not None else 0)
     variant_index = message.variant_index if message.variant_index is not None else 0
     return archive_message_id(
         session_id,
-        message.provider_message_id,
+        _effective_message_native_id(message, duplicate_native_ids),
         position=position if message.position is not None else position_offset + fallback_position,
         variant_index=variant_index,
     )
+
+
+def _duplicate_message_native_ids(messages: Iterable[ParsedMessage]) -> frozenset[str]:
+    counts = Counter(message.provider_message_id for message in messages if message.provider_message_id)
+    return frozenset(native_id for native_id, count in counts.items() if count > 1)
+
+
+def _effective_message_native_id(message: ParsedMessage, duplicate_native_ids: frozenset[str]) -> str | None:
+    native_id = message.provider_message_id
+    if native_id in duplicate_native_ids:
+        return None
+    return native_id
 
 
 def _block_type(block: ParsedContentBlock) -> BlockType:
@@ -1985,9 +2119,9 @@ def _json_dumps(value: object) -> str:
 def _sqlite_text(value: str | None) -> str | None:
     if value is None:
         return None
-    if not any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+    if not _SURROGATE_RE.search(value):
         return value
-    return "".join("\ufffd" if 0xD800 <= ord(char) <= 0xDFFF else char for char in value)
+    return _SURROGATE_RE.sub("\ufffd", value)
 
 
 def _sqlite_json_value(value: object) -> object:

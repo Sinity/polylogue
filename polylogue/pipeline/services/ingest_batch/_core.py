@@ -652,9 +652,10 @@ def _consume_ingest_results(
         release_after_drain = ingest_result_needs_memory_release(ir)
         try:
             if not transaction_started:
+                if suspend_fts_triggers:
+                    conn.execute("PRAGMA foreign_keys = OFF")
                 conn.execute("BEGIN IMMEDIATE")
                 if suspend_fts_triggers:
-                    conn.execute("PRAGMA defer_foreign_keys = ON")
                     from polylogue.storage.fts.fts_lifecycle import suspend_fts_triggers_sync
 
                     suspend_fts_triggers_sync(conn, mark_stale=False)
@@ -764,6 +765,10 @@ def _process_ingest_batch_sync(
             summary=summary,
         )
         if transaction_started:
+            if suspend_fts_triggers:
+                fk_violations = conn.execute("PRAGMA foreign_key_check").fetchmany(10)
+                if fk_violations:
+                    raise sqlite3.IntegrityError(f"foreign key check failed during bulk ingest: {fk_violations!r}")
             fts_repair_ids = set(summary.fts_repair_session_ids)
             # Side effects run before releasing the connection so data and post-
             # write effects share one transaction. The previous arrangement
@@ -815,6 +820,9 @@ def _process_ingest_batch_sync(
                 conn.commit()
         raise
     finally:
+        if suspend_fts_triggers:
+            with contextlib.suppress(Exception):
+                conn.execute("PRAGMA foreign_keys = ON")
         conn.close()
     summary.worker_progress_in_flight = len(progress.in_flight_raw_ids)
     summary.worker_progress_completed = progress.completed_raw_count
