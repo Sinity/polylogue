@@ -29,7 +29,7 @@ from polylogue.browser_capture.route_contracts import (
     BROWSER_CAPTURE_ROUTE_CONTRACTS,
     browser_capture_route_contract_for,
 )
-from polylogue.browser_capture.server import make_server
+from polylogue.browser_capture.server import MAX_BROWSER_CAPTURE_BODY_BYTES, make_server
 from polylogue.daemon.cli import main as daemon_cli
 
 _EXTENSION_ORIGIN = "chrome-extension://polylogue-test"
@@ -253,6 +253,26 @@ def test_receiver_rejects_malformed_capture_payloads(
 
     assert response.status == HTTPStatus.BAD_REQUEST
     assert error.error == expected_error
+    assert list(tmp_path.rglob("*.json")) == []
+
+
+def test_receiver_body_limit_allows_native_conversation_payloads_but_still_caps(
+    tmp_path: Path,
+) -> None:
+    assert MAX_BROWSER_CAPTURE_BODY_BYTES >= 64 * 1024 * 1024
+
+    with _running_receiver(tmp_path) as (host, port):
+        conn = HTTPConnection(host, port)
+        conn.putrequest("POST", "/v1/browser-captures")
+        conn.putheader("Origin", _EXTENSION_ORIGIN)
+        conn.putheader("Content-Length", str(MAX_BROWSER_CAPTURE_BODY_BYTES + 1))
+        conn.endheaders()
+        response = conn.getresponse()
+        error = BrowserCaptureErrorPayload.model_validate(json.loads(response.read()))
+        conn.close()
+
+    assert response.status == HTTPStatus.BAD_REQUEST
+    assert error.error == "invalid_body_size"
     assert list(tmp_path.rglob("*.json")) == []
 
 

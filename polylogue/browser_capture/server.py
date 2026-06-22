@@ -31,6 +31,8 @@ from polylogue.logging import get_logger
 
 logger = get_logger(__name__)
 
+MAX_BROWSER_CAPTURE_BODY_BYTES = 128 * 1024 * 1024
+
 
 def _json_bytes(payload: object) -> bytes:
     return dumps_bytes(payload, option=None)
@@ -212,7 +214,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         except ValueError:
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_content_length")
             return
-        if length <= 0 or length > 10 * 1024 * 1024:
+        if length <= 0 or length > MAX_BROWSER_CAPTURE_BODY_BYTES:
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_body_size")
             return
         try:
