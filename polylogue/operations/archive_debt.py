@@ -230,8 +230,18 @@ def _raw_materialization_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]
                     r.validation_status,
                     r.validation_error
                 FROM raw_sessions AS r
-                LEFT JOIN index_tier.sessions AS s ON s.raw_id = r.raw_id
-                WHERE s.session_id IS NULL
+                LEFT JOIN index_tier.sessions AS s_by_raw ON s_by_raw.raw_id = r.raw_id
+                LEFT JOIN index_tier.sessions AS s_by_native
+                  ON r.native_id IS NOT NULL
+                 AND s_by_native.origin = r.origin
+                 AND s_by_native.native_id = r.native_id
+                WHERE s_by_raw.session_id IS NULL
+                  AND s_by_native.session_id IS NULL
+                  AND NOT (
+                    r.validation_status = 'skipped'
+                    AND r.parsed_at_ms IS NOT NULL
+                    AND r.parse_error IS NULL
+                  )
                 ORDER BY r.origin, r.blob_size DESC, r.raw_id
                 """
             )

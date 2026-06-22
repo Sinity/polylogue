@@ -274,13 +274,25 @@ def _init_raw_materialization_fixture(root: Path) -> tuple[Path, Path, Path]:
                     123,
                     "passed",
                 ),
+                (
+                    "raw-skipped-non-session",
+                    "aistudio-drive",
+                    None,
+                    str(source_file),
+                    bytes.fromhex("cc" * 32),
+                    1024,
+                    123,
+                    None,
+                    123,
+                    "skipped",
+                ),
             ),
         )
     (blob_root / "bb").mkdir()
     (blob_root / "bb" / ("bb" * 31)).write_bytes(b"payload")
 
     with sqlite3.connect(index_db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT, raw_id TEXT)")
+        conn.execute("CREATE TABLE sessions (session_id TEXT, origin TEXT, native_id TEXT, raw_id TEXT)")
 
     return source_db, index_db, source_file
 
@@ -307,7 +319,9 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
 def test_archive_debt_raw_materialization_ignores_materialized_rows(tmp_path: Path) -> None:
     source_db, index_db, _source_file = _init_raw_materialization_fixture(tmp_path)
     with sqlite3.connect(index_db) as conn:
-        conn.execute("INSERT INTO sessions (session_id, raw_id) VALUES ('s1', 'raw-parsed-no-session')")
+        conn.execute(
+            "INSERT INTO sessions (session_id, origin, native_id, raw_id) VALUES ('s1', 'aistudio-drive', NULL, 'raw-parsed-no-session')"
+        )
 
     payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
 
@@ -315,3 +329,23 @@ def test_archive_debt_raw_materialization_ignores_materialized_rows(tmp_path: Pa
     assert "debt:raw-materialization:aistudio-drive:parsed-without-session" not in refs
     assert "debt:raw-materialization:codex-session:missing-blob" in refs
     assert source_db.exists()
+
+
+def test_archive_debt_raw_materialization_ignores_native_id_matches(tmp_path: Path) -> None:
+    _source_db, index_db, _source_file = _init_raw_materialization_fixture(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            "UPDATE raw_sessions SET native_id = ? WHERE raw_id = ?",
+            ("aistudio-native", "raw-parsed-no-session"),
+        )
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(
+            "INSERT INTO sessions (session_id, origin, native_id, raw_id) VALUES (?, ?, ?, ?)",
+            ("aistudio-drive:aistudio-native", "aistudio-drive", "aistudio-native", "older-raw"),
+        )
+
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
+
+    refs = {row.debt_ref for row in payload.rows}
+    assert "debt:raw-materialization:aistudio-drive:parsed-without-session" not in refs
+    assert "debt:raw-materialization:codex-session:missing-blob" in refs

@@ -130,6 +130,10 @@ def _fallback_id(source_path: str | None, raw_id: str) -> str:
     stem = Path(entry_path).stem
     if not stem:
         return raw_id
+    if stem.startswith("agent-"):
+        return stem
+    if "/drive-cache/" in normalized:
+        return stem
     cleaned = _SOURCE_HASH_SUFFIX.sub("", stem).strip("._- ")
     return cleaned or stem
 
