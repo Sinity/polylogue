@@ -45,8 +45,8 @@ def actionable_hint_for_usage_error(message: str) -> str | None:
         bad = bad.split("'")[1] if "'" in bad else bad.split()[0]
         return (
             f"Hint: `{bad}` is not a registered subcommand. "
-            f'Did you mean to search? Try `polylogue "{bad}"` '
-            "(query-first dispatch interprets unrecognized tokens as search queries), "
+            f"Did you mean to search? Try `polylogue find {bad}` "
+            "(plain unmarked roots are refused unless they are structured query expressions), "
             "or run `polylogue --help` for the full subcommand list."
         )
     if "Invalid value" in msg or "is not a valid" in msg:

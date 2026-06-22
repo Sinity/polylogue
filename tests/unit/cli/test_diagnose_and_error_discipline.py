@@ -7,10 +7,9 @@ Covers four contracts:
 2. ``--diagnose`` prints a parser-decision banner on stderr explaining how
    the parser routed the invocation (matched subcommand vs query-first
    fallback) without changing observable behavior on stdout.
-3. ``polylogue invalid-xyz`` produces an actionable no-results message that
-   surfaces the query-first dispatch and (when the token looks like a typo
-   of a real subcommand) a "did you mean a subcommand?" hint — within a
-   reasonable time when the archive is empty.
+3. ``polylogue invalid-xyz`` produces an actionable strict-floor error and
+   (when the token looks like a typo of a real subcommand) a "did you mean a
+   subcommand?" hint — within a reasonable time when the archive is empty.
 4. Click ``UsageError`` (e.g. unknown long-option) carries an actionable
    next-step hint in addition to Click's default usage line.
 """
@@ -79,14 +78,24 @@ class TestDiagnoseBanner:
         runner: CliRunner,
         workspace_env: Mapping[str, Path],
     ) -> None:
-        """Bare unknown token is routed to query mode; --diagnose says so."""
-        result = runner.invoke(cli, ["--diagnose", "invalid-xyz", "--limit", "0"])
+        """Explicit query mode is routed to search; --diagnose says so."""
+        result = runner.invoke(cli, ["--diagnose", "find", "invalid-xyz", "--limit", "0"])
         # We expect an explicit query-first dispatch line in the diagnose banner.
         assert "[diagnose]" in result.output, f"missing diagnose lines: {result.output!r}"
         assert "interpreting as search query" in result.output, (
             f"diagnose banner must announce query-first interpretation: {result.output!r}"
         )
         assert "invalid-xyz" in result.output
+
+    def test_diagnose_banner_on_strict_floor_refusal(self, runner: CliRunner) -> None:
+        """Bare plain tokens are refused before any archive search runs."""
+        result = runner.invoke(cli, ["--diagnose", "invalid-xyz", "--limit", "0"])
+        assert result.exit_code == 2
+        assert "[diagnose]" in result.output
+        assert "No such command 'invalid-xyz'." in result.output
+        assert "polylogue find invalid-xyz" in result.output
+        assert "strict command floor will refuse it" in result.output
+        assert "interpreting as search query" not in result.output
 
     def test_diagnose_banner_on_matched_subcommand(
         self,
@@ -163,7 +172,7 @@ class TestUsageErrorHints:
     def test_actionable_hint_for_no_such_command(self) -> None:
         hint = actionable_hint_for_usage_error("No such command 'foo'.")
         assert hint is not None
-        assert "query-first" in hint
+        assert "polylogue find foo" in hint
         assert "polylogue --help" in hint
 
 
@@ -183,5 +192,5 @@ class TestParserDiagnosticsHelpers:
 
     def test_format_unknown_subcommand_hint_always_suggests_query(self) -> None:
         hint = format_unknown_subcommand_hint("foo", ["read", "analyze"])
-        assert 'polylogue "foo"' in hint
-        assert "query-first dispatch" in hint
+        assert "polylogue find foo" in hint
+        assert "plain unmarked roots" in hint

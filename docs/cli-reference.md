@@ -49,6 +49,7 @@ Usage: polylogue [OPTIONS] COMMAND [ARGS]...
 
   See also:
       polylogue --help                  # this screen
+      polylogue find --help             # query workflow help
       polylogue <subcommand> --help     # per-subcommand help
       polylogue --diagnose <args>       # explain parser decisions
 
@@ -153,9 +154,9 @@ Options:
   -v, --verbose                   Verbose output
   --diagnose                      Explain CLI parser decisions on stderr
                                   before running. Useful when query-first
-                                  dispatch surprises you: shows whether a bare
-                                  token was routed to a subcommand or
-                                  interpreted as a search query.
+                                  dispatch surprises you: shows whether tokens
+                                  were routed to a subcommand, an explicit
+                                  query, or the strict command floor.
   --version                       Show the version and exit.
   --help                          Show this message and exit.
 

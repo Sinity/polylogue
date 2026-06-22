@@ -644,6 +644,16 @@ class TestQueryFirstGroupParseArgs:
             not in result.output
         )
 
+    def test_find_help_renders_query_workflow_help(self, cli_runner: CliRunner) -> None:
+        from polylogue.cli.click_app import cli
+
+        result = cli_runner.invoke(cli, ["find", "--help"], catch_exceptions=False)
+
+        assert result.exit_code == 0
+        assert "Search the archive, then optionally run an action." in result.output
+        assert "polylogue find QUERY then ACTION" in result.output
+        assert "Subcommands:" not in result.output
+
     def test_query_verb_help_renders_with_root_options(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
 

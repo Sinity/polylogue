@@ -319,6 +319,7 @@ def cli(
     \b
     See also:
         polylogue --help                  # this screen
+        polylogue find --help             # query workflow help
         polylogue <subcommand> --help     # per-subcommand help
         polylogue --diagnose <args>       # explain parser decisions
     """
@@ -336,6 +337,31 @@ def cli(
     ctx.obj = env
 
 
+@click.command("find", hidden=True, context_settings={"help_option_names": ["-h", "--help"]})
+def find_help() -> None:
+    """Search the archive, then optionally run an action.
+
+    \b
+    Usage:
+        polylogue find QUERY
+        polylogue find QUERY then ACTION
+
+    \b
+    Examples:
+        polylogue find "browser capture"
+        polylogue find id:abc then read --view messages
+        polylogue find 'repo:polylogue since:7d' then analyze --facets
+        polylogue find 'repo:polylogue tag:stale' then delete --dry-run
+
+    \b
+    Notes:
+        `find` is the explicit query marker, not a normal subcommand.
+        Put root filters before `find`, and verb-specific options after ACTION:
+        `polylogue --origin chatgpt-export find "sqlite" then read --all`.
+    """
+
+
+cli.add_command(find_help)
 register_root_commands(cli)
 
 _QUERY_VERB_HELP: dict[str, str] = {

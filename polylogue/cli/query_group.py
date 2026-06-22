@@ -47,6 +47,8 @@ def _split_query_mode_args(group: click.Group, args: list[str]) -> tuple[list[st
         # `find` is the canonical "this is a query" marker; only the FIRST
         # positional token is the keyword — a later `find` is a literal term.
         if not query_terms and not explicit_query and arg == "find":
+            if index + 1 < len(args) and args[index + 1] in {"--help", "-h"}:
+                return args, (), True, explicit_query
             explicit_query = True
             index += 1
             continue
@@ -204,8 +206,13 @@ def _detect_subcommand_and_verb(group: click.Group, args: list[str]) -> tuple[st
 
     subcommand: str | None = None
     verb: str | None = None
-    for arg in args:
+    for index, arg in enumerate(args):
         if arg.startswith("-"):
+            continue
+        if arg == "find":
+            if index + 1 < len(args) and args[index + 1] in {"--help", "-h"}:
+                subcommand = arg
+                break
             continue
         if arg in group.commands and arg not in VERB_NAMES:
             subcommand = arg
@@ -292,13 +299,18 @@ class QueryFirstGroupBase(click.Group):
 
         from polylogue.cli.parser_diagnostics import emit_parser_decision
 
+        query_terms = tuple(ctx.meta.get("polylogue_query_terms") or ())
+        explicit_query = bool(ctx.meta.get("polylogue_explicit_query", False))
         emit_parser_decision(
             ctx.meta.get("polylogue_raw_args") or [],
             has_subcommand=bool(ctx.meta.get("polylogue_has_subcommand", False)),
             subcommand=ctx.meta.get("polylogue_dispatch_subcommand"),
-            query_terms=ctx.meta.get("polylogue_query_terms") or (),
+            query_terms=query_terms,
             verb=ctx.meta.get("polylogue_dispatch_verb"),
             registered_commands=sorted(self.commands.keys()),
+            strict_floor_refusal=bool(query_terms)
+            and not explicit_query
+            and not _looks_like_query_expression(query_terms),
         )
 
     def handle_default_mode(self, ctx: click.Context) -> None:

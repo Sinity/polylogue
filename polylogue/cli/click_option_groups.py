@@ -361,7 +361,7 @@ GLOBAL_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         help=(
             "Explain CLI parser decisions on stderr before running. "
             "Useful when query-first dispatch surprises you: shows whether "
-            "a bare token was routed to a subcommand or interpreted as a search query."
+            "tokens were routed to a subcommand, an explicit query, or the strict command floor."
         ),
     ),
 )
