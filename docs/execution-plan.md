@@ -21,6 +21,7 @@ and operations layer over the older query/route/workbench spine:
 | #2306 | Make recovery/context/evidence packs trustworthy handoff artifacts. | read views, evidence windows, assertion/candidate review, context/recovery renderers |
 | #2307 | Polish docs, theming, packaging, release proof, and local control-plane probes. | README/docs, renderers, Nix package/runtime proof, dev-loop/browser diagnostics |
 | #2308 | Make deployed state trustworthy and browser captures queryable. | deployment smoke, browser-capture receiver/archive flow, daemon status/resource behavior |
+| #2309 | Make runtime and deployment configuration intentional. | `polylogue/config.py`, config docs, HM/NixOS module options, runtime/user/ops state boundaries |
 
 Closed design or campaign notes should not live here as dispatch truth. If an
 old plan is still useful, fold the relevant decision into the owning issue body
@@ -92,7 +93,18 @@ workflow/hook points at a removed command.
      JSON and Markdown handoff outputs distinguish quoted evidence, inferred
      summary, accepted/rejected candidates, and unavailable source material.
 
-6. **Keep repo/package/dev-loop polish tied to shipped workflows (#2307/#2248).**
+6. **Make configuration explicit before adding more knobs (#2309).**
+   - Classify settings as startup config, deployment policy, mutable user
+     preference, provider/cost control, presentation preference, or disposable
+     ops state before adding them.
+   - Config inspection must show effective values and source layers while
+     redacting secrets. Nix/HM options should map to the same semantics as
+     non-Nix installs, with deployment-only resource policy called out.
+   - Evidence: config inventory tests, docs that explain static vs runtime vs
+     ops state, redaction/security tests, deployment smoke effective-config
+     evidence, and Sinnix module checks where Nix options are touched.
+
+7. **Keep repo/package/dev-loop polish tied to shipped workflows (#2307/#2248).**
    - Docs, theming, release proof, and private-browser/dev-loop probes should
      make real workflows easier to run and verify; avoid proof theater and
      absence memorials.
@@ -101,7 +113,7 @@ workflow/hook points at a removed command.
      branch-local daemon/web/receiver runs expose ports, archive roots, logs,
      browser executable paths, and capture artifacts.
 
-7. **Close the epic (#1807) only after the product story is truthful.**
+8. **Close the epic (#1807) only after the product story is truthful.**
    - The README, CLI help, docs site, daemon shell, and release gate must
      describe what exists now.
    - Claims about query, web, recovery, assertions, and work packets must be
@@ -120,7 +132,7 @@ body before implementing from chat context.
 | Web UI rethink, route failures, slow facets, first-paint truthfulness | #2304 | Bounded route contracts, degraded UI states, lazy/stale facets, DOM/browser smoke. |
 | Browser capture fully functional, provider-native payloads, realtime/live-session state, archive-state lifecycle | #2308 for deployed correctness; #2248 for branch-local extension/dev loop | Keep current capture queryable first; widen to fidelity/lifecycle/sync once the deployed invariant is stable. |
 | Recovery/context packs for feeding stronger agents and avoiding missing context | #2306 | Evidence-backed bundles with omissions, caveats, redaction, and candidate-review affordances. |
-| Configurability without pointless knobs, Nix/NixOS/runtime config clarity | #2307 plus #2248 | Document supported knobs, package/deployment proof, branch-local runtime isolation; add config only when a workflow needs it. |
+| Configurability without pointless knobs, Nix/NixOS/runtime config clarity | #2309 | Classify each setting before adding it; distinguish startup config, deployment policy, mutable user state, presentation preferences, provider spend, and disposable ops state. |
 | Codebase incoherence, stale names, schema/concept review | #2177 plus #2307 | Cleanup belongs with contract ownership or repo-polish work, not standalone rename ceremony. |
 | Agent/process/desktop/browser control and ambient capabilities | #2248, with Polylogue only owning branch-local URLs/logs/receiver config | Do not make Polylogue a general desktop automation framework; expose inspectable control points for existing local tools. |
 | OTLP/observability relevance | #2183 for projection, #2248/#2308 for local daemon/dev-loop resource evidence | OTel-style export is a projection, not internal authority. |
