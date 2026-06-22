@@ -245,7 +245,8 @@
   "type": "object",
   "x-polylogue-cli-surfaces": [
     "polylogue config action-affordances",
-    "future daemon/MCP action discovery"
+    "GET /api/action-affordances",
+    "future MCP action discovery"
   ],
   "x-polylogue-source-model": "ActionAffordanceListPayload"
 }

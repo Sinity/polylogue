@@ -2237,6 +2237,13 @@ x-polylogue-route-contracts:
   auth_policy: bearer_if_configured
   response_contract: query completion metadata
 - method: GET
+  pattern: /api/action-affordances
+  kind: read_query
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: ActionAffordanceListPayload
+  notes: Shared query-action affordance inventory for CLI, daemon, and automation clients.
+- method: GET
   pattern: /api/read-view-profiles
   kind: read_query
   stability: stable

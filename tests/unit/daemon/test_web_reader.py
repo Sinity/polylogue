@@ -1511,6 +1511,31 @@ class TestReaderQueryCompletions:
         )
 
 
+class TestReaderActionAffordances:
+    def test_action_affordances_endpoint_exposes_shared_payload(self) -> None:
+        with _running_server_without_seed() as (_server, base_url):
+            payload = _get_json(base_url, "/api/action-affordances")
+
+        assert isinstance(payload, dict)
+        payload_dict = cast(dict[str, object], payload)
+        actions = payload_dict["actions"]
+        assert isinstance(actions, list)
+        action_payloads = [cast(dict[str, object], action) for action in cast(list[object], actions)]
+        action_by_id = {str(action["id"]): action for action in action_payloads}
+
+        read = action_by_id["read"]
+        assert read["target"] == "selection"
+        assert read["safety_level"] == "safe"
+        assert read["selection_command"] == "polylogue find QUERY then select"
+        assert "terminal" in cast(list[object], read["destination_support"])
+
+        delete = action_by_id["delete"]
+        assert delete["target"] == "selection"
+        assert delete["safety_level"] == "destructive"
+        assert delete["confirmation_command"] == "polylogue find QUERY then delete --dry-run"
+        assert "find" in cast(list[object], delete["next_actions"])
+
+
 class TestReaderQueryUnits:
     def test_query_units_endpoint_returns_terminal_message_rows(self, workspace_env: dict[str, Path]) -> None:
         expression = quote("messages where text:Hello")

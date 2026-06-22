@@ -711,7 +711,7 @@ The schema files live under `docs/schemas/cli-output/`.
 | `archive-debt-list` | `ArchiveDebtListPayload` | `polylogue ops debt list --format json` |
 | `session-neighbor-candidate` | `SessionNeighborCandidatePayload` | `polylogue read --view neighbors --format json` |
 | `mutation-result` | `MutationResultPayload` | `polylogue find <query> then delete --dry-run`<br>`polylogue find <query> then delete --yes`<br>`MCP mutation tools`<br>`daemon mutation endpoints` |
-| `action-affordance-list` | `ActionAffordanceListPayload` | `polylogue config action-affordances`<br>`future daemon/MCP action discovery` |
+| `action-affordance-list` | `ActionAffordanceListPayload` | `polylogue config action-affordances`<br>`GET /api/action-affordances`<br>`future MCP action discovery` |
 | `machine-error` | `MachineErrorPayload` | `polylogue * --machine (error path)` |
 | `machine-success` | `MachineSuccessPayload` | `polylogue * --machine (success path)` |
 | `query-error` | `QueryErrorPayload` | `GET /api/sessions?query=... (error path)`<br>`daemon query/read error responses`<br>`MCP query/read error responses` |

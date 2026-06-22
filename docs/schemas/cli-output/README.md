@@ -27,7 +27,7 @@ devtools render cli-output-schemas --check # CI sync check
 | [`archive-debt-list.schema.json`](./archive-debt-list.schema.json) | `polylogue ops debt list --format json` | `ArchiveDebtListPayload` |
 | [`session-neighbor-candidate.schema.json`](./session-neighbor-candidate.schema.json) | `polylogue read --view neighbors --format json` | `SessionNeighborCandidatePayload` |
 | [`mutation-result.schema.json`](./mutation-result.schema.json) | `polylogue find <query> then delete --dry-run`<br>`polylogue find <query> then delete --yes`<br>`MCP mutation tools`<br>`daemon mutation endpoints` | `MutationResultPayload` |
-| [`action-affordance-list.schema.json`](./action-affordance-list.schema.json) | `polylogue config action-affordances`<br>`future daemon/MCP action discovery` | `ActionAffordanceListPayload` |
+| [`action-affordance-list.schema.json`](./action-affordance-list.schema.json) | `polylogue config action-affordances`<br>`GET /api/action-affordances`<br>`future MCP action discovery` | `ActionAffordanceListPayload` |
 | [`machine-error.schema.json`](./machine-error.schema.json) | `polylogue * --machine (error path)` | `MachineErrorPayload` |
 | [`machine-success.schema.json`](./machine-success.schema.json) | `polylogue * --machine (success path)` | `MachineSuccessPayload` |
 | [`query-error.schema.json`](./query-error.schema.json) | `GET /api/sessions?query=... (error path)`<br>`daemon query/read error responses`<br>`MCP query/read error responses` | `QueryErrorPayload` |

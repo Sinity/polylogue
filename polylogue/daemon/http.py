@@ -236,6 +236,7 @@ def _static_get_routes() -> tuple[_StaticGetRoute, ...]:
         _static_get_route("/api/import/explain", "_handle_import_explain", passes_params=True),
         _static_get_route("/api/refs/resolve", "_handle_ref_resolve", passes_params=True),
         _static_get_route("/api/query-completions", "_handle_query_completions", passes_params=True),
+        _static_get_route("/api/action-affordances", "_handle_action_affordances"),
         _static_get_route("/api/read-view-profiles", "_handle_read_view_profiles"),
         _static_get_route("/api/assertions", "_handle_assertions", passes_params=True),
         _static_get_route("/api/paste-browser", "_handle_paste_browser", passes_params=True),
@@ -2663,6 +2664,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_query_completion", "message": str(exc)})
             return
         self._send_json(HTTPStatus.OK, {"query_completions": payload})
+
+    @daemon_safe_handler
+    def _handle_action_affordances(self) -> None:
+        """``GET /api/action-affordances`` exposes shared query-action metadata."""
+
+        from polylogue.operations.action_contracts import action_affordance_list_payload
+
+        payload = action_affordance_list_payload()
+        self._send_json(HTTPStatus.OK, payload.model_dump(mode="json"))
 
     @daemon_safe_handler
     def _handle_read_view_profiles(self) -> None:
