@@ -527,5 +527,5 @@ devtools test tests/unit/cli/test_demo_command.py tests/unit/demo/test_demo_seed
 ## Local State
 
 - `.cache/`: disposable caches (hypothesis, pytest, mypy, ruff)
-- `.local/`: untracked outputs (campaigns, showcases, build artifacts)
+- `.local/`: untracked outputs (campaigns, demo artifacts, build artifacts)
 - `.local/result`: out-link for `devtools release build-package`

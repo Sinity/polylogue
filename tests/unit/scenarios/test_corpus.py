@@ -118,7 +118,7 @@ def test_corpus_spec_payload_round_trip_preserves_inference_fields() -> None:
         messages_min=5,
         messages_max=9,
         seed=7,
-        style="showcase",
+        style="demo",
         origin="inferred.schema",
         tags=("synthetic", "schema"),
     )
@@ -187,7 +187,7 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
         DEMO_CODEX_SESSION_ID,
     )
     assert tuple(spec.style for spec in specs) == (
-        "showcase",
+        "demo",
         "tool-heavy",
         "tool-heavy",
     )
@@ -394,7 +394,7 @@ def test_resolve_corpus_specs_applies_generation_overrides_to_inferred_specs() -
             messages_min=6,
             messages_max=8,
             seed=42,
-            style="showcase",
+            style="demo",
         )
 
     assert len(specs) == 1
@@ -405,7 +405,7 @@ def test_resolve_corpus_specs_applies_generation_overrides_to_inferred_specs() -
     assert specs[0].messages_min == 6
     assert specs[0].messages_max == 8
     assert specs[0].seed == 42
-    assert specs[0].style == "showcase"
+    assert specs[0].style == "demo"
     assert specs[0].origin == "generated.synthetic-inferred"
     assert specs[0].tags == ("synthetic", "generated", "inferred")
 
@@ -417,7 +417,7 @@ def test_resolve_corpus_scenarios_compiles_named_groups_from_defaults() -> None:
         messages_min=4,
         messages_max=6,
         seed=11,
-        style="showcase",
+        style="demo",
     )
 
     assert tuple(scenario.projection_name for scenario in scenarios) == ("chatgpt:default", "codex:default")
@@ -451,7 +451,7 @@ def test_resolve_corpus_scenarios_supports_inferred_source() -> None:
             messages_min=6,
             messages_max=8,
             seed=42,
-            style="showcase",
+            style="demo",
         )
 
     assert len(scenarios) == 1
@@ -474,7 +474,7 @@ def test_corpus_request_resolves_default_provider_inventory() -> None:
             messages_min=4,
             messages_max=6,
             seed=11,
-            style="showcase",
+            style="demo",
         )
         assert request.available_providers() == ("codex", "chatgpt")
         scenarios = request.resolve_scenarios()
@@ -508,7 +508,7 @@ def test_corpus_request_resolves_inferred_source_without_provider_inventory() ->
             messages_min=6,
             messages_max=8,
             seed=42,
-            style="showcase",
+            style="demo",
         ).resolve_specs()
 
     assert len(specs) == 1
@@ -547,7 +547,7 @@ def test_corpus_request_passes_registry_through_inferred_resolution() -> None:
             messages_min=6,
             messages_max=8,
             seed=42,
-            style="showcase",
+            style="demo",
         ).resolve_specs(registry=registry)
 
     assert observed_registries == [registry]

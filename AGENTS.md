@@ -563,7 +563,7 @@ tests/
 │   ├── pipeline/            # Stage independence, resilience
 │   ├── cli/                 # Commands, terminal snapshots (syrupy)
 │   ├── mcp/                 # MCP tool contracts, edge cases
-│   ├── showcase/            # Verification-lab scenarios and reports
+│   ├── demo/                # Demo archive seed/verify workflows
 │   └── security/            # Protected — never delete
 ├── property/                # Hypothesis property tests
 ├── integration/             # End-to-end (slow, protected)
@@ -1566,7 +1566,7 @@ devtools test tests/unit/cli/test_demo_command.py tests/unit/demo/test_demo_seed
 ## Local State
 
 - `.cache/`: disposable caches (hypothesis, pytest, mypy, ruff)
-- `.local/`: untracked outputs (campaigns, showcases, build artifacts)
+- `.local/`: untracked outputs (campaigns, demo artifacts, build artifacts)
 - `.local/result`: out-link for `devtools release build-package`
 <!-- end include: docs/internals.md -->
 <!-- begin include: docs/devtools.md -->
@@ -1761,7 +1761,7 @@ Campaign outputs live under `.local/`, not in tracked docs trees.
 ## Local State Layout
 
 - `.cache/`: disposable cache state.
-- `.local/`: untracked local outputs such as campaigns, showcases, and reports.
+- `.local/`: untracked local outputs such as campaigns, demo artifacts, and reports.
 - `.venv/` and `.direnv/`: kept at the repo root because their tooling expects those locations.
 - `.local/result`: preferred repo-local out-link for `devtools release build-package`; a top-level `result` symlink is just Nix's default ad-hoc out-link.
 

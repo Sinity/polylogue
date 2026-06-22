@@ -131,11 +131,11 @@ def test_generate_synthetic_fixtures_supports_inferred_corpus_specs(tmp_path: Pa
         generate_synthetic_fixtures(
             tmp_path / "fixtures",
             count=1,
-            style="showcase",
+            style="demo",
             corpus_source="inferred",
         )
 
-    assert (Path(tmp_path) / "fixtures" / "chatgpt" / "showcase-00.json").exists()
+    assert (Path(tmp_path) / "fixtures" / "chatgpt" / "demo-00.json").exists()
 
 
 def test_build_synthetic_corpus_specs_supports_inferred_source() -> None:
@@ -157,7 +157,7 @@ def test_build_synthetic_corpus_specs_supports_inferred_source() -> None:
     ):
         specs = build_synthetic_corpus_specs(
             count=1,
-            style="showcase",
+            style="demo",
             corpus_source="inferred",
         )
 
@@ -184,7 +184,7 @@ def test_build_synthetic_corpus_scenarios_supports_inferred_source() -> None:
     ):
         scenarios = build_synthetic_corpus_scenarios(
             count=1,
-            style="showcase",
+            style="demo",
             corpus_source="inferred",
         )
 
@@ -197,7 +197,7 @@ def test_generate_synthetic_fixtures_from_scenarios_writes_grouped_specs(tmp_pat
     scenario = build_synthetic_corpus_scenarios(
         providers=("chatgpt",),
         count=1,
-        style="showcase",
+        style="demo",
         messages_min=4,
         messages_max=4,
         seed=7,
@@ -219,7 +219,7 @@ def test_seed_workspace_from_corpus_request_routes_through_pipeline(tmp_path: Pa
     with patch("polylogue.api.Polylogue", _RecordingPolylogue):
         seed_workspace_from_corpus_request(
             workspace,
-            request=CorpusRequest(providers=("chatgpt",), count=1, style="showcase", messages_min=6, messages_max=19),
+            request=CorpusRequest(providers=("chatgpt",), count=1, style="demo", messages_min=6, messages_max=19),
         )
 
     assert (workspace.inbox_dir / "chatgpt").exists()
@@ -234,7 +234,7 @@ def test_seed_workspace_from_corpus_options_builds_request_routes_through_pipeli
 
     _RecordingPolylogue.instances.clear()
     with patch("polylogue.api.Polylogue", _RecordingPolylogue):
-        seed_workspace_from_corpus_options(workspace, providers=("chatgpt",), count=1, style="showcase")
+        seed_workspace_from_corpus_options(workspace, providers=("chatgpt",), count=1, style="demo")
 
     assert (workspace.inbox_dir / "chatgpt").exists()
     await_args = _RecordingPolylogue.instances[-1].parse_sources.await_args
@@ -248,7 +248,7 @@ def test_seed_workspace_from_scenarios_routes_through_pipeline(tmp_path: Path) -
     scenario = build_synthetic_corpus_scenarios(
         providers=("chatgpt",),
         count=1,
-        style="showcase",
+        style="demo",
         messages_min=4,
         messages_max=4,
         seed=9,

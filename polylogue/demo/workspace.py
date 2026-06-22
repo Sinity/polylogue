@@ -27,7 +27,7 @@ def _resolved_corpus_request(
     request: CorpusRequest | None,
     providers: tuple[str, ...] | None = None,
     count: int = 3,
-    style: str = "showcase",
+    style: str = "demo",
     corpus_source: CorpusSourceKind | str = CorpusSourceKind.DEFAULT,
     messages_min: int = 6,
     messages_max: int = 19,
@@ -131,7 +131,7 @@ def build_synthetic_corpus_specs(
     request: CorpusRequest | None = None,
     providers: tuple[str, ...] | None = None,
     count: int = 3,
-    style: str = "showcase",
+    style: str = "demo",
     corpus_source: CorpusSourceKind | str = CorpusSourceKind.DEFAULT,
     messages_min: int = 6,
     messages_max: int = 19,
@@ -156,7 +156,7 @@ def build_synthetic_corpus_scenarios(
     request: CorpusRequest | None = None,
     providers: tuple[str, ...] | None = None,
     count: int = 3,
-    style: str = "showcase",
+    style: str = "demo",
     corpus_source: CorpusSourceKind | str = CorpusSourceKind.DEFAULT,
     messages_min: int = 6,
     messages_max: int = 19,
@@ -182,7 +182,7 @@ def generate_synthetic_fixtures(
     request: CorpusRequest | None = None,
     providers: tuple[str, ...] | None = None,
     count: int = 3,
-    style: str = "showcase",
+    style: str = "demo",
     corpus_source: CorpusSourceKind | str = CorpusSourceKind.DEFAULT,
 ) -> None:
     """Generate schema-driven synthetic fixtures for all providers."""
@@ -200,7 +200,7 @@ def generate_synthetic_fixtures_from_specs(
     fixture_dir: Path,
     *,
     corpus_specs: tuple[CorpusSpec, ...],
-    prefix: str = "showcase",
+    prefix: str = "demo",
 ) -> tuple[SyntheticWrittenBatch, ...]:
     """Generate schema-driven synthetic fixtures for explicit corpus specs."""
     return generate_synthetic_fixtures_from_scenarios(
@@ -218,7 +218,7 @@ def generate_synthetic_fixtures_from_scenarios(
     fixture_dir: Path,
     *,
     corpus_scenarios: tuple[CorpusScenario, ...],
-    prefix: str = "showcase",
+    prefix: str = "demo",
 ) -> tuple[SyntheticWrittenBatch, ...]:
     """Generate schema-driven synthetic fixtures for explicit corpus scenarios."""
     from polylogue.schemas.synthetic import SyntheticCorpus
@@ -233,7 +233,7 @@ def seed_workspace_from_specs(
     *,
     corpus_specs: tuple[CorpusSpec, ...],
     regenerate_schemas: bool = False,
-    prefix: str = "showcase",
+    prefix: str = "demo",
 ) -> None:
     """Generate fixtures from explicit specs and ingest them into the workspace."""
     seed_workspace_from_scenarios(
@@ -253,7 +253,7 @@ def seed_workspace_from_scenarios(
     *,
     corpus_scenarios: tuple[CorpusScenario, ...],
     regenerate_schemas: bool = False,
-    prefix: str = "showcase",
+    prefix: str = "demo",
 ) -> None:
     """Generate fixtures from explicit corpus scenarios and ingest them into the workspace."""
     generate_synthetic_fixtures_from_scenarios(
@@ -272,7 +272,7 @@ def seed_workspace_from_corpus_request(
     *,
     request: CorpusRequest,
     regenerate_schemas: bool = False,
-    prefix: str = "showcase",
+    prefix: str = "demo",
 ) -> None:
     """Resolve corpus specs, generate fixtures, and ingest them into the workspace."""
     scenarios = build_synthetic_corpus_scenarios(request=request)
@@ -289,13 +289,13 @@ def seed_workspace_from_corpus_options(
     *,
     providers: tuple[str, ...] | None = None,
     count: int = 3,
-    style: str = "showcase",
+    style: str = "demo",
     corpus_source: CorpusSourceKind | str = CorpusSourceKind.DEFAULT,
     messages_min: int = 6,
     messages_max: int = 19,
     seed: int = 42,
     regenerate_schemas: bool = False,
-    prefix: str = "showcase",
+    prefix: str = "demo",
 ) -> None:
     """Resolve corpus specs, generate fixtures, and ingest them into the workspace."""
     seed_workspace_from_corpus_request(

@@ -189,7 +189,7 @@ Campaign outputs live under `.local/`, not in tracked docs trees.
 ## Local State Layout
 
 - `.cache/`: disposable cache state.
-- `.local/`: untracked local outputs such as campaigns, showcases, and reports.
+- `.local/`: untracked local outputs such as campaigns, demo artifacts, and reports.
 - `.venv/` and `.direnv/`: kept at the repo root because their tooling expects those locations.
 - `.local/result`: preferred repo-local out-link for `devtools release build-package`; a top-level `result` symlink is just Nix's default ad-hoc out-link.
 

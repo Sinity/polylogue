@@ -27,7 +27,7 @@ from polylogue.schemas.synthetic.wire_formats import WireFormat
 
 if TYPE_CHECKING:
     from polylogue.archive.raw_payload.decode import JSONValue
-    from polylogue.schemas.synthetic.showcase import SessionTheme
+    from polylogue.schemas.synthetic.demo_themes import SessionTheme
 
 
 class SyntheticCorpus:

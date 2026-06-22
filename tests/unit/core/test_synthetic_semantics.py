@@ -31,13 +31,13 @@ from polylogue.schemas.synthetic import (
     SyntheticCorpus,
     WireFormat,
 )
+from polylogue.schemas.synthetic.demo_themes import _DEMO_THEMES
 from polylogue.schemas.synthetic.models import SchemaRecord, SchemaValue
 from polylogue.schemas.synthetic.semantic_values import (
     _ROLE_TEXTS,
     SemanticValueGenerator,
     _text_for_role,
 )
-from polylogue.schemas.synthetic.showcase import _SHOWCASE_THEMES
 from polylogue.sources.dispatch import parse_payload
 
 
@@ -146,32 +146,32 @@ class TestTextForRole:
         assert text in _ROLE_TEXTS["user"]
 
     def test_themed_user_turn_returns_theme_content(self) -> None:
-        theme = _SHOWCASE_THEMES[0]
+        theme = _DEMO_THEMES[0]
         rng = random.Random(0)
         text = _text_for_role(rng, "user", turn_index=0, theme=theme)
         assert text in theme.user_turns
 
     def test_themed_assistant_turn_returns_theme_content(self) -> None:
-        theme = _SHOWCASE_THEMES[0]
+        theme = _DEMO_THEMES[0]
         rng = random.Random(0)
         text = _text_for_role(rng, "assistant", turn_index=1, theme=theme)
         assert text in theme.assistant_turns
 
     def test_themed_model_role_uses_assistant_turns(self) -> None:
-        theme = _SHOWCASE_THEMES[0]
+        theme = _DEMO_THEMES[0]
         rng = random.Random(0)
         text = _text_for_role(rng, "model", turn_index=1, theme=theme)
         assert text in theme.assistant_turns
 
     def test_themed_human_role_uses_user_turns(self) -> None:
-        theme = _SHOWCASE_THEMES[0]
+        theme = _DEMO_THEMES[0]
         rng = random.Random(0)
         text = _text_for_role(rng, "human", turn_index=0, theme=theme)
         assert text in theme.user_turns
 
     def test_turn_index_cycles_through_theme_turns(self) -> None:
         """Theme turns should cycle when turn_index exceeds available turns."""
-        theme = _SHOWCASE_THEMES[0]
+        theme = _DEMO_THEMES[0]
         rng = random.Random(0)
         n_user_turns = len(theme.user_turns)
         # Turn index beyond the number of available turns should wrap
@@ -352,7 +352,7 @@ class TestSemanticBody:
         assert assistant_text in _ROLE_TEXTS["assistant"]
 
     def test_body_with_theme_uses_themed_content(self) -> None:
-        theme = _SHOWCASE_THEMES[0]
+        theme = _DEMO_THEMES[0]
         gen = SemanticValueGenerator(random.Random(0), theme=theme)
         schema = _schema({"x-polylogue-semantic-role": "message_body"})
         handled, value = gen.try_generate(schema)
@@ -442,7 +442,7 @@ class TestSemanticTitle:
         assert len(value) > 0
 
     def test_themed_title_uses_theme(self) -> None:
-        theme = _SHOWCASE_THEMES[0]
+        theme = _DEMO_THEMES[0]
         gen = SemanticValueGenerator(random.Random(0), theme=theme)
         schema = _schema({"x-polylogue-semantic-role": "session_title"})
         handled, value = gen.try_generate(schema)
@@ -461,12 +461,12 @@ class TestSemanticTitle:
         assert handled is True
         assert value in {"Alpha", "Beta", "Gamma"}
 
-    def test_title_without_theme_or_values_picks_showcase_theme(self) -> None:
+    def test_title_without_theme_or_values_picks_demo_theme(self) -> None:
         gen = SemanticValueGenerator(random.Random(42))
         schema = _schema({"x-polylogue-semantic-role": "session_title"})
         handled, value = gen.try_generate(schema)
         assert handled is True
-        known_titles = {t.title for t in _SHOWCASE_THEMES}
+        known_titles = {t.title for t in _DEMO_THEMES}
         assert value in known_titles
 
 
@@ -886,20 +886,20 @@ class TestProviderAvailability:
 
 
 # ---------------------------------------------------------------------------
-# Showcase style roundtrip
+# Demo style roundtrip
 # ---------------------------------------------------------------------------
 
 
-class TestShowcaseStyleRoundtrip:
+class TestDemoStyleRoundtrip:
     @pytest.mark.parametrize("provider", _available_providers())
-    def test_showcase_style_roundtrips(self, provider: str) -> None:
-        """Showcase-style synthetic data should also parse correctly."""
+    def test_demo_style_roundtrips(self, provider: str) -> None:
+        """Demo-style synthetic data should also parse correctly."""
         corpus = SyntheticCorpus.for_provider(provider)
         results = corpus.generate(
             count=2,
             seed=42,
             messages_per_session=range(4, 8),
-            style="showcase",
+            style="demo",
         )
         assert len(results) == 2
 
@@ -907,6 +907,6 @@ class TestShowcaseStyleRoundtrip:
 
         for i, raw in enumerate(results):
             payload = _deserialize_for_parser(provider, raw)
-            sessions = parse_payload(runtime_provider, payload, f"showcase-{provider}-{i}")
+            sessions = parse_payload(runtime_provider, payload, f"demo-{provider}-{i}")
             assert len(sessions) >= 1
             assert len(sessions[0].messages) > 0

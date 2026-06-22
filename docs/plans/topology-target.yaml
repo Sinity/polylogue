@@ -1167,7 +1167,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 1359
+    loc: 1368
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -1243,7 +1243,7 @@ files:
     target: polylogue/daemon/healthz.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 3538
+    loc: 3537
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/live_ingest_attempt_models.py
@@ -1312,11 +1312,11 @@ files:
     target: polylogue/daemon/similarity.py
     owner: stable
   - path: polylogue/daemon/status.py
-    loc: 2210
+    loc: 2216
     target: polylogue/daemon/status.py
     owner: stable
   - path: polylogue/daemon/status_snapshot.py
-    loc: 243
+    loc: 297
     target: polylogue/daemon/status_snapshot.py
     owner: stable
   - path: polylogue/daemon/thread_continue.py
@@ -2248,6 +2248,10 @@ files:
     loc: 382
     target: polylogue/schemas/synthetic/core.py
     owner: stable
+  - path: polylogue/schemas/synthetic/demo_themes.py
+    loc: 83
+    target: polylogue/schemas/synthetic/demo_themes.py
+    owner: stable
   - path: polylogue/schemas/synthetic/models.py
     loc: 82
     target: polylogue/schemas/synthetic/models.py
@@ -2272,10 +2276,6 @@ files:
   - path: polylogue/schemas/synthetic/semantic_values.py
     loc: 199
     target: polylogue/schemas/synthetic/semantic_values.py
-    owner: stable
-  - path: polylogue/schemas/synthetic/showcase.py
-    loc: 83
-    target: polylogue/schemas/synthetic/showcase.py
     owner: stable
   - path: polylogue/schemas/synthetic/wire_formats.py
     loc: 77
@@ -2364,7 +2364,7 @@ files:
     target: polylogue/sources/decoders.py
     owner: stable
   - path: polylogue/sources/dispatch.py
-    loc: 674
+    loc: 695
     target: polylogue/sources/dispatch.py
     owner: stable
   - path: polylogue/sources/drive/__init__.py
@@ -2432,7 +2432,7 @@ files:
     target: polylogue/sources/live/append_ingest.py
     owner: stable
   - path: polylogue/sources/live/batch.py
-    loc: 1411
+    loc: 1462
     target: polylogue/sources/live/batch.py
     owner: stable
   - path: polylogue/sources/live/batch_observability.py
@@ -2484,7 +2484,7 @@ files:
     target: polylogue/sources/live/sqlite_locking.py
     owner: stable
   - path: polylogue/sources/live/watcher.py
-    loc: 660
+    loc: 662
     target: polylogue/sources/live/watcher.py
     owner: stable
   - path: polylogue/sources/parsers/antigravity.py
