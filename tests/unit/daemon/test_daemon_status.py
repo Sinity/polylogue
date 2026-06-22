@@ -202,6 +202,23 @@ def test_daemon_status_uses_default_browser_capture_spool(
     assert component_state["browser_capture"] == "running"
 
 
+def test_daemon_status_honors_explicit_disabled_browser_capture(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    expected_spool = tmp_path / "browser-capture"
+    monkeypatch.setattr(
+        BrowserCaptureReceiverConfig,
+        "default",
+        classmethod(lambda cls: BrowserCaptureReceiverConfig(spool_path=expected_spool)),
+    )
+
+    status = build_daemon_status(sources=(), browser_capture_enabled=False)
+
+    assert status.browser_capture_active is False
+    assert status.component_state.browser_capture == "stopped"
+
+
 def test_daemon_status_payload_and_plain_output_include_failed_files(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     failed = tmp_path / "failed.jsonl"

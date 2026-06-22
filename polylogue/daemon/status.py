@@ -1699,6 +1699,7 @@ def _component_from_live_ingest(summary: LiveIngestAttemptSummary) -> ComponentR
 def build_daemon_status(
     *,
     sources: tuple[WatchSource, ...] | None = None,
+    browser_capture_enabled: bool | None = None,
     browser_capture_spool_path: Path | None = None,
     include_expensive_health: bool = False,
 ) -> DaemonStatus:
@@ -1709,7 +1710,11 @@ def build_daemon_status(
         if browser_capture_spool_path is not None
         else BrowserCaptureReceiverConfig.default().spool_path
     )
-    browser_capture_active = effective_browser_capture_spool_path is not None
+    browser_capture_active = (
+        browser_capture_enabled
+        if browser_capture_enabled is not None
+        else effective_browser_capture_spool_path is not None
+    )
     db_info = _db_size_info()
     storage_info = _archive_storage_info()
     fts = _fts_readiness_info()
@@ -1840,6 +1845,7 @@ def build_daemon_status(
 def daemon_status_payload(
     *,
     sources: tuple[WatchSource, ...] | None = None,
+    browser_capture_enabled: bool | None = None,
     browser_capture_spool_path: Path | None = None,
 ) -> JSONDocument:
     """Return the local daemon component status payload (backward-compat dict)."""
@@ -1860,6 +1866,7 @@ def daemon_status_payload(
 
     status = build_daemon_status(
         sources=sources,
+        browser_capture_enabled=browser_capture_enabled,
         browser_capture_spool_path=browser_capture_spool_path,
     )
     archive_debt = _archive_debt_status_summary()

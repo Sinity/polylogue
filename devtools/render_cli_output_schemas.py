@@ -282,7 +282,7 @@ def _build_schema(entry: CliOutputSchema) -> str:
     schema["description"] = (
         entry.description
         + "\n\nGenerated from "
-        + f"`polylogue.surfaces.payloads.{entry.model.__name__}` "
+        + f"`{entry.model.__module__}.{entry.model.__name__}` "
         + "by `devtools render cli-output-schemas`. Do not edit by hand."
     )
     schema["x-polylogue-cli-surfaces"] = list(entry.surfaces)

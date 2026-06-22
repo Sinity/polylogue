@@ -399,12 +399,12 @@ def _probe_browser_capture_archive(*, archive_root: Path) -> BrowserCaptureArchi
                             latest_relative = latest.relative_to(spool_path).as_posix()
                         except ValueError:
                             latest_relative = latest.name
-                        latest_suffix_pattern = f"%/browser-capture/{latest_relative}"
+                        latest_suffix_pattern = f"%/browser-capture/{_escape_sql_like(latest_relative)}"
                         latest_row = conn.execute(
                             """
                             SELECT raw_id, native_id, file_mtime_ms, source_path
                             FROM raw_sessions
-                            WHERE source_path = ? OR source_path LIKE ?
+                            WHERE source_path = ? OR source_path LIKE ? ESCAPE '\\'
                             ORDER BY
                                 CASE WHEN source_path = ? THEN 0 ELSE 1 END,
                                 COALESCE(file_mtime_ms, 0) DESC,
@@ -490,6 +490,20 @@ def _probe_browser_capture_archive(*, archive_root: Path) -> BrowserCaptureArchi
     )
 
 
+def _escape_sql_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _browser_capture_envelope(raw: object) -> dict[str, object] | None:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict) and isinstance(item.get("session"), dict):
+                return item
+    return None
+
+
 def _latest_spooled_capture_summary(path: str | None) -> tuple[str, str, int | None, str | None]:
     if path is None:
         return "", "", None, None
@@ -497,7 +511,8 @@ def _latest_spooled_capture_summary(path: str | None) -> tuple[str, str, int | N
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return "", "", None, f"{type(exc).__name__}: {exc}"
-    session = raw.get("session") if isinstance(raw, dict) else None
+    envelope = _browser_capture_envelope(raw)
+    session = envelope.get("session") if envelope is not None else None
     if not isinstance(session, dict):
         return "", "", None, "missing_session"
     provider = session.get("provider")

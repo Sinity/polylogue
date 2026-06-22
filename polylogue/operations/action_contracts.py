@@ -307,6 +307,8 @@ def _validate_contracts() -> None:
     if duplicate_paths:
         raise ValueError("ACTION_CONTRACTS contains duplicate paths")
     for entry in ACTION_CONTRACTS:
+        if not entry.path or any(not part for part in entry.path):
+            raise ValueError(f"{entry.path!r} action contract path must contain non-empty segments")
         if entry.default_format not in entry.formats:
             raise ValueError(f"{entry.path!r} default_format is not declared in formats")
         if entry.confirmation_command is not None and entry.safety_level not in {"destructive", "mutating"}:

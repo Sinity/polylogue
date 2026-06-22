@@ -228,7 +228,7 @@
   "$id": "https://polylogue.dev/schemas/cli-output/action-affordance-list.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Static query-action affordance inventory for public action surfaces. Exposes target, cardinality, safety, destinations, formats, selection and confirmation commands, guards, and next actions.\n\nGenerated from `polylogue.surfaces.payloads.ActionAffordanceListPayload` by `devtools render cli-output-schemas`. Do not edit by hand.",
+  "description": "Static query-action affordance inventory for public action surfaces. Exposes target, cardinality, safety, destinations, formats, selection and confirmation commands, guards, and next actions.\n\nGenerated from `polylogue.surfaces.action_affordances.ActionAffordanceListPayload` by `devtools render cli-output-schemas`. Do not edit by hand.",
   "properties": {
     "actions": {
       "items": {

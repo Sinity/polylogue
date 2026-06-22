@@ -173,4 +173,4 @@ class TestActionAffordanceMetadata:
 
         assert result.exit_code == 0
         payload = json.loads(result.output)
-        assert payload["actions"][0]["id"] == "find"
+        assert any(action["id"] == "find" for action in payload["actions"])

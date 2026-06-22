@@ -76,6 +76,13 @@ def _write_spooled_capture(path: Path, *, provider_session_id: str = "capture") 
     return capture
 
 
+def _write_list_wrapped_spooled_capture(path: Path, *, provider_session_id: str = "capture") -> Path:
+    capture = _write_spooled_capture(path, provider_session_id=provider_session_id)
+    payload = json.loads(capture.read_text(encoding="utf-8"))
+    capture.write_text(json.dumps([{"ignored": True}, payload]), encoding="utf-8")
+    return capture
+
+
 def _create_browser_index_db(
     path: Path,
     *,
@@ -629,6 +636,22 @@ def test_deployment_smoke_accepts_materialized_browser_capture_at_latest_mtime(t
     assert probe.error is None
 
 
+def test_deployment_smoke_accepts_list_wrapped_browser_capture_envelope(tmp_path: Path) -> None:
+    capture = _write_list_wrapped_spooled_capture(tmp_path)
+    _create_browser_source_db(
+        tmp_path,
+        file_mtime_ms=int(capture.stat().st_mtime * 1000),
+        capture_path=capture,
+    )
+    _create_browser_index_db(tmp_path)
+
+    probe = deployment_smoke._probe_browser_capture_archive(archive_root=tmp_path)
+
+    assert probe.ok is True
+    assert probe.latest_capture_provider_session_id == "capture"
+    assert probe.latest_capture_turn_count == 1
+
+
 def test_deployment_smoke_matches_latest_browser_capture_by_stable_suffix(tmp_path: Path) -> None:
     capture = _write_spooled_capture(tmp_path)
     source_path = Path("/alternate/archive/browser-capture/chatgpt/capture.json")
@@ -644,6 +667,23 @@ def test_deployment_smoke_matches_latest_browser_capture_by_stable_suffix(tmp_pa
     assert probe.ok is True
     assert probe.latest_raw_source_path == str(source_path)
     assert probe.latest_indexed_message_count == 1
+
+
+def test_deployment_smoke_escapes_latest_suffix_like_wildcards(tmp_path: Path) -> None:
+    capture = _write_spooled_capture(tmp_path, provider_session_id="cap_100%")
+    _create_browser_source_db(
+        tmp_path,
+        file_mtime_ms=int(capture.stat().st_mtime * 1000),
+        raw_id="raw-wrong",
+        native_id="wrong",
+        capture_path=Path("/alternate/archive/browser-capture/chatgpt/capx100z.json"),
+    )
+    _create_browser_index_db(tmp_path, raw_id="raw-wrong", native_id="wrong")
+
+    probe = deployment_smoke._probe_browser_capture_archive(archive_root=tmp_path)
+
+    assert probe.ok is False
+    assert probe.error == "latest_spooled_without_raw_row"
 
 
 def test_deployment_smoke_accepts_current_receiver_archive_state_contract(

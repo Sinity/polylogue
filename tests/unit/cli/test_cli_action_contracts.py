@@ -85,6 +85,10 @@ def _choice_values(command: click.Command) -> set[str]:
     return values
 
 
+def test_action_contract_paths_are_non_empty() -> None:
+    assert all(contract.path and all(contract.path) for contract in ACTION_CONTRACTS)
+
+
 def test_every_public_floor_action_has_exactly_one_contract() -> None:
     """Every v0 public floor action must declare one executable contract."""
     declared = set(ACTION_CONTRACT_BY_PATH)
