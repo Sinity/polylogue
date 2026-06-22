@@ -175,6 +175,20 @@ class TestUsageErrorHints:
         assert "polylogue find foo" in hint
         assert "polylogue --help" in hint
 
+    def test_actionable_hint_for_strict_floor_message_extracts_command_only(self) -> None:
+        hint = actionable_hint_for_usage_error(
+            """No such command 'invalid-xyz'.
+
+To search the archive, use the `find` keyword or quote the expression:
+    polylogue find invalid-xyz
+    polylogue 'QUERY' then read
+"""
+        )
+        assert hint is not None
+        assert "`invalid-xyz` is not a registered subcommand" in hint
+        assert "polylogue find invalid-xyz" in hint
+        assert "QUERY" not in hint
+
 
 # ---------------------------------------------------------------------------
 # Helper coverage

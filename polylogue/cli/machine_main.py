@@ -41,8 +41,10 @@ def actionable_hint_for_usage_error(message: str) -> str | None:
         return "Hint: run the command with `--help` to see required arguments."
     if "No such command" in msg:
         # Extract the offending token if Click formatted it.
-        bad = msg.split("No such command")[-1].strip().strip("'\".:")
-        bad = bad.split("'")[1] if "'" in bad else bad.split()[0]
+        import re
+
+        match = re.search(r"No such command ['\"]([^'\"]+)['\"]", msg)
+        bad = match.group(1) if match is not None else msg.split("No such command")[-1].strip().split()[0]
         return (
             f"Hint: `{bad}` is not a registered subcommand. "
             f"Did you mean to search? Try `polylogue find {bad}` "
