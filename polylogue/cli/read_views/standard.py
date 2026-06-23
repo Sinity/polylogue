@@ -11,11 +11,34 @@ from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 
 
+def _is_exact_ref_read(request: RootModeRequest, invocation: ReadViewInvocation) -> bool:
+    if not invocation.session_id:
+        return False
+    spec = request.query_spec()
+    if not spec.session_id:
+        return False
+    return not any(
+        (
+            spec.query_terms,
+            spec.contains_terms,
+            spec.exclude_text_terms,
+            spec.similar_text,
+            spec.similar_session_id,
+        )
+    )
+
+
+def _request_for_standard_read(request: RootModeRequest, invocation: ReadViewInvocation) -> RootModeRequest:
+    if not _is_exact_ref_read(request, invocation):
+        return request
+    return request.with_param_updates(conv_id=invocation.session_id).with_query_terms(())
+
+
 def run_read_summary_or_transcript(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
     """Standard query/list renderer used by summary and transcript views."""
 
     fmt = invocation.output_format or "markdown"
-    updated = request.with_param_updates(output_format=fmt)
+    updated = _request_for_standard_read(request, invocation).with_param_updates(output_format=fmt)
     if invocation.destination in ("stdout", "terminal"):
         execute_query_request(env, updated)
     elif invocation.destination == "clipboard":

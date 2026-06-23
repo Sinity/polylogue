@@ -1355,6 +1355,21 @@ def _execute_query_verb(
     execute_query_request(env, request)
 
 
+def _spec_is_exact_session_ref(spec: object) -> bool:
+    return bool(
+        getattr(spec, "session_id", None)
+        and not any(
+            (
+                getattr(spec, "query_terms", ()),
+                getattr(spec, "contains_terms", ()),
+                getattr(spec, "exclude_text_terms", ()),
+                getattr(spec, "similar_text", None),
+                getattr(spec, "similar_session_id", None),
+            )
+        )
+    )
+
+
 def _resolve_target_session_id(request: RootModeRequest) -> str | None:
     """Verb-tree adapter for the shared latest-resolver helper (#1626, #1642)."""
     if request.query_terms:
@@ -1367,6 +1382,8 @@ def _resolve_target_session_id(request: RootModeRequest) -> str | None:
         if isinstance(explicit, str) and explicit:
             return explicit
         spec = request.query_spec()
+        if _spec_is_exact_session_ref(spec):
+            return cast("str", spec.session_id)
         if not spec.latest and not spec.has_filters():
             return None
         one_match_spec = replace(spec, limit=1)
