@@ -425,7 +425,7 @@ class TestCommandConstruction:
 
     def test_live_lane_uses_module_entrypoint(self) -> None:
         cmd = build_lane_command(LANES["live-archive-smoke"])
-        assert cmd[:3] == ["devtools", "lab", "scenario"]
+        assert cmd[:3] == ["devtools", "lab", "smoke"]
         assert "archive-smoke" in cmd
         assert "--live" in cmd
         assert "--tier" in cmd

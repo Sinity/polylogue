@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import stat
 import subprocess
 import urllib.error
 from email.message import Message
@@ -245,6 +246,78 @@ def test_deployment_smoke_command_succeeds_when_all_probes_pass(
     assert "status: ok" in output
     assert "Completions:" in output
     assert "Browser capture archive:" in output
+    assert "Runtime evidence:" in output
+
+
+def test_deployment_smoke_runtime_evidence_includes_effective_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(deployment_smoke, "_resolve_command", lambda name, *, path: f"/bin/{name}")
+    monkeypatch.setattr(deployment_smoke, "_repo_head", lambda: "abc123def456")
+    secret = "auth-LEAKME"
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        if command == ["polylogue", "config", "--format", "json"]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                json.dumps(
+                    {
+                        "values": {
+                            "api_auth_token": {
+                                "value": "<set>",
+                                "secret": True,
+                                "secret_present": True,
+                                "source_layer": "env",
+                            }
+                        }
+                    }
+                ),
+                "",
+            )
+        return subprocess.CompletedProcess(command, 0, "polylogue, version 0.1.0+abc123d", "")
+
+    monkeypatch.setattr(deployment_smoke, "_run_command", fake_run)
+    monkeypatch.setattr(
+        deployment_smoke,
+        "_run_completion_command",
+        lambda **kwargs: subprocess.CompletedProcess(
+            ["polylogue"],
+            0,
+            {
+                "polylogue find id:abc t": "plain,then\n",
+                "polylogue find id:abc then s": "plain,select\n",
+                "polylogue find id:abc then read --view ": (
+                    "plain,summary\nplain,messages\nplain,raw\nplain,context-pack\n"
+                ),
+                "polylogue find id:abc then read --view messages --format ": "plain,json\nplain,ndjson\nplain,text\n",
+            }[str(kwargs["comp_words"])],
+            "",
+        ),
+    )
+    monkeypatch.setattr(
+        deployment_smoke,
+        "_open_url",
+        lambda url, *, timeout_s: _FakeResponse(200, {"ok": True, "url": url}),
+    )
+
+    report = deployment_smoke.build_report(
+        path="/bin",
+        daemon_base_url="http://daemon",
+        receiver_base_url="http://receiver",
+        archive_root=tmp_path,
+        timeout_s=1,
+    )
+
+    evidence = report.runtime_evidence
+    assert evidence["archive_root"] == str(tmp_path)
+    assert evidence["daemon_base_url"] == "http://daemon"
+    assert evidence["receiver_base_url"] == "http://receiver"
+    config_probe = evidence["effective_config"]
+    assert config_probe["ok"] is True
+    assert config_probe["payload"]["values"]["api_auth_token"]["value"] == "<set>"
+    assert secret not in json.dumps(evidence)
 
 
 def test_deployment_smoke_reports_missing_completion_candidate(
@@ -389,6 +462,28 @@ def test_deployment_smoke_browser_render_probe_success(monkeypatch: pytest.Monke
     assert probe.error is None
 
 
+def test_deployment_smoke_resolves_browser_from_candidate_path(tmp_path: Path) -> None:
+    chrome = tmp_path / "chromium"
+    chrome.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    chrome.chmod(chrome.stat().st_mode | stat.S_IXUSR)
+
+    resolved = deployment_smoke._resolve_browser_executable(str(tmp_path), None)
+
+    assert resolved == str(chrome)
+
+
+def test_deployment_smoke_rejects_missing_explicit_browser_path(tmp_path: Path) -> None:
+    missing = tmp_path / "not-chrome"
+
+    resolved = deployment_smoke._resolve_browser_executable(str(tmp_path), str(missing))
+    diagnostics = deployment_smoke._browser_executable_resolution(str(tmp_path), str(missing))
+
+    assert resolved is None
+    assert diagnostics["ok"] is False
+    assert diagnostics["requested"] == str(missing)
+    assert diagnostics["error"] == "explicit_browser_executable_not_found_or_not_executable"
+
+
 def test_deployment_smoke_browser_render_probe_reports_missing_chrome(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(deployment_smoke, "_resolve_browser_executable", lambda path, executable: None)
 
@@ -471,7 +566,8 @@ def test_deployment_smoke_browser_render_accepts_timeout_after_capture(
     assert probe.ok is True
     assert probe.dom_bytes == len("<html>Polylogue</html>")
     assert probe.screenshot_bytes == 3
-    assert probe.error == "browser_timeout_after_capture"
+    assert probe.error is None
+    assert probe.caveats == ("browser_timeout_after_capture",)
 
 
 def test_deployment_smoke_report_includes_browser_render_failure(
@@ -712,8 +808,15 @@ def test_deployment_smoke_accepts_current_receiver_archive_state_contract(
             {
                 "provider": "chatgpt",
                 "provider_session_id": "capture-ok",
+                "state": "archived",
+                "lifecycle": "archived",
                 "captured": True,
                 "artifact_ref": "chatgpt/capture-ok.json",
+                "raw_row_exists": True,
+                "raw_id": "raw-capture",
+                "indexed_session_exists": True,
+                "indexed_session_id": "chatgpt-export:capture-ok",
+                "indexed_message_count": 1,
             },
         )
 
@@ -757,6 +860,7 @@ def test_deployment_smoke_reports_receiver_archive_state_absolute_artifact_path(
             {
                 "provider": "chatgpt",
                 "provider_session_id": "capture-stale",
+                "state": "archived",
                 "captured": True,
                 "artifact_path": str(capture),
             },
@@ -771,3 +875,88 @@ def test_deployment_smoke_reports_receiver_archive_state_absolute_artifact_path(
 
     assert probe.ok is False
     assert probe.error == "receiver_archive_state_absolute_artifact_path"
+
+
+def test_deployment_smoke_rejects_receiver_archive_state_without_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    capture = _write_spooled_capture(tmp_path, provider_session_id="capture-no-state")
+    archive_probe = deployment_smoke.BrowserCaptureArchiveProbe(
+        spool_path=str(tmp_path / "browser-capture"),
+        source_db_path=str(tmp_path / "source.db"),
+        spooled_count=1,
+        latest_spooled_path=str(capture),
+        latest_spooled_mtime=capture.stat().st_mtime,
+        latest_spooled_mtime_ms=int(capture.stat().st_mtime * 1000),
+        raw_rows=1,
+        latest_raw_file_mtime_ms=int(capture.stat().st_mtime * 1000),
+        ok=True,
+    )
+
+    monkeypatch.setattr(
+        deployment_smoke,
+        "_open_receiver_url",
+        lambda url, *, timeout_s: _FakeResponse(
+            200,
+            {
+                "provider": "chatgpt",
+                "provider_session_id": "capture-no-state",
+                "captured": True,
+                "artifact_ref": "chatgpt/capture-no-state.json",
+            },
+        ),
+    )
+
+    probe = deployment_smoke._probe_browser_capture_receiver_archive_state(
+        receiver_base_url="http://receiver",
+        browser_capture_archive=archive_probe,
+        timeout_s=1,
+    )
+
+    assert probe.ok is False
+    assert probe.error == "receiver_archive_state_missing_lifecycle"
+
+
+def test_deployment_smoke_rejects_receiver_archive_state_without_index_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    capture = _write_spooled_capture(tmp_path, provider_session_id="capture-no-index")
+    archive_probe = deployment_smoke.BrowserCaptureArchiveProbe(
+        spool_path=str(tmp_path / "browser-capture"),
+        source_db_path=str(tmp_path / "source.db"),
+        spooled_count=1,
+        latest_spooled_path=str(capture),
+        latest_spooled_mtime=capture.stat().st_mtime,
+        latest_spooled_mtime_ms=int(capture.stat().st_mtime * 1000),
+        raw_rows=1,
+        latest_raw_file_mtime_ms=int(capture.stat().st_mtime * 1000),
+        ok=True,
+    )
+
+    monkeypatch.setattr(
+        deployment_smoke,
+        "_open_receiver_url",
+        lambda url, *, timeout_s: _FakeResponse(
+            200,
+            {
+                "provider": "chatgpt",
+                "provider_session_id": "capture-no-index",
+                "state": "archived",
+                "captured": True,
+                "artifact_ref": "chatgpt/capture-no-index.json",
+                "raw_row_exists": True,
+                "indexed_session_exists": False,
+            },
+        ),
+    )
+
+    probe = deployment_smoke._probe_browser_capture_receiver_archive_state(
+        receiver_base_url="http://receiver",
+        browser_capture_archive=archive_probe,
+        timeout_s=1,
+    )
+
+    assert probe.ok is False
+    assert probe.error == "receiver_archive_state_missing_index_evidence"

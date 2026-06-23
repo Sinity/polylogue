@@ -18,7 +18,7 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab probe pipeline",
     "lab probe turso",
     "lab projections",
-    "lab scenario",
+    "lab smoke",
     "lab schema audit",
     "lab schema compare",
     "lab schema explain",
@@ -160,6 +160,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "generated surfaces",
         "Render docs/test-quality-workflows.md from live validation, mutation, and benchmark registries.",
         "devtools.render_quality_reference",
+    ),
+    CommandSpec(
+        "render product-workflows",
+        "generated surfaces",
+        "Render docs/product/workflows.md from executable query-action workflow registries.",
+        "devtools.render_product_workflows",
+        use_when=(
+            "Refresh or verify the product query-action workflow contract after changing action contracts, "
+            "read-view surfaces, completion behavior, or workflow golden paths (#2305)."
+        ),
+        examples=(
+            "devtools render product-workflows",
+            "devtools render product-workflows --check",
+        ),
     ),
     CommandSpec(
         "render pages",
@@ -324,7 +338,10 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace dev-loop --capture-cli -- polylogue ops status",
             "devtools workspace dev-loop --receiver-smoke --json",
             "devtools workspace dev-loop --extension-smoke --json",
+            "devtools workspace dev-loop --browser-smoke --json",
+            "devtools workspace dev-loop --browser-provider-smoke --json",
             "devtools workspace dev-loop --browser-plan --json",
+            "devtools workspace dev-loop --browser-live-proof --browser-live-profile-dir .local/browser-profiles/<copy> --json",
             "devtools workspace dev-loop --tui-plan --json",
             "devtools workspace dev-loop --inspect-run .cache/dev-loop/<run-id> --json",
         ),
@@ -544,14 +561,14 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools bench memory --max-rss-mb 1536 -- polylogue --plain analyze",),
     ),
     CommandSpec(
-        "lab scenario",
+        "lab smoke",
         "verification lab",
-        "Run verification-lab smoke scenario sets.",
+        "Run verification-lab smoke sets.",
         "devtools.lab_scenario",
-        use_when="Run direct archive and reader smoke scenarios outside the archive CLI.",
+        use_when="Run direct archive and reader smoke sets outside the archive CLI.",
         examples=(
-            "devtools lab scenario list",
-            "devtools lab scenario run archive-smoke --tier 0",
+            "devtools lab smoke list",
+            "devtools lab smoke run archive-smoke --tier 0",
         ),
     ),
     CommandSpec(

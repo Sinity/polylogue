@@ -1449,6 +1449,16 @@ generation recorded, the static `MIN_AGE_S` floor applies on its own.
 snapshot of daemon-relevant state read directly from the archive SQLite
 database. The probe is read-only and does not talk to the running daemon.
 
+Raw acquisition, index materialization, and FTS readiness are treated as one
+auditable convergence contract. A `source.db.raw_sessions` row that is not
+explicitly skipped and has no matching `index.db.sessions` row is
+`raw-materialization` archive debt; daemon status exposes it through
+`component_readiness.raw_materialization` and
+`raw_materialization_readiness` instead of reporting the archive as simply
+healthy. FTS readiness is likewise a freshness invariant, not a best-effort
+cache: stale or untrusted recorded counts make search readiness non-ready until
+the index is demonstrably current.
+
 For #845-style before/after convergence evidence snapshots:
 
 ```bash
@@ -1625,7 +1635,7 @@ repo verification checks and evidence records, not end-user archive workflows.
 | `devtools lab probe pipeline` | Exercise real pipeline stages and optionally capture emitted summaries as regression cases. |
 | `devtools lab probe turso` | Collect executable evidence before changing production storage backends: Python binding availability, generated-column support, FTS compatibility, MVCC, CDC, vector functions, ATTACH, and WAL pragma behavior. |
 | `devtools lab projections` | Inspect the unified projection inventory that feeds runtime coverage, generated docs, and control-plane maps. |
-| `devtools lab scenario` | Run direct archive and reader smoke scenarios outside the archive CLI. |
+| `devtools lab smoke` | Run direct archive and reader smoke sets outside the archive CLI. |
 | `devtools lab schema audit` | Check committed schema package quality gates without presenting them as normal archive usage. |
 | `devtools lab schema compare` | Review schema package drift between committed versions in the verification-lab surface. |
 | `devtools lab schema explain` | Inspect schema package annotations, semantic roles, and review evidence from the lab surface. |
@@ -1670,6 +1680,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools render docs-surface` | Render docs/README.md and the README documentation table. |
 | `devtools render openapi` | Render docs/openapi/search.yaml from typed daemon query payload models. |
 | `devtools render pages` | Build the GitHub Pages documentation site into .cache/site/. |
+| `devtools render product-workflows` | Render docs/product/workflows.md from executable query-action workflow registries. |
 | `devtools render quality-reference` | Render docs/test-quality-workflows.md from live validation, mutation, and benchmark registries. |
 | `devtools render topology-projection` | Generate docs/plans/topology-target.yaml from the current tree using placement rules. |
 | `devtools render topology-status` | Render docs/topology-status.md from the topology projection and realized tree. |
@@ -1694,7 +1705,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools lab probe turso` | Probe Turso Database compatibility against Polylogue storage assumptions. |
 | `devtools lab projections` | Render the authored scenario-bearing verification projections. |
 | `devtools lab provider completeness` | Report provider/importer package completeness by origin and capture mode. |
-| `devtools lab scenario` | Run verification-lab smoke scenario sets. |
 | `devtools lab schema audit` | Run committed provider schema package quality checks. |
 | `devtools lab schema compare` | Compare two committed schema package versions for a provider. |
 | `devtools lab schema explain` | Explain a committed package element schema with evidence and annotations. |
@@ -1702,6 +1712,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools lab schema list` | List committed schema packages, versions, and evidence manifests. |
 | `devtools lab schema promote` | Promote a schema evidence cluster into a registered package version. |
 | `devtools lab schema roundtrip` | Verify committed provider schema packages reload and roundtrip cleanly. |
+| `devtools lab smoke` | Run verification-lab smoke sets. |
 | `devtools lab snapshot read-surface` | Capture and compare archive read-surface snapshots. |
 
 ### Verification
@@ -1751,8 +1762,8 @@ When changing semantics, validation, or surfaces:
 ```bash
 devtools lab lanes --list
 devtools lab lanes --lane frontier-local
-devtools lab scenario run archive-smoke --tier 0
-devtools lab scenario run reader-visual-smoke
+devtools lab smoke run archive-smoke --tier 0
+devtools lab smoke run reader-visual-smoke
 devtools bench memory --max-rss-mb 1536 -- polylogue --plain analyze
 ```
 
@@ -1798,7 +1809,7 @@ See also: `2026-05-27_Build_Plan.md` §D (Cloud agent enablement).
 | `uv run devtools render all --check`          | yes       | Generated-file drift check (also runs in CI).               |
 | `polylogued run --no-api --no-watch --no-browser-capture` | yes\*     | \*Only against synthetic fixtures in `/tmp/polylogue-archive`. `--no-api` alone is insufficient; you must also disable live watch and browser capture for a truly inert sandbox. |
 | Real archive imports (`~/.claude/projects/…`) | NO        | Never upload personal corpus into a managed sandbox.        |
-| Browser-capture flows                         | NO        | Needs interactive cookies; relocated to ethereal host.      |
+| Browser-capture live/copied-profile proof     | NO        | `dev-loop --browser-live-proof` is explicit local workstation evidence only; deterministic smokes are the cloud-safe substitute. |
 | Any `/realm/data/...` path                    | NO        | Not mounted in cloud sandboxes; would resolve to nothing.   |
 
 ## Privacy and plan tier

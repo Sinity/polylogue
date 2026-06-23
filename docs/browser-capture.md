@@ -18,10 +18,50 @@ The receiver listens on `127.0.0.1:8765` by default and accepts the route contra
 - `GET /v1/archive-state?provider=chatgpt&provider_session_id=...` -> `BrowserCaptureArchiveStatePayload`
 - `POST /v1/browser-captures` with `BrowserCaptureEnvelope` -> `BrowserCaptureAcceptedPayload` or `BrowserCaptureErrorPayload`
 
+`/v1/archive-state` reports archive visibility, not just receiver spool
+presence. Its `state`/`lifecycle` field is one of:
+
+| State | Meaning |
+| --- | --- |
+| `missing` | No receiver artifact, raw acquisition row, or indexed session was found. |
+| `spooled_only` | The receiver has a local artifact, but live ingest has not acquired it into `source.db`. |
+| `ingest_pending` | `source.db.raw_sessions` has the capture, but `index.db.sessions` is missing it or has no messages yet. |
+| `archived` | The capture has raw evidence, an indexed session, and at least one indexed message. Only this state sets `captured: true`. |
+| `failed` | The receiver artifact is unreadable or raw validation/parsing recorded a failure. |
+
+The payload includes bounded archive evidence (`raw_row_exists`, `raw_id`,
+`indexed_session_exists`, `indexed_session_id`, `indexed_message_count`) and a
+relative `artifact_ref`. It must not expose absolute paths. Deployment smoke
+uses this endpoint as an invariant check: a receiver that says `captured: true`
+without raw/index/message evidence is considered broken, not merely stale.
+
 Inspect the receiver target directly with `polylogued browser-capture status`,
 include it in the daemon component summary with `polylogued status`, or include
 the same component status in archive health output with `polylogue ops doctor
 --daemon`.
+
+## Control-plane browser boundary
+
+Browser capture has a local receiver and an unpacked extension, but it does not
+require Polylogue to borrow the operator's authenticated browser. For web-shell
+or extension debugging, keep these paths distinct:
+
+- an agent-private Chrome/MCP browser can inspect the local workbench when the
+  local control plane provides one;
+- the operator's live browser/cookies are used only after explicit approval and
+  should be copied into an ignored local profile, never into CI or cloud agents;
+- `devtools workspace deployment-smoke --browser` launches a fresh headless
+  Chrome/Chromium profile and reports the executable it resolved.
+
+The deployment fallback is useful for proving that the deployed daemon can
+serve the web root to a real browser engine:
+
+```bash
+devtools workspace deployment-smoke --browser --browser-executable "$(command -v google-chrome)"
+```
+
+That smoke does not certify private MCP browser launch, extension ids,
+authenticated ChatGPT/Claude.ai pages, or copied-profile cookies.
 
 Accepted captures are typed browser-capture envelopes and are written
 atomically under the configured capture spool at `<provider>/...json`.
@@ -77,6 +117,46 @@ artifacts or reading receiver state merely because it is open in the browser.
 
 If the receiver is unavailable, the extension surfaces an offline state instead
 of dropping content silently.
+
+## Branch-local extension proof modes
+
+Use `devtools workspace dev-loop` when changing the receiver, extension, or
+provider adapters from a branch. The branch-local loop owns three browser proof
+levels:
+
+- `--extension-smoke` imports the real background worker with a Chrome API mock
+  and proves receiver auth rejection, receiver status, and accepted capture
+  writes without a GUI browser.
+- `--browser-provider-smoke` loads the unpacked extension into headless
+  Chrome/Chromium, maps deterministic ChatGPT and Claude fixture pages onto
+  their real supported origins, and proves content-script capture plus
+  receiver request-id/artifact evidence without cookies.
+- `--browser-live-proof` is explicit operator-local evidence for authenticated
+  copied-profile work. It opens a visible Chrome/Chromium with an
+  operator-approved copied user-data-dir, live ChatGPT/Claude conversation
+  URLs, and the unpacked extension; it writes a redacted proof summary and keeps
+  any raw captured content inside ignored local receiver spool artifacts.
+
+Generate the copied-profile checklist first:
+
+```bash
+devtools workspace dev-loop --browser-plan
+```
+
+Then run the live proof only from a local workstation with a copied profile:
+
+```bash
+devtools workspace dev-loop --browser-live-proof \
+  --browser-live-profile-dir .local/browser-profiles/<run-id>-chrome-user-data \
+  --browser-live-chatgpt-url https://chatgpt.com/c/<conversation-id> \
+  --browser-live-claude-url https://claude.ai/chat/<conversation-id>
+```
+
+The live proof refuses CI by default and rejects common live profile roots or
+Chrome singleton lock files unless a local operator explicitly overrides the
+guardrail. Summaries redact source URLs and provider session ids, omit raw turn
+text, and record provider/adapter identity, role coverage, receiver request ids,
+and spool artifact refs.
 
 ## Current residual map for #1824 / #1847
 

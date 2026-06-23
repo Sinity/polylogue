@@ -37,10 +37,31 @@ polylogue --latest read --to browser  # open it in the local reader instead
 ```
 
 `polylogue init` detects known session sources and writes a starter
-`polylogue.toml`; the daemon takes it from there. For the narrated first run,
-see [docs/getting-started.md](docs/getting-started.md) and
+`polylogue.toml`; the daemon takes it from there. `polylogue config --format
+json` prints the redacted effective state, source layer, and inventory metadata
+for every public config key, so deployments and smoke diagnostics can agree on
+what is really running. For the narrated first run, see
+[docs/getting-started.md](docs/getting-started.md) and
 [docs/onboarding.md](docs/onboarding.md). Other install channels (Nix, Homebrew,
 container) are in [docs/installation.md](docs/installation.md).
+
+Ordinary Linux hosts can keep the tools isolated with `pipx` or a venv:
+
+```bash
+pipx install polylogue
+polylogue --help
+polylogue init
+polylogued run
+polylogued browser-capture status
+```
+
+Nix users can run the packaged apps without installing them globally:
+
+```bash
+nix run github:Sinity/polylogue -- --help
+nix run github:Sinity/polylogue#polylogued -- run
+nix run github:Sinity/polylogue#polylogued -- browser-capture status
+```
 
 ## Why this exists
 
@@ -146,6 +167,7 @@ polylogue import ~/.claude/projects  # ingest sessions from a source path
 polylogue ops doctor                 # FTS coverage, blob store, daemon liveness
 polylogue ops status                 # daemon + archive status
 polylogue config paths               # canonical archive paths
+polylogue config --format json       # redacted effective config + source layers
 polylogued run                       # daemon: convergence + insights + HTTP reader
 polylogued watch                     # watch source dirs and ingest live
 polylogue-mcp --role read            # MCP stdio bridge for AI assistants
@@ -278,8 +300,8 @@ Operators choose focused checks via the verification baseline:
 
 ```bash
 devtools verify --quick
-devtools lab scenario run archive-smoke --tier 0
-devtools lab scenario run reader-visual-smoke
+devtools lab smoke run archive-smoke --tier 0
+devtools lab smoke run reader-visual-smoke
 ```
 
 <!-- BEGIN GENERATED: docs-surface -->
@@ -292,10 +314,11 @@ Start with the generated command and architecture references; use [docs/README.m
 | Document | Description |
 |----------|-------------|
 | [Architecture](docs/architecture.md) | System rings, ownership boundaries, and data flow. |
+| [Installation](docs/installation.md) | Linux, Nix/NixOS, Homebrew, and container install/run paths. |
 | [Architecture Spine](docs/architecture-spine.md) | Target shape, guardrails, and major decisions with rejected alternatives. |
 | [Execution Plan](docs/execution-plan.md) | Current issue-driven sequencing plan for the remaining backlog. |
 | [Design Direction](docs/design/README.md) | Historical design inputs and current guidance for using them without treating them as parallel roadmaps. |
-| [Query-Action Workflows](docs/design/query-action-workflows.md) | `find QUERY then ACTION` contract for cardinality, affordances, rendering, completions, and golden paths. |
+| [Query-Action Workflows](docs/product/workflows.md) | Executable `find QUERY then ACTION` product contract for workflows, affordances, completions, and golden paths. |
 | [CLI Reference](docs/cli-reference.md) | Generated command reference from live help output. |
 | [Search & Query](docs/search.md) | Query grammar, retrieval lanes, ranking policy, and the typed SearchEnvelope contract. |
 | [Browser Capture](docs/browser-capture.md) | Local browser extension capture for ChatGPT and Claude.ai sessions. |

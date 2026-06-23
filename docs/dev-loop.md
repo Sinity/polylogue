@@ -233,6 +233,31 @@ cassette or drive the terminal through the local control plane when the target
 flow is richer than `polylogue ops status`; keep generated recordings under the
 ignored run-local directory.
 
+## Browser control planes
+
+Keep the three browser surfaces separate when debugging web-shell or extension
+work:
+
+- The agent-private Chrome/MCP browser belongs to the local control plane. It
+  can open the branch-local web shell and inspect DOM/network state, but a cloud
+  checkout cannot prove that private browser launch works on the operator's
+  workstation.
+- The operator's live browser and authenticated cookies are never used by
+  default. Use a copied profile only when the operator explicitly approves it,
+  and keep that copy under an ignored local path.
+- `devtools workspace deployment-smoke --browser` is an opt-in fallback that
+  launches a fresh headless Chrome/Chromium profile, captures DOM and a
+  screenshot from the daemon web root, and reports the resolved executable. It
+  proves first paint of Polylogue's deployed web root; it does not prove MCP
+  DevTools navigation or authenticated provider pages.
+
+Use an explicit executable when the default PATH search does not match the host:
+
+```bash
+devtools workspace deployment-smoke --browser --browser-executable "$(command -v google-chrome)"
+devtools workspace deployment-smoke --browser --browser-executable /etc/profiles/per-user/$USER/bin/google-chrome
+```
+
 ## Browser-Capture Extension Development
 
 Load `browser-extension/` unpacked into a development Chrome profile and point
@@ -304,8 +329,9 @@ Combine it with `--browser-plan` when you want one run id and browser artifact
 directory containing both the synthetic extension proof and the real-browser
 handoff plan.
 
-For a local proof that real Chrome can load the unpacked extension and reach the
-branch-local receiver from the extension-origin service-worker context, run:
+For a local proof that real Chrome/Chromium can load the unpacked extension and
+reach the branch-local receiver from the extension-origin service-worker
+context, run:
 
 ```bash
 devtools workspace dev-loop --browser-smoke
@@ -313,11 +339,13 @@ devtools workspace dev-loop --browser-smoke --json
 devtools workspace dev-loop --browser-plan --extension-smoke --browser-smoke --json
 ```
 
-This launches `google-chrome-stable` in headless mode with
-`--load-extension=browser-extension`, discovers the Polylogue MV3 service worker
-over Chrome DevTools Protocol, reads the extension manifest, starts a temporary
-branch-local receiver, then sends unauthenticated and authenticated receiver
-requests from the extension service-worker context. It writes
+This launches the first available Chrome-family binary from
+`google-chrome-stable`, `google-chrome`, `chromium`, and `chromium-browser` in
+headless mode with `--load-extension=browser-extension`, discovers the
+Polylogue MV3 service worker over Chrome DevTools Protocol, reads the extension
+manifest, starts a temporary branch-local receiver, then sends unauthenticated
+and authenticated receiver requests from the extension service-worker context.
+It writes
 `browser_smoke_requested` / `browser_smoke_finished` rows to
 `dev-loop.events.jsonl` plus:
 
@@ -328,11 +356,43 @@ requests from the extension service-worker context. It writes
 .cache/dev-loop/<run-id>/browser/browser-smoke-spool/
 ```
 
-This still does not claim authenticated ChatGPT/Claude.ai DOM adapter coverage.
-It proves the repo-owned unpacked-extension + real-browser + receiver plumbing.
-Use `--browser-plan` for the visible/private browser handoff when content-script
-diagnostics, screenshots, copied-profile cookies, or real provider pages are
-needed.
+For repo-owned content-script/provider coverage, run the provider page smoke:
+
+```bash
+devtools workspace dev-loop --browser-provider-smoke
+devtools workspace dev-loop --browser-provider-smoke --json
+devtools workspace dev-loop --browser-plan --extension-smoke --browser-smoke --browser-provider-smoke --json
+```
+
+This starts a temporary branch-local receiver, starts a local HTTPS fixture
+server, maps `chatgpt.com` and `claude.ai` to loopback with Chrome host resolver
+rules, loads the unpacked extension into headless Chrome/Chromium, opens
+deterministic provider fixture pages on those supported origins, configures the
+extension receiver settings, and asks the content scripts to capture the page.
+The smoke verifies provider identity, adapter identity, user/assistant roles,
+receiver request ids, archive state request ids, and the written receiver spool
+artifacts. It appends `browser_provider_smoke_requested` /
+`browser_provider_smoke_finished` rows to `dev-loop.events.jsonl` plus:
+
+```text
+.cache/dev-loop/<run-id>/browser/browser-provider-smoke.json
+.cache/dev-loop/<run-id>/browser/browser-provider-smoke-result.json
+.cache/dev-loop/<run-id>/browser/browser-provider-smoke-profile/
+.cache/dev-loop/<run-id>/browser/browser-provider-smoke-spool/
+```
+
+The provider smoke deliberately uses deterministic fixture pages and omits raw
+turn text from its summary. It closes the repo-owned real-browser
+content-script loop without using authenticated cookies or copied profiles. Use
+`--browser-plan` for the visible/private browser handoff when screenshots,
+copied-profile cookies, or live provider pages are needed.
+
+If a distro Chromium headless build does not expose MV3 extension service
+workers, these smokes fail cleanly with `Polylogue extension service worker not
+found` in the smoke stderr artifact. Point `POLYLOGUE_BROWSER_SMOKE_CHROME` or
+`POLYLOGUE_PROVIDER_SMOKE_CHROME` at a Chrome/Chromium build with extension
+service-worker support, or use `--browser-plan` for the local visible-browser
+handoff.
 
 For GUI/browser inspection, generate a branch-local browser plan:
 
@@ -350,6 +410,11 @@ browser-plan.md
 chrome-profile/
 screenshots/
 downloads/
+browser-live-proof-checklist.md
+browser-live-proof.env.example
+browser-live-proof.json
+browser-live-proof-result.json
+browser-live-proof-spool/
 ```
 
 The JSON and Markdown plans include:
@@ -360,13 +425,48 @@ The JSON and Markdown plans include:
 - a `google-chrome-stable --user-data-dir=... --load-extension=...` command;
 - a `chromium` variant of the same command;
 - supported real-page probe URLs for `chatgpt.com` and `claude.ai`;
-- screenshot/download artifact directories for the browser-control layer.
+- screenshot/download artifact directories for the browser-control layer;
+- an operator-local copied-profile proof checklist and environment template.
 
 Use this when the local agent/operator browser-control surface is going to load
 the unpacked extension, inspect popup/options state, inspect service-worker
 logs, capture screenshots, or test authenticated ChatGPT/Claude.ai pages with
 an operator-approved copied profile. Copied profiles remain local ignored
 artifacts; they are never CI/cloud inputs and are not Polylogue repo state.
+
+For a source-owned but operator-local live provider proof, use the generated
+checklist from `--browser-plan`, copy the browser user-data-dir into
+`.local/browser-profiles/<run-id>-chrome-user-data/` with Chrome singleton lock
+files excluded, replace the placeholder provider URLs with live conversation
+pages, then run:
+
+```bash
+devtools workspace dev-loop --browser-live-proof \
+  --browser-live-profile-dir .local/browser-profiles/<run-id>-chrome-user-data \
+  --browser-live-chatgpt-url https://chatgpt.com/c/<conversation-id> \
+  --browser-live-claude-url https://claude.ai/chat/<conversation-id>
+```
+
+`--browser-live-proof` opens a visible Chrome/Chromium window with the unpacked
+extension and the copied profile, starts a temporary branch-local receiver,
+configures the extension receiver settings, waits for the operator-controlled
+live pages to settle, asks the content scripts to capture, and writes a
+redacted summary under the same run-local browser directory. The command
+refuses to run in CI by default, rejects common live profile roots and Chrome
+`Singleton*` lock files unless explicitly overridden in the local shell, and
+keeps raw captured content only in the ignored receiver spool.
+
+The live proof summary records provider/adapter identity, role coverage,
+receiver request ids, artifact refs, and hashed/redacted source URL/session
+identifiers. It intentionally omits raw turn text. If only one provider is
+being inspected, narrow the proof explicitly:
+
+```bash
+devtools workspace dev-loop --browser-live-proof \
+  --browser-live-profile-dir .local/browser-profiles/<run-id>-chrome-user-data \
+  --browser-live-providers chatgpt \
+  --browser-live-chatgpt-url https://chatgpt.com/c/<conversation-id>
+```
 
 ## Run Inspection
 
@@ -378,19 +478,21 @@ devtools workspace dev-loop --inspect-run .cache/dev-loop/<run-id> --json
 ```
 
 The summary reads `preflight.json`, `dev-loop.events.jsonl`, daemon launch
-summaries, browser/extension/TUI plans, and terminal capture summaries. It
-reports event counts by status/surface, the last event, failed or blocked
-events, failed summary files, failed terminal captures, slowest timed events,
-missing core artifacts, and an artifact index grouped by surface. Use it as the
-first stop when a daemon/web/extension loop looks stuck: it tells you which
-surface failed, which command or smoke was slow, and which stdout/stderr/log
-artifact to open next instead of making you scan the whole run directory.
+summaries, browser plan, extension smoke, real-browser smoke, provider page
+smoke, TUI plan, and terminal capture summaries. It reports event counts by
+status/surface, the last event, failed or blocked events, failed summary files,
+failed terminal captures, slowest timed events, missing core artifacts, and an
+artifact index grouped by surface. Use it as the first stop when a
+daemon/web/extension loop looks stuck: it tells you which surface failed, which
+command or smoke was slow, and which stdout/stderr/log artifact to open next
+instead of making you scan the whole run directory.
 
 ## Current Boundary
 
 `devtools workspace dev-loop` owns branch-local preparation and local debug
 artifacts. It can launch a branch-local daemon, run synthetic receiver and
-extension smokes, write browser/TUI handoff plans, capture CLI commands, and
-summarize a run directory. It still does not start or stop the deployed
-`polylogued.service`; stopping production service state remains an explicit
-operator action.
+extension smokes, run real-browser extension and deterministic provider-page
+smokes, write browser/TUI handoff plans, run an explicit operator-local
+copied-profile live provider proof, capture CLI commands, and summarize a run
+directory. It still does not start or stop the deployed `polylogued.service`;
+stopping production service state remains an explicit operator action.

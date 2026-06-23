@@ -21,6 +21,7 @@ from polylogue.browser_capture.models import (
 )
 from polylogue.browser_capture.receiver import (
     BrowserCaptureReceiverConfig,
+    capture_response_id,
     existing_capture_state,
     receiver_status_payload,
     write_capture_envelope,
@@ -104,7 +105,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         super().send_response(code, message)
 
     def _finish_observed_request(self, method: str, started_at: float) -> None:
-        logger.info(
+        logger.debug(
             "browser_capture.request",
             request_id=self._request_id(),
             method=method,
@@ -195,7 +196,12 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(
                 HTTPStatus.OK,
-                existing_capture_state(provider, session_id, spool_path=self.server.config.spool_path),
+                existing_capture_state(
+                    provider,
+                    session_id,
+                    spool_path=self.server.config.spool_path,
+                    archive_root=self.server.config.archive_root,
+                ),
             )
             return
         self._safe_error(HTTPStatus.NOT_FOUND, "not_found")
@@ -235,7 +241,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             logger.warning("browser_capture.write_failed", request_id=self._request_id(), error=repr(exc))
             self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
             return
-        logger.info(
+        logger.debug(
             "browser_capture.capture_accepted",
             request_id=self._request_id(),
             provider=result.provider,
@@ -247,7 +253,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         self._send_json(
             HTTPStatus.ACCEPTED,
             BrowserCaptureAcceptedPayload(
-                capture_id=envelope.capture_id or f"{result.provider}:{result.provider_session_id}",
+                capture_id=capture_response_id(result.provider, result.provider_session_id, envelope.capture_id),
                 provider=result.provider,
                 provider_session_id=result.provider_session_id,
                 artifact_ref=result.artifact_ref,
@@ -262,6 +268,7 @@ def make_server(
     port: int,
     *,
     spool_path: Path | None = None,
+    archive_root: Path | None = None,
     allow_remote: bool = False,
     auth_token: str | None = None,
     extra_origins: tuple[str, ...] = (),
@@ -274,6 +281,7 @@ def make_server(
     allowed_origins = cfg.allowed_origins | set(extra_origins)
     config = BrowserCaptureReceiverConfig(
         spool_path=spool_path or cfg.spool_path,
+        archive_root=archive_root,
         allowed_origins=frozenset(allowed_origins),
         allow_remote=allow_remote,
         auth_token=auth_token,

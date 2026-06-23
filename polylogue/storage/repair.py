@@ -43,6 +43,46 @@ def _open_archive_index_connection() -> sqlite3.Connection:
     return conn
 
 
+def _resolve_convergence_debt(
+    *,
+    ops_db: Path,
+    stage: str,
+    target_type: str,
+    target_id: str,
+) -> None:
+    """Best-effort resolution for ops-tier convergence debt.
+
+    Maintenance targets are explicit convergence actuators. When one proves a
+    target ready, stale daemon debt for the same target must stop appearing as
+    actionable work.
+    """
+    if not ops_db.exists():
+        return
+    try:
+        with sqlite3.connect(ops_db) as conn:
+            table_exists = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='convergence_debt'"
+            ).fetchone()
+            if not table_exists:
+                return
+            conn.execute(
+                """
+                DELETE FROM convergence_debt
+                WHERE stage = ? AND target_type = ? AND target_id = ?
+                """,
+                (stage, target_type, target_id),
+            )
+            conn.commit()
+    except sqlite3.Error as exc:
+        logger.warning(
+            "convergence_debt_resolve_failed",
+            stage=stage,
+            target_type=target_type,
+            target_id=target_id,
+            error=str(exc),
+        )
+
+
 def _archive_index_present(config: Config) -> bool:
     index_db = config.archive_root / "index.db"
     if not index_db.exists():
@@ -574,6 +614,17 @@ def count_superseded_raw_snapshots_sync(conn: sqlite3.Connection) -> int:
     return len(superseded_raw_snapshot_candidates(conn, limit=10_000))
 
 
+def _index_referenced_raw_ids(index_db_path: Path) -> set[str]:
+    if not index_db_path.exists():
+        return set()
+    try:
+        with sqlite3.connect(f"file:{index_db_path}?mode=ro", uri=True) as conn:
+            rows = conn.execute("SELECT DISTINCT raw_id FROM sessions WHERE raw_id IS NOT NULL").fetchall()
+    except sqlite3.Error:
+        return set()
+    return {str(row[0]) for row in rows if row[0] is not None}
+
+
 def repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> RepairResult:
     import sqlite3
 
@@ -582,13 +633,24 @@ def repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> Re
 
     repair_db_path = config.db_path.with_name("source.db")
     if repair_db_path.exists():
+        protected_raw_ids = _index_referenced_raw_ids(config.db_path)
         with sqlite3.connect(repair_db_path) as conn:
             conn.row_factory = sqlite3.Row
-            result = cleanup_superseded_raw_snapshots(conn, dry_run=dry_run, limit=10_000)
+            result = cleanup_superseded_raw_snapshots(
+                conn,
+                dry_run=dry_run,
+                limit=10_000,
+                protected_raw_ids=protected_raw_ids,
+            )
     else:
         with open_connection(config.db_path) as conn:
             result = cleanup_superseded_raw_snapshots(conn, dry_run=dry_run, limit=10_000)
     if dry_run:
+        skipped_detail = (
+            f"; skipped {result.skipped_referenced_count:,} index-referenced raw rows"
+            if result.skipped_referenced_count
+            else ""
+        )
         return _repair_result(
             "superseded_raw_snapshots",
             repaired_count=result.candidate_count,
@@ -596,8 +658,14 @@ def repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> Re
             detail=(
                 f"Would: delete {result.candidate_count:,} superseded raw snapshots "
                 f"({result.deleted_raw_bytes:,} referenced bytes)"
+                f"{skipped_detail}"
             ),
         )
+    skipped_detail = (
+        f"; skipped {result.skipped_referenced_count:,} index-referenced raw rows"
+        if result.skipped_referenced_count
+        else ""
+    )
     return _repair_result(
         "superseded_raw_snapshots",
         repaired_count=result.deleted_raw_count,
@@ -605,7 +673,7 @@ def repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> Re
         detail=(
             f"Deleted {result.deleted_raw_count:,} raw rows and {result.deleted_blob_count:,} blob files "
             f"({result.deleted_blob_bytes:,} bytes)"
-            + (f"; errors: {'; '.join(result.errors[:3])}" if result.errors else "")
+            f"{skipped_detail}" + (f"; errors: {'; '.join(result.errors[:3])}" if result.errors else "")
         ),
     )
 
@@ -791,37 +859,6 @@ def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
                     success=True,
                     detail="FTS table does not exist, skipping",
                 )
-            source_count = int(conn.execute("SELECT COUNT(*) FROM blocks WHERE text IS NOT NULL").fetchone()[0] or 0)
-            indexed_count = int(conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] or 0)
-            diff = abs(source_count - indexed_count)
-            if dry_run:
-                return _repair_result(
-                    "dangling_fts",
-                    repaired_count=diff,
-                    success=True,
-                    detail="FTS index in sync"
-                    if diff == 0
-                    else f"Would: FTS sync: {source_count:,} blocks vs {indexed_count:,} indexed ({diff:,} difference)",
-                )
-            if diff == 0:
-                return _repair_result(
-                    "dangling_fts",
-                    repaired_count=0,
-                    success=True,
-                    detail="FTS index in sync",
-                )
-            from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync
-
-            rebuild_fts_index_sync(conn)
-            conn.commit()
-            repaired_count = diff
-            return _repair_result(
-                "dangling_fts",
-                repaired_count=repaired_count,
-                success=True,
-                detail=f"Rebuilt FTS index ({repaired_count:,} row difference)",
-            )
-
             if dry_run:
                 outcome = dry_run_dangling_fts_repair(conn)
                 return _repair_result(
@@ -832,6 +869,13 @@ def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
                 )
             outcome = repair_missing_fts_rows(conn)
             conn.commit()
+            if outcome.success:
+                _resolve_convergence_debt(
+                    ops_db=config.archive_root / "ops.db",
+                    stage="fts",
+                    target_type="fts_surface",
+                    target_id="messages_fts",
+                )
             return _repair_result(
                 "dangling_fts",
                 repaired_count=outcome.repaired_count,

@@ -19,6 +19,7 @@ from polylogue.errors import DatabaseError
 from polylogue.pipeline.payload_types import ParseBatchObservation
 from polylogue.pipeline.services.acquisition import AcquireResult, AcquisitionService
 from polylogue.pipeline.services.acquisition_records import ScanResult
+from polylogue.pipeline.services.ingest_worker import _fallback_id
 from polylogue.pipeline.services.parsing import ParseResult, ParsingService
 from polylogue.pipeline.services.planning import PlanningService
 from polylogue.pipeline.services.validation import ValidationService  # used by TestPlanningService
@@ -30,6 +31,24 @@ from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 WorkspacePaths = dict[str, Path]
 SessionPayload = dict[str, JSONValue]
 VisitSourcesCallback = Callable[[RawSessionRecord], Awaitable[None]]
+
+
+def test_fallback_id_preserves_drive_cache_hash_suffix() -> None:
+    fallback_id = _fallback_id(
+        "/home/sinity/.local/share/polylogue/drive-cache/gemini/Branch_of_Br-144383b77f2f293fb94ec8647f3632e4.json",
+        "raw-id",
+    )
+
+    assert fallback_id == "Branch_of_Br-144383b77f2f293fb94ec8647f3632e4"
+
+
+def test_fallback_id_preserves_subagent_stems() -> None:
+    fallback_id = _fallback_id(
+        "/home/sinity/.claude/projects/project/session/subagents/agent-aba750c3c29cb63e0.jsonl",
+        "raw-id",
+    )
+
+    assert fallback_id == "agent-aba750c3c29cb63e0"
 
 
 def _parse_batch_observation(
@@ -459,6 +478,8 @@ class TestParsingServiceStreaming:
         repository.get_raw_blob_sizes.assert_awaited_once_with(["raw-1", "raw-2", "raw-3"])
         assert mock_process.await_args_list[0].args[2] == ["raw-1"]
         assert mock_process.await_args_list[1].args[2] == ["raw-2", "raw-3"]
+        assert mock_process.await_args_list[0].kwargs["suspend_fts_triggers"] is True
+        assert mock_process.await_args_list[1].kwargs["suspend_fts_triggers"] is True
 
     async def test_parse_from_raw_splits_streamed_backlog_by_blob_budget(self, tmp_path: Path) -> None:
         backend = MagicMock()

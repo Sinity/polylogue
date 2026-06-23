@@ -53,7 +53,7 @@ repo verification checks and evidence records, not end-user archive workflows.
 | `devtools lab probe pipeline` | Exercise real pipeline stages and optionally capture emitted summaries as regression cases. |
 | `devtools lab probe turso` | Collect executable evidence before changing production storage backends: Python binding availability, generated-column support, FTS compatibility, MVCC, CDC, vector functions, ATTACH, and WAL pragma behavior. |
 | `devtools lab projections` | Inspect the unified projection inventory that feeds runtime coverage, generated docs, and control-plane maps. |
-| `devtools lab scenario` | Run direct archive and reader smoke scenarios outside the archive CLI. |
+| `devtools lab smoke` | Run direct archive and reader smoke sets outside the archive CLI. |
 | `devtools lab schema audit` | Check committed schema package quality gates without presenting them as normal archive usage. |
 | `devtools lab schema compare` | Review schema package drift between committed versions in the verification-lab surface. |
 | `devtools lab schema explain` | Inspect schema package annotations, semantic roles, and review evidence from the lab surface. |
@@ -98,6 +98,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools render docs-surface` | Render docs/README.md and the README documentation table. |
 | `devtools render openapi` | Render docs/openapi/search.yaml from typed daemon query payload models. |
 | `devtools render pages` | Build the GitHub Pages documentation site into .cache/site/. |
+| `devtools render product-workflows` | Render docs/product/workflows.md from executable query-action workflow registries. |
 | `devtools render quality-reference` | Render docs/test-quality-workflows.md from live validation, mutation, and benchmark registries. |
 | `devtools render topology-projection` | Generate docs/plans/topology-target.yaml from the current tree using placement rules. |
 | `devtools render topology-status` | Render docs/topology-status.md from the topology projection and realized tree. |
@@ -122,7 +123,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools lab probe turso` | Probe Turso Database compatibility against Polylogue storage assumptions. |
 | `devtools lab projections` | Render the authored scenario-bearing verification projections. |
 | `devtools lab provider completeness` | Report provider/importer package completeness by origin and capture mode. |
-| `devtools lab scenario` | Run verification-lab smoke scenario sets. |
 | `devtools lab schema audit` | Run committed provider schema package quality checks. |
 | `devtools lab schema compare` | Compare two committed schema package versions for a provider. |
 | `devtools lab schema explain` | Explain a committed package element schema with evidence and annotations. |
@@ -130,6 +130,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools lab schema list` | List committed schema packages, versions, and evidence manifests. |
 | `devtools lab schema promote` | Promote a schema evidence cluster into a registered package version. |
 | `devtools lab schema roundtrip` | Verify committed provider schema packages reload and roundtrip cleanly. |
+| `devtools lab smoke` | Run verification-lab smoke sets. |
 | `devtools lab snapshot read-surface` | Capture and compare archive read-surface snapshots. |
 
 ### Verification
@@ -179,8 +180,8 @@ When changing semantics, validation, or surfaces:
 ```bash
 devtools lab lanes --list
 devtools lab lanes --lane frontier-local
-devtools lab scenario run archive-smoke --tier 0
-devtools lab scenario run reader-visual-smoke
+devtools lab smoke run archive-smoke --tier 0
+devtools lab smoke run reader-visual-smoke
 devtools bench memory --max-rss-mb 1536 -- polylogue --plain analyze
 ```
 

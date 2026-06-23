@@ -8,11 +8,12 @@ Use this map when you need the complete repository documentation surface. The to
 
 | Document | Description |
 |----------|-------------|
+| [Installation](installation.md) | Linux, Nix/NixOS, Homebrew, and container install/run paths. |
 | [Architecture](architecture.md) | System rings, ownership boundaries, and data flow. |
 | [Architecture Spine](architecture-spine.md) | Target shape, guardrails, and major decisions with rejected alternatives. |
 | [Execution Plan](execution-plan.md) | Current issue-driven sequencing plan for the remaining backlog. |
 | [Design Direction](design/README.md) | Historical design inputs and current guidance for using them without treating them as parallel roadmaps. |
-| [Query-Action Workflows](design/query-action-workflows.md) | `find QUERY then ACTION` contract for cardinality, affordances, rendering, completions, and golden paths. |
+| [Query-Action Workflows](product/workflows.md) | Executable `find QUERY then ACTION` product contract for workflows, affordances, completions, and golden paths. |
 | [Data Model](data-model.md) | Archive entities, storage shape, and metadata rules. |
 | [Archive Backup](archive-backup.md) | Archive-tier backup profiles, restore boundaries, and blob-GC safety rules. |
 | [Internals](internals.md) | Working implementation reference and debugging landmarks. |
@@ -38,6 +39,7 @@ Use this map when you need the complete repository documentation surface. The to
 | [Developer Tools](devtools.md) | `devtools` guide for generated surfaces, validation, and repo hygiene. |
 | [Test Quality Workflows](test-quality-workflows.md) | Generated validation lanes, mutation campaigns, and benchmark campaigns. |
 | [Release Readiness Gate](plans/release-readiness-gate.md) | Externally-presentable release gate, required checks, and release PR evidence contract. |
+| [Release Checklist](release.md) | Cut-time packaging, installed-artifact, and publish checks. |
 
 ## Contributor Workflow
 

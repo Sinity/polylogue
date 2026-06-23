@@ -27,7 +27,7 @@ from polylogue.storage.source_sessions import (
     session_ids_for_source_path,
     session_ids_for_source_paths,
 )
-from polylogue.storage.sqlite.connection_profile import open_connection
+from polylogue.storage.sqlite.connection_profile import open_daemon_connection
 
 if TYPE_CHECKING:
     pass
@@ -52,7 +52,7 @@ def _is_transient_sqlite_lock(exc: BaseException) -> bool:
 
 
 def _open_archive_insight_write_connection(db_path: Path) -> sqlite3.Connection:
-    conn = open_connection(db_path, timeout=_ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS / 1000)
+    conn = open_daemon_connection(db_path, timeout=_ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS / 1000)
     try:
         conn.execute(f"PRAGMA busy_timeout = {_ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS}")
     except BaseException:
@@ -962,11 +962,9 @@ def _archive_fts_needs_repair(conn: sqlite3.Connection, session_ids: Sequence[st
 
 
 def _archive_rebuild_messages_fts(conn: sqlite3.Connection) -> None:
-    if not _table_exists(conn, "messages_fts"):
-        return
-    from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync
+    from polylogue.storage.fts.fts_lifecycle import reset_message_fts_index_sync
 
-    rebuild_fts_index_sync(conn)
+    reset_message_fts_index_sync(conn)
 
 
 def _archive_repair_sessions_fts(conn: sqlite3.Connection, session_ids: Sequence[str]) -> None:
@@ -1082,6 +1080,22 @@ def _archive_fts_execute_sessions(db_path: Path, session_ids: Sequence[str]) -> 
             conn.close()
     except Exception:
         logger.warning("fts: archive session repair failed", exc_info=True)
+        return False
+
+
+def repair_messages_fts_surface(db_path: Path) -> bool:
+    """Repair the whole archive ``messages_fts`` surface after global drift."""
+    archive_db = _active_archive_index_path(db_path) or db_path
+    try:
+        conn = _open_archive_insight_write_connection(archive_db)
+        try:
+            _archive_rebuild_messages_fts(conn)
+            conn.commit()
+            return not _archive_fts_needs_repair(conn)
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("fts: archive global messages_fts repair failed", exc_info=True)
         return False
 
 

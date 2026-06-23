@@ -164,6 +164,7 @@ def test_loopback_bind_passes_remote_check() -> None:
         {
             "api_enabled": True,
             "watcher_enabled": False,
+            "watcher_roots": (),
             "browser_capture_enabled": False,
             "browser_capture_spool_path": None,
         }

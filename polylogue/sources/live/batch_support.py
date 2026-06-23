@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -28,6 +29,8 @@ _MAX_APPEND_PLAN_PAYLOAD_BYTES = 64 * 1024 * 1024
 _MAX_APPEND_PLAN_GROUP_PAYLOAD_BYTES = 64 * 1024 * 1024
 _MAX_APPEND_PLAN_GROUP_FILES = 64
 _DEFAULT_LIVE_FULL_INGEST_WORKERS = 1
+_BROWSER_CAPTURE_PREFIX_PROBE_BYTES = 1 * 1024 * 1024
+_BROWSER_CAPTURE_PROVIDER_RE = re.compile(rb'"provider"\s*:\s*"([^"\\]{1,80})"')
 
 
 class _FullIngestHeartbeat(Protocol):
@@ -349,6 +352,27 @@ def _accumulate_stage_timings(target: dict[str, float], update: dict[str, float]
         target[stage_name] = target.get(stage_name, 0.0) + float(elapsed)
 
 
+def _browser_capture_prefix_probe(path: Path) -> tuple[bool, Provider | None]:
+    if path.suffix.lower() != ".json":
+        return False, None
+    try:
+        with path.open("rb") as handle:
+            prefix = handle.read(_BROWSER_CAPTURE_PREFIX_PROBE_BYTES)
+    except OSError:
+        return False, None
+    if b"polylogue_capture_kind" not in prefix or b"browser_llm_session" not in prefix:
+        return False, None
+    match = _BROWSER_CAPTURE_PROVIDER_RE.search(prefix)
+    if match is None:
+        return True, None
+    try:
+        provider_token = match.group(1).decode("utf-8")
+    except UnicodeDecodeError:
+        return True, None
+    provider = Provider.from_string(provider_token)
+    return True, provider if provider is not Provider.UNKNOWN else None
+
+
 def _jsonl_sample_from_path(path: Path, *, max_records: int = 32) -> list[JSONValue]:
     records: list[JSONValue] = []
     with path.open("rb") as handle:
@@ -372,7 +396,8 @@ def _detect_provider_from_path_sample(path: Path, fallback_provider: Provider) -
             return detect_provider(records) or fallback_provider
         return fallback_provider
     if _path_size(path) > _STREAMING_FULL_INGEST_BYTES:
-        return fallback_provider
+        browser_capture, provider = _browser_capture_prefix_probe(path)
+        return provider or fallback_provider if browser_capture else fallback_provider
     try:
         payload = path.read_bytes()
     except OSError:
@@ -404,6 +429,9 @@ def _parse_path_as_session_artifact(path: Path, *, provider: Provider) -> bool:
             return False
         return classify_artifact(records, provider=provider, source_path=path).parse_as_session
     if _path_size(path) > _STREAMING_FULL_INGEST_BYTES:
+        browser_capture, _browser_provider = _browser_capture_prefix_probe(path)
+        if browser_capture:
+            return True
         return _large_non_jsonl_path_can_stream(path, provider=provider)
     try:
         document = cast(JSONValue, orjson.loads(path.read_bytes()))

@@ -179,17 +179,27 @@ def test_action_contracts_emit_shared_affordance_payloads() -> None:
 
     read = by_id["read"]
     assert read.target == "selection"
-    assert read.input_unit == "query_result_set"
-    assert read.cardinality_state == "explicit_multi"
-    assert read.safety_level == "safe"
-    assert read.selection_command == "polylogue find QUERY then select"
+    assert read.input.unit == read.input_unit == "query_result_set"
+    assert read.execution.cardinality_state == read.cardinality_state == "explicit_multi"
+    assert read.safety.safety_level == read.safety_level == "safe"
+    assert read.safety.selection_command == read.selection_command == "polylogue find QUERY then select"
+    assert read.output.destination_support == read.destination_support
     assert "browser" in read.destination_support
-    assert read.format_support == ("human", "json", "ndjson")
+    assert read.output.format_support == read.format_support == ("human", "json", "ndjson")
+    assert read.availability.next_actions == read.next_actions
     assert "continue" in read.next_actions
 
+    continue_action = by_id["continue"]
+    assert continue_action.output.format_support == continue_action.format_support == ("human", "json")
+
     delete = by_id["delete"]
-    assert delete.safety_level == "destructive"
-    assert delete.confirmation_command == "polylogue find QUERY then delete --dry-run"
+    assert delete.safety.safety_level == delete.safety_level == "destructive"
+    assert (
+        delete.safety.confirmation_command
+        == delete.confirmation_command
+        == "polylogue find QUERY then delete --dry-run"
+    )
+    assert delete.execution.guards == delete.guards
     assert "dry_run_or_yes_required" in delete.guards
 
 
@@ -423,4 +433,4 @@ def test_config_contract_guard_redacts_secret_values(tmp_path: Path, monkeypatch
     assert result.exit_code == 0, result.output
     assert secret not in output
     payload = json.loads(output)
-    assert payload["voyage_api_key"] == "<set>"
+    assert payload["values"]["voyage_api_key"]["value"] == "<set>"

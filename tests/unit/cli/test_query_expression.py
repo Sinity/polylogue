@@ -695,6 +695,7 @@ class TestBooleanQueryExpression:
             ),
         )
         session_predicate = source.session_predicate
+        assert isinstance(session_predicate, QueryBoolPredicate)
         session_repo = cast(QueryFieldPredicate, session_predicate.children[0])
         session_origin = cast(QueryFieldPredicate, session_predicate.children[1])
         assert session_repo.field_ref is not None

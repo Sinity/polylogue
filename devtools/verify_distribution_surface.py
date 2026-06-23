@@ -17,6 +17,12 @@ from devtools import repo_root as _get_root
 
 ROOT = _get_root()
 RUNTIME_SCRIPTS = ("polylogue", "polylogued", "polylogue-mcp")
+RUNTIME_IMPORT_PROBES = (
+    "polylogue.cli.click_app",
+    "polylogue.daemon.cli",
+    "polylogue.mcp.cli",
+    "polylogue.archive.query.expression",
+)
 
 
 class DistributionVerificationError(RuntimeError):
@@ -115,12 +121,20 @@ def _smoke_installed_wheel(wheel: Path, install_dir: Path) -> None:
     _run(("uv", "pip", "install", "--python", str(python), str(wheel)), cwd=install_dir)
     env = _smoke_env(install_dir / "archive")
     bin_dir = venv_dir / ("Scripts" if os.name == "nt" else "bin")
+    _probe_runtime_imports(python, install_dir, env)
     _run((str(bin_dir / "polylogue"), "--version"), cwd=install_dir, env=env)
     _run((str(bin_dir / "polylogue"), "--help"), cwd=install_dir, env=env)
     _run((str(bin_dir / "polylogue"), "--plain", "analyze", "--count"), cwd=install_dir, env=env)
     _run((str(python), "-m", "polylogue", "--version"), cwd=install_dir, env=env)
     _run((str(bin_dir / "polylogued"), "--help"), cwd=install_dir, env=env)
     _run((str(bin_dir / "polylogue-mcp"), "--help"), cwd=install_dir, env=env)
+
+
+def _probe_runtime_imports(python: Path, install_dir: Path, env: dict[str, str]) -> None:
+    """Import runtime entrypoint modules from the installed wheel environment."""
+    modules_literal = repr(RUNTIME_IMPORT_PROBES)
+    code = f"import importlib\nmodules = {modules_literal}\nfor name in modules:\n    importlib.import_module(name)\n"
+    _run((str(python), "-I", "-c", code), cwd=install_dir, env=env)
 
 
 def _smoke_env(archive_root: Path) -> dict[str, str]:

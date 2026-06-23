@@ -179,6 +179,35 @@ class TestNoArchiveStatus:
         assert "Messages: 2" in combined
         assert "Raw records: 1" in combined
 
+    def test_direct_status_skips_exact_archive_readiness_by_default(self, tmp_path: Path) -> None:
+        env = _make_app_env()
+        db_anchor = tmp_path / "custom.sqlite"
+        index_db = tmp_path / "index.db"
+        with sqlite3.connect(index_db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    message_count INTEGER NOT NULL
+                );
+                INSERT INTO sessions VALUES ('codex-session:one', 1);
+                """
+            )
+
+        with (
+            patch("polylogue.paths.db_path", return_value=db_anchor),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch(
+                "polylogue.cli.commands.status._archive_readiness_status",
+                side_effect=AssertionError("direct status must not run exact readiness by default"),
+            ),
+        ):
+            _show_direct_status(env)
+
+        combined = _combined_calls(env)
+        assert "Archive readiness:" in combined
+        assert "direct_status_default_skips_exact_archive_readiness" in combined
+
     def test_direct_status_json_reads_archive_file_set_from_archive_tiers(self, tmp_path: Path) -> None:
         env = _make_app_env()
         db_anchor = tmp_path / "custom.sqlite"
@@ -349,7 +378,7 @@ class TestNoArchiveStatus:
             patch("polylogue.paths.archive_root", return_value=tmp_path),
             patch("polylogue.cli.commands.status_diagnostics.diagnose_first_run") as diagnose,
         ):
-            _show_direct_status(env)
+            _show_direct_status(env, include_archive_readiness=True)
 
         diagnose.assert_not_called()
         combined = _combined_calls(env)
@@ -383,7 +412,7 @@ class TestNoArchiveStatus:
             patch("polylogue.paths.db_path", return_value=db_anchor),
             patch("polylogue.paths.archive_root", return_value=tmp_path),
         ):
-            _show_direct_json(env)
+            _show_direct_json(env, include_archive_readiness=True)
 
         payload = json.loads(_combined_calls(env))
         readiness = payload["archive_readiness"]
@@ -437,7 +466,7 @@ class TestNoArchiveStatus:
                 return_value=embedding_payload,
             ),
         ):
-            _show_direct_json(env)
+            _show_direct_json(env, include_archive_readiness=True)
 
         payload = json.loads(_combined_calls(env))
         readiness = payload["component_readiness"]["embeddings"]
@@ -452,7 +481,15 @@ class TestNoArchiveStatus:
         assert readiness["caveats"] == []
         assert readiness["repair_hint"] == "polylogue ops embed backfill --max-sessions 10"
 
-    def test_direct_status_json_maps_archive_surface_component_readiness(self, tmp_path: Path) -> None:
+    def test_direct_status_json_maps_archive_surface_component_readiness(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from polylogue.surfaces.payloads import (
+            ArchiveDebtListPayload,
+            ArchiveDebtRowPayload,
+            ArchiveDebtTotalsPayload,
+        )
+
         env = _make_app_env()
         db_anchor = tmp_path / "index.db"
         initialize_archive_database(db_anchor, ArchiveTier.INDEX)
@@ -495,6 +532,27 @@ class TestNoArchiveStatus:
                 "tool_usage": {"ready": True, "blockers": [], "evidence": {"action_count": 4}},
             },
         }
+        raw_materialization_debt = ArchiveDebtListPayload(
+            generated_at="2026-06-23T00:00:00+00:00",
+            archive_root=str(tmp_path),
+            rows=(
+                ArchiveDebtRowPayload(
+                    debt_ref="debt:raw-materialization:chatgpt-export:parsed-without-session",
+                    kind="raw-materialization",
+                    stage="parse",
+                    subject_ref="raw-origin:chatgpt-export",
+                    severity="warning",
+                    status="actionable",
+                    owner="daemon",
+                    summary="4 chatgpt-export raw artifact(s) parsed but have no materialized session",
+                ),
+            ),
+            totals=ArchiveDebtTotalsPayload(total=1, warning=1, actionable=1),
+        )
+        monkeypatch.setattr(
+            "polylogue.operations.archive_debt.archive_debt_list",
+            lambda **_kwargs: raw_materialization_debt,
+        )
 
         with (
             patch("polylogue.paths.db_path", return_value=db_anchor),
@@ -502,7 +560,7 @@ class TestNoArchiveStatus:
             patch("polylogue.cli.commands.status._archive_readiness_status", return_value=archive_readiness),
             patch("polylogue.storage.embeddings.status_payload.embedding_status_payload", side_effect=RuntimeError),
         ):
-            _show_direct_json(env)
+            _show_direct_json(env, include_archive_readiness=True)
 
         payload = json.loads(_combined_calls(env))
         components = payload["component_readiness"]
@@ -510,9 +568,11 @@ class TestNoArchiveStatus:
         readiness = components["search"]
         profiles = components["session_profiles"]
         tool_usage = components["tool_usage"]
+        raw_materialization = components["raw_materialization"]
         assertions = components["assertions"]
         transforms = components["transforms"]
         assert payload["archive_readiness"] == archive_readiness
+        assert payload["raw_materialization_readiness"]["total"] == 1
         assert archive["component"] == "archive_sessions"
         assert archive["scope"] == "archive"
         assert archive["state"] == "ready"
@@ -528,6 +588,10 @@ class TestNoArchiveStatus:
         assert profiles["repair_hint"] == "polylogue ops maintenance run --target session_insights"
         assert tool_usage["scope"] == "actions"
         assert tool_usage["counts"] == {"action_count": 4}
+        assert raw_materialization["scope"] == "archive"
+        assert raw_materialization["state"] == "stale"
+        assert raw_materialization["counts"]["total"] == 1
+        assert raw_materialization["repair_hint"] == "polylogue ops debt list --kind raw-materialization"
         assert assertions["scope"] == "user"
         assert assertions["state"] == "ready"
         assert assertions["counts"] == {"assertion_count": 1, "target_count": 1, "active_count": 1}
@@ -557,7 +621,7 @@ class TestNoArchiveStatus:
             patch("polylogue.paths.archive_root", return_value=tmp_path),
             patch("polylogue.storage.embeddings.status_payload.embedding_status_payload", side_effect=RuntimeError),
         ):
-            _show_direct_json(env)
+            _show_direct_json(env, include_archive_readiness=True)
 
         payload = json.loads(_combined_calls(env))
         components = payload["component_readiness"]
@@ -622,7 +686,7 @@ class TestNoArchiveStatus:
                 return_value=embedding_payload,
             ),
         ):
-            _show_direct_json(env)
+            _show_direct_json(env, include_archive_readiness=True)
 
         components = json.loads(_combined_calls(env))["component_readiness"]
         assert components["archive_sessions"]["state"] == "ready"
@@ -655,7 +719,7 @@ class TestNoArchiveStatus:
             ),
             patch("polylogue.storage.embeddings.status_payload.embedding_status_payload", side_effect=RuntimeError),
         ):
-            _show_direct_json(env)
+            _show_direct_json(env, include_archive_readiness=True)
 
         payload = json.loads(_combined_calls(env))
         transforms = payload["component_readiness"]["transforms"]
@@ -840,7 +904,7 @@ class TestNoArchiveStatus:
                 result = CliRunner().invoke(status_command, ["--daemon-url", "http://127.0.0.1:8766"], obj=env)
 
         assert result.exit_code == 0
-        show_direct.assert_called_once_with(env)
+        show_direct.assert_called_once_with(env, include_archive_readiness=False)
 
     def test_daemon_status_uses_reported_fts_coverage_pct(self) -> None:
         env = _make_app_env()

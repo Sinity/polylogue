@@ -9,7 +9,7 @@ and surface behavior those contracts need to support.
 
 | Input | Status | Purpose |
 |------|--------|---------|
-| [Query-action workflows](query-action-workflows.md) | Current contract | Cross-surface behavior for `find QUERY then ACTION`, including cardinality, action affordances, rendering, completions, browser-capture fidelity, and golden paths. |
+| [Query-action workflows](query-action-workflows.md) | Moved pointer | Redirects to the generated product contract at `docs/product/workflows.md`, which is rendered from live workflow and action registries. |
 | [MK3 design pack](mk3/README.md) | Historical source material | Archive workbench direction for the daemon web reader, multi-chat workspace, topology, paste and attachment rendering, user state, realtime, degraded states, and implementation slices. |
 
 ## How To Use These Docs

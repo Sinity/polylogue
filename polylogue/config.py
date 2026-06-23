@@ -30,6 +30,8 @@ from .paths import (
     active_index_db_path as default_db_path,
 )
 
+_MISSING = object()
+
 
 class ConfigError(PolylogueError):
     """Configuration error."""
@@ -457,6 +459,18 @@ class PolylogueConfig:
         return tuple(rows)
 
 
+@dataclass(frozen=True, slots=True)
+class ConfigInventoryEntry:
+    """Public configuration key metadata for effective-state reporting."""
+
+    key: str
+    toml_path: str | None
+    env_var: str | None
+    cli_override: str | None
+    owner_class: str
+    reload_behavior: str
+
+
 #: Default site-wide configuration path. Overridable through the
 #: ``POLYLOGUE_SITE_CONFIG`` env var (primarily for tests and packaging).
 DEFAULT_SITE_CONFIG_PATH = Path("/etc/polylogue/polylogue.toml")
@@ -575,6 +589,205 @@ def _default_config_values() -> dict[str, object]:
     }
 
 
+_ENV_CONFIG_KEY_MAP: dict[str, str] = {
+    "POLYLOGUE_ARCHIVE_ROOT": "archive_root",
+    "POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS": "embedding_enabled",
+    "POLYLOGUE_OBSERVABILITY_ENABLED": "observability_enabled",
+    "POLYLOGUE_OTLP_MAX_BODY_BYTES": "otlp_max_body_bytes",
+    "VOYAGE_API_KEY": "voyage_api_key",
+    "POLYLOGUE_FORCE_PLAIN": "force_plain",
+    "POLYLOGUE_THEME": "theme",
+    "POLYLOGUE_SLOW_QUERY_NOTICE_SECONDS": "slow_query_notice_seconds",
+    "POLYLOGUE_SCHEMA_VALIDATION": "schema_validation",
+    "POLYLOGUE_NOTIFICATION_BACKEND": "notification_backend",
+    "POLYLOGUE_NOTIFICATION_WEBHOOK_URL": "notification_webhook_url",
+    "POLYLOGUE_NOTIFICATION_WEBHOOK_SECRET": "notification_webhook_secret",
+    "POLYLOGUE_NOTIFICATION_APPRISE_URLS": "notification_apprise_urls",
+    "POLYLOGUE_NOTIFICATION_EMAIL_HOST": "notification_email_host",
+    "POLYLOGUE_NOTIFICATION_EMAIL_PORT": "notification_email_port",
+    "POLYLOGUE_NOTIFICATION_EMAIL_USERNAME": "notification_email_username",
+    "POLYLOGUE_NOTIFICATION_EMAIL_PASSWORD": "notification_email_password",
+    "POLYLOGUE_NOTIFICATION_EMAIL_FROM": "notification_email_from",
+    "POLYLOGUE_NOTIFICATION_EMAIL_TO": "notification_email_to",
+    "POLYLOGUE_HEALTH_CHECK_INTERVAL_S": "health_check_interval_s",
+    "POLYLOGUE_HEALTH_CHECK_TIERS": "health_check_tiers",
+    "POLYLOGUE_HEALTH_FTS_AUTO_RESTORE": "health_fts_auto_restore",
+    "POLYLOGUE_HEALTH_BLOB_INTEGRITY_SAMPLE_SIZE": "health_blob_integrity_sample_size",
+    "POLYLOGUE_API_HOST": "api_host",
+    "POLYLOGUE_API_PORT": "api_port",
+    "POLYLOGUE_API_AUTH_TOKEN": "api_auth_token",
+    "POLYLOGUE_BROWSER_CAPTURE_PORT": "browser_capture_port",
+    "POLYLOGUE_BROWSER_CAPTURE_HOST": "browser_capture_host",
+    "POLYLOGUE_WATCH_DEBOUNCE_S": "watch_debounce_s",
+}
+
+
+_TOML_PATH_BY_CONFIG_KEY: dict[str, str] = {
+    "archive_root": "archive.root",
+    "daemon_host": "daemon.host",
+    "daemon_port": "daemon.port",
+    "api_host": "daemon.api.host",
+    "api_port": "daemon.api.port",
+    "api_auth_token": "daemon.api.auth_token",
+    "browser_capture_host": "daemon.browser_capture.host",
+    "browser_capture_port": "daemon.browser_capture.port",
+    "browser_capture_allowed_origins": "daemon.browser_capture.allowed_origins",
+    "browser_capture_allow_remote": "daemon.browser_capture.allow_remote",
+    "browser_capture_auth_token": "daemon.browser_capture.auth_token",
+    "browser_capture_spool_path": "daemon.browser_capture.spool_path",
+    "watch_debounce_s": "daemon.watch.debounce_s",
+    "source_roots": "sources.roots",
+    "embedding_enabled": "embedding.enabled",
+    "embedding_model": "embedding.model",
+    "embedding_dimension": "embedding.dimension",
+    "embedding_max_cost_usd": "embedding.max_cost_usd",
+    "voyage_api_key": "embedding.voyage_api_key",
+    "observability_enabled": "daemon.observability.enabled",
+    "otlp_max_body_bytes": "daemon.observability.otlp_max_body_bytes",
+    "log_level": "logging.level",
+    "force_plain": "logging.force_plain",
+    "theme": "ui.theme",
+    "slow_query_notice_seconds": "ui.slow_query_notice_seconds",
+    "schema_validation": "schema_validation",
+    "notification_backend": "notifications.backend",
+    "notification_webhook_url": "notifications.webhook_url",
+    "notification_webhook_secret": "notifications.webhook_secret",
+    "notification_apprise_urls": "notifications.apprise_urls",
+    "notification_email_host": "notifications.email.host",
+    "notification_email_port": "notifications.email.port",
+    "notification_email_username": "notifications.email.username",
+    "notification_email_password": "notifications.email.password",
+    "notification_email_from": "notifications.email.from",
+    "notification_email_to": "notifications.email.to",
+    "notification_email_subject_prefix": "notifications.email.subject_prefix",
+    "notification_email_use_tls": "notifications.email.use_tls",
+    "notification_email_use_starttls": "notifications.email.use_starttls",
+    "notification_email_max_per_hour": "notifications.email.max_per_hour",
+    "health_check_interval_s": "health.check_interval_s",
+    "health_check_tiers": "health.check_tiers",
+    "health_fts_auto_restore": "health.fts_auto_restore",
+    "health_blob_integrity_sample_size": "health.blob_integrity_sample_size",
+    "health_convergence_debt": "health.convergence_debt",
+    "health_cursor_lag": "health.cursor_lag",
+    "subscription_plans": "cost.subscription.plans",
+}
+
+
+_CONFIG_KEY_BY_ENV = {key: env for env, key in _ENV_CONFIG_KEY_MAP.items()}
+
+
+def _config_owner_class(key: str) -> str:
+    if key in {"archive_root", "source_roots", "browser_capture_spool_path"}:
+        return "path-layout"
+    if key.startswith(("api_", "browser_capture_", "notification_")) or key.startswith("observability_"):
+        return "network-security"
+    if key.startswith("embedding_") or key in {"voyage_api_key", "subscription_plans"}:
+        return "provider-cost-control"
+    if key in {"force_plain", "theme", "log_level", "slow_query_notice_seconds"}:
+        return "presentation-preference"
+    if key.startswith("health_") or key in {"watch_debounce_s", "otlp_max_body_bytes"}:
+        return "resource-policy"
+    if key in {"schema_validation"}:
+        return "deployment-policy"
+    return "runtime-config"
+
+
+def _config_reload_behavior(key: str) -> str:
+    if key in {"force_plain", "theme", "log_level", "slow_query_notice_seconds"}:
+        return "per-invocation-client"
+    if key.startswith("embedding_"):
+        return "daemon-loop"
+    if key.startswith("health_"):
+        return "daemon-loop"
+    return "startup-bound"
+
+
+def config_inventory() -> tuple[ConfigInventoryEntry, ...]:
+    """Return the maintained public config inventory."""
+    keys = set(_default_config_values()) | set(_TOML_PATH_BY_CONFIG_KEY) | set(_CONFIG_KEY_BY_ENV)
+    return tuple(
+        ConfigInventoryEntry(
+            key=key,
+            toml_path=_TOML_PATH_BY_CONFIG_KEY.get(key),
+            env_var=_CONFIG_KEY_BY_ENV.get(key),
+            cli_override=None,
+            owner_class=_config_owner_class(key),
+            reload_behavior=_config_reload_behavior(key),
+        )
+        for key in sorted(keys)
+    )
+
+
+def config_inventory_by_key() -> dict[str, ConfigInventoryEntry]:
+    """Return config inventory keyed by flat config key."""
+    return {entry.key: entry for entry in config_inventory()}
+
+
+def _inventory_entry_payload(entry: ConfigInventoryEntry, *, default: object = _MISSING) -> dict[str, object]:
+    secret = is_secret_config_key(entry.key)
+    payload: dict[str, object] = {
+        "key": entry.key,
+        "toml_path": entry.toml_path,
+        "env_var": entry.env_var,
+        "cli_override": entry.cli_override,
+        "owner_class": entry.owner_class,
+        "reload_behavior": entry.reload_behavior,
+        "secret": secret,
+        "redaction": "presence" if secret else "none",
+    }
+    if default is not _MISSING:
+        payload["default"] = redact_secret_value(default) if secret else default
+    return payload
+
+
+def config_inventory_payload() -> list[dict[str, object]]:
+    """Return JSON-serializable inventory metadata for public config keys."""
+    defaults = _default_config_values()
+    return [_inventory_entry_payload(entry, default=defaults.get(entry.key, _MISSING)) for entry in config_inventory()]
+
+
+def effective_config_payload(
+    resolved: PolylogueConfig,
+    *,
+    include_inventory: bool = True,
+) -> dict[str, object]:
+    """Return redacted effective config values with source-layer metadata."""
+    layer_paths = describe_config_layers()
+    inventory = config_inventory_by_key()
+    keys = [entry.key for entry in config_inventory()]
+    keys.extend(sorted(key for key in resolved.raw if key not in inventory))
+    values: dict[str, object] = {}
+    for key in keys:
+        value = resolved.raw.get(key)
+        entry = inventory.get(key)
+        secret = is_secret_config_key(key)
+        display_value = redact_secret_value(value) if secret else value
+        values[key] = {
+            "value": display_value,
+            "source_layer": resolved.layer_of(key),
+            "secret": secret,
+            "secret_present": bool(secret and display_value == SECRET_SET_PLACEHOLDER),
+            "toml_path": entry.toml_path if entry is not None else None,
+            "env_var": entry.env_var if entry is not None else None,
+            "cli_override": entry.cli_override if entry is not None else None,
+            "owner_class": entry.owner_class if entry is not None else "unknown",
+            "reload_behavior": entry.reload_behavior if entry is not None else "unknown",
+        }
+    payload: dict[str, object] = {
+        "layers": {
+            "default": "built-in defaults",
+            "site": layer_paths["site"],
+            "user": layer_paths["user"],
+            "env": "POLYLOGUE_*, provider credential, and presentation environment variables",
+            "cli": "CLI overrides (per-invocation)",
+        },
+        "values": values,
+    }
+    if include_inventory:
+        payload["inventory"] = config_inventory_payload()
+    return payload
+
+
 def _apply_toml_layer(
     cfg: dict[str, object],
     layers: dict[str, str],
@@ -598,9 +811,6 @@ def _apply_toml_layer(
     for key, value in cfg.items():
         if before.get(key, _MISSING) != value:
             layers[key] = layer_name
-
-
-_MISSING = object()
 
 
 def load_polylogue_config(
@@ -705,6 +915,7 @@ def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
             "allowed_origins": "browser_capture_allowed_origins",
             "allow_remote": "browser_capture_allow_remote",
             "auth_token": "browser_capture_auth_token",
+            "spool_path": "browser_capture_spool_path",
         },
         "daemon.watch": {
             "debounce_s": "watch_debounce_s",
@@ -717,6 +928,7 @@ def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
             "model": "embedding_model",
             "dimension": "embedding_dimension",
             "max_cost_usd": "embedding_max_cost_usd",
+            "voyage_api_key": "voyage_api_key",
         },
         "logging": {
             "level": "log_level",
@@ -791,37 +1003,6 @@ def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
 
 def _apply_env_overrides(cfg: dict[str, object]) -> None:
     """Apply POLYLOGUE_* environment variable overrides."""
-    env_map = {
-        "POLYLOGUE_ARCHIVE_ROOT": "archive_root",
-        "POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS": "embedding_enabled",
-        "POLYLOGUE_OBSERVABILITY_ENABLED": "observability_enabled",
-        "POLYLOGUE_OTLP_MAX_BODY_BYTES": "otlp_max_body_bytes",
-        "VOYAGE_API_KEY": "voyage_api_key",
-        "POLYLOGUE_FORCE_PLAIN": "force_plain",
-        "POLYLOGUE_THEME": "theme",
-        "POLYLOGUE_SLOW_QUERY_NOTICE_SECONDS": "slow_query_notice_seconds",
-        "POLYLOGUE_SCHEMA_VALIDATION": "schema_validation",
-        "POLYLOGUE_NOTIFICATION_BACKEND": "notification_backend",
-        "POLYLOGUE_NOTIFICATION_WEBHOOK_URL": "notification_webhook_url",
-        "POLYLOGUE_NOTIFICATION_WEBHOOK_SECRET": "notification_webhook_secret",
-        "POLYLOGUE_NOTIFICATION_APPRISE_URLS": "notification_apprise_urls",
-        "POLYLOGUE_NOTIFICATION_EMAIL_HOST": "notification_email_host",
-        "POLYLOGUE_NOTIFICATION_EMAIL_PORT": "notification_email_port",
-        "POLYLOGUE_NOTIFICATION_EMAIL_USERNAME": "notification_email_username",
-        "POLYLOGUE_NOTIFICATION_EMAIL_PASSWORD": "notification_email_password",
-        "POLYLOGUE_NOTIFICATION_EMAIL_FROM": "notification_email_from",
-        "POLYLOGUE_NOTIFICATION_EMAIL_TO": "notification_email_to",
-        "POLYLOGUE_HEALTH_CHECK_INTERVAL_S": "health_check_interval_s",
-        "POLYLOGUE_HEALTH_CHECK_TIERS": "health_check_tiers",
-        "POLYLOGUE_HEALTH_FTS_AUTO_RESTORE": "health_fts_auto_restore",
-        "POLYLOGUE_HEALTH_BLOB_INTEGRITY_SAMPLE_SIZE": "health_blob_integrity_sample_size",
-        "POLYLOGUE_API_HOST": "api_host",
-        "POLYLOGUE_API_PORT": "api_port",
-        "POLYLOGUE_API_AUTH_TOKEN": "api_auth_token",
-        "POLYLOGUE_BROWSER_CAPTURE_PORT": "browser_capture_port",
-        "POLYLOGUE_BROWSER_CAPTURE_HOST": "browser_capture_host",
-        "POLYLOGUE_WATCH_DEBOUNCE_S": "watch_debounce_s",
-    }
     # Keys that must be stored as int
     _int_keys = {
         "api_port",
@@ -832,7 +1013,7 @@ def _apply_env_overrides(cfg: dict[str, object]) -> None:
         "notification_email_port",
         "notification_email_max_per_hour",
     }
-    for env_var, cfg_key in env_map.items():
+    for env_var, cfg_key in _ENV_CONFIG_KEY_MAP.items():
         value = os.environ.get(env_var)
         if value is not None:
             # Coerce booleans
@@ -1045,6 +1226,7 @@ def format_config_toml(cfg: dict[str, object]) -> str:
 __all__ = [
     "Config",
     "ConfigError",
+    "ConfigInventoryEntry",
     "DEFAULT_SITE_CONFIG_PATH",
     "DriveConfig",
     "IndexConfig",
@@ -1053,7 +1235,11 @@ __all__ = [
     "SECRET_SET_PLACEHOLDER",
     "SECRET_UNSET_PLACEHOLDER",
     "Source",
+    "config_inventory",
+    "config_inventory_by_key",
+    "config_inventory_payload",
     "describe_config_layers",
+    "effective_config_payload",
     "format_config_toml",
     "get_config",
     "get_drive_config",

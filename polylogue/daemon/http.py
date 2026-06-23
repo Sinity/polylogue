@@ -72,6 +72,19 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 RouteMethod = Literal["GET", "POST", "DELETE"]
+_FACET_CORE_FAMILIES = ("total_counts", "origins", "tags")
+_FACET_EXPENSIVE_FAMILIES = ("repos", "action_types")
+_FACET_COMPLETE_ARCHIVE_FAMILIES = (
+    "total_counts",
+    "origins",
+    "tags",
+    "repos",
+    "message_types",
+    "action_types",
+    "has_flags",
+)
+_FACET_DEFERRED_REASON = "deferred_by_default"
+_FACET_BUDGET_REASON = "budget_exceeded"
 
 
 @dataclass(frozen=True)
@@ -3210,14 +3223,25 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         query = self._get_param(params, "query") or self._get_param(params, "contains") or ""
         origin, origins = _archive_origin_filter(params)
         requested_families = self._requested_facet_families(params)
-        heavy_families = {"repos", "action_types"}
-        if requested_families & heavy_families:
-            requested_families.update(heavy_families)
-        include_heavy_families = bool(requested_families & heavy_families)
-        complete_families: tuple[str, ...] = ("origins", "tags", "total_sessions", "total_messages")
+        if requested_families & set(_FACET_EXPENSIVE_FAMILIES):
+            requested_families.update(_FACET_EXPENSIVE_FAMILIES)
+        include_heavy_families = bool(requested_families & set(_FACET_EXPENSIVE_FAMILIES))
+        budget_ms = self._facet_budget_ms(params)
+        budget_exceeded = include_heavy_families and budget_ms == 0
+        if budget_exceeded:
+            include_heavy_families = False
+        complete_families: tuple[str, ...] = _FACET_CORE_FAMILIES
         if include_heavy_families:
-            complete_families = (*complete_families, *tuple(sorted(requested_families & heavy_families)))
-        deferred_families = tuple(sorted(heavy_families - requested_families)) if not include_heavy_families else ()
+            complete_families = (
+                *complete_families,
+                *tuple(sorted(requested_families & set(_FACET_EXPENSIVE_FAMILIES))),
+            )
+        deferred_reason = _FACET_BUDGET_REASON if budget_exceeded else _FACET_DEFERRED_REASON
+        deferred_families = (
+            dict.fromkeys(sorted(set(_FACET_EXPENSIVE_FAMILIES) - set(complete_families)), deferred_reason)
+            if not include_heavy_families
+            else {}
+        )
         scoped_to_query = bool(query or origin or origins)
         with ArchiveStore.open_existing(archive_root) as archive:
             global_payload = self._archive_facet_bucket(archive, include_heavy_families=include_heavy_families)
@@ -3261,10 +3285,45 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 "global": global_payload,
                 "complete_families": complete_families,
                 "deferred_families": deferred_families,
+                "family_errors": {},
+                "family_status": self._facet_family_status_map(
+                    complete_families=complete_families,
+                    deferred_families=deferred_families,
+                    family_errors={},
+                ),
                 "generated_at": datetime.now(UTC).isoformat(),
-                "budget_exceeded": bool(deferred_families),
+                "stale": False,
+                "stale_age_s": None,
+                "budget_exceeded": budget_exceeded,
             }
         ).model_dump(mode="json", by_alias=True)
+
+    def _facet_budget_ms(self, params: dict[str, list[str]]) -> int | None:
+        for key in ("budget_ms", "facet_budget_ms"):
+            values = params.get(key) or []
+            if not values:
+                continue
+            try:
+                return max(int(values[-1]), 0)
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _facet_family_status_map(
+        self,
+        *,
+        complete_families: Sequence[str],
+        deferred_families: Mapping[str, str],
+        family_errors: Mapping[str, str],
+    ) -> dict[str, dict[str, object]]:
+        statuses: dict[str, dict[str, object]] = {}
+        for family in complete_families:
+            statuses[family] = {"state": "complete", "stale": False}
+        for family, reason in deferred_families.items():
+            statuses[family] = {"state": "deferred", "reason": reason, "stale": False}
+        for family, error in family_errors.items():
+            statuses[family] = {"state": "error", "error": error, "stale": False}
+        return statuses
 
     def _requested_facet_families(self, params: dict[str, list[str]]) -> set[str]:
         requested = {"origins", "tags"}

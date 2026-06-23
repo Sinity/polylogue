@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import sqlite3
 
-from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync, restore_fts_triggers_sync
+from polylogue.storage.fts.freshness import record_fts_surface_state_sync
+from polylogue.storage.fts.fts_lifecycle import (
+    rebuild_fts_index_sync,
+    repair_message_fts_index_sync,
+    reset_message_fts_index_sync,
+    restore_fts_triggers_sync,
+)
 from polylogue.storage.fts.sql import (
     delete_session_rows_sql,
     insert_session_rows_sql,
@@ -87,6 +93,42 @@ def test_message_fts_repair_dedupes_duplicate_session_ids(test_conn: sqlite3.Con
     assert row[0] == 1
 
 
+def test_message_fts_repair_refreshes_ready_freshness_ledger(test_conn: sqlite3.Connection) -> None:
+    restore_fts_triggers_sync(test_conn)
+    _seed_text_block(
+        test_conn,
+        native_session_id="conv-message-repair-freshness",
+        native_message_id="msg-message-repair-freshness",
+        text="freshness ledger needle",
+    )
+    session_id = "unknown-export:conv-message-repair-freshness"
+    record_fts_surface_state_sync(
+        test_conn,
+        surface="messages_fts",
+        state="ready",
+        source_rows=0,
+        indexed_rows=0,
+    )
+
+    repair_message_fts_index_sync(test_conn, [session_id])
+
+    state = test_conn.execute(
+        """
+        SELECT state, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows
+        FROM fts_freshness_state
+        WHERE surface = 'messages_fts'
+        """
+    ).fetchone()
+    assert dict(state) == {
+        "state": "ready",
+        "source_rows": 1,
+        "indexed_rows": 1,
+        "missing_rows": 0,
+        "excess_rows": 0,
+        "duplicate_rows": 0,
+    }
+
+
 def test_message_fts_trigger_rowids_track_block_rowids(test_conn: sqlite3.Connection) -> None:
     """Message FTS triggers use block rowids so rowid deletes are targeted."""
     restore_fts_triggers_sync(test_conn)
@@ -118,3 +160,40 @@ def test_message_fts_trigger_rowids_track_block_rowids(test_conn: sqlite3.Connec
         ("command",),
     ).fetchone()[0]
     assert remaining == 0
+
+
+def test_message_fts_reset_drops_orphan_docsize_rows(test_conn: sqlite3.Connection) -> None:
+    restore_fts_triggers_sync(test_conn)
+    message_id = _seed_text_block(
+        test_conn,
+        native_session_id="conv-reset-orphan",
+        native_message_id="msg-reset-orphan",
+        text="reset orphan needle",
+    )
+    block_rowid = test_conn.execute(
+        "SELECT rowid FROM blocks WHERE message_id = ?",
+        (message_id,),
+    ).fetchone()["rowid"]
+    rebuild_fts_index_sync(test_conn)
+    test_conn.execute("DROP TRIGGER messages_fts_ad")
+    test_conn.execute("DELETE FROM blocks WHERE rowid = ?", (block_rowid,))
+
+    assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
+
+    reset_message_fts_index_sync(test_conn)
+
+    assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 0
+    state = test_conn.execute(
+        """
+        SELECT state, source_rows, indexed_rows, excess_rows, detail
+        FROM fts_freshness_state
+        WHERE surface = 'messages_fts'
+        """
+    ).fetchone()
+    assert dict(state) == {
+        "state": "ready",
+        "source_rows": 0,
+        "indexed_rows": 0,
+        "excess_rows": 0,
+        "detail": None,
+    }

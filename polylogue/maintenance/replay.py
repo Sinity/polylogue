@@ -248,18 +248,23 @@ class ReplayProgress:
     total: int
     cursor: str
     in_flight_failures: int
+    progress_amount: int | None = None
+    progress_desc: str | None = None
 
     def to_dict(self) -> JSONDocument:
-        return json_document(
-            {
-                "operation_id": self.operation_id,
-                "target": self.target,
-                "processed": self.processed,
-                "total": self.total,
-                "cursor": self.cursor,
-                "in_flight_failures": self.in_flight_failures,
-            }
-        )
+        payload: dict[str, object] = {
+            "operation_id": self.operation_id,
+            "target": self.target,
+            "processed": self.processed,
+            "total": self.total,
+            "cursor": self.cursor,
+            "in_flight_failures": self.in_flight_failures,
+        }
+        if self.progress_amount is not None:
+            payload["progress_amount"] = self.progress_amount
+        if self.progress_desc is not None:
+            payload["progress_desc"] = self.progress_desc
+        return json_document(payload)
 
 
 ProgressCallback = Callable[[ReplayProgress], None]
@@ -425,6 +430,9 @@ def execute_replay(
             config,
             dry_run=dry_run,
             scope_filter=effective_filter,
+            progress_callback=progress_callback,
+            target_total=len(resolved_names),
+            processed_before_target=index - start_index,
         )
         # Advance the cursor *after* the target completes (success or
         # failure). On failure we still advance so the next resume does
@@ -529,6 +537,9 @@ def _run_one_target(
     *,
     dry_run: bool,
     scope_filter: MaintenanceScopeFilter,
+    progress_callback: ProgressCallback | None,
+    target_total: int,
+    processed_before_target: int,
 ) -> None:
     """Execute one target, recording success or a typed failure sample."""
 
@@ -551,15 +562,33 @@ def _run_one_target(
         )
         return
 
+    def _emit_target_progress(amount: int, desc: str | None = None) -> None:
+        if progress_callback is None:
+            return
+        progress_callback(
+            ReplayProgress(
+                operation_id=state.operation_id,
+                target=target_name,
+                processed=processed_before_target,
+                total=target_total,
+                cursor=state.cursor,
+                in_flight_failures=len(state.failures),
+                progress_amount=int(amount),
+                progress_desc=desc,
+            )
+        )
+
     try:
-        if target_name == "session_insights" and scope_filter.session_ids is not None:
+        if target_name == "session_insights" and repair_fn is repair_session_insights:
             # The session-insights repair fn understands a narrowed
-            # session-id scope directly; forward it so a one-session
-            # plan only touches that one session's insights.
+            # session-id scope directly; it also emits lower-level
+            # materialization progress. Forward both so one large target
+            # is not silent until the final per-target checkpoint.
             result = repair_session_insights(
                 config,
                 dry_run,
                 session_ids=scope_filter.session_ids,
+                progress_callback=_emit_target_progress,
             )
         else:
             result = repair_fn(config, dry_run)

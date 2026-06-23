@@ -174,6 +174,19 @@ class TestHandleQueryMode:
         request = mock_execute.call_args[0][1]
         assert request.query_params()["query"] == ("python", "error")
 
+    def test_root_json_flag_reaches_query_request(self, cli_runner: CliRunner) -> None:
+        with (
+            patch("polylogue.cli.query.execute_query_request") as mock_execute,
+            patch("polylogue.cli.click_app.should_use_plain", return_value=True),
+        ):
+            result = cli_runner.invoke(click_cli, ["find", "FTS", "--json"], catch_exceptions=False)
+
+        assert result.exit_code == 0
+        request = mock_execute.call_args[0][1]
+        assert request.query_terms == ("FTS",)
+        assert request.params["output_format"] == "json"
+        assert request.params["plain"] is True
+
 
 def test_read_verb_messages_view_forwards_options(cli_runner: CliRunner) -> None:
     """read --view messages routes pagination and projection flags to run_messages."""

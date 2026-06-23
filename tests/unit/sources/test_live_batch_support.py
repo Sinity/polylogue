@@ -424,6 +424,110 @@ def test_streaming_sized_browser_capture_json_uses_native_payload_detection(
         )
 
 
+def test_generic_large_browser_capture_json_uses_prefix_detection_without_unknown_export(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    root = tmp_path / "inbox"
+    root.mkdir()
+    source = root / "large-browser-capture.json"
+    capture_payload = {
+        "polylogue_capture_kind": "browser_llm_session",
+        "schema_version": 1,
+        "capture_id": "chatgpt:generic-large",
+        "provenance": {
+            "source_url": "https://chatgpt.com/c/generic-large",
+            "page_title": "ChatGPT - Generic capture",
+            "captured_at": "2026-04-24T00:00:00+00:00",
+            "adapter_name": "chatgpt-dom-v1",
+            "capture_mode": "snapshot",
+        },
+        "session": {
+            "provider": "chatgpt",
+            "provider_session_id": "generic-large",
+            "title": "Generic inbox browser capture",
+            "updated_at": "2026-04-24T00:00:01+00:00",
+            "turns": [
+                {"provider_turn_id": "u1", "role": "user", "text": "Generic user text", "ordinal": 0},
+                {"provider_turn_id": "a1", "role": "assistant", "text": "Generic answer text", "ordinal": 1},
+            ],
+        },
+        "padding": "x" * 256,
+    }
+    source.write_text(json.dumps(capture_payload), encoding="utf-8")
+    index_db = tmp_path / "index.db"
+    source_db = tmp_path / "source.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    cursor = CursorStore(index_db)
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="inbox", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+
+    monkeypatch.setattr("polylogue.sources.live.batch._STREAMING_FULL_INGEST_BYTES", 1)
+    monkeypatch.setattr("polylogue.sources.live.batch_support._STREAMING_FULL_INGEST_BYTES", 1)
+
+    result = processor._ingest_full_paths_sync([source], source_name="inbox")
+
+    assert result.succeeded == [source]
+    assert result.failed == []
+    assert result.ingested_session_count == 1
+    assert result.ingested_message_count == 2
+    assert result.raw_source_names[source] == "chatgpt"
+    with sqlite3.connect(source_db) as conn:
+        assert conn.execute("SELECT origin, native_id FROM raw_sessions").fetchone() == (
+            "chatgpt-export",
+            "generic-large",
+        )
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT native_id, title, message_count FROM sessions").fetchone() == (
+            "generic-large",
+            "Generic inbox browser capture",
+            2,
+        )
+
+
+def test_large_browser_capture_prefix_planning_does_not_materialize_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "large-browser-capture.json"
+    target.write_text(
+        json.dumps(
+            {
+                "polylogue_capture_kind": "browser_llm_session",
+                "schema_version": 1,
+                "session": {
+                    "provider": "chatgpt",
+                    "provider_session_id": "prefix-only",
+                    "turns": [{"provider_turn_id": "u1", "role": "user", "text": "x"}],
+                },
+                "provenance": {
+                    "source_url": "https://chatgpt.com/c/prefix-only",
+                    "captured_at": "2026-04-24T00:00:00+00:00",
+                    "adapter_name": "chatgpt-dom-v1",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("polylogue.sources.live.batch_support._path_size", lambda path: 32 * 1024 * 1024)
+
+    def fail_read_bytes(_path: Path) -> bytes:
+        raise AssertionError("large browser-capture planning must not materialize the whole file")
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read_bytes)
+
+    assert _detect_provider_from_path_sample(target, Provider.UNKNOWN) is Provider.CHATGPT
+    assert _parse_path_as_session_artifact(target, provider=Provider.CHATGPT) is True
+
+
 def test_full_ingest_bootstraps_archive_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

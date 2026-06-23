@@ -37,7 +37,7 @@ def test_build_document_includes_live_registry_sections() -> None:
                     description="Read-only live archive smoke lane.",
                     timeout_s=300,
                     category="live",
-                    execution=devtools_execution("lab scenario", "run", "archive-smoke", "--live", "--tier", "0"),
+                    execution=devtools_execution("lab smoke", "run", "archive-smoke", "--live", "--tier", "0"),
                 ),
                 LaneEntry(
                     name="runtime-substrate-hardening",

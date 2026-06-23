@@ -14,8 +14,8 @@ via :func:`resolve_theme_mode`. Precedence (highest first):
 3. ``COLORFGBG`` / ``TERM_BACKGROUND`` hints when set to ``auto``.
 4. Default: ``"dark"``.
 
-``POLYLOGUE_FORCE_PLAIN`` is orthogonal — plain mode strips Rich layout
-entirely, independent of the resolved theme.
+``POLYLOGUE_FORCE_PLAIN`` and ``NO_COLOR`` are orthogonal — plain mode strips
+Rich layout entirely, independent of the resolved theme.
 """
 
 from __future__ import annotations
@@ -153,6 +153,7 @@ DARK_THEME = {
     "bg_primary": "#0a0a0c",
     "bg_secondary": "#16161a",
     "bg_elevated": "#1e1e24",
+    "bg_code": "#282c34",
     # Text
     "text_primary": "#f8f9fa",
     "text_secondary": "#94a3b8",
@@ -162,6 +163,7 @@ DARK_THEME = {
     "accent_glow": "rgba(99, 102, 241, 0.4)",
     # Borders
     "border": "#2d2d35",
+    "border_subtle": "#1f1f23",
     # Special
     "glass": "rgba(255, 255, 255, 0.03)",
     "glass_border": "rgba(255, 255, 255, 0.1)",
@@ -171,12 +173,14 @@ LIGHT_THEME = {
     "bg_primary": "#ffffff",
     "bg_secondary": "#f9fafb",
     "bg_elevated": "#ffffff",
+    "bg_code": "#f6f8fa",
     "text_primary": "#111827",
     "text_secondary": "#4b5563",
     "text_muted": "#9ca3af",
     "accent": "#6366f1",
     "accent_glow": "rgba(99, 102, 241, 0.2)",
     "border": "#e5e7eb",
+    "border_subtle": "#f3f4f6",
     "glass": "rgba(0, 0, 0, 0.02)",
     "glass_border": "rgba(0, 0, 0, 0.08)",
 }
@@ -208,6 +212,20 @@ THINKING_STYLE = {
 # =============================================================================
 
 SEMANTIC_TOKENS: tuple[str, ...] = ("error", "warning", "ok", "dim", "info")
+SyntaxSurface = Literal["terminal_code", "terminal_diff", "html"]
+
+_SYNTAX_THEME_BY_MODE: dict[ThemeMode, dict[SyntaxSurface, str]] = {
+    "dark": {
+        "terminal_code": "monokai",
+        "terminal_diff": "monokai",
+        "html": "monokai",
+    },
+    "light": {
+        "terminal_code": "default",
+        "terminal_diff": "default",
+        "html": "default",
+    },
+}
 
 
 def _semantic_style_map(mode: ThemeMode) -> dict[str, str]:
@@ -239,6 +257,18 @@ def semantic_style(token: str, mode: ThemeMode | None = None) -> str:
         raise KeyError(f"unknown semantic token: {token!r}")
     active = mode if mode is not None else resolve_theme_mode()
     return _semantic_style_map(active)[token]
+
+
+def syntax_theme(surface: SyntaxSurface, mode: ThemeMode | None = None) -> str:
+    """Return the Pygments/Rich syntax style for a semantic render surface.
+
+    Code and diff renderers should use this resolver instead of hard-coded
+    call-site styles so terminal and HTML surfaces stay aligned with the active
+    theme. Plain/no-color callers still bypass syntax color before this helper
+    is reached.
+    """
+    active = mode if mode is not None else resolve_theme_mode()
+    return _SYNTAX_THEME_BY_MODE[active][surface]
 
 
 def resolve_theme_mode() -> ThemeMode:
@@ -364,3 +394,8 @@ def css_variables(theme: str = "dark") -> dict[str, str]:
         variables[f"--{role_name}-border"] = rc.css_border(0.3)
 
     return variables
+
+
+def css_variable_declarations(theme: str = "dark") -> str:
+    """Return theme CSS variables as indented ``name: value;`` declarations."""
+    return "\n".join(f"            {name}: {value};" for name, value in css_variables(theme).items())

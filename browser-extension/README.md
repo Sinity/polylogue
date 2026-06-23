@@ -75,6 +75,7 @@ Before loading a GUI browser, run the branch-local background/receiver smoke:
 
 ```bash
 devtools workspace dev-loop --extension-smoke
+devtools workspace dev-loop --browser-provider-smoke
 ```
 
 The smoke starts a temporary local receiver, imports the actual background
@@ -82,7 +83,41 @@ worker with a Chrome API mock, proves unauthenticated rejection, configures the
 receiver token, checks receiver status, and posts a deterministic capture
 envelope. Artifacts are written under `.cache/dev-loop/<run-id>/browser/`.
 This proves the extension service-worker HTTP path without using real
-ChatGPT/Claude.ai profile data.
+ChatGPT/Claude.ai profile data. The provider page smoke then loads the unpacked
+extension into real headless Chrome/Chromium, serves deterministic ChatGPT and
+Claude fixture pages on their supported origins, triggers the content-script
+capture path, and verifies provider/adapter identity, receiver request ids, and
+spool artifacts without copying browser profiles or writing raw turn text into
+the summary.
+
+For live authenticated ChatGPT/Claude.ai work, generate the operator-local plan
+and run the copied-profile proof from the repo instead of inventing a private
+checklist:
+
+```bash
+devtools workspace dev-loop --browser-plan
+devtools workspace dev-loop --browser-live-proof \
+  --browser-live-profile-dir .local/browser-profiles/<run-id>-chrome-user-data \
+  --browser-live-chatgpt-url https://chatgpt.com/c/<conversation-id> \
+  --browser-live-claude-url https://claude.ai/chat/<conversation-id>
+```
+
+`--browser-plan` writes `browser-live-proof-checklist.md` and
+`browser-live-proof.env.example` under the run-local browser artifact directory.
+`--browser-live-proof` opens a visible local Chrome/Chromium with the unpacked
+extension and the operator-approved copied profile, configures a temporary
+branch-local receiver, asks content scripts to capture live provider pages, and
+writes a redacted summary plus request-id/artifact evidence. It refuses CI by
+default and rejects common live profile roots or Chrome `Singleton*` lock files
+unless the operator explicitly overrides that guardrail in the local shell.
+Raw captured content remains only in ignored local receiver spool artifacts.
+
+If headless Chromium cannot expose MV3 extension service workers, the browser
+smokes fail cleanly with `Polylogue extension service worker not found` in the
+stderr artifact. Set `POLYLOGUE_BROWSER_SMOKE_CHROME` or
+`POLYLOGUE_PROVIDER_SMOKE_CHROME` to a Chrome/Chromium binary with extension
+service-worker support, or use `--browser-live-proof` with a visible copied
+profile for operator-local live-page evidence.
 
 ## Supported Sites
 
@@ -101,7 +136,7 @@ pages the badge shows grey and no data is sent.
 - **Last capture**: popup shows the timestamp and provider of the most recent capture
 - **Offline**: badge turns red when the receiver is down
 - **No background collection**: the extension only reads the DOM when you are actively on a supported page
-- **Local only**: content is posted to `127.0.0.1:8765` and never leaves your machine
+- **Local only**: content is posted to the configured `127.0.0.1` receiver and never leaves your machine
 - **Privacy diagnostics**: the popup shows capture counts and timestamps, never message content
 
 ## Troubleshooting
@@ -123,7 +158,7 @@ Browser (ChatGPT/Claude page/app state)
     ▼
 Extension popup / background
     │
-    │  HTTP POST to 127.0.0.1:8765
+    │  HTTP POST to configured 127.0.0.1 receiver
     ▼
 polylogue browser-capture serve (Python)
     │
@@ -141,6 +176,9 @@ npm run test:watch    # watch mode
 npm run lint          # eslint
 npm run validate      # in-tree manifest validation
 npm run dev-loop-smoke # background worker -> local receiver smoke
+npm run dev-loop-browser-smoke # real Chrome service worker -> local receiver smoke
+npm run dev-loop-provider-smoke # real Chrome content scripts -> deterministic provider fixtures
+npm run dev-loop-live-provider-proof # visible copied-profile live provider proof
 npm run build         # build Chrome .zip + Firefox .xpi under dist/
 npm run screenshots   # capture store-submission screenshots (Playwright)
 ```

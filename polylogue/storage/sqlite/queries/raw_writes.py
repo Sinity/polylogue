@@ -23,10 +23,11 @@ async def save_raw_session(
         origin = origin_from_provider(record.payload_provider)
     else:
         origin = origin_from_provider(Provider.from_string(record.source_name or "unknown"))
+    blob_hash_hex = record.blob_hash or record.raw_id
     try:
-        blob_hash = bytes.fromhex(record.raw_id)
+        blob_hash = bytes.fromhex(blob_hash_hex)
     except ValueError:
-        blob_hash = record.raw_id.encode("utf-8")
+        blob_hash = blob_hash_hex.encode("utf-8")
     if len(blob_hash) != 32:
         blob_hash = hashlib.sha256(blob_hash).digest()
 

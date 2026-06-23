@@ -101,6 +101,72 @@
       "message_types": {
         "message": -1.<HASH>
       }
+    },
+    "generated_at": "<TIMESTAMP>",
+    "stale": false,
+    "stale_age_s": null,
+    "budget_exceeded": false,
+    "complete_families": [
+      "total_counts",
+      "origins",
+      "tags",
+      "repos",
+      "message_types",
+      "action_types",
+      "has_flags"
+    ],
+    "deferred_families": {},
+    "family_errors": {},
+    "family_status": {
+      "total_counts": {
+        "state": "complete",
+        "reason": null,
+        "error": null,
+        "stale": false,
+        "stale_age_s": null
+      },
+      "origins": {
+        "state": "complete",
+        "reason": null,
+        "error": null,
+        "stale": false,
+        "stale_age_s": null
+      },
+      "tags": {
+        "state": "complete",
+        "reason": null,
+        "error": null,
+        "stale": false,
+        "stale_age_s": null
+      },
+      "repos": {
+        "state": "complete",
+        "reason": null,
+        "error": null,
+        "stale": false,
+        "stale_age_s": null
+      },
+      "message_types": {
+        "state": "complete",
+        "reason": null,
+        "error": null,
+        "stale": false,
+        "stale_age_s": null
+      },
+      "action_types": {
+        "state": "complete",
+        "reason": null,
+        "error": null,
+        "stale": false,
+        "stale_age_s": null
+      },
+      "has_flags": {
+        "state": "complete",
+        "reason": null,
+        "error": null,
+        "stale": false,
+        "stale_age_s": null
+      }
     }
   }
   
@@ -273,116 +339,9 @@
       }
     },
     "archive_readiness": {
-      "checked": true,
-      "reason": null,
-      "source_check_available": true,
-      "ready_surface_count": 4,
-      "blocked_surface_count": 5,
-      "total_surface_count": 9,
-      "counts": {
-        "session_count": 2,
-        "raw_link_count": 2,
-        "missing_raw_session_count": 0,
-        "message_count": 10,
-        "text_block_count": 27,
-        "messages_fts_count": 27,
-        "profile_row_count": 0,
-        "missing_profile_row_count": 2,
-        "work_event_row_count": 0,
-        "phase_row_count": 0,
-        "thread_count": 2,
-        "action_count": 0,
-        "missing_session_profile_materialization": 2,
-        "missing_work_events_materialization": 2,
-        "missing_phases_materialization": 2,
-        "missing_thread_materialization": 2,
-        "missing_latency_materialization": 2
-      },
-      "surfaces": {
-        "archive_sessions": {
-          "ready": true,
-          "blockers": [],
-          "evidence": {
-            "session_count": 2,
-            "message_count": 10
-          }
-        },
-        "raw_artifacts": {
-          "ready": true,
-          "blockers": [],
-          "evidence": {
-            "source_check_available": true,
-            "raw_link_count": 2,
-            "missing_raw_session_count": 0
-          }
-        },
-        "search": {
-          "ready": true,
-          "blockers": [],
-          "evidence": {
-            "text_block_count": 27,
-            "messages_fts_count": 27
-          }
-        },
-        "session_profiles": {
-          "ready": false,
-          "blockers": [
-            "missing_profile_rows",
-            "missing_session_profile_materialization"
-          ],
-          "evidence": {
-            "profile_row_count": 0,
-            "missing_profile_row_count": 2,
-            "missing_materialization_count": 2
-          }
-        },
-        "timeline_work_events": {
-          "ready": false,
-          "blockers": [
-            "missing_work_events_materialization"
-          ],
-          "evidence": {
-            "work_event_row_count": 0,
-            "missing_materialization_count": 2
-          }
-        },
-        "timeline_phases": {
-          "ready": false,
-          "blockers": [
-            "missing_phases_materialization"
-          ],
-          "evidence": {
-            "phase_row_count": 0,
-            "missing_materialization_count": 2
-          }
-        },
-        "threads": {
-          "ready": false,
-          "blockers": [
-            "missing_thread_materialization"
-          ],
-          "evidence": {
-            "thread_count": 2,
-            "missing_materialization_count": 2
-          }
-        },
-        "tool_usage": {
-          "ready": true,
-          "blockers": [],
-          "evidence": {
-            "action_count": 0
-          }
-        },
-        "latency_profiles": {
-          "ready": false,
-          "blockers": [
-            "missing_latency_materialization"
-          ],
-          "evidence": {
-            "missing_materialization_count": 2
-          }
-        }
-      }
+      "checked": false,
+      "reason": "direct_status_default_skips_exact_archive_readiness",
+      "surfaces": {}
     },
     "archive_facade_routes": {
       "checked": true,
@@ -1099,151 +1058,32 @@
       "unsupported_primary_methods": [],
       "final_shape_blockers": []
     },
+    "raw_materialization_readiness": {
+      "available": true,
+      "total": 0,
+      "critical": 0,
+      "warning": 0,
+      "actionable": 0,
+      "blocked": 0,
+      "sampled_rows": []
+    },
     "component_readiness": {
-      "archive_sessions": {
-        "component": "archive_sessions",
+      "raw_materialization": {
+        "component": "raw_materialization",
         "scope": "archive",
         "state": "ready",
         "summary": "ready",
         "last_success": null,
         "last_attempt": null,
         "counts": {
-          "session_count": 2,
-          "message_count": 10
+          "total": 0,
+          "critical": 0,
+          "warning": 0,
+          "actionable": 0,
+          "blocked": 0
         },
         "caveats": [],
         "repair_hint": null,
-        "evidence_refs": []
-      },
-      "raw_artifacts": {
-        "component": "raw_artifacts",
-        "scope": "source",
-        "state": "ready",
-        "summary": "ready",
-        "last_success": null,
-        "last_attempt": null,
-        "counts": {
-          "source_check_available": true,
-          "raw_link_count": 2,
-          "missing_raw_session_count": 0
-        },
-        "caveats": [],
-        "repair_hint": null,
-        "evidence_refs": []
-      },
-      "search": {
-        "component": "search",
-        "scope": "lexical",
-        "state": "ready",
-        "summary": "ready",
-        "last_success": null,
-        "last_attempt": null,
-        "counts": {
-          "text_block_count": 27,
-          "messages_fts_count": 27
-        },
-        "caveats": [],
-        "repair_hint": null,
-        "evidence_refs": []
-      },
-      "session_profiles": {
-        "component": "session_profiles",
-        "scope": "insights",
-        "state": "stale",
-        "summary": "missing_profile_rows, missing_session_profile_materialization",
-        "last_success": null,
-        "last_attempt": null,
-        "counts": {
-          "profile_row_count": 0,
-          "missing_profile_row_count": 2,
-          "missing_materialization_count": 2
-        },
-        "caveats": [
-          "missing_profile_rows",
-          "missing_session_profile_materialization"
-        ],
-        "repair_hint": "polylogue ops maintenance run --target session_insights",
-        "evidence_refs": []
-      },
-      "timeline_work_events": {
-        "component": "timeline_work_events",
-        "scope": "insights",
-        "state": "stale",
-        "summary": "missing_work_events_materialization",
-        "last_success": null,
-        "last_attempt": null,
-        "counts": {
-          "work_event_row_count": 0,
-          "missing_materialization_count": 2
-        },
-        "caveats": [
-          "missing_work_events_materialization"
-        ],
-        "repair_hint": "polylogue ops maintenance run --target session_insights",
-        "evidence_refs": []
-      },
-      "timeline_phases": {
-        "component": "timeline_phases",
-        "scope": "insights",
-        "state": "stale",
-        "summary": "missing_phases_materialization",
-        "last_success": null,
-        "last_attempt": null,
-        "counts": {
-          "phase_row_count": 0,
-          "missing_materialization_count": 2
-        },
-        "caveats": [
-          "missing_phases_materialization"
-        ],
-        "repair_hint": "polylogue ops maintenance run --target session_insights",
-        "evidence_refs": []
-      },
-      "threads": {
-        "component": "threads",
-        "scope": "insights",
-        "state": "stale",
-        "summary": "missing_thread_materialization",
-        "last_success": null,
-        "last_attempt": null,
-        "counts": {
-          "thread_count": 2,
-          "missing_materialization_count": 2
-        },
-        "caveats": [
-          "missing_thread_materialization"
-        ],
-        "repair_hint": "polylogue ops maintenance run --target session_insights",
-        "evidence_refs": []
-      },
-      "tool_usage": {
-        "component": "tool_usage",
-        "scope": "actions",
-        "state": "ready",
-        "summary": "ready",
-        "last_success": null,
-        "last_attempt": null,
-        "counts": {
-          "action_count": 0
-        },
-        "caveats": [],
-        "repair_hint": null,
-        "evidence_refs": []
-      },
-      "latency_profiles": {
-        "component": "latency_profiles",
-        "scope": "insights",
-        "state": "stale",
-        "summary": "missing_latency_materialization",
-        "last_success": null,
-        "last_attempt": null,
-        "counts": {
-          "missing_materialization_count": 2
-        },
-        "caveats": [
-          "missing_latency_materialization"
-        ],
-        "repair_hint": "polylogue ops maintenance run --target session_insights",
         "evidence_refs": []
       },
       "embeddings": {
@@ -1513,16 +1353,17 @@
       "transforms": {
         "component": "transforms",
         "scope": "recovery",
-        "state": "ready",
-        "summary": "ready",
+        "state": "blocked",
+        "summary": "direct_status_default_skips_exact_archive_readiness",
         "last_success": null,
         "last_attempt": null,
         "counts": {
           "transform_count": 1,
-          "session_count": 2,
           "recovery_transform_version": 1
         },
-        "caveats": [],
+        "caveats": [
+          "direct_status_default_skips_exact_archive_readiness"
+        ],
         "repair_hint": null,
         "evidence_refs": [
           "transform_registry"

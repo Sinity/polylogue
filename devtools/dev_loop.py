@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
 import re
 import shlex
+import signal
 import socket
 import subprocess
 import sys
@@ -16,8 +18,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from http.client import HTTPConnection
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from threading import Thread
 from typing import Any, TextIO, cast
+from urllib.parse import urlsplit, urlunsplit
 
 from devtools import repo_root as _repo_root
 from polylogue.browser_capture.server import make_server
@@ -37,6 +41,14 @@ class CommandResult:
     stderr: str
 
 
+@dataclass(frozen=True, slots=True)
+class ProcessResult:
+    exit_code: int
+    stdout: str
+    stderr: str
+    timed_out: bool
+
+
 def _run_command(args: list[str], *, timeout_s: float = 2.0) -> CommandResult:
     try:
         result = subprocess.run(
@@ -51,10 +63,108 @@ def _run_command(args: list[str], *, timeout_s: float = 2.0) -> CommandResult:
     return CommandResult(exit_code=result.returncode, stdout=result.stdout.strip(), stderr=result.stderr.strip())
 
 
+def _terminate_process_tree(process: subprocess.Popen[str], sig: int) -> None:
+    try:
+        os.killpg(process.pid, sig)
+    except (AttributeError, ProcessLookupError, PermissionError, OSError):
+        try:
+            if sig == signal.SIGKILL:
+                process.kill()
+            else:
+                process.terminate()
+        except OSError:
+            return
+
+
+def _run_process_tree(
+    args: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    timeout_s: float,
+) -> ProcessResult:
+    """Run a subprocess tree and kill the whole tree on timeout.
+
+    Browser smokes spawn Chrome through Node. Stdout/stderr are captured via
+    files rather than pipes so Chrome grandchildren cannot keep a pipe open and
+    wedge the parent after the Node process has exited.
+    """
+
+    with TemporaryDirectory(prefix="polylogue-process-") as temp_dir:
+        stdout_path = Path(temp_dir) / "stdout.txt"
+        stderr_path = Path(temp_dir) / "stderr.txt"
+        with (
+            stdout_path.open("w+", encoding="utf-8") as stdout_file,
+            stderr_path.open(
+                "w+",
+                encoding="utf-8",
+            ) as stderr_file,
+        ):
+            try:
+                process = subprocess.Popen(
+                    args,
+                    cwd=str(cwd),
+                    env=env,
+                    stdout=stdout_file,
+                    stderr=stderr_file,
+                    text=True,
+                    start_new_session=True,
+                )
+            except OSError as exc:
+                return ProcessResult(exit_code=127, stdout="", stderr=f"{type(exc).__name__}: {exc}\n", timed_out=False)
+            timed_out = False
+            try:
+                exit_code = int(process.wait(timeout=timeout_s))
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                _terminate_process_tree(process, signal.SIGTERM)
+                try:
+                    exit_code = int(process.wait(timeout=5))
+                except subprocess.TimeoutExpired:
+                    _terminate_process_tree(process, signal.SIGKILL)
+                    try:
+                        exit_code = int(process.wait(timeout=5))
+                    except subprocess.TimeoutExpired:
+                        exit_code = 124
+            stdout_file.flush()
+            stderr_file.flush()
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            stdout = stdout_file.read()
+            stderr = stderr_file.read()
+            if timed_out and exit_code != 124:
+                exit_code = 124
+            return ProcessResult(exit_code=exit_code, stdout=stdout, stderr=stderr, timed_out=timed_out)
+
+
 def _safe_artifact_name(command: list[str]) -> str:
     raw = "-".join(Path(part).name if index == 0 else part for index, part in enumerate(command))
     name = _RUN_ID_SAFE_RE.sub("-", raw).strip("-").lower()
     return name[:80] or "command"
+
+
+def _hash_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _redact_live_provider_url(value: str) -> str:
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return "unparseable-url"
+    if not parsed.scheme or not parsed.netloc:
+        return "unparseable-url"
+    path_parts = [part for part in parsed.path.split("/") if part]
+    redacted_parts: list[str] = []
+    for index, part in enumerate(path_parts):
+        if index == 0 and part in {"c", "chat"}:
+            redacted_parts.append(part)
+        elif re.search(r"[A-Za-z0-9_-]{10,}", part):
+            redacted_parts.append(f"<sha256:{_hash_text(part)[:12]}>")
+        else:
+            redacted_parts.append(part)
+    redacted_path = "/" + "/".join(redacted_parts) if redacted_parts else "/"
+    return urlunsplit((parsed.scheme, parsed.netloc, redacted_path, "", ""))
 
 
 def _dev_loop_env_snapshot(env: dict[str, str]) -> dict[str, str]:
@@ -62,7 +172,13 @@ def _dev_loop_env_snapshot(env: dict[str, str]) -> dict[str, str]:
     for key in sorted(env):
         if not (key.startswith("POLYLOGUE_") or key in {"PATH", "PYTHONPATH"}):
             continue
-        snapshot[key] = "[redacted]" if _SENSITIVE_ENV_NAME_RE.search(key) else env[key]
+        if _SENSITIVE_ENV_NAME_RE.search(key):
+            snapshot[key] = "[redacted]"
+        elif key in {"POLYLOGUE_LIVE_PROOF_CHATGPT_URL", "POLYLOGUE_LIVE_PROOF_CLAUDE_URL"}:
+            snapshot[key] = _redact_live_provider_url(env[key])
+            snapshot[f"{key}_SHA256"] = _hash_text(env[key])
+        else:
+            snapshot[key] = env[key]
     return snapshot
 
 
@@ -481,32 +597,19 @@ def run_browser_smoke(*, preflight: dict[str, Any]) -> dict[str, object]:
     env_path.write_text(json.dumps(_dev_loop_env_snapshot(env), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     started = time.monotonic()
     try:
-        result = subprocess.run(
-            ["npm", "run", "dev-loop-browser-smoke", "--silent"],
-            cwd=str(extension_root),
+        result = _run_process_tree(
+            ["node", "scripts/dev-loop-browser-smoke.mjs"],
+            cwd=extension_root,
             env=env,
-            capture_output=True,
-            text=True,
-            timeout=35,
-            check=False,
+            timeout_s=35,
         )
-    except subprocess.TimeoutExpired as exc:
-        stdout = _decode_timeout_stream(exc.stdout)
-        stderr = _decode_timeout_stream(exc.stderr)
-        result_payload: dict[str, object] | None = None
-        exit_code = 124
-        stderr = (stderr + "\n" if stderr else "") + "browser smoke timed out after 35s\n"
-    except OSError as exc:
-        stdout = ""
-        stderr = f"{type(exc).__name__}: {exc}\n"
-        result_payload = None
-        exit_code = 127
-    else:
         stdout = result.stdout
         stderr = result.stderr
-        exit_code = int(result.returncode)
-        result_payload = None
-        if result_path.exists():
+        result_payload: dict[str, object] | None = None
+        exit_code = int(result.exit_code)
+        if result.timed_out:
+            stderr = (stderr + "\n" if stderr else "") + "browser smoke timed out after 35s\n"
+        elif result_path.exists():
             result_payload = json.loads(result_path.read_text(encoding="utf-8"))
     finally:
         server.shutdown()
@@ -568,6 +671,386 @@ def run_browser_smoke(*, preflight: dict[str, Any]) -> dict[str, object]:
             "extension_id": extension_id,
             "artifact_ref": artifact_ref,
             "artifact_path": str(artifact_path) if artifact_path is not None else None,
+            "artifacts": payload["artifacts"],
+        },
+    )
+    return payload
+
+
+def _provider_smoke_artifacts(
+    result_payload: dict[str, object] | None,
+    *,
+    spool_path: Path,
+) -> tuple[dict[str, bool], dict[str, str], dict[str, str]]:
+    provider_statuses: dict[str, bool] = {}
+    artifact_refs: dict[str, str] = {}
+    artifact_paths: dict[str, str] = {}
+    if not isinstance(result_payload, dict):
+        return provider_statuses, artifact_refs, artifact_paths
+    providers = result_payload.get("providers")
+    if not isinstance(providers, dict):
+        return provider_statuses, artifact_refs, artifact_paths
+    for provider_name, provider_payload in providers.items():
+        name = str(provider_name)
+        if not isinstance(provider_payload, dict):
+            provider_statuses[name] = False
+            continue
+        provider_statuses[name] = provider_payload.get("ok") is True
+        capture_result = provider_payload.get("capture_result")
+        if not isinstance(capture_result, dict):
+            continue
+        artifact_ref = capture_result.get("artifact_ref")
+        if not isinstance(artifact_ref, str):
+            continue
+        artifact_refs[name] = artifact_ref
+        artifact_paths[name] = str(spool_path / artifact_ref)
+    return provider_statuses, artifact_refs, artifact_paths
+
+
+_LIVE_PROOF_PROVIDERS = ("chatgpt", "claude")
+
+
+def _parse_provider_csv(raw: str) -> list[str]:
+    providers = [part.strip().lower() for part in raw.split(",") if part.strip()]
+    deduped = list(dict.fromkeys(providers))
+    invalid = [provider for provider in deduped if provider not in _LIVE_PROOF_PROVIDERS]
+    if invalid:
+        raise ValueError(f"unsupported browser live provider(s): {', '.join(invalid)}")
+    if not deduped:
+        raise ValueError("at least one browser live provider is required")
+    return deduped
+
+
+def _default_live_profile_dir(preflight: dict[str, Any]) -> Path:
+    return Path(str(preflight["repo_root"])) / ".local" / "browser-profiles" / f"{preflight['run_id']}-chrome-user-data"
+
+
+def _default_live_provider_urls() -> dict[str, str]:
+    return {
+        "chatgpt": "https://chatgpt.com/c/<conversation-id>",
+        "claude": "https://claude.ai/chat/<conversation-id>",
+    }
+
+
+def run_browser_provider_smoke(*, preflight: dict[str, Any]) -> dict[str, object]:
+    """Run real Chrome content scripts against deterministic provider fixture pages."""
+
+    artifacts = preflight.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise ValueError("preflight payload is missing artifact paths")
+    browser_dir = Path(str(artifacts["browser_dir"]))
+    browser_dir.mkdir(parents=True, exist_ok=True)
+    event_path = Path(str(artifacts.get("dev_events", Path(str(preflight["run_log_dir"])) / "dev-loop.events.jsonl")))
+    extension_root = Path(str(preflight["repo_root"])) / "browser-extension"
+    spool_path = browser_dir / "browser-provider-smoke-spool"
+    profile_dir = browser_dir / "browser-provider-smoke-profile"
+    summary_path = browser_dir / "browser-provider-smoke.json"
+    result_path = browser_dir / "browser-provider-smoke-result.json"
+    stdout_path = browser_dir / "browser-provider-smoke.stdout"
+    stderr_path = browser_dir / "browser-provider-smoke.stderr"
+    env_path = browser_dir / "browser-provider-smoke.env.json"
+
+    _write_dev_loop_event(
+        event_path,
+        preflight=preflight,
+        surface="browser_provider",
+        event_type="browser_provider_smoke_requested",
+        status="starting",
+        payload={
+            "extension_root": str(extension_root),
+            "profile_dir": str(profile_dir),
+            "spool_path": str(spool_path),
+            "providers": ["chatgpt", "claude"],
+        },
+    )
+
+    spool_path.mkdir(parents=True, exist_ok=True)
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    server = make_server(
+        "127.0.0.1",
+        0,
+        spool_path=spool_path,
+        auth_token=_RECEIVER_SMOKE_TOKEN,
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address[:2]
+    if isinstance(host, bytes):
+        host = host.decode("ascii")
+    receiver_url = f"http://{host}:{port}"
+    env = os.environ.copy()
+    env.update(
+        {
+            "POLYLOGUE_PROVIDER_SMOKE_EXTENSION_ROOT": str(extension_root),
+            "POLYLOGUE_PROVIDER_SMOKE_KEEP_PROFILE": "1",
+            "POLYLOGUE_PROVIDER_SMOKE_OUT": str(result_path),
+            "POLYLOGUE_PROVIDER_SMOKE_TIMEOUT_MS": os.environ.get("POLYLOGUE_PROVIDER_SMOKE_TIMEOUT_MS", "10000"),
+            "POLYLOGUE_PROVIDER_SMOKE_PROFILE_DIR": str(profile_dir),
+            "POLYLOGUE_PROVIDER_SMOKE_RECEIVER_TOKEN": _RECEIVER_SMOKE_TOKEN,
+            "POLYLOGUE_PROVIDER_SMOKE_RECEIVER_URL": receiver_url,
+            "POLYLOGUE_PROVIDER_SMOKE_SPOOL_DIR": str(spool_path),
+        }
+    )
+    env_path.write_text(json.dumps(_dev_loop_env_snapshot(env), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    started = time.monotonic()
+    try:
+        result = _run_process_tree(
+            ["node", "scripts/dev-loop-provider-smoke.mjs"],
+            cwd=extension_root,
+            env=env,
+            timeout_s=45,
+        )
+        stdout = result.stdout
+        stderr = result.stderr
+        result_payload: dict[str, object] | None = None
+        exit_code = int(result.exit_code)
+        if result.timed_out:
+            stderr = (stderr + "\n" if stderr else "") + "browser provider smoke timed out after 45s\n"
+        elif result_path.exists():
+            result_payload = json.loads(result_path.read_text(encoding="utf-8"))
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    duration_ms = int((time.monotonic() - started) * 1000)
+    stdout_path.write_text(stdout, encoding="utf-8")
+    stderr_path.write_text(stderr, encoding="utf-8")
+    provider_statuses, artifact_refs, artifact_paths = _provider_smoke_artifacts(
+        result_payload,
+        spool_path=spool_path,
+    )
+    extension_id = None
+    manifest = None
+    privacy_posture = None
+    if isinstance(result_payload, dict):
+        extension_id = result_payload.get("extension_id")
+        raw_manifest = result_payload.get("manifest")
+        manifest = raw_manifest if isinstance(raw_manifest, dict) else None
+        raw_privacy_posture = result_payload.get("privacy_posture")
+        privacy_posture = raw_privacy_posture if isinstance(raw_privacy_posture, str) else None
+    ok = (
+        exit_code == 0
+        and bool(provider_statuses)
+        and all(provider_statuses.values())
+        and bool(artifact_paths)
+        and all(Path(path).exists() for path in artifact_paths.values())
+    )
+    payload: dict[str, object] = {
+        "ok": ok,
+        "exit_code": exit_code,
+        "duration_ms": duration_ms,
+        "extension_id": extension_id,
+        "extension_root": str(extension_root),
+        "manifest": manifest,
+        "privacy_posture": privacy_posture,
+        "profile_dir": str(profile_dir),
+        "receiver_url": receiver_url,
+        "spool_path": str(spool_path),
+        "provider_statuses": provider_statuses,
+        "artifact_refs": artifact_refs,
+        "artifact_paths": artifact_paths,
+        "result": result_payload,
+        "artifacts": {
+            "stdout": str(stdout_path),
+            "stderr": str(stderr_path),
+            "summary": str(summary_path),
+            "result": str(result_path),
+            "env": str(env_path),
+            "profile": str(profile_dir),
+            "spool": str(spool_path),
+        },
+    }
+    summary_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _write_dev_loop_event(
+        event_path,
+        preflight=preflight,
+        surface="browser_provider",
+        event_type="browser_provider_smoke_finished",
+        status="ok" if ok else "failed",
+        payload={
+            "exit_code": exit_code,
+            "duration_ms": duration_ms,
+            "extension_id": extension_id,
+            "provider_statuses": provider_statuses,
+            "artifact_refs": artifact_refs,
+            "artifact_paths": artifact_paths,
+            "artifacts": payload["artifacts"],
+        },
+    )
+    return payload
+
+
+def run_browser_live_proof(
+    *,
+    preflight: dict[str, Any],
+    profile_dir: Path,
+    providers: list[str],
+    chatgpt_url: str | None,
+    claude_url: str | None,
+    wait_s: float,
+) -> dict[str, object]:
+    """Run an operator-local visible browser proof against live provider pages."""
+
+    artifacts = preflight.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise ValueError("preflight payload is missing artifact paths")
+    if not profile_dir.exists() or not profile_dir.is_dir():
+        raise ValueError("--browser-live-profile-dir must point at an existing ignored local copied Chrome profile")
+    browser_dir = Path(str(artifacts["browser_dir"]))
+    browser_dir.mkdir(parents=True, exist_ok=True)
+    event_path = Path(str(artifacts.get("dev_events", Path(str(preflight["run_log_dir"])) / "dev-loop.events.jsonl")))
+    extension_root = Path(str(preflight["repo_root"])) / "browser-extension"
+    spool_path = browser_dir / "browser-live-proof-spool"
+    summary_path = browser_dir / "browser-live-proof.json"
+    result_path = browser_dir / "browser-live-proof-result.json"
+    stdout_path = browser_dir / "browser-live-proof.stdout"
+    stderr_path = browser_dir / "browser-live-proof.stderr"
+    env_path = browser_dir / "browser-live-proof.env.json"
+
+    selected_urls = {
+        "chatgpt": chatgpt_url or "https://chatgpt.com/",
+        "claude": claude_url or "https://claude.ai/",
+    }
+    _write_dev_loop_event(
+        event_path,
+        preflight=preflight,
+        surface="browser_live",
+        event_type="browser_live_proof_requested",
+        status="starting",
+        payload={
+            "extension_root": str(extension_root),
+            "profile_dir": str(profile_dir),
+            "spool_path": str(spool_path),
+            "providers": providers,
+            "wait_s": wait_s,
+        },
+    )
+
+    spool_path.mkdir(parents=True, exist_ok=True)
+    server = make_server(
+        "127.0.0.1",
+        0,
+        spool_path=spool_path,
+        auth_token=_RECEIVER_SMOKE_TOKEN,
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address[:2]
+    if isinstance(host, bytes):
+        host = host.decode("ascii")
+    receiver_url = f"http://{host}:{port}"
+    env = os.environ.copy()
+    env.update(
+        {
+            "POLYLOGUE_LIVE_PROOF_EXTENSION_ROOT": str(extension_root),
+            "POLYLOGUE_LIVE_PROOF_OUT": str(result_path),
+            "POLYLOGUE_LIVE_PROOF_PROFILE_DIR": str(profile_dir),
+            "POLYLOGUE_LIVE_PROOF_PROVIDERS": ",".join(providers),
+            "POLYLOGUE_LIVE_PROOF_RECEIVER_TOKEN": _RECEIVER_SMOKE_TOKEN,
+            "POLYLOGUE_LIVE_PROOF_RECEIVER_URL": receiver_url,
+            "POLYLOGUE_LIVE_PROOF_SPOOL_DIR": str(spool_path),
+            "POLYLOGUE_LIVE_PROOF_WAIT_MS": str(max(0, int(wait_s * 1000))),
+            "POLYLOGUE_LIVE_PROOF_TIMEOUT_MS": str(max(30_000, int(wait_s * 1000) + 75_000)),
+        }
+    )
+    if "chatgpt" in providers:
+        env["POLYLOGUE_LIVE_PROOF_CHATGPT_URL"] = selected_urls["chatgpt"]
+    if "claude" in providers:
+        env["POLYLOGUE_LIVE_PROOF_CLAUDE_URL"] = selected_urls["claude"]
+    env_path.write_text(json.dumps(_dev_loop_env_snapshot(env), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    started = time.monotonic()
+    try:
+        result = _run_process_tree(
+            ["node", "scripts/dev-loop-live-provider-proof.mjs"],
+            cwd=extension_root,
+            env=env,
+            timeout_s=max(45.0, wait_s + 90.0),
+        )
+        stdout = result.stdout
+        stderr = result.stderr
+        result_payload: dict[str, object] | None = None
+        exit_code = int(result.exit_code)
+        if result.timed_out:
+            stderr = (stderr + "\n" if stderr else "") + f"browser live proof timed out after {wait_s + 90.0:.1f}s\n"
+        elif result_path.exists():
+            result_payload = json.loads(result_path.read_text(encoding="utf-8"))
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    duration_ms = int((time.monotonic() - started) * 1000)
+    stdout_path.write_text(stdout, encoding="utf-8")
+    stderr_path.write_text(stderr, encoding="utf-8")
+    provider_statuses, artifact_refs, artifact_paths = _provider_smoke_artifacts(
+        result_payload,
+        spool_path=spool_path,
+    )
+    extension_id = None
+    manifest = None
+    privacy_posture = (
+        "operator-local copied-profile proof; summary omits raw turn text; local spool may contain raw capture content"
+    )
+    if isinstance(result_payload, dict):
+        extension_id = result_payload.get("extension_id")
+        raw_manifest = result_payload.get("manifest")
+        manifest = raw_manifest if isinstance(raw_manifest, dict) else None
+        raw_privacy_posture = result_payload.get("privacy_posture")
+        if isinstance(raw_privacy_posture, str):
+            privacy_posture = raw_privacy_posture
+    ok = (
+        exit_code == 0
+        and set(provider_statuses) == set(providers)
+        and all(provider_statuses.get(provider) is True for provider in providers)
+        and bool(artifact_paths)
+        and all(Path(path).exists() for path in artifact_paths.values())
+    )
+    payload: dict[str, object] = {
+        "ok": ok,
+        "exit_code": exit_code,
+        "duration_ms": duration_ms,
+        "extension_id": extension_id,
+        "extension_root": str(extension_root),
+        "manifest": manifest,
+        "privacy_posture": privacy_posture,
+        "profile_dir": str(profile_dir),
+        "providers": providers,
+        "provider_urls_redacted": {
+            provider: _redact_live_provider_url(selected_urls[provider]) for provider in providers
+        },
+        "provider_url_sha256": {provider: _hash_text(selected_urls[provider]) for provider in providers},
+        "receiver_url": receiver_url,
+        "spool_path": str(spool_path),
+        "provider_statuses": provider_statuses,
+        "artifact_refs": artifact_refs,
+        "artifact_paths": artifact_paths,
+        "result": result_payload,
+        "artifacts": {
+            "stdout": str(stdout_path),
+            "stderr": str(stderr_path),
+            "summary": str(summary_path),
+            "result": str(result_path),
+            "env": str(env_path),
+            "profile": str(profile_dir),
+            "spool": str(spool_path),
+        },
+    }
+    summary_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _write_dev_loop_event(
+        event_path,
+        preflight=preflight,
+        surface="browser_live",
+        event_type="browser_live_proof_finished",
+        status="ok" if ok else "failed",
+        payload={
+            "exit_code": exit_code,
+            "duration_ms": duration_ms,
+            "extension_id": extension_id,
+            "providers": providers,
+            "provider_statuses": provider_statuses,
+            "artifact_refs": artifact_refs,
+            "artifact_paths": artifact_paths,
             "artifacts": payload["artifacts"],
         },
     )
@@ -641,7 +1124,12 @@ def build_browser_plan(*, preflight: dict[str, Any]) -> dict[str, object]:
     profile_dir = browser_dir / "chrome-profile"
     screenshot_dir = browser_dir / "screenshots"
     downloads_dir = browser_dir / "downloads"
-    for path in (profile_dir, screenshot_dir, downloads_dir):
+    live_profile_root = Path(str(preflight["repo_root"])) / ".local" / "browser-profiles"
+    live_profile_dir = _default_live_profile_dir(preflight)
+    live_spool_dir = browser_dir / "browser-live-proof-spool"
+    live_env_example_path = browser_dir / "browser-live-proof.env.example"
+    live_checklist_path = browser_dir / "browser-live-proof-checklist.md"
+    for path in (profile_dir, screenshot_dir, downloads_dir, live_profile_root, live_spool_dir):
         path.mkdir(parents=True, exist_ok=True)
 
     ports = preflight.get("ports")
@@ -667,6 +1155,42 @@ def build_browser_plan(*, preflight: dict[str, Any]) -> dict[str, object]:
         web_shell_url,
     ]
     chromium_command = ["chromium", *chrome_command[1:]]
+    live_launch_command = [
+        "google-chrome-stable",
+        f"--user-data-dir={live_profile_dir}",
+        f"--unsafely-treat-insecure-origin-as-secure={receiver_url}",
+        f"--disable-extensions-except={extension_root}",
+        f"--load-extension={extension_root}",
+        "--new-window",
+        "https://chatgpt.com/",
+        "https://claude.ai/",
+    ]
+    live_urls = _default_live_provider_urls()
+    run_live_proof_command = [
+        "devtools",
+        "workspace",
+        "dev-loop",
+        "--api-port",
+        str(api_port),
+        "--browser-capture-port",
+        str(receiver_port),
+        "--browser-live-proof",
+        "--browser-live-profile-dir",
+        str(live_profile_dir),
+        "--browser-live-chatgpt-url",
+        live_urls["chatgpt"],
+        "--browser-live-claude-url",
+        live_urls["claude"],
+    ]
+    copy_profile_command = (
+        ': "${POLYLOGUE_SOURCE_CHROME_USER_DATA_DIR:?set this to a Chrome/Chromium user-data-dir source}" && '
+        f"mkdir -p {shlex.quote(str(live_profile_root))} && "
+        "rsync -a --delete "
+        "--exclude='Singleton*' --exclude='Crashpad' --exclude='Crash Reports' "
+        "--exclude='GrShaderCache' --exclude='ShaderCache' --exclude='GPUCache' --exclude='Code Cache' "
+        '"${POLYLOGUE_SOURCE_CHROME_USER_DATA_DIR%/}/" '
+        f"{shlex.quote(str(live_profile_dir))}/"
+    )
     configure_steps = [
         "Open the extension popup.",
         f"Set Local receiver URL to {receiver_url}.",
@@ -682,6 +1206,32 @@ def build_browser_plan(*, preflight: dict[str, Any]) -> dict[str, object]:
         "json": str(browser_dir / "browser-plan.json"),
         "markdown": str(browser_dir / "browser-plan.md"),
         "events": str(event_path),
+        "live_proof_checklist": str(live_checklist_path),
+        "live_proof_env_example": str(live_env_example_path),
+        "live_proof_summary": str(browser_dir / "browser-live-proof.json"),
+        "live_proof_result": str(browser_dir / "browser-live-proof-result.json"),
+        "live_proof_spool": str(live_spool_dir),
+        "live_profile_root": str(live_profile_root),
+    }
+    live_proof = {
+        "profile_copy_root": str(live_profile_root),
+        "suggested_profile_dir": str(live_profile_dir),
+        "summary_path": str(browser_dir / "browser-live-proof.json"),
+        "result_path": str(browser_dir / "browser-live-proof-result.json"),
+        "spool_path": str(live_spool_dir),
+        "providers": ["chatgpt", "claude"],
+        "provider_url_templates": live_urls,
+        "commands": {
+            "copy_profile_template": copy_profile_command,
+            "visible_launch_copied_profile": live_launch_command,
+            "run_live_proof": run_live_proof_command,
+            "inspect_run": ["devtools", "workspace", "dev-loop", "--inspect-run", str(preflight["run_log_dir"])],
+        },
+        "operator_boundary": {
+            "profile_copy_policy": "use an operator-approved copied Chrome user-data-dir under an ignored local path",
+            "ci_policy": "the live proof command refuses CI/cloud runs by default; use deterministic smokes in CI",
+            "summary_policy": "proof summaries redact URLs/session ids and omit raw turn text; receiver spool remains ignored local state",
+        },
     }
     payload: dict[str, object] = {
         "ok": True,
@@ -702,6 +1252,7 @@ def build_browser_plan(*, preflight: dict[str, Any]) -> dict[str, object]:
             "claude": "https://claude.ai/",
         },
         "configure_steps": configure_steps,
+        "live_provider_proof": live_proof,
         "safety": {
             "profile_dir_policy": "ignored local dev-loop artifact; never commit copied cookies or profile state",
             "ci_policy": "not used in CI or cloud agents",
@@ -712,6 +1263,53 @@ def build_browser_plan(*, preflight: dict[str, Any]) -> dict[str, object]:
     json_path = Path(plan_artifacts["json"])
     markdown_path = Path(plan_artifacts["markdown"])
     json_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    live_env_example = "\n".join(
+        [
+            "# Polylogue live provider proof template.",
+            "# Edit the source path and provider URLs before running. Keep profile copies local and ignored.",
+            'export POLYLOGUE_SOURCE_CHROME_USER_DATA_DIR="${HOME}/.config/google-chrome"',
+            copy_profile_command,
+            "",
+            shlex.join([str(part) for part in run_live_proof_command]),
+            "",
+        ]
+    )
+    live_env_example_path.write_text(live_env_example, encoding="utf-8")
+    live_checklist = "\n".join(
+        [
+            "# Polylogue Live Provider Proof Checklist",
+            "",
+            f"- Run id: `{payload['run_id']}`",
+            f"- Copied profile target: `{live_profile_dir}`",
+            f"- Extension root: `{extension_root}`",
+            f"- Receiver proof spool: `{live_spool_dir}`",
+            "",
+            "## Before running",
+            "",
+            "1. Close Chrome/Chromium for the source profile or make a fresh operator-approved copy.",
+            "2. Copy the user-data-dir into the suggested ignored path with `Singleton*` lock files excluded.",
+            "3. Replace the placeholder ChatGPT/Claude URLs with conversation pages that are already visible in the copied profile.",
+            "4. Keep screenshots, downloads, receiver spool, and copied profile data under the run-local ignored directories.",
+            "",
+            "## Proof command",
+            "",
+            "```bash",
+            shlex.join([str(part) for part in run_live_proof_command]),
+            "```",
+            "",
+            "The command opens a visible local Chrome, configures the unpacked extension, waits for the operator-controlled pages to settle, asks the content scripts to capture, and writes a redacted summary. Raw captured content, if any, is only in the ignored receiver spool.",
+            "",
+            "## Closeout evidence",
+            "",
+            f"- Summary: `{browser_dir / 'browser-live-proof.json'}`",
+            f"- Result: `{browser_dir / 'browser-live-proof-result.json'}`",
+            f"- Stdout/stderr: `{browser_dir / 'browser-live-proof.stdout'}`, `{browser_dir / 'browser-live-proof.stderr'}`",
+            f"- Receiver spool: `{live_spool_dir}`",
+            f"- Inspect run: `devtools workspace dev-loop --inspect-run {preflight['run_log_dir']}`",
+            "",
+        ]
+    )
+    live_checklist_path.write_text(live_checklist, encoding="utf-8")
     markdown = "\n".join(
         [
             "# Polylogue Browser Dev-Loop Plan",
@@ -738,11 +1336,32 @@ def build_browser_plan(*, preflight: dict[str, Any]) -> dict[str, object]:
             "",
             *[f"{index}. {step}" for index, step in enumerate(configure_steps, start=1)],
             "",
+            "## Operator-Local Live Provider Proof",
+            "",
+            "Use this only with an operator-approved copied browser profile. It is not a CI/cloud test and it does not write raw conversation text into the JSON summary.",
+            "",
+            "Copy profile template:",
+            "",
+            "```bash",
+            copy_profile_command,
+            "```",
+            "",
+            "Run proof template:",
+            "",
+            "```bash",
+            shlex.join([str(part) for part in run_live_proof_command]),
+            "```",
+            "",
+            f"Checklist: `{live_checklist_path}`",
+            f"Environment template: `{live_env_example_path}`",
+            "",
             "## Artifact Paths",
             "",
             f"- Screenshots: `{payload['screenshot_dir']}`",
             f"- Downloads: `{payload['downloads_dir']}`",
             f"- JSON plan: `{json_path}`",
+            f"- Live proof summary: `{plan_artifacts['live_proof_summary']}`",
+            f"- Live proof spool: `{plan_artifacts['live_proof_spool']}`",
             "",
         ]
     )
@@ -758,6 +1377,7 @@ def build_browser_plan(*, preflight: dict[str, Any]) -> dict[str, object]:
             "profile_dir": str(profile_dir),
             "receiver_url": receiver_url,
             "web_shell_url": web_shell_url,
+            "live_provider_proof": live_proof,
             "artifacts": payload["artifacts"],
         },
     )
@@ -973,6 +1593,8 @@ def summarize_dev_loop_run(run_dir: Path) -> dict[str, object]:
         "daemon_launch": run_dir / "polylogued.launch.json",
         "browser_plan": run_dir / "browser" / "browser-plan.json",
         "browser_smoke": run_dir / "browser" / "browser-smoke.json",
+        "browser_provider_smoke": run_dir / "browser" / "browser-provider-smoke.json",
+        "browser_live_proof": run_dir / "browser" / "browser-live-proof.json",
         "extension_smoke": run_dir / "browser" / "extension-smoke.json",
         "tui_plan": run_dir / "tui" / "tui-plan.json",
     }
@@ -1459,6 +2081,17 @@ def build_dev_loop_status(
                 f"devtools workspace dev-loop --api-port {api_port} "
                 f"--browser-capture-port {browser_capture_port} --receiver-smoke --json"
             ),
+            "browser_plan": (
+                f"devtools workspace dev-loop --api-port {api_port} "
+                f"--browser-capture-port {browser_capture_port} --browser-plan"
+            ),
+            "browser_live_proof": (
+                f"devtools workspace dev-loop --api-port {api_port} "
+                f"--browser-capture-port {browser_capture_port} --browser-live-proof "
+                f"--browser-live-profile-dir {archive.parent / 'browser-profiles' / (run_id + '-chrome-user-data')} "
+                "--browser-live-chatgpt-url https://chatgpt.com/c/<conversation-id> "
+                "--browser-live-claude-url https://claude.ai/chat/<conversation-id>"
+            ),
             "run_daemon": (
                 f"env POLYLOGUE_ARCHIVE_ROOT={archive} "
                 f"POLYLOGUE_API_PORT={api_port} "
@@ -1598,6 +2231,48 @@ def _print_browser_smoke(payload: dict[str, Any]) -> None:
     print(f"  summary:   {artifacts['summary']}")
 
 
+def _print_browser_provider_smoke(payload: dict[str, Any]) -> None:
+    preflight = payload["preflight"]
+    smoke = payload["browser_provider_smoke"]
+    assert isinstance(preflight, dict)
+    assert isinstance(smoke, dict)
+    artifacts = smoke["artifacts"]
+    assert isinstance(artifacts, dict)
+    provider_statuses = smoke.get("provider_statuses")
+    if not isinstance(provider_statuses, dict):
+        provider_statuses = {}
+    providers = ", ".join(f"{name}={status}" for name, status in sorted(provider_statuses.items())) or "none"
+    print("Polylogue dev-loop provider page smoke")
+    print(f"  run id:    {preflight['run_id']}")
+    print(f"  ok:        {smoke['ok']}")
+    print(f"  receiver:  {smoke['receiver_url']}")
+    print(f"  extension: {smoke.get('extension_id')}")
+    print(f"  providers: {providers}")
+    print(f"  profile:   {artifacts['profile']}")
+    print(f"  summary:   {artifacts['summary']}")
+
+
+def _print_browser_live_proof(payload: dict[str, Any]) -> None:
+    preflight = payload["preflight"]
+    proof = payload["browser_live_proof"]
+    assert isinstance(preflight, dict)
+    assert isinstance(proof, dict)
+    artifacts = proof["artifacts"]
+    assert isinstance(artifacts, dict)
+    provider_statuses = proof.get("provider_statuses")
+    if not isinstance(provider_statuses, dict):
+        provider_statuses = {}
+    providers = ", ".join(f"{name}={status}" for name, status in sorted(provider_statuses.items())) or "none"
+    print("Polylogue dev-loop live provider proof")
+    print(f"  run id:    {preflight['run_id']}")
+    print(f"  ok:        {proof['ok']}")
+    print(f"  receiver:  {proof['receiver_url']}")
+    print(f"  extension: {proof.get('extension_id')}")
+    print(f"  providers: {providers}")
+    print(f"  profile:   {artifacts['profile']}")
+    print(f"  summary:   {artifacts['summary']}")
+
+
 def _print_browser_plan(payload: dict[str, Any]) -> None:
     preflight = payload["preflight"]
     plan = payload["browser_plan"]
@@ -1716,9 +2391,43 @@ def main(argv: list[str] | None = None) -> int:
         help="Launch real Chrome headless with the unpacked extension against a temporary receiver.",
     )
     parser.add_argument(
+        "--browser-provider-smoke",
+        action="store_true",
+        help="Launch real Chrome headless against deterministic ChatGPT/Claude fixture pages and verify content-script capture.",
+    )
+    parser.add_argument(
         "--browser-plan",
         action="store_true",
         help="Write branch-local browser profile, extension load, receiver, and inspection plan artifacts.",
+    )
+    parser.add_argument(
+        "--browser-live-proof",
+        action="store_true",
+        help="Run a visible operator-local copied-profile proof against live ChatGPT/Claude pages.",
+    )
+    parser.add_argument(
+        "--browser-live-profile-dir",
+        type=Path,
+        help="Ignored local copied Chrome/Chromium user-data-dir for --browser-live-proof.",
+    )
+    parser.add_argument(
+        "--browser-live-providers",
+        default="chatgpt,claude",
+        help="Comma-separated live providers for --browser-live-proof: chatgpt,claude.",
+    )
+    parser.add_argument(
+        "--browser-live-chatgpt-url",
+        help="Live ChatGPT conversation URL to open during --browser-live-proof.",
+    )
+    parser.add_argument(
+        "--browser-live-claude-url",
+        help="Live Claude conversation URL to open during --browser-live-proof.",
+    )
+    parser.add_argument(
+        "--browser-live-wait-s",
+        type=float,
+        default=45.0,
+        help="Visible-browser wait before capturing live provider pages.",
     )
     parser.add_argument(
         "--tui-plan",
@@ -1768,6 +2477,8 @@ def main(argv: list[str] | None = None) -> int:
         or args.launch_daemon
         or args.extension_smoke
         or args.browser_smoke
+        or args.browser_provider_smoke
+        or args.browser_live_proof
         or args.browser_plan
         or args.tui_plan,
         port_selection=port_selection,
@@ -1827,6 +2538,29 @@ def main(argv: list[str] | None = None) -> int:
         smoke_payload = run_browser_smoke(preflight=payload)
         combined_payload["browser_smoke"] = smoke_payload
         combined_ok = combined_ok and smoke_payload.get("ok") is True
+    if args.browser_provider_smoke:
+        provider_smoke_payload = run_browser_provider_smoke(preflight=payload)
+        combined_payload["browser_provider_smoke"] = provider_smoke_payload
+        combined_ok = combined_ok and provider_smoke_payload.get("ok") is True
+    if args.browser_live_proof:
+        if args.browser_live_profile_dir is None:
+            parser.error(
+                "--browser-live-proof requires --browser-live-profile-dir pointing at an ignored local copied profile"
+            )
+        try:
+            live_providers = _parse_provider_csv(str(args.browser_live_providers))
+            live_proof_payload = run_browser_live_proof(
+                preflight=payload,
+                profile_dir=args.browser_live_profile_dir,
+                providers=live_providers,
+                chatgpt_url=args.browser_live_chatgpt_url,
+                claude_url=args.browser_live_claude_url,
+                wait_s=args.browser_live_wait_s,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+        combined_payload["browser_live_proof"] = live_proof_payload
+        combined_ok = combined_ok and live_proof_payload.get("ok") is True
     if args.browser_plan:
         try:
             browser_plan = build_browser_plan(preflight=payload)
@@ -1852,6 +2586,10 @@ def main(argv: list[str] | None = None) -> int:
                 _print_extension_smoke(combined_payload)
             if "browser_smoke" in combined_payload:
                 _print_browser_smoke(combined_payload)
+            if "browser_provider_smoke" in combined_payload:
+                _print_browser_provider_smoke(combined_payload)
+            if "browser_live_proof" in combined_payload:
+                _print_browser_live_proof(combined_payload)
             if "browser_plan" in combined_payload:
                 _print_browser_plan(combined_payload)
             if "tui_plan" in combined_payload:

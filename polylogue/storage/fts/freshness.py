@@ -125,17 +125,17 @@ async def _named_table_exists_async(conn: aiosqlite.Connection, table_name: str)
     return row is not None
 
 
-def _source_table_has_rows_sync(conn: sqlite3.Connection, table_name: str) -> bool | None:
-    if not _named_table_exists_sync(conn, table_name):
+def _message_fts_source_has_rows_sync(conn: sqlite3.Connection) -> bool | None:
+    if not _named_table_exists_sync(conn, "blocks"):
         return None
-    row = conn.execute(f"SELECT 1 FROM {table_name} LIMIT 1").fetchone()
+    row = conn.execute("SELECT 1 FROM blocks WHERE search_text != '' LIMIT 1").fetchone()
     return row is not None
 
 
-async def _source_table_has_rows_async(conn: aiosqlite.Connection, table_name: str) -> bool | None:
-    if not await _named_table_exists_async(conn, table_name):
+async def _message_fts_source_has_rows_async(conn: aiosqlite.Connection) -> bool | None:
+    if not await _named_table_exists_async(conn, "blocks"):
         return None
-    row = await (await conn.execute(f"SELECT 1 FROM {table_name} LIMIT 1")).fetchone()
+    row = await (await conn.execute("SELECT 1 FROM blocks WHERE search_text != '' LIMIT 1")).fetchone()
     return row is not None
 
 
@@ -333,7 +333,7 @@ def message_fts_recorded_ready_trusted_sync(conn: sqlite3.Connection) -> bool:
         missing_rows=_int_or_zero(record.get("missing_rows")),
         excess_rows=_int_or_zero(record.get("excess_rows")),
         duplicate_rows=_int_or_zero(record.get("duplicate_rows")),
-        source_has_rows=_source_table_has_rows_sync(conn, "messages")
+        source_has_rows=_message_fts_source_has_rows_sync(conn)
         if _int_or_zero(record.get("source_rows")) == 0 and _int_or_zero(record.get("indexed_rows")) == 0
         else False,
     )
@@ -366,7 +366,7 @@ async def message_fts_recorded_ready_trusted_async(conn: aiosqlite.Connection) -
         missing_rows=_int_or_zero(record.get("missing_rows")),
         excess_rows=_int_or_zero(record.get("excess_rows")),
         duplicate_rows=_int_or_zero(record.get("duplicate_rows")),
-        source_has_rows=await _source_table_has_rows_async(conn, "messages")
+        source_has_rows=await _message_fts_source_has_rows_async(conn)
         if source_rows == 0 and indexed_rows == 0
         else False,
     )

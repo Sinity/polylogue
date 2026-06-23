@@ -101,8 +101,11 @@ def _validate_record_sync(
         Provider.from_string(stored_payload_provider) if stored_payload_provider else None
     )
 
+    blob_ref = getattr(raw_record, "blob_hash", None)
+    if not isinstance(blob_ref, str) or not blob_ref:
+        blob_ref = raw_record.raw_id
     blob_store = BlobStore(Path(blob_root_str))
-    raw_source = blob_store.blob_path(raw_record.raw_id)
+    raw_source = blob_store.blob_path(blob_ref)
 
     try:
         envelope = _build_validation_envelope(

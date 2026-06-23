@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections.abc import Mapping
@@ -27,6 +28,7 @@ class RuntimeComponentState:
 
     api_enabled: bool | None = None
     watcher_enabled: bool | None = None
+    watcher_roots: tuple[str, ...] = ()
     browser_capture_enabled: bool | None = None
     browser_capture_spool_path: Path | None = None
 
@@ -60,6 +62,7 @@ def configure_runtime_components(
     *,
     api_enabled: bool | None = None,
     watcher_enabled: bool | None = None,
+    watcher_roots: tuple[str, ...] = (),
     browser_capture_enabled: bool | None = None,
     browser_capture_spool_path: Path | None = None,
 ) -> None:
@@ -69,6 +72,7 @@ def configure_runtime_components(
         _RUNTIME_COMPONENT_STATE = RuntimeComponentState(
             api_enabled=api_enabled,
             watcher_enabled=watcher_enabled,
+            watcher_roots=tuple(watcher_roots),
             browser_capture_enabled=browser_capture_enabled,
             browser_capture_spool_path=browser_capture_spool_path,
         )
@@ -87,6 +91,18 @@ def _component_state_from_flag(flag: bool | None, *, default_when_unknown: str =
     return default_when_unknown
 
 
+def _disk_free_bytes(path: Path) -> int:
+    """Return free bytes for the nearest existing parent of ``path``."""
+    target = path if path.exists() else path.parent
+    while not target.exists() and target != target.parent:
+        target = target.parent
+    try:
+        st = os.statvfs(target)
+    except OSError:
+        return 0
+    return int(st.f_frsize * st.f_bavail)
+
+
 def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error: str | None = None) -> JSONDocument:
     """Return a request-safe status envelope with no archive-scale scans."""
     from polylogue.daemon.status import _check_daemon_liveness, browser_capture_status_payload
@@ -101,7 +117,7 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
             refresh_error = refresh_error or str(exc)
     now = datetime.now(UTC).isoformat()
     runtime = _runtime_component_state()
-    browser_capture = dict(browser_capture_status_payload(runtime.browser_capture_spool_path))
+    browser_capture = dict(browser_capture_status_payload(runtime.browser_capture_spool_path, include_spool_path=False))
     browser_capture_enabled = runtime.browser_capture_enabled is True
     browser_capture["active"] = browser_capture_enabled
     payload: dict[str, object] = {
@@ -120,10 +136,10 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
         "db_size_bytes": dbf.stat().st_size if dbf.exists() else 0,
         "wal_size_bytes": wal.stat().st_size if wal.exists() else 0,
         "blob_dir_size_bytes": 0,
-        "disk_free_bytes": 0,
+        "disk_free_bytes": _disk_free_bytes(dbf),
         "quick_check_result": None,
         "quick_check_age_s": None,
-        "watcher_roots": [],
+        "watcher_roots": list(runtime.watcher_roots),
         "browser_capture_active": browser_capture_enabled,
         "failing_files": [],
         "live_cursor": {},

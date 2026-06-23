@@ -15,6 +15,7 @@ BROWSER_CAPTURE_SCHEMA_VERSION: Literal[1] = 1
 BROWSER_CAPTURE_TRANSPORT_SOURCE: Literal["browser-extension"] = "browser-extension"
 BROWSER_CAPTURE_RECEIVER: Literal["polylogue-browser-capture"] = "polylogue-browser-capture"
 BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD: Literal["chrome-extension://*"] = "chrome-extension://*"
+BrowserCaptureArchiveLifecycle = Literal["missing", "spooled_only", "ingest_pending", "archived", "failed"]
 
 
 class BrowserCaptureAttachment(BaseModel):
@@ -176,11 +177,21 @@ class BrowserCaptureArchiveStatePayload(BaseModel):
 
     provider: str
     provider_session_id: str
+    state: BrowserCaptureArchiveLifecycle
+    lifecycle: BrowserCaptureArchiveLifecycle
     captured: bool
+    spooled: bool
     artifact_ref: str
     capture_id: str | None = None
     updated_at: str | None = None
     artifact_readable: bool | None = None
+    raw_row_exists: bool = False
+    raw_id: str | None = None
+    indexed_session_exists: bool = False
+    indexed_session_id: str | None = None
+    indexed_message_count: int | None = None
+    latest_failure: str | None = None
+    failure_source: str | None = None
 
 
 class BrowserCaptureAcceptedPayload(BaseModel):
@@ -226,6 +237,7 @@ __all__ = [
     "BROWSER_CAPTURE_SCHEMA_VERSION",
     "BROWSER_CAPTURE_TRANSPORT_SOURCE",
     "BrowserCaptureAcceptedPayload",
+    "BrowserCaptureArchiveLifecycle",
     "BrowserCaptureArchiveStatePayload",
     "BrowserCaptureAttachment",
     "BrowserCaptureEnvelope",

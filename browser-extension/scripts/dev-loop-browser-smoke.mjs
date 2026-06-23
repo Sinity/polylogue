@@ -3,8 +3,8 @@
 // the Polylogue extension, then exercise the local receiver from the extension
 // service-worker origin. This intentionally has no npm dependencies.
 
-import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -12,7 +12,7 @@ import path from "node:path";
 const receiverBaseUrl = (process.env.POLYLOGUE_BROWSER_SMOKE_RECEIVER_URL || "http://127.0.0.1:8765").replace(/\/+$/, "");
 const receiverAuthToken = process.env.POLYLOGUE_BROWSER_SMOKE_RECEIVER_TOKEN || "";
 const extensionRoot = path.resolve(process.env.POLYLOGUE_BROWSER_SMOKE_EXTENSION_ROOT || ".");
-const chromeBinary = process.env.POLYLOGUE_BROWSER_SMOKE_CHROME || "google-chrome-stable";
+const chromeBinary = resolveChromeBinary();
 const outputPath = process.env.POLYLOGUE_BROWSER_SMOKE_OUT || "";
 const profileDir =
   process.env.POLYLOGUE_BROWSER_SMOKE_PROFILE_DIR || mkdtempSync(path.join(tmpdir(), "polylogue-browser-smoke-"));
@@ -115,18 +115,77 @@ async function evaluateJson(client, expression) {
   return result.result?.value;
 }
 
+function serviceWorkerSuffix(manifest) {
+  const worker = manifest?.background?.service_worker;
+  if (typeof worker !== "string" || !worker) {
+    throw new Error("manifest background.service_worker is missing");
+  }
+  return `/${worker.replace(/^\/+/, "")}`;
+}
+
+function resolveChromeBinary() {
+  if (process.env.POLYLOGUE_BROWSER_SMOKE_CHROME) return process.env.POLYLOGUE_BROWSER_SMOKE_CHROME;
+  for (const candidate of ["google-chrome-stable", "google-chrome", "chromium", "chromium-browser"]) {
+    const found = spawnSync("sh", ["-c", `command -v ${candidate}`], { encoding: "utf8" });
+    if (found.status === 0 && found.stdout.trim()) return candidate;
+  }
+  return "google-chrome-stable";
+}
+
+function signalChromeTree(child, signal) {
+  try {
+    process.kill(-child.pid, signal);
+  } catch (_error) {
+    try {
+      child.kill(signal);
+    } catch (_childError) {
+      // Chrome may already be gone; shutdown should stay best-effort.
+    }
+  }
+}
+
+function terminateProcess(child) {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(termTimer);
+      clearTimeout(killTimer);
+      child.off("exit", finish);
+      child.off("error", finish);
+      resolve();
+    };
+    const termTimer = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) signalChromeTree(child, "SIGTERM");
+    }, 0);
+    const killTimer = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) signalChromeTree(child, "SIGKILL");
+      setTimeout(finish, 500);
+    }, 3000);
+    child.once("exit", finish);
+    child.once("error", finish);
+  });
+}
+
 async function main() {
   const localManifest = JSON.parse(readFileSync(path.join(extensionRoot, "manifest.json"), "utf8"));
+  const expectedWorkerSuffix = serviceWorkerSuffix(localManifest);
+  mkdirSync(profileDir, { recursive: true });
   const debuggingPort = await freePort();
   const chromeArgs = [
     `--user-data-dir=${profileDir}`,
     `--remote-debugging-port=${debuggingPort}`,
     "--headless=new",
+    "--no-sandbox",
     `--disable-extensions-except=${extensionRoot}`,
     `--load-extension=${extensionRoot}`,
     "about:blank",
   ];
-  const chrome = spawn(chromeBinary, chromeArgs, { stdio: ["ignore", "pipe", "pipe"] });
+  const chrome = spawn(chromeBinary, chromeArgs, { detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";
   let stderr = "";
   chrome.stdout.on("data", (chunk) => {
@@ -144,7 +203,7 @@ async function main() {
     while (Date.now() < deadline && !worker) {
       targets = await waitJson(`http://127.0.0.1:${debuggingPort}/json/list`, Math.min(2000, timeoutMs));
       const candidates = targets.filter(
-        (target) => target.type === "service_worker" && target.url.endsWith("/service_worker.js")
+        (target) => target.type === "service_worker" && target.url.endsWith(expectedWorkerSuffix)
       );
       for (const candidate of candidates) {
         const client = await connectCdp(candidate.webSocketDebuggerUrl);
@@ -224,8 +283,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify(summary)}\n`);
     if (!summary.ok) process.exitCode = 1;
   } finally {
-    chrome.kill("SIGTERM");
-    await new Promise((resolve) => chrome.once("exit", resolve));
+    await terminateProcess(chrome);
     if (!keepProfile && !process.env.POLYLOGUE_BROWSER_SMOKE_PROFILE_DIR) {
       rmSync(profileDir, { recursive: true, force: true });
     }

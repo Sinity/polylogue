@@ -55,6 +55,13 @@ COMPLETION_PROBES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         ("json", "ndjson", "text"),
     ),
 )
+BROWSER_EXECUTABLE_CANDIDATES = (
+    "google-chrome",
+    "google-chrome-stable",
+    "chromium",
+    "chromium-browser",
+    "chrome",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +145,7 @@ class BrowserRenderProbe:
     screenshot_bytes: int | None = None
     stderr_tail: str = ""
     error: str | None = None
+    caveats: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +161,7 @@ class DeploymentSmokeReport:
     browser_render: BrowserRenderProbe | None
     browser_capture_archive: BrowserCaptureArchiveProbe
     browser_capture_receiver_archive_state: BrowserCaptureReceiverArchiveStateProbe
+    runtime_evidence: dict[str, Any]
     diagnostics: dict[str, Any]
     failures: list[str]
 
@@ -228,6 +237,51 @@ def _repo_head() -> str | None:
 def _version_commit(stdout: str) -> str | None:
     match = re.search(r"\+([0-9a-f]{7,40})(?:[-+].*)?$", stdout.strip())
     return match.group(1) if match else None
+
+
+def _read_optional_text(path: Path) -> str | None:
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return value or None
+
+
+def _resource_limit_signals() -> dict[str, Any]:
+    """Return cheap cgroup resource-limit signals when available."""
+    cgroup_v2 = Path("/sys/fs/cgroup")
+    signals: dict[str, Any] = {"available": cgroup_v2.exists()}
+    for key, filename in (
+        ("cpu_max", "cpu.max"),
+        ("cpu_weight", "cpu.weight"),
+        ("memory_high", "memory.high"),
+        ("memory_max", "memory.max"),
+    ):
+        value = _read_optional_text(cgroup_v2 / filename)
+        if value is not None:
+            signals[key] = value
+    return {"cgroup": signals}
+
+
+def _effective_config_probe(*, path: str, timeout_s: float) -> dict[str, Any]:
+    """Read redacted effective config from the deployed polylogue command."""
+    try:
+        result = _run_command(["polylogue", "config", "--format", "json"], path=path, timeout_s=timeout_s)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "error": type(exc).__name__}
+    if result.returncode != 0:
+        return {
+            "ok": False,
+            "exit_code": result.returncode,
+            "stderr_tail": result.stderr[-1000:],
+        }
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        return {"ok": False, "error": "invalid_json", "detail": str(exc), "stdout_tail": result.stdout[-1000:]}
+    if not isinstance(payload, dict):
+        return {"ok": False, "error": "unexpected_payload_type", "payload_type": type(payload).__name__}
+    return {"ok": True, "payload": payload}
 
 
 def _probe_command(command: list[str], *, path: str, timeout_s: float) -> CommandProbe:
@@ -568,12 +622,26 @@ def _probe_browser_capture_receiver_archive_state(
             payload = decoded if isinstance(decoded, dict) else {"value": decoded}
             error = None
             artifact_path = payload.get("artifact_path")
+            lifecycle_state = payload.get("state") or payload.get("lifecycle")
+            indexed_message_count = payload.get("indexed_message_count")
             if isinstance(artifact_path, str) and Path(artifact_path).is_absolute():
                 error = "receiver_archive_state_absolute_artifact_path"
             elif payload.get("artifact_ref") is None:
                 error = "receiver_archive_state_missing_artifact_ref"
+            elif not isinstance(lifecycle_state, str):
+                error = "receiver_archive_state_missing_lifecycle"
+            elif payload.get("captured") is True and lifecycle_state != "archived":
+                error = "receiver_archive_state_captured_without_archived_state"
+            elif lifecycle_state != "archived":
+                error = "receiver_archive_state_not_archived"
             elif payload.get("captured") is not True:
                 error = "receiver_archive_state_not_captured"
+            elif payload.get("raw_row_exists") is not True:
+                error = "receiver_archive_state_missing_raw_row_evidence"
+            elif payload.get("indexed_session_exists") is not True:
+                error = "receiver_archive_state_missing_index_evidence"
+            elif not isinstance(indexed_message_count, int) or indexed_message_count <= 0:
+                error = "receiver_archive_state_missing_index_messages"
             return BrowserCaptureReceiverArchiveStateProbe(
                 url=url,
                 provider=provider,
@@ -651,7 +719,30 @@ def _probe_route(url: str, *, timeout_s: float) -> RouteProbe:
 
 
 def _resolve_browser_executable(path: str, executable: str | None) -> str | None:
-    return executable or shutil.which("google-chrome", path=path) or shutil.which("chrome", path=path)
+    if executable:
+        if os.path.isabs(executable) or os.sep in executable or (os.altsep is not None and os.altsep in executable):
+            candidate = Path(executable).expanduser()
+            return str(candidate) if candidate.is_file() and os.access(candidate, os.X_OK) else None
+        return shutil.which(executable, path=path)
+    for candidate_name in BROWSER_EXECUTABLE_CANDIDATES:
+        resolved = shutil.which(candidate_name, path=path)
+        if resolved is not None:
+            return resolved
+    return None
+
+
+def _browser_executable_resolution(path: str, executable: str | None) -> dict[str, Any]:
+    resolved = _resolve_browser_executable(path, executable)
+    candidates = [executable] if executable else list(BROWSER_EXECUTABLE_CANDIDATES)
+    return {
+        "requested": executable,
+        "resolved": resolved,
+        "candidates": candidates,
+        "ok": resolved is not None,
+        "error": None
+        if resolved is not None
+        else ("explicit_browser_executable_not_found_or_not_executable" if executable else "chrome_not_found_on_path"),
+    }
 
 
 def _run_browser_command(command: list[str], *, path: str, timeout_s: float) -> subprocess.CompletedProcess[str]:
@@ -729,7 +820,7 @@ def _probe_browser_render(
                     dom_bytes=dom_bytes,
                     screenshot_bytes=screenshot_bytes,
                     stderr_tail=stderr[-2000:],
-                    error="browser_timeout_after_capture",
+                    caveats=("browser_timeout_after_capture",),
                 )
             return BrowserRenderProbe(
                 url=url,
@@ -761,6 +852,7 @@ def _diagnose(
     routes: list[RouteProbe],
     repo_head: str | None,
     browser_render: BrowserRenderProbe | None,
+    browser_executable_resolution: dict[str, Any],
     browser_capture_archive: BrowserCaptureArchiveProbe,
     browser_capture_receiver_archive_state: BrowserCaptureReceiverArchiveStateProbe,
 ) -> dict[str, Any]:
@@ -796,7 +888,12 @@ def _diagnose(
         next_actions.append("verify the daemon can serve the workbench root before debugging browser-side rendering")
     if browser_render is not None and not browser_render.ok:
         likely_causes.append("web-shell browser render does not reach DOM/screenshot within the deployed smoke budget")
-        next_actions.append("profile first-paint bootstrap and defer slow status/facet/attachment loaders")
+        if browser_executable_resolution.get("resolved") is None:
+            next_actions.append(
+                "pass --browser-executable with an explicit Chrome/Chromium path for the opt-in browser smoke"
+            )
+        else:
+            next_actions.append("profile first-paint bootstrap and defer slow status/facet/attachment loaders")
     if browser_capture_archive.error == "spooled_newer_than_raw_rows":
         likely_causes.append("browser-capture raw archive rows lag behind newer spooled artifacts")
         next_actions.append(
@@ -833,11 +930,74 @@ def _diagnose(
         "polylogue_commit": deployed_commit,
         "polylogued_version_ok": polylogued.ok if polylogued is not None else None,
         "browser_capture_state": browser_capture_state,
+        "browser_executable_resolution": browser_executable_resolution,
         "browser_render": asdict(browser_render) if browser_render is not None else None,
         "browser_capture_archive": asdict(browser_capture_archive),
         "browser_capture_receiver_archive_state": asdict(browser_capture_receiver_archive_state),
         "likely_causes": likely_causes,
         "next_actions": next_actions,
+    }
+
+
+def _runtime_evidence(
+    *,
+    path: str,
+    repo_head: str | None,
+    daemon_base_url: str,
+    receiver_base_url: str,
+    archive_root: Path,
+    commands: list[CommandProbe],
+    routes: list[RouteProbe],
+    timeout_s: float,
+) -> dict[str, Any]:
+    command_versions = {
+        command.name: {
+            "path": command.path,
+            "stdout": command.stdout,
+            "commit": _version_commit(command.stdout),
+            "ok": command.ok,
+        }
+        for command in commands
+    }
+    installed_commits = sorted(
+        {
+            commit
+            for command in command_versions.values()
+            if isinstance((commit := command.get("commit")), str) and commit
+        }
+    )
+    status_payload = next(
+        (
+            route.payload
+            for route in routes
+            if route.url.rstrip("/") == f"{daemon_base_url.rstrip('/')}/api/status" and route.payload is not None
+        ),
+        {},
+    )
+    fts_readiness = status_payload.get("fts_readiness")
+    warnings: list[str] = []
+    if repo_head and installed_commits and all(not repo_head.startswith(commit) for commit in installed_commits):
+        warnings.append("installed command commits differ from source repo head")
+    return {
+        "path": path,
+        "source_repo_head": repo_head,
+        "installed_commits": installed_commits,
+        "command_versions": command_versions,
+        "daemon_base_url": daemon_base_url,
+        "receiver_base_url": receiver_base_url,
+        "archive_root": str(archive_root),
+        "effective_config": _effective_config_probe(path=path, timeout_s=timeout_s),
+        "resource_limits": _resource_limit_signals(),
+        "daemon_status": {
+            "ok": status_payload.get("ok"),
+            "component_state": status_payload.get("component_state"),
+            "db_path": status_payload.get("db_path"),
+            "db_size_bytes": status_payload.get("db_size_bytes"),
+            "wal_size_bytes": status_payload.get("wal_size_bytes"),
+            "fts_messages_ready": fts_readiness.get("messages_ready") if isinstance(fts_readiness, dict) else None,
+            "fts_invariant_ready": fts_readiness.get("invariant_ready") if isinstance(fts_readiness, dict) else None,
+        },
+        "warnings": warnings,
     }
 
 
@@ -879,6 +1039,7 @@ def build_report(
         if not probe.ok
     )
     browser_render = None
+    browser_executable_resolution = _browser_executable_resolution(path, browser_executable)
     if browser:
         browser_render = _probe_browser_render(
             f"{daemon_base_url.rstrip('/')}/",
@@ -902,6 +1063,16 @@ def build_report(
             f"{browser_capture_receiver_archive_state.error or browser_capture_receiver_archive_state.status}"
         )
     repo_head = _repo_head()
+    runtime_evidence = _runtime_evidence(
+        path=path,
+        repo_head=repo_head,
+        daemon_base_url=daemon_base_url,
+        receiver_base_url=receiver_base_url,
+        archive_root=archive_root,
+        commands=commands,
+        routes=routes,
+        timeout_s=timeout_s,
+    )
     return DeploymentSmokeReport(
         ok=not failures,
         path=path,
@@ -914,11 +1085,13 @@ def build_report(
         browser_render=browser_render,
         browser_capture_archive=browser_capture_archive,
         browser_capture_receiver_archive_state=browser_capture_receiver_archive_state,
+        runtime_evidence=runtime_evidence,
         diagnostics=_diagnose(
             commands,
             routes,
             repo_head,
             browser_render,
+            browser_executable_resolution,
             browser_capture_archive,
             browser_capture_receiver_archive_state,
         ),
@@ -933,6 +1106,24 @@ def _print_human(report: DeploymentSmokeReport) -> None:
     print(f"daemon: {report.daemon_base_url}")
     print(f"receiver: {report.receiver_base_url}")
     print(f"status: {'ok' if report.ok else 'failed'}")
+    print("")
+    print("Runtime evidence:")
+    print(f"  archive_root={report.runtime_evidence.get('archive_root')}")
+    print(f"  daemon_api_url={report.runtime_evidence.get('daemon_base_url')}")
+    print(f"  browser_capture_receiver_url={report.runtime_evidence.get('receiver_base_url')}")
+    effective_config = report.runtime_evidence.get("effective_config")
+    if isinstance(effective_config, dict):
+        print(f"  effective_config={'ok' if effective_config.get('ok') else 'unavailable'}")
+    resource_limits = report.runtime_evidence.get("resource_limits")
+    if isinstance(resource_limits, dict):
+        cgroup = resource_limits.get("cgroup")
+        if isinstance(cgroup, dict) and cgroup.get("available"):
+            print(
+                "  cgroup="
+                f"cpu.max:{cgroup.get('cpu_max', '')} "
+                f"memory.high:{cgroup.get('memory_high', '')} "
+                f"memory.max:{cgroup.get('memory_max', '')}"
+            )
     print("")
     print("Commands:")
     for probe in report.commands:
@@ -952,6 +1143,17 @@ def _print_human(report: DeploymentSmokeReport) -> None:
         if completion_probe.missing:
             detail = f"missing={','.join(completion_probe.missing)} candidates={detail}"
         print(f"  {marker} {completion_probe.name}: {detail}")
+    browser_resolution = report.diagnostics.get("browser_executable_resolution")
+    if isinstance(browser_resolution, dict):
+        print("")
+        print("Browser executable:")
+        searched = ", ".join(str(item) for item in browser_resolution.get("candidates", []) if item)
+        marker = "ok" if browser_resolution.get("ok") else "not found"
+        print(
+            f"  {marker} requested={browser_resolution.get('requested') or ''} "
+            f"resolved={browser_resolution.get('resolved') or ''} searched={searched} "
+            f"error={browser_resolution.get('error') or ''}"
+        )
     if report.browser_render is not None:
         browser_probe = report.browser_render
         marker = "ok" if browser_probe.ok else "FAIL"
@@ -960,7 +1162,7 @@ def _print_human(report: DeploymentSmokeReport) -> None:
         print(
             f"  {marker} executable={browser_probe.executable or ''} exit={browser_probe.exit_code} "
             f"dom_bytes={browser_probe.dom_bytes} screenshot_bytes={browser_probe.screenshot_bytes} "
-            f"error={browser_probe.error or ''}"
+            f"error={browser_probe.error or ''} caveats={','.join(browser_probe.caveats)}"
         )
     capture_probe = report.browser_capture_archive
     print("")

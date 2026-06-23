@@ -203,7 +203,7 @@ def _full_scan_malformed_jsonl(record: RawSessionRecord) -> tuple[int, bool]:
     """
     from polylogue.archive.raw_payload.decode import _sample_jsonl_payload_with_detail
 
-    blob_path = get_blob_store().blob_path(record.raw_id)
+    blob_path = get_blob_store().blob_path(record.blob_hash or record.raw_id)
     try:
         _samples, malformed_lines, _detail = _sample_jsonl_payload_with_detail(
             blob_path,

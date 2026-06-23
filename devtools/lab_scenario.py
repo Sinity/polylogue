@@ -1,4 +1,4 @@
-"""Verification-lab smoke scenario runner."""
+"""Verification-lab direct smoke runner."""
 
 from __future__ import annotations
 
@@ -66,7 +66,7 @@ _ARCHIVE_SMOKE_CHECKS: tuple[ArchiveSmokeCheck, ...] = (
 
 
 class ArchiveSmokeResult:
-    """Direct result wrapper for the archive-smoke lab scenario."""
+    """Direct result wrapper for the archive-smoke lab smoke."""
 
     def __init__(
         self,
@@ -98,7 +98,7 @@ class ArchiveSmokeResult:
 
 
 def get_archive_smoke_checks() -> tuple[ArchiveSmokeCheck, ...]:
-    """Return direct CLI checks for the archive-smoke lab scenario."""
+    """Return direct CLI checks for the archive-smoke lab smoke."""
     return _ARCHIVE_SMOKE_CHECKS
 
 
@@ -121,10 +121,10 @@ def run_tier_0() -> dict[str, str]:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run verification-lab smoke scenarios.")
+    parser = argparse.ArgumentParser(description="Run verification-lab smoke sets.")
     subparsers = parser.add_subparsers(dest="action", required=True)
-    run_parser = subparsers.add_parser("run", help="Run a named smoke scenario set.")
-    run_parser.add_argument("scenario", choices=_SCENARIO_NAMES, help="Scenario set to run.")
+    run_parser = subparsers.add_parser("run", help="Run a named smoke set.")
+    run_parser.add_argument("scenario", choices=_SCENARIO_NAMES, help="Smoke set to run.")
     run_parser.add_argument(
         "--live", action="store_true", help="Run against the active archive instead of a seeded workspace."
     )
@@ -134,7 +134,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--verbose", action="store_true", help="Print smoke-check outputs.")
     run_parser.add_argument("--fail-fast", action="store_true", help="Stop on first smoke-check failure.")
 
-    list_parser = subparsers.add_parser("list", help="List available smoke scenarios.")
+    list_parser = subparsers.add_parser("list", help="List available smoke sets.")
     list_parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     return parser
 
@@ -202,7 +202,7 @@ def _format_scenario_summary(result: _ScenarioResult) -> str:
     """Format the scenario runner's direct stage result without report wrapping."""
     stage_statuses = result.stage_statuses()
     failed_stages = result.failed_stages()
-    lines = ["Scenario stages:"]
+    lines = ["Smoke stages:"]
     for name, status in stage_statuses.items():
         lines.append(f"  {name}: {status.value}")
     if failed_stages:
@@ -243,7 +243,7 @@ def run_archive_smoke(
 
 
 def _scenario_payload(result: _ScenarioResult) -> dict[str, object]:
-    """Return the direct lab-scenario payload without report wrapping."""
+    """Return the direct lab smoke payload without report wrapping."""
     stage_statuses = result.stage_statuses()
     failed_stages = result.failed_stages()
     return {

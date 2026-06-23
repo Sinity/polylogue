@@ -1,4 +1,4 @@
-"""Tests for the verification-lab scenario command surface."""
+"""Tests for the verification-lab smoke command surface."""
 
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ def test_main_prints_direct_stage_summary(capsys: pytest.CaptureFixture[str]) ->
         assert main(["run", "archive-smoke", "--tier", "0"]) == 0
 
     out = capsys.readouterr().out
-    assert "Scenario stages:" in out
+    assert "Smoke stages:" in out
     assert "cli: ok" in out
     assert "Failed stages: none" in out
 

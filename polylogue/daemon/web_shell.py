@@ -143,6 +143,13 @@ __BULK_CSS__
   background: var(--panel-subtle); border: 1px solid var(--border); white-space: nowrap; }
 #conv-header .conv-stats .chip.accent { border-color: var(--accent-soft); color: var(--accent); background: var(--accent-bg); }
 #conv-header .conv-stats .chip.repo { font-family: var(--font-mono); font-size: 11px; }
+#conv-header .action-rail { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+#conv-header .action-btn { border: 1px solid var(--border); background: var(--panel-subtle); color: var(--text-muted);
+  border-radius: 3px; padding: 2px 7px; font-size: var(--small); cursor: default; }
+#conv-header .action-btn.q-action-safe { border-color: var(--accent-soft); color: var(--accent); background: var(--accent-bg); }
+#conv-header .action-btn.q-action-mutating { border-color: var(--warn); color: var(--warn); background: var(--warn-bg); }
+#conv-header .action-btn.q-action-destructive { border-color: var(--err); color: var(--err); background: var(--err-bg); }
+#conv-header .action-btn:disabled { opacity: 0.55; }
 __WORKSPACE_CSS__
 #msg-list { flex: 1; overflow-y: auto; }
 .read-profile-selector { display:flex; align-items:center; gap:8px; padding:7px 16px; border-bottom:1px solid var(--border);
@@ -897,10 +904,13 @@ function renderFacets() {
     return;
   }
   var html = '';
-  if ((f.deferred_families || []).length > 0 || f.budget_exceeded) {
+  var deferredFamilies = f.deferred_families || {};
+  var deferredKeys = Array.isArray(deferredFamilies) ? deferredFamilies : Object.keys(deferredFamilies);
+  if (deferredKeys.length > 0 || f.budget_exceeded) {
     html += '<div class="facet-group"><div class="facet-group-label">Facet detail deferred</div><div class="facet-chips">';
-    (f.deferred_families || []).forEach(function(family) {
-      html += '<span class="facet-chip" title="Computed on demand to keep the reader responsive">' + esc(family) + '</span>';
+    deferredKeys.forEach(function(family) {
+      var reason = Array.isArray(deferredFamilies) ? 'deferred' : deferredFamilies[family];
+      html += '<span class="facet-chip" title="' + escAttr(reason || 'Computed on demand to keep the reader responsive') + '">' + esc(family) + '</span>';
     });
     html += '</div></div>';
   }
@@ -938,6 +948,36 @@ function renderFacets() {
     html += '</div></div>';
   }
   document.getElementById('facet-bar').innerHTML = html;
+}
+
+function renderActionAffordanceRail(c) {
+  if (!c) return '';
+  var actions = (state.actionAffordances || []).filter(function(action) {
+    return (action.target || '') === 'selection';
+  });
+  if (!actions.length) return '';
+  var html = '<div class="action-rail" aria-label="Query action affordances">';
+  actions.forEach(function(action) {
+    var safety = (action.safety && action.safety.safety_level) || action.safety_level || 'safe';
+    var inputUnit = (action.input && action.input.unit) || action.input_unit || 'unknown';
+    var cardinality = (action.execution && action.execution.cardinality_state) || action.cardinality_state || 'any';
+    var formats = (action.output && action.output.format_support) || action.format_support || [];
+    var disabledReason = (action.availability && action.availability.disabled_reason) || action.disabled_reason || '';
+    var title = 'target=' + (action.target || 'selection')
+      + ' input=' + inputUnit
+      + ' cardinality=' + cardinality
+      + ' safety=' + safety
+      + ' formats=' + formats.join(',');
+    if (action.selection_command) title += ' select=' + action.selection_command;
+    if (action.confirmation_command) title += ' confirm=' + action.confirmation_command;
+    if (disabledReason) title += ' disabled=' + disabledReason;
+    var disabled = disabledReason ? ' disabled' : '';
+    html += '<button type="button" class="action-btn q-action-' + escAttr(safety) + '" data-action="'
+      + escAttr(action.id || '') + '" title="' + escAttr(title) + '"' + disabled + '>'
+      + esc(action.id || 'action') + '</button>';
+  });
+  html += '</div>';
+  return html;
 }
 
 function renderReadViewSelector(c) {
@@ -1063,6 +1103,7 @@ function renderMain() {
     c.tags.forEach(function(t) { headerHtml += '<span class="chip">' + esc(t) + '</span>'; });
   }
   headerHtml += '</div>';
+  headerHtml += renderActionAffordanceRail(c);
   headerEl.innerHTML = headerHtml;
 
   var readViewSelector = renderReadViewSelector(c);

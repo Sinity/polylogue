@@ -83,7 +83,7 @@ LIVE_LANES: dict[str, LaneEntry] = {
         description="Manual verification-lab archive-smoke lane",
         timeout_s=1800,
         category="live",
-        execution=devtools_execution("lab scenario", "run", "archive-smoke", "--live", "--tier", "0", "--json"),
+        execution=devtools_execution("lab smoke", "run", "archive-smoke", "--live", "--tier", "0", "--json"),
     ),
     **_live_operational_lanes(),
     **_live_insight_lanes(),

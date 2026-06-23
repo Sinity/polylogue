@@ -11,7 +11,7 @@ Tiers:
              Full non-integration pytest run that seeds/updates .cache/testmon/testmondata.
   --all/--full
              Explicit full non-integration pytest diagnostic.
-  --lab      Default testmon baseline plus verification-lab scenario and SLO checks.
+  --lab      Default testmon baseline plus verification-lab smoke and SLO checks.
 
 Output formats:
   --json     Machine-readable JSON to stdout (human progress to stderr).
@@ -898,7 +898,7 @@ def _subprocess_env() -> dict[str, str]:
 
 
 def _stop_after_failed_step(label: str) -> bool:
-    return label.startswith("pytest") or label in {"lab scenario", "bench slo"}
+    return label.startswith("pytest") or label in {"lab smoke", "bench slo"}
 
 
 # ── step builder ────────────────────────────────────────────────────
@@ -1002,7 +1002,7 @@ def build_verify_steps(
             steps.append((label, pytest_cmd))
 
     if lab:
-        steps.append(("lab scenario", _devtools_cmd("lab scenario", "run", "archive-smoke", "--tier", "0")))
+        steps.append(("lab smoke", _devtools_cmd("lab smoke", "run", "archive-smoke", "--tier", "0")))
         steps.append(("bench slo", _devtools_cmd("bench slo", "--include-lab")))
         steps.append(("lab policy schema-versioning", _devtools_cmd("lab policy schema-versioning")))
     return steps

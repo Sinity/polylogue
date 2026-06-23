@@ -8,7 +8,7 @@ import sqlite3
 import uuid
 from collections.abc import AsyncIterator, Iterable, Sequence
 from contextlib import suppress
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -100,6 +100,17 @@ if TYPE_CHECKING:
         SessionSearchHitPayload,
         TagMutationResult,
     )
+
+
+_FACET_COMPLETE_FAMILIES = (
+    "total_counts",
+    "origins",
+    "tags",
+    "repos",
+    "message_types",
+    "action_types",
+    "has_flags",
+)
 
 
 class SessionNotFoundError(PolylogueError):
@@ -2915,6 +2926,14 @@ class PolylogueArchiveMixin:
         return FacetsResponse.model_validate(
             {
                 "scoped_to_query": scoped_to_query,
+                "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "stale": False,
+                "stale_age_s": None,
+                "budget_exceeded": False,
+                "complete_families": _FACET_COMPLETE_FAMILIES,
+                "deferred_families": {},
+                "family_errors": {},
+                "family_status": {family: {"state": "complete", "stale": False} for family in _FACET_COMPLETE_FAMILIES},
                 "origins": dict(active.providers),
                 "tags": dict(active.tags),
                 "repos": dict(active.repos),

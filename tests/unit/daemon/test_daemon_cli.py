@@ -77,7 +77,7 @@ def test_polylogued_status_json_reports_daemon_components(
     assert live["source_count"] == 2
     assert live["existing_source_count"] == 1
     assert browser_capture["spool_ready"] is True
-    assert "spool_path" not in browser_capture
+    assert browser_capture["spool_path"] == str(tmp_path / "captures")
 
 
 def test_polylogued_status_plain_reports_daemon_components(tmp_path: Path) -> None:
@@ -222,6 +222,47 @@ def test_drain_convergence_debt_retries_session_subjects_without_source_lookup(
         debt_after = cursor.list_convergence_debt()
 
     assert retried == 1
+    assert debt_after == []
+
+
+@pytest.mark.contract
+@pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor")
+def test_drain_convergence_debt_retries_global_messages_fts_surface(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    db = tmp_path / "index.db"
+    cursor = CursorStore(db)
+    cursor.record_convergence_debt(
+        stage="fts",
+        subject_type="fts_surface",
+        subject_id="messages_fts",
+        error="startup found stale messages_fts freshness ledger",
+    )
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute(
+            "UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00'",
+        )
+        conn.commit()
+    repairs: list[Path] = []
+
+    def fake_repair_messages_fts_surface(path: Path) -> bool:
+        repairs.append(path)
+        return True
+
+    monkeypatch.setattr(
+        "polylogue.daemon.convergence_stages.repair_messages_fts_surface",
+        fake_repair_messages_fts_surface,
+    )
+
+    retried = daemon_cli._drain_convergence_debt_once(db)
+    debt_after = cursor.list_convergence_debt()
+
+    assert retried == 1
+    assert repairs == [db]
     assert debt_after == []
 
 
@@ -716,6 +757,160 @@ def test_ensure_fts_startup_readiness_does_not_rebuild_old_non_blocks_shape(
     assert conn.closed is True
 
 
+def test_archive_message_fts_startup_large_drift_is_deferred(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.daemon import fts_startup
+
+    class FakeCursor:
+        def __init__(self, row: tuple[object, ...] | None, rows: list[tuple[object, ...]] | None = None) -> None:
+            self._row = row
+            self._rows = rows if rows is not None else ([] if row is None else [row])
+
+        def fetchone(self) -> tuple[object, ...] | None:
+            return self._row
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return self._rows
+
+    class FakeConnection:
+        def execute(self, sql: str, params: object = ()) -> FakeCursor:
+            query = " ".join(sql.split())
+            if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
+                name = str(params[0]) if isinstance(params, tuple) and params else ""
+                return (
+                    FakeCursor((1,)) if name in {"blocks", "messages_fts", "messages_fts_docsize"} else FakeCursor(None)
+                )
+            if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):
+                triggers: list[tuple[object, ...]] = [("messages_fts_ai",), ("messages_fts_ad",), ("messages_fts_au",)]
+                return FakeCursor(triggers[0], rows=triggers)
+            if query.startswith("SELECT state, source_rows, indexed_rows"):
+                return FakeCursor(None)
+            if query == "SELECT COUNT(*) FROM blocks WHERE search_text != ''":
+                return FakeCursor((250_000,))
+            if query == "SELECT COUNT(*) FROM messages_fts_docsize":
+                return FakeCursor((100_000,))
+            raise AssertionError(f"unexpected query: {query}")
+
+    rebuilds: list[FakeConnection] = []
+    records: list[dict[str, object]] = []
+    debts: list[dict[str, object]] = []
+
+    monkeypatch.setattr("polylogue.storage.sqlite.archive_tiers.bootstrap.initialize_archive_tier", lambda *_args: None)
+    monkeypatch.setattr("polylogue.storage.fts.freshness.ensure_fts_freshness_table_sync", lambda _conn: None)
+    monkeypatch.setattr(
+        "polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync", lambda conn: rebuilds.append(conn)
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.fts.freshness.record_fts_surface_state_sync",
+        lambda _conn, **kwargs: records.append(kwargs),
+    )
+
+    class FakeCursorStore:
+        def __init__(self, db_path: Path) -> None:
+            assert db_path == Path("/archive/index.db")
+
+        def record_convergence_debt(self, **kwargs: object) -> None:
+            debts.append(kwargs)
+
+    monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursorStore)
+
+    assert (
+        fts_startup._ensure_archive_messages_fts_startup_readiness_sync(
+            cast(sqlite3.Connection, FakeConnection()),
+            db_path=Path("/archive/index.db"),
+        )
+        is True
+    )
+
+    assert rebuilds == []
+    assert records == [
+        {
+            "surface": "messages_fts",
+            "state": "stale",
+            "source_rows": 250_000,
+            "indexed_rows": 100_000,
+            "missing_rows": 150_000,
+            "excess_rows": 0,
+            "detail": "archive message FTS drift exceeds startup repair budget; scheduled global FTS surface repair",
+        }
+    ]
+    assert debts == [
+        {
+            "stage": "fts",
+            "subject_type": "fts_surface",
+            "subject_id": "messages_fts",
+            "error": "archive message FTS drift exceeds startup repair budget; scheduled global FTS surface repair",
+        }
+    ]
+
+
+def test_archive_message_fts_startup_records_known_stale_ledger_without_global_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.daemon import fts_startup
+
+    class FakeCursor:
+        def __init__(self, row: tuple[object, ...] | None, rows: list[tuple[object, ...]] | None = None) -> None:
+            self._row = row
+            self._rows = rows if rows is not None else ([] if row is None else [row])
+
+        def fetchone(self) -> tuple[object, ...] | None:
+            return self._row
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return self._rows
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        def execute(self, sql: str, params: object = ()) -> FakeCursor:
+            query = " ".join(sql.split())
+            self.queries.append(query)
+            if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
+                name = str(params[0]) if isinstance(params, tuple) and params else ""
+                return (
+                    FakeCursor((1,)) if name in {"blocks", "messages_fts", "messages_fts_docsize"} else FakeCursor(None)
+                )
+            if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):
+                triggers: list[tuple[object, ...]] = [("messages_fts_ai",), ("messages_fts_ad",), ("messages_fts_au",)]
+                return FakeCursor(triggers[0], rows=triggers)
+            if query.startswith("SELECT state, source_rows, indexed_rows"):
+                return FakeCursor(("stale", 250_000, 100_000, 150_000, 0, 0))
+            raise AssertionError(f"unexpected query: {query}")
+
+    conn = FakeConnection()
+    rebuilds: list[FakeConnection] = []
+    records: list[dict[str, object]] = []
+
+    monkeypatch.setattr("polylogue.storage.sqlite.archive_tiers.bootstrap.initialize_archive_tier", lambda *_args: None)
+    monkeypatch.setattr("polylogue.storage.fts.freshness.ensure_fts_freshness_table_sync", lambda _conn: None)
+    monkeypatch.setattr(
+        "polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync", lambda fake_conn: rebuilds.append(fake_conn)
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.fts.freshness.record_fts_surface_state_sync",
+        lambda _conn, **kwargs: records.append(kwargs),
+    )
+
+    assert fts_startup._ensure_archive_messages_fts_startup_readiness_sync(cast(sqlite3.Connection, conn)) is True
+
+    assert rebuilds == []
+    assert records == [
+        {
+            "surface": "messages_fts",
+            "state": "stale",
+            "source_rows": 250_000,
+            "indexed_rows": 100_000,
+            "missing_rows": 150_000,
+            "excess_rows": 0,
+            "duplicate_rows": 0,
+            "detail": "archive message FTS drift exceeds startup repair budget; scheduled global FTS surface repair",
+        }
+    ]
+    assert "SELECT COUNT(*) FROM blocks WHERE search_text != ''" not in conn.queries
+    assert "SELECT COUNT(*) FROM messages_fts_docsize" not in conn.queries
+
+
 def test_ensure_fts_startup_readiness_skips_when_blocks_table_absent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1147,9 +1342,9 @@ def test_ensure_fts_startup_readiness_uses_extended_write_timeout(
     seen_busy_timeout: list[int] = []
     real_ensure = fts_startup._ensure_archive_messages_fts_startup_readiness_sync
 
-    def wrapped_ensure(conn: sqlite3.Connection) -> bool:
+    def wrapped_ensure(conn: sqlite3.Connection, *, db_path: Path | None = None) -> bool:
         seen_busy_timeout.append(int(conn.execute("PRAGMA busy_timeout").fetchone()[0]))
-        return real_ensure(conn)
+        return real_ensure(conn, db_path=db_path)
 
     monkeypatch.setattr(fts_startup, "_ensure_archive_messages_fts_startup_readiness_sync", wrapped_ensure)
 
@@ -1430,6 +1625,146 @@ def test_run_daemon_services_shutdowns_running_server_on_watcher_failure() -> No
 
     assert server.shutdown_called is True
     assert server.close_called is True
+
+
+def test_shutdown_server_runs_even_when_to_thread_task_is_cancelled() -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    class BlockingServer:
+        shutdown_called = False
+
+        def __init__(self) -> None:
+            self._stopped = threading.Event()
+
+        def serve_forever(self, poll_interval: float = 0.5) -> None:
+            assert poll_interval == 0.5
+            self._stopped.wait(timeout=5)
+
+        def shutdown(self) -> None:
+            self.shutdown_called = True
+            self._stopped.set()
+
+    async def exercise() -> BlockingServer:
+        server = BlockingServer()
+        task = asyncio.create_task(asyncio.to_thread(server.serve_forever, 0.5))
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        await daemon_cli._shutdown_server_if_serving(cast(Any, server), task, label="browser-capture")
+        return server
+
+    server = asyncio.run(exercise())
+
+    assert server.shutdown_called is True
+
+
+def test_report_drain_exceptions_ignores_expected_cancellations(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    daemon_cli._report_drain_exceptions([None, asyncio.CancelledError()])
+
+    assert "task raised during shutdown" not in caplog.text
+
+
+def test_run_daemon_services_drains_servers_when_main_task_is_cancelled() -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    class BlockingServer:
+        shutdown_called = False
+        close_called = False
+
+        def __init__(self) -> None:
+            self.ready = threading.Event()
+            self._stopped = threading.Event()
+
+        def serve_forever(self, poll_interval: float = 0.5) -> None:
+            assert poll_interval == 0.5
+            self.ready.set()
+            self._stopped.wait(timeout=5)
+
+        def shutdown(self) -> None:
+            self.shutdown_called = True
+            self._stopped.set()
+
+        def server_close(self) -> None:
+            self.close_called = True
+
+    class FakeConverger:
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+    async def noop() -> None:
+        return None
+
+    async def no_drive_changes() -> int:
+        return 0
+
+    async def wait_forever() -> None:
+        await asyncio.Event().wait()
+
+    browser_server = BlockingServer()
+    api_server = BlockingServer()
+    interrupted_cleanup_calls = 0
+
+    def mark_interrupted_cleanup() -> None:
+        nonlocal interrupted_cleanup_calls
+        interrupted_cleanup_calls += 1
+
+    async def exercise() -> None:
+        task = asyncio.create_task(
+            daemon_cli.run_daemon_services(
+                sources=(),
+                debounce_s=1.0,
+                enable_watch=False,
+                enable_browser_capture=True,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+                enable_api=True,
+                api_host="127.0.0.1",
+                api_port=8766,
+            )
+        )
+        while not (browser_server.ready.is_set() and api_server.ready.is_set()):
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=2.0)
+
+    with (
+        patch.object(daemon_cli, "make_server", return_value=browser_server),
+        patch.object(daemon_cli, "_ensure_fts_startup_readiness", noop),
+        patch.object(daemon_cli, "_configure_fts_automerge", noop),
+        patch.object(daemon_cli, "_run_drive_source_catchup_safely", no_drive_changes),
+        patch.object(daemon_cli, "_periodic_wal_checkpoint", wait_forever),
+        patch.object(daemon_cli, "_periodic_fts_merge", wait_forever),
+        patch.object(daemon_cli, "_periodic_heartbeat", wait_forever),
+        patch.object(daemon_cli, "_periodic_drive_source_catchup", wait_forever),
+        patch.object(daemon_cli, "_periodic_health_check", wait_forever),
+        patch.object(daemon_cli, "_periodic_db_optimize", wait_forever),
+        patch.object(daemon_cli, "_periodic_status_snapshot_refresh", wait_forever),
+        patch.object(daemon_cli, "_periodic_convergence_check", lambda _sources, **_kwargs: wait_forever()),
+        patch.object(daemon_cli, "_sweep_orphaned_blob_leases", wait_forever),
+        patch.object(daemon_cli, "_mark_interrupted_live_ingest_attempts_on_shutdown", mark_interrupted_cleanup),
+        patch("polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check", wait_forever),
+        patch("polylogue.daemon.convergence.DaemonConverger", return_value=FakeConverger()),
+        patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=()),
+        patch("polylogue.daemon.http.DaemonAPIHTTPServer", return_value=api_server),
+    ):
+        asyncio.run(exercise())
+
+    assert browser_server.shutdown_called is True
+    assert browser_server.close_called is True
+    assert api_server.shutdown_called is True
+    assert api_server.close_called is True
+    assert interrupted_cleanup_calls == 1
 
 
 def test_run_daemon_services_schema_block_skips_db_background_work() -> None:

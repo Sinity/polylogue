@@ -8,7 +8,7 @@ any regression in the daemon's contract surface fails here loudly.
 
 This is the documented reader visual smoke lane (see
 ``docs/visual-evidence.md``). The lane runs as part of the standard
-unit suite and ``devtools verify``; a separate ``devtools lab scenario``
+unit suite and ``devtools verify``; a separate ``devtools lab smoke``
 entrypoint can be added later if Playwright-based screenshot evidence
 is bolted on.
 
@@ -698,8 +698,13 @@ class TestReaderSearchState:
         assert global_payload["scoped_to_query"] is False
         assert global_payload["total_sessions"] == 1
         assert global_payload["origins"] == {"codex-session": 1}
-        assert "repos" in global_payload["deferred_families"]
-        assert "action_types" in global_payload["deferred_families"]
+        assert global_payload["budget_exceeded"] is False
+        assert global_payload["deferred_families"] == {
+            "action_types": "deferred_by_default",
+            "repos": "deferred_by_default",
+        }
+        assert global_payload["family_status"]["repos"]["state"] == "deferred"
+        assert global_payload["family_status"]["repos"]["reason"] == "deferred_by_default"
         assert global_payload["repos"] == {}
         assert global_payload["action_types"] == {}
         assert isinstance(scoped_payload, dict)
@@ -717,11 +722,32 @@ class TestReaderSearchState:
             payload = _get_json(base_url, "/api/facets?include_expensive=1")
 
         assert isinstance(payload, dict)
-        assert payload["deferred_families"] == []
+        assert payload["budget_exceeded"] is False
+        assert payload["deferred_families"] == {}
         assert "repos" in payload["complete_families"]
         assert "action_types" in payload["complete_families"]
+        assert payload["family_status"]["repos"]["state"] == "complete"
         assert isinstance(payload["repos"], dict)
         assert isinstance(payload["action_types"], dict)
+
+    def test_archive_file_set_facets_budget_exceeded_metadata(
+        self,
+        workspace_env: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _seed_archive_test_archive(workspace_env)
+        with _running_server_without_seed() as (_, base_url):
+            payload = _get_json(base_url, "/api/facets?include_expensive=1&budget_ms=0")
+
+        assert isinstance(payload, dict)
+        assert payload["budget_exceeded"] is True
+        assert payload["deferred_families"] == {
+            "action_types": "budget_exceeded",
+            "repos": "budget_exceeded",
+        }
+        assert payload["family_status"]["repos"]["state"] == "deferred"
+        assert payload["family_status"]["repos"]["reason"] == "budget_exceeded"
+        assert "repos" not in payload["complete_families"]
 
 
 # ---------------------------------------------------------------------------
@@ -1551,6 +1577,20 @@ class TestReaderQueryCompletions:
 
 
 class TestReaderActionAffordances:
+    def test_web_shell_renders_shared_action_affordance_rail(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            status, content_type, body = _get_text(base_url, "/")
+
+        assert status == 200
+        assert "text/html" in content_type
+        assert "function renderActionAffordanceRail" in body
+        assert "Query action affordances" in body
+        assert "state.actionAffordances = data.action_affordances || []" in body
+        assert "action.input && action.input.unit" in body
+        assert "action.execution && action.execution.cardinality_state" in body
+        assert "action.output && action.output.format_support" in body
+        assert "action.safety && action.safety.safety_level" in body
+
     def test_action_affordances_endpoint_exposes_shared_payload(self) -> None:
         with _running_server_without_seed() as (_server, base_url):
             payload = _get_json(base_url, "/api/action-affordances")
@@ -1564,14 +1604,22 @@ class TestReaderActionAffordances:
 
         read = action_by_id["read"]
         assert read["target"] == "selection"
-        assert read["safety_level"] == "safe"
-        assert read["selection_command"] == "polylogue find QUERY then select"
+        assert read["input_unit"] == "query_result_set"
+        assert cast(dict[str, object], read["input"])["unit"] == read["input_unit"]
+        assert cast(dict[str, object], read["execution"])["cardinality_state"] == read["cardinality_state"]
+        assert cast(dict[str, object], read["safety"])["safety_level"] == read["safety_level"] == "safe"
+        assert cast(dict[str, object], read["safety"])["selection_command"] == "polylogue find QUERY then select"
+        assert cast(dict[str, object], read["output"])["destination_support"] == read["destination_support"]
         assert "terminal" in cast(list[object], read["destination_support"])
 
         delete = action_by_id["delete"]
         assert delete["target"] == "selection"
-        assert delete["safety_level"] == "destructive"
-        assert delete["confirmation_command"] == "polylogue find QUERY then delete --dry-run"
+        assert cast(dict[str, object], delete["safety"])["safety_level"] == delete["safety_level"] == "destructive"
+        assert (
+            cast(dict[str, object], delete["safety"])["confirmation_command"]
+            == "polylogue find QUERY then delete --dry-run"
+        )
+        assert cast(dict[str, object], delete["availability"])["next_actions"] == delete["next_actions"]
         assert "find" in cast(list[object], delete["next_actions"])
 
 
@@ -2240,10 +2288,15 @@ class TestSharedQueryPayloads:
         assert d["diagnostics"]["message"] == "No results."
 
     def test_facets_response_shape(self) -> None:
-        from polylogue.surfaces.payloads import FacetsResponse, FacetTimeRange
+        from polylogue.surfaces.payloads import FacetFamilyStatusPayload, FacetsResponse, FacetTimeRange
 
         r = FacetsResponse(
             scoped_to_query=False,
+            generated_at="2026-06-22T00:00:00Z",
+            budget_exceeded=True,
+            complete_families=("total_counts", "origins", "tags"),
+            deferred_families={"repos": "deferred_by_default"},
+            family_status={"repos": FacetFamilyStatusPayload(state="deferred", reason="deferred_by_default")},
             origins={"claude-code-session": 10, "chatgpt-export": 5},
             total_sessions=15,
             total_messages=100,
@@ -2254,6 +2307,10 @@ class TestSharedQueryPayloads:
         assert d["origins"] == {"claude-code-session": 10, "chatgpt-export": 5}
         assert d["total_sessions"] == 15
         assert d["time_range"]["min"] == "2024-01-01"
+        assert d["generated_at"] == "2026-06-22T00:00:00Z"
+        assert d["budget_exceeded"] is True
+        assert d["deferred_families"] == {"repos": "deferred_by_default"}
+        assert d["family_status"]["repos"]["state"] == "deferred"
 
     def test_assertion_claim_payloads_are_shared_surface_dtos(self) -> None:
         from polylogue.core.enums import AssertionKind

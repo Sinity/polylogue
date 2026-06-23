@@ -58,6 +58,7 @@ class RawSnapshotCleanupResult:
     deleted_raw_bytes: int
     deleted_blob_bytes: int
     skipped_missing_source_count: int
+    skipped_referenced_count: int = 0
     errors: tuple[str, ...] = ()
 
 
@@ -171,8 +172,9 @@ def cleanup_superseded_raw_snapshots(
     limit: int = 1_000,
     dry_run: bool = True,
     blob_store: BlobStore | None = None,
+    protected_raw_ids: set[str] | frozenset[str] | None = None,
 ) -> RawSnapshotCleanupResult:
-    candidates = superseded_raw_snapshot_candidates(
+    all_candidates = superseded_raw_snapshot_candidates(
         conn,
         source_path=source_path,
         keep_full_snapshots=keep_full_snapshots,
@@ -180,6 +182,9 @@ def cleanup_superseded_raw_snapshots(
         min_acquired_at=min_acquired_at,
         limit=limit,
     )
+    protected = protected_raw_ids or frozenset()
+    candidates = [candidate for candidate in all_candidates if candidate.raw_id not in protected]
+    skipped_referenced_count = len(all_candidates) - len(candidates)
     if not candidates:
         return RawSnapshotCleanupResult(
             candidate_count=0,
@@ -188,6 +193,7 @@ def cleanup_superseded_raw_snapshots(
             deleted_raw_bytes=0,
             deleted_blob_bytes=0,
             skipped_missing_source_count=0,
+            skipped_referenced_count=skipped_referenced_count,
         )
 
     raw_ids = [candidate.raw_id for candidate in candidates]
@@ -200,6 +206,7 @@ def cleanup_superseded_raw_snapshots(
             deleted_raw_bytes=raw_bytes,
             deleted_blob_bytes=0,
             skipped_missing_source_count=0,
+            skipped_referenced_count=skipped_referenced_count,
         )
 
     placeholders = ", ".join("?" for _ in raw_ids)
@@ -233,6 +240,7 @@ def cleanup_superseded_raw_snapshots(
         deleted_raw_bytes=raw_bytes,
         deleted_blob_bytes=deleted_blob_bytes,
         skipped_missing_source_count=0,
+        skipped_referenced_count=skipped_referenced_count,
         errors=tuple(errors),
     )
 
