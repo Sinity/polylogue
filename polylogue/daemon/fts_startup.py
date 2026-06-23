@@ -151,6 +151,18 @@ def _ensure_archive_messages_fts_startup_readiness_sync(
         if _message_fts_freshness_row_stale_sync(freshness_row):
             logger.warning("daemon: archive message FTS startup readiness found stale freshness ledger")
             _record_message_fts_surface_debt(db_path, "startup found stale messages_fts freshness ledger")
+            assert freshness_row is not None
+            record_fts_surface_state_sync(
+                conn,
+                surface="messages_fts",
+                state=STALE,
+                source_rows=_int_or_zero(freshness_row[1]),
+                indexed_rows=_int_or_zero(freshness_row[2]),
+                missing_rows=_int_or_zero(freshness_row[3]),
+                excess_rows=_int_or_zero(freshness_row[4]),
+                duplicate_rows=_int_or_zero(freshness_row[5]),
+                detail=_MESSAGE_FTS_STARTUP_REPAIR_DETAIL,
+            )
             return True
     source_rows = _count_or_zero(conn, "SELECT COUNT(*) FROM blocks WHERE search_text != ''")
     indexed_rows = _count_or_zero(conn, "SELECT COUNT(*) FROM messages_fts_docsize") if docsize_exists else 0

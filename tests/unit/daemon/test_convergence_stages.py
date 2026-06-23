@@ -256,8 +256,8 @@ def test_fts_stage_uses_targeted_repair_not_full_rebuild(tmp_path: Path) -> None
         assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
 
 
-def test_archive_repair_sessions_fts_falls_back_to_full_rebuild_without_ids(tmp_path: Path) -> None:
-    """When scope is unknown (no session ids), the full rebuild is the fallback."""
+def test_archive_repair_sessions_fts_resets_message_surface_without_ids(tmp_path: Path) -> None:
+    """When scope is unknown (no session ids), reset the global message surface."""
     from unittest import mock
 
     import polylogue.storage.fts.fts_lifecycle as fts_lc
@@ -269,11 +269,13 @@ def test_archive_repair_sessions_fts_falls_back_to_full_rebuild_without_ids(tmp_
 
     with (
         sqlite3.connect(archive_db) as conn,
-        mock.patch.object(fts_lc, "rebuild_fts_index_sync", wraps=fts_lc.rebuild_fts_index_sync) as full_rebuild,
+        mock.patch.object(
+            fts_lc, "reset_message_fts_index_sync", wraps=fts_lc.reset_message_fts_index_sync
+        ) as reset_surface,
     ):
         stages._archive_repair_sessions_fts(conn, [])
 
-    full_rebuild.assert_called_once()
+    reset_surface.assert_called_once()
 
 
 def test_insights_stage_materializes_archive_profiles_from_archive_tiers(tmp_path: Path) -> None:
