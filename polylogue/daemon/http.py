@@ -2011,12 +2011,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             if fts_query:
                 from polylogue.operations.action_contracts import query_result_action_affordance_payloads
 
-                hits = archive.search_summaries(
-                    fts_query,
-                    limit=limit,
-                    offset=offset,
-                    session_id=resolved_session_id,
-                    **_filter_kw,  # type: ignore[arg-type]
+                hits = self._run_archive_bounded_query(
+                    archive,
+                    deadline_s=None,
+                    compute=lambda: archive.search_summaries(
+                        fts_query,
+                        limit=limit,
+                        offset=offset,
+                        session_id=resolved_session_id,
+                        **_filter_kw,  # type: ignore[arg-type]
+                    ),
                 )
                 payload: dict[str, object] = {
                     "query": fts_query,
@@ -2037,7 +2041,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     # miss instead of rendering a bare empty list.
                     from polylogue.surfaces.payloads import QueryMissDiagnosticsPayload
 
-                    archive_count = archive.count_sessions(**_filter_kw)  # type: ignore[arg-type]
+                    archive_count = self._run_archive_bounded_query(
+                        archive,
+                        deadline_s=None,
+                        compute=lambda: archive.count_sessions(**_filter_kw),  # type: ignore[arg-type]
+                    )
                     filters = tuple(
                         label
                         for label in (
@@ -2054,18 +2062,28 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                         archive_session_count=archive_count,
                     ).model_dump(mode="json", by_alias=True)
                 return payload
-            summaries = archive.list_summaries(
-                limit=limit,
-                offset=offset,
-                session_id=resolved_session_id,
-                **_filter_kw,  # type: ignore[arg-type]
+            summaries = self._run_archive_bounded_query(
+                archive,
+                deadline_s=None,
+                compute=lambda: archive.list_summaries(
+                    limit=limit,
+                    offset=offset,
+                    session_id=resolved_session_id,
+                    **_filter_kw,  # type: ignore[arg-type]
+                ),
             )
             # count_sessions has no session_id param, so when the page is scoped to
             # a single resolved id an archive-wide total would be reported for a
             # one-session match. An id matches at most one session, so the scoped
             # total is the page length.
             total = (
-                len(summaries) if resolved_session_id is not None else archive.count_sessions(**_filter_kw)  # type: ignore[arg-type]
+                len(summaries)
+                if resolved_session_id is not None
+                else self._run_archive_bounded_query(
+                    archive,
+                    deadline_s=None,
+                    compute=lambda: archive.count_sessions(**_filter_kw),  # type: ignore[arg-type]
+                )
             )
             return {
                 "items": [self._archive_summary_payload(summary) for summary in summaries],
@@ -3390,7 +3408,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             if scoped_to_query:
                 session_ids: tuple[str, ...] = ()
                 if query:
-                    hits = self._run_archive_facet_query(
+                    hits = self._run_archive_bounded_query(
                         archive,
                         deadline_s=None,
                         compute=lambda: archive.search_summaries(
@@ -3466,19 +3484,21 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             }
         ).model_dump(mode="json", by_alias=True)
 
-    def _run_archive_facet_query(
+    def _run_archive_bounded_query(
         self,
         archive: ArchiveStore,
         *,
         deadline_s: float | None,
         compute: Callable[[], _FacetQueryResult],
     ) -> _FacetQueryResult:
-        """Run one facet SQL step with budget and client-abort interruption.
+        """Run one archive SQL step with budget and client-abort interruption.
 
         Browser-side ``AbortController`` cancellation only helps the server if
         the request thread periodically observes the dead socket. SQLite's
         progress handler gives long scans/joins that observation point while
-        preserving the existing optional-family budget contract.
+        preserving the existing optional-family budget contract. Facets pass a
+        deadline; list/search routes pass no deadline but still stop when the
+        browser closes a timed-out request.
         """
 
         conn = getattr(archive, "_conn", None)
@@ -3528,7 +3548,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.surfaces.payloads import FacetBucketsPayload
 
         optional_families = optional_families or set()
-        stats = self._run_archive_facet_query(
+        stats = self._run_archive_bounded_query(
             archive,
             deadline_s=None,
             compute=lambda: archive.stats(origin=origin, origins=origins, session_ids=session_ids),
@@ -3542,7 +3562,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         if "repos" in optional_families:
             try:
-                repos = self._run_archive_facet_query(
+                repos = self._run_archive_bounded_query(
                     archive,
                     deadline_s=deadline_s,
                     compute=lambda: archive.stats_by("repo", origin=origin, origins=origins, session_ids=session_ids),
@@ -3558,7 +3578,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         if "action_types" in optional_families:
             try:
-                action_types = self._run_archive_facet_query(
+                action_types = self._run_archive_bounded_query(
                     archive,
                     deadline_s=deadline_s,
                     compute=lambda: archive.stats_by("action", origin=origin, origins=origins, session_ids=session_ids),
@@ -3572,7 +3592,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 errors["action_types"] = _facet_error_text(exc)
 
-        tags = self._run_archive_facet_query(
+        tags = self._run_archive_bounded_query(
             archive,
             deadline_s=None,
             compute=lambda: archive.stats_by("tag", origin=origin, origins=origins, session_ids=session_ids),

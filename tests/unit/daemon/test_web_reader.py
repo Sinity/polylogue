@@ -515,7 +515,7 @@ def test_socket_peer_disconnected_detects_closed_loopback_peer() -> None:
         server_sock.close()
 
 
-def test_archive_facet_query_progress_handler_interrupts_after_client_abort() -> None:
+def test_archive_bounded_query_progress_handler_interrupts_after_client_abort() -> None:
     from polylogue.daemon.http import DaemonAPIHandler
 
     class _Archive:
@@ -533,7 +533,7 @@ def test_archive_facet_query_progress_handler_interrupts_after_client_abort() ->
     handler._client_disconnected = disconnected_after_start  # type: ignore[method-assign]
     try:
         with pytest.raises(ConnectionAbortedError):
-            handler._run_archive_facet_query(
+            handler._run_archive_bounded_query(
                 _Archive(conn),  # type: ignore[arg-type]
                 deadline_s=None,
                 compute=lambda: conn.execute(
@@ -547,9 +547,22 @@ def test_archive_facet_query_progress_handler_interrupts_after_client_abort() ->
                     """
                 ).fetchone(),
             )
+        assert checks["count"] > 2
     finally:
         conn.close()
-    assert checks["count"] > 2
+
+
+def test_archive_session_list_route_uses_bounded_sql_helper() -> None:
+    import inspect
+
+    from polylogue.daemon.http import DaemonAPIHandler
+
+    source = inspect.getsource(DaemonAPIHandler._do_archive_list_sessions)
+
+    assert "self._run_archive_bounded_query(" in source
+    assert "archive.search_summaries(" in source
+    assert "archive.list_summaries(" in source
+    assert "archive.count_sessions(" in source
 
 
 # ---------------------------------------------------------------------------
