@@ -35,6 +35,36 @@ def test_parse_code_classifies_runtime_artifacts() -> None:
         },
         {
             "type": "user",
+            "uuid": "stderr-1",
+            "sessionId": "sess-1",
+            "timestamp": 1704067201.1,
+            "message": {
+                "role": "user",
+                "content": "<local-command-stderr>warning: generated runtime stderr</local-command-stderr>",
+            },
+        },
+        {
+            "type": "user",
+            "uuid": "bash-stdout-1",
+            "sessionId": "sess-1",
+            "timestamp": 1704067201.2,
+            "message": {
+                "role": "user",
+                "content": "<bash-stdout>cargo test passed</bash-stdout>",
+            },
+        },
+        {
+            "type": "user",
+            "uuid": "bash-stderr-1",
+            "sessionId": "sess-1",
+            "timestamp": 1704067201.3,
+            "message": {
+                "role": "user",
+                "content": "<bash-stderr>traceback from shell wrapper</bash-stderr>",
+            },
+        },
+        {
+            "type": "user",
             "uuid": "command-1",
             "sessionId": "sess-1",
             "timestamp": 1704067202,
@@ -88,11 +118,20 @@ def test_parse_code_classifies_runtime_artifacts() -> None:
     result = parse_code(items, "fallback")
 
     by_id = {message.provider_message_id: message for message in result.messages}
-    assert len(result.messages) == len(by_id) == 7
+    assert len(result.messages) == len(by_id) == 10
     assert by_id["task-1"].message_type is MessageType.PROTOCOL
     assert by_id["task-1"].material_origin is MaterialOrigin.RUNTIME_PROTOCOL
     assert by_id["stdout-1"].message_type is MessageType.PROTOCOL
     assert by_id["stdout-1"].material_origin is MaterialOrigin.RUNTIME_PROTOCOL
+    assert by_id["stderr-1"].role is Role.USER
+    assert by_id["stderr-1"].message_type is MessageType.PROTOCOL
+    assert by_id["stderr-1"].material_origin is MaterialOrigin.RUNTIME_PROTOCOL
+    assert by_id["bash-stdout-1"].role is Role.USER
+    assert by_id["bash-stdout-1"].message_type is MessageType.PROTOCOL
+    assert by_id["bash-stdout-1"].material_origin is MaterialOrigin.RUNTIME_PROTOCOL
+    assert by_id["bash-stderr-1"].role is Role.USER
+    assert by_id["bash-stderr-1"].message_type is MessageType.PROTOCOL
+    assert by_id["bash-stderr-1"].material_origin is MaterialOrigin.RUNTIME_PROTOCOL
     assert by_id["command-1"].message_type is MessageType.PROTOCOL
     assert by_id["command-1"].material_origin is MaterialOrigin.OPERATOR_COMMAND
     assert by_id["skill-1"].message_type is MessageType.CONTEXT
