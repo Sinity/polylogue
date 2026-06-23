@@ -1405,7 +1405,7 @@ def _config_path_diagnostics(resolved: PolylogueConfig) -> list[dict[str, object
         value = resolved.raw.get(entry.key)
         # Defaults may legitimately point at not-yet-created first-run paths.
         # Operator-provided paths must be explicit enough to audit.
-        if resolved.layer_of(entry.key) == "default":
+        if resolved.layer_of(entry.key) == "default" and not (entry.env_var and entry.env_var in os.environ):
             continue
         for raw_path in _iter_path_config_values(entry.key, value):
             path = _expand_config_path(raw_path)
