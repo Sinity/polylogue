@@ -846,12 +846,18 @@ def render_stream_transcript(
     output_format: str,
     dialogue_only: bool = False,
     message_roles: MessageRoleFilter = (),
+    material_origins: tuple[object, ...] = (),
     message_limit: int | None = None,
     stats: SessionStats | None = None,
 ) -> tuple[str, int]:
     """Render the full stream transcript deterministically for evidence/tests."""
     effective_roles = message_roles or (DIALOGUE_MESSAGE_ROLES if dialogue_only else ())
-    filtered_messages = [message for message in messages if not effective_roles or message.role in effective_roles]
+    filtered_messages = [
+        message
+        for message in messages
+        if (not effective_roles or message.role in effective_roles)
+        and (not material_origins or message.material_origin in material_origins)
+    ]
     parts = [
         render_stream_header(
             session_id=session_id,

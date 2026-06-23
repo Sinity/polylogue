@@ -532,8 +532,9 @@ can resolve deliberately when the operator wants to inspect source evidence.
 | `--no-tool-outputs` | Strip tool result blocks |
 | `--no-file-reads` | Strip file read blocks |
 | `--prose-only` | Show only authored prose text |
-| `--dialogue-only` | Show only user/assistant messages |
-| `--message-role` | Filter by role (`user`, `assistant`, `system`, `tool`) |
+| `--dialogue-only` | Show only provider-role user/assistant messages |
+| `--message-role` | Filter by provider role (`user`, `assistant`, `system`, `tool`) |
+| `--material-origin` | Filter message rows by authoredness/material source (`human_authored`, `runtime_protocol`, `tool_result`, `unknown`, etc.) |
 
 ## Verbs
 

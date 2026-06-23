@@ -1144,6 +1144,7 @@ class _ArchiveNeighborRuntime:
         *,
         dialogue_only: bool = False,
         message_roles: MessageRoleFilter = (),
+        material_origin: tuple[MaterialOrigin, ...] = (),
         limit: int | None = None,
     ) -> AsyncIterator[Message]:
         async def _iter() -> AsyncIterator[Message]:
@@ -1155,6 +1156,8 @@ class _ArchiveNeighborRuntime:
                 if dialogue_only and message.role not in {Role.USER, Role.ASSISTANT}:
                     continue
                 if message_roles and message.role not in message_roles:
+                    continue
+                if material_origin and message.material_origin not in material_origin:
                     continue
                 if limit is not None and count >= limit:
                     break
@@ -1280,12 +1283,15 @@ def _archive_message_matches(
     *,
     message_role: MessageRoleFilter,
     message_type: MessageTypeName | None,
+    material_origin: tuple[MaterialOrigin, ...] = (),
     since_ms: int | None = None,
     until_ms: int | None = None,
 ) -> bool:
     if message_role and message.role not in message_role:
         return False
     if message_type is not None and message.message_type != MessageType.normalize(message_type):
+        return False
+    if material_origin and message.material_origin not in material_origin:
         return False
     occurred_ms = int(message.timestamp.timestamp() * 1000) if message.timestamp is not None else None
     if since_ms is not None and (occurred_ms is None or occurred_ms < since_ms):
@@ -3043,6 +3049,7 @@ class PolylogueArchiveMixin:
         *,
         message_role: MessageRoleFilter = (),
         message_type: MessageTypeName | None = None,
+        material_origin: tuple[MaterialOrigin, ...] = (),
         limit: int = 50,
         offset: int = 0,
         content_projection: ContentProjectionSpec | None = None,
@@ -3057,7 +3064,12 @@ class PolylogueArchiveMixin:
         messages = [
             message
             for message in session.messages
-            if _archive_message_matches(message, message_role=message_role, message_type=message_type)
+            if _archive_message_matches(
+                message,
+                message_role=message_role,
+                message_type=message_type,
+                material_origin=material_origin,
+            )
         ]
         return messages[offset : offset + limit], len(messages)
 
@@ -3068,6 +3080,7 @@ class PolylogueArchiveMixin:
         since: str | None = None,
         until: str | None = None,
         message_role: MessageRoleFilter = (),
+        material_origin: tuple[MaterialOrigin, ...] = (),
         content_projection: ContentProjectionSpec | None = None,
     ) -> dict[str, list[Message]]:
         """Return messages for many sessions using one archive batch read."""
@@ -3085,6 +3098,7 @@ class PolylogueArchiveMixin:
                     message,
                     message_role=message_role,
                     message_type=None,
+                    material_origin=material_origin,
                     since_ms=since_ms,
                     until_ms=until_ms,
                 )

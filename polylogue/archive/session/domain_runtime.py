@@ -11,6 +11,7 @@ from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import DialoguePair, Message
 from polylogue.archive.message.roles import Role, normalize_message_roles
 from polylogue.archive.session.branch_type import BranchType
+from polylogue.core.enums import MaterialOrigin
 from polylogue.types import SessionId
 
 if TYPE_CHECKING:
@@ -93,6 +94,11 @@ class SessionRuntimeMixin:
     def with_roles(self, roles: object) -> Self:
         selected_roles = normalize_message_roles(roles)
         return self.filter(lambda message: message.role in selected_roles)
+
+    def with_material_origins(self, origins: object) -> Self:
+        raw_origins = origins if isinstance(origins, (tuple, list, set, frozenset)) else (origins,)
+        selected_origins = tuple(MaterialOrigin.validate_filter_token(origin) for origin in raw_origins)
+        return self.filter(lambda message: message.material_origin in selected_origins)
 
     def with_content_projection(
         self,

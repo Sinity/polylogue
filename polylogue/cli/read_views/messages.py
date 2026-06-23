@@ -19,6 +19,7 @@ from polylogue.cli.shared.types import AppEnv
 MESSAGE_READ_VIEW_OPTION_NAMES = frozenset(
     {
         "limit",
+        "material_origin",
         "message_role",
         "message_type",
         "no_code_blocks",
@@ -38,6 +39,7 @@ def build_message_options(values: ReadViewOptionValues) -> ReadViewMessageOption
         limit=cast(int | None, values.get("limit")),
         offset=cast(int, values.get("offset", 0)),
         role=cast(tuple[str, ...], values.get("message_role", ())),
+        material_origin=cast(tuple[str, ...], values.get("material_origin", ())),
         message_type=cast(str | None, values.get("message_type")),
         no_code_blocks=cast(bool, values.get("no_code_blocks", False)),
         no_tool_calls=cast(bool, values.get("no_tool_calls", False)),
@@ -70,6 +72,7 @@ def run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVie
                 request,
                 session_id=invocation.session_id,
                 message_role=options.role,
+                material_origin=options.material_origin,
                 message_type=options.message_type,
                 limit=limit,
                 offset=options.offset,
@@ -90,6 +93,7 @@ def run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVie
         request,
         session_id=invocation.session_id,
         message_role=options.role,
+        material_origin=options.material_origin,
         message_type=options.message_type,
         limit=limit,
         offset=options.offset,

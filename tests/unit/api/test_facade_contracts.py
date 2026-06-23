@@ -37,7 +37,7 @@ import pytest
 from polylogue import Polylogue
 from polylogue.api.archive import SessionNotFoundError
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import AssertionKind, BlockType, Origin, Provider
+from polylogue.core.enums import AssertionKind, BlockType, MaterialOrigin, Origin, Provider
 from polylogue.errors import DatabaseError, PolylogueError
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -1500,6 +1500,50 @@ async def test_get_messages_paginated_applies_content_projection(tmp_path: Path)
 
     assert total == 1
     assert messages[0].text == "Alpha\n\nOmega"
+
+
+async def test_get_messages_paginated_filters_material_origin(tmp_path: Path) -> None:
+    """Message reads can filter authoredness separately from provider role."""
+
+    archive = _archive(tmp_path)
+    with ArchiveStore(tmp_path) as archive_db:
+        session_id = archive_db.write_parsed(
+            ParsedSession(
+                source_name=Provider.CLAUDE_CODE,
+                provider_session_id="material-origin-messages",
+                title="Material origin messages",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="protocol-user",
+                        role=Role.USER,
+                        text="runtime protocol envelope",
+                        material_origin=MaterialOrigin.RUNTIME_PROTOCOL,
+                    ),
+                    ParsedMessage(
+                        provider_message_id="authored-user",
+                        role=Role.USER,
+                        text="human prompt",
+                        material_origin=MaterialOrigin.HUMAN_AUTHORED,
+                    ),
+                ],
+            )
+        )
+    try:
+        role_messages, role_total = await archive.get_messages_paginated(
+            session_id,
+            message_role=(Role.USER,),
+        )
+        authored_messages, authored_total = await archive.get_messages_paginated(
+            session_id,
+            material_origin=(MaterialOrigin.HUMAN_AUTHORED,),
+        )
+    finally:
+        await archive.close()
+
+    assert role_total == 2
+    assert [str(message.id).rsplit(":", 1)[-1] for message in role_messages] == ["protocol-user", "authored-user"]
+    assert authored_total == 1
+    assert str(authored_messages[0].id).endswith(":authored-user")
 
 
 # ---------------------------------------------------------------------------

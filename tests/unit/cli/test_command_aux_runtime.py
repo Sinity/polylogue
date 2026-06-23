@@ -48,6 +48,7 @@ def test_completion_functions_cover_origin_session_tag_tool_and_open_targets() -
     assert [item.value for item in origin_items] == ["chatgpt,claude-ai-export", "chatgpt,claude-code-session"]
     action_items = shell_completion_values.complete_action_values(ctx, param, "file")
     action_sequence_items = shell_completion_values.complete_action_sequence_values(ctx, param, "shell,file")
+    material_origin_items = shell_completion_values.complete_material_origin_values(ctx, param, "runtime")
     message_type_items = shell_completion_values.complete_message_type_values(ctx, param, "m")
     retrieval_lane_items = shell_completion_values.complete_retrieval_lane_values(ctx, param, "h")
 
@@ -88,6 +89,7 @@ def test_completion_functions_cover_origin_session_tag_tool_and_open_targets() -
     assert [item.value for item in action_items] == ["file_read", "file_write", "file_edit"]
     assert "shell,file_read" in [item.value for item in action_sequence_items]
     assert [item.value for item in message_type_items] == ["message"]
+    assert [item.value for item in material_origin_items] == ["runtime_protocol", "runtime_context"]
     assert [item.value for item in retrieval_lane_items] == ["hybrid"]
     assert session_items[0].value == "conv-1"
     assert session_items[0].help is not None and "claude-code" in session_items[0].help
@@ -108,6 +110,9 @@ def test_completion_source_registry_covers_descriptor_sources() -> None:
     assert tuple(shell_completion_values.COMPLETION_SOURCE_HANDLERS) == query_completion_sources()
     assert shell_completion_values.complete_query_source("message_type") is (
         shell_completion_values.complete_message_type_values
+    )
+    assert shell_completion_values.complete_query_source("material_origin") is (
+        shell_completion_values.complete_material_origin_values
     )
 
 

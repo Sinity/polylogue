@@ -131,6 +131,7 @@ class RootModeRequest:
                 "stream",
                 "dialogue_only",
                 "message_role",
+                "material_origin",
             )
         )
 

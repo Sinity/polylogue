@@ -22,6 +22,7 @@ CompletionSource: TypeAlias = Literal[
     "action_sequence",
     "session_id",
     "cwd_prefix",
+    "material_origin",
     "message_type",
     "origin",
     "repo",
@@ -29,6 +30,8 @@ CompletionSource: TypeAlias = Literal[
     "tag",
     "tool",
 ]
+
+OPTION_COMPLETION_SOURCES: frozenset[CompletionSource] = frozenset({"material_origin"})
 
 
 class _ProviderScopedPlan(Protocol):
@@ -923,6 +926,7 @@ def query_completion_sources() -> tuple[CompletionSource, ...]:
                 for descriptor in QUERY_FIELD_DESCRIPTORS
                 if descriptor.completion_source is not None
             }
+            | OPTION_COMPLETION_SOURCES
         )
     )
 

@@ -182,6 +182,19 @@ class MaterialOrigin(PolylogueStrEnum):
                 return item
         return cls.UNKNOWN
 
+    @classmethod
+    def validate_filter_token(cls, value: object) -> MaterialOrigin:
+        candidate = (str(value) if value is not None else "").strip().lower().replace("-", "_")
+        if not candidate:
+            msg = "Material origin cannot be empty"
+            raise ValueError(msg)
+        for item in cls:
+            if item.value == candidate:
+                return item
+        valid = ", ".join(item.value for item in cls)
+        msg = f"Unknown material origin {str(value)!r}. Valid material origins: {valid}"
+        raise ValueError(msg)
+
 
 class BlockType(PolylogueStrEnum):
     """Canonical stored and parsed block kinds.

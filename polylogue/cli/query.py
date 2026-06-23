@@ -58,6 +58,8 @@ def project_query_results(results: list[Session], plan: QueryExecutionPlan) -> l
     message_roles = plan.output.effective_message_roles()
     if message_roles:
         projected = [session.with_roles(message_roles) for session in projected]
+    if plan.output.material_origins:
+        projected = [session.with_material_origins(plan.output.material_origins) for session in projected]
     if plan.output.filters_content():
         projected = [session.with_content_projection(plan.output.content_projection) for session in projected]
     return projected
