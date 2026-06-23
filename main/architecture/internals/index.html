@@ -859,6 +859,15 @@ verification (<a href="https://github.com/Sinity/polylogue/issues/818">#818</a>)
 <p><code>polylogue ops diagnostics workload</code> produces a stable, JSON-serializable
 snapshot of daemon-relevant state read directly from the archive SQLite
 database. The probe is read-only and does not talk to the running daemon.</p>
+<p>Raw acquisition, index materialization, and FTS readiness are treated as one
+auditable convergence contract. A <code>source.db.raw_sessions</code> row that is not
+explicitly skipped and has no matching <code>index.db.sessions</code> row is
+<code>raw-materialization</code> archive debt; daemon status exposes it through
+<code>component_readiness.raw_materialization</code> and
+<code>raw_materialization_readiness</code> instead of reporting the archive as simply
+healthy. FTS readiness is likewise a freshness invariant, not a best-effort
+cache: stale or untrusted recorded counts make search readiness non-ready until
+the index is demonstrably current.</p>
 <p>For #845-style before/after convergence evidence snapshots:</p>
 <pre><code class="language-bash">polylogue ops diagnostics workload --json &gt; before.json
 # ...run convergence work (e.g. polylogued runs, ingest, debt drain)...
