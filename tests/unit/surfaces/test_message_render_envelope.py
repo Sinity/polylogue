@@ -42,6 +42,7 @@ _ENVELOPE_FIELDS: tuple[str, ...] = (
     "actions",
     "timestamp",
     "message_type",
+    "material_origin",
     "content_blocks",
     "parent_id",
     "branch_index",

@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 
 from polylogue.archive.message.types import MessageType
+from polylogue.core.enums import BlockType, MaterialOrigin, Role
 
 _SYSTEM_REMINDER_PATTERN = re.compile(r"<system-reminder>.*?</system-reminder>\s*", re.DOTALL)
 
@@ -49,6 +50,20 @@ _CLAUDE_CODE_PROTOCOL_START_MARKERS = (
 
 _CONTENTS_OF_LINE_RE = re.compile(r"^Contents of .+:", re.MULTILINE)
 _FILE_PATH_LINE_RE = re.compile(r"^<file path=", re.MULTILINE)
+_GENERATED_CONTEXT_PACK_START_MARKERS = (
+    "# Commit ",
+    "Generate all artifacts",
+)
+_GENERATED_ANALYSIS_PACK_START_MARKERS = (
+    "Generate a retrospective for:",
+    "Generate retrospective for:",
+)
+_OPERATOR_COMMAND_MARKERS = (
+    "<command-name>",
+    "<command-message>",
+    "<command-args>",
+    "<bash-input>",
+)
 
 
 def strip_system_reminders(text: str) -> str:
@@ -97,7 +112,41 @@ def classify_text_message_type(text: str | None) -> MessageType | None:
     return None
 
 
+def classify_material_origin(
+    *,
+    role: Role,
+    message_type: MessageType,
+    text: str | None,
+    block_types: tuple[BlockType, ...] = (),
+) -> MaterialOrigin:
+    """Classify authoredness/material origin independently from provider role."""
+    normalized_role = role
+    normalized_type = MessageType.normalize(message_type)
+    stripped = strip_leading_system_reminders(text or "")
+
+    if normalized_role is Role.TOOL or normalized_type is MessageType.TOOL_RESULT:
+        return MaterialOrigin.TOOL_RESULT
+    if block_types and all(block_type is BlockType.TOOL_RESULT for block_type in block_types):
+        return MaterialOrigin.TOOL_RESULT
+    if stripped.startswith(_GENERATED_ANALYSIS_PACK_START_MARKERS):
+        return MaterialOrigin.GENERATED_ANALYSIS_PACK
+    if stripped.startswith(_GENERATED_CONTEXT_PACK_START_MARKERS):
+        return MaterialOrigin.GENERATED_CONTEXT_PACK
+    if normalized_type is MessageType.CONTEXT:
+        return MaterialOrigin.RUNTIME_CONTEXT
+    if normalized_type is MessageType.PROTOCOL:
+        if any(marker in stripped for marker in _OPERATOR_COMMAND_MARKERS):
+            return MaterialOrigin.OPERATOR_COMMAND
+        return MaterialOrigin.RUNTIME_PROTOCOL
+    if normalized_role is Role.USER and normalized_type is MessageType.MESSAGE:
+        return MaterialOrigin.HUMAN_AUTHORED
+    if normalized_role is Role.ASSISTANT and normalized_type is MessageType.MESSAGE:
+        return MaterialOrigin.ASSISTANT_AUTHORED
+    return MaterialOrigin.UNKNOWN
+
+
 __all__ = [
+    "classify_material_origin",
     "classify_text_message_type",
     "strip_leading_system_reminders",
     "strip_system_reminders",

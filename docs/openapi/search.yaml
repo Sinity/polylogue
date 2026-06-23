@@ -1650,6 +1650,10 @@ components:
         message_type:
           title: Message Type
           type: string
+        material_origin:
+          default: unknown
+          title: Material Origin
+          type: string
         position:
           title: Position
           type: integer

@@ -36,6 +36,7 @@ _MESSAGE_RECORD_SELECT = """
     m.has_thinking,
     m.has_paste,
     m.message_type,
+    m.material_origin,
     m.model_name,
     m.input_tokens,
     m.output_tokens,

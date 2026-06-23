@@ -517,6 +517,7 @@ class SessionMessagePayload(SurfacePayloadModel):
     actions: dict[str, ReaderActionAvailabilityPayload] = Field(default_factory=reader_message_actions)
     timestamp: datetime | None = None
     message_type: str = "message"
+    material_origin: str = "unknown"
     content_blocks: list[dict[str, object]] = Field(default_factory=list)
     parent_id: str | None = None
     # #1487 envelope: branch/lineage state.
@@ -569,6 +570,13 @@ class SessionMessagePayload(SurfacePayloadModel):
             message_type = str(raw_message_type.value)
         else:
             message_type = str(raw_message_type)
+        raw_material_origin = getattr(message, "material_origin", None)
+        if raw_material_origin is None:
+            material_origin = "unknown"
+        elif hasattr(raw_material_origin, "value"):
+            material_origin = str(raw_material_origin.value)
+        else:
+            material_origin = str(raw_material_origin)
         target_ref = (
             TargetRefPayload.message(session_id=session_id, message_id=message.id) if session_id is not None else None
         )
@@ -585,6 +593,7 @@ class SessionMessagePayload(SurfacePayloadModel):
             anchor=reader_anchor("message", message.id),
             timestamp=message.timestamp,
             message_type=message_type,
+            material_origin=material_origin,
             content_blocks=message.blocks,
             parent_id=message.parent_id,
             branch_index=int(getattr(message, "branch_index", 0) or 0),
@@ -1090,6 +1099,7 @@ class MessageQueryRowPayload(SurfacePayloadModel):
     title: str | None = None
     role: str
     message_type: str
+    material_origin: str = "unknown"
     position: int
     word_count: int
     text: str
@@ -1103,6 +1113,7 @@ class MessageQueryRowPayload(SurfacePayloadModel):
             title=row.title,
             role=row.role,
             message_type=row.message_type,
+            material_origin=row.material_origin,
             position=row.position,
             word_count=row.word_count,
             text=row.text,

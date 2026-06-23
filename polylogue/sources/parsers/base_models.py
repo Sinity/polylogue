@@ -9,7 +9,7 @@ from pydantic import AliasChoices, BaseModel, Field, field_validator, model_vali
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, Provider, TitleSource
+from polylogue.core.enums import BlockType, MaterialOrigin, Provider, TitleSource
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
 from polylogue.core.timestamps import parse_timestamp
 
@@ -60,6 +60,7 @@ class ParsedMessage(BaseModel):
     occurred_at_ms: int | None = None
     blocks: list[ParsedContentBlock] = Field(default_factory=list)
     message_type: MessageType = MessageType.MESSAGE
+    material_origin: MaterialOrigin = MaterialOrigin.UNKNOWN
     parent_message_provider_id: str | None = None
     position: int | None = None
     branch_index: int = 0
@@ -93,6 +94,11 @@ class ParsedMessage(BaseModel):
     def coerce_message_type(cls, v: object) -> MessageType:
         return MessageType.normalize(v)
 
+    @field_validator("material_origin", mode="before")
+    @classmethod
+    def coerce_material_origin(cls, v: object) -> MaterialOrigin:
+        return MaterialOrigin.normalize(v)
+
     @field_validator("occurred_at_ms", "position", "variant_index", "duration_ms")
     @classmethod
     def non_negative_optional_int(cls, value: int | None) -> int | None:
@@ -106,6 +112,15 @@ class ParsedMessage(BaseModel):
             parsed = parse_timestamp(self.timestamp)
             if parsed is not None:
                 self.occurred_at_ms = int(parsed.timestamp() * 1000)
+        if self.material_origin is MaterialOrigin.UNKNOWN:
+            from polylogue.archive.message.artifacts import classify_material_origin
+
+            self.material_origin = classify_material_origin(
+                role=self.role,
+                message_type=self.message_type,
+                text=self.text,
+                block_types=tuple(block.type for block in self.blocks),
+            )
         return self
 
 

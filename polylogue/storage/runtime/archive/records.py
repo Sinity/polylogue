@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, Origin, SemanticBlockType
+from polylogue.core.enums import BlockType, MaterialOrigin, Origin, SemanticBlockType
 from polylogue.core.hashing import hash_text
 from polylogue.core.json import json_document
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
@@ -139,6 +139,7 @@ class MessageRecord(BaseModel):
     duration_ms: int | None = None
     model_name: str | None = None
     message_type: MessageType = MessageType.MESSAGE
+    material_origin: MaterialOrigin = MaterialOrigin.UNKNOWN
     paste_boundary_state: str | None = None
 
     @field_validator("role", mode="before")
@@ -156,6 +157,11 @@ class MessageRecord(BaseModel):
     @classmethod
     def coerce_message_type(cls, v: object) -> MessageType:
         return MessageType.normalize(v)
+
+    @field_validator("material_origin", mode="before")
+    @classmethod
+    def coerce_material_origin(cls, v: object) -> MaterialOrigin:
+        return MaterialOrigin.normalize(v)
 
     @property
     def role_typed(self) -> Role:

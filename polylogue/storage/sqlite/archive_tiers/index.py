@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
-from polylogue.core.enums import BlockType, BranchType, LinkType, MessageType, Origin, PasteBoundary, Role
+from polylogue.core.enums import (
+    BlockType,
+    BranchType,
+    LinkType,
+    MaterialOrigin,
+    MessageType,
+    Origin,
+    PasteBoundary,
+    Role,
+)
 from polylogue.storage.sqlite.archive_tiers.common import CONTENT_HASH_CHECK, check, nullable_check
 
-INDEX_SCHEMA_VERSION = 4
+INDEX_SCHEMA_VERSION = 5
 
 INDEX_DDL = f"""
 CREATE TABLE IF NOT EXISTS sessions (
@@ -30,10 +39,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     thinking_count          INTEGER NOT NULL DEFAULT 0 CHECK(thinking_count >= 0),
     paste_count             INTEGER NOT NULL DEFAULT 0 CHECK(paste_count >= 0),
     user_message_count      INTEGER NOT NULL DEFAULT 0 CHECK(user_message_count >= 0),
+    authored_user_message_count INTEGER NOT NULL DEFAULT 0 CHECK(authored_user_message_count >= 0),
     assistant_message_count INTEGER NOT NULL DEFAULT 0 CHECK(assistant_message_count >= 0),
     system_message_count    INTEGER NOT NULL DEFAULT 0 CHECK(system_message_count >= 0),
     tool_message_count      INTEGER NOT NULL DEFAULT 0 CHECK(tool_message_count >= 0),
     user_word_count         INTEGER NOT NULL DEFAULT 0 CHECK(user_word_count >= 0),
+    authored_user_word_count INTEGER NOT NULL DEFAULT 0 CHECK(authored_user_word_count >= 0),
     assistant_word_count    INTEGER NOT NULL DEFAULT 0 CHECK(assistant_word_count >= 0),
     content_hash            BLOB NOT NULL {CONTENT_HASH_CHECK},
     created_at_ms           INTEGER,
@@ -67,6 +78,7 @@ CREATE TABLE IF NOT EXISTS messages (
     position            INTEGER NOT NULL CHECK(position >= 0),
     role                TEXT NOT NULL CHECK ({check("role", Role)}),
     message_type        TEXT NOT NULL DEFAULT 'message' CHECK ({check("message_type", MessageType)}),
+    material_origin     TEXT NOT NULL DEFAULT 'unknown' CHECK ({check("material_origin", MaterialOrigin)}),
     model_name          TEXT,
     model_effort        TEXT,
     has_tool_use        INTEGER NOT NULL DEFAULT 0 CHECK(has_tool_use IN (0, 1)),
@@ -96,6 +108,9 @@ WHERE parent_message_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_messages_session_role
 ON messages(session_id, role);
+
+CREATE INDEX IF NOT EXISTS idx_messages_session_material_origin
+ON messages(session_id, material_origin);
 
 CREATE INDEX IF NOT EXISTS idx_messages_active_path
 ON messages(session_id, is_active_path, position)

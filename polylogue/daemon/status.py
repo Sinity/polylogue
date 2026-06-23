@@ -1978,7 +1978,7 @@ def daemon_status_payload(
             "component_state": status.component_state.model_dump(),
             "component_readiness": status.component_readiness,
             "live": live_source_status_payload(watch_sources),
-            "browser_capture": browser_capture_status_public_payload(browser_capture_spool_path),
+            "browser_capture": browser_capture_status_payload(browser_capture_spool_path),
             "db_path": str(_active_status_db_path()),
             "db_size_bytes": status.db_size_bytes,
             "wal_size_bytes": status.wal_size_bytes,

@@ -42,20 +42,22 @@ INBOX_SOURCE_SUFFIXES = (".jsonl", ".zip", ".json", ".ndjson")
 
 def _log_ingest_metrics(prefix: str, metrics: LiveBatchMetrics) -> None:
     """Log actual live-ingest read work separately from candidate file size."""
-    read_amp = metrics.source_payload_read_bytes / metrics.input_bytes if metrics.input_bytes > 0 else 0.0
+    input_bytes = getattr(metrics, "input_bytes", 0)
+    source_payload_read_bytes = getattr(metrics, "source_payload_read_bytes", 0)
+    read_amp = source_payload_read_bytes / input_bytes if input_bytes > 0 else 0.0
     logger.info(
         "%s complete: read=%.1f MB input=%.1f MB read_amp=%.6fx append_files=%d full_files=%d "
         "succeeded=%d failed=%d parse_s=%.3f convergence_s=%.3f",
         prefix,
-        metrics.source_payload_read_bytes / 1e6,
-        metrics.input_bytes / 1e6,
+        source_payload_read_bytes / 1e6,
+        input_bytes / 1e6,
         read_amp,
-        metrics.append_file_count,
-        metrics.full_file_count,
-        metrics.succeeded_file_count,
-        metrics.failed_file_count,
-        metrics.parse_time_s,
-        metrics.convergence_time_s,
+        getattr(metrics, "append_file_count", 0),
+        getattr(metrics, "full_file_count", 0),
+        getattr(metrics, "succeeded_file_count", 0),
+        getattr(metrics, "failed_file_count", 0),
+        getattr(metrics, "parse_time_s", 0.0),
+        getattr(metrics, "convergence_time_s", 0.0),
     )
 
 

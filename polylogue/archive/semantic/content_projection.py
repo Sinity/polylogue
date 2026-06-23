@@ -234,6 +234,8 @@ def _segments_from_text(message: Message) -> list[_Segment]:
         return []
     if message.role == Role.TOOL or message.is_tool_use:
         return [_Segment(ContentKind.TOOL_OUTPUT, text)]
+    if not message.is_authored_prose:
+        return [_Segment(ContentKind.SYSTEM_NOISE, text)]
     if message.is_context_dump or message.is_protocol_artifact or message.is_system:
         return [_Segment(ContentKind.SYSTEM_NOISE, text)]
 

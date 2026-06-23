@@ -68,6 +68,7 @@ class ArchiveMessageRow:
     is_active_leaf: bool
     blocks: tuple[ArchiveBlockRow, ...]
     message_type: str = "message"
+    material_origin: str = "unknown"
     word_count: int = 0
     has_tool_use: bool = False
     has_thinking: bool = False
@@ -210,10 +211,11 @@ def write_parsed_session_to_archive(
                 title, title_source, git_branch, git_repository_url, commit_hash,
                 instructions_text, reported_duration_ms,
                 message_count, word_count, tool_use_count, thinking_count,
-                paste_count, user_message_count, assistant_message_count, system_message_count,
-                tool_message_count, user_word_count, assistant_word_count,
+                paste_count, user_message_count, authored_user_message_count,
+                assistant_message_count, system_message_count,
+                tool_message_count, user_word_count, authored_user_word_count, assistant_word_count,
                 content_hash, created_at_ms, updated_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(origin, native_id) DO UPDATE SET
                 raw_id = excluded.raw_id,
                 branch_type = excluded.branch_type,
@@ -248,10 +250,16 @@ def write_parsed_session_to_archive(
                 sum(_has_block(message, BlockType.THINKING) for message in messages),
                 sum(_has_paste(message) for message in messages),
                 sum(1 for message in messages if _enum_value(message.role) == "user"),
+                sum(1 for message in messages if _enum_value(message.material_origin) == "human_authored"),
                 sum(1 for message in messages if _enum_value(message.role) == "assistant"),
                 sum(1 for message in messages if _enum_value(message.role) == "system"),
                 sum(1 for message in messages if _enum_value(message.role) == "tool"),
                 sum(_word_count(message.text) for message in messages if _enum_value(message.role) == "user"),
+                sum(
+                    _word_count(message.text)
+                    for message in messages
+                    if _enum_value(message.material_origin) == "human_authored"
+                ),
                 sum(_word_count(message.text) for message in messages if _enum_value(message.role) == "assistant"),
                 session_content_hash,
                 _timestamp_ms(session.created_at),
@@ -975,7 +983,7 @@ def read_archive_session_envelope(conn: sqlite3.Connection, session_id: str) -> 
     message_rows = conn.execute(
         """
         SELECT message_id, native_id, role, position, variant_index, is_active_path, is_active_leaf,
-               message_type, word_count, has_tool_use, has_thinking, has_paste, occurred_at_ms,
+               message_type, material_origin, word_count, has_tool_use, has_thinking, has_paste, occurred_at_ms,
                duration_ms, parent_message_id
         FROM messages
         WHERE session_id = ?
@@ -1019,6 +1027,7 @@ def read_archive_session_envelope(conn: sqlite3.Connection, session_id: str) -> 
                     for block in block_rows
                 ),
                 message_type=message["message_type"],
+                material_origin=message["material_origin"],
                 word_count=int(message["word_count"] or 0),
                 has_tool_use=bool(message["has_tool_use"]),
                 has_thinking=bool(message["has_thinking"]),
@@ -1131,6 +1140,7 @@ def _write_messages(
                 position,
                 _enum_value(message.role),
                 _enum_value(message.message_type),
+                _enum_value(message.material_origin),
                 _sqlite_text(message.model_name),
                 _sqlite_text(message.model_effort),
                 _has_block(message, BlockType.TOOL_USE),
@@ -1155,12 +1165,12 @@ def _write_messages(
     conn.executemany(
         """
         INSERT OR REPLACE INTO messages (
-            session_id, native_id, parent_message_id, position, role, message_type,
+            session_id, native_id, parent_message_id, position, role, message_type, material_origin,
             model_name, model_effort, has_tool_use, has_thinking, has_paste, paste_boundary,
             variant_index, is_active_path, is_active_leaf, word_count,
             input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
             duration_ms, content_hash, occurred_at_ms
-        ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows(),
     )
@@ -1222,6 +1232,10 @@ def _refresh_session_counts(conn: sqlite3.Connection, session_id: str) -> None:
             user_message_count = (
                 SELECT COUNT(*) FROM messages WHERE session_id = sessions.session_id AND role = 'user'
             ),
+            authored_user_message_count = (
+                SELECT COUNT(*) FROM messages
+                WHERE session_id = sessions.session_id AND material_origin = 'human_authored'
+            ),
             assistant_message_count = (
                 SELECT COUNT(*) FROM messages WHERE session_id = sessions.session_id AND role = 'assistant'
             ),
@@ -1233,6 +1247,10 @@ def _refresh_session_counts(conn: sqlite3.Connection, session_id: str) -> None:
             ),
             user_word_count = COALESCE((
                 SELECT SUM(word_count) FROM messages WHERE session_id = sessions.session_id AND role = 'user'
+            ), 0),
+            authored_user_word_count = COALESCE((
+                SELECT SUM(word_count) FROM messages
+                WHERE session_id = sessions.session_id AND material_origin = 'human_authored'
             ), 0),
             assistant_word_count = COALESCE((
                 SELECT SUM(word_count) FROM messages WHERE session_id = sessions.session_id AND role = 'assistant'

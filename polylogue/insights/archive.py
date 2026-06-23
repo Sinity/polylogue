@@ -412,6 +412,7 @@ class ArchiveCoverageInsight(ArchiveInsightModel):
     logical_session_count: int = 0
     message_count: int = 0
     user_message_count: int = 0
+    authored_user_message_count: int = 0
     assistant_message_count: int = 0
     total_cost_usd: float = 0.0
     total_duration_ms: int = 0
@@ -420,6 +421,7 @@ class ArchiveCoverageInsight(ArchiveInsightModel):
     total_words: int = 0
     avg_messages_per_session: float = 0.0
     avg_user_words: float = 0.0
+    avg_authored_user_words: float = 0.0
     avg_assistant_words: float = 0.0
     tool_use_count: int = 0
     thinking_count: int = 0

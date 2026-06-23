@@ -106,6 +106,14 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _session_transform_timestamp(session: Session) -> str:
+    message_timestamps = [message.timestamp for message in session.messages if message.timestamp is not None]
+    timestamp = session.updated_at or session.created_at or (max(message_timestamps) if message_timestamps else None)
+    if timestamp is None:
+        return "1970-01-01T00:00:00+00:00"
+    return timestamp.astimezone(timezone.utc).isoformat()
+
+
 class TransformRawRef(ArchiveInsightModel):
     """Pointer back to the raw session evidence that produced a digest claim."""
 
@@ -506,6 +514,7 @@ def compile_recovery_digest(
             transform_version=RECOVERY_TRANSFORM_VERSION,
             input_session_id=str(session.id),
             source_origin=str(session.origin),
+            computed_at=_session_transform_timestamp(session),
             input_message_count=len(messages),
         ),
         size_metrics=RecoverySizeMetrics(

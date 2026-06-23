@@ -6,11 +6,11 @@ import re
 from collections.abc import Iterable, Sequence
 from typing import TypeAlias
 
-from polylogue.archive.message.artifacts import classify_text_message_type
+from polylogue.archive.message.artifacts import classify_material_origin, classify_text_message_type
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, PasteBoundary, Provider
+from polylogue.core.enums import BlockType, MaterialOrigin, PasteBoundary, Provider
 from polylogue.logging import get_logger
 from polylogue.pipeline.semantic_capture import detect_context_compaction
 
@@ -251,6 +251,12 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
         msg_effort = _message_model_effort(message_payload) or _message_model_effort(item)
         msg_duration_ms = _message_duration_ms(item)
         resolved_role = reclassify_tool_result_envelope(envelope_role, content_blocks)
+        material_origin = classify_material_origin(
+            role=resolved_role,
+            message_type=message_type,
+            text=text,
+            block_types=tuple(block.type for block in content_blocks),
+        )
         # Paste markers only appear in user prompts; restricting detection to the
         # user role avoids false positives from assistant text that quotes a marker.
         paste_spans = _detect_paste_spans(text) if resolved_role == Role.USER else []
@@ -262,6 +268,7 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
                 timestamp=timestamp,
                 blocks=content_blocks,
                 message_type=message_type,
+                material_origin=material_origin,
                 parent_message_provider_id=_string_field(item, "parentUuid"),
                 position=message_position,
                 variant_index=0,
@@ -327,7 +334,7 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
 
     title = str(composed_session_id)
     for message in messages:
-        if message.role == "user" and message.text and len(message.text.strip()) > 3:
+        if message.material_origin is MaterialOrigin.HUMAN_AUTHORED and message.text and len(message.text.strip()) > 3:
             # Strip protocol artifacts before extracting title
             cleaned = _clean_title_text(message.text)
             if cleaned and len(cleaned) > 3:

@@ -10,7 +10,7 @@ from polylogue.archive.attachment.models import Attachment
 from polylogue.archive.message.model_runtime import MessageRuntimeMixin
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
-from polylogue.core.enums import Provider
+from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 
 
 class Message(MessageRuntimeMixin, BaseModel):
@@ -22,6 +22,7 @@ class Message(MessageRuntimeMixin, BaseModel):
     attachments: list[Attachment] = Field(default_factory=list)
     blocks: list[dict[str, object]] = Field(default_factory=list)
     message_type: MessageType = MessageType.MESSAGE
+    material_origin: MaterialOrigin = MaterialOrigin.UNKNOWN
     parent_id: str | None = None
     branch_index: int = 0
     # Stats projected from the storage layer so reader surfaces can
@@ -60,6 +61,33 @@ class Message(MessageRuntimeMixin, BaseModel):
     @classmethod
     def coerce_message_type(cls, v: object) -> MessageType:
         return MessageType.normalize(v)
+
+    @field_validator("material_origin", mode="before")
+    @classmethod
+    def coerce_material_origin(cls, v: object) -> MaterialOrigin:
+        return MaterialOrigin.normalize(v)
+
+    @model_validator(mode="after")
+    def derive_material_origin(self) -> Message:
+        if self.material_origin is MaterialOrigin.UNKNOWN:
+            from polylogue.archive.message.artifacts import classify_material_origin
+
+            block_types: list[BlockType] = []
+            for block in self.blocks:
+                raw_type = block.get("type")
+                if raw_type is None:
+                    continue
+                try:
+                    block_types.append(BlockType.from_string(str(raw_type)))
+                except ValueError:
+                    continue
+            self.material_origin = classify_material_origin(
+                role=self.role,
+                message_type=self.message_type,
+                text=self.text,
+                block_types=tuple(block_types),
+            )
+        return self
 
 
 class DialoguePair(BaseModel):

@@ -255,6 +255,7 @@ def archive_message_payload(message: ArchiveMessageRow, *, session_id: str) -> M
         anchor=reader_anchor("message", message.message_id),
         timestamp=_parse_archive_datetime(message.occurred_at),
         message_type=message.message_type,
+        material_origin=message.material_origin,
         content_blocks=content_blocks,
         branch_index=message.variant_index,
         has_paste=message.has_paste,

@@ -703,7 +703,23 @@ def test_ingest_worker_reuses_schema_resolution_and_skips_drift_walk(
         observed["parse_provider"] = provider
         observed["parse_schema_resolution"] = schema_resolution
         observed["parse_fallback_id"] = fallback_id
-        return []
+        return [
+            ParsedSession(
+                source_name=Provider.CHATGPT,
+                provider_session_id=fallback_id,
+                title="Test Session",
+                created_at="2023-11-14T22:13:20Z",
+                updated_at="2023-11-14T22:13:21Z",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="msg-1",
+                        role=Role.USER,
+                        text="hello",
+                    )
+                ],
+                attachments=[],
+            )
+        ]
 
     monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.for_payload", _fake_for_payload)
     monkeypatch.setattr("polylogue.sources.dispatch.parse_payload", _fake_parse_payload)

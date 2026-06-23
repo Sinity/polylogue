@@ -124,6 +124,7 @@ def message_from_record(
         attachments=[attachment_from_record(a) for a in attachments],
         blocks=blocks,
         message_type=record.message_type,
+        material_origin=record.material_origin,
         parent_id=record.parent_message_id,
         branch_index=record.branch_index,
         has_tool_use=bool(record.has_tool_use),

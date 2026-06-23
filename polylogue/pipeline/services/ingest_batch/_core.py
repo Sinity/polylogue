@@ -385,6 +385,9 @@ def _write_session_entry(
 
 
 def _delete_stale_sessions_for_raw_entries(conn: sqlite3.Connection, ready_entries: list[_SessionEntry]) -> None:
+    if not hasattr(conn, "execute"):
+        return
+
     expected_by_raw_id: dict[str, set[str]] = {}
     for raw_id, cdata in ready_entries:
         if raw_id:
