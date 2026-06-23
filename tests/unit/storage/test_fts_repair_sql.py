@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from polylogue.storage.fts.freshness import record_fts_surface_state_sync
 from polylogue.storage.fts.fts_lifecycle import (
     rebuild_fts_index_sync,
     repair_message_fts_index_sync,
@@ -90,6 +91,42 @@ def test_message_fts_repair_dedupes_duplicate_session_ids(test_conn: sqlite3.Con
         (message_id,),
     ).fetchone()
     assert row[0] == 1
+
+
+def test_message_fts_repair_refreshes_ready_freshness_ledger(test_conn: sqlite3.Connection) -> None:
+    restore_fts_triggers_sync(test_conn)
+    _seed_text_block(
+        test_conn,
+        native_session_id="conv-message-repair-freshness",
+        native_message_id="msg-message-repair-freshness",
+        text="freshness ledger needle",
+    )
+    session_id = "unknown-export:conv-message-repair-freshness"
+    record_fts_surface_state_sync(
+        test_conn,
+        surface="messages_fts",
+        state="ready",
+        source_rows=0,
+        indexed_rows=0,
+    )
+
+    repair_message_fts_index_sync(test_conn, [session_id])
+
+    state = test_conn.execute(
+        """
+        SELECT state, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows
+        FROM fts_freshness_state
+        WHERE surface = 'messages_fts'
+        """
+    ).fetchone()
+    assert dict(state) == {
+        "state": "ready",
+        "source_rows": 1,
+        "indexed_rows": 1,
+        "missing_rows": 0,
+        "excess_rows": 0,
+        "duplicate_rows": 0,
+    }
 
 
 def test_message_fts_trigger_rowids_track_block_rowids(test_conn: sqlite3.Connection) -> None:

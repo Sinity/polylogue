@@ -455,6 +455,9 @@ def repair_message_fts_index_sync(conn: sqlite3.Connection, session_ids: Sequenc
         params = tuple(chunk)
         conn.execute(delete_session_rows_sql(len(chunk)), params)
         conn.execute(insert_session_rows_sql(len(chunk)), params)
+    from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
+
+    record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
 
 
 def repair_fts_index_sync(conn: sqlite3.Connection, session_ids: Sequence[str]) -> None:
@@ -484,6 +487,7 @@ async def repair_fts_index_async(
         if progress_callback is not None:
             desc = progress_desc(processed, total) if progress_desc is not None else None
             progress_callback(len(chunk), desc)
+    await _record_message_fts_exact_state_async(conn)
 
 
 def replace_fts_rows_for_messages_sync(
@@ -499,6 +503,67 @@ def replace_fts_rows_for_messages_sync(
     for chunk in chunked(session_ids, size=500):
         conn.execute(delete_session_rows_sql(len(chunk)), tuple(chunk))
         conn.execute(insert_session_rows_sql(len(chunk)), tuple(chunk))
+    from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
+
+    record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
+
+
+async def _record_message_fts_exact_state_async(conn: aiosqlite.Connection) -> None:
+    """Record exact message FTS readiness after async targeted rewrites."""
+    from polylogue.storage.fts.freshness import READY, STALE, record_fts_surface_state_async
+
+    source_exists = await _table_exists_async(conn, "blocks")
+    exists = await _table_exists_async(conn, "messages_fts")
+    source_rows = 0
+    indexed_rows = 0
+    missing_rows = 0
+    excess_rows = 0
+    if source_exists:
+        source_rows = _row_int(
+            await (await conn.execute("SELECT COUNT(*) FROM blocks WHERE search_text != ''")).fetchone(),
+            0,
+        )
+    if exists:
+        indexed_rows = _row_int(await (await conn.execute("SELECT COUNT(*) FROM messages_fts_docsize")).fetchone(), 0)
+    if source_exists and exists:
+        missing_rows = _row_int(
+            await (
+                await conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM blocks AS b
+                    LEFT JOIN messages_fts_docsize AS d ON d.id = b.rowid
+                    WHERE b.search_text != '' AND d.id IS NULL
+                    """
+                )
+            ).fetchone(),
+            0,
+        )
+        excess_rows = _row_int(
+            await (
+                await conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM messages_fts_docsize AS d
+                    LEFT JOIN blocks AS b ON b.rowid = d.id AND b.search_text != ''
+                    WHERE b.rowid IS NULL
+                    """
+                )
+            ).fetchone(),
+            0,
+        )
+    triggers_present = exists and await _triggers_present_async(conn, await _message_trigger_names_for_async(conn))
+    ready = exists and triggers_present and missing_rows == 0 and excess_rows == 0
+    await record_fts_surface_state_async(
+        conn,
+        surface="messages_fts",
+        state=READY if ready else STALE,
+        source_rows=source_rows,
+        indexed_rows=indexed_rows,
+        missing_rows=missing_rows,
+        excess_rows=excess_rows,
+        detail=None if ready else "exact message invariant failed after targeted repair",
+    )
 
 
 def fts_index_status_sync(conn: sqlite3.Connection) -> dict[str, object]:
