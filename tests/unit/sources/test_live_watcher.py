@@ -31,6 +31,7 @@ from polylogue.sources.live.batch import (
     last_complete_newline_from_tail,
 )
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
+from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawSessionRecord
 from tests.infra.frozen_clock import FrozenClock
@@ -82,6 +83,46 @@ class _FailingSecondPathConverger:
                 {"fake": 0.001},
             )
         return ({path: SimpleNamespace(converged=True) for path in paths}, {"fake": 0.001})
+
+
+def test_live_ingest_metrics_log_separates_read_bytes_from_candidate_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logger = MagicMock()
+    monkeypatch.setattr(live_watcher, "logger", logger)
+    metrics = LiveBatchMetrics(
+        queued_file_count=2,
+        needed_file_count=2,
+        skipped_file_count=0,
+        succeeded_file_count=2,
+        failed_file_count=0,
+        source_group_count=1,
+        input_bytes=400_000_000,
+        source_payload_read_bytes=40_000,
+        cursor_fingerprint_read_bytes=0,
+        ingest_worker_count_max=1,
+        append_file_count=2,
+        full_file_count=0,
+        archive_bytes_before=0,
+        archive_bytes_after=0,
+        archive_write_bytes_delta=0,
+        parse_time_s=0.5,
+        convergence_time_s=0.25,
+        total_time_s=1.0,
+    )
+
+    live_watcher._log_ingest_metrics("live.watcher: changed-file batch", metrics)
+
+    message, *args = logger.info.call_args.args
+    assert "read=%.1f MB input=%.1f MB read_amp=%.6fx" in message
+    assert args[:6] == [
+        "live.watcher: changed-file batch",
+        0.04,
+        400.0,
+        0.0001,
+        2,
+        0,
+    ]
 
 
 # --- CursorStore ---------------------------------------------------------------
