@@ -514,7 +514,14 @@ def _probe_browser_capture_archive(*, archive_root: Path) -> BrowserCaptureArchi
                 latest_indexed_message_count = int(row[3] or 0)
                 if latest_indexed_message_count <= 0:
                     error = "latest_spooled_indexed_without_messages"
-                elif latest_provider_session_id is not None and latest_indexed_native_id != latest_provider_session_id:
+                elif (
+                    latest_provider_session_id is not None
+                    and latest_indexed_native_id
+                    != _browser_capture_probe_native_id(
+                        latest_provider,
+                        latest_provider_session_id,
+                    )
+                ):
                     error = "latest_spooled_indexed_native_id_mismatch"
         except sqlite3.Error as exc:
             error = f"index:{type(exc).__name__}: {exc}"
@@ -578,6 +585,24 @@ def _latest_spooled_capture_summary(path: str | None) -> tuple[str, str, int | N
         return "", "", None, "missing_provider_session_id"
     turn_count = len(turns) if isinstance(turns, list) else None
     return provider, provider_session_id, turn_count, None
+
+
+def _browser_capture_probe_native_id(provider: str | None, provider_session_id: str) -> str:
+    """Mirror browser-capture parser normalization for legacy synthetic ids."""
+    if provider and provider_session_id.startswith(f"{provider}:"):
+        parts = provider_session_id.split(":")
+        if len(parts) == 3 and parts[1] and "/" not in parts[1]:
+            return parts[1]
+    if provider and provider_session_id.startswith(f"{provider}-"):
+        import re
+
+        match = re.search(
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+            provider_session_id,
+        )
+        if match:
+            return match.group(0)
+    return provider_session_id
 
 
 def _latest_spooled_capture_identity(path: str | None) -> tuple[str, str, str | None]:
