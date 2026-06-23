@@ -1006,7 +1006,7 @@ systemctl --user disable --now polylogued
 The NixOS module defaults the daemon to background scheduling (<code>Nice=10</code>,
 idle I/O scheduling, conservative <code>IOWeight</code>, <code>MemoryHigh</code>, and <code>MemoryMax</code>)
 while the daemon itself still converges the full archive: live source ingest,
-raw parsing, FTS repair, insight materialization, and convergence-debt retry.
+raw parsing, FTS freshness, insight materialization, and convergence-debt retry.
 Operators can override those systemd resource controls in Nix or via a
 systemd drop-in without changing daemon behavior.</p>
 <p>If the daemon fails to start, check:</p>
