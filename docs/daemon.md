@@ -520,7 +520,7 @@ Packaged deployments should keep host-friendliness in the service manager.
 The NixOS module defaults the daemon to background scheduling (`Nice=10`,
 idle I/O scheduling, conservative `IOWeight`, `MemoryHigh`, and `MemoryMax`)
 while the daemon itself still converges the full archive: live source ingest,
-raw parsing, FTS repair, insight materialization, and convergence-debt retry.
+raw parsing, FTS freshness, insight materialization, and convergence-debt retry.
 Operators can override those systemd resource controls in Nix or via a
 systemd drop-in without changing daemon behavior.
 

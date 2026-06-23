@@ -115,7 +115,7 @@ polylogued = "polylogue.daemon.cli:main"
 polylogue-mcp = "polylogue.mcp.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["polylogue"]
+packages = ["polylogue", "devtools"]
 
 [tool.hatch.build.hooks.custom]
 path = "packaging/hatch_build.py"

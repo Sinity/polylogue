@@ -50,6 +50,9 @@ def test_verify_distribution_surface_builds_sdist_wheel_and_smokes(
     import_probes = [call for call in calls if len(call) >= 4 and call[1:3] == ("-I", "-c")]
     assert len(import_probes) == 2
     assert all("polylogue.archive.query.expression" in call[3] for call in import_probes)
+    smoke_commands = [" ".join(call) for call in calls]
+    assert sum("polylogue --plain ops diagnostics workload --json" in call for call in smoke_commands) == 2
+    assert sum("polylogue --plain ops diagnostics space --json" in call for call in smoke_commands) == 2
 
 
 def test_smoke_env_removes_source_pythonpath(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
