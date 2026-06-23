@@ -6,6 +6,10 @@ _What changed and why it matters (1-3 sentences)._
 
 _What the codebase needed. Why this work was necessary._
 
+Use neutral issue references such as `Ref #NNN`. Do not use GitHub
+issue-state keywords in PR text unless the operator explicitly requested that
+this PR change that exact issue state.
+
 ## Solution
 
 _What was done. Key modules, contracts, and boundaries touched._

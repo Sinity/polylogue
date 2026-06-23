@@ -1,0 +1,71 @@
+name: PR State Guard
+
+on:
+  pull_request:
+    branches: [master]
+    types:
+      - opened
+      - edited
+      - reopened
+      - synchronize
+      - ready_for_review
+
+permissions:
+  # Read repository metadata for this checkout-free PR workflow.
+  contents: read
+  # Read pull request metadata exposed through the event payload.
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  issue-state-keywords:
+    name: reject issue state keywords
+    timeout-minutes: 3
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR title and body
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+
+          event_path = os.environ.get("GITHUB_EVENT_PATH")
+          if not event_path:
+              print("Error: GITHUB_EVENT_PATH is not set")
+              sys.exit(1)
+          try:
+              with open(event_path, encoding="utf-8") as handle:
+                  event = json.load(handle)
+          except FileNotFoundError:
+              print(f"Error: GitHub event payload not found: {event_path}")
+              sys.exit(1)
+          except json.JSONDecodeError as exc:
+              print(f"Error: GitHub event payload is not valid JSON: {exc}")
+              sys.exit(1)
+
+          pr = event.get("pull_request") or {}
+          fields = {
+              "title": pr.get("title") or "",
+              "body": pr.get("body") or "",
+          }
+          pattern = re.compile(
+              r"\b(?:close(?:s|d)?|fix(?:es|ed)?|resolve(?:s|d)?)\s*:?\s+"
+              r"(?:(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#\d+\b|"
+              r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/\d+\b)",
+              re.IGNORECASE,
+          )
+          hits = [(name, match.group(0)) for name, text in fields.items() for match in pattern.finditer(text)]
+          if hits:
+              print("PR title/body contains GitHub issue-state keywords next to issue refs.")
+              print("Use neutral references such as 'Ref #NNN' and describe remaining scope explicitly.")
+              for field, hit in hits:
+                  print(f"- {field}: {hit!r}")
+              sys.exit(1)
+
+          print("PR state guard: no issue-state keywords found")
+          PY
