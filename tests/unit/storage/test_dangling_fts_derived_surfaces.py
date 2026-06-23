@@ -5,8 +5,11 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import aiosqlite
+import pytest
+
 from polylogue.storage.fts.dangling_repair import repair_missing_fts_rows, repair_stale_fts_rows
-from polylogue.storage.fts.freshness import message_fts_recorded_state_sync
+from polylogue.storage.fts.freshness import message_fts_recorded_state_async, message_fts_recorded_state_sync
 from polylogue.storage.fts.fts_lifecycle import message_fts_search_readiness_sync, restore_fts_triggers_sync
 
 
@@ -136,6 +139,67 @@ def test_search_readiness_rejects_poisoned_zero_count_ready_marker(tmp_path: Pat
     assert readiness["indexed_rows"] == 0
     assert state == "stale"
     assert recorded == (1, 0, "exact message readiness failed")
+
+
+def test_search_readiness_uses_blocks_as_zero_count_trust_source(tmp_path: Path) -> None:
+    """A ready|0|0 ledger is untrusted when the actual FTS source has rows."""
+    db = tmp_path / "archive.db"
+    conn = sqlite3.connect(db)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE messages (message_id TEXT PRIMARY KEY);
+            CREATE TABLE blocks (
+                block_id TEXT, message_id TEXT, session_id TEXT, block_type TEXT, text TEXT, search_text TEXT
+            );
+            CREATE VIRTUAL TABLE messages_fts USING fts5(
+                block_id UNINDEXED, message_id UNINDEXED, session_id UNINDEXED, block_type UNINDEXED, text,
+                content='', contentless_delete=1
+            );
+            CREATE TABLE fts_freshness_state (
+                surface TEXT PRIMARY KEY, state TEXT NOT NULL, checked_at TEXT NOT NULL,
+                source_rows INTEGER NOT NULL DEFAULT 0, indexed_rows INTEGER NOT NULL DEFAULT 0,
+                missing_rows INTEGER NOT NULL DEFAULT 0, excess_rows INTEGER NOT NULL DEFAULT 0,
+                duplicate_rows INTEGER NOT NULL DEFAULT 0, detail TEXT
+            );
+            INSERT INTO blocks VALUES ('block-1', 'msg-1', 'conv-1', 'text', 'needle freshness', 'needle freshness');
+            INSERT INTO fts_freshness_state (surface, state, checked_at, source_rows, indexed_rows, detail)
+            VALUES ('messages_fts', 'ready', 'now', 0, 0, NULL);
+            """
+        )
+
+        assert message_fts_recorded_state_sync(conn) == "unknown"
+    finally:
+        conn.close()
+
+
+@pytest.mark.asyncio
+async def test_async_recorded_readiness_uses_blocks_as_zero_count_trust_source(tmp_path: Path) -> None:
+    db = tmp_path / "archive.db"
+    async with aiosqlite.connect(db) as conn:
+        await conn.executescript(
+            """
+            CREATE TABLE messages (message_id TEXT PRIMARY KEY);
+            CREATE TABLE blocks (
+                block_id TEXT, message_id TEXT, session_id TEXT, block_type TEXT, text TEXT, search_text TEXT
+            );
+            CREATE VIRTUAL TABLE messages_fts USING fts5(
+                block_id UNINDEXED, message_id UNINDEXED, session_id UNINDEXED, block_type UNINDEXED, text,
+                content='', contentless_delete=1
+            );
+            CREATE TABLE fts_freshness_state (
+                surface TEXT PRIMARY KEY, state TEXT NOT NULL, checked_at TEXT NOT NULL,
+                source_rows INTEGER NOT NULL DEFAULT 0, indexed_rows INTEGER NOT NULL DEFAULT 0,
+                missing_rows INTEGER NOT NULL DEFAULT 0, excess_rows INTEGER NOT NULL DEFAULT 0,
+                duplicate_rows INTEGER NOT NULL DEFAULT 0, detail TEXT
+            );
+            INSERT INTO blocks VALUES ('block-1', 'msg-1', 'conv-1', 'text', 'needle freshness', 'needle freshness');
+            INSERT INTO fts_freshness_state (surface, state, checked_at, source_rows, indexed_rows, detail)
+            VALUES ('messages_fts', 'ready', 'now', 0, 0, NULL);
+            """
+        )
+
+        assert await message_fts_recorded_state_async(conn) == "unknown"
 
 
 def test_repair_stale_fts_rows_recomputes_poisoned_archive_counts(tmp_path: Path) -> None:
