@@ -2297,9 +2297,9 @@ class _SpecAccumulator:
                 else:
                     self.has_types.append(sub)
 
-        elif fname == "id":
+        elif fname in {"id", "session"}:
             if tok.negated:
-                raise ExpressionCompileError("negation is not supported for 'id'", field=fname)
+                raise ExpressionCompileError(f"negation is not supported for {fname!r}", field=fname)
             if values:
                 self.session_id = values[-1]
 

@@ -296,6 +296,17 @@ EXECUTABLE_WORKFLOW_GOLDEN_PATHS: tuple[ExecutableWorkflowGoldenPath, ...] = (
         required_affordance_ids=("select",),
     ),
     ExecutableWorkflowGoldenPath(
+        id="select-exact-session-ref-json",
+        workflow_id="resolve-ref-drilldown",
+        description="Exact session: ref query selects the demo Claude Code session without broad FTS fallback.",
+        command=("find", f"session:{DEMO_CLAUDE_CODE_SESSION_ID}", "then", "select", "--json"),
+        action_path=("select",),
+        output_kind="json_object",
+        json_expectations=(JsonExpectation(("id",), "string"), JsonExpectation(("origin",), "string")),
+        stdout_contains=(DEMO_CLAUDE_CODE_SESSION_ID, '"origin":"claude-code-session"'),
+        required_affordance_ids=("select",),
+    ),
+    ExecutableWorkflowGoldenPath(
         id="read-messages-json",
         workflow_id="find-then-read-messages",
         description="Query-selected message read exposes the normalized message JSON payload.",

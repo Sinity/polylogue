@@ -4134,6 +4134,11 @@ class TestLowererFieldMapping:
         spec = compile_expression(f"id:{session_id}")
         assert spec.session_id == session_id
 
+    def test_session_alias(self) -> None:
+        session_id = "claude-code-session:abc123def456"
+        spec = compile_expression(f"session:{session_id}")
+        assert spec.session_id == session_id
+
     def test_title(self) -> None:
         spec = compile_expression("title:refactor")
         assert spec.title == "refactor"
@@ -5079,6 +5084,11 @@ class TestDaemonSessionIdFilter:
         spec = compile_expression("id:abc")
         assert spec.session_id == "abc"
 
+    def test_session_clause_produces_session_id_in_spec(self) -> None:
+        """compile_expression('session:abc') must be an exact-ref alias."""
+        spec = compile_expression("session:abc")
+        assert spec.session_id == "abc"
+
     def test_id_query_scopes_results_and_total(self, workspace_env: dict[str, Path]) -> None:
         index_db = workspace_env["archive_root"] / "index.db"
         ids = self._seed(index_db, [("alpha", "alpha body"), ("beta", "beta body")])
@@ -5093,6 +5103,19 @@ class TestDaemonSessionIdFilter:
         items = payload["items"]
         assert isinstance(items, list) and len(items) == 1
 
+    def test_session_query_scopes_results_and_total(self, workspace_env: dict[str, Path]) -> None:
+        index_db = workspace_env["archive_root"] / "index.db"
+        ids = self._seed(index_db, [("alpha", "alpha body"), ("beta", "beta body")])
+        assert len(ids) == 2
+
+        payload = self._handler()._do_archive_list_sessions(
+            workspace_env["archive_root"], {"query": [f"session:{ids[0]}"]}, 50, 0
+        )
+        assert isinstance(payload, dict)
+        assert payload["total"] == 1
+        items = payload["items"]
+        assert isinstance(items, list) and len(items) == 1
+
     def test_id_miss_returns_typed_empty_not_500(self, workspace_env: dict[str, Path]) -> None:
         index_db = workspace_env["archive_root"] / "index.db"
         self._seed(index_db, [("alpha", "alpha body")])
@@ -5101,6 +5124,15 @@ class TestDaemonSessionIdFilter:
             workspace_env["archive_root"], {"query": ["id:nonexistentnope"]}, 50, 0
         )
         # A missing id is a typed-empty page, not a 500 propagated from resolve.
+        assert payload == {"items": [], "total": 0, "limit": 50, "offset": 0}
+
+    def test_session_miss_returns_typed_empty_not_500(self, workspace_env: dict[str, Path]) -> None:
+        index_db = workspace_env["archive_root"] / "index.db"
+        self._seed(index_db, [("alpha", "alpha body")])
+
+        payload = self._handler()._do_archive_list_sessions(
+            workspace_env["archive_root"], {"query": ["session:nonexistentnope"]}, 50, 0
+        )
         assert payload == {"items": [], "total": 0, "limit": 50, "offset": 0}
 
     def test_id_ambiguous_prefix_raises_query_spec_error(self, workspace_env: dict[str, Path]) -> None:
