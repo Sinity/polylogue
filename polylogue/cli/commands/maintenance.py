@@ -790,9 +790,11 @@ def run_command(
     )
 
     def _emit_progress(snapshot: ReplayProgress) -> None:
+        detail = f" {snapshot.progress_desc}" if snapshot.progress_desc else ""
+        amount = f" amount={snapshot.progress_amount}" if snapshot.progress_amount is not None else ""
         click.echo(
             f"  [{snapshot.processed}/{snapshot.total}] {snapshot.target} "
-            f"cursor={snapshot.cursor} failures={snapshot.in_flight_failures}",
+            f"cursor={snapshot.cursor} failures={snapshot.in_flight_failures}{amount}{detail}",
             err=True,
         )
 

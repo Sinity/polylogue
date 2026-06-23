@@ -14,10 +14,12 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 
+import polylogue.maintenance.replay as replay_module
 from polylogue.config import Config
 from polylogue.maintenance.models import MaintenanceCategory
 from polylogue.maintenance.planner import BackfillStatus
@@ -199,6 +201,52 @@ def test_progress_callback_fires_per_target(tmp_path: Path, patched_dispatch: di
     assert snapshots[0].processed == 1 and snapshots[0].total == 2
     assert snapshots[-1].cursor == CURSOR_DONE
     assert snapshots[-1].in_flight_failures == 0
+
+
+def test_session_insight_progress_is_forwarded_within_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _make_config(tmp_path)
+    snapshots: list[ReplayProgress] = []
+
+    def repair_with_progress(
+        _config: Config,
+        _dry_run: bool,
+        *,
+        progress_callback: Any = None,
+        progress_total: int | None = None,
+        session_ids: tuple[str, ...] | None = None,
+    ) -> RepairResult:
+        assert progress_total is None
+        assert session_ids is None
+        assert callable(progress_callback)
+        progress_callback(17, desc="rebuild: materialized 17/42 session profiles")
+        return _ok_result("session_insights", repaired=42)
+
+    monkeypatch.setattr("polylogue.maintenance.replay.repair_session_insights", repair_with_progress)
+    monkeypatch.setitem(
+        replay_module._REPLAY_DISPATCH,
+        "session_insights",
+        repair_with_progress,
+    )
+
+    op = execute_replay(
+        config,
+        targets=("session_insights",),
+        operation_id="op-progress-inner",
+        progress_callback=snapshots.append,
+    )
+
+    assert op.status is BackfillStatus.COMPLETED
+    assert [snapshot.progress_desc for snapshot in snapshots] == [
+        "rebuild: materialized 17/42 session profiles",
+        None,
+    ]
+    assert snapshots[0].processed == 0
+    assert snapshots[0].progress_amount == 17
+    assert snapshots[-1].processed == 1
+    assert snapshots[-1].cursor == CURSOR_DONE
 
 
 def test_unresolved_targets_short_circuit(tmp_path: Path) -> None:

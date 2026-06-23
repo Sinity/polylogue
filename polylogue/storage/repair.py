@@ -43,6 +43,46 @@ def _open_archive_index_connection() -> sqlite3.Connection:
     return conn
 
 
+def _resolve_convergence_debt(
+    *,
+    ops_db: Path,
+    stage: str,
+    target_type: str,
+    target_id: str,
+) -> None:
+    """Best-effort resolution for ops-tier convergence debt.
+
+    Maintenance targets are explicit convergence actuators. When one proves a
+    target ready, stale daemon debt for the same target must stop appearing as
+    actionable work.
+    """
+    if not ops_db.exists():
+        return
+    try:
+        with sqlite3.connect(ops_db) as conn:
+            table_exists = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='convergence_debt'"
+            ).fetchone()
+            if not table_exists:
+                return
+            conn.execute(
+                """
+                DELETE FROM convergence_debt
+                WHERE stage = ? AND target_type = ? AND target_id = ?
+                """,
+                (stage, target_type, target_id),
+            )
+            conn.commit()
+    except sqlite3.Error as exc:
+        logger.warning(
+            "convergence_debt_resolve_failed",
+            stage=stage,
+            target_type=target_type,
+            target_id=target_id,
+            error=str(exc),
+        )
+
+
 def _archive_index_present(config: Config) -> bool:
     index_db = config.archive_root / "index.db"
     if not index_db.exists():
@@ -819,37 +859,6 @@ def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
                     success=True,
                     detail="FTS table does not exist, skipping",
                 )
-            source_count = int(conn.execute("SELECT COUNT(*) FROM blocks WHERE text IS NOT NULL").fetchone()[0] or 0)
-            indexed_count = int(conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] or 0)
-            diff = abs(source_count - indexed_count)
-            if dry_run:
-                return _repair_result(
-                    "dangling_fts",
-                    repaired_count=diff,
-                    success=True,
-                    detail="FTS index in sync"
-                    if diff == 0
-                    else f"Would: FTS sync: {source_count:,} blocks vs {indexed_count:,} indexed ({diff:,} difference)",
-                )
-            if diff == 0:
-                return _repair_result(
-                    "dangling_fts",
-                    repaired_count=0,
-                    success=True,
-                    detail="FTS index in sync",
-                )
-            from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync
-
-            rebuild_fts_index_sync(conn)
-            conn.commit()
-            repaired_count = diff
-            return _repair_result(
-                "dangling_fts",
-                repaired_count=repaired_count,
-                success=True,
-                detail=f"Rebuilt FTS index ({repaired_count:,} row difference)",
-            )
-
             if dry_run:
                 outcome = dry_run_dangling_fts_repair(conn)
                 return _repair_result(
@@ -860,6 +869,13 @@ def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
                 )
             outcome = repair_missing_fts_rows(conn)
             conn.commit()
+            if outcome.success:
+                _resolve_convergence_debt(
+                    ops_db=config.archive_root / "ops.db",
+                    stage="fts",
+                    target_type="fts_surface",
+                    target_id="messages_fts",
+                )
             return _repair_result(
                 "dangling_fts",
                 repaired_count=outcome.repaired_count,

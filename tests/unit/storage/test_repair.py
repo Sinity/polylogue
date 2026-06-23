@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -10,6 +11,7 @@ import pytest
 from polylogue.config import Config
 from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.storage import repair as repair_mod
+from polylogue.storage.fts.dangling_repair import DanglingFtsRepairOutcome
 from polylogue.storage.insights.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
 
 
@@ -243,17 +245,11 @@ def test_repair_dangling_fts_uses_targeted_missing_row_repair(monkeypatch: pytes
             return (self.value,)
 
     class FakeConn:
-        indexed_count = 8
-
         def execute(self, sql: str, params: object = ()) -> _Cursor:
             if sql.startswith("PRAGMA "):
                 return _Cursor(None)
             if "sqlite_master" in sql and "messages_fts" in sql:
                 return _Cursor("messages_fts")
-            if "COUNT(*) FROM blocks WHERE text IS NOT NULL" in sql:
-                return _Cursor(10)
-            if "COUNT(*) FROM messages_fts_docsize" in sql:
-                return _Cursor(self.indexed_count)
             raise AssertionError(f"unexpected SQL: {sql}")
 
         def commit(self) -> None:
@@ -263,36 +259,71 @@ def test_repair_dangling_fts_uses_targeted_missing_row_repair(monkeypatch: pytes
     def fake_connection_context() -> Iterator[FakeConn]:
         yield FakeConn()
 
+    ops_db = tmp_path / "ops.db"
+    with sqlite3.connect(ops_db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE convergence_debt (
+                debt_id TEXT PRIMARY KEY,
+                stage TEXT NOT NULL,
+                target_type TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'failed' CHECK(status IN ('failed', 'deferred')),
+                priority INTEGER NOT NULL DEFAULT 0,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                next_retry_at TEXT,
+                materializer_version TEXT,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                UNIQUE(stage, target_type, target_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO convergence_debt (
+                debt_id, stage, target_type, target_id, status, priority,
+                attempts, last_error, next_retry_at, materializer_version,
+                created_at_ms, updated_at_ms
+            )
+            VALUES (
+                'debt-1', 'fts', 'fts_surface', 'messages_fts', 'failed', 0,
+                1, 'stale ledger', '1970-01-01T00:00:00+00:00', NULL, 1, 1
+            )
+            """
+        )
+
     monkeypatch.setattr(repair_mod, "_open_archive_index_connection", fake_connection_context)
-    # The contentless ``messages_fts`` index is repopulated by
-    # ``rebuild_fts_index_sync`` (delete-all + INSERT...SELECT over blocks plus
-    # the derived-surface rebuilds). That seam runs many statements against a
-    # real connection; stub it here and assert it was invoked.
+
+    def fail_full_rebuild(_conn: FakeConn) -> None:
+        raise AssertionError("repair_dangling_fts must not run the full FTS rebuild path")
+
     monkeypatch.setattr(
         "polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync",
-        lambda _conn: calls.append(("rebuild", ())),
+        fail_full_rebuild,
     )
     monkeypatch.setattr(
-        "polylogue.storage.fts.dangling_repair._repair_session_work_events_fts_rows_sync",
-        lambda _conn: (0, 0, 0, 0),
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.fts.dangling_repair._repair_threads_fts_rows_sync",
-        lambda _conn: (0, 0, 0, 0),
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.fts.dangling_repair._record_optional_derived_surface",
-        lambda _conn, **_kwargs: True,
-    )
-    monkeypatch.setattr("polylogue.storage.fts.dangling_repair._triggers_present_sync", lambda _conn, _names: True)
-    monkeypatch.setattr(
-        "polylogue.storage.fts.dangling_repair.record_fts_surface_state_sync",
-        lambda _conn, **kwargs: calls.append(("record", kwargs["surface"])),
+        "polylogue.storage.fts.dangling_repair.repair_missing_fts_rows",
+        lambda _conn: DanglingFtsRepairOutcome(
+            repaired_count=2,
+            success=True,
+            detail="FTS sync: repaired index",
+        ),
     )
 
     result = repair_mod.repair_dangling_fts(_config(tmp_path), dry_run=False)
 
     assert result.success is True
-    assert "Rebuilt FTS index" in result.detail
-    assert ("rebuild", ()) in calls
+    assert result.repaired_count == 2
+    assert result.detail == "FTS sync: repaired index"
     assert ("commit", ()) in calls
+    with sqlite3.connect(ops_db) as conn:
+        row = conn.execute(
+            """
+            SELECT status, last_error, next_retry_at, updated_at_ms
+            FROM convergence_debt
+            WHERE stage = 'fts' AND target_type = 'fts_surface' AND target_id = 'messages_fts'
+            """
+        ).fetchone()
+    assert row is None
