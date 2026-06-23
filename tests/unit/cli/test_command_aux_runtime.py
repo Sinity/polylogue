@@ -155,6 +155,14 @@ def test_query_field_candidates_include_readable_operator_fields() -> None:
     assert user_messages_candidate.source == "EXPRESSION_FIELD_REGISTRY/COUNT_QUERY_FIELD_REGISTRY"
     assert "sessions where user_messages >= 2" in user_messages_candidate.description
 
+    authored_candidates = shell_completion_values.query_field_candidates("authored_user")
+    authored_messages_candidate = next(
+        candidate for candidate in authored_candidates if candidate.value == "authored_user_messages"
+    )
+    assert authored_messages_candidate.insert == "authored_user_messages "
+    assert authored_messages_candidate.source == "EXPRESSION_FIELD_REGISTRY/COUNT_QUERY_FIELD_REGISTRY"
+    assert "sessions where authored_user_messages >= 2" in authored_messages_candidate.description
+
     duration_candidates = shell_completion_values.query_field_candidates("dur")
     duration_candidate = next(candidate for candidate in duration_candidates if candidate.value == "duration_ms")
     assert duration_candidate.insert == "duration_ms "

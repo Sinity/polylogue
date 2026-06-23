@@ -746,6 +746,7 @@ def _upsert_session_stats_sync(
 ) -> None:
     """Sync mirror of aggregate-column maintenance for test seeding."""
     from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import MaterialOrigin
 
     message_count = len(messages)
     word_count = sum(m.word_count for m in messages)
@@ -753,10 +754,12 @@ def _upsert_session_stats_sync(
     thinking_count = sum(1 for m in messages if m.has_thinking)
     paste_count = sum(1 for m in messages if m.has_paste)
     user_msg_count = sum(1 for m in messages if m.role == Role.USER)
+    authored_user_msg_count = sum(1 for m in messages if m.material_origin == MaterialOrigin.HUMAN_AUTHORED)
     assistant_msg_count = sum(1 for m in messages if m.role == Role.ASSISTANT)
     system_msg_count = sum(1 for m in messages if m.role == Role.SYSTEM)
     tool_msg_count = sum(1 for m in messages if m.role == Role.TOOL)
     user_word_count = sum(m.word_count for m in messages if m.role == Role.USER)
+    authored_user_word_count = sum(m.word_count for m in messages if m.material_origin == MaterialOrigin.HUMAN_AUTHORED)
     assistant_word_count = sum(m.word_count for m in messages if m.role == Role.ASSISTANT)
     conn.execute(
         """
@@ -767,10 +770,12 @@ def _upsert_session_stats_sync(
             thinking_count = ?,
             paste_count = ?,
             user_message_count = ?,
+            authored_user_message_count = ?,
             assistant_message_count = ?,
             system_message_count = ?,
             tool_message_count = ?,
             user_word_count = ?,
+            authored_user_word_count = ?,
             assistant_word_count = ?
         WHERE session_id = ?
         """,
@@ -781,10 +786,12 @@ def _upsert_session_stats_sync(
             thinking_count,
             paste_count,
             user_msg_count,
+            authored_user_msg_count,
             assistant_msg_count,
             system_msg_count,
             tool_msg_count,
             user_word_count,
+            authored_user_word_count,
             assistant_word_count,
             session.session_id,
         ),
@@ -862,6 +869,7 @@ def _record_to_parsed_session(
             text=message.text,
             blocks=_blocks(message),
             message_type=message.message_type,
+            material_origin=message.material_origin,
             parent_message_provider_id=_provider_message_id(message.parent_message_id),
             position=position,
             branch_index=message.branch_index,
