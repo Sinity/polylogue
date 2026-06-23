@@ -21,6 +21,7 @@ from .paths import (
     GEMINI_DRIVE_FOLDER,
     archive_root,
     config_home,
+    data_home,
     drive_cache_path,
     drive_credentials_path,
     drive_token_path,
@@ -983,14 +984,12 @@ def _user_config_path() -> Path | None:
 def _default_config_values() -> dict[str, object]:
     """Built-in defaults (layer 1).
 
-    Pure function — does not touch the filesystem, env, or CLI state.
-    The one exception is ``archive_root``, which derives from XDG paths
-    via :func:`archive_root`; that resolution is itself env-driven but
-    represents the documented built-in default for an unconfigured
-    install.
+    The ``archive_root`` default follows the XDG data root, but the explicit
+    ``POLYLOGUE_ARCHIVE_ROOT`` override is applied only by the env layer below
+    so layer provenance remains accurate.
     """
     return {
-        "archive_root": str(archive_root()),
+        "archive_root": str(data_home()),
         "daemon_url": "http://127.0.0.1:8766",
         "daemon_host": "127.0.0.1",
         "daemon_port": 8766,
@@ -1406,7 +1405,7 @@ def _config_path_diagnostics(resolved: PolylogueConfig) -> list[dict[str, object
         value = resolved.raw.get(entry.key)
         # Defaults may legitimately point at not-yet-created first-run paths.
         # Operator-provided paths must be explicit enough to audit.
-        if resolved.layer_of(entry.key) == "default" and not (entry.env_var and entry.env_var in os.environ):
+        if resolved.layer_of(entry.key) == "default":
             continue
         for raw_path in _iter_path_config_values(entry.key, value):
             path = _expand_config_path(raw_path)

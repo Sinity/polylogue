@@ -207,6 +207,30 @@ def test_effective_config_payload_reports_env_relative_archive_root(
     )
 
 
+def test_config_diagnostics_use_resolved_snapshot_not_ambient_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    workspace_env: dict[str, Path],
+) -> None:
+    from polylogue.config import effective_config_payload, load_polylogue_config
+
+    monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", "relative-archive")
+    cfg = load_polylogue_config()
+    monkeypatch.delenv("POLYLOGUE_ARCHIVE_ROOT")
+
+    payload = effective_config_payload(cfg)
+
+    diagnostics = payload["diagnostics"]
+    assert isinstance(diagnostics, list)
+    assert any(
+        diag.get("code") == "config_path_not_absolute"
+        and diag.get("key") == "archive_root"
+        and diag.get("env_var") == "POLYLOGUE_ARCHIVE_ROOT"
+        for diag in diagnostics
+        if isinstance(diag, dict)
+    )
+
+
 def test_effective_config_payload_reports_embedding_enabled_without_key(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
