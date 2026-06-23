@@ -279,15 +279,19 @@ def _message_response_latencies(messages: Sequence[Message]) -> tuple[list[int],
     timestamped = [message for message in messages if message.timestamp is not None]
     for index, message in enumerate(timestamped):
         next_message = next(
-            (candidate for candidate in timestamped[index + 1 :] if candidate.is_user or candidate.is_assistant),
+            (
+                candidate
+                for candidate in timestamped[index + 1 :]
+                if candidate.is_human_authored or candidate.is_assistant
+            ),
             None,
         )
         if next_message is None or next_message.timestamp is None or message.timestamp is None:
             continue
         delta_ms = max(int((next_message.timestamp - message.timestamp).total_seconds() * 1000), 0)
-        if message.is_user and next_message.is_assistant:
+        if message.is_human_authored and next_message.is_assistant:
             agent_response_ms.append(delta_ms)
-        elif message.is_assistant and next_message.is_user and delta_ms <= 1_800_000:
+        elif message.is_assistant and next_message.is_human_authored and delta_ms <= 1_800_000:
             user_response_ms.append(delta_ms)
     return agent_response_ms, user_response_ms
 

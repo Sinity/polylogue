@@ -24,7 +24,7 @@ from polylogue.core.payload_coercion import (
     string_sequence,
 )
 
-# Strip XML-like protocol artifacts from user messages before summarizing.
+# Strip XML-like protocol artifacts from authored prompt messages before summarizing.
 # Claude Code sessions contain <command-name>, <task-notification>,
 # <local-command-caveat>, <system-reminder> etc. which are tool protocol
 # noise, not human-readable content.
@@ -274,7 +274,7 @@ def _collect_range_signals(
     text_signal_name: str | None = None
 
     for message in message_range.iter_messages(messages):
-        if message.is_user and message.text and not message.is_noise:
+        if message.is_human_authored and message.text and not message.is_noise:
             lowered_text: str | None = None
             if normalized_user_text_len < _SIGNAL_TEXT_PREVIEW_MAX_LEN:
                 lowered_text = message.text.lower()
@@ -423,7 +423,7 @@ def _build_range_summary(
     summary_parts: list[str] = []
     summary_length = 0
     for message in message_range.iter_messages(messages):
-        if not message.is_user or not message.text:
+        if not message.is_human_authored or not message.text:
             continue
         cleaned_text = _clean_summary_text(message.text)
         if not cleaned_text:
