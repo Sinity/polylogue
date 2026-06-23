@@ -26,10 +26,12 @@ function sessionIdFromUrl(provider, url) {
   if (provider === "chatgpt") {
     const marker = parts.indexOf("c");
     if (marker >= 0 && parts[marker + 1]) return parts[marker + 1];
+    return null;
   }
   if (provider === "claude-ai" && parts[0] === "chat" && parts[1]) {
     return parts[1];
   }
+  if (provider === "claude-ai") return null;
   const sessionToken =
     parts.at(-1) || parsed.pathname || parsed.hostname;
   return `${provider}:${sessionToken}:${fnv1a(parsed.origin + parsed.pathname)}`;
@@ -52,10 +54,13 @@ function buildEnvelope({
   updatedAt = null,
   providerMeta = {},
   rawProviderPayload = null,
+  sourceUrl = "https://chatgpt.com/c/test-conv",
 }) {
-  const sourceUrl = "https://chatgpt.com/c/test-conv";
   const stableProviderSessionId =
     providerSessionId || sessionIdFromUrl(provider, sourceUrl);
+  if (!stableProviderSessionId) {
+    throw new Error(`cannot capture ${provider} page without a provider-native conversation id`);
+  }
   const stableCaptureId = stableProviderSessionId.startsWith(`${provider}:`)
     ? stableProviderSessionId
     : `${provider}:${stableProviderSessionId}`;
@@ -163,6 +168,22 @@ describe("sessionIdFromUrl", () => {
     expect(id).toBe("conv");
   });
 
+  it("does not invent ChatGPT ids for non-conversation routes", () => {
+    const id = sessionIdFromUrl(
+      "chatgpt",
+      "https://chatgpt.com/",
+    );
+    expect(id).toBeNull();
+  });
+
+  it("does not invent Claude ids for non-conversation routes", () => {
+    const id = sessionIdFromUrl(
+      "claude-ai",
+      "https://claude.ai/new",
+    );
+    expect(id).toBeNull();
+  });
+
   it("keeps provider prefix in capture id but not session id", () => {
     const envelope = buildEnvelope({
       provider: "chatgpt",
@@ -231,6 +252,15 @@ describe("buildEnvelope", () => {
     expect(envelope.provenance.capture_mode).toBe("snapshot");
     expect(envelope.session.provider).toBe("chatgpt");
     expect(envelope.session.turns).toHaveLength(1);
+  });
+
+  it("rejects supported provider pages without native conversation ids", () => {
+    expect(() => buildEnvelope({
+      provider: "chatgpt",
+      adapterName: "chatgpt-dom-v1",
+      turns: [{ role: "user", text: "Hello" }],
+      sourceUrl: "https://chatgpt.com/",
+    })).toThrow("cannot capture chatgpt page without a provider-native conversation id");
   });
 
   it("assigns ordinals to turns", () => {
