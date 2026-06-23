@@ -464,7 +464,7 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
                 stage=debt.stage,
                 subject_type=debt.subject_type,
                 subject_id=debt.subject_id,
-                error="global FTS surface repair did not converge",
+                error="FTS freshness convergence did not converge",
             )
             retried += 1
             continue
@@ -792,11 +792,11 @@ async def run_daemon_services(
     # Periodic maintenance tasks. If schema preflight blocks the watcher, do
     # not start any background loop that opens the archive: a mismatched
     # runtime/database pair must remain observable without doing catch-up,
-    # FTS repair, status snapshots, WAL checkpointing, or convergence work.
+    # FTS freshness recovery, status snapshots, WAL checkpointing, or convergence work.
     #
     # The task list is populated only after startup FTS readiness completes.
     # Several maintenance loops can write the archive, especially convergence
-    # debt retry; starting them before FTS startup repair self-contends on
+    # debt retry; starting them before FTS startup freshness recovery self-contends on
     # SQLite during daemon bootstrap.
     maintenance_tasks: list[asyncio.Task[None]] = []
 

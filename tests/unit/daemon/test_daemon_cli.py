@@ -830,7 +830,9 @@ def test_archive_message_fts_startup_large_drift_is_deferred(monkeypatch: pytest
             "indexed_rows": 100_000,
             "missing_rows": 150_000,
             "excess_rows": 0,
-            "detail": "archive message FTS drift exceeds startup repair budget; scheduled global FTS surface repair",
+            "detail": (
+                "archive message FTS drift exceeds bounded startup reconciliation; scheduled global FTS freshness debt"
+            ),
         }
     ]
     assert debts == [
@@ -838,7 +840,9 @@ def test_archive_message_fts_startup_large_drift_is_deferred(monkeypatch: pytest
             "stage": "fts",
             "subject_type": "fts_surface",
             "subject_id": "messages_fts",
-            "error": "archive message FTS drift exceeds startup repair budget; scheduled global FTS surface repair",
+            "error": (
+                "archive message FTS drift exceeds bounded startup reconciliation; scheduled global FTS freshness debt"
+            ),
         }
     ]
 
@@ -904,7 +908,9 @@ def test_archive_message_fts_startup_records_known_stale_ledger_without_global_c
             "missing_rows": 150_000,
             "excess_rows": 0,
             "duplicate_rows": 0,
-            "detail": "archive message FTS drift exceeds startup repair budget; scheduled global FTS surface repair",
+            "detail": (
+                "archive message FTS drift exceeds bounded startup reconciliation; scheduled global FTS freshness debt"
+            ),
         }
     ]
     assert "SELECT COUNT(*) FROM blocks WHERE search_text != ''" not in conn.queries

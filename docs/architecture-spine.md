@@ -44,7 +44,8 @@ Every `docs/plans/*.yaml` manifest is enforced by a lint in `devtools verify`.
 ### FTS5: unicode61 tokenizer, no porter stemmer
 - **Chosen**: `unicode61` tokenizer. Triggers on messages table with suspend/resume during bulk ops.
 - **Rejected**: Porter stemmer — not compiled in this SQLite build.
-- **Constraint**: FTS triggers must survive SIGKILL (startup repair check).
+- **Constraint**: FTS freshness is an invariant; startup may perform bounded
+  recovery, but global drift is represented as explicit convergence debt.
 
 ### Blob store: content-addressed with SHA-256 prefix sharding
 - **Chosen**: 256 subdirectories (`blob/00/` through `blob/ff/`), write-once, read-many.
@@ -52,7 +53,7 @@ Every `docs/plans/*.yaml` manifest is enforced by a lint in `devtools verify`.
 - **Constraint**: Link counting for GC, unreferenced blobs need explicit cleanup.
 
 ### Daemon convergence: explicit stages, no implicit storage upgrade
-- **Chosen**: Daemon runs named convergence stages (FTS repair, insight refresh, embedding) on a schedule.
+- **Chosen**: Daemon runs named convergence stages (FTS freshness, insight refresh, embedding) on a schedule.
 - **Rejected**: Event-driven cascade — harder to reason about, harder to test.
 - **Constraint**: Local HTTP API is read-only by default; write/mutation requires explicit role.
 

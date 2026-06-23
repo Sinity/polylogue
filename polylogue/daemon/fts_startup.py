@@ -64,7 +64,7 @@ def table_exists_sync(conn: sqlite3.Connection, table_name: str) -> bool:
 def record_fts_freshness_snapshot_sync(conn: sqlite3.Connection) -> None:
     """Write per-surface freshness rows after a successful startup readiness pass.
 
-    Without this, the bounded-repair and healthy startup paths leave
+    Without this, the bounded-recovery and healthy startup paths leave
     ``fts_freshness_state`` empty, so ``/healthz/ready`` returns 503
     indefinitely and ``message_fts_search_readiness_sync`` keeps refusing
     queries even though triggers + index are intact (#1628).
@@ -117,8 +117,8 @@ def _active_fts_startup_db_path() -> Path:
     return paths.active_index_db_path()
 
 
-_MESSAGE_FTS_STARTUP_REPAIR_DETAIL = (
-    "archive message FTS drift exceeds startup repair budget; scheduled global FTS surface repair"
+_MESSAGE_FTS_STARTUP_DEBT_DETAIL = (
+    "archive message FTS drift exceeds bounded startup reconciliation; scheduled global FTS freshness debt"
 )
 
 
@@ -161,7 +161,7 @@ def _ensure_archive_messages_fts_startup_readiness_sync(
                 missing_rows=_int_or_zero(freshness_row[3]),
                 excess_rows=_int_or_zero(freshness_row[4]),
                 duplicate_rows=_int_or_zero(freshness_row[5]),
-                detail=_MESSAGE_FTS_STARTUP_REPAIR_DETAIL,
+                detail=_MESSAGE_FTS_STARTUP_DEBT_DETAIL,
             )
             return True
     source_rows = _count_or_zero(conn, "SELECT COUNT(*) FROM blocks WHERE search_text != ''")
@@ -177,21 +177,21 @@ def _ensure_archive_messages_fts_startup_readiness_sync(
             triggers_present = not _missing_named_triggers_sync(conn, _ARCHIVE_MESSAGE_FTS_TRIGGERS)
         else:
             logger.warning(
-                "daemon: archive message FTS drift exceeds startup repair budget; "
-                "scheduled global FTS surface repair "
+                "daemon: archive message FTS drift exceeds bounded startup reconciliation; "
+                "scheduled global FTS freshness debt "
                 "(source_rows=%s indexed_rows=%s drift_rows=%s max_startup_rebuild_rows=%s)",
                 source_rows,
                 indexed_rows,
                 drift_rows,
                 _ARCHIVE_MESSAGES_FTS_STARTUP_REBUILD_MAX_DRIFT_ROWS,
             )
-            _record_message_fts_surface_debt(db_path, _MESSAGE_FTS_STARTUP_REPAIR_DETAIL)
+            _record_message_fts_surface_debt(db_path, _MESSAGE_FTS_STARTUP_DEBT_DETAIL)
 
     ready = fts_exists and triggers_present and indexed_rows == source_rows
     drift_detail = (
         "archive startup FTS readiness failed"
         if abs(source_rows - indexed_rows) <= _ARCHIVE_MESSAGES_FTS_STARTUP_REBUILD_MAX_DRIFT_ROWS
-        else _MESSAGE_FTS_STARTUP_REPAIR_DETAIL
+        else _MESSAGE_FTS_STARTUP_DEBT_DETAIL
     )
     record_fts_surface_state_sync(
         conn,
@@ -333,7 +333,7 @@ def ensure_fts_startup_readiness_sync() -> None:
     This path restores obvious broken structure first and records durable
     freshness state for search request handlers. It deliberately avoids exact
     full-archive invariant scans during ordinary startup; bounded missing-row
-    repair is enough for the normal SIGKILL-after-trigger-suspend failure mode.
+    recovery is enough for the normal SIGKILL-after-trigger-suspend failure mode.
     """
     db = _active_fts_startup_db_path()
     if not db.exists():
