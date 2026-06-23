@@ -47,10 +47,10 @@ config_command.add_command(paths_command)
 def _show_config(env: AppEnv, output_format: str, show_layers: bool) -> None:
     from polylogue.config import (
         describe_config_layers,
+        effective_config_payload,
         format_config_toml,
         is_secret_config_key,
         load_polylogue_config,
-        redact_config_mapping,
         redact_secret_value,
     )
 
@@ -84,7 +84,7 @@ def _show_config(env: AppEnv, output_format: str, show_layers: bool) -> None:
             import json
 
             env.ui.console.print(
-                json.dumps(payload, indent=2, default=str),
+                json.dumps(effective_config_payload(cfg), indent=2, default=str),
                 markup=False,
                 highlight=False,
             )
@@ -111,11 +111,11 @@ def _show_config(env: AppEnv, output_format: str, show_layers: bool) -> None:
         import json
 
         # ``console.print`` interprets ``[brackets]`` as Rich markup, which
-        # would mangle JSON output and TOML section headers. Print without
-        # markup parsing to preserve exact bytes. Secret-bearing keys are
-        # redacted so the JSON dump never reveals a cleartext secret.
+        # would mangle JSON output. Print without markup parsing to preserve
+        # exact bytes. Secret-bearing keys are redacted in the effective
+        # config payload so the JSON dump never reveals a cleartext secret.
         env.ui.console.print(
-            json.dumps(redact_config_mapping(cfg.raw), indent=2, default=str),
+            json.dumps(effective_config_payload(cfg), indent=2, default=str),
             markup=False,
             highlight=False,
         )

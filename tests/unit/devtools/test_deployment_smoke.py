@@ -246,6 +246,78 @@ def test_deployment_smoke_command_succeeds_when_all_probes_pass(
     assert "status: ok" in output
     assert "Completions:" in output
     assert "Browser capture archive:" in output
+    assert "Runtime evidence:" in output
+
+
+def test_deployment_smoke_runtime_evidence_includes_effective_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(deployment_smoke, "_resolve_command", lambda name, *, path: f"/bin/{name}")
+    monkeypatch.setattr(deployment_smoke, "_repo_head", lambda: "abc123def456")
+    secret = "auth-LEAKME"
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        if command == ["polylogue", "config", "--format", "json"]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                json.dumps(
+                    {
+                        "values": {
+                            "api_auth_token": {
+                                "value": "<set>",
+                                "secret": True,
+                                "secret_present": True,
+                                "source_layer": "env",
+                            }
+                        }
+                    }
+                ),
+                "",
+            )
+        return subprocess.CompletedProcess(command, 0, "polylogue, version 0.1.0+abc123d", "")
+
+    monkeypatch.setattr(deployment_smoke, "_run_command", fake_run)
+    monkeypatch.setattr(
+        deployment_smoke,
+        "_run_completion_command",
+        lambda **kwargs: subprocess.CompletedProcess(
+            ["polylogue"],
+            0,
+            {
+                "polylogue find id:abc t": "plain,then\n",
+                "polylogue find id:abc then s": "plain,select\n",
+                "polylogue find id:abc then read --view ": (
+                    "plain,summary\nplain,messages\nplain,raw\nplain,context-pack\n"
+                ),
+                "polylogue find id:abc then read --view messages --format ": "plain,json\nplain,ndjson\nplain,text\n",
+            }[str(kwargs["comp_words"])],
+            "",
+        ),
+    )
+    monkeypatch.setattr(
+        deployment_smoke,
+        "_open_url",
+        lambda url, *, timeout_s: _FakeResponse(200, {"ok": True, "url": url}),
+    )
+
+    report = deployment_smoke.build_report(
+        path="/bin",
+        daemon_base_url="http://daemon",
+        receiver_base_url="http://receiver",
+        archive_root=tmp_path,
+        timeout_s=1,
+    )
+
+    evidence = report.runtime_evidence
+    assert evidence["archive_root"] == str(tmp_path)
+    assert evidence["daemon_base_url"] == "http://daemon"
+    assert evidence["receiver_base_url"] == "http://receiver"
+    config_probe = evidence["effective_config"]
+    assert config_probe["ok"] is True
+    assert config_probe["payload"]["values"]["api_auth_token"]["value"] == "<set>"
+    assert secret not in json.dumps(evidence)
 
 
 def test_deployment_smoke_reports_missing_completion_candidate(

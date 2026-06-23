@@ -86,14 +86,45 @@ same directory tree.
 
 ## Configuration Model
 
-Polylogue has a layered configuration system with four sources (highest precedence first):
+Polylogue has a layered configuration system and a separate archive state
+surface. Keep them apart: startup config tells processes where to bind, where
+to read/write, which provider work is allowed, and how to render output. User
+annotations, saved views, daemon cursors, convergence debt, and one-shot smoke
+results live in SQLite/log state instead.
 
-1. CLI flag overrides
-2. `POLYLOGUE_*` environment variables
-3. `polylogue.toml` (resolved from `$POLYLOGUE_CONFIG`, then `$XDG_CONFIG_HOME/polylogue/polylogue.toml`, then `./polylogue.toml`)
-4. Built-in defaults (full-featured-by-default: watch + browser-capture + HTTP API all on)
+Layer precedence is highest first:
 
-Use `polylogue config` to print the resolved configuration as TOML, or `polylogue config -f json` for a machine-readable form.
+1. CLI flag overrides for that invocation.
+2. `POLYLOGUE_*`, provider credential, and presentation environment variables.
+3. User `polylogue.toml`, resolved from `$POLYLOGUE_CONFIG`, then
+   `$XDG_CONFIG_HOME/polylogue/polylogue.toml`, then `./polylogue.toml`.
+4. Site `polylogue.toml`, resolved from `$POLYLOGUE_SITE_CONFIG` or
+   `/etc/polylogue/polylogue.toml`.
+5. Built-in defaults: local loopback binds, browser capture restricted to
+   extension origins, embeddings off, and no provider spend unless explicitly
+   enabled.
+
+Use `polylogue config` to print the resolved configuration as redacted TOML.
+Use `polylogue config --show-layers` for human provenance. Use
+`polylogue config --format json` for automation; it returns `layers`, `values`,
+and `inventory`. Each value includes its redacted effective value,
+`source_layer`, secret policy, TOML path, env var, owner class, and reload
+behavior.
+
+Secrets are never printed in cleartext. Set secrets show as `<set>` and unset
+or empty secrets show as `<unset>`, while `secret_present` preserves the useful
+diagnostic bit.
+
+State classes:
+
+| Class | Where it lives | Examples | Reload behavior |
+| --- | --- | --- | --- |
+| Static startup config | TOML/env/CLI | archive root, API host/port/token, browser-capture host/port/spool/origins, source roots | Restart `polylogued` after changing. |
+| Deployment policy | TOML/env/Nix/HM/systemd | schema validation mode, remote-bind posture, systemd memory/IO limits | Restart the managed service; policy is outside archive content hashes. |
+| Runtime mutable user state | `user.db` | tags, marks, saved views, workspaces, assertions, authored overlays | Mutated through CLI/API; not TOML and not source content. |
+| Provider/cost controls | TOML/env | `embedding.enabled`, `embedding.max_cost_usd`, `VOYAGE_API_KEY` | Daemon/provider loops must see explicit enablement before spending. |
+| Presentation preferences | TOML/env/CLI | `logging.force_plain`, `ui.theme`, `NO_COLOR`, slow-query notices | Per CLI process or web render; does not change archive meaning. |
+| Disposable ops state | `ops.db`, logs, smoke JSON | health cursors, convergence debt, deployment-smoke evidence, cgroup signals | Rebuildable diagnostics; do not place in source archives. |
 
 ### TOML schema
 
@@ -111,11 +142,14 @@ port = 8766
 # auth_token = "..."   # optional; required for non-loopback API binding
 
 [daemon.browser_capture]
+host = "127.0.0.1"
 port = 8765
 allowed_origins = "127.0.0.1"
+spool_path = "/home/user/.local/share/polylogue/browser-capture"
+# auth_token = "..."   # required for non-loopback receiver binding
 
 [embedding]
-# enabled defaults to true when VOYAGE_API_KEY is set, false otherwise
+# Supplying VOYAGE_API_KEY alone does not enable daemon provider spend.
 enabled = true
 model = "voyage-4"
 dimension = 1024

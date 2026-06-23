@@ -87,8 +87,8 @@ def test_redacted_secrets_show_presence_placeholder(config_with_secrets: Path) -
     assert "<set>" in toml_out
     json_out = _run(["-f", "json"])
     payload = json.loads(json_out)
-    assert payload["voyage_api_key"] == "<set>"
-    assert payload["notification_webhook_secret"] == "<set>"
+    assert payload["values"]["voyage_api_key"]["value"] == "<set>"
+    assert payload["values"]["notification_webhook_secret"]["value"] == "<set>"
 
 
 def test_unset_secret_renders_unset_in_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -101,10 +101,40 @@ def test_unset_secret_renders_unset_in_json(tmp_path: Path, monkeypatch: pytest.
     monkeypatch.setenv("VOYAGE_API_KEY", "")
     payload = json.loads(_run(["-f", "json"]))
     # An unset secret is reported as <unset>, never as null masquerading as a value.
-    assert payload["voyage_api_key"] == "<unset>"
+    assert payload["values"]["voyage_api_key"]["value"] == "<unset>"
 
 
 def test_non_secret_values_are_not_redacted(config_with_secrets: Path) -> None:
     payload = json.loads(_run(["-f", "json"]))
     # Non-secret config keys must still be visible verbatim.
-    assert payload["embedding_enabled"] is True
+    assert payload["values"]["embedding_enabled"]["value"] is True
+
+
+def test_json_effective_config_includes_inventory_and_layer_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = tmp_path / "polylogue.toml"
+    cfg.write_text("[daemon.api]\nport = 9001\n", encoding="utf-8")
+    monkeypatch.setenv("POLYLOGUE_CONFIG", str(cfg))
+    monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", str(tmp_path / "absent-site.toml"))
+    monkeypatch.setenv("POLYLOGUE_API_PORT", "9002")
+    monkeypatch.setenv("POLYLOGUE_API_AUTH_TOKEN", _AUTH_TOKEN)
+
+    payload = json.loads(_run(["-f", "json"]))
+
+    api_port = payload["values"]["api_port"]
+    assert api_port["value"] == 9002
+    assert api_port["source_layer"] == "env"
+    assert api_port["toml_path"] == "daemon.api.port"
+    assert api_port["env_var"] == "POLYLOGUE_API_PORT"
+    assert api_port["owner_class"] == "network-security"
+    assert api_port["reload_behavior"] == "startup-bound"
+
+    api_token = payload["values"]["api_auth_token"]
+    assert api_token["value"] == "<set>"
+    assert api_token["secret"] is True
+    assert api_token["secret_present"] is True
+
+    inventory_by_key = {entry["key"]: entry for entry in payload["inventory"]}
+    assert inventory_by_key["api_port"]["default"] == 8766

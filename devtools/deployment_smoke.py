@@ -239,6 +239,51 @@ def _version_commit(stdout: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _read_optional_text(path: Path) -> str | None:
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return value or None
+
+
+def _resource_limit_signals() -> dict[str, Any]:
+    """Return cheap cgroup resource-limit signals when available."""
+    cgroup_v2 = Path("/sys/fs/cgroup")
+    signals: dict[str, Any] = {"available": cgroup_v2.exists()}
+    for key, filename in (
+        ("cpu_max", "cpu.max"),
+        ("cpu_weight", "cpu.weight"),
+        ("memory_high", "memory.high"),
+        ("memory_max", "memory.max"),
+    ):
+        value = _read_optional_text(cgroup_v2 / filename)
+        if value is not None:
+            signals[key] = value
+    return {"cgroup": signals}
+
+
+def _effective_config_probe(*, path: str, timeout_s: float) -> dict[str, Any]:
+    """Read redacted effective config from the deployed polylogue command."""
+    try:
+        result = _run_command(["polylogue", "config", "--format", "json"], path=path, timeout_s=timeout_s)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "error": type(exc).__name__}
+    if result.returncode != 0:
+        return {
+            "ok": False,
+            "exit_code": result.returncode,
+            "stderr_tail": result.stderr[-1000:],
+        }
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        return {"ok": False, "error": "invalid_json", "detail": str(exc), "stdout_tail": result.stdout[-1000:]}
+    if not isinstance(payload, dict):
+        return {"ok": False, "error": "unexpected_payload_type", "payload_type": type(payload).__name__}
+    return {"ok": True, "payload": payload}
+
+
 def _probe_command(command: list[str], *, path: str, timeout_s: float) -> CommandProbe:
     name = command[0]
     resolved = _resolve_command(name, path=path)
@@ -903,6 +948,7 @@ def _runtime_evidence(
     archive_root: Path,
     commands: list[CommandProbe],
     routes: list[RouteProbe],
+    timeout_s: float,
 ) -> dict[str, Any]:
     command_versions = {
         command.name: {
@@ -940,6 +986,8 @@ def _runtime_evidence(
         "daemon_base_url": daemon_base_url,
         "receiver_base_url": receiver_base_url,
         "archive_root": str(archive_root),
+        "effective_config": _effective_config_probe(path=path, timeout_s=timeout_s),
+        "resource_limits": _resource_limit_signals(),
         "daemon_status": {
             "ok": status_payload.get("ok"),
             "component_state": status_payload.get("component_state"),
@@ -1023,6 +1071,7 @@ def build_report(
         archive_root=archive_root,
         commands=commands,
         routes=routes,
+        timeout_s=timeout_s,
     )
     return DeploymentSmokeReport(
         ok=not failures,
@@ -1057,6 +1106,24 @@ def _print_human(report: DeploymentSmokeReport) -> None:
     print(f"daemon: {report.daemon_base_url}")
     print(f"receiver: {report.receiver_base_url}")
     print(f"status: {'ok' if report.ok else 'failed'}")
+    print("")
+    print("Runtime evidence:")
+    print(f"  archive_root={report.runtime_evidence.get('archive_root')}")
+    print(f"  daemon_api_url={report.runtime_evidence.get('daemon_base_url')}")
+    print(f"  browser_capture_receiver_url={report.runtime_evidence.get('receiver_base_url')}")
+    effective_config = report.runtime_evidence.get("effective_config")
+    if isinstance(effective_config, dict):
+        print(f"  effective_config={'ok' if effective_config.get('ok') else 'unavailable'}")
+    resource_limits = report.runtime_evidence.get("resource_limits")
+    if isinstance(resource_limits, dict):
+        cgroup = resource_limits.get("cgroup")
+        if isinstance(cgroup, dict) and cgroup.get("available"):
+            print(
+                "  cgroup="
+                f"cpu.max:{cgroup.get('cpu_max', '')} "
+                f"memory.high:{cgroup.get('memory_high', '')} "
+                f"memory.max:{cgroup.get('memory_max', '')}"
+            )
     print("")
     print("Commands:")
     for probe in report.commands:
