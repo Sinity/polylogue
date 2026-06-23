@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from polylogue import Polylogue
+from polylogue.core.enums import MaterialOrigin
 from polylogue.insights.archive import ArchiveCoverageInsight, ArchiveCoverageInsightQuery
 from tests.infra.storage_records import SessionBuilder
 
@@ -198,6 +199,45 @@ class TestListArchiveCoverageInsights:
         assert result[0].user_message_count == 2
         assert result[0].assistant_message_count == 2
         assert result[0].message_count == 4
+
+    @pytest.mark.asyncio
+    async def test_provider_user_and_authored_user_counts_can_diverge(self: object, tmp_path: Path) -> None:
+        """Coverage keeps provider-role user counts distinct from authored prompts."""
+        archive = _archive(tmp_path)
+        db_path = archive.archive_root / "index.db"
+
+        (
+            SessionBuilder(db_path, "conv-authored-split")
+            .provider("claude-code")
+            .title("Authored Split")
+            .add_message(
+                "m-runtime",
+                role="user",
+                text="<local-command-stdout>generated output payload</local-command-stdout>",
+                material_origin=MaterialOrigin.RUNTIME_PROTOCOL,
+            )
+            .add_message(
+                "m-authored",
+                role="user",
+                text="Please inspect the archive state",
+                material_origin=MaterialOrigin.HUMAN_AUTHORED,
+            )
+            .add_message(
+                "m-assistant",
+                role="assistant",
+                text="I will inspect it",
+                material_origin=MaterialOrigin.ASSISTANT_AUTHORED,
+            )
+            .save()
+        )
+
+        result = await _coverage(archive)
+
+        assert len(result) == 1
+        assert result[0].user_message_count == 2
+        assert result[0].authored_user_message_count == 1
+        assert result[0].avg_user_words == pytest.approx(4.0)
+        assert result[0].avg_authored_user_words == 5.0
 
     @pytest.mark.asyncio
     async def test_avg_messages_per_session(self: object, tmp_path: Path) -> None:

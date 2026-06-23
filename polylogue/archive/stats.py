@@ -17,6 +17,9 @@ class ArchiveStats:
     total_messages: int
     total_attachments: int = 0
     origins: dict[str, int] = field(default_factory=dict)
+    role_counts: dict[str, int] = field(default_factory=dict)
+    message_types: dict[str, int] = field(default_factory=dict)
+    material_origins: dict[str, int] = field(default_factory=dict)
     embedded_sessions: int = 0
     embedded_messages: int = 0
     pending_embedding_sessions: int = 0
@@ -70,6 +73,9 @@ class ArchiveStats:
             "total_attachments": self.total_attachments,
             "origin_count": self.origin_count,
             "origins": self.origins,
+            "role_counts": self.role_counts,
+            "message_types": self.message_types,
+            "material_origins": self.material_origins,
             "embedded_sessions": self.embedded_sessions,
             "embedded_messages": self.embedded_messages,
             "pending_embedding_sessions": self.pending_embedding_sessions,

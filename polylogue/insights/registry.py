@@ -545,6 +545,10 @@ register(
             InsightField("sessions", _attr("session_count", "0"), group=1),
             InsightField("messages", _attr("message_count", "0"), group=1),
             InsightField("words", _attr("total_words", "0"), group=1),
+            InsightField("provider_user_msgs", _attr("user_message_count", "0"), group=1),
+            InsightField("authored_user_msgs", _attr("authored_user_message_count", "0"), group=1),
+            InsightField("provider_user_avg_words", _attr("avg_user_words", "0"), group=1),
+            InsightField("authored_user_avg_words", _attr("avg_authored_user_words", "0"), group=1),
             InsightField("tool_active_ms", _attr("total_tool_active_duration_ms", "0"), group=1),
         ),
     )
