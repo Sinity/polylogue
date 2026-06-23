@@ -593,6 +593,8 @@ def _browser_capture_probe_native_id(provider: str | None, provider_session_id: 
         parts = provider_session_id.split(":")
         if len(parts) == 3 and parts[1] and "/" not in parts[1]:
             return parts[1]
+        if provider == "chatgpt" and len(parts) == 4 and parts[1] == "WEB" and parts[2]:
+            return f"WEB:{parts[2]}"
     if provider and provider_session_id.startswith(f"{provider}-"):
         import re
 
@@ -601,6 +603,8 @@ def _browser_capture_probe_native_id(provider: str | None, provider_session_id: 
             provider_session_id,
         )
         if match:
+            if provider == "chatgpt" and provider_session_id.startswith("chatgpt-WEB-"):
+                return f"WEB:{match.group(0)}"
             return match.group(0)
     return provider_session_id
 

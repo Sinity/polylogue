@@ -292,8 +292,18 @@ def test_browser_capture_supports_claude_ai_provider() -> None:
         ),
         (
             "chatgpt",
+            "chatgpt:WEB:b04a9756-2c83-40b6-97d2-afd5e283f7fe:bdb32387",
+            "WEB:b04a9756-2c83-40b6-97d2-afd5e283f7fe",
+        ),
+        (
+            "chatgpt",
             "chatgpt-6a232355-ac3c-83eb-a93d-9c70697bfc18-20105879-0",
             "6a232355-ac3c-83eb-a93d-9c70697bfc18",
+        ),
+        (
+            "chatgpt",
+            "chatgpt-WEB-b04a9756-2c83-40b6-97d2-afd5e283f7fe-bdb32387-0",
+            "WEB:b04a9756-2c83-40b6-97d2-afd5e283f7fe",
         ),
     ],
 )
