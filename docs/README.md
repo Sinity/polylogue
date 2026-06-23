@@ -12,7 +12,7 @@ Use this map when you need the complete repository documentation surface. The to
 | [Architecture Spine](architecture-spine.md) | Target shape, guardrails, and major decisions with rejected alternatives. |
 | [Execution Plan](execution-plan.md) | Current issue-driven sequencing plan for the remaining backlog. |
 | [Design Direction](design/README.md) | Historical design inputs and current guidance for using them without treating them as parallel roadmaps. |
-| [Query-Action Workflows](design/query-action-workflows.md) | `find QUERY then ACTION` contract for cardinality, affordances, rendering, completions, and golden paths. |
+| [Query-Action Workflows](product/workflows.md) | Executable `find QUERY then ACTION` product contract for workflows, affordances, completions, and golden paths. |
 | [Data Model](data-model.md) | Archive entities, storage shape, and metadata rules. |
 | [Archive Backup](archive-backup.md) | Archive-tier backup profiles, restore boundaries, and blob-GC safety rules. |
 | [Internals](internals.md) | Working implementation reference and debugging landmarks. |

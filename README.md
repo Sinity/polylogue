@@ -295,7 +295,7 @@ Start with the generated command and architecture references; use [docs/README.m
 | [Architecture Spine](docs/architecture-spine.md) | Target shape, guardrails, and major decisions with rejected alternatives. |
 | [Execution Plan](docs/execution-plan.md) | Current issue-driven sequencing plan for the remaining backlog. |
 | [Design Direction](docs/design/README.md) | Historical design inputs and current guidance for using them without treating them as parallel roadmaps. |
-| [Query-Action Workflows](docs/design/query-action-workflows.md) | `find QUERY then ACTION` contract for cardinality, affordances, rendering, completions, and golden paths. |
+| [Query-Action Workflows](docs/product/workflows.md) | Executable `find QUERY then ACTION` product contract for workflows, affordances, completions, and golden paths. |
 | [CLI Reference](docs/cli-reference.md) | Generated command reference from live help output. |
 | [Search & Query](docs/search.md) | Query grammar, retrieval lanes, ranking policy, and the typed SearchEnvelope contract. |
 | [Browser Capture](docs/browser-capture.md) | Local browser extension capture for ChatGPT and Claude.ai sessions. |

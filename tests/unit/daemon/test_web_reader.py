@@ -1551,6 +1551,20 @@ class TestReaderQueryCompletions:
 
 
 class TestReaderActionAffordances:
+    def test_web_shell_renders_shared_action_affordance_rail(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            status, content_type, body = _get_text(base_url, "/")
+
+        assert status == 200
+        assert "text/html" in content_type
+        assert "function renderActionAffordanceRail" in body
+        assert "Query action affordances" in body
+        assert "state.actionAffordances = data.action_affordances || []" in body
+        assert "action.input && action.input.unit" in body
+        assert "action.execution && action.execution.cardinality_state" in body
+        assert "action.output && action.output.format_support" in body
+        assert "action.safety && action.safety.safety_level" in body
+
     def test_action_affordances_endpoint_exposes_shared_payload(self) -> None:
         with _running_server_without_seed() as (_server, base_url):
             payload = _get_json(base_url, "/api/action-affordances")
@@ -1564,14 +1578,22 @@ class TestReaderActionAffordances:
 
         read = action_by_id["read"]
         assert read["target"] == "selection"
-        assert read["safety_level"] == "safe"
-        assert read["selection_command"] == "polylogue find QUERY then select"
+        assert read["input_unit"] == "query_result_set"
+        assert cast(dict[str, object], read["input"])["unit"] == read["input_unit"]
+        assert cast(dict[str, object], read["execution"])["cardinality_state"] == read["cardinality_state"]
+        assert cast(dict[str, object], read["safety"])["safety_level"] == read["safety_level"] == "safe"
+        assert cast(dict[str, object], read["safety"])["selection_command"] == "polylogue find QUERY then select"
+        assert cast(dict[str, object], read["output"])["destination_support"] == read["destination_support"]
         assert "terminal" in cast(list[object], read["destination_support"])
 
         delete = action_by_id["delete"]
         assert delete["target"] == "selection"
-        assert delete["safety_level"] == "destructive"
-        assert delete["confirmation_command"] == "polylogue find QUERY then delete --dry-run"
+        assert cast(dict[str, object], delete["safety"])["safety_level"] == delete["safety_level"] == "destructive"
+        assert (
+            cast(dict[str, object], delete["safety"])["confirmation_command"]
+            == "polylogue find QUERY then delete --dry-run"
+        )
+        assert cast(dict[str, object], delete["availability"])["next_actions"] == delete["next_actions"]
         assert "find" in cast(list[object], delete["next_actions"])
 
 

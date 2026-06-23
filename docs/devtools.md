@@ -98,6 +98,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools render docs-surface` | Render docs/README.md and the README documentation table. |
 | `devtools render openapi` | Render docs/openapi/search.yaml from typed daemon query payload models. |
 | `devtools render pages` | Build the GitHub Pages documentation site into .cache/site/. |
+| `devtools render product-workflows` | Render docs/product/workflows.md from executable query-action workflow registries. |
 | `devtools render quality-reference` | Render docs/test-quality-workflows.md from live validation, mutation, and benchmark registries. |
 | `devtools render topology-projection` | Generate docs/plans/topology-target.yaml from the current tree using placement rules. |
 | `devtools render topology-status` | Render docs/topology-status.md from the topology projection and realized tree. |

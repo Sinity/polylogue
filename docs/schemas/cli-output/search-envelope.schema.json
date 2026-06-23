@@ -4,6 +4,9 @@
       "additionalProperties": false,
       "description": "Shared static action-affordance contract for public action surfaces.",
       "properties": {
+        "availability": {
+          "$ref": "#/$defs/ActionAvailabilityPayload"
+        },
         "cardinality_state": {
           "enum": [
             "any",
@@ -106,6 +109,9 @@
           "default": null,
           "title": "Estimated Cost"
         },
+        "execution": {
+          "$ref": "#/$defs/ActionExecutionPayload"
+        },
         "format_support": {
           "items": {
             "enum": [
@@ -129,6 +135,9 @@
         "id": {
           "title": "Id",
           "type": "string"
+        },
+        "input": {
+          "$ref": "#/$defs/ActionInputPayload"
         },
         "input_unit": {
           "enum": [
@@ -161,6 +170,9 @@
           "title": "Next Actions",
           "type": "array"
         },
+        "output": {
+          "$ref": "#/$defs/ActionOutputPayload"
+        },
         "path": {
           "items": {
             "type": "string"
@@ -171,6 +183,9 @@
         "requires_daemon": {
           "title": "Requires Daemon",
           "type": "boolean"
+        },
+        "safety": {
+          "$ref": "#/$defs/ActionSafetyPayload"
         },
         "safety_level": {
           "enum": [
@@ -212,6 +227,11 @@
         "path",
         "effect",
         "target",
+        "input",
+        "execution",
+        "output",
+        "safety",
+        "availability",
         "input_unit",
         "cardinality_state",
         "safety_level",
@@ -222,6 +242,228 @@
         "requires_daemon"
       ],
       "title": "ActionAffordancePayload",
+      "type": "object"
+    },
+    "ActionAvailabilityPayload": {
+      "additionalProperties": false,
+      "description": "Availability and next-action posture for an affordance.",
+      "properties": {
+        "disabled_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Disabled Reason"
+        },
+        "estimated_cost": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimated Cost"
+        },
+        "next_actions": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Next Actions",
+          "type": "array"
+        }
+      },
+      "title": "ActionAvailabilityPayload",
+      "type": "object"
+    },
+    "ActionExecutionPayload": {
+      "additionalProperties": false,
+      "description": "Execution constraints for an affordance before the action runs.",
+      "properties": {
+        "cardinality_state": {
+          "enum": [
+            "any",
+            "singleton",
+            "explicit_multi",
+            "destructive_multi"
+          ],
+          "title": "Cardinality State",
+          "type": "string"
+        },
+        "guards": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Guards",
+          "type": "array"
+        },
+        "requires_daemon": {
+          "title": "Requires Daemon",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "cardinality_state",
+        "requires_daemon"
+      ],
+      "title": "ActionExecutionPayload",
+      "type": "object"
+    },
+    "ActionInputPayload": {
+      "additionalProperties": false,
+      "description": "Input side of an action affordance. Keeps selection/query input explicit.",
+      "properties": {
+        "completion_context": {
+          "anyOf": [
+            {
+              "enum": [
+                "config_key",
+                "filesystem_path",
+                "query_expression",
+                "session_id"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completion Context"
+        },
+        "unit": {
+          "enum": [
+            "none",
+            "query_result_set",
+            "session",
+            "path",
+            "config",
+            "runtime"
+          ],
+          "title": "Unit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "unit"
+      ],
+      "title": "ActionInputPayload",
+      "type": "object"
+    },
+    "ActionOutputPayload": {
+      "additionalProperties": false,
+      "description": "Output contract for an affordance.",
+      "properties": {
+        "default_format": {
+          "enum": [
+            "human",
+            "json",
+            "ndjson"
+          ],
+          "title": "Default Format",
+          "type": "string"
+        },
+        "destination_support": {
+          "items": {
+            "enum": [
+              "terminal",
+              "stdout",
+              "browser",
+              "clipboard",
+              "file",
+              "api",
+              "mcp"
+            ],
+            "type": "string"
+          },
+          "title": "Destination Support",
+          "type": "array"
+        },
+        "format_support": {
+          "items": {
+            "enum": [
+              "human",
+              "json",
+              "ndjson"
+            ],
+            "type": "string"
+          },
+          "title": "Format Support",
+          "type": "array"
+        },
+        "machine_envelope": {
+          "enum": [
+            "result_set",
+            "item",
+            "mutation",
+            "error",
+            "stream_item"
+          ],
+          "title": "Machine Envelope",
+          "type": "string"
+        }
+      },
+      "required": [
+        "destination_support",
+        "format_support",
+        "default_format",
+        "machine_envelope"
+      ],
+      "title": "ActionOutputPayload",
+      "type": "object"
+    },
+    "ActionSafetyPayload": {
+      "additionalProperties": false,
+      "description": "Safety and confirmation posture for an affordance.",
+      "properties": {
+        "confirmation_command": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confirmation Command"
+        },
+        "safety_level": {
+          "enum": [
+            "safe",
+            "mutating",
+            "destructive",
+            "operational"
+          ],
+          "title": "Safety Level",
+          "type": "string"
+        },
+        "selection_command": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Selection Command"
+        }
+      },
+      "required": [
+        "safety_level"
+      ],
+      "title": "ActionSafetyPayload",
       "type": "object"
     },
     "QueryMissDiagnosticsPayload": {

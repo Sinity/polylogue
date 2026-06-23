@@ -162,6 +162,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.render_quality_reference",
     ),
     CommandSpec(
+        "render product-workflows",
+        "generated surfaces",
+        "Render docs/product/workflows.md from executable query-action workflow registries.",
+        "devtools.render_product_workflows",
+        use_when=(
+            "Refresh or verify the product query-action workflow contract after changing action contracts, "
+            "read-view surfaces, completion behavior, or workflow golden paths (#2305)."
+        ),
+        examples=(
+            "devtools render product-workflows",
+            "devtools render product-workflows --check",
+        ),
+    ),
+    CommandSpec(
         "render pages",
         "generated surfaces",
         "Build the GitHub Pages documentation site into .cache/site/.",

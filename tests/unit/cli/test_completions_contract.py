@@ -160,12 +160,18 @@ class TestActionAffordanceMetadata:
         by_id = {item["id"]: item for item in actions}
         assert {"find", "read", "select", "continue", "analyze", "mark", "delete"}.issubset(by_id)
         read = by_id["read"]
-        assert read["cardinality_state"] == "explicit_multi"
-        assert read["selection_command"] == "polylogue find QUERY then select"
+        assert read["input"]["unit"] == read["input_unit"] == "query_result_set"
+        assert read["execution"]["cardinality_state"] == read["cardinality_state"] == "explicit_multi"
+        assert read["safety"]["selection_command"] == read["selection_command"] == "polylogue find QUERY then select"
+        assert read["output"]["destination_support"] == read["destination_support"]
         assert "browser" in read["destination_support"]
         delete = by_id["delete"]
-        assert delete["safety_level"] == "destructive"
-        assert delete["confirmation_command"] == "polylogue find QUERY then delete --dry-run"
+        assert delete["safety"]["safety_level"] == delete["safety_level"] == "destructive"
+        assert (
+            delete["safety"]["confirmation_command"]
+            == delete["confirmation_command"]
+            == "polylogue find QUERY then delete --dry-run"
+        )
 
     @pytest.mark.parametrize("args", (["--json"], ["--format", "json"]))
     def test_action_affordances_accepts_common_json_flags(self, runner: CliRunner, args: list[str]) -> None:

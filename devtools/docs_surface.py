@@ -77,8 +77,8 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     ),
     DocsEntry(
         "Query-Action Workflows",
-        "docs/design/query-action-workflows.md",
-        "`find QUERY then ACTION` contract for cardinality, affordances, rendering, completions, and golden paths.",
+        "docs/product/workflows.md",
+        "Executable `find QUERY then ACTION` product contract for workflows, affordances, completions, and golden paths.",
     ),
     DocsEntry("Internals", "docs/internals.md", "Working implementation reference and debugging landmarks."),
     DocsEntry("MCP Integration", "docs/mcp-integration.md", "Model Context Protocol server setup and usage."),

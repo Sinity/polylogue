@@ -13,6 +13,7 @@ from devtools import (
     render_docs_surface,
     render_openapi,
     render_pages,
+    render_product_workflows,
     render_quality_reference,
     render_topology_status,
 )
@@ -146,6 +147,20 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
             "polylogue/operations/specs.py",
             "polylogue/scenarios/",
             "pyproject.toml",
+        ),
+    ),
+    GeneratedSurface(
+        name="product-workflows",
+        label="Product workflows",
+        description="Render docs/product/workflows.md from query-action workflow registries (#2305).",
+        command=control_plane_argv("render product-workflows"),
+        main=render_product_workflows.main,
+        inputs=(
+            "devtools/render_product_workflows.py",
+            "polylogue/product/workflows.py",
+            "polylogue/operations/action_contracts.py",
+            "polylogue/surfaces/action_affordances.py",
+            "polylogue/archive/viewport/profiles.py",
         ),
     ),
     GeneratedSurface(

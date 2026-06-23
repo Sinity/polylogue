@@ -487,6 +487,120 @@ def test_query_action_completion_marks_destructive_actions_per_shell(
 
 
 @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+def test_query_action_read_view_completion_per_shell(
+    shell: str,
+    comp_cls: type[ShellComplete],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After ``find QUERY then read --view``, completion stays on read-view profiles."""
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    items = _run_completion(shell, comp_cls, ["find", "id:abc", "then", "read", "--view"])
+    item_map = dict(items)
+
+    assert {"messages", "recovery", "context-pack"}.issubset(item_map)
+    assert item_map["messages"] is not None and "Messages:" in item_map["messages"]
+
+
+@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+def test_query_action_read_destination_completion_per_shell(
+    shell: str,
+    comp_cls: type[ShellComplete],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After ``find QUERY then read``, --to completion exposes supported destinations."""
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    items = dict(_run_completion(shell, comp_cls, ["find", "id:abc", "then", "read", "--to"]))
+
+    assert {"terminal", "stdout", "browser", "clipboard", "file"}.issubset(items)
+
+
+@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+def test_query_action_read_format_completion_uses_selected_view_per_shell(
+    shell: str,
+    comp_cls: type[ShellComplete],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After ``find QUERY then read``, --format completion still narrows by view."""
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    items = _run_completion(shell, comp_cls, ["find", "id:abc", "then", "read", "--view", "raw", "--format"])
+
+    assert dict(items) == {"json": "Supported by read --view raw"}
+
+
+@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+def test_query_action_mutating_guard_completion_per_shell(
+    shell: str,
+    comp_cls: type[ShellComplete],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mutating/destructive action completions expose guards after ``then``."""
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    mark_items = dict(_run_completion_for_partial(shell, comp_cls, ["find", "id:abc", "then", "mark"], "--"))
+    delete_items = dict(_run_completion_for_partial(shell, comp_cls, ["find", "id:abc", "then", "delete"], "--"))
+
+    assert {"--tag-add", "--all", "--first"}.issubset(mark_items)
+    assert {"--dry-run", "--yes", "--all"}.issubset(delete_items)
+
+
+@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+def test_query_action_mark_candidates_completion_per_shell(
+    shell: str,
+    comp_cls: type[ShellComplete],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``mark candidates`` subcommands complete inside the query-action grammar."""
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    items = dict(_run_completion(shell, comp_cls, ["find", "id:abc", "then", "mark", "candidates"]))
+
+    assert {"list", "accept", "reject", "defer", "supersede"}.issubset(items)
+
+
+@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+def test_query_action_continue_candidates_completion_per_shell(
+    shell: str,
+    comp_cls: type[ShellComplete],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``continue --candidates`` options complete after ``find QUERY then`` routing."""
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    items = dict(
+        _run_completion_for_partial(shell, comp_cls, ["find", "id:abc", "then", "continue", "--candidates"], "--")
+    )
+
+    assert {"--repo", "--cwd", "--recent", "--limit", "--format"}.issubset(items)
+
+
+@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
 def test_read_format_completion_uses_selected_view_per_shell(
     shell: str,
     comp_cls: type[ShellComplete],
