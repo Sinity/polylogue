@@ -112,6 +112,35 @@ _FACET_COMPLETE_FAMILIES = (
     "has_flags",
 )
 
+_NOISY_REPO_LABELS = {
+    "",
+    ".agent",
+    ".cache",
+    ".claude",
+    ".config",
+    ".git",
+    ".local",
+    "archive",
+    "archives",
+    "browser-capture",
+    "captures",
+    "chatlog",
+    "codex",
+    "data",
+    "download",
+    "downloads",
+    "exports",
+    "home",
+    "inbox",
+    "logs",
+    "misc",
+    "raw",
+    "sessions",
+    "source",
+    "tmp",
+    "var",
+}
+
 
 class SessionNotFoundError(PolylogueError):
     """Raised when a requested session does not exist in the archive."""
@@ -335,6 +364,7 @@ def _archive_facet_buckets(archive: Any, spec: SessionQuerySpec | None) -> Any:
         message_types=sql_buckets["message_types"],
         action_types=sql_buckets["action_types"],
         has_flags=sql_buckets["has_flags"],
+        omitted=sql_buckets["omitted"],
         total_sessions=len(summaries),
         total_messages=total_messages,
     )
@@ -350,6 +380,7 @@ def _archive_aggregate_facet_families(
         "message_types": {},
         "action_types": {},
         "has_flags": {},
+        "omitted": {},
     }
     if session_ids is not None and not session_ids:
         return result
@@ -367,25 +398,31 @@ def _archive_aggregate_facet_families(
     def keyed(rows: list[Any]) -> dict[str, int]:
         return {str(row[0]): int(row[1] or 0) for row in rows if row[0]}
 
-    result["repos"] = keyed(
-        scoped_rows(
-            """
-            SELECT COALESCE(NULLIF(r.repo_name, ''), NULLIF(r.root_path, ''), NULLIF(r.origin_url, '')) AS key,
-                   COUNT(DISTINCT sr.session_id) AS n
-            FROM session_repos sr
-            JOIN repos r ON r.repo_id = sr.repo_id
-            WHERE sr.session_id IN ({})
-            GROUP BY key
-            """,
-            """
-            SELECT COALESCE(NULLIF(r.repo_name, ''), NULLIF(r.root_path, ''), NULLIF(r.origin_url, '')) AS key,
-                   COUNT(DISTINCT sr.session_id) AS n
-            FROM session_repos sr
-            JOIN repos r ON r.repo_id = sr.repo_id
-            GROUP BY key
-            """,
-        )
+    repo_rows = scoped_rows(
+        """
+        SELECT sr.session_id, r.repo_name, r.root_path, r.origin_url
+        FROM session_repos sr
+        JOIN repos r ON r.repo_id = sr.repo_id
+        WHERE sr.session_id IN ({})
+        """,
+        """
+        SELECT sr.session_id, r.repo_name, r.root_path, r.origin_url
+        FROM session_repos sr
+        JOIN repos r ON r.repo_id = sr.repo_id
+        """,
     )
+    repo_sessions: dict[str, set[str]] = {}
+    omitted_repo_sessions: set[str] = set()
+    for row in repo_rows:
+        session_id = str(row[0])
+        label = _canonical_repo_facet_label(repo_name=row[1], root_path=row[2], origin_url=row[3])
+        if label is None:
+            omitted_repo_sessions.add(session_id)
+            continue
+        repo_sessions.setdefault(label, set()).add(session_id)
+    result["repos"] = {label: len(sessions) for label, sessions in repo_sessions.items()}
+    if omitted_repo_sessions:
+        result["omitted"]["repos"] = len(omitted_repo_sessions)
     result["message_types"] = keyed(
         scoped_rows(
             "SELECT message_type, COUNT(*) AS n FROM messages WHERE session_id IN ({}) GROUP BY message_type",
@@ -415,6 +452,52 @@ def _archive_aggregate_facet_families(
         "has_paste": sum(int(row[2] or 0) for row in flag_rows),
     }
     return result
+
+
+def _canonical_repo_facet_label(*, repo_name: object, root_path: object, origin_url: object) -> str | None:
+    """Return a product-level repo facet label or ``None`` for path noise."""
+
+    repo = _clean_repo_label(repo_name)
+    if repo and not _is_noisy_repo_label(repo):
+        return repo
+    url_label = _repo_label_from_url(origin_url)
+    if url_label and not _is_noisy_repo_label(url_label):
+        return url_label
+    root = _clean_repo_label(root_path)
+    if root is None:
+        return None
+    basename = root.rstrip("/").rsplit("/", maxsplit=1)[-1]
+    if _is_noisy_repo_label(basename):
+        return None
+    if "/" not in root:
+        return basename
+    if root.endswith(f"/{basename}") and (root.endswith("/project/" + basename) or root.endswith("/repo/" + basename)):
+        return basename
+    return None
+
+
+def _clean_repo_label(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _repo_label_from_url(value: object) -> str | None:
+    cleaned = _clean_repo_label(value)
+    if cleaned is None:
+        return None
+    label = cleaned.rstrip("/").rsplit("/", maxsplit=1)[-1]
+    if label.endswith(".git"):
+        label = label[:-4]
+    return label or None
+
+
+def _is_noisy_repo_label(value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in _NOISY_REPO_LABELS:
+        return True
+    return normalized.isdigit()
 
 
 def _archive_health_report(config: Config) -> ReadinessReport:
@@ -2918,6 +3001,7 @@ class PolylogueArchiveMixin:
                 message_types=dict(b.message_types),
                 action_types=dict(b.action_types),
                 has_flags=dict(b.has_flags),
+                omitted=dict(b.omitted),
                 total_sessions=b.total_sessions,
                 total_messages=b.total_messages,
             )
@@ -2947,6 +3031,7 @@ class PolylogueArchiveMixin:
                 "message_types": dict(active.message_types),
                 "action_types": dict(active.action_types),
                 "has_flags": dict(active.has_flags),
+                "omitted_facet_counts": dict(active.omitted),
                 "total_sessions": active.total_sessions,
                 "total_messages": active.total_messages,
                 "scoped": _payload(scoped_buckets),

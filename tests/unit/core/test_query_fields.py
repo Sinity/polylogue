@@ -201,6 +201,7 @@ def test_query_field_catalog_marks_completion_sources() -> None:
         "action",
         "action_sequence",
         "cwd_prefix",
+        "material_origin",
         "message_type",
         "origin",
         "repo",

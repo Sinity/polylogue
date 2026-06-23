@@ -2210,6 +2210,7 @@ class FacetBucketsPayload(SurfacePayloadModel):
     material_origins: dict[str, int] = Field(default_factory=dict)
     action_types: dict[str, int] = Field(default_factory=dict)
     has_flags: dict[str, int] = Field(default_factory=dict)
+    omitted: dict[str, int] = Field(default_factory=dict)
     total_sessions: int = 0
     total_messages: int = 0
 
@@ -2261,6 +2262,7 @@ class FacetsResponse(SurfacePayloadModel):
     material_origins: dict[str, int] = Field(default_factory=dict)
     action_types: dict[str, int] = Field(default_factory=dict)
     has_flags: dict[str, int] = Field(default_factory=dict)
+    omitted_facet_counts: dict[str, int] = Field(default_factory=dict)
     time_range: FacetTimeRange | None = None
     total_sessions: int = 0
     total_messages: int = 0

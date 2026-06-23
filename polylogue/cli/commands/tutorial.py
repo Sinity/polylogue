@@ -1,11 +1,12 @@
-"""Interactive first-run walkthrough — ``polylogue tutorial``.
+"""First-run setup checklist — ``polylogue tutorial``.
 
-The tutorial is an idempotent five-stage onboarding flow. Re-running picks
+The tutorial is an idempotent setup checklist. Re-running picks
 up where the previous run left off: each stage probes the archive/config
 state and either marks itself ``[skip]`` (already satisfied) or guides the
 operator through the next action. ``--non-interactive`` suppresses prompts
 and prints the diagnostic block once — used by tests and as a "what would
-this do" preview.
+this do" preview. Reader launch is intentionally not part of this command:
+``polylogue dashboard`` owns the TUI launch contract.
 """
 
 from __future__ import annotations
@@ -116,11 +117,6 @@ def _count_searchable_sessions(conn: Any) -> int:
     return 0
 
 
-def _stage_open_reader() -> tuple[bool, str]:
-    """Final stage — nothing to verify, just a pointer."""
-    return False, "Reader has not been launched in this session."
-
-
 STAGES: tuple[TutorialStage, ...] = (
     TutorialStage(
         number=1,
@@ -145,12 +141,6 @@ STAGES: tuple[TutorialStage, ...] = (
         title="Your first search",
         probe=_stage_first_search,
         action_text="Try: polylogue 'hello'",
-    ),
-    TutorialStage(
-        number=5,
-        title="Open reader",
-        probe=_stage_open_reader,
-        action_text="Run `polylogue dashboard` to open the local reader.",
     ),
 )
 
@@ -178,7 +168,7 @@ def _daemon_http_alive() -> bool:
 )
 @click.pass_obj
 def tutorial_command(env: AppEnv, non_interactive: bool) -> None:
-    """Walk through a fresh polylogue install end-to-end.
+    """Inspect first-run setup state and print the next concrete action.
 
     Each stage is idempotent — already-satisfied stages are marked
     ``[skip]``. Use ``--non-interactive`` to print the current state
@@ -187,10 +177,13 @@ def tutorial_command(env: AppEnv, non_interactive: bool) -> None:
     console = env.ui.console
     total = len(STAGES)
     console.print("\n[bold]polylogue tutorial[/bold]")
-    console.print("  Five stages will walk you through a working install.\n")
+    console.print("  Setup checklist for a searchable local archive.\n")
 
+    satisfied_count = 0
     for stage in STAGES:
         satisfied, message = stage.probe()
+        if satisfied:
+            satisfied_count += 1
         prefix = "[green]✓[/green]" if satisfied else "[yellow]·[/yellow]"
         label = "[skip]" if satisfied else "[do  ]"
         console.print(f"  {prefix} Step {stage.number}/{total} {label} {stage.title}")
@@ -210,7 +203,13 @@ def tutorial_command(env: AppEnv, non_interactive: bool) -> None:
             except (click.exceptions.Abort, EOFError, KeyboardInterrupt):
                 console.print("\n  [dim]Tutorial paused. Re-run `polylogue tutorial` to resume.[/dim]")
                 sys.exit(0)
-    console.print("\n[green]Done.[/green] See `polylogue --help` for more.")
+    if satisfied_count == total:
+        console.print("\n[green]Ready.[/green] Try `polylogue find QUERY then read` or `polylogue dashboard`.")
+    else:
+        console.print(
+            f"\n[yellow]Checklist incomplete.[/yellow] {satisfied_count}/{total} stages are ready; "
+            "run the listed action(s), then re-run `polylogue tutorial`."
+        )
 
 
 __all__ = ["TutorialStage", "STAGES", "tutorial_command"]

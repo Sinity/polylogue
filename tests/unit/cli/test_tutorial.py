@@ -37,8 +37,9 @@ def _set_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 
 
 def test_stage_count() -> None:
-    assert len(STAGES) == 5
-    assert tuple(s.number for s in STAGES) == (1, 2, 3, 4, 5)
+    assert len(STAGES) == 4
+    assert tuple(s.number for s in STAGES) == (1, 2, 3, 4)
+    assert "Open reader" not in {stage.title for stage in STAGES}
 
 
 def test_non_interactive_runs_to_completion(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -55,6 +56,8 @@ def test_non_interactive_runs_to_completion(monkeypatch: pytest.MonkeyPatch, tmp
     # Every stage title appears.
     for stage in STAGES:
         assert stage.title in combined
+    assert "Checklist incomplete" in combined
+    assert "Done" not in combined
 
 
 def test_stage_detect_sources_no_dirs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

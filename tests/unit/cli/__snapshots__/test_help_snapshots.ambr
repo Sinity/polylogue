@@ -13,6 +13,12 @@
         `polylogue --diagnose <args>` to have the parser explain how it
         routed your invocation.
   
+    Product roles:
+        Setup/demo/proof:  config, init, import, demo, tutorial
+        Reader/TUI:        dashboard
+        Operations:        polylogue ops status, ops diagnostics, ops maintenance, ops backup
+        Query actions:     find QUERY then read|select|mark|analyze|delete|continue
+  
     Query mode (default):
         polylogue find "search terms"
         polylogue --origin claude-ai-export --since "last week" find "search terms"
@@ -137,6 +143,10 @@
     --message-role TEXT             Show only selected message roles (repeatable
                                     or comma-separated: user, assistant, system,
                                     tool, unknown)
+    --material-origin TEXT          Show only selected material origins
+                                    (repeatable or comma-separated:
+                                    human_authored, runtime_protocol, tool_result,
+                                    unknown)
     --set TEXT...                   Set metadata key value
     --add-tag TEXT                  Add tags (comma-separated)
     --plain                         Force non-interactive plain output
@@ -153,7 +163,7 @@
     analyze
     config     Show resolved Polylogue configuration with precedence sources.
     continue   Compile a successor-agent continuation report.
-    dashboard  Open the local dashboard.
+    dashboard  Launch the terminal dashboard TUI.
     delete     Delete matched sessions.
     demo       Seed and verify the deterministic demo archive.
     import     Import sessions from configured sources.
@@ -162,7 +172,7 @@
     ops        Run operational archive and daemon commands.
     read       Read matched sessions (route to view/destination).
     select
-    tutorial   Interactive first-run walk-through.
+    tutorial   Inspect first-run setup state.
   
   '''
 # ---
