@@ -112,6 +112,7 @@ def record_attempt_progress(
         cgroup_memory_anon_mb=cgroup_stat_mb.get("anon"),
         cgroup_memory_file_mb=cgroup_stat_mb.get("file"),
         cgroup_memory_inactive_file_mb=cgroup_stat_mb.get("inactive_file"),
+        stage_payload=stage_payload,
         stage_timings_json=None
         if not stage_timings_s
         else json_dumps(stage_timings_s, sort_keys=True, separators=(",", ":")),
