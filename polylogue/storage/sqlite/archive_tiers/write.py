@@ -331,6 +331,7 @@ def write_parsed_session_to_archive(
             messages,
             session.session_events,
             position_offset=position_offset,
+            event_position_offset=_next_session_event_position(conn, session_id),
             duplicate_native_ids=duplicate_message_native_ids,
         )
         _write_working_dirs(conn, session_id, session.working_directories)
@@ -1659,6 +1660,23 @@ def _root_ids(conn: sqlite3.Connection, session_ids: set[str]) -> set[str]:
     return root_ids
 
 
+def _next_session_event_position(conn: sqlite3.Connection, session_id: str) -> int:
+    row = conn.execute(
+        """
+        SELECT MAX(position) + 1
+        FROM (
+            SELECT position FROM session_events WHERE session_id = ?
+            UNION ALL
+            SELECT position FROM session_agent_policies WHERE session_id = ?
+            UNION ALL
+            SELECT position FROM session_provider_usage_events WHERE session_id = ?
+        )
+        """,
+        (session_id, session_id, session_id),
+    ).fetchone()
+    return int(row[0] or 0) if row is not None else 0
+
+
 def _write_session_events(
     conn: sqlite3.Connection,
     session_id: str,
@@ -1666,6 +1684,7 @@ def _write_session_events(
     events: Iterable[ParsedSessionEvent],
     *,
     position_offset: int = 0,
+    event_position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> None:
     by_native_id = {
@@ -1679,7 +1698,7 @@ def _write_session_events(
         for fallback_position, message in enumerate(messages)
         if message.provider_message_id and message.provider_message_id not in duplicate_native_ids
     }
-    position = 0
+    position = event_position_offset
     for event in events:
         if event.event_type == "compaction":
             conn.execute(
@@ -1817,7 +1836,10 @@ def _aggregate_provider_usage_into_model_usage(conn: sqlite3.Connection, session
             output_tokens      = excluded.output_tokens,
             cache_read_tokens  = excluded.cache_read_tokens,
             cache_write_tokens = excluded.cache_write_tokens,
-            cost_provenance    = excluded.cost_provenance
+            cost_provenance    = excluded.cost_provenance,
+            cost_usd           = NULL,
+            priced_with        = NULL,
+            priced_at_ms       = NULL
         """,
         (
             session_id,

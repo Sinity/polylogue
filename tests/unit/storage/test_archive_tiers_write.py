@@ -954,6 +954,132 @@ def test_provider_usage_events_repair_single_model_usage_rollup(tmp_path: Path) 
     }
 
 
+def test_provider_usage_events_append_preserves_prior_history(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    first = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-usage-append",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                model_name="gpt-5-codex",
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="first answer")],
+            )
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                source_message_provider_id="m1",
+                payload={
+                    "type": "token_count",
+                    "total_token_usage": {"input_tokens": 10, "output_tokens": 5},
+                },
+            )
+        ],
+    )
+    second = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-usage-append",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m2",
+                role=Role.ASSISTANT,
+                model_name="gpt-5-codex",
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="second answer")],
+            )
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                source_message_provider_id="m2",
+                payload={
+                    "type": "token_count",
+                    "total_token_usage": {"input_tokens": 30, "output_tokens": 15},
+                },
+            )
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, first)
+    write_parsed_session_to_archive(conn, second, merge_append=True)
+
+    rows = conn.execute(
+        """
+        SELECT usage_event_id, source_message_id, position, total_input_tokens, total_output_tokens
+        FROM session_provider_usage_events
+        WHERE session_id = ?
+        ORDER BY position
+        """,
+        (session_id,),
+    ).fetchall()
+    assert [dict(row) for row in rows] == [
+        {
+            "usage_event_id": f"{session_id}:usage:0",
+            "source_message_id": f"{session_id}:m1",
+            "position": 0,
+            "total_input_tokens": 10,
+            "total_output_tokens": 5,
+        },
+        {
+            "usage_event_id": f"{session_id}:usage:1",
+            "source_message_id": f"{session_id}:m2",
+            "position": 1,
+            "total_input_tokens": 30,
+            "total_output_tokens": 15,
+        },
+    ]
+
+
+def test_provider_usage_rollup_clears_stale_message_pricing(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-usage-priced-repair",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                model_name="gpt-4o",
+                input_tokens=10,
+                output_tokens=5,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="priced answer")],
+            )
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-4o",
+                    "total_token_usage": {"input_tokens": 1_000, "output_tokens": 500},
+                },
+            )
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, session)
+
+    row = conn.execute(
+        """
+        SELECT model_name, input_tokens, output_tokens, cost_provenance,
+               cost_usd, priced_with, priced_at_ms
+        FROM session_model_usage
+        WHERE session_id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+    assert dict(row) == {
+        "model_name": "gpt-4o",
+        "input_tokens": 1_000,
+        "output_tokens": 500,
+        "cost_provenance": "origin_reported",
+        "cost_usd": None,
+        "priced_with": None,
+        "priced_at_ms": None,
+    }
+
+
 def test_archive_tiers_writer_records_unresolved_parent_session_link(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     session = ParsedSession(
