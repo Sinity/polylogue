@@ -20,8 +20,10 @@ agent behavior.
 
 Open an issue before starting work that is non-trivial, spans multiple
 PRs, or introduces architectural decisions. The issue defines scope and
-acceptance criteria. Reference it from the PR with `Ref #NNN` or
-`Closes #NNN`.
+acceptance criteria. Reference it from the PR with neutral wording such
+as `Ref #NNN`. Do not use GitHub resolver keywords in agent-authored PR
+bodies or comments unless the user explicitly asks for that exact PR to
+change that exact issue's GitHub state.
 
 ### Verification before push
 
@@ -297,12 +299,13 @@ Pull requests should:
 - use a conventional title like `feat: add X` or `fix(cli): correct Y`
 - treat that title as the final squash-merge commit subject on `master`
 - explain the problem, solution, verification, and any remaining risk or follow-up
-- link a related issue with `Ref #NNN` or `Closes #NNN` when one exists
+- link a related issue with neutral wording such as `Ref #NNN` when one exists
 - record the verification commands that were actually run
 - update docs, config, and governance when behavior or workflow changes
 
-Use `Ref #NNN` when the issue should stay open after merge, and `Closes #NNN`
-when the merge should close it.
+Use `Ref #NNN` by default. Do not use GitHub resolver keywords in PR bodies
+or comments unless the operator explicitly asks for that exact PR to change
+that exact issue's GitHub state.
 
 ## Documentation Site Previews
 
