@@ -923,6 +923,18 @@ def _diagnose(
     if browser_capture_receiver_archive_state.error == "receiver_archive_state_absolute_artifact_path":
         likely_causes.append("deployed browser-capture receiver archive-state DTO leaks absolute artifact paths")
         next_actions.append("restart a deployed receiver built from the current relative artifact-ref contract")
+    elif browser_capture_receiver_archive_state.error in {
+        "receiver_archive_state_missing_lifecycle",
+        "receiver_archive_state_captured_without_archived_state",
+        "receiver_archive_state_not_archived",
+        "receiver_archive_state_missing_raw_row_evidence",
+        "receiver_archive_state_missing_index_evidence",
+        "receiver_archive_state_missing_index_messages",
+    }:
+        likely_causes.append("deployed browser-capture receiver archive-state DTO does not prove query visibility")
+        next_actions.append(
+            "restart a receiver built from the lifecycle archive-state contract and verify source/index rows for the latest capture"
+        )
     if repo_head is not None and deployed_commit is not None and not repo_head.startswith(deployed_commit):
         likely_causes.append("systemwide polylogue commit differs from the current checkout")
         next_actions.append("compare the deployed package input with the checkout before trusting live UI probes")
