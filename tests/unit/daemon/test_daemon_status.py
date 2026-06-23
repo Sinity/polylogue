@@ -105,6 +105,7 @@ def test_status_snapshot_uses_runtime_browser_capture_state(
     configure_runtime_components(
         api_enabled=True,
         watcher_enabled=True,
+        watcher_roots=("/watch/a", "/watch/b"),
         browser_capture_enabled=True,
         browser_capture_spool_path=spool,
     )
@@ -112,6 +113,7 @@ def test_status_snapshot_uses_runtime_browser_capture_state(
     snapshot = refresh_status_snapshot()
 
     assert snapshot.payload["browser_capture_active"] is True
+    assert snapshot.payload["watcher_roots"] == ["/watch/a", "/watch/b"]
     component_state = snapshot.payload["component_state"]
     assert isinstance(component_state, dict)
     assert component_state["browser_capture"] == "running"
@@ -123,6 +125,18 @@ def test_status_snapshot_uses_runtime_browser_capture_state(
     browser_readiness = readiness["browser_capture"]
     assert isinstance(browser_readiness, dict)
     assert browser_readiness["state"] == "ready"
+
+
+def test_status_snapshot_reports_disk_free_for_archive_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = tmp_path / "missing-archive" / "index.db"
+    monkeypatch.setattr("polylogue.daemon.status_snapshot.active_index_db_path", lambda: db)
+
+    snapshot = refresh_status_snapshot()
+
+    assert int(snapshot.payload["disk_free_bytes"]) > 0
 
 
 def test_status_snapshot_marks_disabled_browser_capture_inactive(

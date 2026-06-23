@@ -712,6 +712,7 @@ async def run_daemon_services(
     configure_runtime_components(
         api_enabled=enable_api,
         watcher_enabled=enable_watch,
+        watcher_roots=tuple(str(source.root) for source in sources),
         browser_capture_enabled=enable_browser_capture,
         browser_capture_spool_path=browser_capture_spool_path,
     )
