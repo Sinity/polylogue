@@ -577,12 +577,26 @@ def _probe_browser_capture_receiver_archive_state(
             payload = decoded if isinstance(decoded, dict) else {"value": decoded}
             error = None
             artifact_path = payload.get("artifact_path")
+            lifecycle_state = payload.get("state") or payload.get("lifecycle")
+            indexed_message_count = payload.get("indexed_message_count")
             if isinstance(artifact_path, str) and Path(artifact_path).is_absolute():
                 error = "receiver_archive_state_absolute_artifact_path"
             elif payload.get("artifact_ref") is None:
                 error = "receiver_archive_state_missing_artifact_ref"
+            elif not isinstance(lifecycle_state, str):
+                error = "receiver_archive_state_missing_lifecycle"
+            elif payload.get("captured") is True and lifecycle_state != "archived":
+                error = "receiver_archive_state_captured_without_archived_state"
+            elif lifecycle_state != "archived":
+                error = "receiver_archive_state_not_archived"
             elif payload.get("captured") is not True:
                 error = "receiver_archive_state_not_captured"
+            elif payload.get("raw_row_exists") is not True:
+                error = "receiver_archive_state_missing_raw_row_evidence"
+            elif payload.get("indexed_session_exists") is not True:
+                error = "receiver_archive_state_missing_index_evidence"
+            elif not isinstance(indexed_message_count, int) or indexed_message_count <= 0:
+                error = "receiver_archive_state_missing_index_messages"
             return BrowserCaptureReceiverArchiveStateProbe(
                 url=url,
                 provider=provider,

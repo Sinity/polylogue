@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -13,11 +14,13 @@ import orjson
 
 from polylogue.browser_capture.models import (
     BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD,
+    BrowserCaptureArchiveLifecycle,
     BrowserCaptureArchiveStatePayload,
     BrowserCaptureEnvelope,
     BrowserCaptureReceiverStatusPayload,
 )
 from polylogue.core.hashing import hash_text_short
+from polylogue.paths import archive_root as default_archive_root
 from polylogue.paths import browser_capture_spool_root
 
 _SAFE_TOKEN = re.compile(r"[^A-Za-z0-9._-]+")
@@ -28,6 +31,7 @@ class BrowserCaptureReceiverConfig:
     """Configuration for the localhost browser-capture receiver."""
 
     spool_path: Path
+    archive_root: Path | None = None
     allowed_origins: frozenset[str] = frozenset({BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD})
     allow_remote: bool = False
     auth_token: str | None = None
@@ -62,6 +66,21 @@ class BrowserCaptureWriteResult:
     replaced: bool
 
 
+@dataclass(frozen=True, slots=True)
+class _RawArchiveLookup:
+    raw_row_exists: bool = False
+    raw_id: str | None = None
+    latest_failure: str | None = None
+    failure_source: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _IndexArchiveLookup:
+    indexed_session_exists: bool = False
+    indexed_session_id: str | None = None
+    indexed_message_count: int | None = None
+
+
 def _is_extension_origin_pattern(origin: str) -> bool:
     return origin == BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD or origin.startswith("chrome-extension://")
 
@@ -93,6 +112,181 @@ def capture_response_id(provider: str, provider_session_id: str, capture_id: str
     while value.startswith(f"{prefix}{prefix}"):
         value = value[len(prefix) :]
     return value if value.startswith(prefix) else f"{prefix}{value}"
+
+
+def _open_readonly_sqlite(path: Path) -> sqlite3.Connection | None:
+    if not path.exists():
+        return None
+    uri = f"file:{path.as_posix()}?mode=ro"
+    try:
+        conn = sqlite3.connect(uri, uri=True)
+    except sqlite3.Error:
+        return None
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name=? LIMIT 1",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    return {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
+
+
+def _origin_candidates_for_provider(provider: str) -> tuple[str, ...]:
+    canonical = {
+        "chatgpt": ("chatgpt", "chatgpt-export"),
+        "openai": ("openai", "chatgpt-export"),
+        "claude": ("claude", "claude-ai-export"),
+        "claude-ai": ("claude-ai", "claude-ai-export"),
+        "claude-code": ("claude-code", "claude-code-session"),
+        "codex": ("codex", "codex-session"),
+        "aistudio": ("aistudio", "aistudio-drive"),
+        "gemini": ("gemini", "aistudio-drive"),
+    }
+    values = (provider, *canonical.get(provider, ()))
+    return tuple(dict.fromkeys(value for value in values if value))
+
+
+def _lookup_raw_archive_state(
+    archive_root: Path,
+    *,
+    provider: str,
+    provider_session_id: str,
+    artifact_ref: str,
+) -> _RawArchiveLookup:
+    conn = _open_readonly_sqlite(archive_root / "source.db")
+    if conn is None:
+        return _RawArchiveLookup()
+    try:
+        if not _table_exists(conn, "raw_sessions"):
+            return _RawArchiveLookup()
+        columns = _columns(conn, "raw_sessions")
+        select = ["raw_id"] if "raw_id" in columns else []
+        for optional in ("parse_error", "validation_error", "validation_status"):
+            if optional in columns:
+                select.append(optional)
+        if not select:
+            return _RawArchiveLookup(raw_row_exists=True)
+        where: list[str] = []
+        params: list[object] = []
+        if "native_id" in columns:
+            where.append("native_id = ?")
+            params.append(provider_session_id)
+        if "origin" in columns and "native_id" in columns:
+            origins = _origin_candidates_for_provider(provider)
+            placeholders = ",".join("?" for _ in origins)
+            where[-1] = f"(native_id = ? AND origin IN ({placeholders}))"
+            params.extend(origins)
+        if "source_path" in columns:
+            where.append("source_path LIKE ? ESCAPE '\\'")
+            params.append(f"%{_escape_like_suffix(artifact_ref)}")
+        if not where:
+            return _RawArchiveLookup()
+        row = conn.execute(
+            f"SELECT {', '.join(select)} FROM raw_sessions WHERE {' OR '.join(where)} ORDER BY rowid DESC LIMIT 1",
+            tuple(params),
+        ).fetchone()
+        if row is None:
+            return _RawArchiveLookup()
+        row_keys = set(row.keys())
+        latest_failure: str | None = None
+        failure_source: str | None = None
+        parse_error = row["parse_error"] if "parse_error" in row_keys else None
+        validation_error = row["validation_error"] if "validation_error" in row_keys else None
+        validation_status = (
+            str(row["validation_status"]) if "validation_status" in row_keys and row["validation_status"] else None
+        )
+        if isinstance(parse_error, str) and parse_error:
+            latest_failure = parse_error
+            failure_source = "raw_parse"
+        elif isinstance(validation_error, str) and validation_error:
+            latest_failure = validation_error
+            failure_source = "raw_validation"
+        elif validation_status is not None and validation_status not in {"passed", "valid", "ok"}:
+            latest_failure = validation_status
+            failure_source = "raw_validation"
+        return _RawArchiveLookup(
+            raw_row_exists=True,
+            raw_id=str(row["raw_id"]) if "raw_id" in row_keys and row["raw_id"] is not None else None,
+            latest_failure=latest_failure,
+            failure_source=failure_source,
+        )
+    except sqlite3.Error:
+        return _RawArchiveLookup()
+    finally:
+        conn.close()
+
+
+def _lookup_index_archive_state(
+    archive_root: Path,
+    *,
+    raw_id: str | None,
+    provider: str,
+    provider_session_id: str,
+) -> _IndexArchiveLookup:
+    conn = _open_readonly_sqlite(archive_root / "index.db")
+    if conn is None:
+        return _IndexArchiveLookup()
+    try:
+        if not _table_exists(conn, "sessions"):
+            return _IndexArchiveLookup()
+        columns = _columns(conn, "sessions")
+        select = ["session_id"] if "session_id" in columns else []
+        if "message_count" in columns:
+            select.append("message_count")
+        if not select:
+            return _IndexArchiveLookup(indexed_session_exists=True)
+        where: list[str] = []
+        params: list[object] = []
+        if raw_id and "raw_id" in columns:
+            where.append("raw_id = ?")
+            params.append(raw_id)
+        if "native_id" in columns:
+            if "origin" in columns:
+                origins = _origin_candidates_for_provider(provider)
+                placeholders = ",".join("?" for _ in origins)
+                where.append(f"(native_id = ? AND origin IN ({placeholders}))")
+                params.extend((provider_session_id, *origins))
+            else:
+                where.append("native_id = ?")
+                params.append(provider_session_id)
+        if not where:
+            return _IndexArchiveLookup()
+        row = conn.execute(
+            f"SELECT {', '.join(select)} FROM sessions WHERE {' OR '.join(where)} ORDER BY rowid DESC LIMIT 1",
+            tuple(params),
+        ).fetchone()
+        if row is None:
+            return _IndexArchiveLookup()
+        row_keys = set(row.keys())
+        session_id = str(row["session_id"]) if "session_id" in row_keys and row["session_id"] is not None else None
+        message_count: int | None
+        if "message_count" in row_keys and row["message_count"] is not None:
+            message_count = int(row["message_count"])
+        elif session_id is not None and _table_exists(conn, "messages"):
+            count_row = conn.execute("SELECT COUNT(*) FROM messages WHERE session_id=?", (session_id,)).fetchone()
+            message_count = int(count_row[0] or 0) if count_row is not None else 0
+        else:
+            message_count = None
+        return _IndexArchiveLookup(
+            indexed_session_exists=True,
+            indexed_session_id=session_id,
+            indexed_message_count=message_count,
+        )
+    except (sqlite3.Error, ValueError):
+        return _IndexArchiveLookup()
+    finally:
+        conn.close()
+
+
+def _escape_like_suffix(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def write_capture_envelope(
@@ -139,6 +333,7 @@ def existing_capture_state(
     provider_session_id: str,
     *,
     spool_path: Path | None = None,
+    archive_root: Path | None = None,
 ) -> dict[str, object]:
     """Return the local capture state visible to the browser extension."""
     envelope = BrowserCaptureEnvelope.model_validate(
@@ -156,11 +351,14 @@ def existing_capture_state(
         }
     )
     path = capture_artifact_path(envelope, spool_path)
+    artifact_ref = capture_artifact_ref(envelope, spool_path)
     capture_id: str | None = None
     updated_at: str | None = None
     artifact_readable: bool | None = None
-    captured = path.exists()
-    if captured:
+    spooled = path.exists()
+    latest_failure: str | None = None
+    failure_source: str | None = None
+    if spooled:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
             raw_capture_id = payload.get("capture_id")
@@ -169,18 +367,53 @@ def existing_capture_state(
             updated_at = raw_updated_at if isinstance(raw_updated_at, str) else None
         except (OSError, json.JSONDecodeError, AttributeError):
             artifact_readable = False
-    lifecycle = "not_captured"
-    if captured:
-        lifecycle = "spooled_unreadable" if artifact_readable is False else "archived"
+            latest_failure = "spool_unreadable"
+            failure_source = "spool"
+    root = archive_root if archive_root is not None else default_archive_root()
+    raw = _lookup_raw_archive_state(
+        root,
+        provider=envelope.provider.value,
+        provider_session_id=envelope.provider_session_id,
+        artifact_ref=artifact_ref,
+    )
+    index = _lookup_index_archive_state(
+        root,
+        raw_id=raw.raw_id,
+        provider=envelope.provider.value,
+        provider_session_id=envelope.provider_session_id,
+    )
+    latest_failure = latest_failure or raw.latest_failure
+    failure_source = failure_source or raw.failure_source
+    lifecycle: BrowserCaptureArchiveLifecycle
+    if latest_failure is not None:
+        lifecycle = "failed"
+    elif raw.raw_row_exists and index.indexed_session_exists and (index.indexed_message_count or 0) > 0:
+        lifecycle = "archived"
+    elif raw.raw_row_exists:
+        lifecycle = "ingest_pending"
+    elif spooled:
+        lifecycle = "spooled_only"
+    else:
+        lifecycle = "missing"
+    captured = lifecycle == "archived"
     return BrowserCaptureArchiveStatePayload(
         provider=envelope.provider.value,
         provider_session_id=envelope.provider_session_id,
+        state=lifecycle,
         lifecycle=lifecycle,
         captured=captured,
-        artifact_ref=capture_artifact_ref(envelope, spool_path),
+        spooled=spooled,
+        artifact_ref=artifact_ref,
         capture_id=capture_response_id(envelope.provider.value, envelope.provider_session_id, capture_id),
         updated_at=updated_at,
         artifact_readable=artifact_readable,
+        raw_row_exists=raw.raw_row_exists,
+        raw_id=raw.raw_id,
+        indexed_session_exists=index.indexed_session_exists,
+        indexed_session_id=index.indexed_session_id,
+        indexed_message_count=index.indexed_message_count,
+        latest_failure=latest_failure,
+        failure_source=failure_source,
     ).model_dump(mode="json", exclude_none=True)
 
 

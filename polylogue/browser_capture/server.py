@@ -196,7 +196,12 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(
                 HTTPStatus.OK,
-                existing_capture_state(provider, session_id, spool_path=self.server.config.spool_path),
+                existing_capture_state(
+                    provider,
+                    session_id,
+                    spool_path=self.server.config.spool_path,
+                    archive_root=self.server.config.archive_root,
+                ),
             )
             return
         self._safe_error(HTTPStatus.NOT_FOUND, "not_found")
@@ -263,6 +268,7 @@ def make_server(
     port: int,
     *,
     spool_path: Path | None = None,
+    archive_root: Path | None = None,
     allow_remote: bool = False,
     auth_token: str | None = None,
     extra_origins: tuple[str, ...] = (),
@@ -275,6 +281,7 @@ def make_server(
     allowed_origins = cfg.allowed_origins | set(extra_origins)
     config = BrowserCaptureReceiverConfig(
         spool_path=spool_path or cfg.spool_path,
+        archive_root=archive_root,
         allowed_origins=frozenset(allowed_origins),
         allow_remote=allow_remote,
         auth_token=auth_token,

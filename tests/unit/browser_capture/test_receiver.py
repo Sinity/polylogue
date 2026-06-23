@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from http import HTTPStatus
@@ -59,6 +60,7 @@ def _payload(provider: str = "chatgpt", session_id: str = "conv-123") -> dict[st
 def _running_receiver(
     tmp_path: Path,
     *,
+    archive_root: Path | None = None,
     auth_token: str | None = None,
     extra_origins: tuple[str, ...] = (),
 ) -> Iterator[tuple[str, int]]:
@@ -66,6 +68,7 @@ def _running_receiver(
         "127.0.0.1",
         0,
         spool_path=tmp_path,
+        archive_root=archive_root,
         auth_token=auth_token,
         extra_origins=extra_origins,
     )
@@ -78,6 +81,53 @@ def _running_receiver(
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def _seed_browser_capture_archive(
+    archive_root: Path,
+    *,
+    native_id: str = "conv-123",
+    raw_id: str = "raw-capture",
+    message_count: int = 1,
+    parse_error: str | None = None,
+) -> None:
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """
+            CREATE TABLE raw_sessions (
+                raw_id TEXT,
+                origin TEXT,
+                native_id TEXT,
+                source_path TEXT,
+                parse_error TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (raw_id, origin, native_id, source_path, parse_error)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (raw_id, "chatgpt-export", native_id, f"browser-capture/chatgpt/{native_id}.json", parse_error),
+        )
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        conn.execute(
+            """
+            CREATE TABLE sessions (
+                session_id TEXT,
+                raw_id TEXT,
+                native_id TEXT,
+                message_count INTEGER
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO sessions (session_id, raw_id, native_id, message_count)
+            VALUES (?, ?, ?, ?)
+            """,
+            (f"chatgpt-export:{native_id}", raw_id, native_id, message_count),
+        )
 
 
 def _request(
@@ -128,11 +178,13 @@ def test_existing_capture_state_reports_written_artifact(tmp_path: Path) -> None
     envelope = BrowserCaptureEnvelope.model_validate(_payload())
     write_capture_envelope(envelope, spool_path=tmp_path)
 
-    state = existing_capture_state("chatgpt", "conv-123", spool_path=tmp_path)
+    state = existing_capture_state("chatgpt", "conv-123", spool_path=tmp_path, archive_root=tmp_path)
     typed = BrowserCaptureArchiveStatePayload.model_validate(state)
 
-    assert typed.captured is True
-    assert typed.lifecycle == "archived"
+    assert typed.captured is False
+    assert typed.spooled is True
+    assert typed.state == "spooled_only"
+    assert typed.lifecycle == "spooled_only"
     assert typed.provider == "chatgpt"
     assert typed.artifact_ref == capture_artifact_ref(envelope, tmp_path)
     assert Path(typed.artifact_ref).is_absolute() is False
@@ -227,7 +279,80 @@ def test_receiver_does_not_double_prefix_prefixed_capture_id(tmp_path: Path) -> 
 
     assert accepted.capture_id == "chatgpt:conv-123"
     assert state.capture_id == "chatgpt:conv-123"
+    assert state.state == "spooled_only"
+    assert state.lifecycle == "spooled_only"
+    assert state.captured is False
+    assert state.spooled is True
+
+
+def test_receiver_archive_state_reports_missing_without_spool_or_archive(tmp_path: Path) -> None:
+    state = BrowserCaptureArchiveStatePayload.model_validate(
+        existing_capture_state("chatgpt", "conv-123", spool_path=tmp_path, archive_root=tmp_path)
+    )
+
+    assert state.state == "missing"
+    assert state.lifecycle == "missing"
+    assert state.captured is False
+    assert state.spooled is False
+    assert state.raw_row_exists is False
+    assert state.indexed_session_exists is False
+    assert Path(state.artifact_ref).is_absolute() is False
+
+
+def test_receiver_archive_state_requires_indexed_messages(tmp_path: Path) -> None:
+    envelope = BrowserCaptureEnvelope.model_validate(_payload())
+    write_capture_envelope(envelope, spool_path=tmp_path)
+    _seed_browser_capture_archive(tmp_path, message_count=0)
+
+    state = BrowserCaptureArchiveStatePayload.model_validate(
+        existing_capture_state("chatgpt", "conv-123", spool_path=tmp_path, archive_root=tmp_path)
+    )
+
+    assert state.state == "ingest_pending"
+    assert state.captured is False
+    assert state.spooled is True
+    assert state.raw_row_exists is True
+    assert state.raw_id == "raw-capture"
+    assert state.indexed_session_exists is True
+    assert state.indexed_message_count == 0
+
+
+def test_receiver_archive_state_reports_archived_only_with_raw_index_and_messages(tmp_path: Path) -> None:
+    envelope = BrowserCaptureEnvelope.model_validate(_payload())
+    write_capture_envelope(envelope, spool_path=tmp_path)
+    _seed_browser_capture_archive(tmp_path)
+
+    with _running_receiver(tmp_path, archive_root=tmp_path) as (host, port):
+        response = _request(
+            host,
+            port,
+            "GET",
+            "/v1/archive-state?provider=chatgpt&provider_session_id=conv-123",
+            origin=_EXTENSION_ORIGIN,
+        )
+        state = BrowserCaptureArchiveStatePayload.model_validate(json.loads(response.read()))
+
+    assert state.state == "archived"
     assert state.lifecycle == "archived"
+    assert state.captured is True
+    assert state.raw_row_exists is True
+    assert state.indexed_session_exists is True
+    assert state.indexed_message_count == 1
+
+
+def test_receiver_archive_state_surfaces_raw_failure(tmp_path: Path) -> None:
+    envelope = BrowserCaptureEnvelope.model_validate(_payload())
+    write_capture_envelope(envelope, spool_path=tmp_path)
+    _seed_browser_capture_archive(tmp_path, parse_error="bad payload")
+
+    state = BrowserCaptureArchiveStatePayload.model_validate(
+        existing_capture_state("chatgpt", "conv-123", spool_path=tmp_path, archive_root=tmp_path)
+    )
+
+    assert state.state == "failed"
+    assert state.captured is False
+    assert state.latest_failure == "bad payload"
+    assert state.failure_source == "raw_parse"
 
 
 def test_receiver_echoes_safe_request_id_header(tmp_path: Path) -> None:

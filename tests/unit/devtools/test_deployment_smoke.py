@@ -736,8 +736,15 @@ def test_deployment_smoke_accepts_current_receiver_archive_state_contract(
             {
                 "provider": "chatgpt",
                 "provider_session_id": "capture-ok",
+                "state": "archived",
+                "lifecycle": "archived",
                 "captured": True,
                 "artifact_ref": "chatgpt/capture-ok.json",
+                "raw_row_exists": True,
+                "raw_id": "raw-capture",
+                "indexed_session_exists": True,
+                "indexed_session_id": "chatgpt-export:capture-ok",
+                "indexed_message_count": 1,
             },
         )
 
@@ -781,6 +788,7 @@ def test_deployment_smoke_reports_receiver_archive_state_absolute_artifact_path(
             {
                 "provider": "chatgpt",
                 "provider_session_id": "capture-stale",
+                "state": "archived",
                 "captured": True,
                 "artifact_path": str(capture),
             },
@@ -795,3 +803,88 @@ def test_deployment_smoke_reports_receiver_archive_state_absolute_artifact_path(
 
     assert probe.ok is False
     assert probe.error == "receiver_archive_state_absolute_artifact_path"
+
+
+def test_deployment_smoke_rejects_receiver_archive_state_without_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    capture = _write_spooled_capture(tmp_path, provider_session_id="capture-no-state")
+    archive_probe = deployment_smoke.BrowserCaptureArchiveProbe(
+        spool_path=str(tmp_path / "browser-capture"),
+        source_db_path=str(tmp_path / "source.db"),
+        spooled_count=1,
+        latest_spooled_path=str(capture),
+        latest_spooled_mtime=capture.stat().st_mtime,
+        latest_spooled_mtime_ms=int(capture.stat().st_mtime * 1000),
+        raw_rows=1,
+        latest_raw_file_mtime_ms=int(capture.stat().st_mtime * 1000),
+        ok=True,
+    )
+
+    monkeypatch.setattr(
+        deployment_smoke,
+        "_open_receiver_url",
+        lambda url, *, timeout_s: _FakeResponse(
+            200,
+            {
+                "provider": "chatgpt",
+                "provider_session_id": "capture-no-state",
+                "captured": True,
+                "artifact_ref": "chatgpt/capture-no-state.json",
+            },
+        ),
+    )
+
+    probe = deployment_smoke._probe_browser_capture_receiver_archive_state(
+        receiver_base_url="http://receiver",
+        browser_capture_archive=archive_probe,
+        timeout_s=1,
+    )
+
+    assert probe.ok is False
+    assert probe.error == "receiver_archive_state_missing_lifecycle"
+
+
+def test_deployment_smoke_rejects_receiver_archive_state_without_index_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    capture = _write_spooled_capture(tmp_path, provider_session_id="capture-no-index")
+    archive_probe = deployment_smoke.BrowserCaptureArchiveProbe(
+        spool_path=str(tmp_path / "browser-capture"),
+        source_db_path=str(tmp_path / "source.db"),
+        spooled_count=1,
+        latest_spooled_path=str(capture),
+        latest_spooled_mtime=capture.stat().st_mtime,
+        latest_spooled_mtime_ms=int(capture.stat().st_mtime * 1000),
+        raw_rows=1,
+        latest_raw_file_mtime_ms=int(capture.stat().st_mtime * 1000),
+        ok=True,
+    )
+
+    monkeypatch.setattr(
+        deployment_smoke,
+        "_open_receiver_url",
+        lambda url, *, timeout_s: _FakeResponse(
+            200,
+            {
+                "provider": "chatgpt",
+                "provider_session_id": "capture-no-index",
+                "state": "archived",
+                "captured": True,
+                "artifact_ref": "chatgpt/capture-no-index.json",
+                "raw_row_exists": True,
+                "indexed_session_exists": False,
+            },
+        ),
+    )
+
+    probe = deployment_smoke._probe_browser_capture_receiver_archive_state(
+        receiver_base_url="http://receiver",
+        browser_capture_archive=archive_probe,
+        timeout_s=1,
+    )
+
+    assert probe.ok is False
+    assert probe.error == "receiver_archive_state_missing_index_evidence"
