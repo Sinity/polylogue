@@ -28,6 +28,7 @@ from polylogue.logging import get_logger
 from polylogue.sources.live.batch import LiveBatchEventEmitter, LiveBatchProcessor, fingerprint_file
 from polylogue.sources.live.batch_support import tail_hash_and_last_complete_newline_from_path, tail_hash_from_path
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
+from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics
 
 if TYPE_CHECKING:
@@ -37,6 +38,7 @@ logger = get_logger(__name__)
 _PARSER_FINGERPRINT = "live-batched-v2"
 _CATCH_UP_MAX_BATCH_FILES = 50
 _CATCH_UP_MAX_BATCH_BYTES = 64 * 1024 * 1024
+_INCOMPLETE_APPEND_PROBE_BYTES = 64 * 1024 * 1024
 INBOX_SOURCE_SUFFIXES = (".jsonl", ".zip", ".json", ".ndjson")
 
 
@@ -477,7 +479,7 @@ class LiveWatcher:
                 return False
             return current_tail_hash != cursor.tail_hash
         if size > cursor.byte_offset:
-            return True
+            return not self._defer_incomplete_jsonl_append(path, stat=stat, cursor=cursor)
         if cursor.content_fingerprint is None:
             return True
         try:
@@ -485,6 +487,43 @@ class LiveWatcher:
         except FileNotFoundError:
             return False
         return not (size == cursor.byte_size and fingerprint == cursor.content_fingerprint)
+
+    def _defer_incomplete_jsonl_append(
+        self,
+        path: Path,
+        *,
+        stat: os.stat_result,
+        cursor: CursorRecord,
+    ) -> bool:
+        """Record a grown-but-incomplete JSONL tail without scheduling ingest."""
+        if path.suffix.lower() not in {".jsonl", ".ndjson"}:
+            return False
+        if cursor.content_fingerprint is None:
+            return False
+        if cursor.st_dev is not None and cursor.st_dev != stat.st_dev:
+            return False
+        if cursor.st_ino is not None and cursor.st_ino != stat.st_ino:
+            return False
+        start_offset = max(cursor.byte_offset, 0)
+        if stat.st_size <= start_offset:
+            return False
+        bytes_to_probe = min(stat.st_size - start_offset, _INCOMPLETE_APPEND_PROBE_BYTES)
+        try:
+            with path.open("rb") as handle:
+                handle.seek(start_offset)
+                payload = handle.read(bytes_to_probe)
+        except FileNotFoundError:
+            return True
+        if b"\n" in payload:
+            return False
+        record_deferred_append_cursor(
+            self._cursor,
+            path,
+            cursor=cursor,
+            parser_fingerprint=_PARSER_FINGERPRINT,
+            source_name=self._source_name_for(path),
+        )
+        return True
 
     def _reconcile_archived_cursor(self, path: Path, *, stat: os.stat_result) -> bool:
         """Restore a missing/stale cursor from proven archive raw state.

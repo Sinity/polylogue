@@ -1532,6 +1532,43 @@ def test_partial_trailing_line_keeps_cursor_at_last_newline(tmp_path: Path) -> N
     assert record.last_complete_newline == len(complete)
 
 
+def test_incomplete_append_event_defers_without_ingest_until_newline(tmp_path: Path) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    f = root / "session.jsonl"
+    complete = b'{"a":1}\n'
+    partial = b'{"b":'
+    f.write_bytes(complete)
+    watcher, parse_sources = _make_watcher(tmp_path, root)
+    stat = f.stat()
+    watcher._cursor.set(
+        f,
+        len(complete),
+        byte_offset=len(complete),
+        last_complete_newline=len(complete),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint="base",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+
+    f.write_bytes(complete + partial)
+    asyncio.run(_ingest_one(watcher, f))
+    asyncio.run(_ingest_one(watcher, f))
+
+    record = watcher._cursor.get_record(f)
+    assert parse_sources.await_count == 0
+    assert record is not None
+    assert record.byte_size == len(complete + partial)
+    assert record.byte_offset == len(complete)
+
+    f.write_bytes(complete + b'{"b":2}\n')
+    asyncio.run(_ingest_one(watcher, f))
+
+    assert parse_sources.await_count == 1
+
+
 def test_append_after_partial_line_reingests_completed_record(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
