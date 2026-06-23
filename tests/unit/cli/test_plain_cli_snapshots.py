@@ -188,6 +188,27 @@ def test_analyze_facets_no_idf_omits_idf(runner: CliRunner, seeded_db_env: Path)
     assert not payload.get("idf")  # no IDF weights when --no-idf is set
 
 
+def test_analyze_facets_include_deferred_materializes_expensive_families(
+    runner: CliRunner,
+    seeded_db_env: Path,
+) -> None:
+    """`--include-deferred` opts into the full facet families."""
+    import json as _json
+
+    result = runner.invoke(
+        cli,
+        ["--plain", "analyze", "--facets", "--include-deferred", "--format", "json"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    payload = _json.loads(result.output)
+
+    assert payload["deferred_families"] == {}
+    assert {"repos", "message_types", "action_types", "has_flags"}.issubset(set(payload["complete_families"]))
+    assert payload["family_status"]["message_types"]["state"] == "complete"
+    assert payload["message_types"] == {"message": 10}
+
+
 def test_json_status_snapshot(
     runner: CliRunner,
     seeded_db_env: Path,

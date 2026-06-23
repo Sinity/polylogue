@@ -1119,6 +1119,12 @@ def _emit_candidate_judgment(
     help="With --facets, skip inverse-document-frequency weighting",
 )
 @click.option(
+    "--include-deferred",
+    is_flag=True,
+    default=False,
+    help="With --facets, compute expensive families that are deferred by default.",
+)
+@click.option(
     "--format",
     "-f",
     "output_format",
@@ -1137,6 +1143,7 @@ def analyze_verb(
     plan_name: str | None = None,
     method: str = "linear",
     no_idf: bool = False,
+    include_deferred: bool = False,
     output_format: str | None = None,
     limit: int | None = None,
 ) -> None:
@@ -1166,6 +1173,7 @@ def analyze_verb(
                 plan_name is not None,
                 method != "linear",
                 no_idf,
+                include_deferred,
                 output_format is not None,
                 limit is not None,
             )
@@ -1192,6 +1200,7 @@ def analyze_verb(
         count=count_only,
         by=stats_by,
         facets=show_facets,
+        include_deferred=include_deferred,
         cost_outlook=cost_outlook,
         format=output_format or request.params.get("output_format") or "default",
         limit=limit,
@@ -1225,7 +1234,9 @@ def analyze_verb(
             raise click.UsageError("`analyze --facets` only supports terminal text or --format json")
         # Delegate to the Polylogue facets API using the request's query spec.
         spec = request.query_spec()
-        response = run_coroutine_sync(env.polylogue.facets(spec, include_idf=not no_idf))
+        response = run_coroutine_sync(
+            env.polylogue.facets(spec, include_idf=not no_idf, include_deferred=include_deferred)
+        )
         if output_format == "json":
             click.echo(_json.dumps(response.model_dump(mode="json", by_alias=True), indent=2))
             return
@@ -1246,6 +1257,10 @@ def analyze_verb(
                 click.echo(f"    [{family}]")
                 for value, weight in sorted(values.items(), key=lambda kv: -kv[1]):
                     click.echo(f"      {value}: {weight:.3f}")
+        if response.deferred_families:
+            click.echo("  Deferred families:")
+            for family, reason in sorted(response.deferred_families.items()):
+                click.echo(f"    {family}: {reason} (use --include-deferred)")
         return
 
     if cost_outlook:

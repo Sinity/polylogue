@@ -102,15 +102,20 @@ if TYPE_CHECKING:
     )
 
 
-_FACET_COMPLETE_FAMILIES = (
+_FACET_CORE_FAMILIES = (
     "total_counts",
     "origins",
     "tags",
+)
+
+_FACET_DEFERRED_FAMILIES = (
     "repos",
     "message_types",
     "action_types",
     "has_flags",
 )
+
+_FACET_COMPLETE_FAMILIES = _FACET_CORE_FAMILIES + _FACET_DEFERRED_FAMILIES
 
 _NOISY_REPO_LABELS = {
     "",
@@ -336,7 +341,12 @@ def _archive_count_sessions_for_spec(archive: Any, spec: SessionQuerySpec) -> in
     return int(archive.count_sessions(**query_kwargs))
 
 
-def _archive_facet_buckets(archive: Any, spec: SessionQuerySpec | None) -> Any:
+def _archive_facet_buckets(
+    archive: Any,
+    spec: SessionQuerySpec | None,
+    *,
+    include_deferred: bool = True,
+) -> Any:
     from polylogue.archive.query.facets import FacetBuckets
 
     if spec is None:
@@ -347,15 +357,29 @@ def _archive_facet_buckets(archive: Any, spec: SessionQuerySpec | None) -> Any:
     tags: dict[str, int] = {}
     total_messages = 0
     session_ids: list[str] = []
+    seen_session_ids: set[str] = set()
     for summary in summaries:
+        if summary.session_id in seen_session_ids:
+            continue
+        seen_session_ids.add(summary.session_id)
         session_ids.append(summary.session_id)
         total_messages += summary.message_count
         origins[summary.origin] = origins.get(summary.origin, 0) + 1
         for tag in set(summary.tags):
             tags[tag] = tags.get(tag, 0) + 1
-    sql_buckets = _archive_aggregate_facet_families(
-        archive._conn,
-        session_ids=session_ids if spec is not None else None,
+    sql_buckets = (
+        _archive_aggregate_facet_families(
+            archive._conn,
+            session_ids=session_ids if spec is not None else None,
+        )
+        if include_deferred
+        else {
+            "repos": {},
+            "message_types": {},
+            "action_types": {},
+            "has_flags": {},
+            "omitted": {},
+        }
     )
     return FacetBuckets(
         providers=origins,
@@ -365,7 +389,7 @@ def _archive_facet_buckets(archive: Any, spec: SessionQuerySpec | None) -> Any:
         action_types=sql_buckets["action_types"],
         has_flags=sql_buckets["has_flags"],
         omitted=sql_buckets["omitted"],
-        total_sessions=len(summaries),
+        total_sessions=len(session_ids),
         total_messages=total_messages,
     )
 
@@ -2972,6 +2996,7 @@ class PolylogueArchiveMixin:
         spec: SessionQuerySpec | None = None,
         *,
         include_idf: bool = True,
+        include_deferred: bool = True,
     ) -> FacetsResponse:
         """Compute scoped + global facet aggregates over the archive.
 
@@ -3010,10 +3035,16 @@ class PolylogueArchiveMixin:
 
         scoped_to_query = spec is not None and spec.has_filters()
         with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            global_buckets = _archive_facet_buckets(archive, None)
-            scoped_buckets = _archive_facet_buckets(archive, spec) if scoped_to_query else global_buckets
+            global_buckets = _archive_facet_buckets(archive, None, include_deferred=include_deferred)
+            scoped_buckets = (
+                _archive_facet_buckets(archive, spec, include_deferred=include_deferred)
+                if scoped_to_query
+                else global_buckets
+            )
         idf_map = compute_idf(global_buckets) if include_idf else {}
         active = scoped_buckets if scoped_to_query else global_buckets
+        complete_families = _FACET_COMPLETE_FAMILIES if include_deferred else _FACET_CORE_FAMILIES
+        deferred_families = {} if include_deferred else dict.fromkeys(_FACET_DEFERRED_FAMILIES, "deferred_by_default")
         return FacetsResponse.model_validate(
             {
                 "scoped_to_query": scoped_to_query,
@@ -3021,10 +3052,16 @@ class PolylogueArchiveMixin:
                 "stale": False,
                 "stale_age_s": None,
                 "budget_exceeded": False,
-                "complete_families": _FACET_COMPLETE_FAMILIES,
-                "deferred_families": {},
+                "complete_families": complete_families,
+                "deferred_families": deferred_families,
                 "family_errors": {},
-                "family_status": {family: {"state": "complete", "stale": False} for family in _FACET_COMPLETE_FAMILIES},
+                "family_status": {
+                    **{family: {"state": "complete", "stale": False} for family in complete_families},
+                    **{
+                        family: {"state": "deferred", "reason": reason, "stale": False}
+                        for family, reason in deferred_families.items()
+                    },
+                },
                 "origins": dict(active.providers),
                 "tags": dict(active.tags),
                 "repos": dict(active.repos),

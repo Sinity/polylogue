@@ -58,13 +58,14 @@
     "complete_families": [
       "total_counts",
       "origins",
-      "tags",
-      "repos",
-      "message_types",
-      "action_types",
-      "has_flags"
+      "tags"
     ],
-    "deferred_families": {},
+    "deferred_families": {
+      "repos": "deferred_by_default",
+      "message_types": "deferred_by_default",
+      "action_types": "deferred_by_default",
+      "has_flags": "deferred_by_default"
+    },
     "family_errors": {},
     "family_status": {
       "total_counts": {
@@ -89,29 +90,29 @@
         "stale_age_s": null
       },
       "repos": {
-        "state": "complete",
-        "reason": null,
+        "state": "deferred",
+        "reason": "deferred_by_default",
         "error": null,
         "stale": false,
         "stale_age_s": null
       },
       "message_types": {
-        "state": "complete",
-        "reason": null,
+        "state": "deferred",
+        "reason": "deferred_by_default",
         "error": null,
         "stale": false,
         "stale_age_s": null
       },
       "action_types": {
-        "state": "complete",
-        "reason": null,
+        "state": "deferred",
+        "reason": "deferred_by_default",
         "error": null,
         "stale": false,
         "stale_age_s": null
       },
       "has_flags": {
-        "state": "complete",
-        "reason": null,
+        "state": "deferred",
+        "reason": "deferred_by_default",
         "error": null,
         "stale": false,
         "stale_age_s": null
@@ -124,16 +125,10 @@
     "repos": {},
     "cwd_prefixes": {},
     "role_counts": {},
-    "message_types": {
-      "message": 10
-    },
+    "message_types": {},
     "material_origins": {},
     "action_types": {},
-    "has_flags": {
-      "has_tool_use": 0,
-      "has_thinking": 0,
-      "has_paste": 0
-    },
+    "has_flags": {},
     "omitted_facet_counts": {},
     "time_range": null,
     "total_sessions": 2,
@@ -145,16 +140,10 @@
       "tags": {},
       "repos": {},
       "role_counts": {},
-      "message_types": {
-        "message": 10
-      },
+      "message_types": {},
       "material_origins": {},
       "action_types": {},
-      "has_flags": {
-        "has_tool_use": 0,
-        "has_thinking": 0,
-        "has_paste": 0
-      },
+      "has_flags": {},
       "omitted": {},
       "total_sessions": 2,
       "total_messages": 10
@@ -166,16 +155,10 @@
       "tags": {},
       "repos": {},
       "role_counts": {},
-      "message_types": {
-        "message": 10
-      },
+      "message_types": {},
       "material_origins": {},
       "action_types": {},
-      "has_flags": {
-        "has_tool_use": 0,
-        "has_thinking": 0,
-        "has_paste": 0
-      },
+      "has_flags": {},
       "omitted": {},
       "total_sessions": 2,
       "total_messages": 10
@@ -183,9 +166,6 @@
     "idf": {
       "origins": {
         "chatgpt-export": 0.0
-      },
-      "message_types": {
-        "message": -1.<HASH>
       }
     }
   }
