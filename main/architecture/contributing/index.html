@@ -504,12 +504,13 @@ publish from the tag. The manual procedure is retained in
 <li>use a conventional title like <code>feat: add X</code> or <code>fix(cli): correct Y</code></li>
 <li>treat that title as the final squash-merge commit subject on <code>master</code></li>
 <li>explain the problem, solution, verification, and any remaining risk or follow-up</li>
-<li>link a related issue with <code>Ref #NNN</code> or <code>Closes #NNN</code> when one exists</li>
+<li>link a related issue with neutral wording such as <code>Ref #NNN</code> when one exists</li>
 <li>record the verification commands that were actually run</li>
 <li>update docs, config, and governance when behavior or workflow changes</li>
 </ul>
-<p>Use <code>Ref #NNN</code> when the issue should stay open after merge, and <code>Closes #NNN</code>
-when the merge should close it.</p>
+<p>Use <code>Ref #NNN</code> by default. Do not use GitHub resolver keywords in PR bodies
+or comments unless the operator explicitly asks for that exact PR to change
+that exact issue's GitHub state.</p>
 <h2>Documentation Site Previews</h2>
 <p>The documentation site (<code>devtools render pages</code> → <code>.cache/site/</code>) is
 published to GitHub Pages on every push to <code>master</code> via
