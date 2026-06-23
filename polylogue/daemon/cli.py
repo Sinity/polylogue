@@ -797,6 +797,8 @@ async def run_daemon_services(
     watcher_task: asyncio.Task[None] | None = None
     converger: DaemonConverger | None = None
     tasks: list[asyncio.Task[None]] = []
+    cleanup_task: asyncio.Task[object] | None = None
+    cleanup_cancel_requests = 0
 
     try:
         if enable_browser_capture:
@@ -958,62 +960,73 @@ async def run_daemon_services(
                         },
                     )
                 await asyncio.gather(*maintenance_tasks)
-        except BaseException:
-            _log_completed_daemon_tasks(tasks + maintenance_tasks)
+        except BaseException as exc:
+            if not isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt)):
+                _log_completed_daemon_tasks(tasks + maintenance_tasks)
             raise
     finally:
-        if lifecycle_events_enabled:
-            _emit_daemon_lifecycle_event(
-                "shutdown_started",
-                archive_root_path=archive_root_path,
-                status="stopping",
-            )
-        if watcher is not None:
-            watcher.stop()
-        if converger is not None:
-            await converger.stop()
-        if server is not None:
-            await _shutdown_server_if_serving(server, server_task, label="browser-capture")
-        if api_server is not None:
-            await _shutdown_server_if_serving(api_server, api_server_task, label="api")
+        cleanup_task = asyncio.current_task()
+        if cleanup_task is not None:
+            cleanup_cancel_requests = cleanup_task.cancelling()
+            for _ in range(cleanup_cancel_requests):
+                cleanup_task.uncancel()
+        try:
+            if lifecycle_events_enabled:
+                _emit_daemon_lifecycle_event(
+                    "shutdown_started",
+                    archive_root_path=archive_root_path,
+                    status="stopping",
+                )
+            if watcher is not None:
+                watcher.stop()
+            if converger is not None:
+                await converger.stop()
+            if server is not None:
+                await _shutdown_server_if_serving(server, server_task, label="browser-capture")
+            if api_server is not None:
+                await _shutdown_server_if_serving(api_server, api_server_task, label="api")
 
-        # Cancel all component tasks.
-        for task in tasks:
-            if not task.done():
-                task.cancel()
+            # Cancel all component tasks.
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
 
-        # Cancel orphaned debounced watcher child tasks.
-        if watcher is not None:
-            cancel_pending = getattr(watcher, "cancel_pending", None)
-            if callable(cancel_pending):
-                cancel_pending()
+            # Cancel orphaned debounced watcher child tasks.
+            if watcher is not None:
+                cancel_pending = getattr(watcher, "cancel_pending", None)
+                if callable(cancel_pending):
+                    cancel_pending()
 
-        # Drain component tasks with a timeout.
-        drained_results = await _drain_tasks(tasks, timeout=5.0)
-        _report_drain_exceptions(drained_results)
+            # Drain component tasks with a timeout.
+            drained_results = await _drain_tasks(tasks, timeout=5.0)
+            _report_drain_exceptions(drained_results)
 
-        # Cancel and drain maintenance tasks.
-        for mt in maintenance_tasks:
-            if not mt.done():
-                mt.cancel()
-        await _drain_tasks(maintenance_tasks, timeout=5.0)
+            # Cancel and drain maintenance tasks.
+            for mt in maintenance_tasks:
+                if not mt.done():
+                    mt.cancel()
+            await _drain_tasks(maintenance_tasks, timeout=5.0)
 
-        if server is not None:
-            server.server_close()
-        if api_server is not None:
-            api_server.server_close()
+            if server is not None:
+                server.server_close()
+            if api_server is not None:
+                api_server.server_close()
 
-        # Clean up pidfile and release advisory lock.
-        if pidfile_fd is not None:
-            with contextlib.suppress(OSError):
-                os.close(pidfile_fd)
-        _cleanup_pidfile()
-        if lifecycle_events_enabled:
-            _emit_daemon_lifecycle_event(
-                "shutdown_complete",
-                archive_root_path=archive_root_path,
-                status="stopped",
-            )
+            # Clean up pidfile and release advisory lock.
+            if pidfile_fd is not None:
+                with contextlib.suppress(OSError):
+                    os.close(pidfile_fd)
+            _cleanup_pidfile()
+            if lifecycle_events_enabled:
+                _emit_daemon_lifecycle_event(
+                    "shutdown_complete",
+                    archive_root_path=archive_root_path,
+                    status="stopped",
+                )
+        finally:
+            if cleanup_task is not None:
+                for _ in range(cleanup_cancel_requests):
+                    cleanup_task.cancel()
 
     logger.info("daemon stopped")
 
@@ -1040,7 +1053,7 @@ async def _drain_tasks(tasks: list[asyncio.Task[None]], *, timeout: float = 5.0)
 def _report_drain_exceptions(results: list[BaseException | None]) -> None:
     """Log any exceptions found during task draining."""
     for exc in results:
-        if exc is not None:
+        if exc is not None and not isinstance(exc, asyncio.CancelledError):
             logger.warning("daemon: task raised during shutdown: %s", exc)
 
 
@@ -1071,13 +1084,17 @@ async def _shutdown_server_if_serving(
         try:
             exc = task.exception()
         except asyncio.CancelledError:
-            logger.warning("daemon: %s server task was cancelled before shutdown", label)
-            return
-        if exc is None:
+            # Cancelling the asyncio Future returned by to_thread() does not
+            # stop the underlying socketserver.serve_forever thread. Continue
+            # into server.shutdown() so Ctrl-C can actually drain the executor.
+            logger.debug("daemon: %s server task cancelled; shutting down server anyway", label)
+            exc = None
+        if exc is None and not task.cancelled():
             logger.warning("daemon: %s server task exited before shutdown", label)
-        else:
+            return
+        if exc is not None:
             logger.warning("daemon: %s server task failed before shutdown: %s", label, exc)
-        return
+            return
     # ``socketserver.BaseServer.shutdown()`` blocks until ``serve_forever()`` sets
     # its internal ``__is_shut_down`` Event. ``serve_forever`` runs off the loop in
     # the default executor (see ``server_task`` creation), so calling

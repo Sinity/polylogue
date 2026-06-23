@@ -1614,6 +1614,139 @@ def test_run_daemon_services_shutdowns_running_server_on_watcher_failure() -> No
     assert server.close_called is True
 
 
+def test_shutdown_server_runs_even_when_to_thread_task_is_cancelled() -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    class BlockingServer:
+        shutdown_called = False
+
+        def __init__(self) -> None:
+            self._stopped = threading.Event()
+
+        def serve_forever(self, poll_interval: float = 0.5) -> None:
+            assert poll_interval == 0.5
+            self._stopped.wait(timeout=5)
+
+        def shutdown(self) -> None:
+            self.shutdown_called = True
+            self._stopped.set()
+
+    async def exercise() -> BlockingServer:
+        server = BlockingServer()
+        task = asyncio.create_task(asyncio.to_thread(server.serve_forever, 0.5))
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        await daemon_cli._shutdown_server_if_serving(cast(Any, server), task, label="browser-capture")
+        return server
+
+    server = asyncio.run(exercise())
+
+    assert server.shutdown_called is True
+
+
+def test_report_drain_exceptions_ignores_expected_cancellations(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    daemon_cli._report_drain_exceptions([None, asyncio.CancelledError()])
+
+    assert "task raised during shutdown" not in caplog.text
+
+
+def test_run_daemon_services_drains_servers_when_main_task_is_cancelled() -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    class BlockingServer:
+        shutdown_called = False
+        close_called = False
+
+        def __init__(self) -> None:
+            self.ready = threading.Event()
+            self._stopped = threading.Event()
+
+        def serve_forever(self, poll_interval: float = 0.5) -> None:
+            assert poll_interval == 0.5
+            self.ready.set()
+            self._stopped.wait(timeout=5)
+
+        def shutdown(self) -> None:
+            self.shutdown_called = True
+            self._stopped.set()
+
+        def server_close(self) -> None:
+            self.close_called = True
+
+    class FakeConverger:
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+    async def noop() -> None:
+        return None
+
+    async def no_drive_changes() -> int:
+        return 0
+
+    async def wait_forever() -> None:
+        await asyncio.Event().wait()
+
+    browser_server = BlockingServer()
+    api_server = BlockingServer()
+
+    async def exercise() -> None:
+        task = asyncio.create_task(
+            daemon_cli.run_daemon_services(
+                sources=(),
+                debounce_s=1.0,
+                enable_watch=False,
+                enable_browser_capture=True,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+                enable_api=True,
+                api_host="127.0.0.1",
+                api_port=8766,
+            )
+        )
+        while not (browser_server.ready.is_set() and api_server.ready.is_set()):
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=2.0)
+
+    with (
+        patch.object(daemon_cli, "make_server", return_value=browser_server),
+        patch.object(daemon_cli, "_ensure_fts_startup_readiness", noop),
+        patch.object(daemon_cli, "_configure_fts_automerge", noop),
+        patch.object(daemon_cli, "_run_drive_source_catchup_safely", no_drive_changes),
+        patch.object(daemon_cli, "_periodic_wal_checkpoint", wait_forever),
+        patch.object(daemon_cli, "_periodic_fts_merge", wait_forever),
+        patch.object(daemon_cli, "_periodic_heartbeat", wait_forever),
+        patch.object(daemon_cli, "_periodic_drive_source_catchup", wait_forever),
+        patch.object(daemon_cli, "_periodic_health_check", wait_forever),
+        patch.object(daemon_cli, "_periodic_db_optimize", wait_forever),
+        patch.object(daemon_cli, "_periodic_status_snapshot_refresh", wait_forever),
+        patch.object(daemon_cli, "_periodic_convergence_check", lambda _sources, **_kwargs: wait_forever()),
+        patch.object(daemon_cli, "_sweep_orphaned_blob_leases", wait_forever),
+        patch("polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check", wait_forever),
+        patch("polylogue.daemon.convergence.DaemonConverger", return_value=FakeConverger()),
+        patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=()),
+        patch("polylogue.daemon.http.DaemonAPIHTTPServer", return_value=api_server),
+    ):
+        asyncio.run(exercise())
+
+    assert browser_server.shutdown_called is True
+    assert browser_server.close_called is True
+    assert api_server.shutdown_called is True
+    assert api_server.close_called is True
+
+
 def test_run_daemon_services_schema_block_skips_db_background_work() -> None:
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.health import HealthAlert, HealthSeverity, HealthTier
