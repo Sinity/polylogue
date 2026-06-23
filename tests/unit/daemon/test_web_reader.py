@@ -698,8 +698,13 @@ class TestReaderSearchState:
         assert global_payload["scoped_to_query"] is False
         assert global_payload["total_sessions"] == 1
         assert global_payload["origins"] == {"codex-session": 1}
-        assert "repos" in global_payload["deferred_families"]
-        assert "action_types" in global_payload["deferred_families"]
+        assert global_payload["budget_exceeded"] is False
+        assert global_payload["deferred_families"] == {
+            "action_types": "deferred_by_default",
+            "repos": "deferred_by_default",
+        }
+        assert global_payload["family_status"]["repos"]["state"] == "deferred"
+        assert global_payload["family_status"]["repos"]["reason"] == "deferred_by_default"
         assert global_payload["repos"] == {}
         assert global_payload["action_types"] == {}
         assert isinstance(scoped_payload, dict)
@@ -717,11 +722,32 @@ class TestReaderSearchState:
             payload = _get_json(base_url, "/api/facets?include_expensive=1")
 
         assert isinstance(payload, dict)
-        assert payload["deferred_families"] == []
+        assert payload["budget_exceeded"] is False
+        assert payload["deferred_families"] == {}
         assert "repos" in payload["complete_families"]
         assert "action_types" in payload["complete_families"]
+        assert payload["family_status"]["repos"]["state"] == "complete"
         assert isinstance(payload["repos"], dict)
         assert isinstance(payload["action_types"], dict)
+
+    def test_archive_file_set_facets_budget_exceeded_metadata(
+        self,
+        workspace_env: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _seed_archive_test_archive(workspace_env)
+        with _running_server_without_seed() as (_, base_url):
+            payload = _get_json(base_url, "/api/facets?include_expensive=1&budget_ms=0")
+
+        assert isinstance(payload, dict)
+        assert payload["budget_exceeded"] is True
+        assert payload["deferred_families"] == {
+            "action_types": "budget_exceeded",
+            "repos": "budget_exceeded",
+        }
+        assert payload["family_status"]["repos"]["state"] == "deferred"
+        assert payload["family_status"]["repos"]["reason"] == "budget_exceeded"
+        assert "repos" not in payload["complete_families"]
 
 
 # ---------------------------------------------------------------------------
@@ -2262,10 +2288,15 @@ class TestSharedQueryPayloads:
         assert d["diagnostics"]["message"] == "No results."
 
     def test_facets_response_shape(self) -> None:
-        from polylogue.surfaces.payloads import FacetsResponse, FacetTimeRange
+        from polylogue.surfaces.payloads import FacetFamilyStatusPayload, FacetsResponse, FacetTimeRange
 
         r = FacetsResponse(
             scoped_to_query=False,
+            generated_at="2026-06-22T00:00:00Z",
+            budget_exceeded=True,
+            complete_families=("total_counts", "origins", "tags"),
+            deferred_families={"repos": "deferred_by_default"},
+            family_status={"repos": FacetFamilyStatusPayload(state="deferred", reason="deferred_by_default")},
             origins={"claude-code-session": 10, "chatgpt-export": 5},
             total_sessions=15,
             total_messages=100,
@@ -2276,6 +2307,10 @@ class TestSharedQueryPayloads:
         assert d["origins"] == {"claude-code-session": 10, "chatgpt-export": 5}
         assert d["total_sessions"] == 15
         assert d["time_range"]["min"] == "2024-01-01"
+        assert d["generated_at"] == "2026-06-22T00:00:00Z"
+        assert d["budget_exceeded"] is True
+        assert d["deferred_families"] == {"repos": "deferred_by_default"}
+        assert d["family_status"]["repos"]["state"] == "deferred"
 
     def test_assertion_claim_payloads_are_shared_surface_dtos(self) -> None:
         from polylogue.core.enums import AssertionKind

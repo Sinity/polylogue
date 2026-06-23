@@ -904,10 +904,13 @@ function renderFacets() {
     return;
   }
   var html = '';
-  if ((f.deferred_families || []).length > 0 || f.budget_exceeded) {
+  var deferredFamilies = f.deferred_families || {};
+  var deferredKeys = Array.isArray(deferredFamilies) ? deferredFamilies : Object.keys(deferredFamilies);
+  if (deferredKeys.length > 0 || f.budget_exceeded) {
     html += '<div class="facet-group"><div class="facet-group-label">Facet detail deferred</div><div class="facet-chips">';
-    (f.deferred_families || []).forEach(function(family) {
-      html += '<span class="facet-chip" title="Computed on demand to keep the reader responsive">' + esc(family) + '</span>';
+    deferredKeys.forEach(function(family) {
+      var reason = Array.isArray(deferredFamilies) ? 'deferred' : deferredFamilies[family];
+      html += '<span class="facet-chip" title="' + escAttr(reason || 'Computed on demand to keep the reader responsive') + '">' + esc(family) + '</span>';
     });
     html += '</div></div>';
   }

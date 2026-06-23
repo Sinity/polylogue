@@ -2200,6 +2200,24 @@ class FacetBucketsPayload(SurfacePayloadModel):
     total_messages: int = 0
 
 
+FacetFamilyRouteState = Literal["complete", "deferred", "error"]
+
+
+class FacetFamilyStatusPayload(SurfacePayloadModel):
+    """Route-visible status for one facet family.
+
+    Empty facet buckets can mean either "empty result" or "not computed for
+    this response". The status map makes that distinction explicit for web,
+    CLI, and automation surfaces.
+    """
+
+    state: FacetFamilyRouteState
+    reason: str | None = None
+    error: str | None = None
+    stale: bool = False
+    stale_age_s: float | None = None
+
+
 class FacetsResponse(SurfacePayloadModel):
     """Shared facets response envelope with scope semantics.
 
@@ -2230,10 +2248,14 @@ class FacetsResponse(SurfacePayloadModel):
         serialization_alias="global",
     )
     idf: dict[str, dict[str, float]] = Field(default_factory=dict)
-    complete_families: tuple[str, ...] = ()
-    deferred_families: tuple[str, ...] = ()
     generated_at: str | None = None
+    stale: bool = False
+    stale_age_s: float | None = None
     budget_exceeded: bool = False
+    complete_families: tuple[str, ...] = ()
+    deferred_families: dict[str, str] = Field(default_factory=dict)
+    family_errors: dict[str, str] = Field(default_factory=dict)
+    family_status: dict[str, FacetFamilyStatusPayload] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
@@ -2460,6 +2482,7 @@ __all__ = [
     "SessionSummaryPayload",
     "FacetBucketsPayload",
     "FacetTimeRange",
+    "FacetFamilyStatusPayload",
     "FacetsResponse",
     "ArchiveDebtActionPayload",
     "ArchiveDebtKind",
