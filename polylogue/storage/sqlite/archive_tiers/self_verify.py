@@ -23,6 +23,11 @@ def build_archive_session_self_verify_envelope(
             "messages": len(envelope.messages),
             "blocks": sum(len(message.blocks) for message in envelope.messages),
             "session_events": _count(conn, "SELECT COUNT(*) FROM session_events WHERE session_id = ?", session_id),
+            "provider_usage_events": _count(
+                conn,
+                "SELECT COUNT(*) FROM session_provider_usage_events WHERE session_id = ?",
+                session_id,
+            ),
             "session_links_outbound": _count(
                 conn,
                 "SELECT COUNT(*) FROM session_links WHERE src_session_id = ?",

@@ -14,7 +14,7 @@ from polylogue.core.enums import (
 )
 from polylogue.storage.sqlite.archive_tiers.common import CONTENT_HASH_CHECK, check, nullable_check
 
-INDEX_SCHEMA_VERSION = 5
+INDEX_SCHEMA_VERSION = 6
 
 INDEX_DDL = f"""
 CREATE TABLE IF NOT EXISTS sessions (
@@ -461,6 +461,32 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     cost_provenance         TEXT CHECK(cost_provenance IN ('origin_reported', 'priced', 'estimated') OR cost_provenance IS NULL),
     PRIMARY KEY(session_id, model_name)
 ) STRICT;
+
+CREATE TABLE IF NOT EXISTS session_provider_usage_events (
+    usage_event_id                 TEXT GENERATED ALWAYS AS (session_id || ':usage:' || position) STORED UNIQUE,
+    session_id                     TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    source_message_id              TEXT REFERENCES messages(message_id) ON DELETE SET NULL,
+    position                       INTEGER NOT NULL CHECK(position >= 0),
+    provider_event_type            TEXT NOT NULL CHECK(provider_event_type IN ('token_count')),
+    model_name                     TEXT,
+    last_input_tokens              INTEGER NOT NULL DEFAULT 0 CHECK(last_input_tokens >= 0),
+    last_output_tokens             INTEGER NOT NULL DEFAULT 0 CHECK(last_output_tokens >= 0),
+    last_cached_input_tokens       INTEGER NOT NULL DEFAULT 0 CHECK(last_cached_input_tokens >= 0),
+    last_reasoning_output_tokens   INTEGER NOT NULL DEFAULT 0 CHECK(last_reasoning_output_tokens >= 0),
+    last_total_tokens              INTEGER NOT NULL DEFAULT 0 CHECK(last_total_tokens >= 0),
+    total_input_tokens             INTEGER NOT NULL DEFAULT 0 CHECK(total_input_tokens >= 0),
+    total_output_tokens            INTEGER NOT NULL DEFAULT 0 CHECK(total_output_tokens >= 0),
+    total_cached_input_tokens      INTEGER NOT NULL DEFAULT 0 CHECK(total_cached_input_tokens >= 0),
+    total_reasoning_output_tokens  INTEGER NOT NULL DEFAULT 0 CHECK(total_reasoning_output_tokens >= 0),
+    total_tokens                   INTEGER NOT NULL DEFAULT 0 CHECK(total_tokens >= 0),
+    model_context_window           INTEGER CHECK(model_context_window IS NULL OR model_context_window >= 0),
+    payload_json                   TEXT NOT NULL DEFAULT '{{}}',
+    occurred_at_ms                 INTEGER,
+    PRIMARY KEY(session_id, position)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_session_provider_usage_events_session
+ON session_provider_usage_events(session_id, position);
 
 CREATE TABLE IF NOT EXISTS session_tags (
     session_id    TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,

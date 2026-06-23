@@ -117,6 +117,7 @@ def test_archive_tiers_archive_self_verify_envelope_is_stable(tmp_path: Path) ->
             "messages": 2,
             "blocks": 2,
             "session_events": 1,
+            "provider_usage_events": 0,
             "session_links_outbound": 0,
             "attachments": 1,
             "attachment_refs": 1,

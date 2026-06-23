@@ -304,7 +304,13 @@ def test_archive_tiers_cost_price_basis_has_typed_tables(tmp_path: Path) -> None
         ).fetchall()
     }
 
-    assert {"price_catalogs", "model_prices", "session_reported_costs", "session_model_usage"} <= tables
+    assert {
+        "price_catalogs",
+        "model_prices",
+        "session_reported_costs",
+        "session_model_usage",
+        "session_provider_usage_events",
+    } <= tables
 
 
 def test_archive_tier_specs_capture_file_and_backup_policy() -> None:

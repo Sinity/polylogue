@@ -336,6 +336,7 @@ def write_parsed_session_to_archive(
         _write_working_dirs(conn, session_id, session.working_directories)
         _write_repo_edges(conn, session_id, session)
         _write_reported_costs(conn, session_id, session)
+        _aggregate_provider_usage_into_model_usage(conn, session_id)
         _refresh_session_counts(conn, session_id)
         _resolve_session_graph(conn, session_id, native_id, origin.value)
         if session.ingest_flags:
@@ -385,6 +386,7 @@ def _clear_session_projection_rows(conn: sqlite3.Connection, session_id: str) ->
         "attachment_refs",
         "paste_spans",
         "session_events",
+        "session_provider_usage_events",
         "session_agent_policies",
         "session_working_dirs",
         "session_repos",
@@ -1715,6 +1717,116 @@ def _write_session_events(
                 ),
             )
             position += 1
+        elif event.event_type == "token_count":
+            _write_provider_usage_event(
+                conn,
+                session_id,
+                by_native_id.get(event.source_message_provider_id or ""),
+                position,
+                event,
+            )
+            position += 1
+
+
+def _write_provider_usage_event(
+    conn: sqlite3.Connection,
+    session_id: str,
+    source_message_id: str | None,
+    position: int,
+    event: ParsedSessionEvent,
+) -> None:
+    last_usage = _payload_mapping(event.payload, "last_token_usage")
+    total_usage = _payload_mapping(event.payload, "total_token_usage")
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO session_provider_usage_events (
+            session_id, source_message_id, position, provider_event_type, model_name,
+            last_input_tokens, last_output_tokens, last_cached_input_tokens,
+            last_reasoning_output_tokens, last_total_tokens,
+            total_input_tokens, total_output_tokens, total_cached_input_tokens,
+            total_reasoning_output_tokens, total_tokens, model_context_window,
+            payload_json, occurred_at_ms
+        ) VALUES (?, ?, ?, 'token_count', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            session_id,
+            source_message_id,
+            position,
+            _sqlite_text(_payload_string(event.payload, "model", "model_name")),
+            _payload_int(last_usage, "input_tokens"),
+            _payload_int(last_usage, "output_tokens"),
+            _payload_int(last_usage, "cached_input_tokens"),
+            _payload_int(last_usage, "reasoning_output_tokens"),
+            _payload_int(last_usage, "total_tokens"),
+            _payload_int(total_usage, "input_tokens"),
+            _payload_int(total_usage, "output_tokens"),
+            _payload_int(total_usage, "cached_input_tokens"),
+            _payload_int(total_usage, "reasoning_output_tokens"),
+            _payload_int(total_usage, "total_tokens"),
+            _payload_optional_int(event.payload, "model_context_window"),
+            _json_dumps(event.payload),
+            _timestamp_ms(event.timestamp),
+        ),
+    )
+
+
+def _aggregate_provider_usage_into_model_usage(conn: sqlite3.Connection, session_id: str) -> None:
+    """Fold provider-reported total usage into model usage for single-model sessions."""
+
+    usage_row = conn.execute(
+        """
+        SELECT model_name, total_input_tokens, total_output_tokens,
+               total_cached_input_tokens, total_reasoning_output_tokens
+        FROM session_provider_usage_events
+        WHERE session_id = ?
+          AND provider_event_type = 'token_count'
+          AND (
+            total_input_tokens > 0 OR total_output_tokens > 0 OR
+            total_cached_input_tokens > 0 OR total_reasoning_output_tokens > 0 OR
+            total_tokens > 0
+          )
+        ORDER BY position DESC
+        LIMIT 1
+        """,
+        (session_id,),
+    ).fetchone()
+    if usage_row is None:
+        return
+
+    model_name = str(usage_row[0]).strip() if usage_row[0] else ""
+    if not model_name:
+        model_rows = conn.execute(
+            "SELECT model_name FROM session_model_usage WHERE session_id = ? ORDER BY model_name",
+            (session_id,),
+        ).fetchall()
+        if len(model_rows) != 1:
+            return
+        model_name = str(model_rows[0][0]).strip()
+    if not model_name:
+        return
+
+    conn.execute(
+        """
+        INSERT INTO session_model_usage (
+            session_id, model_name,
+            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+            cost_provenance
+        ) VALUES (?, ?, ?, ?, ?, 0, 'origin_reported')
+        ON CONFLICT(session_id, model_name) DO UPDATE SET
+            input_tokens       = excluded.input_tokens,
+            output_tokens      = excluded.output_tokens,
+            cache_read_tokens  = excluded.cache_read_tokens,
+            cache_write_tokens = excluded.cache_write_tokens,
+            cost_provenance    = excluded.cost_provenance
+        """,
+        (
+            session_id,
+            model_name,
+            int(usage_row[1] or 0),
+            int(usage_row[2] or 0) + int(usage_row[4] or 0),
+            int(usage_row[3] or 0),
+        ),
+    )
 
 
 def _write_working_dirs(conn: sqlite3.Connection, session_id: str, working_directories: Iterable[str]) -> None:
@@ -2081,6 +2193,31 @@ def _payload_string(payload: Mapping[str, object], *keys: str) -> str | None:
         value = payload.get(key)
         if value is not None:
             return str(value)
+    return None
+
+
+def _payload_mapping(payload: Mapping[str, object], key: str) -> Mapping[str, object]:
+    value = payload.get(key)
+    return value if isinstance(value, Mapping) else {}
+
+
+def _payload_int(payload: Mapping[str, object], key: str) -> int:
+    return _payload_optional_int(payload, key) or 0
+
+
+def _payload_optional_int(payload: Mapping[str, object], key: str) -> int | None:
+    value = payload.get(key)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return max(value, 0)
+    if isinstance(value, float):
+        return max(int(value), 0)
+    if isinstance(value, str) and value.strip():
+        try:
+            return max(int(float(value)), 0)
+        except ValueError:
+            return None
     return None
 
 

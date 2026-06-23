@@ -829,6 +829,131 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
     ]
 
 
+def test_archive_tiers_writer_materializes_provider_usage_events(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-usage-1",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                model_name="gpt-5-codex",
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="answer")],
+            )
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                source_message_provider_id="m1",
+                timestamp="2026-01-01T00:00:03+00:00",
+                payload={
+                    "type": "token_count",
+                    "last_token_usage": {
+                        "input_tokens": 11,
+                        "cached_input_tokens": 2,
+                        "output_tokens": 3,
+                        "reasoning_output_tokens": 4,
+                        "total_tokens": 20,
+                    },
+                    "total_token_usage": {
+                        "input_tokens": 100,
+                        "cached_input_tokens": 20,
+                        "output_tokens": 30,
+                        "reasoning_output_tokens": 40,
+                        "total_tokens": 190,
+                    },
+                    "model_context_window": 200000,
+                },
+            )
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, session)
+
+    usage = conn.execute(
+        """
+        SELECT usage_event_id, source_message_id, position, provider_event_type,
+               last_input_tokens, last_output_tokens, last_cached_input_tokens,
+               last_reasoning_output_tokens, last_total_tokens,
+               total_input_tokens, total_output_tokens, total_cached_input_tokens,
+               total_reasoning_output_tokens, total_tokens, model_context_window,
+               occurred_at_ms
+        FROM session_provider_usage_events
+        WHERE session_id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+    assert dict(usage) == {
+        "usage_event_id": f"{session_id}:usage:0",
+        "source_message_id": f"{session_id}:m1",
+        "position": 0,
+        "provider_event_type": "token_count",
+        "last_input_tokens": 11,
+        "last_output_tokens": 3,
+        "last_cached_input_tokens": 2,
+        "last_reasoning_output_tokens": 4,
+        "last_total_tokens": 20,
+        "total_input_tokens": 100,
+        "total_output_tokens": 30,
+        "total_cached_input_tokens": 20,
+        "total_reasoning_output_tokens": 40,
+        "total_tokens": 190,
+        "model_context_window": 200000,
+        "occurred_at_ms": 1_767_225_603_000,
+    }
+
+
+def test_provider_usage_events_repair_single_model_usage_rollup(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-usage-rollup-1",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                model_name="gpt-5-codex",
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="answer")],
+            )
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "total_token_usage": {
+                        "input_tokens": 100,
+                        "cached_input_tokens": 20,
+                        "output_tokens": 30,
+                        "reasoning_output_tokens": 40,
+                    },
+                },
+            )
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, session)
+
+    usage = conn.execute(
+        """
+        SELECT model_name, input_tokens, output_tokens, cache_read_tokens,
+               cache_write_tokens, cost_provenance
+        FROM session_model_usage
+        WHERE session_id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+    assert dict(usage) == {
+        "model_name": "gpt-5-codex",
+        "input_tokens": 100,
+        "output_tokens": 70,
+        "cache_read_tokens": 20,
+        "cache_write_tokens": 0,
+        "cost_provenance": "origin_reported",
+    }
+
+
 def test_archive_tiers_writer_records_unresolved_parent_session_link(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     session = ParsedSession(
