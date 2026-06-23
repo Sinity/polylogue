@@ -575,6 +575,11 @@
       "additionalProperties": false,
       "description": "Shared terminal-query row for archive messages.",
       "properties": {
+        "material_origin": {
+          "default": "unknown",
+          "title": "Material Origin",
+          "type": "string"
+        },
         "message_id": {
           "title": "Message Id",
           "type": "string"

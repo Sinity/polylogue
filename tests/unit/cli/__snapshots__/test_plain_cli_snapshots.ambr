@@ -9,7 +9,7 @@
   '''
   {
     "avg_messages_per_session": 5.0,
-    "db_size_bytes": 532480,
+    "db_size_bytes": 536576,
     "embedded_messages": 0,
     "embedded_sessions": 0,
     "embedding_coverage_percent": 0.0,
@@ -40,68 +40,6 @@
   '''
   {
     "scoped_to_query": false,
-    "origins": {
-      "chatgpt-export": 2
-    },
-    "tags": {},
-    "repos": {},
-    "cwd_prefixes": {},
-    "message_types": {
-      "message": 10
-    },
-    "action_types": {},
-    "has_flags": {
-      "has_tool_use": 0,
-      "has_thinking": 0,
-      "has_paste": 0
-    },
-    "time_range": null,
-    "total_sessions": 2,
-    "total_messages": 10,
-    "scoped": {
-      "origins": {
-        "chatgpt-export": 2
-      },
-      "tags": {},
-      "repos": {},
-      "message_types": {
-        "message": 10
-      },
-      "action_types": {},
-      "has_flags": {
-        "has_tool_use": 0,
-        "has_thinking": 0,
-        "has_paste": 0
-      },
-      "total_sessions": 2,
-      "total_messages": 10
-    },
-    "global": {
-      "origins": {
-        "chatgpt-export": 2
-      },
-      "tags": {},
-      "repos": {},
-      "message_types": {
-        "message": 10
-      },
-      "action_types": {},
-      "has_flags": {
-        "has_tool_use": 0,
-        "has_thinking": 0,
-        "has_paste": 0
-      },
-      "total_sessions": 2,
-      "total_messages": 10
-    },
-    "idf": {
-      "origins": {
-        "chatgpt-export": 0.0
-      },
-      "message_types": {
-        "message": -1.<HASH>
-      }
-    },
     "generated_at": "<TIMESTAMP>",
     "stale": false,
     "stale_age_s": null,
@@ -166,6 +104,68 @@
         "error": null,
         "stale": false,
         "stale_age_s": null
+      }
+    },
+    "origins": {
+      "chatgpt-export": 2
+    },
+    "tags": {},
+    "repos": {},
+    "cwd_prefixes": {},
+    "message_types": {
+      "message": 10
+    },
+    "action_types": {},
+    "has_flags": {
+      "has_tool_use": 0,
+      "has_thinking": 0,
+      "has_paste": 0
+    },
+    "time_range": null,
+    "total_sessions": 2,
+    "total_messages": 10,
+    "scoped": {
+      "origins": {
+        "chatgpt-export": 2
+      },
+      "tags": {},
+      "repos": {},
+      "message_types": {
+        "message": 10
+      },
+      "action_types": {},
+      "has_flags": {
+        "has_tool_use": 0,
+        "has_thinking": 0,
+        "has_paste": 0
+      },
+      "total_sessions": 2,
+      "total_messages": 10
+    },
+    "global": {
+      "origins": {
+        "chatgpt-export": 2
+      },
+      "tags": {},
+      "repos": {},
+      "message_types": {
+        "message": 10
+      },
+      "action_types": {},
+      "has_flags": {
+        "has_tool_use": 0,
+        "has_thinking": 0,
+        "has_paste": 0
+      },
+      "total_sessions": 2,
+      "total_messages": 10
+    },
+    "idf": {
+      "origins": {
+        "chatgpt-export": 0.0
+      },
+      "message_types": {
+        "message": -1.<HASH>
       }
     }
   }
@@ -280,9 +280,9 @@
       "index": {
         "path": "<PATH>",
         "exists": true,
-        "size_bytes": 532480,
-        "expected_user_version": 4,
-        "user_version": 4,
+        "size_bytes": 536576,
+        "expected_user_version": 5,
+        "user_version": 5,
         "version_status": "ok",
         "table_counts": {
           "sessions": 2,

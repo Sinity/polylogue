@@ -215,6 +215,11 @@
       "title": "Input Tokens",
       "type": "integer"
     },
+    "material_origin": {
+      "default": "unknown",
+      "title": "Material Origin",
+      "type": "string"
+    },
     "message_type": {
       "default": "message",
       "title": "Message Type",

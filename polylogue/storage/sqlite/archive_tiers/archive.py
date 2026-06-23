@@ -173,10 +173,12 @@ class ArchiveSessionSummary:
     thinking_count: int = 0
     paste_count: int = 0
     user_message_count: int = 0
+    authored_user_message_count: int = 0
     assistant_message_count: int = 0
     system_message_count: int = 0
     tool_message_count: int = 0
     user_word_count: int = 0
+    authored_user_word_count: int = 0
     assistant_word_count: int = 0
     working_directories: tuple[str, ...] = ()
     git_branch: str | None = None
@@ -207,6 +209,7 @@ class ArchiveMessageQueryRow:
     title: str | None
     role: str
     message_type: str
+    material_origin: str
     position: int
     word_count: int
     text: str
@@ -1220,8 +1223,10 @@ class ArchiveStore:
             SELECT s.session_id, s.native_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
                    s.message_count, s.word_count, s.reported_duration_ms,
                    s.tool_use_count, s.thinking_count, s.paste_count,
-                   s.user_message_count, s.assistant_message_count, s.system_message_count,
-                   s.tool_message_count, s.user_word_count, s.assistant_word_count,
+                   s.user_message_count, s.authored_user_message_count,
+                   s.assistant_message_count, s.system_message_count,
+                   s.tool_message_count, s.user_word_count, s.authored_user_word_count,
+                   s.assistant_word_count,
                    s.git_branch, s.git_repository_url,
                    COALESCE(
                        (
@@ -1598,8 +1603,10 @@ class ArchiveStore:
                 COUNT(*) AS session_count,
                 SUM(s.message_count) AS message_count,
                 SUM(s.user_message_count) AS user_message_count,
+                SUM(s.authored_user_message_count) AS authored_user_message_count,
                 SUM(s.assistant_message_count) AS assistant_message_count,
                 SUM(s.user_word_count) AS user_word_sum,
+                SUM(s.authored_user_word_count) AS authored_user_word_sum,
                 SUM(s.assistant_word_count) AS assistant_word_sum,
                 SUM(s.tool_use_count) AS tool_use_count,
                 SUM(s.thinking_count) AS thinking_count,
@@ -2995,8 +3002,10 @@ class ArchiveStore:
             SELECT s.session_id, s.native_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
                    s.message_count, s.word_count, s.reported_duration_ms,
                    s.tool_use_count, s.thinking_count, s.paste_count,
-                   s.user_message_count, s.assistant_message_count, s.system_message_count,
-                   s.tool_message_count, s.user_word_count, s.assistant_word_count,
+                   s.user_message_count, s.authored_user_message_count,
+                   s.assistant_message_count, s.system_message_count,
+                   s.tool_message_count, s.user_word_count, s.authored_user_word_count,
+                   s.assistant_word_count,
                    s.git_branch, s.git_repository_url,
                    COALESCE(
                        (
@@ -3409,6 +3418,7 @@ class ArchiveStore:
                 s.title,
                 m.role,
                 m.message_type,
+                m.material_origin,
                 m.position,
                 m.word_count,
                 COALESCE((
@@ -3438,6 +3448,7 @@ class ArchiveStore:
                 title=str(row["title"]) if row["title"] is not None else None,
                 role=str(row["role"]),
                 message_type=str(row["message_type"]),
+                material_origin=str(row["material_origin"]),
                 position=int(row["position"]),
                 word_count=int(row["word_count"]),
                 text=str(row["text"] or ""),
@@ -4089,10 +4100,12 @@ def _summary_from_row(row: sqlite3.Row) -> ArchiveSessionSummary:
         thinking_count=row_int("thinking_count"),
         paste_count=row_int("paste_count"),
         user_message_count=row_int("user_message_count"),
+        authored_user_message_count=row_int("authored_user_message_count"),
         assistant_message_count=row_int("assistant_message_count"),
         system_message_count=row_int("system_message_count"),
         tool_message_count=row_int("tool_message_count"),
         user_word_count=row_int("user_word_count"),
+        authored_user_word_count=row_int("authored_user_word_count"),
         assistant_word_count=row_int("assistant_word_count"),
         working_directories=working_directories,
         git_branch=str(row["git_branch"]) if row["git_branch"] is not None else None,
@@ -5972,8 +5985,10 @@ def _provider_coverage_from_archive_row(row: sqlite3.Row) -> ArchiveCoverageInsi
     session_count = int(row["session_count"] or 0)
     message_count = int(row["message_count"] or 0)
     user_message_count = int(row["user_message_count"] or 0)
+    authored_user_message_count = int(row["authored_user_message_count"] or 0)
     assistant_message_count = int(row["assistant_message_count"] or 0)
     user_word_sum = int(row["user_word_sum"] or 0)
+    authored_user_word_sum = int(row["authored_user_word_sum"] or 0)
     assistant_word_sum = int(row["assistant_word_sum"] or 0)
     sessions_with_tools = int(row["sessions_with_tools"] or 0)
     sessions_with_thinking = int(row["sessions_with_thinking"] or 0)
@@ -5985,9 +6000,13 @@ def _provider_coverage_from_archive_row(row: sqlite3.Row) -> ArchiveCoverageInsi
         session_count=session_count,
         message_count=message_count,
         user_message_count=user_message_count,
+        authored_user_message_count=authored_user_message_count,
         assistant_message_count=assistant_message_count,
         avg_messages_per_session=(message_count / session_count if session_count else 0.0),
         avg_user_words=(user_word_sum / user_message_count if user_message_count else 0.0),
+        avg_authored_user_words=(
+            authored_user_word_sum / authored_user_message_count if authored_user_message_count else 0.0
+        ),
         avg_assistant_words=(assistant_word_sum / assistant_message_count if assistant_message_count else 0.0),
         tool_use_count=int(row["tool_use_count"] or 0),
         thinking_count=int(row["thinking_count"] or 0),

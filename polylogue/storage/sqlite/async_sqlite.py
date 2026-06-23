@@ -531,6 +531,7 @@ class SQLiteBackend(
         async with self._get_connection() as conn:
             if _is_initialized_archive_index(self._db_path):
                 from polylogue.archive.message.roles import Role
+                from polylogue.core.enums import MaterialOrigin
 
                 message_count = len(messages)
                 word_count = sum(message.word_count for message in messages)
@@ -538,10 +539,18 @@ class SQLiteBackend(
                 thinking_count = sum(1 for message in messages if message.has_thinking)
                 paste_count = sum(1 for message in messages if message.has_paste)
                 user_message_count = sum(1 for message in messages if message.role == Role.USER)
+                authored_user_message_count = sum(
+                    1 for message in messages if message.material_origin == MaterialOrigin.HUMAN_AUTHORED
+                )
                 assistant_message_count = sum(1 for message in messages if message.role == Role.ASSISTANT)
                 system_message_count = sum(1 for message in messages if message.role == Role.SYSTEM)
                 tool_message_count = sum(1 for message in messages if message.role == Role.TOOL)
                 user_word_count = sum(message.word_count for message in messages if message.role == Role.USER)
+                authored_user_word_count = sum(
+                    message.word_count
+                    for message in messages
+                    if message.material_origin == MaterialOrigin.HUMAN_AUTHORED
+                )
                 assistant_word_count = sum(message.word_count for message in messages if message.role == Role.ASSISTANT)
                 await conn.execute(
                     """
@@ -552,10 +561,12 @@ class SQLiteBackend(
                         thinking_count = ?,
                         paste_count = ?,
                         user_message_count = ?,
+                        authored_user_message_count = ?,
                         assistant_message_count = ?,
                         system_message_count = ?,
                         tool_message_count = ?,
                         user_word_count = ?,
+                        authored_user_word_count = ?,
                         assistant_word_count = ?
                     WHERE session_id = ? OR native_id = ?
                     """,
@@ -566,10 +577,12 @@ class SQLiteBackend(
                         thinking_count,
                         paste_count,
                         user_message_count,
+                        authored_user_message_count,
                         assistant_message_count,
                         system_message_count,
                         tool_message_count,
                         user_word_count,
+                        authored_user_word_count,
                         assistant_word_count,
                         session_id,
                         session_id,

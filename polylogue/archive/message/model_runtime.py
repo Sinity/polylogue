@@ -10,7 +10,7 @@ from functools import cached_property
 from polylogue.archive.attachment.models import Attachment
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
-from polylogue.core.enums import Provider
+from polylogue.core.enums import MaterialOrigin, Provider
 
 
 def _block_texts(blocks: Iterable[Mapping[str, object]], *, block_type: str) -> list[str]:
@@ -42,6 +42,7 @@ class MessageRuntimeMixin:
     attachments: list[Attachment]
     blocks: list[dict[str, object]]
     message_type: MessageType
+    material_origin: MaterialOrigin
     parent_id: str | None
     branch_index: int
 
@@ -52,6 +53,19 @@ class MessageRuntimeMixin:
     @property
     def is_user(self) -> bool:
         return self.role == Role.USER
+
+    @property
+    def is_human_authored(self) -> bool:
+        return MaterialOrigin.normalize(getattr(self, "material_origin", MaterialOrigin.UNKNOWN)) is (
+            MaterialOrigin.HUMAN_AUTHORED
+        )
+
+    @property
+    def is_authored_prose(self) -> bool:
+        return MaterialOrigin.normalize(getattr(self, "material_origin", MaterialOrigin.UNKNOWN)) in {
+            MaterialOrigin.HUMAN_AUTHORED,
+            MaterialOrigin.ASSISTANT_AUTHORED,
+        }
 
     @property
     def is_assistant(self) -> bool:

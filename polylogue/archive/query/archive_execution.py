@@ -19,7 +19,7 @@ from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.domain_models import Session, SessionSummary
-from polylogue.core.enums import Provider
+from polylogue.core.enums import MaterialOrigin, Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.types import SessionId
 
@@ -249,6 +249,7 @@ def _message_to_domain(message: ArchiveMessageRow, *, provider: Provider) -> Mes
         provider=provider,
         blocks=content_blocks,
         message_type=MessageType.normalize(message.message_type),
+        material_origin=MaterialOrigin.normalize(message.material_origin),
         has_tool_use=message.has_tool_use,
         has_thinking=message.has_thinking,
         has_paste=message.has_paste,

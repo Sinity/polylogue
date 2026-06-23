@@ -152,6 +152,37 @@ class MessageType(PolylogueStrEnum):
         raise ValueError(msg)
 
 
+class MaterialOrigin(PolylogueStrEnum):
+    """Archive-visible authoredness/material-origin axis for messages.
+
+    ``Role`` preserves provider/API envelope truth. Material origin answers
+    what kind of material the row represents for accounting, projections, and
+    user-facing prose filters.
+    """
+
+    HUMAN_AUTHORED = "human_authored"
+    ASSISTANT_AUTHORED = "assistant_authored"
+    OPERATOR_COMMAND = "operator_command"
+    RUNTIME_PROTOCOL = "runtime_protocol"
+    RUNTIME_CONTEXT = "runtime_context"
+    TOOL_RESULT = "tool_result"
+    GENERATED_CONTEXT_PACK = "generated_context_pack"
+    GENERATED_ANALYSIS_PACK = "generated_analysis_pack"
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def normalize(cls, value: object) -> MaterialOrigin:
+        if isinstance(value, MaterialOrigin):
+            return value
+        candidate = (str(value) if value is not None else "").strip().lower().replace("-", "_")
+        if not candidate:
+            return cls.UNKNOWN
+        for item in cls:
+            if item.value == candidate:
+                return item
+        return cls.UNKNOWN
+
+
 class BlockType(PolylogueStrEnum):
     """Canonical stored and parsed block kinds.
 
@@ -358,6 +389,7 @@ __all__ = [
     "BlockType",
     "BranchType",
     "LinkType",
+    "MaterialOrigin",
     "MessageType",
     "Origin",
     "PasteBoundary",

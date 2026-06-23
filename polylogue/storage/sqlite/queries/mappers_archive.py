@@ -11,6 +11,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import (
     ArtifactSupportStatus,
     BlockType,
+    MaterialOrigin,
     Origin,
     SemanticBlockType,
     ValidationMode,
@@ -85,6 +86,7 @@ def _row_to_message(row: sqlite3.Row) -> MessageRecord:
         cache_write_tokens=_row_int(row, "cache_write_tokens", 0) or 0,
         model_name=_row_text(row, "model_name"),
         message_type=MessageType.normalize(_row_text(row, "message_type") or "message"),
+        material_origin=MaterialOrigin.normalize(_row_text(row, "material_origin")),
     )
 
 

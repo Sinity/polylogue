@@ -6,7 +6,7 @@ from pathlib import Path
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, Provider, TitleSource
+from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, Provider, TitleSource
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
@@ -109,9 +109,66 @@ def test_archive_tiers_writer_materializes_codex_session(tmp_path: Path) -> None
     ]
     assert envelope.messages[1].is_active_leaf is True
     assert [block.block_type for block in envelope.messages[1].blocks] == ["tool_use", "tool_result"]
+    assert [message.material_origin for message in envelope.messages] == ["human_authored", "assistant_authored"]
     action = conn.execute("SELECT tool_command, output_text FROM actions").fetchone()
     assert dict(action) == {"tool_command": "pytest -q", "output_text": "checks passed"}
     assert search_archive_blocks(conn, "focused") == ["codex-session:codex-session-1:u1:0"]
+
+
+def test_archive_tiers_writer_splits_provider_user_from_authored_user_counts(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="claude-code-authoredness",
+        title="authoredness",
+        messages=[
+            ParsedMessage(
+                provider_message_id="runtime-protocol",
+                role=Role.USER,
+                text="<task-notification>done</task-notification>",
+                message_type=MessageType.PROTOCOL,
+                material_origin=MaterialOrigin.RUNTIME_PROTOCOL,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="<task-notification>done</task-notification>")],
+            ),
+            ParsedMessage(
+                provider_message_id="generated-pack",
+                role=Role.USER,
+                text="# Commit N: Generate all artifacts\n\nnot typed by the operator",
+                material_origin=MaterialOrigin.GENERATED_CONTEXT_PACK,
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TEXT,
+                        text="# Commit N: Generate all artifacts\n\nnot typed by the operator",
+                    )
+                ],
+            ),
+            ParsedMessage(
+                provider_message_id="typed-prompt",
+                role=Role.USER,
+                text="Please inspect the failing parser.",
+                material_origin=MaterialOrigin.HUMAN_AUTHORED,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="Please inspect the failing parser.")],
+            ),
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, session)
+    counts = conn.execute(
+        """
+        SELECT user_message_count, authored_user_message_count,
+               user_word_count, authored_user_word_count
+        FROM sessions
+        WHERE session_id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+
+    assert dict(counts) == {
+        "user_message_count": 3,
+        "authored_user_message_count": 1,
+        "user_word_count": 17,
+        "authored_user_word_count": 5,
+    }
 
 
 def test_archive_store_connection_applies_canonical_profile(tmp_path: Path) -> None:

@@ -39,8 +39,10 @@ class ProviderMetricsRow(TypedDict):
     session_count: int
     message_count: int
     user_message_count: int
+    authored_user_message_count: int
     assistant_message_count: int
     user_word_sum: int
+    authored_user_word_sum: int
     assistant_word_sum: int
     tool_use_count: int
     thinking_count: int
@@ -244,12 +246,15 @@ async def upsert_session_stats(
     thinking_count = sum(1 for m in messages if m.has_thinking)
     paste_count = sum(1 for m in messages if m.has_paste)
     from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import MaterialOrigin
 
     user_msg_count = sum(1 for m in messages if m.role == Role.USER)
+    authored_user_msg_count = sum(1 for m in messages if m.material_origin == MaterialOrigin.HUMAN_AUTHORED)
     assistant_msg_count = sum(1 for m in messages if m.role == Role.ASSISTANT)
     system_msg_count = sum(1 for m in messages if m.role == Role.SYSTEM)
     tool_msg_count = sum(1 for m in messages if m.role == Role.TOOL)
     user_word_count = sum(m.word_count for m in messages if m.role == Role.USER)
+    authored_user_word_count = sum(m.word_count for m in messages if m.material_origin == MaterialOrigin.HUMAN_AUTHORED)
     assistant_word_count = sum(m.word_count for m in messages if m.role == Role.ASSISTANT)
     await conn.execute(
         """
@@ -260,10 +265,12 @@ async def upsert_session_stats(
             thinking_count = ?,
             paste_count = ?,
             user_message_count = ?,
+            authored_user_message_count = ?,
             assistant_message_count = ?,
             system_message_count = ?,
             tool_message_count = ?,
             user_word_count = ?,
+            authored_user_word_count = ?,
             assistant_word_count = ?
         WHERE session_id = ?
         """,
@@ -274,10 +281,12 @@ async def upsert_session_stats(
             thinking_count,
             paste_count,
             user_msg_count,
+            authored_user_msg_count,
             assistant_msg_count,
             system_msg_count,
             tool_msg_count,
             user_word_count,
+            authored_user_word_count,
             assistant_word_count,
             session_id,
         ),
@@ -377,8 +386,10 @@ async def get_provider_metrics_rows(
             SUM(CASE WHEN tool_use_count > 0 THEN 1 ELSE 0 END) AS sessions_with_tools,
             SUM(CASE WHEN thinking_count > 0 THEN 1 ELSE 0 END) AS sessions_with_thinking,
             COALESCE(SUM(user_message_count), 0) AS user_message_count,
+            COALESCE(SUM(authored_user_message_count), 0) AS authored_user_message_count,
             COALESCE(SUM(assistant_message_count), 0) AS assistant_message_count,
             COALESCE(SUM(user_word_count), 0) AS user_word_sum,
+            COALESCE(SUM(authored_user_word_count), 0) AS authored_user_word_sum,
             COALESCE(SUM(assistant_word_count), 0) AS assistant_word_sum
         FROM sessions
         GROUP BY origin
@@ -391,8 +402,10 @@ async def get_provider_metrics_rows(
         provider = str(row["source_name"] or "unknown")
         role_split = {
             "user_message_count": int(row["user_message_count"] or 0),
+            "authored_user_message_count": int(row["authored_user_message_count"] or 0),
             "assistant_message_count": int(row["assistant_message_count"] or 0),
             "user_word_sum": int(row["user_word_sum"] or 0),
+            "authored_user_word_sum": int(row["authored_user_word_sum"] or 0),
             "assistant_word_sum": int(row["assistant_word_sum"] or 0),
         }
         merged.append(
@@ -401,8 +414,10 @@ async def get_provider_metrics_rows(
                 "session_count": int(row["session_count"] or 0),
                 "message_count": int(row["message_count"] or 0),
                 "user_message_count": role_split["user_message_count"],
+                "authored_user_message_count": role_split["authored_user_message_count"],
                 "assistant_message_count": role_split["assistant_message_count"],
                 "user_word_sum": role_split["user_word_sum"],
+                "authored_user_word_sum": role_split["authored_user_word_sum"],
                 "assistant_word_sum": role_split["assistant_word_sum"],
                 "tool_use_count": int(row["tool_use_count"] or 0),
                 "thinking_count": int(row["thinking_count"] or 0),

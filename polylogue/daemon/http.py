@@ -896,6 +896,13 @@ def _message_type_value(message: object) -> str:
     return str(message_type)
 
 
+def _material_origin_value(message: object) -> str:
+    material_origin = getattr(message, "material_origin", "")
+    if hasattr(material_origin, "value"):
+        return str(material_origin.value)
+    return str(material_origin)
+
+
 def daemon_safe_handler(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Decorator that discriminates PolylogueError types to HTTP status codes.
 
@@ -2177,6 +2184,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "actions": _dump_actions(reader_message_actions()),
                     "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
                     "message_type": _message_type_value(msg),
+                    "material_origin": _material_origin_value(msg),
                     "word_count": msg.word_count,
                     "has_tool_use": bool(msg.has_tool_use) if hasattr(msg, "has_tool_use") else False,
                     "has_thinking": bool(msg.has_thinking) if hasattr(msg, "has_thinking") else False,
@@ -2359,6 +2367,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "actions": _dump_actions(reader_message_actions()),
             "timestamp": message.occurred_at,
             "message_type": message.message_type,
+            "material_origin": message.material_origin,
             "word_count": message.word_count,
             "has_tool_use": bool(message.has_tool_use),
             "has_thinking": bool(message.has_thinking),
@@ -3202,6 +3211,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "actions": _dump_actions(reader_message_actions()),
                     "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
                     "message_type": _message_type_value(msg),
+                    "material_origin": _material_origin_value(msg),
                     "word_count": msg.word_count,
                 }
                 for msg in messages

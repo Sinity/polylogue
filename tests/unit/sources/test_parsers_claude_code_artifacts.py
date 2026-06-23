@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from polylogue.archive.message.types import MessageType
+from polylogue.core.enums import MaterialOrigin, Role
 from polylogue.sources.parsers.claude import parse_code
 from polylogue.sources.parsers.claude.common import normalize_timestamp
 
@@ -24,9 +25,19 @@ def test_parse_code_classifies_runtime_artifacts() -> None:
         },
         {
             "type": "user",
-            "uuid": "command-1",
+            "uuid": "stdout-1",
             "sessionId": "sess-1",
             "timestamp": 1704067201,
+            "message": {
+                "role": "user",
+                "content": "<local-command-stdout>pytest passed</local-command-stdout>",
+            },
+        },
+        {
+            "type": "user",
+            "uuid": "command-1",
+            "sessionId": "sess-1",
+            "timestamp": 1704067202,
             "message": {
                 "role": "user",
                 "content": "<command-name>status</command-name>\n<command-message>status</command-message>",
@@ -36,7 +47,7 @@ def test_parse_code_classifies_runtime_artifacts() -> None:
             "type": "user",
             "uuid": "skill-1",
             "sessionId": "sess-1",
-            "timestamp": 1704067202,
+            "timestamp": 1704067203,
             "message": {
                 "role": "user",
                 "content": "Base directory for this skill: /tmp/skill\n\n# Skill Body",
@@ -44,9 +55,29 @@ def test_parse_code_classifies_runtime_artifacts() -> None:
         },
         {
             "type": "user",
+            "uuid": "commit-pack-1",
+            "sessionId": "sess-1",
+            "timestamp": 1704067204,
+            "message": {
+                "role": "user",
+                "content": "# Commit N: Generate all artifacts\n\nlarge generated context",
+            },
+        },
+        {
+            "type": "user",
+            "uuid": "retro-pack-1",
+            "sessionId": "sess-1",
+            "timestamp": 1704067205,
+            "message": {
+                "role": "user",
+                "content": "Generate a retrospective for: long generated analysis bundle",
+            },
+        },
+        {
+            "type": "user",
             "uuid": "prompt-1",
             "sessionId": "sess-1",
-            "timestamp": 1704067203,
+            "timestamp": 1704067206,
             "message": {
                 "role": "user",
                 "content": "<system-reminder>model-only context</system-reminder>\n\nActual user prompt.",
@@ -57,11 +88,42 @@ def test_parse_code_classifies_runtime_artifacts() -> None:
     result = parse_code(items, "fallback")
 
     by_id = {message.provider_message_id: message for message in result.messages}
-    assert len(result.messages) == len(by_id) == 4
+    assert len(result.messages) == len(by_id) == 7
     assert by_id["task-1"].message_type is MessageType.PROTOCOL
+    assert by_id["task-1"].material_origin is MaterialOrigin.RUNTIME_PROTOCOL
+    assert by_id["stdout-1"].message_type is MessageType.PROTOCOL
+    assert by_id["stdout-1"].material_origin is MaterialOrigin.RUNTIME_PROTOCOL
     assert by_id["command-1"].message_type is MessageType.PROTOCOL
+    assert by_id["command-1"].material_origin is MaterialOrigin.OPERATOR_COMMAND
     assert by_id["skill-1"].message_type is MessageType.CONTEXT
+    assert by_id["skill-1"].material_origin is MaterialOrigin.RUNTIME_CONTEXT
+    assert by_id["commit-pack-1"].message_type is MessageType.MESSAGE
+    assert by_id["commit-pack-1"].material_origin is MaterialOrigin.GENERATED_CONTEXT_PACK
+    assert by_id["retro-pack-1"].message_type is MessageType.MESSAGE
+    assert by_id["retro-pack-1"].material_origin is MaterialOrigin.GENERATED_ANALYSIS_PACK
     assert by_id["prompt-1"].message_type is MessageType.MESSAGE
+    assert by_id["prompt-1"].material_origin is MaterialOrigin.HUMAN_AUTHORED
+    assert result.title == "Actual user prompt."
+
+
+def test_parse_code_preserves_tool_result_reclassification_material_origin() -> None:
+    result = parse_code(
+        [
+            {
+                "type": "user",
+                "uuid": "tool-result-1",
+                "sessionId": "sess-tool",
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "tool_result", "tool_use_id": "tool-1", "content": "ok"}],
+                },
+            }
+        ],
+        "fallback-tool",
+    )
+
+    assert result.messages[0].role is Role.TOOL
+    assert result.messages[0].material_origin is MaterialOrigin.TOOL_RESULT
 
 
 def test_parse_code_drops_progress_hook_records() -> None:

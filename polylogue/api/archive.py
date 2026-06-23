@@ -23,7 +23,7 @@ from polylogue.archive.query.spec import normalize_action_sequence, normalize_ac
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_models import Session, SessionSummary
-from polylogue.core.enums import Origin, Provider
+from polylogue.core.enums import MaterialOrigin, Origin, Provider
 from polylogue.core.json import JSONDocument
 from polylogue.core.refs import EvidenceRef, ObjectRef, parse_public_ref
 from polylogue.core.sources import origin_from_provider, provider_from_origin
@@ -706,6 +706,7 @@ def _archive_message_to_domain(message: ArchiveMessageRow, *, provider: Provider
         provider=provider,
         blocks=content_blocks,
         message_type=MessageType.normalize(message.message_type),
+        material_origin=MaterialOrigin.normalize(message.material_origin),
         has_tool_use=message.has_tool_use,
         has_thinking=message.has_thinking,
         has_paste=message.has_paste,
