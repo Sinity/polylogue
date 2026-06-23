@@ -165,6 +165,35 @@ def test_browser_capture_raw_chatgpt_without_id_uses_envelope_session_id() -> No
     assert [message.provider_message_id for message in session.messages] == ["native-u1", "native-a1"]
 
 
+def test_browser_capture_raw_chatgpt_normalizes_legacy_synthetic_fallback_id() -> None:
+    payload = _capture_payload()
+    session = payload["session"]
+    assert isinstance(session, dict)
+    session["provider_session_id"] = "chatgpt:6a232355-ac3c-83eb-a93d-9c70697bfc18:9f658806"
+    payload["raw_provider_payload"] = {
+        "title": "Native ChatGPT title",
+        "current_node": "assistant-node",
+        "mapping": {
+            "assistant-node": {
+                "id": "assistant-node",
+                "parent": None,
+                "children": [],
+                "message": {
+                    "id": "native-a1",
+                    "author": {"role": "assistant"},
+                    "content": {"content_type": "text", "parts": ["Native answer text"]},
+                    "metadata": {},
+                },
+            },
+        },
+    }
+
+    parsed = parse_payload(Provider.CHATGPT, payload, "file-fallback")
+
+    assert len(parsed) == 1
+    assert parsed[0].provider_session_id == "6a232355-ac3c-83eb-a93d-9c70697bfc18"
+
+
 def test_browser_capture_prefers_raw_claude_ai_payload_when_present() -> None:
     payload = _capture_payload()
     session = payload["session"]

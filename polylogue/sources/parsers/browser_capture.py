@@ -38,14 +38,16 @@ def looks_like(payload: object) -> bool:
 def parse(payload: object, fallback_id: str) -> ParsedSession:
     """Parse a browser-capture envelope into the canonical parser contract."""
     envelope = BrowserCaptureEnvelope.model_validate(payload)
+    provider = envelope.session.provider if envelope.session.provider is not Provider.UNKNOWN else Provider.UNKNOWN
+    provider_session_id = _legacy_native_id(provider, envelope.session.provider_session_id) or fallback_id
     if envelope.session.provider is Provider.CHATGPT and envelope.raw_provider_payload:
         from polylogue.sources.parsers.chatgpt import parse as parse_chatgpt
 
-        return parse_chatgpt(envelope.raw_provider_payload, envelope.session.provider_session_id or fallback_id)
+        return parse_chatgpt(envelope.raw_provider_payload, provider_session_id)
     if envelope.session.provider is Provider.CLAUDE_AI and envelope.raw_provider_payload:
         from polylogue.sources.parsers.claude.ai_parser import parse_ai as parse_claude_ai
 
-        return parse_claude_ai(envelope.raw_provider_payload, envelope.session.provider_session_id or fallback_id)
+        return parse_claude_ai(envelope.raw_provider_payload, provider_session_id)
 
     seen_turns: set[str] = set()
     messages: list[ParsedMessage] = []
@@ -98,8 +100,6 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
             )
         )
 
-    provider = envelope.session.provider if envelope.session.provider is not Provider.UNKNOWN else Provider.UNKNOWN
-    provider_session_id = _legacy_native_id(provider, envelope.session.provider_session_id) or fallback_id
     active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
     if active_leaf_message_provider_id is not None:
         messages = [
