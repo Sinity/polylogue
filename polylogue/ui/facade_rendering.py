@@ -6,7 +6,7 @@ import difflib
 from typing import Literal
 
 from pygments import highlight
-from pygments.formatters import TerminalFormatter
+from pygments.formatters import Terminal256Formatter
 from pygments.lexers import get_lexer_by_name
 from rich.align import Align
 from rich.box import Box
@@ -17,6 +17,7 @@ from rich.syntax import Syntax
 from rich.text import Text
 
 from polylogue.ui.facade_console import ConsoleLike
+from polylogue.ui.theme import syntax_theme
 
 
 def _print_plain_section(console: ConsoleLike, heading: str, content: str | None = None) -> None:
@@ -109,7 +110,7 @@ def render_code(console: ConsoleLike, *, plain: bool, panel_box: Box, code: str,
         console.print(code)
         return
 
-    syntax = Syntax(code, language, theme="monokai", line_numbers=True)
+    syntax = Syntax(code, language, theme=syntax_theme("terminal_code"), line_numbers=True)
     _render_panel(
         console,
         syntax,
@@ -146,13 +147,13 @@ def render_diff(
         if isinstance(console, Console):
             with console.pager():
                 lexer = get_lexer_by_name("diff")
-                highlighted = highlight(diff_text, lexer, TerminalFormatter())
+                highlighted = highlight(diff_text, lexer, Terminal256Formatter(style=syntax_theme("terminal_diff")))
                 console.print(highlighted, markup=False, highlight=False)
         else:
             console.print(diff_text)
     except (ImportError, AttributeError):
         if isinstance(console, Console):
-            syntax = Syntax(diff_text, "diff", theme="ansi_dark")
+            syntax = Syntax(diff_text, "diff", theme=syntax_theme("terminal_diff"))
             console.print(syntax)
         else:
             console.print(diff_text)

@@ -38,6 +38,8 @@ anything different; release-please consumes the existing history.
 
 - [ ] `devtools verify` passes on the cut commit.
 - [ ] `devtools render all --check` clean.
+- [ ] `devtools release verify-distribution` passes locally when packaging or
+      runtime dependencies changed.
 - [ ] CI green on `master`.
 - [ ] `CHANGELOG.md` diff in the release PR looks right — entries grouped under
       the configured sections, no stray Unreleased content left over.
@@ -57,12 +59,17 @@ anything different; release-please consumes the existing history.
    which runs, in order:
    - `build-and-smoke` — builds wheel + sdist, runs
      `devtools release verify-distribution`, and verifies PyPI long-description
-     renderability with `twine check`.
+     renderability with `twine check`. The distribution verifier installs the
+     wheel in a clean venv, removes source-tree `PYTHONPATH`, imports runtime
+     entrypoint modules from the installed artifact, and then smokes the CLI,
+     daemon, MCP, and query-parser paths so a missing runtime dependency fails
+     before publication.
    - `installed-smoke` matrix — installs the freshly-built wheel into a fresh
      `python -m venv` on `{ubuntu-latest, macos-latest} × py{3.11, 3.12, 3.13}`
-     and exercises `polylogue --version | --help | stats | count`,
-     `polylogued --help`, `polylogue-mcp --help`, and `python -m polylogue
-     --version` against an empty `POLYLOGUE_ARCHIVE_ROOT`. This is the
+     and exercises `polylogue --version`, `polylogue --help`,
+     `polylogue --plain analyze --count`, `polylogued --help`,
+     `polylogue-mcp --help`, and `python -m polylogue --version` against an
+     empty `POLYLOGUE_ARCHIVE_ROOT`. This is the
      OS/Python-version coverage gate: PyPI publication waits on it.
    - `sbom` — emits a CycloneDX SBOM (`*.cdx.json` and `*.cdx.xml`) from the
      wheel's resolved dependency closure and uploads it as the

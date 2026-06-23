@@ -47,6 +47,18 @@ def test_verify_distribution_surface_builds_sdist_wheel_and_smokes(
     rendered = [" ".join(call[:2]) for call in calls]
     assert rendered.count("uv build") == 2
     assert rendered.count("uv venv") == 2
+    import_probes = [call for call in calls if len(call) >= 4 and call[1:3] == ("-I", "-c")]
+    assert len(import_probes) == 2
+    assert all("polylogue.archive.query.expression" in call[3] for call in import_probes)
+
+
+def test_smoke_env_removes_source_pythonpath(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PYTHONPATH", "/repo/source")
+
+    env = surface._smoke_env(tmp_path / "archive")
+
+    assert "PYTHONPATH" not in env
+    assert env["POLYLOGUE_FORCE_PLAIN"] == "1"
 
 
 def _runtime_entry_points() -> str:

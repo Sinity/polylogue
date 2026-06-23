@@ -15,6 +15,11 @@ class DocsEntry:
 
 
 DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
+    DocsEntry(
+        "Installation",
+        "docs/installation.md",
+        "Linux, Nix/NixOS, Homebrew, and container install/run paths.",
+    ),
     DocsEntry("CLI Reference", "docs/cli-reference.md", "Generated command reference from live help output."),
     DocsEntry(
         "Search & Query",
@@ -104,6 +109,7 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "docs/plans/release-readiness-gate.md",
         "Externally-presentable release gate, required checks, and release PR evidence contract.",
     ),
+    DocsEntry("Release Checklist", "docs/release.md", "Cut-time packaging, installed-artifact, and publish checks."),
 )
 
 REPO_GUIDE_ENTRIES: tuple[DocsEntry, ...] = (
@@ -114,6 +120,7 @@ REPO_GUIDE_ENTRIES: tuple[DocsEntry, ...] = (
 
 README_DOC_TITLES: tuple[str, ...] = (
     "Architecture",
+    "Installation",
     "Architecture Spine",
     "Execution Plan",
     "Design Direction",

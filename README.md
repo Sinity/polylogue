@@ -42,6 +42,24 @@ see [docs/getting-started.md](docs/getting-started.md) and
 [docs/onboarding.md](docs/onboarding.md). Other install channels (Nix, Homebrew,
 container) are in [docs/installation.md](docs/installation.md).
 
+Ordinary Linux hosts can keep the tools isolated with `pipx` or a venv:
+
+```bash
+pipx install polylogue
+polylogue --help
+polylogue init
+polylogued run
+polylogued browser-capture status
+```
+
+Nix users can run the packaged apps without installing them globally:
+
+```bash
+nix run github:Sinity/polylogue -- --help
+nix run github:Sinity/polylogue#polylogued -- run
+nix run github:Sinity/polylogue#polylogued -- browser-capture status
+```
+
 ## Why this exists
 
 AI sessions are scattered across one JSON dump per vendor, one JSONL stream
@@ -278,8 +296,8 @@ Operators choose focused checks via the verification baseline:
 
 ```bash
 devtools verify --quick
-devtools lab scenario run archive-smoke --tier 0
-devtools lab scenario run reader-visual-smoke
+devtools lab smoke run archive-smoke --tier 0
+devtools lab smoke run reader-visual-smoke
 ```
 
 <!-- BEGIN GENERATED: docs-surface -->
@@ -292,6 +310,7 @@ Start with the generated command and architecture references; use [docs/README.m
 | Document | Description |
 |----------|-------------|
 | [Architecture](docs/architecture.md) | System rings, ownership boundaries, and data flow. |
+| [Installation](docs/installation.md) | Linux, Nix/NixOS, Homebrew, and container install/run paths. |
 | [Architecture Spine](docs/architecture-spine.md) | Target shape, guardrails, and major decisions with rejected alternatives. |
 | [Execution Plan](docs/execution-plan.md) | Current issue-driven sequencing plan for the remaining backlog. |
 | [Design Direction](docs/design/README.md) | Historical design inputs and current guidance for using them without treating them as parallel roadmaps. |

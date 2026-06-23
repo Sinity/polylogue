@@ -75,6 +75,7 @@ def build_docs_readme(
             _render_named_table(
                 docs_by_title,
                 (
+                    "Installation",
                     "Architecture",
                     "Architecture Spine",
                     "Execution Plan",
@@ -109,7 +110,7 @@ def build_docs_readme(
             "",
             _render_named_table(
                 docs_by_title,
-                ("Developer Tools", "Test Quality Workflows", "Release Readiness Gate"),
+                ("Developer Tools", "Test Quality Workflows", "Release Readiness Gate", "Release Checklist"),
                 from_dir="docs",
             ),
             "",

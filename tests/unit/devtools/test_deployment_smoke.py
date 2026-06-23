@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import stat
 import subprocess
 import urllib.error
 from email.message import Message
@@ -387,6 +388,28 @@ def test_deployment_smoke_browser_render_probe_success(monkeypatch: pytest.Monke
     assert probe.dom_bytes == len("<html>Polylogue</html>")
     assert probe.screenshot_bytes == 3
     assert probe.error is None
+
+
+def test_deployment_smoke_resolves_browser_from_candidate_path(tmp_path: Path) -> None:
+    chrome = tmp_path / "chromium"
+    chrome.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    chrome.chmod(chrome.stat().st_mode | stat.S_IXUSR)
+
+    resolved = deployment_smoke._resolve_browser_executable(str(tmp_path), None)
+
+    assert resolved == str(chrome)
+
+
+def test_deployment_smoke_rejects_missing_explicit_browser_path(tmp_path: Path) -> None:
+    missing = tmp_path / "not-chrome"
+
+    resolved = deployment_smoke._resolve_browser_executable(str(tmp_path), str(missing))
+    diagnostics = deployment_smoke._browser_executable_resolution(str(tmp_path), str(missing))
+
+    assert resolved is None
+    assert diagnostics["ok"] is False
+    assert diagnostics["requested"] == str(missing)
+    assert diagnostics["error"] == "explicit_browser_executable_not_found_or_not_executable"
 
 
 def test_deployment_smoke_browser_render_probe_reports_missing_chrome(monkeypatch: pytest.MonkeyPatch) -> None:

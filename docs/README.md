@@ -8,6 +8,7 @@ Use this map when you need the complete repository documentation surface. The to
 
 | Document | Description |
 |----------|-------------|
+| [Installation](installation.md) | Linux, Nix/NixOS, Homebrew, and container install/run paths. |
 | [Architecture](architecture.md) | System rings, ownership boundaries, and data flow. |
 | [Architecture Spine](architecture-spine.md) | Target shape, guardrails, and major decisions with rejected alternatives. |
 | [Execution Plan](execution-plan.md) | Current issue-driven sequencing plan for the remaining backlog. |
@@ -38,6 +39,7 @@ Use this map when you need the complete repository documentation surface. The to
 | [Developer Tools](devtools.md) | `devtools` guide for generated surfaces, validation, and repo hygiene. |
 | [Test Quality Workflows](test-quality-workflows.md) | Generated validation lanes, mutation campaigns, and benchmark campaigns. |
 | [Release Readiness Gate](plans/release-readiness-gate.md) | Externally-presentable release gate, required checks, and release PR evidence contract. |
+| [Release Checklist](release.md) | Cut-time packaging, installed-artifact, and publish checks. |
 
 ## Contributor Workflow
 

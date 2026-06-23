@@ -8,7 +8,7 @@ For users, the supported entrypoint is `polylogue import --demo`: it generates
 the approved deterministic fixture world and schedules it through the same
 daemon-backed import path as ordinary source imports. For tests and repository
 verification, the same generator is available through `polylogue.scenarios`,
-shared fixtures, and `devtools lab scenario`.
+shared fixtures, and `devtools lab smoke`.
 
 ## Quick Start
 
@@ -31,8 +31,8 @@ polylogue find "pytest" then read --all --limit 5
 polylogue find "pytest" then read --view messages
 polylogue find "pytest" then analyze --facets
 
-# Repository verification-lab scenarios
-devtools lab scenario run archive-smoke --tier 0
+# Repository verification-lab smokes
+devtools lab smoke run archive-smoke --tier 0
 devtools test tests/unit/cli/test_demo_command.py tests/unit/demo/test_demo_seed_verify.py tests/visual
 ```
 

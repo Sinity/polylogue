@@ -34,7 +34,7 @@ def isolated_task_history_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         ("verify topology", "verify"),
         ("render all", "render"),
         ("render cli-reference", "render"),
-        ("lab scenario", "lab"),
+        ("lab smoke", "lab"),
         ("bench mutation", "campaign"),
         ("bench campaign", "campaign"),
         ("bench synthetic", "campaign"),

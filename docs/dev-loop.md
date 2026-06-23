@@ -233,6 +233,31 @@ cassette or drive the terminal through the local control plane when the target
 flow is richer than `polylogue ops status`; keep generated recordings under the
 ignored run-local directory.
 
+## Browser control planes
+
+Keep the three browser surfaces separate when debugging web-shell or extension
+work:
+
+- The agent-private Chrome/MCP browser belongs to the local control plane. It
+  can open the branch-local web shell and inspect DOM/network state, but a cloud
+  checkout cannot prove that private browser launch works on the operator's
+  workstation.
+- The operator's live browser and authenticated cookies are never used by
+  default. Use a copied profile only when the operator explicitly approves it,
+  and keep that copy under an ignored local path.
+- `devtools workspace deployment-smoke --browser` is an opt-in fallback that
+  launches a fresh headless Chrome/Chromium profile, captures DOM and a
+  screenshot from the daemon web root, and reports the resolved executable. It
+  proves first paint of Polylogue's deployed web root; it does not prove MCP
+  DevTools navigation or authenticated provider pages.
+
+Use an explicit executable when the default PATH search does not match the host:
+
+```bash
+devtools workspace deployment-smoke --browser --browser-executable "$(command -v google-chrome)"
+devtools workspace deployment-smoke --browser --browser-executable /etc/profiles/per-user/$USER/bin/google-chrome
+```
+
 ## Browser-Capture Extension Development
 
 Load `browser-extension/` unpacked into a development Chrome profile and point

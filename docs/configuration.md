@@ -125,6 +125,9 @@ max_cost_usd = 5.0   # soft monthly cap; 0 = unlimited
 level = "INFO"
 force_plain = false
 
+[ui]
+theme = "auto"   # auto, dark, or light
+
 [notifications]
 backend = "log"
 
@@ -183,10 +186,22 @@ These are the supported runtime overrides:
 | `XDG_STATE_HOME` | Base directory for OAuth token and runtime state |
 | `POLYLOGUE_ARCHIVE_ROOT` | Override the archive root instead of using `$XDG_DATA_HOME/polylogue` |
 | `POLYLOGUE_FORCE_PLAIN` | Force non-interactive plain output |
+| `NO_COLOR` | Standard no-color request; any non-empty value makes CLI output ANSI-free/plain |
+| `POLYLOGUE_THEME` | `auto`, `dark`, or `light` semantic theme for Rich and HTML rendering |
 | `VOYAGE_API_KEY` | Voyage AI API key for embeddings |
 | `POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS` | Set to `1`, `true`, or `yes` to let daemon convergence call the embedding provider |
 | `POLYLOGUE_CREDENTIAL_PATH` | Drive auth override for the OAuth client JSON path |
 | `POLYLOGUE_TOKEN_PATH` | Drive auth override for the OAuth token path |
+
+### Theme and no-color policy
+
+Human-facing terminal output becomes plain when `--plain`,
+`POLYLOGUE_FORCE_PLAIN`, `NO_COLOR`, or a non-interactive terminal path requests
+it. Plain mode removes Rich layout and ANSI escapes before any color theme is
+applied. When rich rendering is allowed, `POLYLOGUE_THEME` or `[ui] theme`
+selects semantic tokens for terminal panels, code/diff highlighting, and HTML
+exports. Future palette sources such as pywal should feed those semantic tokens
+rather than adding one-off colors at call sites.
 
 ## Backup and Export
 

@@ -276,7 +276,11 @@ def live_source_status_payload(sources: tuple[WatchSource, ...]) -> JSONDocument
     )
 
 
-def browser_capture_status_payload(spool_path: Path | None = None) -> JSONDocument:
+def browser_capture_status_payload(
+    spool_path: Path | None = None,
+    *,
+    include_spool_path: bool = True,
+) -> JSONDocument:
     """Return status for the browser-capture receiver component."""
     cfg_default = BrowserCaptureReceiverConfig.default()
     if spool_path is not None:
@@ -288,7 +292,11 @@ def browser_capture_status_payload(spool_path: Path | None = None) -> JSONDocume
         )
     else:
         config = cfg_default
-    return json_document(receiver_status_payload(config))
+    payload = receiver_status_payload(config)
+    if not include_spool_path:
+        payload.pop("spool_path", None)
+        payload.pop("artifact_path", None)
+    return json_document(payload)
 
 
 def _db_size_info() -> dict[str, object]:

@@ -10,8 +10,67 @@ matches how you run other tools on the host.
 | `nix run github:Sinity/polylogue` | NixOS / nix-darwin users | [`flake.nix`](../flake.nix) |
 | `ghcr.io/sinity/polylogue` | Container / Kubernetes / Compose | see below |
 
-This document focuses on the container channel; the other channels are linked
-out so they can evolve independently.
+The sections below cover ordinary Linux/Python installs, Nix/NixOS, containers,
+and Homebrew. The same three console scripts are exposed by every channel:
+`polylogue`, `polylogued`, and `polylogue-mcp`.
+
+## Ordinary Linux / Python
+
+Use `pipx` when you want Polylogue as a user-level tool without mixing it into
+an application virtualenv:
+
+```bash
+python -m pip install --user pipx
+python -m pipx ensurepath
+pipx install polylogue
+polylogue --help
+polylogue init
+polylogued run
+polylogued browser-capture status
+```
+
+A plain virtualenv works the same way and keeps the installed scripts under one
+explicit directory:
+
+```bash
+python -m venv ~/.local/share/polylogue-venv
+~/.local/share/polylogue-venv/bin/pip install --upgrade pip polylogue
+~/.local/share/polylogue-venv/bin/polylogue init
+~/.local/share/polylogue-venv/bin/polylogued run
+```
+
+For a system service, point the unit at the venv or package-managed
+`polylogued` executable and set `POLYLOGUE_ARCHIVE_ROOT` only when the default
+XDG archive location is not desired.
+
+## Nix / NixOS quick start
+
+The flake exposes app outputs for the CLI, daemon, and MCP server. One-shot
+commands are enough for smoke testing a host:
+
+```bash
+nix run github:Sinity/polylogue -- --help
+nix run github:Sinity/polylogue#polylogued -- run
+nix run github:Sinity/polylogue#polylogued -- browser-capture status
+nix run github:Sinity/polylogue#polylogue-mcp -- --help
+```
+
+Inside a checkout, use the dev shell when you want the repo-local command
+surface and verification helpers:
+
+```bash
+nix develop -c polylogue --help
+nix develop -c polylogued run
+nix develop -c devtools workspace deployment-smoke --browser --browser-executable "$(command -v google-chrome)"
+```
+
+On NixOS, import the flake module shown in the Nix section below. It creates a
+managed `polylogued.service`; check that deployed surface with:
+
+```bash
+systemctl status polylogued.service
+polylogue ops status
+```
 
 ## Container image
 

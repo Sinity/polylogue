@@ -23,6 +23,29 @@ include it in the daemon component summary with `polylogued status`, or include
 the same component status in archive health output with `polylogue ops doctor
 --daemon`.
 
+## Control-plane browser boundary
+
+Browser capture has a local receiver and an unpacked extension, but it does not
+require Polylogue to borrow the operator's authenticated browser. For web-shell
+or extension debugging, keep these paths distinct:
+
+- an agent-private Chrome/MCP browser can inspect the local workbench when the
+  local control plane provides one;
+- the operator's live browser/cookies are used only after explicit approval and
+  should be copied into an ignored local profile, never into CI or cloud agents;
+- `devtools workspace deployment-smoke --browser` launches a fresh headless
+  Chrome/Chromium profile and reports the executable it resolved.
+
+The deployment fallback is useful for proving that the deployed daemon can
+serve the web root to a real browser engine:
+
+```bash
+devtools workspace deployment-smoke --browser --browser-executable "$(command -v google-chrome)"
+```
+
+That smoke does not certify private MCP browser launch, extension ids,
+authenticated ChatGPT/Claude.ai pages, or copied-profile cookies.
+
 Accepted captures are typed browser-capture envelopes and are written
 atomically under the configured capture spool at `<provider>/...json`.
 The filename is deterministic from provider and provider session id, so repeated

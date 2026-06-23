@@ -7,7 +7,7 @@ Role: **codebase navigator**. The projection declares where each file lives
 and where it should live under planned placement rules. It is not a behavior
 evidence — it does not encode source/provider semantics, correctness contracts,
 or import-boundary enforcement. Those concerns belong to tests, verify layering,
-and verification-lab scenarios.
+and verification-lab smoke sets.
 
 Output is a first-cut projection. Cells where the rule is uncertain are
 marked ``target: TBD`` with a reason. The intended workflow is:

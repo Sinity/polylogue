@@ -243,16 +243,16 @@ def test_lab_verify_includes_medium_scale_marker() -> None:
     assert "scale_small" not in marker_expr
 
 
-def test_lab_verify_delegates_to_lab_scenario() -> None:
+def test_lab_verify_delegates_to_lab_smoke() -> None:
     steps = build_verify_steps(quick=True, lab=True, skip_slow=False)
 
     labels = [label for label, _command in steps]
-    assert "lab scenario" in labels
+    assert "lab smoke" in labels
     assert "bench slo" in labels
-    lab_step = next(step for step in steps if step[0] == "lab scenario")
+    lab_step = next(step for step in steps if step[0] == "lab smoke")
     assert lab_step == (
-        "lab scenario",
-        [sys.executable, "-m", "devtools", "lab", "scenario", "run", "archive-smoke", "--tier", "0"],
+        "lab smoke",
+        [sys.executable, "-m", "devtools", "lab", "smoke", "run", "archive-smoke", "--tier", "0"],
     )
 
 
@@ -806,7 +806,7 @@ def test_failed_step_stop_policy_distinguishes_cheap_and_heavy_steps() -> None:
     assert _stop_after_failed_step("ruff check") is False
     assert _stop_after_failed_step("verify layering") is False
     assert _stop_after_failed_step("pytest testmon") is True
-    assert _stop_after_failed_step("lab scenario") is True
+    assert _stop_after_failed_step("lab smoke") is True
     assert _stop_after_failed_step("bench slo") is True
 
 

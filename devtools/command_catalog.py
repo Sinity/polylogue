@@ -18,7 +18,7 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab probe pipeline",
     "lab probe turso",
     "lab projections",
-    "lab scenario",
+    "lab smoke",
     "lab schema audit",
     "lab schema compare",
     "lab schema explain",
@@ -561,14 +561,14 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools bench memory --max-rss-mb 1536 -- polylogue --plain analyze",),
     ),
     CommandSpec(
-        "lab scenario",
+        "lab smoke",
         "verification lab",
-        "Run verification-lab smoke scenario sets.",
+        "Run verification-lab smoke sets.",
         "devtools.lab_scenario",
-        use_when="Run direct archive and reader smoke scenarios outside the archive CLI.",
+        use_when="Run direct archive and reader smoke sets outside the archive CLI.",
         examples=(
-            "devtools lab scenario list",
-            "devtools lab scenario run archive-smoke --tier 0",
+            "devtools lab smoke list",
+            "devtools lab smoke run archive-smoke --tier 0",
         ),
     ),
     CommandSpec(

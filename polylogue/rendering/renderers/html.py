@@ -13,6 +13,7 @@ from polylogue.rendering.renderers.html_messages import (
     build_session_html_messages,
 )
 from polylogue.rendering.renderers.html_template import get_cached_template
+from polylogue.ui.theme import ThemeMode, css_variable_declarations, syntax_theme
 
 if TYPE_CHECKING:
     from polylogue.archive.models import Session
@@ -32,7 +33,8 @@ def render_session_html(conv: Session, theme: str = "dark") -> str:
     Returns:
         Complete HTML document as a string.
     """
-    style = "monokai" if theme == "dark" else "default"
+    active_theme: ThemeMode = "light" if theme == "light" else "dark"
+    style = syntax_theme("html", active_theme)
     highlighter = PygmentsHighlighter(style=style)
     message_renderer = HTMLMessageRenderer(highlighter)
 
@@ -53,7 +55,8 @@ def render_session_html(conv: Session, theme: str = "dark") -> str:
         message_count=len(messages),
         created_at=str(conv.display_date) if conv.display_date else None,
         highlight_css=highlighter.get_css(),
-        theme=theme,
+        theme=active_theme,
+        theme_css=css_variable_declarations(active_theme),
     )
     return str(rendered)
 

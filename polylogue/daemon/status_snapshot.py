@@ -101,7 +101,7 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
             refresh_error = refresh_error or str(exc)
     now = datetime.now(UTC).isoformat()
     runtime = _runtime_component_state()
-    browser_capture = dict(browser_capture_status_payload(runtime.browser_capture_spool_path))
+    browser_capture = dict(browser_capture_status_payload(runtime.browser_capture_spool_path, include_spool_path=False))
     browser_capture_enabled = runtime.browser_capture_enabled is True
     browser_capture["active"] = browser_capture_enabled
     payload: dict[str, object] = {

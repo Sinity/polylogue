@@ -55,6 +55,13 @@ COMPLETION_PROBES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         ("json", "ndjson", "text"),
     ),
 )
+BROWSER_EXECUTABLE_CANDIDATES = (
+    "google-chrome",
+    "google-chrome-stable",
+    "chromium",
+    "chromium-browser",
+    "chrome",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -653,7 +660,30 @@ def _probe_route(url: str, *, timeout_s: float) -> RouteProbe:
 
 
 def _resolve_browser_executable(path: str, executable: str | None) -> str | None:
-    return executable or shutil.which("google-chrome", path=path) or shutil.which("chrome", path=path)
+    if executable:
+        if os.path.isabs(executable) or os.sep in executable or (os.altsep is not None and os.altsep in executable):
+            candidate = Path(executable).expanduser()
+            return str(candidate) if candidate.is_file() and os.access(candidate, os.X_OK) else None
+        return shutil.which(executable, path=path)
+    for candidate_name in BROWSER_EXECUTABLE_CANDIDATES:
+        resolved = shutil.which(candidate_name, path=path)
+        if resolved is not None:
+            return resolved
+    return None
+
+
+def _browser_executable_resolution(path: str, executable: str | None) -> dict[str, Any]:
+    resolved = _resolve_browser_executable(path, executable)
+    candidates = [executable] if executable else list(BROWSER_EXECUTABLE_CANDIDATES)
+    return {
+        "requested": executable,
+        "resolved": resolved,
+        "candidates": candidates,
+        "ok": resolved is not None,
+        "error": None
+        if resolved is not None
+        else ("explicit_browser_executable_not_found_or_not_executable" if executable else "chrome_not_found_on_path"),
+    }
 
 
 def _run_browser_command(command: list[str], *, path: str, timeout_s: float) -> subprocess.CompletedProcess[str]:
@@ -763,6 +793,7 @@ def _diagnose(
     routes: list[RouteProbe],
     repo_head: str | None,
     browser_render: BrowserRenderProbe | None,
+    browser_executable_resolution: dict[str, Any],
     browser_capture_archive: BrowserCaptureArchiveProbe,
     browser_capture_receiver_archive_state: BrowserCaptureReceiverArchiveStateProbe,
 ) -> dict[str, Any]:
@@ -798,7 +829,12 @@ def _diagnose(
         next_actions.append("verify the daemon can serve the workbench root before debugging browser-side rendering")
     if browser_render is not None and not browser_render.ok:
         likely_causes.append("web-shell browser render does not reach DOM/screenshot within the deployed smoke budget")
-        next_actions.append("profile first-paint bootstrap and defer slow status/facet/attachment loaders")
+        if browser_executable_resolution.get("resolved") is None:
+            next_actions.append(
+                "pass --browser-executable with an explicit Chrome/Chromium path for the opt-in browser smoke"
+            )
+        else:
+            next_actions.append("profile first-paint bootstrap and defer slow status/facet/attachment loaders")
     if browser_capture_archive.error == "spooled_newer_than_raw_rows":
         likely_causes.append("browser-capture raw archive rows lag behind newer spooled artifacts")
         next_actions.append(
@@ -835,6 +871,7 @@ def _diagnose(
         "polylogue_commit": deployed_commit,
         "polylogued_version_ok": polylogued.ok if polylogued is not None else None,
         "browser_capture_state": browser_capture_state,
+        "browser_executable_resolution": browser_executable_resolution,
         "browser_render": asdict(browser_render) if browser_render is not None else None,
         "browser_capture_archive": asdict(browser_capture_archive),
         "browser_capture_receiver_archive_state": asdict(browser_capture_receiver_archive_state),
@@ -940,6 +977,7 @@ def build_report(
         if not probe.ok
     )
     browser_render = None
+    browser_executable_resolution = _browser_executable_resolution(path, browser_executable)
     if browser:
         browser_render = _probe_browser_render(
             f"{daemon_base_url.rstrip('/')}/",
@@ -990,6 +1028,7 @@ def build_report(
             routes,
             repo_head,
             browser_render,
+            browser_executable_resolution,
             browser_capture_archive,
             browser_capture_receiver_archive_state,
         ),
@@ -1023,6 +1062,17 @@ def _print_human(report: DeploymentSmokeReport) -> None:
         if completion_probe.missing:
             detail = f"missing={','.join(completion_probe.missing)} candidates={detail}"
         print(f"  {marker} {completion_probe.name}: {detail}")
+    browser_resolution = report.diagnostics.get("browser_executable_resolution")
+    if isinstance(browser_resolution, dict):
+        print("")
+        print("Browser executable:")
+        searched = ", ".join(str(item) for item in browser_resolution.get("candidates", []) if item)
+        marker = "ok" if browser_resolution.get("ok") else "not found"
+        print(
+            f"  {marker} requested={browser_resolution.get('requested') or ''} "
+            f"resolved={browser_resolution.get('resolved') or ''} searched={searched} "
+            f"error={browser_resolution.get('error') or ''}"
+        )
     if report.browser_render is not None:
         browser_probe = report.browser_render
         marker = "ok" if browser_probe.ok else "FAIL"

@@ -13,9 +13,12 @@ from polylogue.cli.help_markdown import render_help_markdown
 from polylogue.ui.theme import (
     SEMANTIC_TOKENS,
     ThemeMode,
+    css_variable_declarations,
+    css_variables,
     resolve_theme_mode,
     rich_theme_styles,
     semantic_style,
+    syntax_theme,
 )
 
 _MODES: tuple[ThemeMode, ...] = ("dark", "light")
@@ -77,6 +80,31 @@ def test_rich_theme_styles_carries_semantic_namespace() -> None:
             "status.icon.info",
         ):
             assert legacy in styles, (mode, legacy)
+
+
+def test_syntax_theme_uses_semantic_surface_names() -> None:
+    assert syntax_theme("terminal_code", mode="dark") == "monokai"
+    assert syntax_theme("terminal_code", mode="light") == "default"
+    assert syntax_theme("terminal_diff", mode="dark") == "monokai"
+    assert syntax_theme("html", mode="light") == "default"
+
+
+def test_css_variables_cover_template_tokens() -> None:
+    for mode in _MODES:
+        variables = css_variables(mode)
+        for required in (
+            "--bg-primary",
+            "--bg-code",
+            "--border-subtle",
+            "--user-bg",
+            "--user-border",
+            "--assistant-bg",
+            "--assistant-border",
+        ):
+            assert required in variables, (mode, required)
+        declarations = css_variable_declarations(mode)
+        assert "            --bg-code:" in declarations
+        assert '[data-theme="light"]' not in declarations
 
 
 def test_force_plain_independent_of_theme(monkeypatch: pytest.MonkeyPatch) -> None:
