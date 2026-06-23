@@ -247,7 +247,12 @@ def _raw_materialization_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]
                 """
             )
         )
-        missing_rows = [row for row in candidate_rows if not _raw_materialized_by_source_path_native(conn, row)]
+        missing_rows = [
+            row
+            for row in candidate_rows
+            if _raw_materialization_category(row, archive_root) != "parsed-without-session"
+            or not _raw_materialized_by_source_path_native(conn, row)
+        ]
     except sqlite3.Error:
         return []
     finally:

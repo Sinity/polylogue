@@ -394,10 +394,51 @@ def _delete_stale_sessions_for_raw_entries(conn: sqlite3.Connection, ready_entri
         if not expected_session_ids:
             continue
         placeholders = ",".join("?" for _ in expected_session_ids)
+        stale_session_ids = [
+            str(row[0])
+            for row in conn.execute(
+                f"SELECT session_id FROM sessions WHERE raw_id = ? AND session_id NOT IN ({placeholders})",
+                (raw_id, *sorted(expected_session_ids)),
+            ).fetchall()
+        ]
+        if not stale_session_ids:
+            continue
+        _delete_sessions_without_fk_cascade(conn, stale_session_ids)
         conn.execute(
             f"DELETE FROM sessions WHERE raw_id = ? AND session_id NOT IN ({placeholders})",
             (raw_id, *sorted(expected_session_ids)),
         )
+
+
+def _delete_sessions_without_fk_cascade(conn: sqlite3.Connection, session_ids: Sequence[str]) -> None:
+    """Apply sessions FK actions manually while bulk ingest has FKs disabled."""
+    if not session_ids:
+        return
+    placeholders = ",".join("?" for _ in session_ids)
+    params = tuple(session_ids)
+    for table_name, from_column, on_delete in _session_foreign_key_actions(conn):
+        table = _quote_identifier(table_name)
+        column = _quote_identifier(from_column)
+        if table_name == "sessions" or on_delete.upper() == "SET NULL":
+            conn.execute(f"UPDATE {table} SET {column} = NULL WHERE {column} IN ({placeholders})", params)
+        elif on_delete.upper() == "CASCADE":
+            conn.execute(f"DELETE FROM {table} WHERE {column} IN ({placeholders})", params)
+
+
+def _session_foreign_key_actions(conn: sqlite3.Connection) -> list[tuple[str, str, str]]:
+    actions: list[tuple[str, str, str]] = []
+    table_rows = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+    for table_row in table_rows:
+        table_name = str(table_row[0])
+        for fk in conn.execute(f"PRAGMA foreign_key_list({_quote_identifier(table_name)})").fetchall():
+            if str(fk[2]) == "sessions":
+                actions.append((table_name, str(fk[3]), str(fk[6] or "")))
+    actions.sort(key=lambda item: item[0] == "sessions")
+    return actions
+
+
+def _quote_identifier(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
 
 
 def _drain_ready_session_entries(

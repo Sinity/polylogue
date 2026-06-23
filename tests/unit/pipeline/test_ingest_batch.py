@@ -1025,7 +1025,16 @@ def test_process_ingest_batch_sync_replaces_stale_sessions_for_same_raw_id(
         stale_session_id,
         content_hash="stale-provider-session",
         raw_id=raw_id,
-        message_tuples=[],
+        message_tuples=[
+            _message_tuple(
+                "msg-stale-provider-redetected",
+                stale_session_id,
+                role="user",
+                text="stale drive payload",
+                content_hash="stale-message",
+                sort_key=0.0,
+            )
+        ],
     )
     replacement = _session_data(
         replacement_session_id,
@@ -1078,9 +1087,14 @@ def test_process_ingest_batch_sync_replaces_stale_sessions_for_same_raw_id(
         ).fetchall()
         assert [row[0] for row in rows] == [replacement_session_id]
         assert (
+            conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (stale_session_id,)).fetchone()[0] == 0
+        )
+        assert conn.execute("SELECT COUNT(*) FROM blocks WHERE session_id = ?", (stale_session_id,)).fetchone()[0] == 0
+        assert (
             conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (replacement_session_id,)).fetchone()[0]
             == 1
         )
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
 def test_select_ingest_worker_count_uses_cpu_count(monkeypatch: pytest.MonkeyPatch) -> None:
