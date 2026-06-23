@@ -113,6 +113,12 @@ EXPRESSION_FIELD_REGISTRY: dict[str, dict[str, str]] = {
         "negatable": "no",
         "example": "id:abc123",
     },
+    "session": {
+        "description": "Filter by exact session ref; alias for id:",
+        "spec_field": "session_id",
+        "negatable": "no",
+        "example": "session:claude-code-session:abc123",
+    },
     "title": {
         "description": "Filter by session title (substring)",
         "spec_field": "title",
