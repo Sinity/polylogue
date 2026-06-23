@@ -19,6 +19,10 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
         from polylogue.sources.parsers.chatgpt import parse as parse_chatgpt
 
         return parse_chatgpt(envelope.raw_provider_payload, envelope.session.provider_session_id or fallback_id)
+    if envelope.session.provider is Provider.CLAUDE_AI and envelope.raw_provider_payload:
+        from polylogue.sources.parsers.claude.ai_parser import parse_ai as parse_claude_ai
+
+        return parse_claude_ai(envelope.raw_provider_payload, envelope.session.provider_session_id or fallback_id)
 
     seen_turns: set[str] = set()
     messages: list[ParsedMessage] = []

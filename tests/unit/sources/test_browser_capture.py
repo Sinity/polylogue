@@ -165,6 +165,70 @@ def test_browser_capture_raw_chatgpt_without_id_uses_envelope_session_id() -> No
     assert [message.provider_message_id for message in session.messages] == ["native-u1", "native-a1"]
 
 
+def test_browser_capture_prefers_raw_claude_ai_payload_when_present() -> None:
+    payload = _capture_payload()
+    session = payload["session"]
+    assert isinstance(session, dict)
+    session["provider"] = "claude-ai"
+    session["provider_session_id"] = "claude-conv-123"
+    payload["raw_provider_payload"] = {
+        "uuid": "claude-native-conv",
+        "name": "Native Claude title",
+        "created_at": "2026-04-24T00:00:00+00:00",
+        "updated_at": "2026-04-24T00:00:01+00:00",
+        "chat_messages": [
+            {
+                "uuid": "claude-u1",
+                "sender": "human",
+                "text": "Native Claude user",
+                "created_at": "2026-04-24T00:00:00+00:00",
+            },
+            {
+                "uuid": "claude-a1",
+                "sender": "assistant",
+                "text": "Native Claude answer",
+                "created_at": "2026-04-24T00:00:01+00:00",
+                "model": "claude-native",
+            },
+        ],
+    }
+
+    parsed = parse_payload(Provider.CLAUDE_AI, payload, "fallback")
+
+    assert len(parsed) == 1
+    parsed_session = parsed[0]
+    assert parsed_session.source_name is Provider.CLAUDE_AI
+    assert parsed_session.provider_session_id == "claude-native-conv"
+    assert parsed_session.title == "Native Claude title"
+    assert [message.provider_message_id for message in parsed_session.messages] == ["claude-u1", "claude-a1"]
+    assert [message.text for message in parsed_session.messages] == ["Native Claude user", "Native Claude answer"]
+    assert parsed_session.messages[1].model_name == "claude-native"
+
+
+def test_browser_capture_raw_claude_ai_without_id_uses_envelope_session_id() -> None:
+    payload = _capture_payload()
+    session = payload["session"]
+    assert isinstance(session, dict)
+    session["provider"] = "claude-ai"
+    session["provider_session_id"] = "claude-conv-123"
+    payload["raw_provider_payload"] = {
+        "title": "Loose Claude title",
+        "chat_messages": [
+            {"id": "claude-u1", "role": "user", "text": "Loose Claude user"},
+            {"id": "claude-a1", "role": "assistant", "text": "Loose Claude answer"},
+        ],
+    }
+
+    parsed = parse_payload(Provider.CLAUDE_AI, payload, "file-fallback")
+
+    assert len(parsed) == 1
+    parsed_session = parsed[0]
+    assert parsed_session.source_name is Provider.CLAUDE_AI
+    assert parsed_session.provider_session_id == "claude-conv-123"
+    assert parsed_session.title == "Loose Claude title"
+    assert [message.provider_message_id for message in parsed_session.messages] == ["claude-u1", "claude-a1"]
+
+
 def test_browser_capture_parses_list_wrapped_live_decoder_shape() -> None:
     parsed = parse_payload(Provider.CHATGPT, [_capture_payload()], "fallback")
 
@@ -313,4 +377,90 @@ async def test_browser_capture_raw_payload_coalesces_with_chatgpt_export(
     assert rows[0]["session_id"] == "chatgpt-export:conv-123"
     assert rows[0]["native_id"] == "conv-123"
     assert rows[0]["title"] == "Browser title"
+    assert rows[0]["message_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_browser_capture_raw_payload_coalesces_with_claude_ai_export(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    del workspace_env
+    gdpr_export = tmp_path / "claude-export.json"
+    gdpr_export.write_text(
+        json.dumps(
+            {
+                "uuid": "claude-conv-123",
+                "name": "Claude GDPR title",
+                "created_at": "2026-04-24T00:00:00+00:00",
+                "updated_at": "2026-04-24T00:00:01+00:00",
+                "chat_messages": [
+                    {
+                        "uuid": "gdpr-u1",
+                        "sender": "human",
+                        "text": "Claude GDPR user",
+                        "created_at": "2026-04-24T00:00:00+00:00",
+                    },
+                    {
+                        "uuid": "gdpr-a1",
+                        "sender": "assistant",
+                        "text": "Claude GDPR answer",
+                        "created_at": "2026-04-24T00:00:01+00:00",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    capture_payload = _capture_payload()
+    session = capture_payload["session"]
+    assert isinstance(session, dict)
+    session["provider"] = "claude-ai"
+    session["provider_session_id"] = "claude-conv-123"
+    capture_payload["raw_provider_payload"] = {
+        "name": "Claude browser title",
+        "created_at": "2026-04-24T00:00:00+00:00",
+        "updated_at": "2026-04-24T00:00:02+00:00",
+        "chat_messages": [
+            {
+                "uuid": "browser-u1",
+                "sender": "human",
+                "text": "Claude browser user",
+                "created_at": "2026-04-24T00:00:00+00:00",
+            },
+            {
+                "uuid": "browser-a1",
+                "sender": "assistant",
+                "text": "Claude browser answer",
+                "created_at": "2026-04-24T00:00:02+00:00",
+            },
+        ],
+    }
+    artifact = write_capture_envelope(
+        BrowserCaptureEnvelope.model_validate(capture_payload),
+        spool_path=tmp_path / "browser-capture",
+    ).path
+    config = get_config()
+    sources = [
+        Source(name="claude-ai", path=gdpr_export),
+        Source(name="browser-capture", path=artifact),
+    ]
+
+    async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
+        await polylogue.parse_sources(sources)
+
+    with open_index_db(config.archive_root / "index.db") as conn:
+        rows = conn.execute(
+            """
+            SELECT session_id, origin, native_id, title, message_count
+            FROM sessions
+            WHERE origin = 'claude-ai-export'
+            ORDER BY native_id
+            """
+        ).fetchall()
+
+    assert len(rows) == 1
+    assert rows[0]["session_id"] == "claude-ai-export:claude-conv-123"
+    assert rows[0]["native_id"] == "claude-conv-123"
+    assert rows[0]["title"] == "Claude browser title"
     assert rows[0]["message_count"] == 2

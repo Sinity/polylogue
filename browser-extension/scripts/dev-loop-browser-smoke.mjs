@@ -203,11 +203,23 @@ async function main() {
     while (Date.now() < deadline && !worker) {
       targets = await waitJson(`http://127.0.0.1:${debuggingPort}/json/list`, Math.min(2000, timeoutMs));
       const candidates = targets.filter(
-        (target) => target.type === "service_worker" && target.url.endsWith(expectedWorkerSuffix)
+        (target) => target.type === "service_worker" && target.url.startsWith("chrome-extension://")
       );
       for (const candidate of candidates) {
         const client = await connectCdp(candidate.webSocketDebuggerUrl);
         await client.call("Runtime.enable");
+        if (!candidate.url.endsWith(expectedWorkerSuffix)) {
+          if (candidates.length === 1) {
+            worker = candidate;
+            workerClient = client;
+            break;
+          }
+          const manifestName = await evaluateJson(client, "chrome.runtime.getManifest().name").catch(() => null);
+          if (manifestName !== localManifest.name) {
+            client.close();
+            continue;
+          }
+        }
         worker = candidate;
         workerClient = client;
         break;

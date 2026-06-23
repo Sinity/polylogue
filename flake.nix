@@ -150,6 +150,7 @@
           python.pkgs.pyinstrument
           bat
           glow
+          openssl
           vhs
         ];
 
