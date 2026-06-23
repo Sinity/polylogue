@@ -39,29 +39,11 @@ polylogue --latest read --to browser  # open it in the local reader instead
 `polylogue init` detects known session sources and writes a starter
 `polylogue.toml`; the daemon takes it from there. `polylogue config --format
 json` prints the redacted effective state, source layer, and inventory metadata
-for every public config key, so deployments and smoke diagnostics can agree on
-what is really running. For the narrated first run, see
+for every public knob, so Nix/HM deployments, MCP clients, and smoke diagnostics
+can agree on what is really running. For the narrated first run, see
 [docs/getting-started.md](docs/getting-started.md) and
 [docs/onboarding.md](docs/onboarding.md). Other install channels (Nix, Homebrew,
 container) are in [docs/installation.md](docs/installation.md).
-
-Ordinary Linux hosts can keep the tools isolated with `pipx` or a venv:
-
-```bash
-pipx install polylogue
-polylogue --help
-polylogue init
-polylogued run
-polylogued browser-capture status
-```
-
-Nix users can run the packaged apps without installing them globally:
-
-```bash
-nix run github:Sinity/polylogue -- --help
-nix run github:Sinity/polylogue#polylogued -- run
-nix run github:Sinity/polylogue#polylogued -- browser-capture status
-```
 
 ## Why this exists
 
@@ -300,8 +282,8 @@ Operators choose focused checks via the verification baseline:
 
 ```bash
 devtools verify --quick
-devtools lab smoke run archive-smoke --tier 0
-devtools lab smoke run reader-visual-smoke
+devtools lab scenario run archive-smoke --tier 0
+devtools lab scenario run reader-visual-smoke
 ```
 
 <!-- BEGIN GENERATED: docs-surface -->

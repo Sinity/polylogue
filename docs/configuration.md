@@ -86,45 +86,78 @@ same directory tree.
 
 ## Configuration Model
 
-Polylogue has a layered configuration system and a separate archive state
-surface. Keep them apart: startup config tells processes where to bind, where
-to read/write, which provider work is allowed, and how to render output. User
-annotations, saved views, daemon cursors, convergence debt, and one-shot smoke
-results live in SQLite/log state instead.
+Polylogue has a small layered configuration surface and a larger archive state
+surface. Keep those apart: startup config tells processes how to bind, where to
+read/write, which provider work is allowed, and how to present output. User
+annotations, saved views, daemon cursors, telemetry, and one-shot smoke results
+live in SQLite/log state instead.
 
 Layer precedence is highest first:
 
 1. CLI flag overrides for that invocation.
-2. `POLYLOGUE_*`, provider credential, and presentation environment variables.
+2. `POLYLOGUE_*`, provider-specific, and presentation environment variables.
 3. User `polylogue.toml`, resolved from `$POLYLOGUE_CONFIG`, then
    `$XDG_CONFIG_HOME/polylogue/polylogue.toml`, then `./polylogue.toml`.
 4. Site `polylogue.toml`, resolved from `$POLYLOGUE_SITE_CONFIG` or
    `/etc/polylogue/polylogue.toml`.
-5. Built-in defaults: local loopback binds, browser capture restricted to
-   extension origins, embeddings off, and no provider spend unless explicitly
-   enabled.
+5. Built-in defaults: local loopback binds, embeddings off, browser capture
+   restricted to extension origins, and no remote auth-free write surface.
 
-Use `polylogue config` to print the resolved configuration as redacted TOML.
-Use `polylogue config --show-layers` for human provenance. Use
-`polylogue config --format json` for automation; it returns `layers`, `values`,
-and `inventory`. Each value includes its redacted effective value,
-`source_layer`, secret policy, TOML path, env var, owner class, and reload
-behavior.
+Use `polylogue config` to print the effective configuration as redacted TOML.
+Use `polylogue config --show-layers` for a human provenance view. Use
+`polylogue config --format json` for the machine contract; it returns the
+redacted effective value, source layer, owner class, reload behavior, TOML path,
+environment variable, CLI override, default, and inventory row for each public
+key.
 
-Secrets are never printed in cleartext. Set secrets show as `<set>` and unset
-or empty secrets show as `<unset>`, while `secret_present` preserves the useful
-diagnostic bit.
+The JSON shape is intentionally stable for automation:
 
-State classes:
+```json
+{
+  "layers": {
+    "default": "built-in defaults",
+    "site": {"path": "/etc/polylogue/polylogue.toml", "exists": false},
+    "user": {"path": "/home/user/.config/polylogue/polylogue.toml", "exists": true},
+    "env": "POLYLOGUE_*, provider credential, and presentation environment variables",
+    "cli": "CLI overrides (per-invocation)"
+  },
+  "values": {
+    "api_auth_token": {
+      "value": "<set>",
+      "source_layer": "env",
+      "secret": true,
+      "secret_present": true,
+      "toml_path": "daemon.api.auth_token",
+      "env_var": "POLYLOGUE_API_AUTH_TOKEN",
+      "owner_class": "network-security",
+      "reload_behavior": "startup-bound"
+    }
+  },
+  "inventory": [
+    {
+      "key": "api_auth_token",
+      "toml_path": "daemon.api.auth_token",
+      "env_var": "POLYLOGUE_API_AUTH_TOKEN",
+      "redaction": "presence"
+    }
+  ]
+}
+```
+
+Secrets are never printed in cleartext. Set secrets show as `<set>` and unset or
+empty secrets show as `<unset>`, while `secret_present` preserves the useful bit
+for diagnostics.
+
+### State classes
 
 | Class | Where it lives | Examples | Reload behavior |
 | --- | --- | --- | --- |
 | Static startup config | TOML/env/CLI | archive root, API host/port/token, browser-capture host/port/spool/origins, source roots | Restart `polylogued` after changing. |
-| Deployment policy | TOML/env/Nix/HM/systemd | schema validation mode, remote-bind posture, systemd memory/IO limits | Restart the managed service; policy is outside archive content hashes. |
+| Deployment policy | TOML/env/Nix/HM/systemd | remote-bind opt-in, auth requirements, systemd memory/IO limits, schema validation mode | Restart the managed service; policy is outside archive content hashes. |
 | Runtime mutable user state | `user.db` | tags, marks, saved views, workspaces, assertions, authored overlays | Mutated through CLI/API; not TOML and not source content. |
-| Provider/cost controls | TOML/env | `embedding.enabled`, `embedding.max_cost_usd`, `VOYAGE_API_KEY` | Daemon/provider loops must see explicit enablement before spending. |
-| Presentation preferences | TOML/env/CLI | `logging.force_plain`, `ui.theme`, `NO_COLOR`, slow-query notices | Per CLI process or web render; does not change archive meaning. |
-| Disposable ops state | `ops.db`, logs, smoke JSON | health cursors, convergence debt, deployment-smoke evidence, cgroup signals | Rebuildable diagnostics; do not place in source archives. |
+| Provider/cost controls | TOML/env | `embedding.enabled`, `embedding.max_cost_usd`, `VOYAGE_API_KEY` | Embedding loops read the gate/cost controls; no provider call happens unless explicitly enabled and credentials are present. |
+| Presentation preferences | TOML/env/CLI | `logging.force_plain`, `no_color`, `ui.theme`, `NO_COLOR`, slow-query notices | Per CLI process or web render; does not change archive meaning. |
+| Disposable ops state | `ops.db`, logs, smoke JSON | health cursors, convergence debt, deployment-smoke evidence, cgroup signals | Rebuildable/diagnostic; do not place in source archives. |
 
 ### TOML schema
 
@@ -133,48 +166,69 @@ State classes:
 root = "/home/user/.local/share/polylogue"
 
 [daemon]
-host = "127.0.0.1"
-port = 8766
+host = "127.0.0.1" # legacy alias used by Nix/HM when api/browser host is omitted
+port = 8766         # legacy API port alias
 
 [daemon.api]
 host = "127.0.0.1"
 port = 8766
-# auth_token = "..."   # optional; required for non-loopback API binding
+# auth_token = "..."   # required for non-loopback API binding
 
 [daemon.browser_capture]
 host = "127.0.0.1"
 port = 8765
-allowed_origins = "127.0.0.1"
-spool_path = "/home/user/.local/share/polylogue/browser-capture"
-# auth_token = "..."   # required for non-loopback receiver binding
+allowed_origins = "chrome-extension://*"
+allow_remote = false
+# auth_token = "..."   # required for remote binding or web origins
+# spool_path = "/home/user/.local/share/polylogue/browser-capture"
+
+[daemon.watch]
+debounce_s = 2.0
+
+[sources]
+roots = ["/home/user/.claude/projects", "/home/user/.codex/sessions"]
 
 [embedding]
-# Supplying VOYAGE_API_KEY alone does not enable daemon provider spend.
-enabled = true
+enabled = false
 model = "voyage-4"
 dimension = 1024
 max_cost_usd = 5.0   # soft monthly cap; 0 = unlimited
+# voyage_api_key = "..." # prefer VOYAGE_API_KEY from a secret manager
+
+[observability]
+enabled = false
+otlp_max_body_bytes = 8388608
 
 [logging]
 level = "INFO"
 force_plain = false
 
 [ui]
-theme = "auto"   # auto, dark, or light
+theme = "auto" # auto, dark, or light
+# slow_query_notice_seconds = 2.5
+
+[schema]
+validation = "advisory" # off, advisory, or strict
 
 [notifications]
 backend = "log"
+# webhook_url = "https://..."
+# webhook_secret = "..."
+
+[notifications.email]
+port = 587
+use_tls = true
+use_starttls = true
+max_per_hour = 12
 
 [health]
 check_interval_s = 300
 check_tiers = "fast"
+fts_auto_restore = false
+blob_integrity_sample_size = 100
 
-# Convergence-debt alert thresholds (#1226). The daemon raises a typed
-# HealthAlert when the per-family count of `live_convergence_debt` rows
-# crosses these levels. Overrides per source family let a stuck
-# claude-code-session session escalate sooner than a long-tail chatgpt
-# export. dedup_window_s suppresses repeated alerts within the window;
-# severity escalations and resolution always fire immediately.
+# Convergence-debt alert thresholds. The daemon raises a typed HealthAlert
+# when the per-family count of live_convergence_debt rows crosses these levels.
 [health.convergence_debt]
 default_warning = 1
 default_error = 10
@@ -184,16 +238,78 @@ dedup_window_s = 3600
 warning = 1
 error = 5
 
-[health.convergence_debt.families.chatgpt-export]
-warning = 25
-error = 200
+[health.cursor_lag]
+default_warning_s = 300
+default_error_s = 900
+
+[[cost.subscription.plans]]
+name = "team-monthly"
+period = "monthly"
+included_usd = 0
 ```
 
-Filesystem layout is owned by `polylogue.paths`, which reads directory
-environment variables lazily when its path functions are called.
+The TOML key map is executable: `polylogue.config` owns the inventory consumed
+by the loader, redacted TOML renderer, and JSON effective-state payload. When a
+new public key is added, inventory coverage tests require a TOML/env/default
+classification instead of letting a second ledger drift away from the code.
 
-Path-safety helpers are separate from both surfaces. Code that sanitizes
-provider or session names imports from `polylogue.paths.sanitize`.
+### Safety gates
+
+Remote API binding fails closed. `polylogued run --api-host 0.0.0.0` requires
+both `--insecure-allow-remote` and an API auth token, or the equivalent TOML/env
+settings:
+
+```toml
+[daemon.api]
+host = "0.0.0.0"
+auth_token = "..."
+
+[daemon.browser_capture]
+allow_remote = true
+```
+
+Browser-capture web origins fail closed without a browser-capture auth token.
+Extension origins such as `chrome-extension://*` are allowed by default for the
+local receiver; ordinary web origins such as `https://workbench.example` require
+`daemon.browser_capture.auth_token` or `POLYLOGUE_BROWSER_CAPTURE_AUTH_TOKEN`.
+
+Embeddings are provider-cost work. `VOYAGE_API_KEY` alone supplies a credential
+but does not enable daemon embedding convergence. Set `embedding.enabled = true`
+or `POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS=true` to opt in; without a provider key,
+readiness reports disabled/error state instead of attempting provider calls.
+
+### Presentation and theme policy
+
+`logging.force_plain` and `POLYLOGUE_FORCE_PLAIN` force plain CLI output and
+avoid Rich layout primitives. `NO_COLOR` appears in the config inventory as the
+env-only `no_color` presentation key and is honored by CLI formatting as a
+no-color/plain-output signal for terminal compatibility. `ui.theme` and
+`POLYLOGUE_THEME` select semantic token mode: `auto`, `dark`, or `light`. The
+semantic token names are stable; individual palettes are UI implementation, not
+a deployment policy knob.
+
+Presentation preferences never enter the source/archive content hash and should
+not be stored as user assertions. They are per process, per terminal, or per web
+render.
+
+### Nix and Home Manager semantics
+
+The bundled NixOS module (`services.polylogue`) and Home Manager module
+(`programs.polylogued`) render the same `polylogue.toml` schema that non-Nix
+users write by hand. `polylogued run` reads that TOML/env effective state, so
+module settings do not need to be duplicated as `ExecStart` flags; secret-bearing
+values should come from environment/secret-manager wiring whenever possible
+instead of being rendered into the Nix store.
+
+Nix/HM service settings such as `service.memoryHigh`, `service.memoryMax`,
+`service.nice`, and `service.ioWeight` are deployment policy. They affect the
+systemd unit and show up in deployment-smoke resource evidence when the platform
+exposes cgroup files, but they are not Polylogue archive config keys.
+
+Filesystem layout is owned by `polylogue.paths`, which reads directory
+environment variables lazily when its path functions are called. Path-safety
+helpers are separate from both surfaces. Code that sanitizes provider or session
+names imports from `polylogue.paths.sanitize`.
 
 ## Environment Policy
 
@@ -203,39 +319,38 @@ Environment variable precedence is:
 2. `POLYLOGUE_ARCHIVE_ROOT` overrides the archive root and the archive
    databases under it (`source.db`, `index.db`, `embeddings.db`, `user.db`,
    and `ops.db`).
-3. Source discovery is derived from resolved filesystem paths and Drive cache or
-   auth files.
-4. Drive authentication may override credential and token files through the
-   Drive-specific environment variables below.
-5. Vector indexing reads `VOYAGE_API_KEY` only when daemon embedding convergence
-   is explicitly enabled.
+3. `POLYLOGUE_CONFIG` and `POLYLOGUE_SITE_CONFIG` select config files.
+4. `POLYLOGUE_*` runtime variables override matching TOML values.
+5. Provider credentials such as `VOYAGE_API_KEY` supply secrets; they do not
+   enable provider spend by themselves.
 
-These are the supported runtime overrides:
+Common runtime overrides:
 
-| Variable | Description |
-|----------|-------------|
-| `XDG_CONFIG_HOME` | Base directory for `polylogue-credentials.json` |
-| `XDG_DATA_HOME` | Base directory for the database, blob store, browser-capture spool, and Drive cache |
-| `XDG_CACHE_HOME` | Base directory for cache/index output |
-| `XDG_STATE_HOME` | Base directory for OAuth token and runtime state |
-| `POLYLOGUE_ARCHIVE_ROOT` | Override the archive root instead of using `$XDG_DATA_HOME/polylogue` |
-| `POLYLOGUE_FORCE_PLAIN` | Force non-interactive plain output |
-| `NO_COLOR` | Standard no-color request; any non-empty value makes CLI output ANSI-free/plain |
-| `POLYLOGUE_THEME` | `auto`, `dark`, or `light` semantic theme for Rich and HTML rendering |
-| `VOYAGE_API_KEY` | Voyage AI API key for embeddings |
-| `POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS` | Set to `1`, `true`, or `yes` to let daemon convergence call the embedding provider |
-| `POLYLOGUE_CREDENTIAL_PATH` | Drive auth override for the OAuth client JSON path |
-| `POLYLOGUE_TOKEN_PATH` | Drive auth override for the OAuth token path |
-
-### Theme and no-color policy
-
-Human-facing terminal output becomes plain when `--plain`,
-`POLYLOGUE_FORCE_PLAIN`, `NO_COLOR`, or a non-interactive terminal path requests
-it. Plain mode removes Rich layout and ANSI escapes before any color theme is
-applied. When rich rendering is allowed, `POLYLOGUE_THEME` or `[ui] theme`
-selects semantic tokens for terminal panels, code/diff highlighting, and HTML
-exports. Future palette sources such as pywal should feed those semantic tokens
-rather than adding one-off colors at call sites.
+| Variable | Config key | Description |
+|----------|------------|-------------|
+| `XDG_CONFIG_HOME` | path base | Base directory for `polylogue.toml` and Drive credentials. |
+| `XDG_DATA_HOME` | path base | Base directory for the archive, blob store, Drive cache, and browser-capture spool. |
+| `XDG_CACHE_HOME` | path base | Base directory for cache/index output. |
+| `XDG_STATE_HOME` | path base | Base directory for OAuth token and runtime state. |
+| `POLYLOGUE_CONFIG` | config layer | Explicit user config path. |
+| `POLYLOGUE_SITE_CONFIG` | config layer | Explicit site config path; empty disables site config. |
+| `POLYLOGUE_ARCHIVE_ROOT` | `archive_root` | Override the archive root. |
+| `POLYLOGUE_DAEMON_URL` | `daemon_url` | CLI/MCP client daemon base URL. |
+| `POLYLOGUE_API_HOST` / `POLYLOGUE_API_PORT` | `api_host` / `api_port` | Daemon HTTP API bind. |
+| `POLYLOGUE_API_AUTH_TOKEN` | `api_auth_token` | API bearer token; redacted in config output. |
+| `POLYLOGUE_BROWSER_CAPTURE_HOST` / `POLYLOGUE_BROWSER_CAPTURE_PORT` | browser-capture bind | Receiver bind host/port. |
+| `POLYLOGUE_BROWSER_CAPTURE_ALLOWED_ORIGINS` | `browser_capture_allowed_origins` | Comma-separated receiver CORS origins. |
+| `POLYLOGUE_BROWSER_CAPTURE_ALLOW_REMOTE` | `browser_capture_allow_remote` | Explicit remote-bind opt-in. |
+| `POLYLOGUE_BROWSER_CAPTURE_AUTH_TOKEN` | `browser_capture_auth_token` | Receiver bearer token; redacted. |
+| `POLYLOGUE_BROWSER_CAPTURE_SPOOL_PATH` | `browser_capture_spool_path` | Receiver spool override. |
+| `POLYLOGUE_FORCE_PLAIN` | `force_plain` | Force plain output. |
+| `POLYLOGUE_THEME` | `theme` | `auto`, `dark`, or `light`. |
+| `NO_COLOR` | `no_color` | Disable color/plain terminal formatting. |
+| `VOYAGE_API_KEY` | `voyage_api_key` | Voyage credential; redacted and spend-gated. |
+| `POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS` | `embedding_enabled` | Enable daemon embedding convergence. |
+| `POLYLOGUE_OBSERVABILITY_ENABLED` | `observability_enabled` | Enable OTLP/observability HTTP ingestion. |
+| `POLYLOGUE_CREDENTIAL_PATH` | Drive auth | OAuth client JSON path. |
+| `POLYLOGUE_TOKEN_PATH` | Drive auth | OAuth token path. |
 
 ## Backup and Export
 

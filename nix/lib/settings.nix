@@ -37,25 +37,26 @@ let
       host = mkOption {
         type = types.nullOr types.str;
         default = null;
-        description = "Daemon listen host (polylogue default: 127.0.0.1).";
+        description = "Legacy daemon listen host alias (polylogue default: 127.0.0.1).";
       };
       port = mkOption {
         type = types.nullOr types.port;
         default = null;
-        description = "Daemon HTTP API port (polylogue default: 8766).";
+        description = "Legacy daemon HTTP API port alias (polylogue default: 8766).";
       };
       watch = mkOption {
         type = types.nullOr (types.listOf types.str);
         default = null;
         description = ''
-          Additional watch roots for live ingestion. Merged with any
+          Additional source roots for live ingestion. Rendered as
+          ``[sources] roots`` in polylogue.toml and merged with any
           paths produced by ``discoverSources``.
         '';
       };
-      watch-debounce-s = mkOption {
+      debounce-s = mkOption {
         type = types.nullOr types.number;
         default = null;
-        description = "Live watcher quiet period in seconds.";
+        description = "Live watcher debounce in seconds (polylogue default: 2.0).";
       };
     };
 
@@ -73,7 +74,11 @@ let
       auth-token = mkOption {
         type = types.nullOr types.str;
         default = null;
-        description = "API Bearer auth token.";
+        description = ''
+          API Bearer auth token. Prefer sourcing this from a secret manager
+          into ``POLYLOGUE_API_AUTH_TOKEN``; setting it here renders it into
+          the generated TOML.
+        '';
       };
     };
 
@@ -81,7 +86,7 @@ let
       host = mkOption {
         type = types.nullOr types.str;
         default = null;
-        description = "Browser-capture receiver listen host.";
+        description = "Browser-capture receiver host (polylogue default: 127.0.0.1).";
       };
       port = mkOption {
         type = types.nullOr types.port;
@@ -91,22 +96,26 @@ let
       allowed-origins = mkOption {
         type = types.nullOr types.str;
         default = null;
-        description = "Comma-separated allowed CORS origins.";
+        description = "Comma-separated allowed CORS origins (default: chrome-extension://*).";
       };
       allow-remote = mkOption {
         type = types.nullOr types.bool;
         default = null;
-        description = "Allow non-loopback browser-capture receiver binds.";
+        description = "Explicitly allow non-loopback browser-capture/API binding.";
       };
       auth-token = mkOption {
         type = types.nullOr types.str;
         default = null;
-        description = "Browser-capture receiver Bearer auth token.";
+        description = ''
+          Browser-capture Bearer auth token. Required when remote binding or
+          non-extension web origins are configured. Prefer an environment
+          secret over rendering this into TOML.
+        '';
       };
       spool-path = mkOption {
         type = types.nullOr types.str;
         default = null;
-        description = "Browser-capture artifact spool path.";
+        description = "Browser-capture spool path.";
       };
     };
 
@@ -131,18 +140,32 @@ let
         default = null;
         description = "Maximum USD cost for embeddings (0 = unlimited).";
       };
+      voyage-api-key = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = ''
+          Voyage API key. Prefer ``VOYAGE_API_KEY`` from a secret manager;
+          setting this here renders it into the generated TOML.
+        '';
+      };
+    };
+
+    observability = {
+      enabled = mkOption {
+        type = types.nullOr types.bool;
+        default = null;
+        description = "Enable OTLP/observability HTTP ingestion routes.";
+      };
+      otlp-max-body-bytes = mkOption {
+        type = types.nullOr types.ints.unsigned;
+        default = null;
+        description = "Maximum accepted OTLP request body size.";
+      };
     };
 
     logging = {
       level = mkOption {
-        type = types.nullOr (
-          types.enum [
-            "DEBUG"
-            "INFO"
-            "WARNING"
-            "ERROR"
-          ]
-        );
+        type = types.nullOr (types.enum [ "DEBUG" "INFO" "WARNING" "ERROR" ]);
         default = null;
         description = "Log level.";
       };
@@ -150,6 +173,77 @@ let
         type = types.nullOr types.bool;
         default = null;
         description = "Force plain (non-rich) output.";
+      };
+    };
+
+    ui = {
+      theme = mkOption {
+        type = types.nullOr (types.enum [ "dark" "light" "auto" ]);
+        default = null;
+        description = "Semantic theme mode.";
+      };
+      slow-query-notice-seconds = mkOption {
+        type = types.nullOr types.number;
+        default = null;
+        description = "Threshold for slow-query user notices.";
+      };
+    };
+
+    schema = {
+      validation = mkOption {
+        type = types.nullOr (types.enum [ "off" "advisory" "strict" ]);
+        default = null;
+        description = "Schema validation mode.";
+      };
+    };
+
+    notifications = {
+      backend = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Notification backend: log/stdout/webhook/apprise/email.";
+      };
+      webhook-url = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Notification webhook URL.";
+      };
+      webhook-secret = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Notification webhook secret; prefer environment secrets over rendered TOML.";
+      };
+      apprise-urls = mkOption {
+        type = types.nullOr (types.listOf types.str);
+        default = null;
+        description = "Apprise notification URLs.";
+      };
+      email = {
+        host = mkOption { type = types.nullOr types.str; default = null; description = "SMTP host."; };
+        port = mkOption { type = types.nullOr types.port; default = null; description = "SMTP port."; };
+        username = mkOption { type = types.nullOr types.str; default = null; description = "SMTP username."; };
+        password = mkOption { type = types.nullOr types.str; default = null; description = "SMTP password; prefer environment secrets over rendered TOML."; };
+        from = mkOption { type = types.nullOr types.str; default = null; description = "SMTP sender address."; };
+        to = mkOption { type = types.nullOr (types.listOf types.str); default = null; description = "SMTP recipient list."; };
+        subject-prefix = mkOption { type = types.nullOr types.str; default = null; description = "SMTP subject prefix."; };
+        use-tls = mkOption { type = types.nullOr types.bool; default = null; description = "Use implicit TLS for SMTP."; };
+        use-starttls = mkOption { type = types.nullOr types.bool; default = null; description = "Use STARTTLS for SMTP."; };
+        max-per-hour = mkOption { type = types.nullOr types.ints.unsigned; default = null; description = "Max notification emails per hour."; };
+      };
+    };
+
+    health = {
+      check-interval-s = mkOption { type = types.nullOr types.ints.unsigned; default = null; description = "Daemon health-check interval."; };
+      check-tiers = mkOption { type = types.nullOr types.str; default = null; description = "Health-check tiers."; };
+      fts-auto-restore = mkOption { type = types.nullOr types.bool; default = null; description = "Allow health checks to repair FTS trigger drift."; };
+      blob-integrity-sample-size = mkOption { type = types.nullOr types.ints.unsigned; default = null; description = "Blob-integrity sample size."; };
+    };
+
+    cost = {
+      subscription-plans = mkOption {
+        type = types.nullOr (types.listOf (types.attrsOf types.unspecified));
+        default = null;
+        description = "Subscription plan rows rendered as [[cost.subscription.plans]].";
       };
     };
   };
@@ -189,11 +283,7 @@ let
   discoverSourcesOption = mkOption {
     type = types.listOf (types.enum providerNames);
     default = [ ];
-    example = [
-      "claude-code"
-      "codex"
-      "gemini"
-    ];
+    example = [ "claude-code" "codex" "gemini" ];
     description = ''
       Convenience: select one or more known provider names and the
       module will add their canonical source paths to
@@ -205,10 +295,7 @@ let
   };
 
   configLocationOption = mkOption {
-    type = types.enum [
-      "xdg"
-      "store"
-    ];
+    type = types.enum [ "xdg" "store" ];
     default = "xdg";
     description = ''
       Where to render polylogue.toml.
@@ -229,11 +316,11 @@ let
   # pkgs.formats.toml expects. Mirrors polylogue/config.py's TOML
   # schema (section names use snake_case keys like auth_token,
   # allowed_origins, max_cost_usd, force_plain).
-  renderSettings =
-    settings:
+  renderSettings = settings:
     let
       dropNulls = lib.filterAttrs (_: v: v != null);
-      maybe = section: rendered: if rendered == { } then { } else { ${section} = rendered; };
+      maybe = section: rendered:
+        if rendered == { } then { } else { ${section} = rendered; };
 
       archive = maybe "archive" (
         lib.optionalAttrs (settings.archive.root != null) {
@@ -246,79 +333,131 @@ let
           host = settings.daemon.host;
           port = settings.daemon.port;
         }
-        //
-          lib.optionalAttrs
-            (
-              settings.daemon-api.host != null
-              || settings.daemon-api.port != null
-              || settings.daemon-api.auth-token != null
-            )
-            {
-              api = dropNulls {
-                host = settings.daemon-api.host;
-                port = settings.daemon-api.port;
-                auth_token = settings.daemon-api.auth-token;
-              };
-            }
-        //
-          lib.optionalAttrs
-            (
-              settings.browser-capture.host != null
-              || settings.browser-capture.port != null
-              || settings.browser-capture.allowed-origins != null
-              || settings.browser-capture.allow-remote != null
-              || settings.browser-capture.auth-token != null
-              || settings.browser-capture.spool-path != null
-            )
-            {
-              browser_capture = dropNulls {
-                host = settings.browser-capture.host;
-                port = settings.browser-capture.port;
-                allowed_origins = settings.browser-capture.allowed-origins;
-                allow_remote = settings.browser-capture.allow-remote;
-                auth_token = settings.browser-capture.auth-token;
-                spool_path = settings.browser-capture.spool-path;
-              };
-            }
-        // lib.optionalAttrs (settings.daemon.watch-debounce-s != null) {
-          watch = {
-            debounce_s = settings.daemon.watch-debounce-s;
+        // lib.optionalAttrs (settings.daemon.debounce-s != null) {
+          watch = { debounce_s = settings.daemon.debounce-s; };
+        }
+        // lib.optionalAttrs (
+          settings.daemon-api.host != null
+          || settings.daemon-api.port != null
+          || settings.daemon-api.auth-token != null
+        ) {
+          api = dropNulls {
+            host = settings.daemon-api.host;
+            port = settings.daemon-api.port;
+            auth_token = settings.daemon-api.auth-token;
+          };
+        }
+        // lib.optionalAttrs (
+          settings.browser-capture.host != null
+          || settings.browser-capture.port != null
+          || settings.browser-capture.allowed-origins != null
+          || settings.browser-capture.allow-remote != null
+          || settings.browser-capture.auth-token != null
+          || settings.browser-capture.spool-path != null
+        ) {
+          browser_capture = dropNulls {
+            host = settings.browser-capture.host;
+            port = settings.browser-capture.port;
+            allowed_origins = settings.browser-capture.allowed-origins;
+            allow_remote = settings.browser-capture.allow-remote;
+            auth_token = settings.browser-capture.auth-token;
+            spool_path = settings.browser-capture.spool-path;
           };
         }
       );
 
-      sources = maybe "sources" (
-        lib.optionalAttrs (settings.daemon.watch != null) {
-          roots = settings.daemon.watch;
-        }
-      );
+      sources = maybe "sources" (dropNulls {
+        roots = settings.daemon.watch;
+      });
 
       embedding = maybe "embedding" (dropNulls {
         enabled = settings.embedding.enabled;
         model = settings.embedding.model;
         dimension = settings.embedding.dimension;
         max_cost_usd = settings.embedding.max-cost-usd;
+        voyage_api_key = settings.embedding.voyage-api-key;
+      });
+
+      observability = maybe "observability" (dropNulls {
+        enabled = settings.observability.enabled;
+        otlp_max_body_bytes = settings.observability.otlp-max-body-bytes;
       });
 
       logging = maybe "logging" (dropNulls {
         level = settings.logging.level;
         force_plain = settings.logging.force-plain;
       });
-    in
-    archive // daemon // sources // embedding // logging;
 
-  renderConfigFile =
-    settings: (pkgs.formats.toml { }).generate "polylogue.toml" (renderSettings settings);
+      ui = maybe "ui" (dropNulls {
+        theme = settings.ui.theme;
+        slow_query_notice_seconds = settings.ui.slow-query-notice-seconds;
+      });
+
+      schema = maybe "schema" (dropNulls {
+        validation = settings.schema.validation;
+      });
+
+      notifications = maybe "notifications" (
+        dropNulls {
+          backend = settings.notifications.backend;
+          webhook_url = settings.notifications.webhook-url;
+          webhook_secret = settings.notifications.webhook-secret;
+          apprise_urls = settings.notifications.apprise-urls;
+        }
+        // lib.optionalAttrs (
+          settings.notifications.email.host != null
+          || settings.notifications.email.port != null
+          || settings.notifications.email.username != null
+          || settings.notifications.email.password != null
+          || settings.notifications.email.from != null
+          || settings.notifications.email.to != null
+          || settings.notifications.email.subject-prefix != null
+          || settings.notifications.email.use-tls != null
+          || settings.notifications.email.use-starttls != null
+          || settings.notifications.email.max-per-hour != null
+        ) {
+          email = dropNulls {
+            host = settings.notifications.email.host;
+            port = settings.notifications.email.port;
+            username = settings.notifications.email.username;
+            password = settings.notifications.email.password;
+            from = settings.notifications.email.from;
+            to = settings.notifications.email.to;
+            subject_prefix = settings.notifications.email.subject-prefix;
+            use_tls = settings.notifications.email.use-tls;
+            use_starttls = settings.notifications.email.use-starttls;
+            max_per_hour = settings.notifications.email.max-per-hour;
+          };
+        }
+      );
+
+      health = maybe "health" (dropNulls {
+        check_interval_s = settings.health.check-interval-s;
+        check_tiers = settings.health.check-tiers;
+        fts_auto_restore = settings.health.fts-auto-restore;
+        blob_integrity_sample_size = settings.health.blob-integrity-sample-size;
+      });
+
+      cost = maybe "cost" (
+        lib.optionalAttrs (settings.cost.subscription-plans != null) {
+          subscription = { plans = settings.cost.subscription-plans; };
+        }
+      );
+    in
+    archive // daemon // sources // embedding // observability // logging // ui // schema // notifications // health // cost;
+
+  renderConfigFile = settings:
+    (pkgs.formats.toml { }).generate "polylogue.toml" (renderSettings settings);
 
   # Translate ``discoverSources = [ ... ]`` into a list of watch
   # paths. Returned unchanged when the input is empty so callers can
   # safely concatenate.
-  expandDiscoverSources = discoverSources: map (name: knownProviderRoots.${name}) discoverSources;
+  expandDiscoverSources = discoverSources:
+    map (name: knownProviderRoots.${name}) discoverSources;
 
-  # Compose the effective ``daemon.watch`` list by combining the
+  # Compose the effective ``sources.roots`` list by combining the
   # explicit setting (if any) with the discover-sources expansion.
-  effectiveWatch =
-    { settings, discoverSources }:
+  effectiveWatch = { settings, discoverSources }:
     let
       explicit = settings.daemon.watch or null;
       discovered = expandDiscoverSources discoverSources;
@@ -331,14 +470,12 @@ let
   # systemd Service directive block built from service.* options.
   # Returns an attrset suitable for ``serviceConfig`` (system) or
   # ``Service`` (HM). Memory* keys are omitted entirely when null.
-  serviceDirectives =
-    service:
-    lib.filterAttrs (_: v: v != null) {
-      Nice = service.nice;
-      IOWeight = service.ioWeight;
-      MemoryHigh = service.memoryHigh;
-      MemoryMax = service.memoryMax;
-    };
+  serviceDirectives = service: lib.filterAttrs (_: v: v != null) {
+    Nice = service.nice;
+    IOWeight = service.ioWeight;
+    MemoryHigh = service.memoryHigh;
+    MemoryMax = service.memoryMax;
+  };
 
 in
 {

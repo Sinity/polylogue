@@ -87,8 +87,10 @@ def test_redacted_secrets_show_presence_placeholder(config_with_secrets: Path) -
     assert "<set>" in toml_out
     json_out = _run(["-f", "json"])
     payload = json.loads(json_out)
-    assert payload["values"]["voyage_api_key"]["value"] == "<set>"
-    assert payload["values"]["notification_webhook_secret"]["value"] == "<set>"
+    values = payload["values"]
+    assert values["voyage_api_key"]["value"] == "<set>"
+    assert values["voyage_api_key"]["secret_present"] is True
+    assert values["notification_webhook_secret"]["value"] == "<set>"
 
 
 def test_unset_secret_renders_unset_in_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -102,6 +104,7 @@ def test_unset_secret_renders_unset_in_json(tmp_path: Path, monkeypatch: pytest.
     payload = json.loads(_run(["-f", "json"]))
     # An unset secret is reported as <unset>, never as null masquerading as a value.
     assert payload["values"]["voyage_api_key"]["value"] == "<unset>"
+    assert payload["values"]["voyage_api_key"]["secret_present"] is False
 
 
 def test_non_secret_values_are_not_redacted(config_with_secrets: Path) -> None:
@@ -111,8 +114,7 @@ def test_non_secret_values_are_not_redacted(config_with_secrets: Path) -> None:
 
 
 def test_json_effective_config_includes_inventory_and_layer_metadata(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cfg = tmp_path / "polylogue.toml"
     cfg.write_text("[daemon.api]\nport = 9001\n", encoding="utf-8")
@@ -133,8 +135,8 @@ def test_json_effective_config_includes_inventory_and_layer_metadata(
 
     api_token = payload["values"]["api_auth_token"]
     assert api_token["value"] == "<set>"
-    assert api_token["secret"] is True
     assert api_token["secret_present"] is True
+    assert _AUTH_TOKEN not in json.dumps(payload)
 
-    inventory_by_key = {entry["key"]: entry for entry in payload["inventory"]}
-    assert inventory_by_key["api_port"]["default"] == 8766
+    inventory_keys = {entry["key"] for entry in payload["inventory"]}
+    assert {"api_port", "api_auth_token", "browser_capture_spool_path"}.issubset(inventory_keys)

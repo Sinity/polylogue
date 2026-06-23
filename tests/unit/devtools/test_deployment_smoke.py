@@ -7,6 +7,7 @@ import subprocess
 import urllib.error
 from email.message import Message
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -318,6 +319,63 @@ def test_deployment_smoke_runtime_evidence_includes_effective_config(
     assert config_probe["ok"] is True
     assert config_probe["payload"]["values"]["api_auth_token"]["value"] == "<set>"
     assert secret not in json.dumps(evidence)
+
+
+def test_deployment_smoke_includes_effective_config_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(deployment_smoke, "_resolve_command", lambda name, *, path: f"/bin/{name}")
+    monkeypatch.setattr(deployment_smoke, "_repo_head", lambda: "abc123def456")
+    monkeypatch.setattr(
+        deployment_smoke,
+        "_resource_limit_signals",
+        lambda: {"cgroup": {"available": True, "cpu_max": "max 100000", "memory_high": "2G"}},
+    )
+    monkeypatch.setattr(
+        deployment_smoke,
+        "_run_command",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, f"{' '.join(command)} version", ""),
+    )
+    monkeypatch.setattr(
+        deployment_smoke,
+        "_run_completion_command",
+        lambda **kwargs: subprocess.CompletedProcess(
+            ["polylogue"],
+            0,
+            {
+                "polylogue find id:abc t": "plain,then\n",
+                "polylogue find id:abc then s": "plain,select\n",
+                "polylogue find id:abc then read --view ": (
+                    "plain,summary\nplain,messages\nplain,raw\nplain,context-pack\n"
+                ),
+                "polylogue find id:abc then read --view messages --format ": "plain,json\nplain,ndjson\nplain,text\n",
+            }[str(kwargs["comp_words"])],
+            "",
+        ),
+    )
+    monkeypatch.setattr(
+        deployment_smoke,
+        "_open_url",
+        lambda url, *, timeout_s: _FakeResponse(200, {"ok": True, "url": url}),
+    )
+
+    report = deployment_smoke.build_report(
+        path="/bin",
+        daemon_base_url="http://daemon/",
+        receiver_base_url="http://receiver/",
+        archive_root=tmp_path,
+        timeout_s=1,
+    )
+
+    evidence = report.runtime_evidence
+    assert evidence["archive_root"] == str(tmp_path)
+    assert evidence["daemon_base_url"] == "http://daemon/"
+    assert evidence["receiver_base_url"] == "http://receiver/"
+    command_versions = cast(dict[str, dict[str, object]], evidence["command_versions"])
+    assert command_versions["polylogue --version"]["path"] == "/bin/polylogue"
+    assert command_versions["polylogued --version"]["stdout"] == "polylogued --version version"
+    assert evidence["resource_limits"]["cgroup"]["memory_high"] == "2G"
 
 
 def test_deployment_smoke_reports_missing_completion_candidate(
