@@ -503,6 +503,10 @@ Options:
   --message-role TEXT             Show only selected message roles (repeatable
                                   or comma-separated: user, assistant, system,
                                   tool, unknown)
+  --material-origin TEXT          Show only selected material origins
+                                  (repeatable or comma-separated:
+                                  human_authored, runtime_protocol,
+                                  tool_result, unknown)
   --set TEXT...                   Set metadata key value
   --add-tag TEXT                  Add tags (comma-separated)
   --plain                         Force non-interactive plain output
@@ -614,6 +618,7 @@ Options:
   --out PATH                      File path for --to file.
   --all                           Apply to all matched sessions (bulk export).
   -r, --message-role TEXT         Filter by message role (--view messages).
+  --material-origin ORIGIN        Filter by material origin (--view messages).
   --message-type TYPE             Filter by message content type (--view
                                   messages).
   -l, -n, --limit INTEGER         Max items to return.
