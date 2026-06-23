@@ -136,7 +136,7 @@ def test_status_snapshot_reports_disk_free_for_archive_parent(
 
     snapshot = refresh_status_snapshot()
 
-    assert int(snapshot.payload["disk_free_bytes"]) > 0
+    assert cast(int, snapshot.payload["disk_free_bytes"]) > 0
 
 
 def test_status_snapshot_marks_disabled_browser_capture_inactive(
