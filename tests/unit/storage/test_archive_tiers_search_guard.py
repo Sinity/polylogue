@@ -9,10 +9,13 @@ column operator.
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
 
+from polylogue.errors import DatabaseError
+from polylogue.storage.fts.freshness import record_fts_surface_state_sync
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.storage_records import SessionBuilder, db_setup
 
@@ -44,6 +47,34 @@ def test_hyphenated_token_does_not_raise(workspace_env: dict[str, Path]) -> None
         # And the count path stays consistent.
         assert archive.count_search_sessions("drive-file-1") >= 0
         assert isinstance(hits, list)
+
+
+def test_search_rejects_ready_freshness_row_when_triggers_missing(workspace_env: dict[str, Path]) -> None:
+    archive_root = _seed(workspace_env)
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        source_rows = int(conn.execute("SELECT COUNT(*) FROM blocks WHERE search_text != ''").fetchone()[0] or 0)
+        indexed_rows = int(conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] or 0)
+        record_fts_surface_state_sync(
+            conn,
+            surface="messages_fts",
+            state="ready",
+            source_rows=source_rows,
+            indexed_rows=indexed_rows,
+            missing_rows=0,
+            excess_rows=0,
+            duplicate_rows=0,
+        )
+        conn.executescript(
+            """
+            DROP TRIGGER IF EXISTS messages_fts_ai;
+            DROP TRIGGER IF EXISTS messages_fts_ad;
+            DROP TRIGGER IF EXISTS messages_fts_au;
+            """
+        )
+
+    with ArchiveStore.open_existing(archive_root) as archive:
+        with pytest.raises(DatabaseError, match="Search index is incomplete"):
+            archive.search_summaries("drive-file-1")
 
 
 @pytest.mark.parametrize("query", ["*", "AND", "NOT", '"unterminated', "col:val"])
