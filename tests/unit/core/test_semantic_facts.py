@@ -23,9 +23,10 @@ from polylogue.archive.semantic.pricing import harmonize_session_cost
 from polylogue.archive.semantic.timing import compute_session_latency_profile
 from polylogue.archive.session import extraction as work_event_extraction
 from polylogue.archive.session import runtime as session_profile_runtime
+from polylogue.archive.session.attribution import extract_attribution
 from polylogue.archive.session.events import SessionEvent
 from polylogue.archive.session.session_profile import build_session_profile
-from polylogue.core.enums import Origin, Provider
+from polylogue.core.enums import MaterialOrigin, Origin, Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.storage.archive_views import SessionRenderProjection
 from polylogue.types import SessionEventId, SessionId
@@ -102,6 +103,7 @@ def _protocol_summary_session() -> SessionModel:
                     text="<system-reminder>skip this</system-reminder>\n"
                     + (f"Please inspect {README_PATH} and summarize the findings clearly. " * 3),
                     timestamp=datetime(2026, 3, 23, 10, 0, tzinfo=timezone.utc),
+                    material_origin=MaterialOrigin.HUMAN_AUTHORED,
                 ),
                 make_msg(
                     id="a1",
@@ -128,6 +130,7 @@ def _protocol_summary_session() -> SessionModel:
                         "It repeats a bit so we hit the summary truncation boundary."
                     ),
                     timestamp=datetime(2026, 3, 23, 10, 2, tzinfo=timezone.utc),
+                    material_origin=MaterialOrigin.HUMAN_AUTHORED,
                 ),
                 make_msg(
                     id="u3",
@@ -135,6 +138,7 @@ def _protocol_summary_session() -> SessionModel:
                     origin="claude-code",
                     text="This trailing note should be truncated away once the summary is already full.",
                     timestamp=datetime(2026, 3, 23, 10, 3, tzinfo=timezone.utc),
+                    material_origin=MaterialOrigin.HUMAN_AUTHORED,
                 ),
             ]
         ),
@@ -303,9 +307,23 @@ def test_compute_session_latency_profile_aggregates_tool_and_turn_latencies() ->
         origin=Provider.CODEX,
         title="Latency profile",
         messages=[
-            make_msg(id="u1", role="user", origin=Provider.CODEX, text="Run", timestamp=start),
+            make_msg(
+                id="u1",
+                role="user",
+                origin=Provider.CODEX,
+                text="Run",
+                timestamp=start,
+                material_origin=MaterialOrigin.HUMAN_AUTHORED,
+            ),
             make_msg(id="a1", role="assistant", origin=Provider.CODEX, text="Done", timestamp=agent),
-            make_msg(id="u2", role="user", origin=Provider.CODEX, text="Follow up", timestamp=followup),
+            make_msg(
+                id="u2",
+                role="user",
+                origin=Provider.CODEX,
+                text="Follow up",
+                timestamp=followup,
+                material_origin=MaterialOrigin.HUMAN_AUTHORED,
+            ),
         ],
         updated_at=datetime(2026, 5, 24, 10, 12, tzinfo=timezone.utc),
         session_events=(
@@ -354,6 +372,65 @@ def test_compute_session_latency_profile_aggregates_tool_and_turn_latencies() ->
     assert facts.median_agent_response_ms == 60_000
     assert facts.median_user_response_ms == 120_000
     assert facts.tool_call_count_by_category == {"shell": 2}
+
+
+def test_compute_session_latency_profile_ignores_provider_user_runtime_protocol_turns() -> None:
+    start = datetime(2026, 5, 24, 11, 0, tzinfo=timezone.utc)
+    runtime_after_user = datetime(2026, 5, 24, 11, 0, 10, tzinfo=timezone.utc)
+    assistant = datetime(2026, 5, 24, 11, 1, tzinfo=timezone.utc)
+    runtime_after_assistant = datetime(2026, 5, 24, 11, 1, 15, tzinfo=timezone.utc)
+    followup = datetime(2026, 5, 24, 11, 3, tzinfo=timezone.utc)
+    session = make_conv(
+        id="conv-latency-runtime-user",
+        origin=Provider.CLAUDE_CODE,
+        title="Latency profile runtime user",
+        messages=[
+            make_msg(
+                id="u1",
+                role="user",
+                origin=Provider.CLAUDE_CODE,
+                text="Run the release checks.",
+                timestamp=start,
+                material_origin=MaterialOrigin.HUMAN_AUTHORED,
+            ),
+            make_msg(
+                id="u-runtime-1",
+                role="user",
+                origin=Provider.CLAUDE_CODE,
+                text="<local-command-stdout>pytest output</local-command-stdout>",
+                timestamp=runtime_after_user,
+                material_origin=MaterialOrigin.RUNTIME_PROTOCOL,
+            ),
+            make_msg(
+                id="a1",
+                role="assistant",
+                origin=Provider.CLAUDE_CODE,
+                text="Checks finished.",
+                timestamp=assistant,
+            ),
+            make_msg(
+                id="u-runtime-2",
+                role="user",
+                origin=Provider.CLAUDE_CODE,
+                text="<task-notification>background status</task-notification>",
+                timestamp=runtime_after_assistant,
+                material_origin=MaterialOrigin.RUNTIME_PROTOCOL,
+            ),
+            make_msg(
+                id="u2",
+                role="user",
+                origin=Provider.CLAUDE_CODE,
+                text="Prepare the final evidence note.",
+                timestamp=followup,
+                material_origin=MaterialOrigin.HUMAN_AUTHORED,
+            ),
+        ],
+    )
+
+    facts = compute_session_latency_profile(list(session.messages), session.session_events)
+
+    assert facts.median_agent_response_ms == 60_000
+    assert facts.median_user_response_ms == 120_000
 
 
 def test_build_session_profile_classifies_workflow_shape_from_observable_features() -> None:
@@ -658,6 +735,74 @@ def test_extract_work_events_strips_protocol_noise_and_respects_summary_cap() ->
     assert f"Please inspect {README_PATH}" in summary
     assert "This trailing note should be truncated away" not in summary
     assert len(summary) <= 200
+
+
+def test_extract_work_events_ignores_provider_user_runtime_protocol_text() -> None:
+    session = make_conv(
+        id="conv-work-event-runtime-user",
+        origin="claude-code",
+        title="Work Event Runtime User",
+        created_at=datetime(2026, 3, 23, 11, 0, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 3, 23, 11, 5, tzinfo=timezone.utc),
+        messages=MessageCollection(
+            messages=[
+                make_msg(
+                    id="u-runtime",
+                    role="user",
+                    origin="claude-code",
+                    text="<local-command-stdout>pytest failed with traceback</local-command-stdout>",
+                    timestamp=datetime(2026, 3, 23, 11, 0, tzinfo=timezone.utc),
+                    material_origin=MaterialOrigin.RUNTIME_PROTOCOL,
+                ),
+                make_msg(
+                    id="u-authored",
+                    role="user",
+                    origin="claude-code",
+                    text="Plan the release evidence package.",
+                    timestamp=datetime(2026, 3, 23, 11, 1, tzinfo=timezone.utc),
+                    material_origin=MaterialOrigin.HUMAN_AUTHORED,
+                ),
+            ]
+        ),
+    )
+
+    events = work_event_extraction.extract_work_events(session)
+
+    assert events
+    assert events[0].heuristic_label == work_event_extraction.WorkEventHeuristicLabel.PLANNING
+    assert events[0].summary == "Plan the release evidence package."
+    assert "pytest failed" not in events[0].summary
+
+
+def test_extract_attribution_ignores_runtime_protocol_language_hints() -> None:
+    session = make_conv(
+        id="conv-attribution-runtime-user",
+        origin="claude-code",
+        title="Attribution Runtime User",
+        messages=MessageCollection(
+            messages=[
+                make_msg(
+                    id="u-runtime",
+                    role="user",
+                    origin="claude-code",
+                    text="<local-command-stdout>python traceback from generated output</local-command-stdout>",
+                    material_origin=MaterialOrigin.RUNTIME_PROTOCOL,
+                ),
+                make_msg(
+                    id="u-authored",
+                    role="user",
+                    origin="claude-code",
+                    text="Please review the rust parser path.",
+                    material_origin=MaterialOrigin.HUMAN_AUTHORED,
+                ),
+            ]
+        ),
+    )
+
+    attribution = extract_attribution(session)
+
+    assert "rust" in attribution.languages_detected
+    assert "python" not in attribution.languages_detected
 
 
 def test_build_session_semantic_facts_uses_canonical_db_content_blocks() -> None:
