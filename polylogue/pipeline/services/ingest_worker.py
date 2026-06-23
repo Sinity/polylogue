@@ -189,7 +189,10 @@ def _is_stream_record_provider(source_path: str | None, provider: str | Provider
 
 
 def _is_jsonl_source_path(source_path: str | None) -> bool:
-    return (source_path or "").lower().endswith((".jsonl", ".jsonl.txt", ".ndjson"))
+    normalized = (source_path or "").lower()
+    return normalized.endswith((".jsonl", ".jsonl.txt", ".ndjson")) or any(
+        marker in normalized for marker in (".jsonl.", ".ndjson.")
+    )
 
 
 def _record_result(
@@ -492,6 +495,17 @@ def _materialize_parsed_sessions(
     validation: _PlanValidation,
     parsed_sessions: list[ParsedSession],
 ) -> IngestRecordResult:
+    if not parsed_sessions:
+        error = "parse: session artifact produced no materializable sessions"
+        return _record_result(
+            context,
+            plan.payload_provider,
+            validation_status=validation.status,
+            validation_error=validation.validation_error,
+            parse_error=error,
+            error=error,
+        )
+
     session_payloads: list[SessionWritePayload] = []
     for convo in parsed_sessions:
         normalized_convo = _normalized_session(

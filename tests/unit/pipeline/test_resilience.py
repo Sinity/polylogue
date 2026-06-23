@@ -188,6 +188,41 @@ def test_parse_mixed_valid_invalid_jsonl_lines(tmp_path: Path) -> None:
         assert result.sessions[0].parsed_session.source_name == "claude-code"
 
 
+def test_jsonl_stream_shape_beats_drive_cache_json_suffix(tmp_path: Path) -> None:
+    """Drive-acquired JSONL snapshots may carry a trailing ``.json`` suffix."""
+    from polylogue.pipeline.services.ingest_worker import ingest_record
+
+    content = (
+        b'{"type":"summary","summary":"continued session","leafUuid":"leaf-1"}\n'
+        b'{"parentUuid":null,"isSidechain":false,"userType":"external",'
+        b'"cwd":"/realm/project/polylogue","sessionId":"session-from-drive",'
+        b'"version":"1.0.6","type":"user","timestamp":"2025-06-06T12:55:19.000Z",'
+        b'"message":{"role":"user","content":[{"type":"text","text":"hello from drive cache"}]}}\n'
+        b'{"parentUuid":"m1","isSidechain":false,"userType":"external",'
+        b'"cwd":"/realm/project/polylogue","sessionId":"session-from-drive",'
+        b'"version":"1.0.6","type":"assistant","timestamp":"2025-06-06T12:55:20.000Z",'
+        b'"message":{"role":"assistant","content":[{"type":"text","text":"parsed as stream"}]}}\n'
+    )
+    record = _make_raw_record(
+        "drive-jsonl",
+        "gemini",
+        content,
+        "/drive-cache/gemini/session-from-drive.jsonl.txt.json",
+    )
+
+    result = ingest_record(record, str(tmp_path / "archive"), "off")
+
+    assert result.error is None
+    assert len(result.sessions) == 1
+    parsed = result.sessions[0].parsed_session
+    assert parsed.source_name == "claude-code"
+    assert parsed.provider_session_id == "session-from-drive"
+    assert [message.text for message in parsed.messages if message.text] == [
+        "hello from drive cache",
+        "parsed as stream",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Fault 5: Parsing handles valid JSON for unknown provider gracefully
 # ---------------------------------------------------------------------------
@@ -538,10 +573,42 @@ def test_ingest_worker_decodes_and_dispatches_provider(tmp_path: Path) -> None:
     # Verify the result structure
     assert result.raw_id is not None  # Should be the actual hash
     assert result.payload_provider is not None  # Provider detected
-    # ingest_record returns SessionData list; empty mapping results in empty sessions
+    # ingest_record returns a materializable SessionWritePayload even when
+    # the source has no messages yet; that still produces an index.db session.
     assert isinstance(result.sessions, list)
-    # Result should be clean with no errors
+    assert len(result.sessions) == 1
     assert result.error is None
+
+
+def test_ingest_worker_quarantines_session_artifact_with_no_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A parser that emits no sessions must not stamp raw state as clean."""
+    from polylogue.pipeline.services import ingest_worker
+
+    payload = json.dumps(
+        {
+            "id": "conv-empty",
+            "title": "Empty parser result",
+            "mapping": {},
+            "create_time": 1700000000,
+            "update_time": 1700000001,
+        }
+    ).encode()
+    raw_record = _make_raw_record(
+        raw_id="ignored",
+        provider="chatgpt",
+        content=payload,
+        path="/tmp/session.json",
+    )
+
+    monkeypatch.setattr(ingest_worker, "_parse_plan_sessions", lambda *_args, **_kwargs: [])
+
+    result = ingest_worker.ingest_record(raw_record, str(tmp_path / "archive"), "off")
+
+    assert result.sessions == []
+    assert result.error == "parse: session artifact produced no materializable sessions"
+    assert result.parse_error == result.error
 
 
 def test_ingest_worker_reuses_schema_resolution_and_skips_drift_walk(

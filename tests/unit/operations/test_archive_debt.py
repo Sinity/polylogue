@@ -349,3 +349,26 @@ def test_archive_debt_raw_materialization_ignores_native_id_matches(tmp_path: Pa
     refs = {row.debt_ref for row in payload.rows}
     assert "debt:raw-materialization:aistudio-drive:parsed-without-session" not in refs
     assert "debt:raw-materialization:codex-session:missing-blob" in refs
+
+
+def test_archive_debt_raw_materialization_ignores_source_path_native_aliases(tmp_path: Path) -> None:
+    _source_db, index_db, _source_file = _init_raw_materialization_fixture(tmp_path)
+    source_path = tmp_path / "drive-cache" / "gemini" / "native-alias_1.jsonl.txt.json"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text("{}", encoding="utf-8")
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            "UPDATE raw_sessions SET origin = ?, source_path = ? WHERE raw_id = ?",
+            ("claude-code-session", str(source_path), "raw-parsed-no-session"),
+        )
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(
+            "INSERT INTO sessions (session_id, origin, native_id, raw_id) VALUES (?, ?, ?, ?)",
+            ("claude-code-session:native-alias", "claude-code-session", "native-alias", "older-raw"),
+        )
+
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
+
+    refs = {row.debt_ref for row in payload.rows}
+    assert "debt:raw-materialization:claude-code-session:parsed-without-session" not in refs
+    assert "debt:raw-materialization:codex-session:missing-blob" in refs

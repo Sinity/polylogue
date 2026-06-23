@@ -384,6 +384,22 @@ def _write_session_entry(
         return False
 
 
+def _delete_stale_sessions_for_raw_entries(conn: sqlite3.Connection, ready_entries: list[_SessionEntry]) -> None:
+    expected_by_raw_id: dict[str, set[str]] = {}
+    for raw_id, cdata in ready_entries:
+        if raw_id:
+            expected_by_raw_id.setdefault(raw_id, set()).add(cdata.session_id)
+
+    for raw_id, expected_session_ids in expected_by_raw_id.items():
+        if not expected_session_ids:
+            continue
+        placeholders = ",".join("?" for _ in expected_session_ids)
+        conn.execute(
+            f"DELETE FROM sessions WHERE raw_id = ? AND session_id NOT IN ({placeholders})",
+            (raw_id, *sorted(expected_session_ids)),
+        )
+
+
 def _drain_ready_session_entries(
     conn: sqlite3.Connection,
     ready_entries: list[_SessionEntry],
@@ -392,6 +408,7 @@ def _drain_ready_session_entries(
     materialized_ids: set[str],
     force_write: bool = False,
 ) -> None:
+    _delete_stale_sessions_for_raw_entries(conn, ready_entries)
     for raw_id, cdata in _topo_sort_session_entries(ready_entries):
         wrote = _write_session_entry(conn, raw_id, cdata, summary=summary, force_write=force_write)
         discard_session_data_payload(cdata)
