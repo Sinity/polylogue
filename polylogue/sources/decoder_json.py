@@ -251,7 +251,10 @@ def iter_json_stream_with(
     path_name: str,
     unpack_lists: bool = True,
 ) -> Iterable[JsonValue]:
-    if path_name.lower().endswith((".jsonl", ".jsonl.txt", ".ndjson")):
+    normalized_path = path_name.lower()
+    if normalized_path.endswith((".jsonl", ".jsonl.txt", ".ndjson")) or any(
+        marker in normalized_path for marker in (".jsonl.", ".ndjson.")
+    ):
         yield from _iter_jsonl_stream(logger_obj, handle, path_name)
         return
 

@@ -251,6 +251,10 @@ async def test_repository_raw_forwards_query_and_mutation_calls() -> None:
             new=AsyncMock(return_value={"inbox": "1"}),
         ) as mock_mtimes,
         patch(
+            "polylogue.storage.repository.raw.repository_raw.cursor_queries.get_known_source_cursors",
+            new=AsyncMock(return_value={"inbox": {"st_dev": 1, "st_ino": 2, "st_size": 3, "mtime_ns": 4}}),
+        ) as mock_cursors,
+        patch(
             "polylogue.storage.repository.raw.repository_raw.raw_queries.reset_parse_status",
             new=AsyncMock(return_value=3),
         ) as mock_reset_parse,
@@ -290,6 +294,9 @@ async def test_repository_raw_forwards_query_and_mutation_calls() -> None:
             payload_provider="chatgpt",
         )
         assert await repo.get_known_source_mtimes() == {"inbox": "1"}
+        assert await repo.get_known_source_cursors() == {
+            "inbox": {"st_dev": 1, "st_ino": 2, "st_size": 3, "mtime_ns": 4}
+        }
         assert await repo.reset_parse_status(provider="chatgpt", source_names=["inbox"]) == 3
         assert await repo.reset_validation_status(provider="chatgpt", source_names=["inbox"]) == 4
         assert await repo.get_raw_sessions_batch(["raw-1"]) == ["a"]
@@ -320,6 +327,7 @@ async def test_repository_raw_forwards_query_and_mutation_calls() -> None:
         transaction_depth=7,
     )
     mock_mtimes.assert_awaited_once_with(conn)
+    mock_cursors.assert_awaited_once_with(conn)
     mock_reset_parse.assert_awaited_once_with(conn, provider="chatgpt", source_names=["inbox"], transaction_depth=7)
     mock_reset_validation.assert_awaited_once_with(
         conn,

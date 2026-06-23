@@ -124,6 +124,7 @@ class RawSessionStateUpdate:
                 self.validation_drift_count,
                 self.validation_provider,
                 self.validation_mode,
+                self.detection_warnings,
             )
         )
 

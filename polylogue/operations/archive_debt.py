@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
@@ -215,7 +216,7 @@ def _raw_materialization_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]
     except sqlite3.Error:
         return []
     try:
-        missing_rows = list(
+        candidate_rows = list(
             conn.execute(
                 """
                 SELECT
@@ -246,6 +247,12 @@ def _raw_materialization_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]
                 """
             )
         )
+        missing_rows = [
+            row
+            for row in candidate_rows
+            if _raw_materialization_category(row, archive_root) != "parsed-without-session"
+            or not _raw_materialized_by_source_path_native(conn, row)
+        ]
     except sqlite3.Error:
         return []
     finally:
@@ -263,6 +270,45 @@ def _raw_materialization_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]
     for (origin, category), group_rows in grouped.items():
         rows.append(_raw_materialization_debt_row(archive_root, origin=origin, category=category, rows=group_rows))
     return rows
+
+
+def _raw_materialized_by_source_path_native(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
+    origin = str(row["origin"] or "")
+    if not origin:
+        return False
+    for native_id in _source_path_native_id_candidates(str(row["source_path"] or "")):
+        existing = conn.execute(
+            """
+            SELECT 1
+            FROM index_tier.sessions
+            WHERE origin = ?
+              AND native_id = ?
+            LIMIT 1
+            """,
+            (origin, native_id),
+        ).fetchone()
+        if existing is not None:
+            return True
+    return False
+
+
+def _source_path_native_id_candidates(source_path: str) -> tuple[str, ...]:
+    if not source_path:
+        return ()
+    name = Path(source_path).name
+    candidates: list[str] = []
+    current = name
+    for _ in range(4):
+        stem = Path(current).stem
+        if stem == current:
+            break
+        current = stem
+        if current and current not in candidates:
+            candidates.append(current)
+        unsplit = re.sub(r"_\d+$", "", current)
+        if unsplit and unsplit != current and unsplit not in candidates:
+            candidates.append(unsplit)
+    return tuple(candidates)
 
 
 def _raw_materialization_category(row: sqlite3.Row, archive_root: Path) -> str:

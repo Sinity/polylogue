@@ -13,6 +13,7 @@ from polylogue.storage.runtime import (
     RawSessionRecord,
 )
 from polylogue.storage.sqlite.queries import artifacts as artifacts_q
+from polylogue.storage.sqlite.queries import cursor as cursor_queries
 from polylogue.storage.sqlite.queries import raw as raw_queries
 
 
@@ -100,25 +101,12 @@ class RepositoryRawMixin:
             return await raw_queries.get_known_source_mtimes(conn)
 
     async def get_known_source_cursors(self) -> dict[str, dict[str, object]]:
-        """Return live_cursor stat fields for the stat-based fast path."""
+        """Return ingest_cursor stat fields for the stat-based fast path."""
         async with self._backend.connection() as conn:
             try:
-                rows = await conn.execute(
-                    "SELECT source_path, st_dev, st_ino, byte_size, mtime_ns "
-                    "FROM live_cursor WHERE excluded = 0 AND st_dev IS NOT NULL"
-                )
-                records = await rows.fetchall()
+                return await cursor_queries.get_known_source_cursors(conn)
             except Exception:
                 return {}
-        return {
-            str(row[0]): {
-                "st_dev": row[1],
-                "st_ino": row[2],
-                "st_size": row[3],
-                "mtime_ns": row[4],
-            }
-            for row in records
-        }
 
     async def upsert_source_file_cursor(
         self,

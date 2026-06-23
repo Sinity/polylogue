@@ -1001,6 +1001,102 @@ def test_process_ingest_batch_sync_commits_fts_repair_and_invalidates_search_cac
     assert [hit.session_id for hit in second_result.hits] == [session_id]
 
 
+def test_process_ingest_batch_sync_replaces_stale_sessions_for_same_raw_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "index.db"
+    archive_root = tmp_path / "archive"
+    blob_root = tmp_path / "blob"
+    source_path = tmp_path / "raw.jsonl.txt.json"
+    source_path.write_text("{}", encoding="utf-8")
+    raw_id = "raw-provider-redetected"
+    stale_session_id = "aistudio-drive:provider-redetected"
+    replacement_session_id = "codex-session:provider-redetected"
+
+    raw_record = RawSessionRecord(
+        raw_id=raw_id,
+        source_name="gemini",
+        source_path=str(source_path),
+        blob_size=source_path.stat().st_size,
+        acquired_at="2026-04-02T00:00:00Z",
+    )
+    stale = _session_data(
+        stale_session_id,
+        content_hash="stale-provider-session",
+        raw_id=raw_id,
+        message_tuples=[
+            _message_tuple(
+                "msg-stale-provider-redetected",
+                stale_session_id,
+                role="user",
+                text="stale drive payload",
+                content_hash="stale-message",
+                sort_key=0.0,
+            )
+        ],
+    )
+    replacement = _session_data(
+        replacement_session_id,
+        content_hash="replacement-provider-session",
+        raw_id=raw_id,
+        message_tuples=[
+            _message_tuple(
+                "msg-provider-redetected",
+                replacement_session_id,
+                role="user",
+                text="redetected stream payload",
+                content_hash="replacement-message",
+                sort_key=0.0,
+            )
+        ],
+    )
+
+    with open_connection(db_path) as conn:
+        _write_session(conn, stale)
+        conn.commit()
+
+    def fake_ingest_record(
+        record: RawSessionRecord,
+        archive_root_str: str,
+        validation_mode: str,
+        measure_ingest_result_size: bool,
+        *,
+        blob_root_str: str | None,
+    ) -> IngestRecordResult:
+        del archive_root_str, validation_mode, measure_ingest_result_size, blob_root_str
+        assert record.raw_id == raw_id
+        return IngestRecordResult(raw_id=record.raw_id, sessions=[replacement])
+
+    monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest_record)
+
+    _process_ingest_batch_sync(
+        [raw_record],
+        db_path=db_path,
+        archive_root_str=str(archive_root),
+        blob_root_str=str(blob_root),
+        validation_mode="off",
+        ingest_workers=1,
+        measure_ingest_result_size=False,
+        force_write=True,
+    )
+
+    with open_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT session_id FROM sessions WHERE raw_id = ? ORDER BY session_id", (raw_id,)
+        ).fetchall()
+        assert [row[0] for row in rows] == [replacement_session_id]
+        assert (
+            conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (stale_session_id,)).fetchone()[0] == 0
+        )
+        assert conn.execute("SELECT COUNT(*) FROM blocks WHERE session_id = ?", (stale_session_id,)).fetchone()[0] == 0
+        assert (
+            conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (replacement_session_id,)).fetchone()[0]
+            == 1
+        )
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
 def test_select_ingest_worker_count_uses_cpu_count(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("polylogue.pipeline.services.ingest_batch._core.os.cpu_count", lambda: 16)
     raw_artifacts = [SimpleNamespace(blob_size=16 * 1024 * 1024) for _ in range(6)]
