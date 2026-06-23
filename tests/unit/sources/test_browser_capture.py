@@ -252,6 +252,49 @@ def test_browser_capture_supports_claude_ai_provider() -> None:
     assert parsed[0].provider_session_id == "claude-session"
 
 
+@pytest.mark.parametrize(
+    ("provider", "legacy_id", "expected_id"),
+    [
+        ("chatgpt", "chatgpt:6a232355-ac3c-83eb-a93d-9c70697bfc18:9f658806", "6a232355-ac3c-83eb-a93d-9c70697bfc18"),
+        (
+            "claude-ai",
+            "claude-ai:6a590003-3e69-4eb7-aed3-fbb75fb800c0:ce1a9248",
+            "6a590003-3e69-4eb7-aed3-fbb75fb800c0",
+        ),
+        (
+            "chatgpt",
+            "chatgpt-6a232355-ac3c-83eb-a93d-9c70697bfc18-20105879-0",
+            "6a232355-ac3c-83eb-a93d-9c70697bfc18",
+        ),
+    ],
+)
+def test_browser_capture_normalizes_legacy_synthetic_dom_session_ids(
+    provider: str,
+    legacy_id: str,
+    expected_id: str,
+) -> None:
+    payload = _capture_payload()
+    session = payload["session"]
+    assert isinstance(session, dict)
+    session["provider"] = provider
+    session["provider_session_id"] = legacy_id
+
+    parsed = parse_payload(Provider.CHATGPT if provider == "chatgpt" else Provider.CLAUDE_AI, payload, "fallback")
+
+    assert parsed[0].provider_session_id == expected_id
+
+
+def test_browser_capture_does_not_normalize_legacy_root_route_synthetic_id() -> None:
+    payload = _capture_payload()
+    session = payload["session"]
+    assert isinstance(session, dict)
+    session["provider_session_id"] = "chatgpt:/:e4af3c6b"
+
+    parsed = parse_payload(Provider.CHATGPT, payload, "fallback")
+
+    assert parsed[0].provider_session_id == "chatgpt:/:e4af3c6b"
+
+
 @pytest.mark.asyncio
 async def test_browser_capture_receiver_artifact_lands_in_archive(
     workspace_env: dict[str, Path],

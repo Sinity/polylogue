@@ -7,6 +7,29 @@ from polylogue.core.enums import Provider
 from polylogue.sources.parsers.base_models import ParsedAttachment, ParsedMessage, ParsedSession
 
 
+def _legacy_native_id(provider: Provider, provider_session_id: str | None) -> str | None:
+    """Recover native ids from old browser-extension synthetic session ids."""
+    if not provider_session_id:
+        return None
+    provider_prefix = provider.value
+    synthetic_prefix = f"{provider_prefix}:"
+    if provider_session_id.startswith(synthetic_prefix):
+        parts = provider_session_id.split(":")
+        if len(parts) == 3 and parts[1] and "/" not in parts[1]:
+            return parts[1]
+    hyphen_prefix = f"{provider_prefix}-"
+    if provider_session_id.startswith(hyphen_prefix):
+        import re
+
+        match = re.search(
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+            provider_session_id,
+        )
+        if match:
+            return match.group(0)
+    return provider_session_id
+
+
 def looks_like(payload: object) -> bool:
     """Return whether a payload is a browser-capture envelope."""
     return looks_like_browser_capture(payload)
@@ -76,6 +99,7 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
         )
 
     provider = envelope.session.provider if envelope.session.provider is not Provider.UNKNOWN else Provider.UNKNOWN
+    provider_session_id = _legacy_native_id(provider, envelope.session.provider_session_id) or fallback_id
     active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
     if active_leaf_message_provider_id is not None:
         messages = [
@@ -86,8 +110,8 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
         ]
     return ParsedSession(
         source_name=provider,
-        provider_session_id=envelope.session.provider_session_id or fallback_id,
-        title=envelope.session.title or envelope.provenance.page_title or fallback_id,
+        provider_session_id=provider_session_id,
+        title=envelope.session.title or envelope.provenance.page_title or provider_session_id,
         created_at=envelope.session.created_at,
         updated_at=envelope.session.updated_at or envelope.provenance.captured_at,
         messages=messages,
