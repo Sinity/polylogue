@@ -54,6 +54,8 @@ def archive_debt_list(
         rows.extend(_assertion_candidate_rows(archive_root / "user.db"))
     if _include("raw-materialization", selected_kinds):
         rows.extend(_raw_materialization_rows(archive_root))
+    if _include("provider-usage", selected_kinds):
+        rows.extend(_provider_usage_rows(index_db))
     if _include("convergence", selected_kinds):
         rows.extend(_convergence_rows(index_db))
     if _include("embedding", selected_kinds):
@@ -497,6 +499,85 @@ def _source_family(subject_type: str, subject_id: str) -> str:
     from polylogue.daemon.convergence_debt_alert import source_family_for_subject
 
     return source_family_for_subject(subject_type, subject_id)
+
+
+def _provider_usage_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
+    if not index_db.exists():
+        return []
+    try:
+        conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+    except sqlite3.Error:
+        return []
+    try:
+        if not _table_exists(conn, "sessions") or not _table_exists(conn, "session_model_usage"):
+            return []
+        rows = list(
+            conn.execute(
+                """
+                SELECT
+                    s.origin AS origin,
+                    COUNT(DISTINCT s.session_id) AS session_count,
+                    COUNT(*) AS model_row_count,
+                    COUNT(DISTINCT smu.model_name) AS model_count
+                FROM sessions AS s
+                JOIN session_model_usage AS smu ON smu.session_id = s.session_id
+                WHERE s.origin = 'codex-session'
+                GROUP BY s.origin
+                HAVING COALESCE(SUM(smu.input_tokens), 0) = 0
+                   AND COALESCE(SUM(smu.output_tokens), 0) = 0
+                   AND COALESCE(SUM(smu.cache_read_tokens), 0) = 0
+                   AND COALESCE(SUM(smu.cache_write_tokens), 0) = 0
+                """
+            )
+        )
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+    debt_rows: list[ArchiveDebtRowPayload] = []
+    for row in rows:
+        origin = str(row["origin"])
+        session_count = _int_value(row["session_count"]) or 0
+        model_row_count = _int_value(row["model_row_count"]) or 0
+        model_count = _int_value(row["model_count"]) or 0
+        if session_count <= 0 or model_row_count <= 0:
+            continue
+        debt_rows.append(
+            ArchiveDebtRowPayload(
+                debt_ref=f"debt:provider-usage:{origin}:zero-token-projection",
+                kind="provider-usage",
+                stage="usage-projection",
+                subject_ref=f"raw-origin:{origin}",
+                severity="warning",
+                status="open",
+                owner="archive",
+                summary=f"{session_count} {origin} session(s) have model rows but no projected token usage",
+                details=(
+                    f"{model_row_count} session_model_usage row(s) across {model_count} model(s) contain only zero "
+                    "token counters. Codex token_count events are parser-visible but are not yet materialized into "
+                    "a provider-usage ledger or rollup."
+                ),
+                source_family=origin,
+                evidence_refs=(f"archive-tier:{index_db}", "table:session_model_usage"),
+                caveats=(
+                    "Zero projected tokens are usage-coverage debt, not evidence that the sessions consumed no tokens.",
+                ),
+            )
+        )
+    return debt_rows
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ? LIMIT 1",
+            (table,),
+        ).fetchone()
+    except sqlite3.Error:
+        return False
+    return row is not None
 
 
 def _embedding_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:

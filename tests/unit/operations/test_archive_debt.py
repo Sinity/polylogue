@@ -316,6 +316,76 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
     assert "passed=1" in (parsed_gap.details or "")
 
 
+def test_archive_debt_reports_codex_zero_token_projection_debt(tmp_path: Path) -> None:
+    _write_current_tier_files(tmp_path)
+    index_db = tmp_path / "index.db"
+    with sqlite3.connect(index_db) as conn:
+        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT NOT NULL)")
+        conn.execute(
+            """
+            CREATE TABLE session_model_usage (
+                session_id TEXT NOT NULL,
+                model_name TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_write_tokens INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        conn.execute("INSERT INTO sessions (session_id, origin) VALUES ('codex-session:s1', 'codex-session')")
+        conn.execute(
+            """
+            INSERT INTO session_model_usage (
+                session_id, model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+            ) VALUES ('codex-session:s1', 'gpt-5-codex', 0, 0, 0, 0)
+            """
+        )
+
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("provider-usage",))
+
+    assert payload.totals.total == 1
+    row = payload.rows[0]
+    assert row.debt_ref == "debt:provider-usage:codex-session:zero-token-projection"
+    assert row.kind == "provider-usage"
+    assert row.stage == "usage-projection"
+    assert row.severity == "warning"
+    assert row.status == "open"
+    assert "no projected token usage" in row.summary
+    assert "not evidence that the sessions consumed no tokens" in row.caveats[0]
+
+
+def test_archive_debt_ignores_codex_usage_rows_with_nonzero_tokens(tmp_path: Path) -> None:
+    _write_current_tier_files(tmp_path)
+    index_db = tmp_path / "index.db"
+    with sqlite3.connect(index_db) as conn:
+        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT NOT NULL)")
+        conn.execute(
+            """
+            CREATE TABLE session_model_usage (
+                session_id TEXT NOT NULL,
+                model_name TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_write_tokens INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        conn.execute("INSERT INTO sessions (session_id, origin) VALUES ('codex-session:s1', 'codex-session')")
+        conn.execute(
+            """
+            INSERT INTO session_model_usage (
+                session_id, model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+            ) VALUES ('codex-session:s1', 'gpt-5-codex', 10, 0, 0, 0)
+            """
+        )
+
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("provider-usage",))
+
+    assert payload.rows == ()
+
+
 def test_archive_debt_raw_materialization_ignores_materialized_rows(tmp_path: Path) -> None:
     source_db, index_db, _source_file = _init_raw_materialization_fixture(tmp_path)
     with sqlite3.connect(index_db) as conn:

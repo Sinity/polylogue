@@ -739,3 +739,53 @@ class TestEdgeCases:
         assert result.messages[0].blocks[0].tool_name == "exec_command"
         assert result.messages[0].blocks[0].tool_input == {"cmd": "git status"}
         assert result.messages[1].blocks[0].type == "tool_result"
+
+    def test_token_count_event_preserves_nested_usage_counters(self) -> None:
+        payload = [
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "last_token_usage": {
+                            "input_tokens": 111,
+                            "cached_input_tokens": 22,
+                            "output_tokens": 33,
+                            "reasoning_output_tokens": 4,
+                            "total_tokens": 170,
+                        },
+                        "total_token_usage": {
+                            "input_tokens": 1000,
+                            "cached_input_tokens": 9000,
+                            "output_tokens": 300,
+                            "reasoning_output_tokens": 40,
+                            "total_tokens": 10340,
+                        },
+                        "model_context_window": 200000,
+                    },
+                },
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        assert [event.event_type for event in result.session_events] == ["token_count"]
+        assert result.session_events[0].payload == {
+            "source_index": 1,
+            "type": "token_count",
+            "last_token_usage": {
+                "input_tokens": 111,
+                "cached_input_tokens": 22,
+                "output_tokens": 33,
+                "reasoning_output_tokens": 4,
+                "total_tokens": 170,
+            },
+            "total_token_usage": {
+                "input_tokens": 1000,
+                "cached_input_tokens": 9000,
+                "output_tokens": 300,
+                "reasoning_output_tokens": 40,
+                "total_tokens": 10340,
+            },
+            "model_context_window": 200000,
+        }

@@ -98,6 +98,7 @@
             "convergence",
             "embedding",
             "fts",
+            "provider-usage",
             "raw-materialization"
           ],
           "title": "Kind",
