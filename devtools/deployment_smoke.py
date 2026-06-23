@@ -64,6 +64,10 @@ BROWSER_EXECUTABLE_CANDIDATES = (
     "chromium-browser",
     "chrome",
 )
+BROWSER_CAPTURE_PROVIDER_ORIGINS = {
+    "chatgpt": "chatgpt-export",
+    "claude-ai": "claude-ai-export",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -469,6 +473,22 @@ def _probe_browser_capture_archive(*, archive_root: Path) -> BrowserCaptureArchi
                             """,
                             (str(latest), latest_suffix_pattern, str(latest)),
                         ).fetchone()
+                        if latest_row is None and latest_provider and latest_provider_session_id:
+                            latest_origin = BROWSER_CAPTURE_PROVIDER_ORIGINS.get(latest_provider)
+                            latest_native_id = legacy_browser_capture_native_id(
+                                latest_provider, latest_provider_session_id
+                            )
+                            if latest_origin and latest_native_id:
+                                latest_row = conn.execute(
+                                    """
+                                    SELECT raw_id, native_id, file_mtime_ms, source_path
+                                    FROM raw_sessions
+                                    WHERE origin = ? AND native_id = ?
+                                    ORDER BY COALESCE(file_mtime_ms, 0) DESC, rowid DESC
+                                    LIMIT 1
+                                    """,
+                                    (latest_origin, latest_native_id),
+                                ).fetchone()
                         if latest_row is not None:
                             latest_raw_id = str(latest_row[0]) if latest_row[0] is not None else None
                             latest_raw_native_id = str(latest_row[1]) if latest_row[1] is not None else None

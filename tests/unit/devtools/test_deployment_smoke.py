@@ -843,6 +843,26 @@ def test_deployment_smoke_matches_latest_browser_capture_by_stable_suffix(tmp_pa
     assert probe.latest_indexed_message_count == 1
 
 
+def test_deployment_smoke_matches_repeated_browser_capture_by_identity(tmp_path: Path) -> None:
+    capture = _write_spooled_capture(tmp_path, provider_session_id="capture")
+    source_path = Path("/alternate/archive/browser-capture/chatgpt/chatgpt-capture-oldhash.json")
+    _create_browser_source_db(
+        tmp_path,
+        file_mtime_ms=int(capture.stat().st_mtime * 1000),
+        capture_path=source_path,
+        native_id="capture",
+    )
+    _create_browser_index_db(tmp_path, native_id="capture")
+
+    probe = deployment_smoke._probe_browser_capture_archive(archive_root=tmp_path)
+
+    assert probe.ok is True
+    assert probe.latest_spooled_path == str(capture)
+    assert probe.latest_raw_source_path == str(source_path)
+    assert probe.latest_indexed_native_id == "capture"
+    assert probe.latest_indexed_message_count == 1
+
+
 def test_deployment_smoke_escapes_latest_suffix_like_wildcards(tmp_path: Path) -> None:
     capture = _write_spooled_capture(tmp_path, provider_session_id="cap_100%")
     _create_browser_source_db(
