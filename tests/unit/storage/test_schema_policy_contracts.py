@@ -123,6 +123,33 @@ def test_matching_version_database_opens_cleanly(tmp_path: Path) -> None:
     conn.close()
 
 
+def test_matching_version_database_ensures_runtime_indexes(tmp_path: Path) -> None:
+    """Runtime index extensions are safe on existing same-version archives.
+
+    These indexes are performance guards, not schema-version migrations: a
+    current archive can gain them without rebuilding from source.
+    """
+    db_path = tmp_path / "runtime-indexes.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        _ensure_schema(conn)
+        for index_name in (
+            "idx_session_events_source_message",
+            "idx_session_agent_policies_source_message",
+            "idx_session_provider_usage_events_source_message",
+        ):
+            conn.execute(f"DROP INDEX {index_name}")
+        _ensure_schema(conn)
+        for table, index_name in (
+            ("session_events", "idx_session_events_source_message"),
+            ("session_agent_policies", "idx_session_agent_policies_source_message"),
+            ("session_provider_usage_events", "idx_session_provider_usage_events_source_message"),
+        ):
+            assert any(row[1] == index_name for row in conn.execute(f"PRAGMA index_list({table})"))
+    finally:
+        conn.close()
+
+
 def test_future_schema_version_is_rejected(tmp_path: Path) -> None:
     """docs/internals.md § Schema Versioning Model: a DB whose version
     is *newer* than this runtime understands must be rejected.

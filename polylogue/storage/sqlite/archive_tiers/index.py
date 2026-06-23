@@ -213,6 +213,10 @@ CREATE TABLE IF NOT EXISTS session_events (
     PRIMARY KEY(session_id, position)
 ) STRICT;
 
+CREATE INDEX IF NOT EXISTS idx_session_events_source_message
+ON session_events(source_message_id)
+WHERE source_message_id IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS session_agent_policies (
     policy_id         TEXT GENERATED ALWAYS AS (session_id || ':' || position) STORED UNIQUE,
     session_id        TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
@@ -224,6 +228,10 @@ CREATE TABLE IF NOT EXISTS session_agent_policies (
     observed_at_ms    INTEGER,
     PRIMARY KEY(session_id, position)
 ) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_session_agent_policies_source_message
+ON session_agent_policies(source_message_id)
+WHERE source_message_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS session_links (
     src_session_id          TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
@@ -487,6 +495,10 @@ CREATE TABLE IF NOT EXISTS session_provider_usage_events (
 
 CREATE INDEX IF NOT EXISTS idx_session_provider_usage_events_session
 ON session_provider_usage_events(session_id, position);
+
+CREATE INDEX IF NOT EXISTS idx_session_provider_usage_events_source_message
+ON session_provider_usage_events(source_message_id)
+WHERE source_message_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS session_tags (
     session_id    TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,

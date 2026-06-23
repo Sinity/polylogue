@@ -1401,6 +1401,29 @@ def test_archive_tiers_writer_replacement_clears_old_projection_rows(tmp_path: P
         "session_commits": 0,
     }
     assert dict(session_row) == {"git_branch": None, "git_repository_url": None, "commit_hash": None}
+    assert search_archive_blocks(conn, "old") == []
+    assert search_archive_blocks(conn, "replacement") == [f"{session_id}:m1:0"]
+    assert (
+        conn.execute(
+            """
+        SELECT COUNT(*)
+        FROM sqlite_master
+        WHERE type = 'trigger'
+          AND name IN ('messages_fts_ai', 'messages_fts_ad', 'messages_fts_au')
+        """
+        ).fetchone()[0]
+        == 3
+    )
+    assert (
+        conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
+        == conn.execute("SELECT COUNT(*) FROM blocks WHERE search_text != ''").fetchone()[0]
+    )
+    for table, index_name in (
+        ("session_events", "idx_session_events_source_message"),
+        ("session_agent_policies", "idx_session_agent_policies_source_message"),
+        ("session_provider_usage_events", "idx_session_provider_usage_events_source_message"),
+    ):
+        assert any(row["name"] == index_name for row in conn.execute(f"PRAGMA index_list({table})"))
 
 
 def test_archive_tiers_writer_materializes_attachments_and_refs(tmp_path: Path) -> None:
