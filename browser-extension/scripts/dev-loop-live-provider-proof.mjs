@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// Launch a visible local Chrome/Chromium with an operator-approved copied
-// profile, load the unpacked extension, open live ChatGPT/Claude pages, and
-// write a redacted proof summary. This script is intentionally local-only: it
-// refuses CI by default, refuses common live profile roots, and never prints raw
-// conversation text. Receiver spool artifacts are local ignored state.
+// Launch a local Chrome/Chromium with an operator-approved copied profile, load
+// the unpacked extension, open live ChatGPT/Claude pages, and write a redacted
+// proof summary. This script is intentionally local-only: it refuses CI by
+// default, refuses common live profile roots, and never prints raw conversation
+// text. Receiver spool artifacts are local ignored state.
 
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -22,6 +22,8 @@ const timeoutMs = Number(process.env.POLYLOGUE_LIVE_PROOF_TIMEOUT_MS || "120000"
 const interactiveWaitMs = Number(process.env.POLYLOGUE_LIVE_PROOF_WAIT_MS || "45000");
 const spoolDir = process.env.POLYLOGUE_LIVE_PROOF_SPOOL_DIR || "";
 const requestedProviders = parseProviders(process.env.POLYLOGUE_LIVE_PROOF_PROVIDERS || "chatgpt,claude");
+const headless = envFlag("POLYLOGUE_LIVE_PROOF_HEADLESS", false);
+const noSandbox = envFlag("POLYLOGUE_LIVE_PROOF_NO_SANDBOX", headless);
 
 const providerCatalog = {
   chatgpt: {
@@ -42,6 +44,12 @@ const providerCatalog = {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function envFlag(name, defaultValue = false) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return defaultValue;
+  return ["1", "true", "yes", "on"].includes(String(raw).trim().toLowerCase());
 }
 
 function sha256(text) {
@@ -288,13 +296,21 @@ async function configureExtension(workerClient) {
     workerClient,
     `(async () => {
       if (!globalThis.chrome?.storage?.local) {
+        if (${JSON.stringify(receiverBaseUrl)} === "http://127.0.0.1:8765" && !${JSON.stringify(receiverAuthToken)}) {
+          return {
+            receiverBaseUrl: "http://127.0.0.1:8765",
+            receiverAuthToken: "",
+            storageConfigured: false,
+            caveat: "chrome.storage.local unavailable in service-worker CDP context; using extension defaults"
+          };
+        }
         throw new Error("extension service-worker CDP target does not expose chrome.storage.local");
       }
       await chrome.storage.local.set({
         receiverBaseUrl: ${JSON.stringify(receiverBaseUrl)},
         receiverAuthToken: ${JSON.stringify(receiverAuthToken)}
       });
-      return await chrome.storage.local.get(["receiverBaseUrl", "receiverAuthToken"]);
+      return { ...(await chrome.storage.local.get(["receiverBaseUrl", "receiverAuthToken"])), storageConfigured: true };
     })()`,
   );
 }
@@ -420,12 +436,15 @@ async function main() {
     `--remote-debugging-port=${debuggingPort}`,
     "--no-first-run",
     "--disable-default-apps",
+    "--no-default-browser-check",
     `--unsafely-treat-insecure-origin-as-secure=${receiverBaseUrl}`,
     `--disable-extensions-except=${extensionRoot}`,
     `--load-extension=${extensionRoot}`,
-    "--new-window",
     "about:blank",
   ];
+  if (headless) chromeArgs.splice(2, 0, "--headless=new");
+  if (noSandbox) chromeArgs.splice(3, 0, "--no-sandbox");
+  if (!headless) chromeArgs.splice(chromeArgs.length - 1, 0, "--new-window");
   const chrome = spawn(chromeBinary, chromeArgs, { detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";
   let stderr = "";
