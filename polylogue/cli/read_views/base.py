@@ -27,6 +27,7 @@ class ReadViewMessageOptions:
     limit: int | None = None
     offset: int = 0
     role: tuple[str, ...] = ()
+    material_origin: tuple[str, ...] = ()
     message_type: str | None = None
     no_code_blocks: bool = False
     no_tool_calls: bool = False

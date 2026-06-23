@@ -34,7 +34,7 @@ from polylogue.cli.query_contracts import (
     QueryOutputSpec,
 )
 from polylogue.cli.shared.types import AppEnv
-from polylogue.core.enums import Provider
+from polylogue.core.enums import MaterialOrigin, Provider
 from polylogue.services import build_runtime_services
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
 from polylogue.surfaces.payloads import decode_search_cursor
@@ -197,6 +197,7 @@ def _output_spec(
     transform: str | None = None,
     list_mode: bool = False,
     print_url: bool = False,
+    material_origins: tuple[MaterialOrigin, ...] = (),
 ) -> QueryOutputSpec:
     return QueryOutputSpec(
         output_format=output_format,
@@ -204,6 +205,7 @@ def _output_spec(
         fields=fields,
         dialogue_only=dialogue_only,
         message_roles=message_roles,
+        material_origins=material_origins,
         transform=transform,
         list_mode=list_mode,
         print_url=print_url,
@@ -233,15 +235,26 @@ def _sample_session() -> Session:
         provider=Provider.CLAUDE_AI,
         title="Transform Contract",
         messages=[
-            make_msg(id="m-user", role=Role.USER, text="hello"),
+            make_msg(
+                id="m-user",
+                role=Role.USER,
+                text="hello",
+                material_origin=MaterialOrigin.RUNTIME_PROTOCOL,
+            ),
             make_msg(
                 id="m-thinking",
                 role=Role.ASSISTANT,
                 text="chain",
+                material_origin=MaterialOrigin.RUNTIME_CONTEXT,
                 blocks=[{"type": "thinking", "text": "chain"}],
             ),
             make_msg(id="m-tool", role=Role.TOOL, text="tool output"),
-            make_msg(id="m-assistant", role=Role.ASSISTANT, text="answer"),
+            make_msg(
+                id="m-assistant",
+                role=Role.ASSISTANT,
+                text="answer",
+                material_origin=MaterialOrigin.ASSISTANT_AUTHORED,
+            ),
         ],
     )
 
@@ -283,6 +296,20 @@ def test_project_query_results_message_role_contract() -> None:
     projected = project_query_results([session], plan)
 
     assert [message.id for message in projected[0].messages] == ["m-user"]
+
+
+def test_project_query_results_material_origin_contract() -> None:
+    plan = QueryExecutionPlan(
+        selection=SessionQuerySpec(),
+        action=QueryAction.SHOW,
+        output=_output_spec(material_origins=(MaterialOrigin.ASSISTANT_AUTHORED,)),
+        mutation=_mutation_spec(),
+    )
+    session = _sample_session()
+
+    projected = project_query_results([session], plan)
+
+    assert [message.id for message in projected[0].messages] == ["m-assistant"]
 
 
 def test_project_query_results_explicit_message_role_supersedes_dialogue_only() -> None:

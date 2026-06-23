@@ -36,6 +36,7 @@ _complete_action = _lazy_shell_complete("action")
 _complete_action_sequence = _lazy_shell_complete("action_sequence")
 _complete_session_id = _lazy_shell_complete("session_id")
 _complete_cwd_prefix = _lazy_shell_complete("cwd_prefix")
+_complete_material_origin = _lazy_shell_complete("material_origin")
 _complete_message_type = _lazy_shell_complete("message_type")
 _complete_origin = _lazy_shell_complete("origin")
 _complete_repo = _lazy_shell_complete("repo")
@@ -72,6 +73,12 @@ def _load_message_types() -> list[str]:
     from polylogue.archive.message.types import MessageType
 
     return [m.value for m in MessageType]
+
+
+def _load_material_origins() -> list[str]:
+    from polylogue.core.enums import MaterialOrigin
+
+    return [m.value for m in MaterialOrigin]
 
 
 def _load_retrieval_lanes() -> list[str]:
@@ -115,6 +122,19 @@ def _validate_message_role_tokens(
         return normalize_message_role_option(value)
     except ValueError as exc:
         raise click.BadParameter(str(exc), param_hint="--message-role") from exc
+
+
+def _validate_material_origin_tokens(
+    ctx: click.Context,
+    _param: click.Parameter,
+    value: tuple[str, ...],
+) -> tuple[str, ...]:
+    try:
+        from polylogue.cli.query_contracts import normalize_material_origin_option
+
+        return normalize_material_origin_option(value)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="--material-origin") from exc
 
 
 FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] = (
@@ -343,6 +363,17 @@ STREAMING_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...
         multiple=True,
         callback=_validate_message_role_tokens,
         help="Show only selected message roles (repeatable or comma-separated: user, assistant, system, tool, unknown)",
+    ),
+    click.option(
+        "--material-origin",
+        "material_origin",
+        multiple=True,
+        callback=_validate_material_origin_tokens,
+        shell_complete=_complete_material_origin,
+        help=(
+            "Show only selected material origins "
+            "(repeatable or comma-separated: human_authored, runtime_protocol, tool_result, unknown)"
+        ),
     ),
 )
 

@@ -205,16 +205,22 @@ maintained by the archive:
 
 ```bash
 polylogue 'sessions where user_messages >= 2 AND assistant_words between 500 and 2000'
+polylogue 'sessions where authored_user_messages >= 2 AND authored_user_words >= 100'
 polylogue 'sessions where system_messages = 0 AND tool_messages = 0'
 polylogue 'sessions where tool_use_messages >= 1 AND paste_messages = 0'
 ```
 
 Supported aggregate count fields are `messages`, `words`, `user_messages`,
-`assistant_messages`, `system_messages`, `tool_messages`, `user_words`,
-`assistant_words`, `tool_use_messages`, `thinking_messages`, and
-`paste_messages`. The `tool_use_messages`, `thinking_messages`, and
-`paste_messages` fields count messages carrying those signals, not raw block
-rows. These fields are SQL-backed session predicates; use them in
+`authored_user_messages`, `assistant_messages`, `system_messages`,
+`tool_messages`, `user_words`, `authored_user_words`, `assistant_words`,
+`tool_use_messages`, `thinking_messages`, and `paste_messages`.
+`user_messages` and `user_words` are provider-role counts: they preserve source
+envelope truth and may include runtime protocol/context rows from providers
+such as Claude Code. Use `authored_user_messages` and `authored_user_words`
+when the question is human-authored prompt material. The `tool_use_messages`,
+`thinking_messages`, and `paste_messages` fields count messages carrying those
+signals, not raw block rows. These fields are SQL-backed session predicates; use
+them in
 `sessions where ...` Boolean queries or as `session.<field>` predicates inside
 terminal unit queries.
 
@@ -526,8 +532,9 @@ can resolve deliberately when the operator wants to inspect source evidence.
 | `--no-tool-outputs` | Strip tool result blocks |
 | `--no-file-reads` | Strip file read blocks |
 | `--prose-only` | Show only authored prose text |
-| `--dialogue-only` | Show only user/assistant messages |
-| `--message-role` | Filter by role (`user`, `assistant`, `system`, `tool`) |
+| `--dialogue-only` | Show only provider-role user/assistant messages |
+| `--message-role` | Filter by provider role (`user`, `assistant`, `system`, `tool`) |
+| `--material-origin` | Filter message rows by authoredness/material source (`human_authored`, `runtime_protocol`, `tool_result`, `unknown`, etc.) |
 
 ## Verbs
 

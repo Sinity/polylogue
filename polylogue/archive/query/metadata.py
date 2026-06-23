@@ -165,10 +165,16 @@ EXPRESSION_FIELD_REGISTRY: dict[str, dict[str, str]] = {
         "example": "sessions where duration_ms >= 60000",
     },
     "user_messages": {
-        "description": "Count comparison for user messages",
+        "description": "Count comparison for provider-role user messages",
         "spec_field": "boolean_predicate",
         "negatable": "no",
         "example": "sessions where user_messages >= 2",
+    },
+    "authored_user_messages": {
+        "description": "Count comparison for human-authored user prompt messages",
+        "spec_field": "boolean_predicate",
+        "negatable": "no",
+        "example": "sessions where authored_user_messages >= 2",
     },
     "assistant_messages": {
         "description": "Count comparison for assistant messages",
@@ -207,10 +213,16 @@ EXPRESSION_FIELD_REGISTRY: dict[str, dict[str, str]] = {
         "example": "sessions where paste_messages = 0",
     },
     "user_words": {
-        "description": "Count comparison for user words",
+        "description": "Count comparison for provider-role user words",
         "spec_field": "boolean_predicate",
         "negatable": "no",
         "example": "sessions where user_words >= 100",
+    },
+    "authored_user_words": {
+        "description": "Count comparison for human-authored user prompt words",
+        "spec_field": "boolean_predicate",
+        "negatable": "no",
+        "example": "sessions where authored_user_words >= 100",
     },
     "assistant_words": {
         "description": "Count comparison for assistant words",
@@ -250,6 +262,7 @@ _BOOLEAN_SUPPORTED_FIELDS = {
     "words",
     "duration_ms",
     "user_messages",
+    "authored_user_messages",
     "assistant_messages",
     "system_messages",
     "tool_messages",
@@ -257,6 +270,7 @@ _BOOLEAN_SUPPORTED_FIELDS = {
     "thinking_messages",
     "paste_messages",
     "user_words",
+    "authored_user_words",
     "assistant_words",
     "lineage",
 }
@@ -579,13 +593,17 @@ _SESSION_SCOPED_STRUCTURAL_EXAMPLES: dict[str, str] = {
     "tool_use_messages": "session.tool_use_messages:>=1",
     "until": "session.until:2024-01-15",
     "user_messages": "session.user_messages:>=2",
+    "authored_user_messages": "session.authored_user_messages:>=2",
     "user_words": "session.user_words:>=100",
+    "authored_user_words": "session.authored_user_words:>=100",
     "words": "session.words:<=200",
 }
 
 _RUNTIME_SESSION_SCOPED_STRUCTURAL_FIELDS = {
     "assistant_messages",
     "assistant_words",
+    "authored_user_messages",
+    "authored_user_words",
     "cwd",
     "date",
     "duration_ms",
@@ -868,11 +886,18 @@ COUNT_QUERY_FIELD_REGISTRY: dict[str, CountQueryFieldInfo] = {
         session_column="word_count",
     ),
     "user_messages": CountQueryFieldInfo(
-        description="User-message-count predicate over normalized session messages.",
+        description="Provider-role user-message-count predicate over normalized session messages.",
         operators=(">=", "<=", "=", ">", "<"),
         range_keyword="between",
         example="user_messages >= 2",
         session_column="user_message_count",
+    ),
+    "authored_user_messages": CountQueryFieldInfo(
+        description="Human-authored user-prompt-count predicate over normalized session messages.",
+        operators=(">=", "<=", "=", ">", "<"),
+        range_keyword="between",
+        example="authored_user_messages >= 2",
+        session_column="authored_user_message_count",
     ),
     "assistant_messages": CountQueryFieldInfo(
         description="Assistant-message-count predicate over normalized session messages.",
@@ -917,11 +942,18 @@ COUNT_QUERY_FIELD_REGISTRY: dict[str, CountQueryFieldInfo] = {
         session_column="paste_count",
     ),
     "user_words": CountQueryFieldInfo(
-        description="User-word-count predicate over normalized session text.",
+        description="Provider-role user-word-count predicate over normalized session text.",
         operators=(">=", "<=", "=", ">", "<"),
         range_keyword="between",
         example="user_words between 100 and 500",
         session_column="user_word_count",
+    ),
+    "authored_user_words": CountQueryFieldInfo(
+        description="Human-authored user-prompt word-count predicate over normalized session text.",
+        operators=(">=", "<=", "=", ">", "<"),
+        range_keyword="between",
+        example="authored_user_words between 100 and 500",
+        session_column="authored_user_word_count",
     ),
     "assistant_words": CountQueryFieldInfo(
         description="Assistant-word-count predicate over normalized session text.",

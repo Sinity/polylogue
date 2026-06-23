@@ -120,7 +120,7 @@ class _ArchiveFacetBucketResult:
     budget_exceeded: bool = False
 
 
-_FACET_CORE_FAMILIES = ("total_counts", "origins", "tags")
+_FACET_CORE_FAMILIES = ("total_counts", "origins", "tags", "role_counts", "message_types", "material_origins")
 _FACET_EXPENSIVE_FAMILIES = ("repos", "action_types")
 _FACET_COMPLETE_ARCHIVE_FAMILIES = (
     "total_counts",
@@ -3454,7 +3454,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 "origins": active.origins,
                 "tags": active.tags,
                 "repos": active.repos,
+                "role_counts": active.role_counts,
                 "message_types": active.message_types,
+                "material_origins": active.material_origins,
                 "action_types": active.action_types,
                 "has_flags": active.has_flags,
                 "total_sessions": active.total_sessions,
@@ -3579,7 +3581,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             origins=dict(stats.origins),
             tags=tags,
             repos=repos,
+            role_counts=dict(stats.role_counts),
             action_types=action_types,
+            message_types=dict(stats.message_types),
+            material_origins=dict(stats.material_origins),
             total_sessions=stats.total_sessions,
             total_messages=stats.total_messages,
         )

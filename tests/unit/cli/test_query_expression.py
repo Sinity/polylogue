@@ -3592,6 +3592,59 @@ class TestBooleanQueryExpression:
 
         assert [row.session_id for row in rows] == ["claude-code-session:ext-role-count-hit"]
 
+    def test_authored_user_count_predicate_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "authored-count-hit")
+            .provider("claude-code")
+            .title("authored count hit")
+            .add_message("m-hit-prompt-1", role="user", text="please inspect")
+            .add_message("m-hit-prompt-2", role="user", text="and add coverage")
+            .add_message(
+                "m-hit-runtime",
+                role="user",
+                text="<task-notification>ignored runtime row</task-notification>",
+                message_type="protocol",
+            )
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "authored-count-control")
+            .provider("claude-code")
+            .title("authored count control")
+            .add_message("m-control-prompt", role="user", text="please inspect")
+            .add_message(
+                "m-control-runtime-1",
+                role="user",
+                text="<task-notification>runtime one</task-notification>",
+                message_type="protocol",
+            )
+            .add_message(
+                "m-control-runtime-2",
+                role="user",
+                text="<task-notification>runtime two</task-notification>",
+                message_type="protocol",
+            )
+            .save()
+        )
+
+        role_spec = compile_expression("sessions where user_messages >= 3")
+        authored_spec = compile_expression("sessions where authored_user_messages >= 2 AND authored_user_words >= 4")
+        assert role_spec.boolean_predicate is not None
+        assert authored_spec.boolean_predicate is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            role_rows = archive.list_summaries(limit=100, boolean_predicate=role_spec.boolean_predicate)
+            authored_rows = archive.list_summaries(limit=100, boolean_predicate=authored_spec.boolean_predicate)
+
+        assert {row.session_id for row in role_rows} == {
+            "claude-code-session:ext-authored-count-hit",
+            "claude-code-session:ext-authored-count-control",
+        }
+        assert [row.session_id for row in authored_rows] == ["claude-code-session:ext-authored-count-hit"]
+
     def test_sequence_predicate_executes_in_order_against_archive(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from tests.infra.storage_records import SessionBuilder
@@ -4174,13 +4227,13 @@ class TestLowererFieldMapping:
 
     def test_boolean_ast_exposes_aggregate_count_comparisons(self) -> None:
         ast = parse_expression_ast(
-            "sessions where user_messages >= 2 AND assistant_words between 5 and 20 AND tool_use_messages >= 1"
+            "sessions where authored_user_messages >= 2 AND assistant_words between 5 and 20 AND tool_use_messages >= 1"
         )
 
         assert ast.boolean_predicate == QueryBoolPredicate(
             "and",
             (
-                QueryFieldPredicate(field="user_messages", values=("2",), op=">="),
+                QueryFieldPredicate(field="authored_user_messages", values=("2",), op=">="),
                 QueryFieldPredicate(field="assistant_words", values=("5",), op=">="),
                 QueryFieldPredicate(field="assistant_words", values=("20",), op="<="),
                 QueryFieldPredicate(field="tool_use_messages", values=("1",), op=">="),
@@ -4551,6 +4604,11 @@ class TestFieldRegistry:
             "boolean_predicate",
             QueryFieldPredicate(field="user_messages", values=("2",), op=">="),
         ),
+        "authored_user_messages": (
+            "sessions where authored_user_messages >= 2",
+            "boolean_predicate",
+            QueryFieldPredicate(field="authored_user_messages", values=("2",), op=">="),
+        ),
         "assistant_messages": (
             "sessions where assistant_messages >= 2",
             "boolean_predicate",
@@ -4590,6 +4648,11 @@ class TestFieldRegistry:
             "sessions where user_words >= 100",
             "boolean_predicate",
             QueryFieldPredicate(field="user_words", values=("100",), op=">="),
+        ),
+        "authored_user_words": (
+            "sessions where authored_user_words >= 100",
+            "boolean_predicate",
+            QueryFieldPredicate(field="authored_user_words", values=("100",), op=">="),
         ),
         "assistant_words": (
             "sessions where assistant_words >= 500",

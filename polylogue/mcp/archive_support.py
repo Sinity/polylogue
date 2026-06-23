@@ -418,6 +418,7 @@ def archive_messages_payload(
     *,
     roles: Sequence[str] = (),
     message_type: str | None = None,
+    material_origins: Sequence[str] = (),
     content_projection: ContentProjectionSpec | None = None,
     limit: int,
     offset: int,
@@ -426,11 +427,14 @@ def archive_messages_payload(
     from polylogue.mcp.payloads import MCPMessagesListPayload
 
     role_filter = frozenset(roles)
+    material_origin_filter = frozenset(material_origins)
     messages = [
         projected
         for message in session.messages
+        for message_origin in (str(getattr(message.material_origin, "value", message.material_origin)),)
         if (not role_filter or message.role in role_filter)
         and (message_type is None or message.message_type == message_type)
+        and (not material_origin_filter or message_origin in material_origin_filter)
         for projected in (_project_archive_message(message, content_projection),)
         if projected is not None
     ]

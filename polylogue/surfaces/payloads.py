@@ -2204,7 +2204,9 @@ class FacetBucketsPayload(SurfacePayloadModel):
     origins: dict[str, int] = Field(default_factory=dict)
     tags: dict[str, int] = Field(default_factory=dict)
     repos: dict[str, int] = Field(default_factory=dict)
+    role_counts: dict[str, int] = Field(default_factory=dict)
     message_types: dict[str, int] = Field(default_factory=dict)
+    material_origins: dict[str, int] = Field(default_factory=dict)
     action_types: dict[str, int] = Field(default_factory=dict)
     has_flags: dict[str, int] = Field(default_factory=dict)
     total_sessions: int = 0
@@ -2253,7 +2255,9 @@ class FacetsResponse(SurfacePayloadModel):
     tags: dict[str, int] = Field(default_factory=dict)
     repos: dict[str, int] = Field(default_factory=dict)
     cwd_prefixes: dict[str, int] = Field(default_factory=dict)
+    role_counts: dict[str, int] = Field(default_factory=dict)
     message_types: dict[str, int] = Field(default_factory=dict)
+    material_origins: dict[str, int] = Field(default_factory=dict)
     action_types: dict[str, int] = Field(default_factory=dict)
     has_flags: dict[str, int] = Field(default_factory=dict)
     time_range: FacetTimeRange | None = None

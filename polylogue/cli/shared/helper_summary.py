@@ -152,6 +152,8 @@ def print_summary_impl(
                     ui.console.print(
                         f"  Words: {int(metric.avg_user_words)} user / {int(metric.avg_assistant_words)} asst (avg)"
                     )
+                    if int(metric.avg_authored_user_words) != int(metric.avg_user_words):
+                        ui.console.print(f"  Authored user words: {int(metric.avg_authored_user_words)} (avg)")
                     if metric.tool_use_count > 0:
                         ui.console.print(
                             f"  Tool Use: {metric.tool_use_count:,} ({metric.tool_use_percentage:.1f}% of convs)"

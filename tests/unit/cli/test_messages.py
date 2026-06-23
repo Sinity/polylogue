@@ -13,6 +13,7 @@ from polylogue.cli.messages import run_messages, run_raw
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
+from polylogue.core.enums import MaterialOrigin
 
 SCHEMAS_DIR = Path("docs/schemas/cli-output")
 
@@ -146,6 +147,7 @@ def test_run_messages_emits_json_and_passes_projection(tmp_path: Path, capsys: p
             _request(tmp_path),
             session_id="conv-1",
             message_role=("user",),
+            material_origin=("human-authored",),
             message_type="summary",
             limit=5,
             offset=2,
@@ -158,6 +160,7 @@ def test_run_messages_emits_json_and_passes_projection(tmp_path: Path, capsys: p
     assert payload["messages"][0]["text"] == "hello"
     assert api.messages_kwargs["session_id"] == "conv-1"
     assert api.messages_kwargs["message_role"] == ("user",)
+    assert api.messages_kwargs["material_origin"] == (MaterialOrigin.HUMAN_AUTHORED,)
     assert api.messages_kwargs["message_type"] == "summary"
     assert api.messages_kwargs["limit"] == 5
     assert api.messages_kwargs["offset"] == 2

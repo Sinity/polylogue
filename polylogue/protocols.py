@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from polylogue.archive.session.domain_models import Session, SessionSummary
     from polylogue.archive.session.session_profile import SessionProfile
     from polylogue.archive.stats import ArchiveStats
+    from polylogue.core.enums import MaterialOrigin
     from polylogue.storage.archive_views import SessionRenderProjection
     from polylogue.storage.query_models import SessionRecordQuery
     from polylogue.storage.runtime import (
@@ -184,6 +185,7 @@ class SessionReader(Protocol):
         *,
         dialogue_only: bool = False,
         message_roles: MessageRoleFilter = (),
+        material_origin: tuple[MaterialOrigin, ...] = (),
         limit: int | None = None,
     ) -> AsyncIterator[Message]: ...
 
@@ -264,6 +266,7 @@ class ArchiveMessageQueryStore(Protocol):
         *,
         message_role: MessageRoleFilter = (),
         message_type: MessageTypeName | None = None,
+        material_origin: tuple[MaterialOrigin, ...] = (),
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[MessageRecord], int]: ...

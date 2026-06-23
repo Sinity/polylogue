@@ -37,6 +37,7 @@ from polylogue.archive.query.metadata import (
     terminal_query_sources,
 )
 from polylogue.archive.query.spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES, QUERY_SEQUENCE_ACTION_TYPES
+from polylogue.core.enums import MaterialOrigin
 from polylogue.paths import active_index_db_path
 
 if TYPE_CHECKING:
@@ -407,6 +408,15 @@ def complete_message_type_values(
     return _static_completion_items(tuple(message_type.value for message_type in MessageType), incomplete)
 
 
+def complete_material_origin_values(
+    ctx: click.Context,
+    param: click.Parameter,
+    incomplete: str,
+) -> list[CompletionItem]:
+    del ctx, param
+    return _static_completion_items(tuple(origin.value for origin in MaterialOrigin), incomplete, csv=True)
+
+
 def complete_retrieval_lane_values(
     ctx: click.Context,
     param: click.Parameter,
@@ -526,6 +536,7 @@ COMPLETION_SOURCE_HANDLERS: Final[Mapping[CompletionSource, CompletionCallback]]
     "action": complete_action_values,
     "action_sequence": complete_action_sequence_values,
     "cwd_prefix": complete_cwd_prefix_values,
+    "material_origin": complete_material_origin_values,
     "message_type": complete_message_type_values,
     "origin": complete_origin_values,
     "repo": complete_repo_values,
@@ -549,6 +560,7 @@ __all__ = [
     "complete_query_expression_fields",
     "complete_session_ids",
     "complete_cwd_prefix_values",
+    "complete_material_origin_values",
     "complete_message_type_values",
     "complete_origin_values",
     "complete_query_source",

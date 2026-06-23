@@ -93,22 +93,17 @@ def _clean_topic_text(value: str | None, *, width: int = _TOPIC_MAX_CHARS) -> st
 def _first_substantive_user_turn(analysis: SessionAnalysis) -> str | None:
     fallback_user_turn: str | None = None
     for message in analysis.facts.message_facts:
-        if not message.is_user or message.is_protocol_artifact:
+        if not message.is_human_authored:
             continue
         cleaned = _clean_topic_text(message.text)
         if cleaned is None:
             continue
-        if fallback_user_turn is None and not message.is_noise:
+        if fallback_user_turn is None:
             fallback_user_turn = cleaned
         if message.is_substantive and not message.is_noise:
             return cleaned
     if fallback_user_turn is not None:
         return fallback_user_turn
-    for message in analysis.facts.message_facts:
-        if message.is_user:
-            cleaned = _clean_topic_text(message.text)
-            if cleaned is not None:
-                return cleaned
     return None
 
 
@@ -223,7 +218,7 @@ def _terminal_state(
     if last is None:
         return "unknown", 0.1, {}
     text_lower = last.text.lower()
-    if last.is_user:
+    if last.is_human_authored:
         return "question_left", 0.72, {"message_id": last.message_id}
     if last.is_assistant and any(marker in text_lower for marker in _ERROR_MARKERS):
         return "error_left", 0.7, {"message_id": last.message_id}

@@ -58,6 +58,16 @@ def _get_message_type_choices() -> list[str]:
     return [m.value for m in _get_message_type_class()]  # type: ignore[attr-defined]
 
 
+def _get_material_origin_class() -> object:  # pragma: no cover — returns MaterialOrigin
+    from polylogue.core.enums import MaterialOrigin
+
+    return MaterialOrigin
+
+
+def _get_material_origin_choices() -> list[str]:
+    return [m.value for m in _get_material_origin_class()]  # type: ignore[attr-defined]
+
+
 def _lazy_shell_complete(source: str):  # type: ignore[no-untyped-def]
     def _complete(ctx: click.Context, param: click.Parameter, incomplete: str):  # type: ignore[no-untyped-def]
         from polylogue.cli.shell_completion_values import complete_query_source
@@ -69,6 +79,7 @@ def _lazy_shell_complete(source: str):  # type: ignore[no-untyped-def]
 
 
 _complete_session_id = _lazy_shell_complete("session_id")
+_complete_material_origin = _lazy_shell_complete("material_origin")
 _complete_message_type = _lazy_shell_complete("message_type")
 
 _READ_VIEWS = read_view_choices()
@@ -93,6 +104,7 @@ def _read_view_option_values(
     limit: int | None,
     offset: int,
     message_role: tuple[str, ...],
+    material_origin: tuple[str, ...],
     message_type: str | None,
     no_code_blocks: bool,
     no_tool_calls: bool,
@@ -123,6 +135,7 @@ def _read_view_option_values(
         "limit": limit,
         "offset": offset,
         "message_role": message_role,
+        "material_origin": material_origin,
         "message_type": message_type,
         "no_code_blocks": no_code_blocks,
         "no_tool_calls": no_tool_calls,
@@ -325,6 +338,14 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: b
 # message/raw pagination flags
 @click.option("--message-role", "-r", "message_role", multiple=True, help="Filter by message role (--view messages).")
 @click.option(
+    "--material-origin",
+    "material_origin",
+    multiple=True,
+    type=_LazyChoice(_get_material_origin_choices, "origin"),
+    shell_complete=_complete_material_origin,
+    help="Filter by material origin (--view messages).",
+)
+@click.option(
     "--message-type",
     "message_type",
     type=_LazyChoice(_get_message_type_choices, "type"),
@@ -418,6 +439,7 @@ def read_verb(
     out_path: str | None,
     export_all: bool,
     message_role: tuple[str, ...],
+    material_origin: tuple[str, ...],
     message_type: str | None,
     limit: int | None,
     offset: int,
@@ -554,6 +576,7 @@ def read_verb(
                     limit=limit,
                     offset=offset,
                     message_role=message_role,
+                    material_origin=material_origin,
                     message_type=message_type,
                     no_code_blocks=no_code_blocks,
                     no_tool_calls=no_tool_calls,

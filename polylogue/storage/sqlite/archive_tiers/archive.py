@@ -3977,11 +3977,50 @@ class ArchiveStore:
             """,
             params,
         ).fetchone()
+        role_rows = self._conn.execute(
+            f"""
+            SELECT COALESCE(NULLIF(m.role, ''), 'unknown') AS group_key,
+                   COUNT(*) AS count
+            FROM sessions s
+            JOIN messages m ON m.session_id = s.session_id
+            {where}
+            GROUP BY group_key
+            ORDER BY count DESC, group_key
+            """,
+            params,
+        ).fetchall()
+        message_type_rows = self._conn.execute(
+            f"""
+            SELECT COALESCE(NULLIF(m.message_type, ''), 'unknown') AS group_key,
+                   COUNT(*) AS count
+            FROM sessions s
+            JOIN messages m ON m.session_id = s.session_id
+            {where}
+            GROUP BY group_key
+            ORDER BY count DESC, group_key
+            """,
+            params,
+        ).fetchall()
+        material_origin_rows = self._conn.execute(
+            f"""
+            SELECT COALESCE(NULLIF(m.material_origin, ''), 'unknown') AS group_key,
+                   COUNT(*) AS count
+            FROM sessions s
+            JOIN messages m ON m.session_id = s.session_id
+            {where}
+            GROUP BY group_key
+            ORDER BY count DESC, group_key
+            """,
+            params,
+        ).fetchall()
         return ArchiveStats(
             total_sessions=int(row["total_sessions"] or 0) if row is not None else 0,
             total_messages=int(row["total_messages"] or 0) if row is not None else 0,
             total_attachments=int(attachment_row["total_attachments"] or 0) if attachment_row is not None else 0,
             origins={str(provider_row["origin"]): int(provider_row["count"] or 0) for provider_row in provider_rows},
+            role_counts={str(item["group_key"]): int(item["count"] or 0) for item in role_rows},
+            message_types={str(item["group_key"]): int(item["count"] or 0) for item in message_type_rows},
+            material_origins={str(item["group_key"]): int(item["count"] or 0) for item in material_origin_rows},
             db_size_bytes=self.index_db_path.stat().st_size if self.index_db_path.exists() else 0,
         )
 
@@ -4824,6 +4863,36 @@ def _stats_by_sql(group_by: str, where: str, *, tags_relation: str = "session_ta
             GROUP BY st.tag
             ORDER BY count DESC, group_key
         """
+    if group_by == "role":
+        return f"""
+            SELECT COALESCE(NULLIF(m.role, ''), 'unknown') AS group_key,
+                   COUNT(*) AS count
+            FROM sessions s
+            JOIN messages m ON m.session_id = s.session_id
+            {where}
+            GROUP BY group_key
+            ORDER BY count DESC, group_key
+        """
+    if group_by == "message_type":
+        return f"""
+            SELECT COALESCE(NULLIF(m.message_type, ''), 'unknown') AS group_key,
+                   COUNT(*) AS count
+            FROM sessions s
+            JOIN messages m ON m.session_id = s.session_id
+            {where}
+            GROUP BY group_key
+            ORDER BY count DESC, group_key
+        """
+    if group_by == "material_origin":
+        return f"""
+            SELECT COALESCE(NULLIF(m.material_origin, ''), 'unknown') AS group_key,
+                   COUNT(*) AS count
+            FROM sessions s
+            JOIN messages m ON m.session_id = s.session_id
+            {where}
+            GROUP BY group_key
+            ORDER BY count DESC, group_key
+        """
     if group_by == "repo":
         return f"""
             SELECT COALESCE(NULLIF(r.repo_name, ''), NULLIF(r.root_path, ''), NULLIF(r.origin_url, '')) AS group_key,
@@ -4867,7 +4936,9 @@ def _stats_by_sql(group_by: str, where: str, *, tags_relation: str = "session_ta
             ORDER BY count DESC, group_key
         """
     raise ValueError(
-        f"Unknown group_by {group_by!r}; expected one of: provider, origin, day, month, year, tag, repo, tool, action, work-kind"
+        "Unknown group_by "
+        f"{group_by!r}; expected one of: provider, origin, day, month, year, tag, role, "
+        "message_type, material_origin, repo, tool, action, work-kind"
     )
 
 

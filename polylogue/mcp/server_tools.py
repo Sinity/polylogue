@@ -796,6 +796,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         session_id: str,
         message_role: str | None = None,
         message_type: str | None = None,
+        material_origin: str | None = None,
         no_code_blocks: bool = False,
         no_tool_calls: bool = False,
         no_tool_outputs: bool = False,
@@ -807,11 +808,13 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         async def run() -> str:
             from polylogue.archive.message.roles import normalize_message_roles
             from polylogue.archive.message.types import validate_message_type_filter
+            from polylogue.core.enums import MaterialOrigin
 
             roles = normalize_message_roles(message_role) if message_role else ()
             normalized_message_type = (
                 validate_message_type_filter(message_type).value if message_type is not None else None
             )
+            material_origins = (MaterialOrigin.validate_filter_token(material_origin).value,) if material_origin else ()
             projection = ContentProjectionSpec.from_params(
                 {
                     "no_code_blocks": no_code_blocks,
@@ -833,6 +836,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                         session,
                         roles=tuple(str(role) for role in roles),
                         message_type=normalized_message_type,
+                        material_origins=material_origins,
                         content_projection=projection,
                         limit=hooks.clamp_limit(limit),
                         offset=max(0, offset),

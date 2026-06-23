@@ -51,6 +51,7 @@ class TestHandleQueryMode:
             "stream": False,
             "dialogue_only": False,
             "message_role": (),
+            "material_origin": (),
             "set_meta": (),
             "add_tag": (),
             "plain": False,
@@ -144,6 +145,7 @@ class TestHandleQueryMode:
             self._make_params(stream=True),
             self._make_params(dialogue_only=True),
             self._make_params(message_role=("user",)),
+            self._make_params(material_origin=("human_authored",)),
         ):
             mock_execute, _ = self._call(params)
             mock_execute.assert_called_once()

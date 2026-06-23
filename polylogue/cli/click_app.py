@@ -267,6 +267,7 @@ def cli(
     stream: bool,
     dialogue_only: bool,
     message_role: tuple[str, ...],
+    material_origin: tuple[str, ...],
     # Modifiers
     set_meta: tuple[tuple[str, str], ...],
     add_tag: tuple[str, ...],

@@ -2415,6 +2415,8 @@ class TestSharedQueryPayloads:
             deferred_families={"repos": "deferred_by_default"},
             family_status={"repos": FacetFamilyStatusPayload(state="deferred", reason="deferred_by_default")},
             origins={"claude-code-session": 10, "chatgpt-export": 5},
+            role_counts={"user": 12, "assistant": 8},
+            material_origins={"human_authored": 7, "runtime_protocol": 5},
             total_sessions=15,
             total_messages=100,
             time_range=FacetTimeRange(min="2024-01-01", max="2024-12-31"),
@@ -2422,6 +2424,8 @@ class TestSharedQueryPayloads:
         d = r.model_dump(mode="json")
         assert d["scoped_to_query"] is False
         assert d["origins"] == {"claude-code-session": 10, "chatgpt-export": 5}
+        assert d["role_counts"] == {"user": 12, "assistant": 8}
+        assert d["material_origins"] == {"human_authored": 7, "runtime_protocol": 5}
         assert d["total_sessions"] == 15
         assert d["time_range"]["min"] == "2024-01-01"
         assert d["generated_at"] == "2026-06-22T00:00:00Z"
@@ -2528,6 +2532,56 @@ class TestQueryNoResultsDiagnosticPath:
         assert isinstance(payload, dict)
         assert payload["scoped_to_query"] is False
         assert isinstance(payload["origins"], dict)
+        assert isinstance(payload["role_counts"], dict)
+        assert isinstance(payload["message_types"], dict)
+        assert isinstance(payload["material_origins"], dict)
+
+    def test_archive_facets_expose_provider_role_and_material_origin_split(
+        self, workspace_env: dict[str, Path]
+    ) -> None:
+        """Facets make authoredness visible instead of hiding behind role=user."""
+        from polylogue.core.enums import MaterialOrigin
+        from tests.infra.storage_records import SessionBuilder
+
+        archive_root = workspace_env["archive_root"]
+        db_path = archive_root / "index.db"
+        (
+            SessionBuilder(db_path, "facet-authored-split")
+            .provider("claude-code")
+            .title("Facet authored split")
+            .add_message(
+                "m-runtime",
+                role="user",
+                text="<bash-stdout>runtime output</bash-stdout>",
+                material_origin=MaterialOrigin.RUNTIME_PROTOCOL,
+            )
+            .add_message(
+                "m-human",
+                role="user",
+                text="Run the probe",
+                material_origin=MaterialOrigin.HUMAN_AUTHORED,
+            )
+            .add_message(
+                "m-assistant",
+                role="assistant",
+                text="Probe complete",
+                material_origin=MaterialOrigin.ASSISTANT_AUTHORED,
+            )
+            .save()
+        )
+
+        with _running_server_without_seed() as (_, base_url):
+            payload = cast(dict[str, object], _get_json(base_url, "/api/facets?origin=claude-code-session"))
+
+        role_counts = cast(dict[str, int], payload["role_counts"])
+        material_origins = cast(dict[str, int], payload["material_origins"])
+        message_types = cast(dict[str, int], payload["message_types"])
+        assert role_counts["user"] == 2
+        assert role_counts["assistant"] == 1
+        assert material_origins["human_authored"] == 1
+        assert material_origins["runtime_protocol"] == 1
+        assert material_origins["assistant_authored"] == 1
+        assert message_types["message"] == 3
 
     def test_facets_scoped_returns_subset(self, workspace_env: dict[str, Path]) -> None:
         """Scoped /api/facets?origin=... returns scoped_to_query=True."""
