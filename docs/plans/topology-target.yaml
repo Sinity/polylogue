@@ -999,7 +999,7 @@ files:
     target: polylogue/cli/shared/types.py
     owner: stable
   - path: polylogue/cli/shell_completion_values.py
-    loc: 580
+    loc: 579
     target: polylogue/cli/shell_completion_values.py
     owner: stable
   - path: polylogue/cli/shell_words.py
