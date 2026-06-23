@@ -290,9 +290,16 @@ cachix use polylogue
   services.polylogue = {
     enable = true;
     package = inputs.polylogue.packages.${pkgs.system}.default;
+    discoverSources = [ "claude-code" "codex" ];
     settings = {
       archive.root = "/var/lib/polylogue";
       daemon.port = 8766;
+      daemon.watch-debounce-s = 30;
+      browser-capture = {
+        host = "127.0.0.1";
+        port = 8765;
+        spool-path = "/var/lib/polylogue/browser-capture";
+      };
     };
   };
 }
@@ -300,10 +307,13 @@ cachix use polylogue
 
 The module wires a `polylogued.service` systemd unit running `polylogued run`
 (watch + browser-capture + HTTP API). All `services.polylogue.settings.*`
-options map to entries in the generated `polylogue.toml` and are documented
-inline in [`nix/module.nix`](../nix/module.nix). Per-unit hardening defaults
-(`Nice = 10`, `IOSchedulingClass = idle`, `MemoryHigh = 1G`, `MemoryMax = 2G`)
-are tunable under `services.polylogue.service.*`.
+options map to runtime-loadable entries in the generated `polylogue.toml`;
+startup-bound values such as watch roots, debounce, API bind, and
+browser-capture bind/spool/auth/origins are also passed as `polylogued run`
+flags so the systemd process matches the rendered config. Options are
+documented inline in [`nix/module.nix`](../nix/module.nix). Per-unit hardening
+defaults (`Nice = 10`, `IOSchedulingClass = idle`, `MemoryHigh = 2G`,
+`MemoryMax = 2G`) are tunable under `services.polylogue.service.*`.
 
 ### Home Manager module
 
@@ -314,14 +324,22 @@ are tunable under `services.polylogue.service.*`.
   programs.polylogued = {
     enable = true;
     package = inputs.polylogue.packages.${pkgs.system}.default;
-    settings.daemon.port = 8766;
+    discoverSources = [ "claude-code" "codex" ];
+    settings = {
+      daemon.port = 8766;
+      daemon.watch-debounce-s = 30;
+      browser-capture.port = 8765;
+    };
   };
 }
 ```
 
 The HM module declares a `systemd.user.services.polylogued` unit. Set
 `programs.polylogued.autoStart = false;` to keep the unit available but not
-started at login.
+started at login. By default it writes
+`$XDG_CONFIG_HOME/polylogue/polylogue.toml`; set
+`programs.polylogued.configLocation = "store";` when you want only a Nix store
+config path passed via `POLYLOGUE_CONFIG`.
 
 ### Building locally
 

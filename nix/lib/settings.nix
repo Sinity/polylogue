@@ -52,6 +52,11 @@ let
           paths produced by ``discoverSources``.
         '';
       };
+      watch-debounce-s = mkOption {
+        type = types.nullOr types.number;
+        default = null;
+        description = "Live watcher quiet period in seconds.";
+      };
     };
 
     daemon-api = {
@@ -73,6 +78,11 @@ let
     };
 
     browser-capture = {
+      host = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Browser-capture receiver listen host.";
+      };
       port = mkOption {
         type = types.nullOr types.port;
         default = null;
@@ -82,6 +92,21 @@ let
         type = types.nullOr types.str;
         default = null;
         description = "Comma-separated allowed CORS origins.";
+      };
+      allow-remote = mkOption {
+        type = types.nullOr types.bool;
+        default = null;
+        description = "Allow non-loopback browser-capture receiver binds.";
+      };
+      auth-token = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Browser-capture receiver Bearer auth token.";
+      };
+      spool-path = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Browser-capture artifact spool path.";
       };
     };
 
@@ -110,7 +135,14 @@ let
 
     logging = {
       level = mkOption {
-        type = types.nullOr (types.enum [ "DEBUG" "INFO" "WARNING" "ERROR" ]);
+        type = types.nullOr (
+          types.enum [
+            "DEBUG"
+            "INFO"
+            "WARNING"
+            "ERROR"
+          ]
+        );
         default = null;
         description = "Log level.";
       };
@@ -157,7 +189,11 @@ let
   discoverSourcesOption = mkOption {
     type = types.listOf (types.enum providerNames);
     default = [ ];
-    example = [ "claude-code" "codex" "gemini" ];
+    example = [
+      "claude-code"
+      "codex"
+      "gemini"
+    ];
     description = ''
       Convenience: select one or more known provider names and the
       module will add their canonical source paths to
@@ -169,7 +205,10 @@ let
   };
 
   configLocationOption = mkOption {
-    type = types.enum [ "xdg" "store" ];
+    type = types.enum [
+      "xdg"
+      "store"
+    ];
     default = "xdg";
     description = ''
       Where to render polylogue.toml.
@@ -190,11 +229,11 @@ let
   # pkgs.formats.toml expects. Mirrors polylogue/config.py's TOML
   # schema (section names use snake_case keys like auth_token,
   # allowed_origins, max_cost_usd, force_plain).
-  renderSettings = settings:
+  renderSettings =
+    settings:
     let
       dropNulls = lib.filterAttrs (_: v: v != null);
-      maybe = section: rendered:
-        if rendered == { } then { } else { ${section} = rendered; };
+      maybe = section: rendered: if rendered == { } then { } else { ${section} = rendered; };
 
       archive = maybe "archive" (
         lib.optionalAttrs (settings.archive.root != null) {
@@ -206,27 +245,51 @@ let
         dropNulls {
           host = settings.daemon.host;
           port = settings.daemon.port;
-          watch = settings.daemon.watch;
         }
-        // lib.optionalAttrs (
-          settings.daemon-api.host != null
-          || settings.daemon-api.port != null
-          || settings.daemon-api.auth-token != null
-        ) {
-          api = dropNulls {
-            host = settings.daemon-api.host;
-            port = settings.daemon-api.port;
-            auth_token = settings.daemon-api.auth-token;
+        //
+          lib.optionalAttrs
+            (
+              settings.daemon-api.host != null
+              || settings.daemon-api.port != null
+              || settings.daemon-api.auth-token != null
+            )
+            {
+              api = dropNulls {
+                host = settings.daemon-api.host;
+                port = settings.daemon-api.port;
+                auth_token = settings.daemon-api.auth-token;
+              };
+            }
+        //
+          lib.optionalAttrs
+            (
+              settings.browser-capture.host != null
+              || settings.browser-capture.port != null
+              || settings.browser-capture.allowed-origins != null
+              || settings.browser-capture.allow-remote != null
+              || settings.browser-capture.auth-token != null
+              || settings.browser-capture.spool-path != null
+            )
+            {
+              browser_capture = dropNulls {
+                host = settings.browser-capture.host;
+                port = settings.browser-capture.port;
+                allowed_origins = settings.browser-capture.allowed-origins;
+                allow_remote = settings.browser-capture.allow-remote;
+                auth_token = settings.browser-capture.auth-token;
+                spool_path = settings.browser-capture.spool-path;
+              };
+            }
+        // lib.optionalAttrs (settings.daemon.watch-debounce-s != null) {
+          watch = {
+            debounce_s = settings.daemon.watch-debounce-s;
           };
         }
-        // lib.optionalAttrs (
-          settings.browser-capture.port != null
-          || settings.browser-capture.allowed-origins != null
-        ) {
-          browser-capture = dropNulls {
-            port = settings.browser-capture.port;
-            allowed_origins = settings.browser-capture.allowed-origins;
-          };
+      );
+
+      sources = maybe "sources" (
+        lib.optionalAttrs (settings.daemon.watch != null) {
+          roots = settings.daemon.watch;
         }
       );
 
@@ -242,20 +305,20 @@ let
         force_plain = settings.logging.force-plain;
       });
     in
-    archive // daemon // embedding // logging;
+    archive // daemon // sources // embedding // logging;
 
-  renderConfigFile = settings:
-    (pkgs.formats.toml { }).generate "polylogue.toml" (renderSettings settings);
+  renderConfigFile =
+    settings: (pkgs.formats.toml { }).generate "polylogue.toml" (renderSettings settings);
 
   # Translate ``discoverSources = [ ... ]`` into a list of watch
   # paths. Returned unchanged when the input is empty so callers can
   # safely concatenate.
-  expandDiscoverSources = discoverSources:
-    map (name: knownProviderRoots.${name}) discoverSources;
+  expandDiscoverSources = discoverSources: map (name: knownProviderRoots.${name}) discoverSources;
 
   # Compose the effective ``daemon.watch`` list by combining the
   # explicit setting (if any) with the discover-sources expansion.
-  effectiveWatch = { settings, discoverSources }:
+  effectiveWatch =
+    { settings, discoverSources }:
     let
       explicit = settings.daemon.watch or null;
       discovered = expandDiscoverSources discoverSources;
@@ -268,12 +331,14 @@ let
   # systemd Service directive block built from service.* options.
   # Returns an attrset suitable for ``serviceConfig`` (system) or
   # ``Service`` (HM). Memory* keys are omitted entirely when null.
-  serviceDirectives = service: lib.filterAttrs (_: v: v != null) {
-    Nice = service.nice;
-    IOWeight = service.ioWeight;
-    MemoryHigh = service.memoryHigh;
-    MemoryMax = service.memoryMax;
-  };
+  serviceDirectives =
+    service:
+    lib.filterAttrs (_: v: v != null) {
+      Nice = service.nice;
+      IOWeight = service.ioWeight;
+      MemoryHigh = service.memoryHigh;
+      MemoryMax = service.memoryMax;
+    };
 
 in
 {
