@@ -380,6 +380,43 @@ def test_read_verb_summary_dispatches_to_execute_query_verb() -> None:
     assert request.query_params()["origin"] == "chatgpt-export"
 
 
+def test_read_verb_summary_exact_ref_dispatches_direct_read() -> None:
+    """Exact session refs read the selected session instead of re-running search."""
+    _, child = _context_pair(query_terms=("session:codex-session:abc123",))
+    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+
+    with patch("polylogue.cli.read_views.standard.execute_query_request") as execute:
+        wrapped(child, **_read_verb_kwargs(view="summary", output_format="json"))
+
+    execute.assert_called_once()
+    request = execute.call_args.args[1]
+    assert isinstance(request, RootModeRequest)
+    assert request.query_terms == ()
+    assert request.params["conv_id"] == "codex-session:abc123"
+    assert request.params["output_format"] == "json"
+
+
+def test_read_verb_summary_preserves_search_within_exact_ref() -> None:
+    """Exact refs combined with FTS terms still search within the session."""
+    _, child = _context_pair(query_terms=("session:codex-session:abc123", "needle"))
+    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+
+    with (
+        patch("polylogue.cli.query_verbs._resolve_target_session_id", return_value="codex-session:abc123"),
+        patch("polylogue.cli.read_views.standard.execute_query_request") as execute,
+    ):
+        wrapped(child, **_read_verb_kwargs(view="summary", output_format="json"))
+
+    execute.assert_called_once()
+    request = execute.call_args.args[1]
+    assert isinstance(request, RootModeRequest)
+    assert request.query_terms == ("session:codex-session:abc123", "needle")
+    assert "conv_id" not in request.params
+    assert request.params["output_format"] == "json"
+
+
 def test_read_verb_all_non_summary_invokes_bulk_export_view() -> None:
     """read --all with a concrete non-summary view routes to bulk export."""
     _, child = _context_pair(params={"origin": "claude-code-session"}, query_terms=("alpha",))
