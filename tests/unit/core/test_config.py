@@ -799,6 +799,68 @@ class TestDescribeConfigLayers:
         assert report["site"] == {"path": None, "exists": False}
 
 
+class TestConfigInventoryPayload:
+    """The public config inventory must stay executable, not decorative."""
+
+    def _disable_site(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+
+    def test_inventory_payload_has_unique_keys_and_env_vars(self) -> None:
+        from polylogue.config import config_inventory_payload
+
+        rows = config_inventory_payload()
+        keys = [str(row["key"]) for row in rows]
+        env_vars = [str(row["env_var"]) for row in rows if row.get("env_var")]
+
+        assert len(keys) == len(set(keys))
+        assert len(env_vars) == len(set(env_vars))
+        assert all(row.get("owner_class") for row in rows)
+        assert all(row.get("reload_behavior") for row in rows)
+        assert all(row.get("effective_path") for row in rows)
+
+    def test_effective_payload_redacts_secret_and_reports_env_source(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.config import effective_config_payload, load_polylogue_config
+
+        self._disable_site(monkeypatch)
+        monkeypatch.setenv("POLYLOGUE_API_AUTH_TOKEN", "secret-do-not-leak")
+        cfg = load_polylogue_config()
+        payload = effective_config_payload(cfg)
+
+        values = payload["values"]
+        assert isinstance(values, dict)
+        token = values["api_auth_token"]
+        assert isinstance(token, dict)
+        assert token["value"] == "<set>"
+        assert token["secret"] is True
+        assert token["secret_present"] is True
+        assert token["source_layer"] == "env"
+        assert "secret-do-not-leak" not in str(payload)
+
+    def test_effective_payload_uses_inventory_env_mapping_for_typed_values(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.config import effective_config_payload, load_polylogue_config
+
+        self._disable_site(monkeypatch)
+        monkeypatch.setenv("POLYLOGUE_BROWSER_CAPTURE_PORT", "9987")
+        cfg = load_polylogue_config()
+        payload = effective_config_payload(cfg)
+
+        values = payload["values"]
+        assert isinstance(values, dict)
+        port = values["browser_capture_port"]
+        assert isinstance(port, dict)
+        assert port["value"] == 9987
+        assert port["source_layer"] == "env"
+        assert port["env_var"] == "POLYLOGUE_BROWSER_CAPTURE_PORT"
+
+
 # =============================================================================
 # Merged from test_logging.py (2024-03-15)
 # =============================================================================
