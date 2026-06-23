@@ -1359,6 +1359,98 @@ def config_inventory_payload() -> list[dict[str, object]]:
     return [_inventory_entry_payload(entry, default=defaults.get(entry.key, _MISSING)) for entry in _CONFIG_INVENTORY]
 
 
+def _config_diagnostic(
+    *,
+    code: str,
+    severity: str,
+    key: str,
+    message: str,
+    next_action: str,
+) -> dict[str, object]:
+    entry = _CONFIG_INVENTORY_BY_KEY.get(key)
+    return {
+        "code": code,
+        "severity": severity,
+        "key": key,
+        "toml_path": entry.toml_path if entry is not None else None,
+        "env_var": entry.env_var if entry is not None else None,
+        "message": message,
+        "next_action": next_action,
+    }
+
+
+def _iter_path_config_values(key: str, value: object) -> list[str]:
+    if value in (None, "", ()):
+        return []
+    if key == "source_roots":
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, (tuple, list)):
+            return [str(item) for item in value if str(item)]
+        return [str(value)]
+    return [str(value)]
+
+
+def _config_path_diagnostics(resolved: PolylogueConfig) -> list[dict[str, object]]:
+    diagnostics: list[dict[str, object]] = []
+    for entry in _CONFIG_INVENTORY:
+        if entry.owner_class != "path-layout":
+            continue
+        value = resolved.raw.get(entry.key)
+        # Defaults may legitimately point at not-yet-created first-run paths.
+        # Operator-provided paths must be explicit enough to audit.
+        if resolved.layer_of(entry.key) == "default":
+            continue
+        for raw_path in _iter_path_config_values(entry.key, value):
+            path = Path(raw_path).expanduser()
+            if not path.is_absolute():
+                diagnostics.append(
+                    _config_diagnostic(
+                        code="config_path_not_absolute",
+                        severity="error",
+                        key=entry.key,
+                        message=f"{entry.key} resolves to a relative path: {raw_path!r}.",
+                        next_action=(
+                            f"Set {entry.toml_path or entry.key} to an absolute path"
+                            + (f" or override {entry.env_var}" if entry.env_var else "")
+                            + "."
+                        ),
+                    )
+                )
+                continue
+            if entry.key == "source_roots" and not path.exists():
+                diagnostics.append(
+                    _config_diagnostic(
+                        code="configured_source_root_missing",
+                        severity="warning",
+                        key=entry.key,
+                        message=f"Configured source root does not exist: {raw_path}.",
+                        next_action="Remove the stale source root or create/mount it before running the daemon.",
+                    )
+                )
+    return diagnostics
+
+
+def config_diagnostics(cfg: PolylogueConfig | None = None) -> list[dict[str, object]]:
+    """Return typed diagnostics for the resolved effective configuration."""
+    resolved = cfg if cfg is not None else load_polylogue_config()
+    diagnostics = _config_path_diagnostics(resolved)
+    if resolved.embedding_enabled and not resolved.voyage_api_key:
+        diagnostics.append(
+            _config_diagnostic(
+                code="embedding_enabled_without_voyage_key",
+                severity="error",
+                key="voyage_api_key",
+                message="Embedding convergence is enabled but no Voyage API key is configured.",
+                next_action=(
+                    "Set VOYAGE_API_KEY, run `polylogue ops embed enable --voyage-api-key ...`, "
+                    "or disable embedding convergence."
+                ),
+            )
+        )
+    return diagnostics
+
+
 def effective_config_payload(
     cfg: PolylogueConfig | None = None,
     *,
@@ -1411,6 +1503,7 @@ def effective_config_payload(
             "cli": "CLI overrides (per-invocation)",
         },
         "values": values,
+        "diagnostics": config_diagnostics(resolved),
     }
     if include_inventory:
         payload["inventory"] = config_inventory_payload()
@@ -1466,6 +1559,7 @@ __all__ = [
     "SECRET_UNSET_PLACEHOLDER",
     "Source",
     "config_display_value",
+    "config_diagnostics",
     "config_inventory",
     "config_inventory_by_key",
     "config_inventory_payload",

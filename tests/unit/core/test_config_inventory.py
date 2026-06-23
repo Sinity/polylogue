@@ -117,3 +117,62 @@ def test_effective_config_payload_redacts_secret_presence_and_exposes_source_lay
     assert api_port["effective_path"] == "polylogue config --format json values.api_port"
 
     assert "do-not-leak" not in str(payload)
+
+
+def test_effective_config_payload_reports_configured_source_root_debt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    workspace_env: dict[str, Path],
+) -> None:
+    from polylogue.config import effective_config_payload, load_polylogue_config
+
+    missing_root = tmp_path / "missing-source-root"
+    cfg_path = tmp_path / "polylogue.toml"
+    cfg_path.write_text(
+        f"""
+[sources]
+roots = ["{missing_root}"]
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+
+    payload = effective_config_payload(load_polylogue_config(config_path=cfg_path))
+
+    diagnostics = payload["diagnostics"]
+    assert isinstance(diagnostics, list)
+    assert {
+        "code": "configured_source_root_missing",
+        "severity": "warning",
+        "key": "source_roots",
+        "toml_path": "sources.roots",
+        "env_var": None,
+        "message": f"Configured source root does not exist: {missing_root}.",
+        "next_action": "Remove the stale source root or create/mount it before running the daemon.",
+    } in diagnostics
+
+
+def test_effective_config_payload_reports_embedding_enabled_without_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    workspace_env: dict[str, Path],
+) -> None:
+    from polylogue.config import effective_config_payload, load_polylogue_config
+
+    cfg_path = tmp_path / "polylogue.toml"
+    cfg_path.write_text("[embedding]\nenabled = true\n", encoding="utf-8")
+    monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+
+    payload = effective_config_payload(load_polylogue_config(config_path=cfg_path))
+
+    diagnostics = payload["diagnostics"]
+    assert isinstance(diagnostics, list)
+    assert any(
+        diag.get("code") == "embedding_enabled_without_voyage_key"
+        and diag.get("severity") == "error"
+        and diag.get("key") == "voyage_api_key"
+        and diag.get("env_var") == "VOYAGE_API_KEY"
+        for diag in diagnostics
+        if isinstance(diag, dict)
+    )
