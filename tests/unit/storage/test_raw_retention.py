@@ -91,10 +91,8 @@ def test_superseded_raw_snapshot_cleanup_keeps_newest_per_source(tmp_path: Path)
     missing_old, missing_old_size = _write_blob(blob_store, b"missing-old")
     missing_new, missing_new_size = _write_blob(blob_store, b"missing-new")
 
-    # Archive file-set retention is recency-only: it keeps the newest snapshot per
-    # (source_path, source_index) and supersedes the rest. There is no legacy
-    # live-reference / lease preservation — sessions point at current raws, and
-    # superseded snapshot whose source file still exists is a candidate.
+    # Archive file-set retention ranks snapshots by recency, but callers must
+    # protect raw rows still referenced by index.db sessions before deleting.
     def _seed(raw_id: str, source_path: Path, source_index: int, blob_size: int, acquired_at_ms: int) -> None:
         _insert_archive_raw_session(
             conn,
@@ -142,6 +140,62 @@ def test_superseded_raw_snapshot_cleanup_keeps_newest_per_source(tmp_path: Path)
         str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions ORDER BY raw_id").fetchall()
     }
     assert remaining_raw_ids == {full_new, append_current, missing_old, missing_new}
+
+
+def test_superseded_raw_snapshot_cleanup_preserves_index_referenced_raws(tmp_path: Path) -> None:
+    db_path = tmp_path / "source.db"
+    source = tmp_path / "rollout.jsonl"
+    source.write_text('{"type":"message"}\n', encoding="utf-8")
+    blob_store = BlobStore(tmp_path / "blob")
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    _ensure_archive_source_schema(conn)
+
+    old_raw, old_size = _write_blob(blob_store, b"old-but-index-referenced")
+    current_raw, current_size = _write_blob(blob_store, b"current")
+    _insert_archive_raw_session(
+        conn,
+        raw_id=old_raw,
+        source_path=source,
+        source_index=0,
+        blob_hash=old_raw,
+        blob_size=old_size,
+        acquired_at_ms=1_000,
+    )
+    _insert_archive_raw_session(
+        conn,
+        raw_id=current_raw,
+        source_path=source,
+        source_index=0,
+        blob_hash=current_raw,
+        blob_size=current_size,
+        acquired_at_ms=2_000,
+    )
+    conn.commit()
+
+    dry_run = cleanup_superseded_raw_snapshots(
+        conn,
+        dry_run=True,
+        blob_store=blob_store,
+        protected_raw_ids={old_raw},
+    )
+    assert dry_run.candidate_count == 0
+    assert dry_run.skipped_referenced_count == 1
+
+    result = cleanup_superseded_raw_snapshots(
+        conn,
+        dry_run=False,
+        blob_store=blob_store,
+        protected_raw_ids={old_raw},
+    )
+    assert result.deleted_raw_count == 0
+    assert result.skipped_referenced_count == 1
+    assert blob_store.exists(old_raw)
+    assert blob_store.exists(current_raw)
+    assert conn.execute("SELECT 1 FROM raw_sessions WHERE raw_id = ?", (old_raw,)).fetchone() is not None
+    assert conn.execute("SELECT 1 FROM raw_sessions WHERE raw_id = ?", (current_raw,)).fetchone() is not None
 
 
 def test_archive_cleanup_compacts_append_snapshot_without_session_events(tmp_path: Path) -> None:
