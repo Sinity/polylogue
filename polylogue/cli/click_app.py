@@ -328,6 +328,11 @@ def cli(
         plain = True
         if not output_format:
             output_format = "json"
+        # Root query mode builds RootModeRequest from ctx.params, not from this
+        # callback's local variables. Persist the normalized values so
+        # `polylogue find QUERY --json` reaches the archive renderer.
+        ctx.params["plain"] = plain
+        ctx.params["output_format"] = output_format
 
     # Set up logging early so all output goes to stderr
     configure_logging(verbose=verbose)
