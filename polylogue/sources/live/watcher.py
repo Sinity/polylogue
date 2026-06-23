@@ -40,6 +40,25 @@ _CATCH_UP_MAX_BATCH_BYTES = 64 * 1024 * 1024
 INBOX_SOURCE_SUFFIXES = (".jsonl", ".zip", ".json", ".ndjson")
 
 
+def _log_ingest_metrics(prefix: str, metrics: LiveBatchMetrics) -> None:
+    """Log actual live-ingest read work separately from candidate file size."""
+    read_amp = metrics.source_payload_read_bytes / metrics.input_bytes if metrics.input_bytes > 0 else 0.0
+    logger.info(
+        "%s complete: read=%.1f MB input=%.1f MB read_amp=%.6fx append_files=%d full_files=%d "
+        "succeeded=%d failed=%d parse_s=%.3f convergence_s=%.3f",
+        prefix,
+        metrics.source_payload_read_bytes / 1e6,
+        metrics.input_bytes / 1e6,
+        read_amp,
+        metrics.append_file_count,
+        metrics.full_file_count,
+        metrics.succeeded_file_count,
+        metrics.failed_file_count,
+        metrics.parse_time_s,
+        metrics.convergence_time_s,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class WatchSource:
     """A directory to watch for live session files."""
@@ -196,11 +215,13 @@ class LiveWatcher:
                     len(chunk),
                     chunk_bytes / 1e6,
                 )
-                await self._ingest_files(
+                metrics = await self._ingest_files(
                     list(chunk),
                     queued_file_count=len(plan.candidates) if index == 1 else len(chunk),
                     skipped_file_count=plan.skipped_file_count if index == 1 else 0,
                 )
+                if metrics is not None:
+                    _log_ingest_metrics(f"live.watcher: catch-up chunk {index}/{len(chunks)}", metrics)
             self._schedule_failed_retry_scan()
 
     def _scan_catch_up_candidates(self, roots: list[Path]) -> tuple[CandidateSourceFile, ...]:
@@ -394,11 +415,13 @@ class LiveWatcher:
                 return bool(paths)
 
             logger.info("live.watcher: batching %d changed file(s)", len(needed))
-            await self._ingest_files(
+            metrics = await self._ingest_files(
                 needed,
                 queued_file_count=len(paths),
                 skipped_file_count=len(paths) - len(needed),
             )
+            if metrics is not None:
+                _log_ingest_metrics("live.watcher: changed-file batch", metrics)
             self._schedule_failed_retry_scan()
         except sqlite3.OperationalError as exc:
             if not _is_database_locked(exc):
