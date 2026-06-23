@@ -290,9 +290,9 @@ def live_source_status_payload(sources: tuple[WatchSource, ...]) -> JSONDocument
 def browser_capture_status_payload(
     spool_path: Path | None = None,
     *,
-    include_spool_path: bool = True,
+    include_spool_path: bool = False,
 ) -> JSONDocument:
-    """Return status for the browser-capture receiver component."""
+    """Return safe status for the browser-capture receiver component."""
     cfg_default = BrowserCaptureReceiverConfig.default()
     if spool_path is not None:
         config = BrowserCaptureReceiverConfig(
@@ -312,9 +312,7 @@ def browser_capture_status_payload(
 
 def browser_capture_status_public_payload(spool_path: Path | None = None) -> JSONDocument:
     """Return browser-capture status safe for the daemon web/status API."""
-    payload = dict(browser_capture_status_payload(spool_path))
-    payload.pop("spool_path", None)
-    return json_document(payload)
+    return browser_capture_status_payload(spool_path, include_spool_path=False)
 
 
 def _db_size_info() -> dict[str, object]:
@@ -1945,6 +1943,7 @@ def daemon_status_payload(
     sources: tuple[WatchSource, ...] | None = None,
     browser_capture_enabled: bool | None = None,
     browser_capture_spool_path: Path | None = None,
+    include_browser_capture_spool_path: bool = False,
 ) -> JSONDocument:
     """Return the local daemon component status payload (backward-compat dict)."""
     watch_sources = sources if sources is not None else default_sources()
@@ -1978,7 +1977,10 @@ def daemon_status_payload(
             "component_state": status.component_state.model_dump(),
             "component_readiness": status.component_readiness,
             "live": live_source_status_payload(watch_sources),
-            "browser_capture": browser_capture_status_payload(browser_capture_spool_path),
+            "browser_capture": browser_capture_status_payload(
+                browser_capture_spool_path,
+                include_spool_path=include_browser_capture_spool_path,
+            ),
             "db_path": str(_active_status_db_path()),
             "db_size_bytes": status.db_size_bytes,
             "wal_size_bytes": status.wal_size_bytes,

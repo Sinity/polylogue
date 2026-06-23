@@ -1018,3 +1018,71 @@ def test_deployment_smoke_rejects_receiver_archive_state_without_index_evidence(
 
     assert probe.ok is False
     assert probe.error == "receiver_archive_state_missing_index_evidence"
+
+
+@pytest.mark.parametrize(
+    "receiver_error",
+    [
+        "receiver_archive_state_missing_index_evidence",
+        "receiver_archive_state_not_captured",
+    ],
+)
+def test_deployment_smoke_diagnoses_receiver_archive_state_without_query_visibility(
+    receiver_error: str,
+) -> None:
+    diagnostics = deployment_smoke._diagnose(
+        commands=[
+            deployment_smoke.CommandProbe(
+                name="polylogue --version",
+                path="/bin/polylogue",
+                exit_code=0,
+                ok=True,
+                stdout="polylogue, version 0.1.0+abc123",
+                stderr="",
+            ),
+            deployment_smoke.CommandProbe(
+                name="polylogued --version",
+                path="/bin/polylogued",
+                exit_code=0,
+                ok=True,
+                stdout="polylogued, version 0.1.0+abc123",
+                stderr="",
+            ),
+        ],
+        routes=[],
+        repo_head="abc123def456",
+        browser_render=None,
+        browser_executable_resolution={},
+        browser_capture_archive=deployment_smoke.BrowserCaptureArchiveProbe(
+            spool_path="/tmp/browser-capture",
+            source_db_path="/tmp/source.db",
+            spooled_count=1,
+            latest_spooled_path="/tmp/browser-capture/chatgpt/capture-no-index.json",
+            latest_spooled_mtime=1.0,
+            latest_spooled_mtime_ms=1000,
+            raw_rows=1,
+            latest_raw_file_mtime_ms=1000,
+            ok=True,
+        ),
+        browser_capture_receiver_archive_state=deployment_smoke.BrowserCaptureReceiverArchiveStateProbe(
+            url="http://receiver/v1/archive-state",
+            provider="chatgpt",
+            provider_session_id="capture-no-index",
+            status=200,
+            payload={
+                "state": "archived",
+                "captured": True,
+                "artifact_ref": "chatgpt/capture-no-index.json",
+                "raw_row_exists": True,
+                "indexed_session_exists": False,
+            },
+            ok=False,
+            error=receiver_error,
+        ),
+    )
+
+    assert (
+        "deployed browser-capture receiver archive-state DTO does not prove query visibility"
+        in diagnostics["likely_causes"]
+    )
+    assert any("verify source/index rows" in action for action in diagnostics["next_actions"])
