@@ -148,6 +148,13 @@ Secrets are never printed in cleartext. Set secrets show as `<set>` and unset or
 empty secrets show as `<unset>`, while `secret_present` preserves the useful bit
 for diagnostics.
 
+The JSON form also includes a `diagnostics` array. Each item has stable
+`code`, `severity`, `key`, `toml_path`, `env_var`, `message`, and
+`next_action` fields so deployment smoke, agents, and shell scripts can tell
+configuration debt from daemon/runtime failures. Current diagnostics cover
+operator-supplied path-layout problems and `embedding.enabled = true` without
+a configured Voyage key.
+
 ### State classes
 
 | Class | Where it lives | Examples | Reload behavior |

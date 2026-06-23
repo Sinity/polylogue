@@ -140,3 +140,21 @@ def test_json_effective_config_includes_inventory_and_layer_metadata(
 
     inventory_keys = {entry["key"] for entry in payload["inventory"]}
     assert {"api_port", "api_auth_token", "browser_capture_spool_path"}.issubset(inventory_keys)
+    assert "diagnostics" in payload
+
+
+def test_json_effective_config_includes_typed_diagnostics(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = tmp_path / "polylogue.toml"
+    cfg.write_text("[embedding]\nenabled = true\n", encoding="utf-8")
+    monkeypatch.setenv("POLYLOGUE_CONFIG", str(cfg))
+    monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", str(tmp_path / "absent-site.toml"))
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+
+    payload = json.loads(_run(["-f", "json"]))
+
+    assert any(
+        diag["code"] == "embedding_enabled_without_voyage_key"
+        and diag["key"] == "voyage_api_key"
+        and diag["env_var"] == "VOYAGE_API_KEY"
+        for diag in payload["diagnostics"]
+    )
