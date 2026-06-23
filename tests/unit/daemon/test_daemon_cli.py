@@ -843,7 +843,9 @@ def test_archive_message_fts_startup_large_drift_is_deferred(monkeypatch: pytest
     ]
 
 
-def test_archive_message_fts_startup_preserves_known_stale_ledger(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_archive_message_fts_startup_records_known_stale_ledger_without_global_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from polylogue.daemon import fts_startup
 
     class FakeCursor:
@@ -893,7 +895,18 @@ def test_archive_message_fts_startup_preserves_known_stale_ledger(monkeypatch: p
     assert fts_startup._ensure_archive_messages_fts_startup_readiness_sync(cast(sqlite3.Connection, conn)) is True
 
     assert rebuilds == []
-    assert records == []
+    assert records == [
+        {
+            "surface": "messages_fts",
+            "state": "stale",
+            "source_rows": 250_000,
+            "indexed_rows": 100_000,
+            "missing_rows": 150_000,
+            "excess_rows": 0,
+            "duplicate_rows": 0,
+            "detail": "archive message FTS drift exceeds startup repair budget; scheduled global FTS surface repair",
+        }
+    ]
     assert "SELECT COUNT(*) FROM blocks WHERE search_text != ''" not in conn.queries
     assert "SELECT COUNT(*) FROM messages_fts_docsize" not in conn.queries
 
