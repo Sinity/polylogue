@@ -747,12 +747,20 @@ def _column_exists(conn: Any, table_name: str, column_name: str) -> bool:
     default=False,
     help="Alias for ``--format json``. Matches the sibling commands' ``--json`` flag (#1612).",
 )
+@click.option(
+    "--full",
+    "include_archive_readiness",
+    is_flag=True,
+    default=False,
+    help="Run exact archive-readiness probes in direct SQLite fallback status.",
+)
 @click.pass_obj
 def status_command(
     env: AppEnv,
     daemon_url: str,
     output_format: str | None,
     json_alias: bool,
+    include_archive_readiness: bool,
 ) -> None:
     """Show daemon and archive health.
 
@@ -776,12 +784,12 @@ def status_command(
             if _daemon_live(daemon_url, timeout=_FAST_TIMEOUT_S):
                 _show_daemon_status_unavailable_json(env)
             else:
-                _show_direct_json(env)
+                _show_direct_json(env, include_archive_readiness=include_archive_readiness)
         else:
             if _daemon_live(daemon_url, timeout=_FAST_TIMEOUT_S):
                 _show_daemon_status_unavailable(env)
             else:
-                _show_direct_status(env)
+                _show_direct_status(env, include_archive_readiness=include_archive_readiness)
         return
 
     if output_format == "json":
@@ -911,7 +919,17 @@ def _show_daemon_status_unavailable(env: AppEnv, *, compact: bool = False) -> No
         env.ui.console.print("  [dim]/api/status did not answer within the bounded CLI timeout.[/dim]")
 
 
-def _show_direct_json(env: AppEnv) -> None:
+def _direct_archive_readiness_status(root: Path, *, include_archive_readiness: bool) -> dict[str, Any]:
+    if include_archive_readiness:
+        return _archive_readiness_status(root)
+    return {
+        "checked": False,
+        "reason": "direct_status_default_skips_exact_archive_readiness",
+        "surfaces": {},
+    }
+
+
+def _show_direct_json(env: AppEnv, *, include_archive_readiness: bool = False) -> None:
     """Machine-readable JSON fallback when daemon is not running."""
     from polylogue.cli.commands.init import starter_config_path
     from polylogue.cli.commands.status_diagnostics import (
@@ -926,7 +944,10 @@ def _show_direct_json(env: AppEnv) -> None:
     diag = diagnose_first_run(daemon_alive=False)
     active_db = _active_status_db(db)
     active_root = active_db.parent if active_db is not None and active_db.name == "index.db" else root
-    archive_readiness = _archive_readiness_status(active_root)
+    archive_readiness = _direct_archive_readiness_status(
+        active_root,
+        include_archive_readiness=include_archive_readiness,
+    )
     payload: dict[str, Any] = {
         "daemon_liveness": False,
         "archive_root": str(root),
@@ -1123,7 +1144,12 @@ def _render_direct_embedding_status(env: AppEnv, payload: dict[str, Any]) -> Non
         )
 
 
-def _show_direct_status(env: AppEnv, *, compact: bool = False) -> None:
+def _show_direct_status(
+    env: AppEnv,
+    *,
+    compact: bool = False,
+    include_archive_readiness: bool = False,
+) -> None:
     """Fallback status when daemon is not running."""
     from polylogue.cli.commands.status_diagnostics import diagnose_first_run
     from polylogue.paths import archive_root, db_path
@@ -1171,7 +1197,13 @@ def _show_direct_status(env: AppEnv, *, compact: bool = False) -> None:
             tier_detail = _archive_tier_detail_line(tiers)
             if tier_detail:
                 env.ui.console.print(f"  Archive tier detail: {tier_detail}")
-            _render_archive_readiness(env, _archive_readiness_status(active_root))
+            _render_archive_readiness(
+                env,
+                _direct_archive_readiness_status(
+                    active_root,
+                    include_archive_readiness=include_archive_readiness,
+                ),
+            )
             _render_archive_facade_routes(env, _archive_facade_route_status())
             _render_archive_cli_routes(env, _archive_cli_route_status())
             _render_archive_runtime_paths(env, _archive_runtime_path_status())

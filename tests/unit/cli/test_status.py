@@ -179,6 +179,35 @@ class TestNoArchiveStatus:
         assert "Messages: 2" in combined
         assert "Raw records: 1" in combined
 
+    def test_direct_status_skips_exact_archive_readiness_by_default(self, tmp_path: Path) -> None:
+        env = _make_app_env()
+        db_anchor = tmp_path / "custom.sqlite"
+        index_db = tmp_path / "index.db"
+        with sqlite3.connect(index_db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    message_count INTEGER NOT NULL
+                );
+                INSERT INTO sessions VALUES ('codex-session:one', 1);
+                """
+            )
+
+        with (
+            patch("polylogue.paths.db_path", return_value=db_anchor),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch(
+                "polylogue.cli.commands.status._archive_readiness_status",
+                side_effect=AssertionError("direct status must not run exact readiness by default"),
+            ),
+        ):
+            _show_direct_status(env)
+
+        combined = _combined_calls(env)
+        assert "Archive readiness:" in combined
+        assert "direct_status_default_skips_exact_archive_readiness" in combined
+
     def test_direct_status_json_reads_archive_file_set_from_archive_tiers(self, tmp_path: Path) -> None:
         env = _make_app_env()
         db_anchor = tmp_path / "custom.sqlite"
@@ -349,7 +378,7 @@ class TestNoArchiveStatus:
             patch("polylogue.paths.archive_root", return_value=tmp_path),
             patch("polylogue.cli.commands.status_diagnostics.diagnose_first_run") as diagnose,
         ):
-            _show_direct_status(env)
+            _show_direct_status(env, include_archive_readiness=True)
 
         diagnose.assert_not_called()
         combined = _combined_calls(env)
@@ -383,7 +412,7 @@ class TestNoArchiveStatus:
             patch("polylogue.paths.db_path", return_value=db_anchor),
             patch("polylogue.paths.archive_root", return_value=tmp_path),
         ):
-            _show_direct_json(env)
+            _show_direct_json(env, include_archive_readiness=True)
 
         payload = json.loads(_combined_calls(env))
         readiness = payload["archive_readiness"]
@@ -437,7 +466,7 @@ class TestNoArchiveStatus:
                 return_value=embedding_payload,
             ),
         ):
-            _show_direct_json(env)
+            _show_direct_json(env, include_archive_readiness=True)
 
         payload = json.loads(_combined_calls(env))
         readiness = payload["component_readiness"]["embeddings"]
@@ -502,7 +531,7 @@ class TestNoArchiveStatus:
             patch("polylogue.cli.commands.status._archive_readiness_status", return_value=archive_readiness),
             patch("polylogue.storage.embeddings.status_payload.embedding_status_payload", side_effect=RuntimeError),
         ):
-            _show_direct_json(env)
+            _show_direct_json(env, include_archive_readiness=True)
 
         payload = json.loads(_combined_calls(env))
         components = payload["component_readiness"]
@@ -557,7 +586,7 @@ class TestNoArchiveStatus:
             patch("polylogue.paths.archive_root", return_value=tmp_path),
             patch("polylogue.storage.embeddings.status_payload.embedding_status_payload", side_effect=RuntimeError),
         ):
-            _show_direct_json(env)
+            _show_direct_json(env, include_archive_readiness=True)
 
         payload = json.loads(_combined_calls(env))
         components = payload["component_readiness"]
@@ -622,7 +651,7 @@ class TestNoArchiveStatus:
                 return_value=embedding_payload,
             ),
         ):
-            _show_direct_json(env)
+            _show_direct_json(env, include_archive_readiness=True)
 
         components = json.loads(_combined_calls(env))["component_readiness"]
         assert components["archive_sessions"]["state"] == "ready"
@@ -655,7 +684,7 @@ class TestNoArchiveStatus:
             ),
             patch("polylogue.storage.embeddings.status_payload.embedding_status_payload", side_effect=RuntimeError),
         ):
-            _show_direct_json(env)
+            _show_direct_json(env, include_archive_readiness=True)
 
         payload = json.loads(_combined_calls(env))
         transforms = payload["component_readiness"]["transforms"]
@@ -840,7 +869,7 @@ class TestNoArchiveStatus:
                 result = CliRunner().invoke(status_command, ["--daemon-url", "http://127.0.0.1:8766"], obj=env)
 
         assert result.exit_code == 0
-        show_direct.assert_called_once_with(env)
+        show_direct.assert_called_once_with(env, include_archive_readiness=False)
 
     def test_daemon_status_uses_reported_fts_coverage_pct(self) -> None:
         env = _make_app_env()
