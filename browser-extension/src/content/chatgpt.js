@@ -7,7 +7,8 @@
   function conversationIdFromUrl(url = window.location.href) {
     const parsed = new URL(url);
     const parts = parsed.pathname.split("/").filter(Boolean);
-    return parts[0] === "c" && parts[1] ? parts[1] : null;
+    const marker = parts.indexOf("c");
+    return marker >= 0 && parts[marker + 1] ? parts[marker + 1] : null;
   }
 
   function injectNativeCaptureBridge() {

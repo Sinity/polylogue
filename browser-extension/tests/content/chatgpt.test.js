@@ -26,6 +26,13 @@ function roleFromNode(node, index) {
   return index % 2 === 0 ? "user" : "assistant";
 }
 
+function conversationIdFromUrl(url) {
+  const parsed = new URL(url);
+  const parts = parsed.pathname.split("/").filter(Boolean);
+  const marker = parts.indexOf("c");
+  return marker >= 0 && parts[marker + 1] ? parts[marker + 1] : null;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -139,5 +146,23 @@ describe("chatgpt roleFromNode — #622 gap (index-parity fallback)", () => {
     expect(roleFromNode(node, 100)).toBe("user");
     // Odd index
     expect(roleFromNode(node, 101)).toBe("assistant");
+  });
+});
+
+describe("chatgpt conversationIdFromUrl", () => {
+  it("reads normal conversation routes", () => {
+    expect(conversationIdFromUrl("https://chatgpt.com/c/abc-123")).toBe(
+      "abc-123",
+    );
+  });
+
+  it("reads custom GPT conversation routes", () => {
+    expect(
+      conversationIdFromUrl("https://chatgpt.com/g/g-p-abc/c/conv-123"),
+    ).toBe("conv-123");
+  });
+
+  it("returns null outside conversation routes", () => {
+    expect(conversationIdFromUrl("https://chatgpt.com/g/g-p-abc")).toBe(null);
   });
 });

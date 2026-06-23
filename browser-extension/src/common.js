@@ -14,6 +14,13 @@
   function sessionIdFromUrl(provider, url) {
     const parsed = new URL(url);
     const parts = parsed.pathname.split("/").filter(Boolean);
+    if (provider === "chatgpt") {
+      const marker = parts.indexOf("c");
+      if (marker >= 0 && parts[marker + 1]) return parts[marker + 1];
+    }
+    if (provider === "claude-ai" && parts[0] === "chat" && parts[1]) {
+      return parts[1];
+    }
     const sessionToken = parts.at(-1) || parsed.pathname || parsed.hostname;
     return `${provider}:${sessionToken}:${fnv1a(parsed.origin + parsed.pathname)}`;
   }

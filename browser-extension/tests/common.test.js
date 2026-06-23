@@ -23,6 +23,13 @@ function fnv1a(text) {
 function sessionIdFromUrl(provider, url) {
   const parsed = new URL(url);
   const parts = parsed.pathname.split("/").filter(Boolean);
+  if (provider === "chatgpt") {
+    const marker = parts.indexOf("c");
+    if (marker >= 0 && parts[marker + 1]) return parts[marker + 1];
+  }
+  if (provider === "claude-ai" && parts[0] === "chat" && parts[1]) {
+    return parts[1];
+  }
   const sessionToken =
     parts.at(-1) || parsed.pathname || parsed.hostname;
   return `${provider}:${sessionToken}:${fnv1a(parsed.origin + parsed.pathname)}`;
@@ -124,20 +131,28 @@ describe("fnv1a", () => {
 // ---------------------------------------------------------------------------
 
 describe("sessionIdFromUrl", () => {
-  it("extracts last path segment as token", () => {
+  it("extracts ChatGPT conversation id as provider-native token", () => {
     const id = sessionIdFromUrl(
       "chatgpt",
       "https://chatgpt.com/c/abc-123",
     );
-    expect(id).toMatch(/^chatgpt:abc-123:/);
+    expect(id).toBe("abc-123");
   });
 
-  it("includes provider prefix", () => {
+  it("extracts ChatGPT custom-GPT route conversation id", () => {
+    const id = sessionIdFromUrl(
+      "chatgpt",
+      "https://chatgpt.com/g/g-p-abc/c/conv-123",
+    );
+    expect(id).toBe("conv-123");
+  });
+
+  it("extracts Claude conversation id as provider-native token", () => {
     const id = sessionIdFromUrl(
       "claude-ai",
       "https://claude.ai/chat/test-conv",
     );
-    expect(id).toMatch(/^claude-ai:test-conv:/);
+    expect(id).toBe("test-conv");
   });
 
   it("handles URL with query params", () => {
@@ -145,17 +160,17 @@ describe("sessionIdFromUrl", () => {
       "chatgpt",
       "https://chatgpt.com/c/conv?q=1",
     );
-    expect(id).toMatch(/^chatgpt:conv:/);
+    expect(id).toBe("conv");
   });
 
-  it("does not duplicate provider prefix in capture id", () => {
+  it("keeps provider prefix in capture id but not session id", () => {
     const envelope = buildEnvelope({
       provider: "chatgpt",
       adapterName: "chatgpt-dom-v1",
       turns: [{ role: "user", text: "Hello" }],
     });
-    expect(envelope.session.provider_session_id).toMatch(/^chatgpt:/);
-    expect(envelope.capture_id).toBe(envelope.session.provider_session_id);
+    expect(envelope.session.provider_session_id).toBe("test-conv");
+    expect(envelope.capture_id).toBe("chatgpt:test-conv");
   });
 });
 
