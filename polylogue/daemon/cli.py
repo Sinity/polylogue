@@ -1198,10 +1198,16 @@ def status_command(spool_path: Path | None, output_format: str | None) -> None:
     configure_logging()
     if output_format == "json":
         with redirect_stdout(sys.stderr):
-            payload = daemon_status_payload(browser_capture_spool_path=spool_path)
+            payload = daemon_status_payload(
+                browser_capture_spool_path=spool_path,
+                include_browser_capture_spool_path=spool_path is not None,
+            )
         click.echo(dumps(payload))
         return
-    payload = daemon_status_payload(browser_capture_spool_path=spool_path)
+    payload = daemon_status_payload(
+        browser_capture_spool_path=spool_path,
+        include_browser_capture_spool_path=spool_path is not None,
+    )
     for line in format_daemon_status_lines(payload):
         click.echo(line)
 
