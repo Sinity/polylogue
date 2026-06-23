@@ -903,6 +903,12 @@ A facets response carries both views explicitly:
   buckets if the filter chain narrows away every value.
 - `global` — counts over the unfiltered archive. Always populated.
 - `scoped_to_query` — `true` whenever any filter narrowed the view.
+- `complete_families` / `deferred_families` / `family_status` — route-state
+  metadata for each facet family. HTTP readers use this to distinguish an
+  actually-empty bucket from a family intentionally not materialized in the
+  current response.
+- `generated_at`, `stale`, `stale_age_s`, `budget_exceeded` — freshness and
+  budget metadata surfaced to the web workbench.
 - `idf` — inverse-document-frequency per facet value, computed against
   the global universe. Higher = rarer = stronger signal; near zero =
   value appears in almost every session. Disable with
@@ -912,6 +918,17 @@ Top-level fields (`origins`, `tags`, `total_sessions` etc.)
 mirror the *active* view (scoped when filtered, global otherwise) for
 backward compatibility with surfaces written before #1269. Consumers
 that need both views should read `scoped` and `global` directly.
+
+Daemon HTTP keeps expensive archive-wide families lazy for workbench
+first paint. `GET /api/facets` includes origin/tag/count buckets and marks
+`repos` plus `action_types` as `deferred_by_default`. Clients that need the
+full set can call `GET /api/facets?include_deferred=1&budget_ms=5000` or
+`GET /api/facets?families=repos,action_types`; a budget overrun returns
+the existing bucket fields plus `budget_exceeded=true` and per-family
+deferred reasons instead of blocking the page indefinitely. HTTP workbench
+requests attach request IDs and bounded `AbortController` timeouts; the daemon
+observes closed client sockets inside facet SQLite progress handlers so
+cancelled/timed-out browser requests can interrupt already-started scans.
 
 ```bash
 polylogue facets                     # global only (no filters)

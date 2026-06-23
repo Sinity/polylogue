@@ -147,7 +147,14 @@ Query params include `target_ref`, `scope_ref`, `kind`, `status`,
 
 ### GET /api/facets
 
-Query faceted aggregations.
+Query faceted aggregations. The route returns `FacetsResponse`, including
+`complete_families`, `deferred_families`, `generated_at`, `stale`,
+`stale_age_s`, `budget_exceeded`, and `family_status`. Repo and action
+families are deferred from first-paint responses by default; request them
+with `include_deferred=1` or `families=repos,action_types`, optionally
+bounded by `budget_ms`. The daemon also polls the client socket from SQLite
+progress handlers while computing facet SQL, so browser aborts/timeouts can
+stop already-started archive scans instead of waiting for response write.
 
 ### GET /api/sources
 

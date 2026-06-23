@@ -156,7 +156,15 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
     ),
     RouteContract("GET", "/api/events", "operational", "stable", "bearer_if_configured", "SSE or JSON event poll"),
     RouteContract("GET", "/api/sessions", "read_query", "stable", "bearer_if_configured", "SearchEnvelope"),
-    RouteContract("GET", "/api/facets", "read_query", "stable", "bearer_if_configured", "Facets envelope"),
+    RouteContract(
+        "GET",
+        "/api/facets",
+        "read_query",
+        "stable",
+        "bearer_if_configured",
+        "FacetsResponse with route-state metadata",
+        "Repo and action facet families are deferred from first paint unless explicitly requested.",
+    ),
     RouteContract("GET", "/api/query-units", "read_query", "stable", "bearer_if_configured", "QueryUnitResultEnvelope"),
     RouteContract(
         "GET",

@@ -264,8 +264,8 @@ __ATTACHMENT_CSS__
   <div id="status-strip">
     <span class="dot ok" id="status-dot" title="Daemon health"></span>
     <span class="chip" id="status-label">checking</span>
-    <span class="chip" id="status-convs">0 convs</span>
-    <span class="chip" id="status-msgs">0 msgs</span>
+    <span class="chip q-partial" id="status-convs">convs checking</span>
+    <span class="chip q-partial" id="status-msgs">msgs checking</span>
     <span class="chip" id="status-db">--</span>
     <span class="spacer"></span>
     <span class="chip" id="status-fts" title="FTS readiness">FTS: --</span>
@@ -389,6 +389,10 @@ var state = {
   // profiles remain disabled until HTTP execution exists.
   readViewProfiles: [], selectedReadView: 'messages', readViewProfileError: '',
   readViewPayloads: {}, readViewErrors: {},
+  // Shared route-state ledger for optional workbench routes (#2304). Values
+  // are idle/loading/ready/stale/error/budget_exceeded and always retain the
+  // route plus fallback command needed to recover outside the shell.
+  routeStates: {}, inFlight: {facets: null}, selectedLoadError: null,
   // Per-session similarity panel cache (#1123). Keyed by
   // session_id; populated on demand when the Similar inspector
   // tab is opened. ``undefined`` means "not loaded yet"; the envelope
@@ -429,18 +433,45 @@ async function requestJSON(url, opts) {
   var requestId = nextApiRequestId();
   var headers = Object.assign({'X-Request-ID': requestId}, opts.headers || {});
   var requestOpts = Object.assign({}, opts, {method: method, headers: headers});
+  var timeoutMs = Number(opts.timeoutMs || 0);
+  delete requestOpts.timeoutMs;
+  var timeoutId = null;
+  var timedOut = false;
+  var relayAbort = null;
+  if (timeoutMs > 0 && typeof AbortController !== 'undefined') {
+    var timeoutController = new AbortController();
+    var externalSignal = requestOpts.signal;
+    if (externalSignal) {
+      if (externalSignal.aborted) timeoutController.abort();
+      else {
+        relayAbort = function() { timeoutController.abort(); };
+        externalSignal.addEventListener('abort', relayAbort, {once: true});
+      }
+    }
+    timeoutId = setTimeout(function() { timedOut = true; timeoutController.abort(); }, timeoutMs);
+    requestOpts.signal = timeoutController.signal;
+  }
   var started = nowMs();
   var response;
   try {
     response = await fetch(API + url, requestOpts);
   } catch(e) {
     var networkDuration = Math.round(nowMs() - started);
+    if (timedOut && e && e.name === 'AbortError') {
+      e.timed_out = true;
+      e.status = 'timeout';
+      e.response_summary = 'request_timeout_after_' + timeoutMs + 'ms';
+    }
     rememberApiDebug({
       ok: false, method: method, url: url, request_id: requestId,
-      status: 'network_error', duration_ms: networkDuration,
-      response_summary: String(e && e.message ? e.message : e)
+      status: timedOut ? 'timeout' : (e && e.name === 'AbortError' ? 'aborted' : 'network_error'),
+      duration_ms: networkDuration,
+      response_summary: (e && e.response_summary) ? e.response_summary : String(e && e.message ? e.message : e)
     });
     throw e;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+    if (relayAbort && opts.signal && opts.signal.removeEventListener) opts.signal.removeEventListener('abort', relayAbort);
   }
   var text = await response.text();
   var duration = Math.round(nowMs() - started);
@@ -483,14 +514,91 @@ async function requestJSON(url, opts) {
     throw parseError;
   }
 }
-
-async function fetchJSON(url) {
-  return requestJSON(url, {method: 'GET'});
+async function fetchJSON(url, opts) {
+  return requestJSON(url, Object.assign({method: 'GET'}, opts || {}));
 }
 async function sendJSON(url, method, body) {
   var opts = {method: method, headers: {'Content-Type': 'application/json'}};
   if (body !== undefined) opts.body = JSON.stringify(body);
   return requestJSON(url, opts);
+}
+
+function fallbackCommand(route) {
+  return 'curl -fsS http://127.0.0.1:8766' + route;
+}
+
+function routeErrorDetails(e, route) {
+  var message = String((e && (e.response_summary || e.message)) || e || 'unavailable');
+  return {
+    route: route,
+    status: (e && e.status) ? String(e.status) : '',
+    error: message,
+    request_id: (e && e.request_id) ? String(e.request_id) : '',
+    fallback: fallbackCommand(route)
+  };
+}
+
+function setRouteState(name, patch) {
+  var current = state.routeStates[name] || {state: 'idle'};
+  var next = Object.assign({}, current, patch || {});
+  if (next.route && !next.fallback) next.fallback = fallbackCommand(next.route);
+  state.routeStates[name] = next;
+  return next;
+}
+
+function routeStateQuality(routeState) {
+  if (!routeState) return '';
+  if (routeState.state === 'ready') return 'canonical';
+  if (routeState.state === 'stale') return 'stale';
+  if (routeState.state === 'loading' || routeState.state === 'budget_exceeded') return 'partial';
+  if (routeState.state === 'error') return 'unavailable';
+  return '';
+}
+
+function renderRouteStateNotice(name, label, retryJs) {
+  var rs = state.routeStates[name];
+  if (!rs || rs.state === 'idle' || rs.state === 'ready') return '';
+  var quality = routeStateQuality(rs) || 'partial';
+  var title = label + ': ' + rs.state.replace('_', ' ');
+  var parts = [];
+  if (rs.route) parts.push('route ' + rs.route);
+  if (rs.status) parts.push('status ' + rs.status);
+  if (rs.error) parts.push(rs.error);
+  if (rs.stale_available) parts.push('showing stale data');
+  if (rs.state === 'budget_exceeded') parts.push('budget exceeded');
+  var html = '<div class="sidebar-state q-' + escAttr(quality) + '"><div class="state-icon">!</div>'
+    + '<div><strong>' + esc(title) + '</strong><br>' + esc(parts.join(' · ') || 'checking route')
+    + '<br><code>' + esc(rs.fallback || (rs.route ? fallbackCommand(rs.route) : 'polylogue daemon status')) + '</code></div>';
+  if (retryJs) html += '<button class="user-action" onclick="' + escAttr(retryJs) + '">Retry</button>';
+  html += '</div>';
+  return html;
+}
+
+function renderInlineRouteFailure(title, details, retryJs) {
+  details = details || {};
+  var route = details.route || '';
+  var bits = [];
+  if (route) bits.push('route ' + route);
+  if (details.status) bits.push('status ' + details.status);
+  if (details.error) bits.push(details.error);
+  if (details.stale_available) bits.push('stale data available');
+  var html = '<div class="main-empty q-unavailable"><h3>' + esc(title) + '</h3>'
+    + '<p>' + esc(bits.join(' · ') || 'Route unavailable') + '</p>'
+    + '<p><code>' + esc(details.fallback || (route ? fallbackCommand(route) : 'polylogue daemon status')) + '</code></p>';
+  if (retryJs) html += '<button class="user-action" onclick="' + escAttr(retryJs) + '">Retry</button>';
+  html += '</div>';
+  return html;
+}
+
+function updateStatusCountsUnknown(reason) {
+  var convs = document.getElementById('status-convs');
+  var msgs = document.getElementById('status-msgs');
+  if (convs) { convs.textContent = state.total ? (state.total.toLocaleString() + ' visible convs') : 'convs unknown'; setChipQuality(convs, 'partial'); }
+  if (msgs) { msgs.textContent = 'msgs unknown'; setChipQuality(msgs, 'partial'); }
+  if (reason) {
+    var label = document.getElementById('status-label');
+    if (label && label.textContent === 'checking') label.textContent = reason;
+  }
 }
 
 function markSetFor(sessionId) {
@@ -544,12 +652,13 @@ async function loadSessions(opts) {
   var beforeIds = {};
   (state.sessions || []).forEach(function(c) { beforeIds[c.id] = true; });
   try {
-    var data = await fetchJSON('/api/sessions?' + params);
+    var data = await fetchJSON('/api/sessions?' + params, {timeoutMs: 8000});
     state.sessions = sessionsFromListPayload(data);
     state.total = data.total || 0;
     state.actionAffordances = data.action_affordances || [];
     document.getElementById('footer-result').textContent =
       (state.total > 0) ? (state.total + ' results') : '';
+    if (state.routeStates.status && state.routeStates.status.state !== 'ready') updateStatusCountsUnknown('degraded');
   } catch(e) {
     state.sessions = [];
     state.total = 0;
@@ -567,37 +676,50 @@ async function loadSessions(opts) {
 }
 
 async function loadReadViewProfiles() {
+  var route = '/api/read-view-profiles';
+  setRouteState('readViewProfiles', {state: 'loading', route: route, error: '', status: ''});
   try {
-    var payload = await fetchJSON('/api/read-view-profiles');
+    var payload = await fetchJSON(route, {timeoutMs: 4000});
     state.readViewProfiles = payload.read_views || [];
     state.readViewProfileError = '';
+    setRouteState('readViewProfiles', {state: 'ready', route: route, status: '200', error: ''});
   } catch(e) {
     state.readViewProfiles = [];
-    state.readViewProfileError = 'Read profiles unavailable';
+    var details = routeErrorDetails(e, route);
+    state.readViewProfileError = details.error;
+    setRouteState('readViewProfiles', Object.assign({state: 'error'}, details));
   }
   renderMain();
 }
 
 async function loadUserState() {
+  var route = '/api/user/marks';
+  setRouteState('userState', {state: 'loading', route: route, error: '', status: ''});
   try {
-    var marks = await fetchJSON('/api/user/marks');
+    var marks = await fetchJSON(route, {timeoutMs: 5000});
     state.marks = {};
     (marks.items || []).forEach(function(m) {
       setMarkLocal(m.session_id, m.mark_type, true);
     });
-    var annotations = await fetchJSON('/api/user/annotations');
+    route = '/api/user/annotations';
+    var annotations = await fetchJSON(route, {timeoutMs: 5000});
     state.annotations = {};
     (annotations.items || []).forEach(function(a) {
       if (!state.annotations[a.session_id]) state.annotations[a.session_id] = [];
       state.annotations[a.session_id].push(a);
     });
-    var savedViews = await fetchJSON('/api/user/saved-views');
+    route = '/api/user/saved-views';
+    var savedViews = await fetchJSON(route, {timeoutMs: 5000});
     state.savedViews = savedViews.items || [];
-    var workspaces = await fetchJSON('/api/user/workspaces');
+    route = '/api/user/workspaces';
+    var workspaces = await fetchJSON(route, {timeoutMs: 5000});
     state.workspaces = workspaces.items || [];
     state.userStateError = '';
+    setRouteState('userState', {state: 'ready', route: route, status: '200', error: ''});
   } catch(e) {
-    state.userStateError = 'User state unavailable';
+    var details = routeErrorDetails(e, route);
+    state.userStateError = details.error;
+    setRouteState('userState', Object.assign({state: 'error'}, details));
   }
   renderSessions();
   renderMain();
@@ -608,63 +730,114 @@ async function loadSession(id, updateURL) {
   state.mode = 'single';
   state.stackPayload = null;
   state.comparePayload = null;
+  state.selectedLoadError = null;
   if (updateURL !== false) pushSingleURL(id);
+  var route = '/api/sessions/' + encodeURIComponent(id);
+  setRouteState('sessionDetail', {state: 'loading', route: route, error: '', status: ''});
   try {
-    var data = await fetchJSON('/api/sessions/' + id);
+    var data = await fetchJSON(route, {timeoutMs: 10000});
     state.selected = data;
-  } catch(e) { state.selected = null; }
+    setRouteState('sessionDetail', {state: 'ready', route: route, status: '200', error: ''});
+  } catch(e) {
+    state.selected = null;
+    state.selectedLoadError = routeErrorDetails(e, route);
+    setRouteState('sessionDetail', Object.assign({state: 'error'}, state.selectedLoadError));
+  }
   renderMain();
   renderInspector();
   renderSessions();
 }
 
+function loadSessionFromError() {
+  var rs = state.routeStates.sessionDetail || {};
+  var route = rs.route || '';
+  var prefix = '/api/sessions/';
+  if (route.indexOf(prefix) !== 0) return;
+  loadSession(decodeURIComponent(route.slice(prefix.length)), true);
+}
+
 async function loadSessionRaw(id) {
   try {
-    var data = await fetchJSON('/api/sessions/' + encodeURIComponent(id) + '/provenance');
+    var data = await fetchJSON('/api/sessions/' + encodeURIComponent(id) + '/provenance', {timeoutMs: 5000});
     state.selectedRaw = data;
   } catch(e) { state.selectedRaw = null; }
 }
 
-async function loadFacets() {
+async function loadFacets(opts) {
+  opts = opts || {};
   var params = new URLSearchParams();
   if (state.query) params.set('query', state.query);
   if (state.origin) params.set('origin', state.origin);
+  if (opts.includeDeferred) params.set('include_deferred', '1');
+  if (opts.budgetMs !== undefined) params.set('budget_ms', String(opts.budgetMs));
   var qs = params.toString();
+  var route = '/api/facets' + (qs ? '?' + qs : '');
+  if (state.inFlight.facets && state.inFlight.facets.controller) {
+    state.inFlight.facets.controller.abort();
+  }
+  var controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  var token = {};
+  state.inFlight.facets = {controller: controller, token: token};
+  setRouteState('facets', {state: 'loading', route: route, error: '', status: '', stale_available: !!state.facets});
+  renderFacets();
   try {
-    state.facets = await fetchJSON('/api/facets' + (qs ? '?' + qs : ''));
-    state.facetError = '';
+    var payload = await fetchJSON(route, Object.assign(controller ? {signal: controller.signal} : {}, {timeoutMs: opts.timeoutMs || 5000}));
+    if (!state.inFlight.facets || state.inFlight.facets.token !== token) return;
+    state.facets = payload;
+    var routeState = payload.budget_exceeded ? 'budget_exceeded' : (payload.stale ? 'stale' : 'ready');
+    setRouteState('facets', {
+      state: routeState, route: route, status: '200', error: '', stale: !!payload.stale,
+      stale_age_s: payload.stale_age_s || null, stale_available: true, budget_exceeded: !!payload.budget_exceeded
+    });
   } catch(e) {
-    state.facetError = 'Facets unavailable';
-    state.facets = null;
+    if (e && e.name === 'AbortError' && !e.timed_out) return;
+    setRouteState('facets', Object.assign({state: 'error', stale_available: !!state.facets}, routeErrorDetails(e, route)));
+  } finally {
+    if (state.inFlight.facets && state.inFlight.facets.token === token) state.inFlight.facets = null;
   }
   renderFacets();
 }
 
 async function loadStatus() {
+  var healthRoute = '/api/health';
+  setRouteState('health', {state: 'loading', route: healthRoute, error: '', status: ''});
   try {
-    var h = await fetchJSON('/api/health');
+    var h = await fetchJSON(healthRoute, {timeoutMs: 3000});
     var dot = document.getElementById('status-dot');
     dot.className = 'dot ' + (h.ok ? 'ok' : 'err');
     document.getElementById('status-label').textContent = h.ok ? 'healthy' : (h.quick_check || 'issues');
     var dbGB = ((h.db_size_bytes || 0) / 1073741824).toFixed(1);
     document.getElementById('status-db').textContent = 'DB: ' + dbGB + ' GB';
+    setRouteState('health', {state: h.ok ? 'ready' : 'error', route: healthRoute, status: '200', error: h.ok ? '' : (h.quick_check || 'issues')});
   } catch(e) {
     document.getElementById('status-dot').className = 'dot err';
     document.getElementById('status-label').textContent = 'offline';
+    setRouteState('health', Object.assign({state: 'error'}, routeErrorDetails(e, healthRoute)));
   }
+  var statusRoute = '/api/status';
+  setRouteState('status', {state: 'loading', route: statusRoute, error: '', status: ''});
   try {
-    var s = await fetchJSON('/api/status');
+    var s = await fetchJSON(statusRoute, {timeoutMs: 5000});
     var readiness = s.component_readiness || {};
-    document.getElementById('status-convs').textContent = (s.total_sessions || 0).toLocaleString() + ' convs';
-    document.getElementById('status-msgs').textContent = (s.total_messages || 0).toLocaleString() + ' msgs';
+    var convs = document.getElementById('status-convs');
+    var msgs = document.getElementById('status-msgs');
+    convs.textContent = (s.total_sessions != null ? Number(s.total_sessions).toLocaleString() : 'unknown') + ' convs';
+    msgs.textContent = (s.total_messages != null ? Number(s.total_messages).toLocaleString() : 'unknown') + ' msgs';
+    setChipQuality(convs, s.total_sessions != null ? 'canonical' : 'partial');
+    setChipQuality(msgs, s.total_messages != null ? 'canonical' : 'partial');
     renderFtsChip(readiness.search || null, s.fts_readiness || {});
     renderSemanticChip(readiness.embeddings || null);
     renderInsightChip(readiness.session_profiles || null, s.insight_freshness || {});
     renderIngestChip(readiness.daemon_ingest || null, s.live || {});
     renderBrowserCaptureChip(readiness.browser_capture || null, s.browser_capture || {});
-  } catch(e) {}
+    setRouteState('status', {state: 'ready', route: statusRoute, status: '200', error: ''});
+  } catch(e) {
+    updateStatusCountsUnknown('degraded');
+    setRouteState('status', Object.assign({state: 'error', stale_available: false}, routeErrorDetails(e, statusRoute)));
+    renderFacets();
+  }
   try {
-    renderDevLoopChip(await fetchJSON('/api/dev-loop'));
+    renderDevLoopChip(await fetchJSON('/api/dev-loop', {timeoutMs: 3000}));
   } catch(e) { renderDevLoopChip(null); }
 }
 
@@ -897,22 +1070,16 @@ __BULK_JS__
 
 function renderFacets() {
   var f = state.facets;
-  if (!f) {
-    document.getElementById('facet-bar').innerHTML = state.facetError
-      ? '<div class="facet-group"><div class="facet-group-label">' + esc(state.facetError) + '</div></div>'
-      : '';
-    return;
-  }
-  var html = '';
-  var deferredFamilies = f.deferred_families || {};
-  var deferredKeys = Array.isArray(deferredFamilies) ? deferredFamilies : Object.keys(deferredFamilies);
-  if (deferredKeys.length > 0 || f.budget_exceeded) {
-    html += '<div class="facet-group"><div class="facet-group-label">Facet detail deferred</div><div class="facet-chips">';
-    deferredKeys.forEach(function(family) {
-      var reason = Array.isArray(deferredFamilies) ? 'deferred' : deferredFamilies[family];
-      html += '<span class="facet-chip" title="' + escAttr(reason || 'Computed on demand to keep the reader responsive') + '">' + esc(family) + '</span>';
-    });
-    html += '</div></div>';
+  var html = renderRouteStateNotice('status', 'Status', 'loadStatus()')
+    + renderRouteStateNotice('facets', 'Facets', 'loadFacets()');
+  if (!f) { document.getElementById('facet-bar').innerHTML = html; return; }
+  var deferred = f.deferred_families || {};
+  var deferredKeys = Object.keys(deferred);
+  if (deferredKeys.length) {
+    html += '<div class="sidebar-state q-partial"><div class="state-icon">~</div><div><strong>Deferred facets</strong><br>'
+      + esc(deferredKeys.map(function(k) { return k + ': ' + deferred[k]; }).join(' · '))
+      + '<br><code>' + esc(fallbackCommand('/api/facets?include_deferred=1&budget_ms=5000')) + '</code></div>'
+      + '<button class="user-action" onclick="loadFacets({includeDeferred:true,budgetMs:5000})">Load deferred families</button></div>';
   }
   var providers = f.origins || {};
   var provKeys = Object.keys(providers);
@@ -984,7 +1151,9 @@ function renderReadViewSelector(c) {
   if (!c) return '';
   var profiles = state.readViewProfiles || [];
   if (!profiles.length) {
-    var fallback = state.readViewProfileError || 'Read profiles loading';
+    var routePanel = renderRouteStateNotice('readViewProfiles', 'Read profiles', 'loadReadViewProfiles()');
+    if (routePanel) return '<div id="read-profile-selector" class="read-profile-selector muted">' + routePanel + '</div>';
+    var fallback = state.readViewProfileError || 'Read profiles loading from /api/read-view-profiles';
     return '<div id="read-profile-selector" class="read-profile-selector muted">' + esc(fallback) + '</div>';
   }
   var html = '<div id="read-profile-selector" class="read-profile-selector"><label for="read-profile-select">Read view</label>'
@@ -1026,12 +1195,13 @@ function readViewCacheKey(id, viewId) {
 async function loadReadViewExecution(id, viewId) {
   if (!id || !viewId || viewId === 'messages') return;
   var key = readViewCacheKey(id, viewId);
+  var route = '/api/sessions/' + encodeURIComponent(id) + '/read?view=' + encodeURIComponent(viewId) + '&format=json';
   try {
-    var payload = await fetchJSON('/api/sessions/' + encodeURIComponent(id) + '/read?view=' + encodeURIComponent(viewId) + '&format=json');
+    var payload = await fetchJSON(route, {timeoutMs: 10000});
     state.readViewPayloads[key] = payload;
     delete state.readViewErrors[key];
   } catch(e) {
-    state.readViewErrors[key] = String(e);
+    state.readViewErrors[key] = routeErrorDetails(e, route);
   }
   if (state.selected && state.selected.id === id && state.selectedReadView === viewId) {
     renderMain();
@@ -1045,9 +1215,14 @@ function renderMain() {
   var headerEl = document.getElementById('conv-header');
   var msgEl = document.getElementById('msg-list');
   if (!state.selected) {
-    headerEl.innerHTML = '<h2>Polylogue</h2><div class="conv-stats"></div>';
-    msgEl.innerHTML = '<div class="main-empty"><h3>Select a session</h3>'
-      + '<p>Browse from the list or use <span class="kbd">/</span> to search. Press <span class="kbd">?</span> for shortcuts.</p></div>';
+    if (state.selectedLoadError) {
+      headerEl.innerHTML = '<h2>Session unavailable</h2><div class="conv-stats"></div>';
+      msgEl.innerHTML = renderInlineRouteFailure('Session detail unavailable', state.selectedLoadError, 'loadSessionFromError()');
+    } else {
+      headerEl.innerHTML = '<h2>Polylogue</h2><div class="conv-stats"></div>';
+      msgEl.innerHTML = '<div class="main-empty"><h3>Select a session</h3>'
+        + '<p>Browse from the list or use <span class="kbd">/</span> to search. Press <span class="kbd">?</span> for shortcuts.</p></div>';
+    }
     return;
   }
   var c = state.selected;
@@ -1125,7 +1300,7 @@ function renderMain() {
 function renderReadViewExecution(c, viewId) {
   var key = readViewCacheKey(c.id, viewId);
   if (state.readViewErrors[key]) {
-    return '<div class="main-empty"><h3>Read view unavailable</h3><p>' + esc(state.readViewErrors[key]) + '</p></div>';
+    return renderInlineRouteFailure('Read view unavailable', state.readViewErrors[key], 'retryReadViewExecution()');
   }
   var envelope = state.readViewPayloads[key];
   if (envelope === undefined) {
@@ -1140,6 +1315,14 @@ function renderReadViewExecution(c, viewId) {
   if (viewId === 'neighbors') return renderNeighborsReadView(payload);
   if (viewId === 'correlation') return renderCorrelationReadView(payload);
   return '<div class="main-empty"><h3>Unsupported read view</h3><p>' + esc(viewId) + '</p></div>';
+}
+
+function retryReadViewExecution() {
+  if (!state.selected || !state.selectedReadView) return;
+  var key = readViewCacheKey(state.selected.id, state.selectedReadView);
+  delete state.readViewErrors[key];
+  delete state.readViewPayloads[key];
+  renderMain();
 }
 
 function renderRecoveryReadView(payload) {
@@ -1349,7 +1532,14 @@ function markButtonHtml(sessionId, markType, label, title) {
 
 function renderInspector() {
   var el = document.getElementById('inspector-content');
-  if (!state.selected) { el.innerHTML = '<div class="inspector-empty">Select a session to inspect</div>'; return; }
+  if (!state.selected) {
+    if (state.selectedLoadError) {
+      el.innerHTML = renderInlineRouteFailure('Session detail unavailable', state.selectedLoadError, 'loadSessionFromError()');
+    } else {
+      el.innerHTML = '<div class="inspector-empty">Select a session to inspect</div>';
+    }
+    return;
+  }
   var c = state.selected;
   var tab = state.inspectorTab || 'info';
   if (tab === 'info') renderInspectorInfo(el, c);
@@ -1372,7 +1562,7 @@ function renderInspector() {
 // chip and a "no rows recorded" body.
 async function loadInsightsPanel(id) {
   try {
-    var data = await fetchJSON('/api/insights/sessions/' + encodeURIComponent(id));
+    var data = await fetchJSON('/api/insights/sessions/' + encodeURIComponent(id), {timeoutMs: 8000});
     state.insightsPanels[id] = data;
   } catch(e) {
     state.insightsPanels[id] = {error: String(e)};
@@ -1535,7 +1725,7 @@ function renderInspectorInsights(el, c) {
 // q-estimated / q-heuristic / q-unavailable).
 async function loadCostPanel(id) {
   try {
-    var data = await fetchJSON('/api/sessions/' + encodeURIComponent(id) + '/cost');
+    var data = await fetchJSON('/api/sessions/' + encodeURIComponent(id) + '/cost', {timeoutMs: 8000});
     state.costPanels[id] = data;
   } catch(e) {
     state.costPanels[id] = {error: String(e)};
@@ -1646,8 +1836,8 @@ function renderInspectorCost(el, c) {
 
 async function loadEvidencePanel(id) {
   try {
-    var recovery = await fetchJSON('/api/sessions/' + encodeURIComponent(id) + '/recovery?report=work-packet&format=json');
-    var assertions = await fetchJSON('/api/assertions?target_ref=' + encodeURIComponent('session:' + id) + '&limit=20');
+    var recovery = await fetchJSON('/api/sessions/' + encodeURIComponent(id) + '/recovery?report=work-packet&format=json', {timeoutMs: 10000});
+    var assertions = await fetchJSON('/api/assertions?target_ref=' + encodeURIComponent('session:' + id) + '&limit=20', {timeoutMs: 10000});
     state.evidencePanels[id] = {recovery: recovery, assertions: assertions};
   } catch(e) {
     state.evidencePanels[id] = {error: String(e)};
@@ -1718,7 +1908,7 @@ function renderInspectorInfo(el, c) {
     ['Messages', c.message_count], ['Words', (c.word_count || 0).toLocaleString()],
     ['Repo', c.repo], ['CWD', c.cwd_display], ['Branch', c.branch_type], ['Session', c.session_id]
   ];
-  var html = '';
+  var html = renderRouteStateNotice('userState', 'User state', 'loadUserState()');
   fields.forEach(function(f) {
     var val = f[1] != null ? String(f[1]) : '';
     html += '<div class="inspector-field"><span class="label">' + esc(f[0]) + '</span>'
@@ -2032,8 +2222,9 @@ async function selectSession(id, updateURL, opts) {
   if (isLiveTail && state.selected && state.selected.messages) {
     state.selected.messages.forEach(function(m) { priorMessageIds[m.id] = true; });
   } else {
-    document.getElementById('msg-list').innerHTML = '<div class="main-empty"><h3>Loading...</h3></div>';
-    document.getElementById('inspector-content').innerHTML = '<div class="inspector-empty">Loading...</div>';
+    var route = '/api/sessions/' + encodeURIComponent(id);
+    document.getElementById('msg-list').innerHTML = '<div class="main-empty q-partial"><h3>Loading session detail</h3><p>route ' + esc(route) + '</p></div>';
+    document.getElementById('inspector-content').innerHTML = '<div class="inspector-empty q-partial">Loading session detail from ' + esc(route) + '</div>';
   }
   await loadSession(id, updateURL);
   if (isLiveTail) {
@@ -2060,8 +2251,8 @@ document.addEventListener('keydown', function(e) {
     e.preventDefault();
     var help = document.getElementById('help-overlay');
     if (help.classList.contains('visible')) { toggleHelp(); return; }
-    if (state.query) { state.query = ''; document.getElementById('search').value = ''; state.offset = 0; loadSessions(); return; }
-    if (state.origin) { state.origin = ''; state.offset = 0; loadSessions(); renderFacets(); return; }
+    if (state.query) { state.query = ''; document.getElementById('search').value = ''; state.offset = 0; loadSessions(); loadFacets(); return; }
+    if (state.origin) { state.origin = ''; state.offset = 0; loadSessions(); loadFacets(); return; }
     return;
   }
   if (e.key === 'j' || e.key === 'k') {
@@ -2107,7 +2298,7 @@ document.getElementById('facet-bar').addEventListener('click', function(e) {
   if (!chip) return;
   var facet = chip.dataset.facet;
   var value = chip.dataset.value;
-  if (facet === 'origin') { state.origin = value || ''; state.offset = 0; loadSessions(); renderFacets(); }
+  if (facet === 'origin') { state.origin = value || ''; state.offset = 0; loadSessions(); loadFacets(); }
 });
 
 attachBulkHandlers();

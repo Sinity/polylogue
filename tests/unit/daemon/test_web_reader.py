@@ -24,6 +24,8 @@ import pytest
 pytestmark = pytest.mark.xdist_group("web-reader")
 
 import json
+import socket
+import sqlite3
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -501,6 +503,55 @@ def _request_json(
         return exc.code, json.loads(raw)
 
 
+def test_socket_peer_disconnected_detects_closed_loopback_peer() -> None:
+    from polylogue.daemon.http import _socket_peer_disconnected
+
+    server_sock, client_sock = socket.socketpair()
+    try:
+        assert _socket_peer_disconnected(server_sock) is False
+        client_sock.close()
+        assert _socket_peer_disconnected(server_sock) is True
+    finally:
+        server_sock.close()
+
+
+def test_archive_facet_query_progress_handler_interrupts_after_client_abort() -> None:
+    from polylogue.daemon.http import DaemonAPIHandler
+
+    class _Archive:
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            self._conn = conn
+
+    conn = sqlite3.connect(":memory:")
+    handler = DaemonAPIHandler.__new__(DaemonAPIHandler)
+    checks = {"count": 0}
+
+    def disconnected_after_start() -> bool:
+        checks["count"] += 1
+        return checks["count"] > 2
+
+    handler._client_disconnected = disconnected_after_start  # type: ignore[method-assign]
+    try:
+        with pytest.raises(ConnectionAbortedError):
+            handler._run_archive_facet_query(
+                _Archive(conn),  # type: ignore[arg-type]
+                deadline_s=None,
+                compute=lambda: conn.execute(
+                    """
+                    WITH RECURSIVE counter(value) AS (
+                      VALUES(0)
+                      UNION ALL
+                      SELECT value + 1 FROM counter WHERE value < 1000000
+                    )
+                    SELECT SUM(value) FROM counter
+                    """
+                ).fetchone(),
+            )
+    finally:
+        conn.close()
+    assert checks["count"] > 2
+
+
 # ---------------------------------------------------------------------------
 # polylogue.local_reader.search — list/search reader state
 # ---------------------------------------------------------------------------
@@ -536,6 +587,12 @@ class TestReaderSearchState:
             "renderReadViewExecution",
             "loadReadViewProfiles",
             "renderReadViewSelector",
+            "renderRouteStateNotice",
+            "renderInlineRouteFailure",
+            "AbortController",
+            "timeoutMs",
+            "request_timeout_after_",
+            "budget_exceeded",
             "applyReadViewSelection",
             "/api/read-view-profiles",
             "/read?view=",
@@ -591,8 +648,40 @@ class TestReaderSearchState:
         assert isinstance(payload, dict)
         assert "scoped_to_query" in payload
         assert "origins" in payload
-        assert "complete_families" in payload
-        assert "deferred_families" in payload
+        assert isinstance(payload["generated_at"], str)
+        assert payload["stale"] is False
+        assert payload["budget_exceeded"] is False
+        assert set(payload["complete_families"]) >= {"total_counts", "origins", "tags"}
+        assert payload["deferred_families"] == {
+            "repos": "deferred_by_default",
+            "action_types": "deferred_by_default",
+        }
+        assert payload["family_status"]["repos"]["state"] == "deferred"
+        assert "repos" in payload and "action_types" in payload
+
+    def test_facets_budget_exceeded_metadata(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            payload = _get_json(base_url, "/api/facets?include_deferred=1&budget_ms=0")
+        assert isinstance(payload, dict)
+        assert payload["budget_exceeded"] is True
+        assert payload["deferred_families"] == {"repos": "budget_exceeded", "action_types": "budget_exceeded"}
+        assert payload["family_status"]["repos"] == {
+            "state": "deferred",
+            "reason": "budget_exceeded",
+            "error": None,
+            "stale": False,
+            "stale_age_s": None,
+        }
+        assert "repos" not in payload["complete_families"]
+
+    def test_facets_can_materialize_deferred_families_when_requested(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            payload = _get_json(base_url, "/api/facets?families=repos,action_types&budget_ms=5000")
+        assert isinstance(payload, dict)
+        assert payload["deferred_families"] == {}
+        assert {"repos", "action_types"}.issubset(set(payload["complete_families"]))
+        assert payload["family_status"]["repos"]["state"] == "complete"
+        assert payload["family_status"]["action_types"]["state"] == "complete"
 
     def test_facets_origin_filter_scopes_counts(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
@@ -2494,6 +2583,66 @@ class TestReaderInformability:
         assert "function renderComponentReadinessChip(" in body
         assert "function readinessQuality(" in body
         assert "function renderBrowserCaptureChip(" in body
+
+    def test_status_strip_starts_with_unknown_counts_not_zero(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            _, _, body = _get_text(base_url, "/")
+
+        assert "convs checking" in body
+        assert "msgs checking" in body
+        assert "0 convs" not in body
+        assert "0 msgs" not in body
+        assert "updateStatusCountsUnknown" in body
+        assert "s.total_sessions != null" in body
+        assert "s.total_messages != null" in body
+
+    def test_web_shell_models_failed_route_panels_and_retries(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            _, _, body = _get_text(base_url, "/")
+
+        assert "routeStates" in body
+        assert "function routeErrorDetails" in body
+        assert "function fallbackCommand" in body
+        assert "function renderRouteStateNotice" in body
+        assert "function renderInlineRouteFailure" in body
+        assert "Retry" in body
+        assert "stale_available" in body
+        assert "/api/status" in body
+        assert "/api/facets" in body
+        assert "/api/read-view-profiles" in body
+        assert "/api/sessions/" in body
+
+    def test_facets_loader_cancels_previous_request(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            _, _, body = _get_text(base_url, "/")
+
+        assert "AbortController" in body
+        assert "state.inFlight.facets.controller.abort()" in body
+        assert "controller.signal" in body
+        assert "state.inFlight.facets.token !== token" in body
+        assert "timeoutMs: opts.timeoutMs || 5000" in body
+        assert "e.name === 'AbortError' && !e.timed_out" in body
+        assert "include_deferred" in body
+        assert "budget_ms" in body
+
+    def test_missing_read_view_profiles_route_has_retry_fallback(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            _, _, body = _get_text(base_url, "/")
+
+        assert "setRouteState('readViewProfiles'" in body
+        assert "Read profiles" in body
+        assert "loadReadViewProfiles()" in body
+        assert "curl -fsS http://127.0.0.1:8766" in body
+
+    def test_session_detail_failure_does_not_leave_bare_loading(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            _, _, body = _get_text(base_url, "/")
+
+        assert "selectedLoadError" in body
+        assert "Session detail unavailable" in body
+        assert "Loading session detail" in body
+        assert "loadSessionFromError" in body
+        assert "/api/sessions/" in body
 
     def test_fts_chip_keeps_legacy_tri_state_fallback(self, workspace_env: dict[str, Path]) -> None:
         """``renderFtsChip`` must still distinguish ok / partial /

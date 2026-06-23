@@ -38,8 +38,8 @@ REQUIRED_DAEMON_ROUTES = (
 REQUIRED_WEB_ROUTES = (
     "/",
     "/api/sessions?limit=1&offset=0",
-    "/api/facets",
 )
+OPTIONAL_WEB_ROUTES = ("/api/facets",)
 REQUIRED_RECEIVER_ROUTES = ("/v1/status",)
 COMPLETION_PROBES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("query-then-connector", "polylogue find id:abc t", ("then",)),
@@ -881,8 +881,10 @@ def _diagnose(
         likely_causes.append("deployed daemon API predates /api/read-view-profiles or is not restarted")
         next_actions.append("restart polylogued after deploying a build that contains the read-view profiles route")
     if facets_route is not None and not facets_route.ok:
-        likely_causes.append("web-shell facets route exceeds the deployed smoke timeout")
-        next_actions.append("profile /api/facets and move expensive facet aggregation behind caching or bounded reads")
+        likely_causes.append("optional web-shell facets route exceeds the deployed smoke timeout")
+        next_actions.append(
+            "verify first paint still succeeds from / and /api/sessions, then profile deferred /api/facets families"
+        )
     if root_route is not None and not root_route.ok:
         likely_causes.append("web-shell root document is unavailable or exceeds the deployed smoke timeout")
         next_actions.append("verify the daemon can serve the workbench root before debugging browser-side rendering")
@@ -1023,16 +1025,23 @@ def build_report(
     routes = [
         *(
             _probe_route(f"{daemon_base_url.rstrip('/')}{route}", timeout_s=timeout_s)
-            for route in (*REQUIRED_DAEMON_ROUTES, *REQUIRED_WEB_ROUTES)
+            for route in (*REQUIRED_DAEMON_ROUTES, *REQUIRED_WEB_ROUTES, *OPTIONAL_WEB_ROUTES)
         ),
         *(
             _probe_route(f"{receiver_base_url.rstrip('/')}{route}", timeout_s=timeout_s)
             for route in REQUIRED_RECEIVER_ROUTES
         ),
     ]
+    required_route_urls = {
+        f"{daemon_base_url.rstrip('/')}{route}" for route in (*REQUIRED_DAEMON_ROUTES, *REQUIRED_WEB_ROUTES)
+    } | {f"{receiver_base_url.rstrip('/')}{route}" for route in REQUIRED_RECEIVER_ROUTES}
     failures: list[str] = []
     failures.extend(f"command:{probe.name}:{probe.error or probe.exit_code}" for probe in commands if not probe.ok)
-    failures.extend(f"route:{probe.url}:{probe.error or probe.status}" for probe in routes if not probe.ok)
+    failures.extend(
+        f"route:{probe.url}:{probe.error or probe.status}"
+        for probe in routes
+        if not probe.ok and probe.url in required_route_urls
+    )
     failures.extend(
         f"completion:{probe.name}:{probe.error or 'missing=' + ','.join(probe.missing)}"
         for probe in completions

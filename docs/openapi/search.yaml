@@ -2544,7 +2544,8 @@ x-polylogue-route-contracts:
   kind: read_query
   stability: stable
   auth_policy: bearer_if_configured
-  response_contract: Facets envelope
+  response_contract: FacetsResponse with route-state metadata
+  notes: Repo and action facet families are deferred from first paint unless explicitly requested.
 - method: GET
   pattern: /api/query-units
   kind: read_query
