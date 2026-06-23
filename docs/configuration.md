@@ -345,12 +345,22 @@ Common runtime overrides:
 | `POLYLOGUE_BROWSER_CAPTURE_SPOOL_PATH` | `browser_capture_spool_path` | Receiver spool override. |
 | `POLYLOGUE_FORCE_PLAIN` | `force_plain` | Force plain output. |
 | `POLYLOGUE_THEME` | `theme` | `auto`, `dark`, or `light`. |
-| `NO_COLOR` | `no_color` | Disable color/plain terminal formatting. |
+| `NO_COLOR` | `no_color` | Standard no-color request; any non-empty value makes CLI output ANSI-free/plain. |
 | `VOYAGE_API_KEY` | `voyage_api_key` | Voyage credential; redacted and spend-gated. |
 | `POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS` | `embedding_enabled` | Enable daemon embedding convergence. |
 | `POLYLOGUE_OBSERVABILITY_ENABLED` | `observability_enabled` | Enable OTLP/observability HTTP ingestion. |
 | `POLYLOGUE_CREDENTIAL_PATH` | Drive auth | OAuth client JSON path. |
 | `POLYLOGUE_TOKEN_PATH` | Drive auth | OAuth token path. |
+
+### Theme and no-color policy
+
+Human-facing terminal output becomes plain when `--plain`,
+`POLYLOGUE_FORCE_PLAIN`, `NO_COLOR`, or a non-interactive terminal path requests
+it. Plain mode removes Rich layout and ANSI escapes before any color theme is
+applied. When rich rendering is allowed, `POLYLOGUE_THEME` or `[ui] theme`
+selects semantic tokens for terminal panels, code/diff highlighting, and HTML
+exports. Future palette sources such as pywal should feed those semantic tokens
+rather than adding one-off colors at call sites.
 
 ## Backup and Export
 

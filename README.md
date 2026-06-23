@@ -45,6 +45,24 @@ can agree on what is really running. For the narrated first run, see
 [docs/onboarding.md](docs/onboarding.md). Other install channels (Nix, Homebrew,
 container) are in [docs/installation.md](docs/installation.md).
 
+Ordinary Linux hosts can keep the tools isolated with `pipx` or a venv:
+
+```bash
+pipx install polylogue
+polylogue --help
+polylogue init
+polylogued run
+polylogued browser-capture status
+```
+
+Nix users can run the packaged apps without installing them globally:
+
+```bash
+nix run github:Sinity/polylogue -- --help
+nix run github:Sinity/polylogue#polylogued -- run
+nix run github:Sinity/polylogue#polylogued -- browser-capture status
+```
+
 ## Why this exists
 
 AI sessions are scattered across one JSON dump per vendor, one JSONL stream
@@ -282,8 +300,8 @@ Operators choose focused checks via the verification baseline:
 
 ```bash
 devtools verify --quick
-devtools lab scenario run archive-smoke --tier 0
-devtools lab scenario run reader-visual-smoke
+devtools lab smoke run archive-smoke --tier 0
+devtools lab smoke run reader-visual-smoke
 ```
 
 <!-- BEGIN GENERATED: docs-surface -->
