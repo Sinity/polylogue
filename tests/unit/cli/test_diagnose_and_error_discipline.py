@@ -66,6 +66,15 @@ class TestRootHelpDocumentsQueryFirst:
         # help reference.
         assert "<subcommand> --help" in result.output
 
+    def test_root_help_labels_product_roles(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli, ["--help"])
+        assert result.exit_code == 0
+        assert "Product roles:" in result.output
+        assert "Setup/demo/proof:" in result.output
+        assert "Operations:" in result.output
+        assert "Query actions:" in result.output
+        assert "polylogue ops status" in result.output
+
 
 # ---------------------------------------------------------------------------
 # Contract 2: --diagnose prints parser-decision banner on stderr
@@ -96,6 +105,14 @@ class TestDiagnoseBanner:
         assert "polylogue find invalid-xyz" in result.output
         assert "strict command floor will refuse it" in result.output
         assert "interpreting as search query" not in result.output
+
+    def test_status_strict_floor_points_to_ops_status(self, runner: CliRunner) -> None:
+        """The natural root status instinct should point at the real owner."""
+        result = runner.invoke(cli, ["status"])
+        assert result.exit_code == 2
+        assert "No such command 'status'." in result.output
+        assert "polylogue ops status" in result.output
+        assert "polylogue find status" in result.output
 
     def test_diagnose_banner_on_matched_subcommand(
         self,
@@ -174,6 +191,12 @@ class TestUsageErrorHints:
         assert hint is not None
         assert "polylogue find foo" in hint
         assert "polylogue --help" in hint
+
+    def test_actionable_hint_for_root_status(self) -> None:
+        hint = actionable_hint_for_usage_error("No such command 'status'.")
+        assert hint is not None
+        assert "polylogue ops status" in hint
+        assert "polylogue find status" in hint
 
     def test_actionable_hint_for_strict_floor_message_extracts_command_only(self) -> None:
         hint = actionable_hint_for_usage_error(

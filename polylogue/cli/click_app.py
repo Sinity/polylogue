@@ -288,6 +288,12 @@ def cli(
         routed your invocation.
 
     \b
+    Product roles:
+        Setup/demo/proof:  config, init, import, demo, tutorial
+        Operations:        polylogue ops status, ops diagnostics, ops maintenance, ops backup
+        Query actions:     find QUERY then read|select|mark|analyze|delete|continue
+
+    \b
     Query mode (default):
         polylogue find "search terms"
         polylogue --origin claude-ai-export --since "last week" find "search terms"
