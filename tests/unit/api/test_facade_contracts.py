@@ -670,6 +670,38 @@ async def test_facets_returns_typed_envelope_on_empty_archive(tmp_path: Path) ->
         await archive.close()
 
 
+def test_archive_facet_buckets_count_unique_sessions_for_duplicate_hits() -> None:
+    """Facet buckets count sessions, not duplicate per-message search hits."""
+    from types import SimpleNamespace
+
+    from polylogue.api.archive import _archive_facet_buckets
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
+
+    summary = ArchiveSessionSummary(
+        session_id="claude-ai-export:conv-alpha",
+        native_id="conv-alpha",
+        origin="claude-ai-export",
+        provider=Provider.CLAUDE_AI,
+        title="Alpha",
+        created_at=None,
+        updated_at=None,
+        message_count=2,
+        word_count=4,
+        tags=("work",),
+    )
+    archive = SimpleNamespace(
+        list_summaries=lambda limit: [summary, summary],
+        _conn=None,
+    )
+
+    result = _archive_facet_buckets(archive, None, include_deferred=False)
+
+    assert result.total_sessions == 1
+    assert result.total_messages == 2
+    assert result.providers == {"claude-ai-export": 1}
+    assert result.tags == {"work": 1}
+
+
 # ---------------------------------------------------------------------------
 # 5. Happy path on a seeded archive
 # ---------------------------------------------------------------------------
