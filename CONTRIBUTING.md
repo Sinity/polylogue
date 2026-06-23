@@ -169,12 +169,13 @@ Pull requests should:
 - use a conventional title like `feat: add X` or `fix(cli): correct Y`
 - treat that title as the final squash-merge commit subject on `master`
 - explain the problem, solution, verification, and any remaining risk or follow-up
-- link a related issue with `Ref #NNN` or `Closes #NNN` when one exists
+- link a related issue with neutral wording such as `Ref #NNN` when one exists
 - record the verification commands that were actually run
 - update docs, config, and governance when behavior or workflow changes
 
-Use `Ref #NNN` when the issue should stay open after merge, and `Closes #NNN`
-when the merge should close it.
+Use `Ref #NNN` by default. Do not use GitHub resolver keywords in PR bodies
+or comments unless the operator explicitly asks for that exact PR to change
+that exact issue's GitHub state.
 
 ## Documentation Site Previews
 

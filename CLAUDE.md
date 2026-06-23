@@ -18,8 +18,10 @@ agent behavior.
 
 Open an issue before starting work that is non-trivial, spans multiple
 PRs, or introduces architectural decisions. The issue defines scope and
-acceptance criteria. Reference it from the PR with `Ref #NNN` or
-`Closes #NNN`.
+acceptance criteria. Reference it from the PR with neutral wording such
+as `Ref #NNN`. Do not use GitHub resolver keywords in agent-authored PR
+bodies or comments unless the user explicitly asks for that exact PR to
+change that exact issue's GitHub state.
 
 ### Verification before push
 
