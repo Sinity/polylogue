@@ -555,6 +555,11 @@ archive.</li>
 <li>Schema bumps are deletes-then-defines, never deltas. A schema change
 edits the owning tier DDL/version and documents the re-ingest expectation.
 No upgrade helpers are added for the bump.</li>
+<li>Index schema version 5 adds <code>messages.material_origin</code> plus authored-user
+aggregate columns on <code>sessions</code>. Existing index tiers must be rebuilt from
+source evidence so Claude Code <code>role=user</code> protocol/context/generated-pack
+rows move out of authored-user accounting while provider-role counts remain
+available.</li>
 <li>Provider schemas (the parsing/validation surface, distinct from the
 storage schema) are still regenerated fresh via
 <code>devtools lab schema generate</code> and promoted via <code>devtools lab schema promote</code>.</li>
