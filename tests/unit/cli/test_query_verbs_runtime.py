@@ -72,6 +72,7 @@ def test_read_all_and_analyze_count_update_parent_request() -> None:
                 None,
                 True,
                 (),
+                (),
                 None,
                 7,
                 0,
@@ -119,6 +120,7 @@ def test_read_all_and_analyze_count_update_parent_request() -> None:
                 "json",
                 out_path,
                 True,
+                (),
                 (),
                 None,
                 None,
@@ -190,6 +192,7 @@ def test_read_direct_ref_emits_shared_resolution_payload(capsys: pytest.CaptureF
             out_path=None,
             export_all=False,
             message_role=(),
+            material_origin=(),
             message_type=None,
             limit=None,
             offset=0,
@@ -329,6 +332,7 @@ def _read_verb_kwargs(**overrides: object) -> dict[str, object]:
         "out_path": None,
         "export_all": False,
         "message_role": (),
+        "material_origin": (),
         "message_type": None,
         "limit": None,
         "offset": 0,
@@ -355,6 +359,7 @@ def _read_verb_kwargs(**overrides: object) -> dict[str, object]:
         "no_file_reads": False,
         "prose_only": False,
         "fields": None,
+        "show_views": False,
     }
     defaults.update(overrides)
     return defaults

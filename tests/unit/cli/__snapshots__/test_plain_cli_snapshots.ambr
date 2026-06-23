@@ -9,7 +9,7 @@
   '''
   {
     "avg_messages_per_session": 5.0,
-    "db_size_bytes": 536576,
+    "db_size_bytes": 552960,
     "embedded_messages": 0,
     "embedded_sessions": 0,
     "embedding_coverage_percent": 0.0,
@@ -18,6 +18,13 @@
     "embedding_newest_at": null,
     "embedding_oldest_at": null,
     "embedding_readiness_status": "none",
+    "material_origins": {
+      "assistant_authored": 4,
+      "human_authored": 6
+    },
+    "message_types": {
+      "message": 10
+    },
     "messages_missing_embedding_provenance": 0,
     "mode": "stats",
     "origin": null,
@@ -28,6 +35,10 @@
     "pending_embedding_sessions": 0,
     "query": null,
     "retrieval_ready": false,
+    "role_counts": {
+      "assistant": 4,
+      "user": 6
+    },
     "stale_embedding_messages": 0,
     "total_attachments": 0,
     "total_messages": 10,
@@ -112,15 +123,18 @@
     "tags": {},
     "repos": {},
     "cwd_prefixes": {},
+    "role_counts": {},
     "message_types": {
       "message": 10
     },
+    "material_origins": {},
     "action_types": {},
     "has_flags": {
       "has_tool_use": 0,
       "has_thinking": 0,
       "has_paste": 0
     },
+    "omitted_facet_counts": {},
     "time_range": null,
     "total_sessions": 2,
     "total_messages": 10,
@@ -130,15 +144,18 @@
       },
       "tags": {},
       "repos": {},
+      "role_counts": {},
       "message_types": {
         "message": 10
       },
+      "material_origins": {},
       "action_types": {},
       "has_flags": {
         "has_tool_use": 0,
         "has_thinking": 0,
         "has_paste": 0
       },
+      "omitted": {},
       "total_sessions": 2,
       "total_messages": 10
     },
@@ -148,15 +165,18 @@
       },
       "tags": {},
       "repos": {},
+      "role_counts": {},
       "message_types": {
         "message": 10
       },
+      "material_origins": {},
       "action_types": {},
       "has_flags": {
         "has_tool_use": 0,
         "has_thinking": 0,
         "has_paste": 0
       },
+      "omitted": {},
       "total_sessions": 2,
       "total_messages": 10
     },
@@ -280,9 +300,9 @@
       "index": {
         "path": "<PATH>",
         "exists": true,
-        "size_bytes": 536576,
-        "expected_user_version": 5,
-        "user_version": 5,
+        "size_bytes": 552960,
+        "expected_user_version": 6,
+        "user_version": 6,
         "version_status": "ok",
         "table_counts": {
           "sessions": 2,

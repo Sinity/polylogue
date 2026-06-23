@@ -287,6 +287,7 @@ def cli(
     \b
     Product roles:
         Setup/demo/proof:  config, init, import, demo, tutorial
+        Reader/TUI:        dashboard
         Operations:        polylogue ops status, ops diagnostics, ops maintenance, ops backup
         Query actions:     find QUERY then read|select|mark|analyze|delete|continue
 

@@ -23,6 +23,7 @@ Usage: polylogue [OPTIONS] COMMAND [ARGS]...
 
   Product roles:
       Setup/demo/proof:  config, init, import, demo, tutorial
+      Reader/TUI:        dashboard
       Operations:        polylogue ops status, ops diagnostics, ops maintenance, ops backup
       Query actions:     find QUERY then read|select|mark|analyze|delete|continue
 
@@ -173,7 +174,7 @@ Commands:
   analyze
   config     Show resolved Polylogue configuration with precedence sources.
   continue   Compile a successor-agent continuation report.
-  dashboard  Open the local dashboard.
+  dashboard  Launch the terminal dashboard TUI.
   delete     Delete matched sessions.
   demo       Seed and verify the deterministic demo archive.
   import     Import sessions from configured sources.
@@ -182,7 +183,7 @@ Commands:
   ops        Run operational archive and daemon commands.
   read       Read matched sessions (route to view/destination).
   select
-  tutorial   Interactive first-run walk-through.
+  tutorial   Inspect first-run setup state.
 ```
 
 ## Analyze Verb
@@ -663,10 +664,14 @@ Options:
 ```text
 Usage: polylogue dashboard [OPTIONS]
 
-  Launch the dashboard TUI.
+  Launch the terminal dashboard TUI with explicit runtime evidence.
 
 Options:
-  --help  Show this message and exit.
+  --status              Print dashboard launch/readiness evidence without
+                        starting the TUI.
+  --format [text|json]  Output format for --status and launch evidence.
+                        [default: text]
+  --help                Show this message and exit.
 ```
 
 ## Tutorial
@@ -674,7 +679,7 @@ Options:
 ```text
 Usage: polylogue tutorial [OPTIONS]
 
-  Walk through a fresh polylogue install end-to-end.
+  Inspect first-run setup state and print the next concrete action.
 
   Each stage is idempotent — already-satisfied stages are marked ``[skip]``.
   Use ``--non-interactive`` to print the current state without prompting

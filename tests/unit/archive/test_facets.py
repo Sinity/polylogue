@@ -99,6 +99,16 @@ class TestComputeIdf:
         idf = compute_idf(buckets)
         assert math.isclose(idf["origins"]["x"], 0.0)
 
+    def test_idf_ignores_omitted_noise_counts(self) -> None:
+        buckets = FacetBuckets(
+            repos={"polylogue": 2},
+            omitted={"repos": 10},
+            total_sessions=12,
+        )
+        idf = compute_idf(buckets)
+        assert idf["repos"] == {"polylogue": math.log(12 / 2)}
+        assert "omitted" not in idf
+
 
 class TestFacetsResponseEnvelope:
     def test_carries_scoped_and_global_buckets_with_alias(self) -> None:
@@ -125,6 +135,7 @@ class TestFacetsResponseEnvelope:
             "material_origins": {},
             "action_types": {},
             "has_flags": {},
+            "omitted": {},
             "total_sessions": 1,
             "total_messages": 0,
         }

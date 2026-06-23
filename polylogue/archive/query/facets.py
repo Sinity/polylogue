@@ -45,6 +45,7 @@ class FacetBuckets:
     message_types: dict[str, int] = field(default_factory=dict)
     action_types: dict[str, int] = field(default_factory=dict)
     has_flags: dict[str, int] = field(default_factory=dict)
+    omitted: dict[str, int] = field(default_factory=dict)
     total_sessions: int = 0
     total_messages: int = 0
 

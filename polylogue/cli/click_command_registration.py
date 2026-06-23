@@ -92,7 +92,7 @@ _SHORT_HELP: dict[str, str] = {
     "check": "Run archive health checks and repairs.",
     "completions": "Emit shell completion setup for polylogue.",
     "config": "Show configuration paths and resolved settings.",
-    "dashboard": "Open the local dashboard.",
+    "dashboard": "Launch the terminal dashboard TUI.",
     "demo": "Seed and verify the deterministic demo archive.",
     "debt": "List archive work that needs operator attention.",
     "diagnostics": "Run archive and session diagnostics.",
@@ -105,7 +105,7 @@ _SHORT_HELP: dict[str, str] = {
     "paths": "Print canonical archive paths and bind-mount detection.",
     "reset": "Reset local archive state.",
     "status": "Show daemon and archive status.",
-    "tutorial": "Interactive first-run walk-through.",
+    "tutorial": "Inspect first-run setup state.",
 }
 
 _COMMAND_NAMES: dict[str, str] = {

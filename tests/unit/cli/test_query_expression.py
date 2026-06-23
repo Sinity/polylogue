@@ -4597,6 +4597,7 @@ class TestFieldRegistry:
         "action": ("action:file_edit", "action_terms", ("file_edit",)),
         "has": ("has:paste", "filter_has_paste", True),
         "id": ("id:abc123", "session_id", "abc123"),
+        "session": ("session:claude-code-session:abc123", "session_id", "claude-code-session:abc123"),
         "title": ("title:refactor", "title", "refactor"),
         "since": ("since:7d", "since", "7 days ago"),
         "until": ("until:2024-01-15", "until", "2024-01-15"),
