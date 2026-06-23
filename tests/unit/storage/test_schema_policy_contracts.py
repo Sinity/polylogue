@@ -137,6 +137,8 @@ def test_matching_version_database_ensures_runtime_indexes(tmp_path: Path) -> No
             "idx_session_events_source_message",
             "idx_session_agent_policies_source_message",
             "idx_session_provider_usage_events_source_message",
+            "idx_messages_message_type",
+            "idx_messages_material_origin",
         ):
             conn.execute(f"DROP INDEX {index_name}")
         _ensure_schema(conn)
@@ -144,6 +146,8 @@ def test_matching_version_database_ensures_runtime_indexes(tmp_path: Path) -> No
             ("session_events", "idx_session_events_source_message"),
             ("session_agent_policies", "idx_session_agent_policies_source_message"),
             ("session_provider_usage_events", "idx_session_provider_usage_events_source_message"),
+            ("messages", "idx_messages_message_type"),
+            ("messages", "idx_messages_material_origin"),
         ):
             assert any(row[1] == index_name for row in conn.execute(f"PRAGMA index_list({table})"))
     finally:

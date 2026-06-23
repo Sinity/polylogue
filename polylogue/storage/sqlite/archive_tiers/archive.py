@@ -3977,50 +3977,86 @@ class ArchiveStore:
             """,
             params,
         ).fetchone()
-        role_rows = self._conn.execute(
+        role_row = self._conn.execute(
             f"""
-            SELECT COALESCE(NULLIF(m.role, ''), 'unknown') AS group_key,
-                   COUNT(*) AS count
+            SELECT COALESCE(SUM(s.user_message_count), 0) AS user_count,
+                   COALESCE(SUM(s.assistant_message_count), 0) AS assistant_count,
+                   COALESCE(SUM(s.system_message_count), 0) AS system_count,
+                   COALESCE(SUM(s.tool_message_count), 0) AS tool_count,
+                   COALESCE(SUM(s.message_count), 0)
+                     - COALESCE(SUM(s.user_message_count), 0)
+                     - COALESCE(SUM(s.assistant_message_count), 0)
+                     - COALESCE(SUM(s.system_message_count), 0)
+                     - COALESCE(SUM(s.tool_message_count), 0) AS unknown_count
             FROM sessions s
-            JOIN messages m ON m.session_id = s.session_id
             {where}
-            GROUP BY group_key
-            ORDER BY count DESC, group_key
             """,
             params,
-        ).fetchall()
-        message_type_rows = self._conn.execute(
-            f"""
-            SELECT COALESCE(NULLIF(m.message_type, ''), 'unknown') AS group_key,
-                   COUNT(*) AS count
-            FROM sessions s
-            JOIN messages m ON m.session_id = s.session_id
-            {where}
-            GROUP BY group_key
-            ORDER BY count DESC, group_key
-            """,
-            params,
-        ).fetchall()
-        material_origin_rows = self._conn.execute(
-            f"""
-            SELECT COALESCE(NULLIF(m.material_origin, ''), 'unknown') AS group_key,
-                   COUNT(*) AS count
-            FROM sessions s
-            JOIN messages m ON m.session_id = s.session_id
-            {where}
-            GROUP BY group_key
-            ORDER BY count DESC, group_key
-            """,
-            params,
-        ).fetchall()
+        ).fetchone()
+        if where:
+            message_type_rows = self._conn.execute(
+                f"""
+                SELECT m.message_type AS group_key,
+                       COUNT(*) AS count
+                FROM sessions s
+                JOIN messages m ON m.session_id = s.session_id
+                {where}
+                GROUP BY m.message_type
+                ORDER BY count DESC, m.message_type
+                """,
+                params,
+            ).fetchall()
+            material_origin_rows = self._conn.execute(
+                f"""
+                SELECT m.material_origin AS group_key,
+                       COUNT(*) AS count
+                FROM sessions s
+                JOIN messages m ON m.session_id = s.session_id
+                {where}
+                GROUP BY m.material_origin
+                ORDER BY count DESC, m.material_origin
+                """,
+                params,
+            ).fetchall()
+        else:
+            message_type_rows = self._conn.execute(
+                """
+                SELECT m.message_type AS group_key,
+                       COUNT(*) AS count
+                FROM messages m
+                GROUP BY m.message_type
+                ORDER BY count DESC, m.message_type
+                """
+            ).fetchall()
+            material_origin_rows = self._conn.execute(
+                """
+                SELECT m.material_origin AS group_key,
+                       COUNT(*) AS count
+                FROM messages m
+                GROUP BY m.material_origin
+                ORDER BY count DESC, m.material_origin
+                """
+            ).fetchall()
         return ArchiveStats(
             total_sessions=int(row["total_sessions"] or 0) if row is not None else 0,
             total_messages=int(row["total_messages"] or 0) if row is not None else 0,
             total_attachments=int(attachment_row["total_attachments"] or 0) if attachment_row is not None else 0,
             origins={str(provider_row["origin"]): int(provider_row["count"] or 0) for provider_row in provider_rows},
-            role_counts={str(item["group_key"]): int(item["count"] or 0) for item in role_rows},
-            message_types={str(item["group_key"]): int(item["count"] or 0) for item in message_type_rows},
-            material_origins={str(item["group_key"]): int(item["count"] or 0) for item in material_origin_rows},
+            role_counts={
+                key: count
+                for key, count in (
+                    ("tool", int(role_row["tool_count"] or 0) if role_row is not None else 0),
+                    ("assistant", int(role_row["assistant_count"] or 0) if role_row is not None else 0),
+                    ("user", int(role_row["user_count"] or 0) if role_row is not None else 0),
+                    ("system", int(role_row["system_count"] or 0) if role_row is not None else 0),
+                    ("unknown", int(role_row["unknown_count"] or 0) if role_row is not None else 0),
+                )
+                if count > 0
+            },
+            message_types={str(item["group_key"] or "unknown"): int(item["count"] or 0) for item in message_type_rows},
+            material_origins={
+                str(item["group_key"] or "unknown"): int(item["count"] or 0) for item in material_origin_rows
+            },
             db_size_bytes=self.index_db_path.stat().st_size if self.index_db_path.exists() else 0,
         )
 

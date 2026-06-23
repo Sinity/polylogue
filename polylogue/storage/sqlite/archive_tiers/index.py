@@ -112,6 +112,12 @@ ON messages(session_id, role);
 CREATE INDEX IF NOT EXISTS idx_messages_session_material_origin
 ON messages(session_id, material_origin);
 
+CREATE INDEX IF NOT EXISTS idx_messages_message_type
+ON messages(message_type);
+
+CREATE INDEX IF NOT EXISTS idx_messages_material_origin
+ON messages(material_origin);
+
 CREATE INDEX IF NOT EXISTS idx_messages_active_path
 ON messages(session_id, is_active_path, position)
 WHERE is_active_path = 1;

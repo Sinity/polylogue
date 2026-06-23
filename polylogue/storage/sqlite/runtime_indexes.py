@@ -22,6 +22,14 @@ _RUNTIME_INDEX_SQL: tuple[str, ...] = (
     ON session_provider_usage_events(source_message_id)
     WHERE source_message_id IS NOT NULL
     """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_messages_message_type
+    ON messages(message_type)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_messages_material_origin
+    ON messages(material_origin)
+    """,
 )
 
 
