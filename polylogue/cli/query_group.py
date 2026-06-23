@@ -116,6 +116,12 @@ def _bare_root_error_message(group: click.Group, query_terms: tuple[str, ...]) -
     if len(query_terms) == 1:
         token = query_terms[0].strip()
         if token:
+            if token == "status":
+                lines += [
+                    "",
+                    "Status is an operational command. Try:",
+                    "    polylogue ops status",
+                ]
             from polylogue.cli.parser_diagnostics import looks_like_subcommand_typo
 
             suggestions = looks_like_subcommand_typo(token, sorted(group.commands.keys()))

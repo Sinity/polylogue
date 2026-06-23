@@ -45,6 +45,12 @@ def actionable_hint_for_usage_error(message: str) -> str | None:
 
         match = re.search(r"No such command ['\"]([^'\"]+)['\"]", msg)
         bad = match.group(1) if match is not None else msg.split("No such command")[-1].strip().split()[0]
+        if bad == "status":
+            return (
+                "Hint: `status` is an operational command. "
+                "Run `polylogue ops status` for daemon/archive status, or "
+                "`polylogue find status` if you meant to search for the word."
+            )
         return (
             f"Hint: `{bad}` is not a registered subcommand. "
             f"Did you mean to search? Try `polylogue find {bad}` "
