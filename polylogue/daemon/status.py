@@ -290,9 +290,9 @@ def live_source_status_payload(sources: tuple[WatchSource, ...]) -> JSONDocument
 def browser_capture_status_payload(
     spool_path: Path | None = None,
     *,
-    include_spool_path: bool = True,
+    include_spool_path: bool = False,
 ) -> JSONDocument:
-    """Return status for the browser-capture receiver component."""
+    """Return safe status for the browser-capture receiver component."""
     cfg_default = BrowserCaptureReceiverConfig.default()
     if spool_path is not None:
         config = BrowserCaptureReceiverConfig(
@@ -312,9 +312,7 @@ def browser_capture_status_payload(
 
 def browser_capture_status_public_payload(spool_path: Path | None = None) -> JSONDocument:
     """Return browser-capture status safe for the daemon web/status API."""
-    payload = dict(browser_capture_status_payload(spool_path))
-    payload.pop("spool_path", None)
-    return json_document(payload)
+    return browser_capture_status_payload(spool_path, include_spool_path=False)
 
 
 def _db_size_info() -> dict[str, object]:

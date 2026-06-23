@@ -21,7 +21,7 @@ def browser_capture_command() -> None:
 @click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
 def status_command(spool_path: Path | None, output_format: str | None) -> None:
     """Show receiver configuration and capture-spool target."""
-    payload = browser_capture_status_payload(spool_path)
+    payload = browser_capture_status_payload(spool_path, include_spool_path=True)
     if output_format == "json":
         click.echo(dumps(payload))
         return

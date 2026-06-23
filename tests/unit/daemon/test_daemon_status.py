@@ -13,6 +13,7 @@ from polylogue.core.json import JSONDocument
 from polylogue.daemon import status as status_module
 from polylogue.daemon.status import (
     _insight_freshness_info,
+    browser_capture_status_payload,
     build_daemon_status,
     daemon_status_payload,
     format_daemon_status_lines,
@@ -194,7 +195,7 @@ def test_build_daemon_status_reports_failed_live_cursor_files(tmp_path: Path) ->
     assert status.live_cursor.failing_files[0].next_retry_at is not None
 
 
-def test_daemon_status_uses_default_browser_capture_spool(
+def test_daemon_status_redacts_default_browser_capture_spool(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -210,10 +211,27 @@ def test_daemon_status_uses_default_browser_capture_spool(
     assert payload["browser_capture_active"] is True
     browser_capture = payload["browser_capture"]
     assert isinstance(browser_capture, dict)
-    assert browser_capture["spool_path"] == str(expected_spool)
+    assert browser_capture["spool_ready"] is True
+    assert "spool_path" not in browser_capture
     component_state = payload["component_state"]
     assert isinstance(component_state, dict)
     assert component_state["browser_capture"] == "running"
+
+
+def test_browser_capture_status_payload_can_include_spool_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    expected_spool = tmp_path / "browser-capture"
+    monkeypatch.setattr(
+        BrowserCaptureReceiverConfig,
+        "default",
+        classmethod(lambda cls: BrowserCaptureReceiverConfig(spool_path=expected_spool)),
+    )
+
+    payload = browser_capture_status_payload(include_spool_path=True)
+
+    assert payload["spool_path"] == str(expected_spool)
 
 
 def test_daemon_status_honors_explicit_disabled_browser_capture(
