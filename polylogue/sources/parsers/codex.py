@@ -147,6 +147,24 @@ def _optional_int_field(record: dict[str, object], *keys: str) -> int | None:
     return None
 
 
+def _codex_token_usage_payload(record: dict[str, object] | None) -> dict[str, int]:
+    if not record:
+        return {}
+    usage: dict[str, int] = {}
+    field_aliases = {
+        "input_tokens": ("input_tokens", "inputTokenCount"),
+        "cached_input_tokens": ("cached_input_tokens", "cache_read_input_tokens", "cached_tokens"),
+        "output_tokens": ("output_tokens", "outputTokenCount"),
+        "reasoning_output_tokens": ("reasoning_output_tokens", "reasoning_tokens"),
+        "total_tokens": ("total_tokens", "totalTokenCount"),
+    }
+    for public_key, aliases in field_aliases.items():
+        value = _optional_int_field(record, *aliases)
+        if value is not None:
+            usage[public_key] = value
+    return usage
+
+
 def _turn_context_payload(payload: dict[str, object]) -> dict[str, object]:
     nested = payload.get("turn_context")
     if isinstance(nested, dict):
@@ -239,6 +257,23 @@ def _compact_response_payload(payload: dict[str, object], *, index: int) -> dict
     cwd = _extract_cwd(payload)
     if cwd:
         compact["cwd"] = cwd
+    if compact.get("type") == "token_count":
+        info = _dict_record(payload.get("info")) or {}
+        last_usage = _codex_token_usage_payload(_dict_record(info.get("last_token_usage")))
+        total_usage = _codex_token_usage_payload(_dict_record(info.get("total_token_usage")))
+        if not last_usage:
+            last_usage = _codex_token_usage_payload(_dict_record(payload.get("last_token_usage")) or payload)
+        if not total_usage:
+            total_usage = _codex_token_usage_payload(_dict_record(payload.get("total_token_usage")))
+        if last_usage:
+            compact["last_token_usage"] = last_usage
+        if total_usage:
+            compact["total_token_usage"] = total_usage
+        context_window = _optional_int_field(info, "model_context_window") or _optional_int_field(
+            payload, "model_context_window"
+        )
+        if context_window is not None:
+            compact["model_context_window"] = context_window
     return compact
 
 
