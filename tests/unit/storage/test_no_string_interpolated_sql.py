@@ -196,6 +196,7 @@ _TRUSTED_IDENTIFIER_NAMES: frozenset[str] = frozenset(
         "base_select",  # local literal SELECT template; dynamic values stay bound
         "quoted",  # double-quote escaped identifier from a closed table list
         "source_filter",  # local literal predicate fragment plus bound value
+        "prefix_clause",  # local session-id prefix bounds predicate; values bound
         "source_alias",  # attached schema alias returned by _ensure_source_tier_attached
         "schema",  # closed SQLite schema alias
         "tags_relation",  # archive-local table name or closed user/archive tag UNION relation

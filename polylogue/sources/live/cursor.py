@@ -181,6 +181,12 @@ def _convergence_debt_status(*, stage: str, error: str | None) -> str:
     return "failed"
 
 
+def _convergence_debt_priority(*, stage: str, subject_type: str, subject_id: str) -> int:
+    if stage == "fts" and subject_type == "fts_surface" and subject_id == "messages_fts":
+        return 100
+    return 0
+
+
 def _origin_value_for_source_name(source_name: str | None) -> str | None:
     if source_name is None:
         return None
@@ -353,7 +359,11 @@ class CursorStore:
                     target_type=subject_type,
                     target_id=subject_id,
                     status=_convergence_debt_status(stage=stage, error=error),
-                    priority=0,
+                    priority=_convergence_debt_priority(
+                        stage=stage,
+                        subject_type=subject_type,
+                        subject_id=subject_id,
+                    ),
                     attempts=attempts_delta,
                     last_error=error,
                     next_retry_at=retry_at.isoformat(),
@@ -1156,7 +1166,7 @@ class CursorStore:
                     next_retry_at,
                     materializer_version
                 FROM convergence_debt
-                ORDER BY updated_at_ms DESC, priority DESC, debt_id DESC
+                ORDER BY priority DESC, updated_at_ms DESC, debt_id DESC
                 LIMIT ?
                 """,
                 (limit,),

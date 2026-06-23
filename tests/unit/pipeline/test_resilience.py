@@ -706,6 +706,12 @@ def test_transform_with_tool_use_message_keeps_non_empty_message_hash(tmp_path: 
 
 
 def test_transform_deduplicates_materialized_message_rows_by_primary_key(tmp_path: Path) -> None:
+    """Duplicate provider-native ids must not collapse distinct archive rows.
+
+    Provider message ids are only trustworthy while unique within a session.
+    Large Codex streams can reuse them, so the writer stores duplicate native ids
+    as NULL and falls back to position/variant archive ids.
+    """
     session = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="duplicate-message-conv",
@@ -739,19 +745,29 @@ def test_transform_deduplicates_materialized_message_rows_by_primary_key(tmp_pat
             content_hash=hashlib.sha256(b"duplicate-message-conv").hexdigest(),
             raw_id="raw-1",
         )
-        message_rows = conn.execute("SELECT native_id FROM messages WHERE session_id = ?", (session_id,)).fetchall()
-        block_rows = conn.execute("SELECT text FROM blocks WHERE session_id = ?", (session_id,)).fetchall()
+        message_rows = conn.execute(
+            "SELECT message_id, native_id, position FROM messages WHERE session_id = ? ORDER BY position",
+            (session_id,),
+        ).fetchall()
+        block_rows = conn.execute(
+            "SELECT message_id, text FROM blocks WHERE session_id = ? ORDER BY message_id",
+            (session_id,),
+        ).fetchall()
         session_message_count = conn.execute(
             "SELECT message_count FROM sessions WHERE session_id = ?", (session_id,)
         ).fetchone()[0]
     finally:
         conn.close()
 
-    assert len(message_rows) == 1
-    assert message_rows[0]["native_id"] == "msg-1"
-    assert len(block_rows) == 1
-    assert block_rows[0]["text"] == "newer text"
-    assert session_message_count == 1
+    assert [(row["message_id"], row["native_id"], row["position"]) for row in message_rows] == [
+        (f"{session_id}:0.0", None, 0),
+        (f"{session_id}:1.0", None, 1),
+    ]
+    assert [(row["message_id"], row["text"]) for row in block_rows] == [
+        (f"{session_id}:0.0", "older text"),
+        (f"{session_id}:1.0", "newer text"),
+    ]
+    assert session_message_count == 2
 
 
 def test_ingest_record_streams_codex_jsonl_without_full_envelope_decode(tmp_path: Path) -> None:

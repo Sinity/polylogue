@@ -433,4 +433,4 @@ def test_config_contract_guard_redacts_secret_values(tmp_path: Path, monkeypatch
     assert result.exit_code == 0, result.output
     assert secret not in output
     payload = json.loads(output)
-    assert payload["voyage_api_key"] == "<set>"
+    assert payload["values"]["voyage_api_key"]["value"] == "<set>"

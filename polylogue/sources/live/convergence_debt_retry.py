@@ -25,6 +25,8 @@ def convergence_debt_retry_at(
     archive_root: Path | None = None,
 ) -> datetime:
     now = datetime.now(UTC)
+    if subject_type == "fts_surface":
+        return now
     delay_s = convergence_debt_retry_delay_s(failure_count, error=error)
     fallback = datetime.fromtimestamp(now.timestamp() + delay_s, tz=UTC)
     if error != _HOT_INSIGHT_DEFERRED:

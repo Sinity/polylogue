@@ -9,7 +9,7 @@ import sqlite3
 import time
 import zipfile
 from collections.abc import Callable, Iterable
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -364,6 +364,45 @@ def test_cursor_syncs_convergence_debt_to_archive_ops_db(tmp_path: Path) -> None
     with sqlite3.connect(tmp_path / "ops.db") as conn:
         count = conn.execute("SELECT COUNT(*) FROM convergence_debt").fetchone()[0]
     assert count == 0
+
+
+@pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor", "polylogue.sources.live.convergence_debt_retry")
+def test_cursor_records_messages_fts_surface_debt_as_immediately_due(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+) -> None:
+    store = CursorStore(tmp_path / "live.sqlite")
+
+    store.record_convergence_debt(
+        stage="insights",
+        subject_type="session_id",
+        subject_id="conv-1",
+        error="profile stale",
+    )
+    frozen_clock.advance(1)
+    store.record_convergence_debt(
+        stage="fts",
+        subject_type="fts_surface",
+        subject_id="messages_fts",
+        error="startup found stale messages_fts freshness ledger",
+    )
+
+    debt = store.list_convergence_debt(limit=2)
+    assert [item.subject_id for item in debt] == ["messages_fts", "conv-1"]
+    retry_at = datetime.fromisoformat(debt[0].next_retry_at or "")
+    failed_at = datetime.fromisoformat(debt[0].last_failed_at)
+    assert debt[0].stage == "fts"
+    assert retry_at == failed_at
+
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        priority = conn.execute(
+            """
+            SELECT priority
+            FROM convergence_debt
+            WHERE stage = 'fts' AND target_type = 'fts_surface' AND target_id = 'messages_fts'
+            """,
+        ).fetchone()[0]
+    assert priority == 100
 
 
 def test_cursor_marks_running_attempts_abandoned_on_restart(tmp_path: Path) -> None:

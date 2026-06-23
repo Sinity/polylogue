@@ -115,13 +115,15 @@ def _ms_to_iso(value: object) -> str | None:
 def _row_to_raw_session(row: sqlite3.Row) -> RawSessionRecord:
     validation_status = _row_text(row, "validation_status")
     validation_mode = _row_text(row, "validation_mode")
+    blob_hash_value = _row_get(row, "blob_hash")
+    blob_hash = bytes(blob_hash_value).hex() if isinstance(blob_hash_value, (bytes, bytearray)) else None
     # raw_sessions carries a single ``origin`` column (#1743). The in-memory
     # record still exposes provider-wire ``source_name``/``payload_provider``;
     # both project from the stored origin.
     provider = provider_from_origin(Origin.from_string(row["origin"]))
     return RawSessionRecord(
         raw_id=row["raw_id"],
-        blob_hash=bytes(row["blob_hash"]).hex(),
+        blob_hash=blob_hash,
         payload_provider=provider,
         source_name=provider.value,
         source_path=row["source_path"],
