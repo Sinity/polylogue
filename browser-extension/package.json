@@ -11,6 +11,8 @@
     "validate": "node scripts/validate-manifest.mjs",
     "dev-loop-smoke": "node scripts/dev-loop-smoke.mjs",
     "dev-loop-browser-smoke": "node scripts/dev-loop-browser-smoke.mjs",
+    "dev-loop-provider-smoke": "node scripts/dev-loop-provider-smoke.mjs",
+    "dev-loop-live-provider-proof": "node scripts/dev-loop-live-provider-proof.mjs",
     "build": "node scripts/build.mjs",
     "screenshots": "node scripts/screenshots.mjs",
     "sync-version": "node scripts/build.mjs --sync-only"

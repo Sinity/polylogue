@@ -29,7 +29,7 @@ const ALLOWED_PERMISSIONS = new Set([
 const ALLOWED_HOST_GLOBS = [
   /^https:\/\/chatgpt\.com\/\*$/,
   /^https:\/\/claude\.ai\/\*$/,
-  /^http:\/\/127\.0\.0\.1:\d+\/\*$/,
+  /^http:\/\/127\.0\.0\.1\/\*$/,
 ];
 
 function fail(errors) {

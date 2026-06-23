@@ -375,13 +375,28 @@ def test_browser_plan_writes_local_extension_launch_artifacts(
     assert chrome[0] == "google-chrome-stable"
     assert f"--load-extension={plan['extension_root']}" in chrome
     assert f"--user-data-dir={plan['profile_dir']}" in chrome
+    live_proof = plan["live_provider_proof"]
+    assert live_proof["providers"] == ["chatgpt", "claude"]
+    assert live_proof["suggested_profile_dir"].endswith("-chrome-user-data")
+    assert "--browser-live-proof" in live_proof["commands"]["run_live_proof"]
+    copy_profile_template = live_proof["commands"]["copy_profile_template"]
+    assert "${POLYLOGUE_SOURCE_CHROME_USER_DATA_DIR:?" in copy_profile_template
+    assert "--exclude='Singleton*'" in copy_profile_template
 
     artifacts = plan["artifacts"]
     json_plan = Path(artifacts["json"])
     markdown_plan = Path(artifacts["markdown"])
+    live_checklist = Path(artifacts["live_proof_checklist"])
+    live_env_example = Path(artifacts["live_proof_env_example"])
     assert json_plan.is_file()
     assert markdown_plan.is_file()
-    assert "POLYLOGUE_BROWSER_CAPTURE_AUTH_TOKEN" in markdown_plan.read_text(encoding="utf-8")
+    assert live_checklist.is_file()
+    assert live_env_example.is_file()
+    assert Path(artifacts["live_proof_spool"]).is_dir()
+    markdown_text = markdown_plan.read_text(encoding="utf-8")
+    assert "POLYLOGUE_BROWSER_CAPTURE_AUTH_TOKEN" in markdown_text
+    assert "--browser-live-proof" in markdown_text
+    assert "POLYLOGUE_SOURCE_CHROME_USER_DATA_DIR" in live_env_example.read_text(encoding="utf-8")
     event_rows = [json.loads(line) for line in Path(artifacts["events"]).read_text(encoding="utf-8").splitlines()]
     assert event_rows[-1]["event_type"] == "browser_plan_written"
     assert event_rows[-1]["surface"] == "browser"
@@ -454,16 +469,16 @@ def test_browser_smoke_records_real_chrome_extension_artifacts(
         dev_loop, "_git_value", lambda args, *, cwd: "feature/dev-loop" if args[0] == "branch" else "abc1234"
     )
 
-    class Completed:
-        returncode = 0
-        stdout = '{"ok":true}\n'
-        stderr = ""
-
-    def fake_run(*args: object, **kwargs: object) -> Completed:
-        env_obj = kwargs.get("env")
-        if not isinstance(env_obj, dict) or "POLYLOGUE_BROWSER_SMOKE_OUT" not in env_obj:
-            return Completed()
-        env = env_obj
+    def fake_run_process_tree(
+        args: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        timeout_s: float,
+    ) -> dev_loop.ProcessResult:
+        assert args == ["node", "scripts/dev-loop-browser-smoke.mjs"]
+        assert cwd.name == "browser-extension"
+        assert timeout_s == 35
         output_path = Path(env["POLYLOGUE_BROWSER_SMOKE_OUT"])
         artifact_ref = "chatgpt/dev-loop-browser-smoke.json"
         artifact_path = output_path.parent / "browser-smoke-spool" / artifact_ref
@@ -480,9 +495,9 @@ def test_browser_smoke_records_real_chrome_extension_artifacts(
             ),
             encoding="utf-8",
         )
-        return Completed()
+        return dev_loop.ProcessResult(exit_code=0, stdout='{"ok":true}\n', stderr="", timed_out=False)
 
-    monkeypatch.setattr("devtools.dev_loop.subprocess.run", fake_run)
+    monkeypatch.setattr(dev_loop, "_run_process_tree", fake_run_process_tree)
 
     assert (
         dev_loop.main(
@@ -514,6 +529,258 @@ def test_browser_smoke_records_real_chrome_extension_artifacts(
     assert [row["event_type"] for row in event_rows[-2:]] == ["browser_smoke_requested", "browser_smoke_finished"]
     assert event_rows[-1]["surface"] == "browser"
     assert event_rows[-1]["payload"]["extension_id"] == "extension-id"
+
+
+def test_browser_provider_smoke_records_content_script_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(dev_loop, "system_service_status", lambda: {"active": False})
+    monkeypatch.setattr(
+        dev_loop,
+        "port_status",
+        lambda port: {"port": port, "connectable": False, "owner_count": 0, "owners": []},
+    )
+    monkeypatch.setattr(
+        dev_loop, "_git_value", lambda args, *, cwd: "feature/dev-loop" if args[0] == "branch" else "abc1234"
+    )
+
+    def fake_run_process_tree(
+        args: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        timeout_s: float,
+    ) -> dev_loop.ProcessResult:
+        assert args == ["node", "scripts/dev-loop-provider-smoke.mjs"]
+        assert cwd.name == "browser-extension"
+        assert timeout_s == 45
+        output_path = Path(env["POLYLOGUE_PROVIDER_SMOKE_OUT"])
+        spool_path = Path(env["POLYLOGUE_PROVIDER_SMOKE_SPOOL_DIR"])
+        providers = {
+            "chatgpt": ("chatgpt", "chatgpt-dom-v1", "chatgpt/dev-loop-provider-chatgpt.json"),
+            "claude": ("claude-ai", "claude-ai-dom-v1", "claude-ai/dev-loop-provider-claude.json"),
+        }
+        summaries: dict[str, object] = {}
+        for provider_key, (provider, adapter_name, artifact_ref) in providers.items():
+            artifact_path = spool_path / artifact_ref
+            artifact_path.parent.mkdir(parents=True, exist_ok=True)
+            artifact_path.write_text(json.dumps({"provider": provider, "ok": True}) + "\n", encoding="utf-8")
+            summaries[provider_key] = {
+                "ok": True,
+                "provider": provider,
+                "adapter_name": adapter_name,
+                "turn_count": 2,
+                "roles": ["user", "assistant"],
+                "capture_result": {
+                    "artifact_ref": artifact_ref,
+                    "receiver_request_id": f"{provider_key}-capture-request",
+                },
+                "archive_state": {
+                    "captured": True,
+                    "receiver_request_id": f"{provider_key}-archive-request",
+                },
+            }
+        output_path.write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "extension_id": "extension-id",
+                    "manifest": {"manifest_version": 3, "name": "Polylogue Browser Capture", "version": "0.1.0"},
+                    "privacy_posture": "deterministic fixture pages only; summary omits raw turn text",
+                    "providers": summaries,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return dev_loop.ProcessResult(exit_code=0, stdout='{"ok":true}\n', stderr="", timed_out=False)
+
+    monkeypatch.setattr(dev_loop, "_run_process_tree", fake_run_process_tree)
+
+    assert (
+        dev_loop.main(
+            [
+                "--json",
+                "--log-dir",
+                str(tmp_path / "dev-loop-logs"),
+                "--archive-root",
+                str(tmp_path / "archive"),
+                "--browser-provider-smoke",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    smoke = payload["browser_provider_smoke"]
+    assert smoke["ok"] is True
+    assert smoke["extension_id"] == "extension-id"
+    assert smoke["provider_statuses"] == {"chatgpt": True, "claude": True}
+    assert smoke["artifact_refs"] == {
+        "chatgpt": "chatgpt/dev-loop-provider-chatgpt.json",
+        "claude": "claude-ai/dev-loop-provider-claude.json",
+    }
+    assert Path(smoke["artifact_paths"]["chatgpt"]).is_file()
+    assert Path(smoke["artifact_paths"]["claude"]).is_file()
+    artifacts = smoke["artifacts"]
+    assert Path(artifacts["summary"]).is_file()
+    assert Path(artifacts["profile"]).is_dir()
+    assert Path(artifacts["spool"]).is_dir()
+    event_rows = [
+        json.loads(line)
+        for line in Path(payload["preflight"]["artifacts"]["dev_events"]).read_text(encoding="utf-8").splitlines()
+    ]
+    assert [row["event_type"] for row in event_rows[-2:]] == [
+        "browser_provider_smoke_requested",
+        "browser_provider_smoke_finished",
+    ]
+    assert event_rows[-1]["surface"] == "browser_provider"
+    assert event_rows[-1]["payload"]["provider_statuses"] == {"chatgpt": True, "claude": True}
+
+
+def test_browser_live_proof_records_operator_local_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(dev_loop, "system_service_status", lambda: {"active": False})
+    monkeypatch.setattr(
+        dev_loop,
+        "port_status",
+        lambda port: {"port": port, "connectable": False, "owner_count": 0, "owners": []},
+    )
+    monkeypatch.setattr(
+        dev_loop, "_git_value", lambda args, *, cwd: "feature/dev-loop" if args[0] == "branch" else "abc1234"
+    )
+    profile_dir = tmp_path / "copied-profile"
+    profile_dir.mkdir()
+
+    def fake_run_process_tree(
+        args: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        timeout_s: float,
+    ) -> dev_loop.ProcessResult:
+        assert args == ["node", "scripts/dev-loop-live-provider-proof.mjs"]
+        assert cwd.name == "browser-extension"
+        assert timeout_s == 90.0
+        assert env["POLYLOGUE_LIVE_PROOF_PROFILE_DIR"] == str(profile_dir)
+        assert env["POLYLOGUE_LIVE_PROOF_PROVIDERS"] == "chatgpt,claude"
+        assert env["POLYLOGUE_LIVE_PROOF_CHATGPT_URL"] == "https://chatgpt.com/c/local-proof"
+        assert env["POLYLOGUE_LIVE_PROOF_CLAUDE_URL"] == "https://claude.ai/chat/local-proof"
+        output_path = Path(env["POLYLOGUE_LIVE_PROOF_OUT"])
+        spool_path = Path(env["POLYLOGUE_LIVE_PROOF_SPOOL_DIR"])
+        providers = {
+            "chatgpt": ("chatgpt", "chatgpt-dom-v1", "chatgpt/live-proof-chatgpt.json"),
+            "claude": ("claude-ai", "claude-ai-dom-v1", "claude-ai/live-proof-claude.json"),
+        }
+        summaries: dict[str, object] = {}
+        for provider_key, (provider, adapter_name, artifact_ref) in providers.items():
+            artifact_path = spool_path / artifact_ref
+            artifact_path.parent.mkdir(parents=True, exist_ok=True)
+            artifact_path.write_text(json.dumps({"provider": provider, "ok": True}) + "\n", encoding="utf-8")
+            summaries[provider_key] = {
+                "ok": True,
+                "provider": provider,
+                "adapter_name": adapter_name,
+                "turn_count": 3,
+                "roles": ["user", "assistant"],
+                "capture_result": {
+                    "artifact_ref": artifact_ref,
+                    "receiver_request_id": f"{provider_key}-capture-request",
+                },
+                "archive_state": {
+                    "captured": True,
+                    "receiver_request_id": f"{provider_key}-archive-request",
+                },
+            }
+        output_path.write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "extension_id": "extension-id",
+                    "manifest": {"manifest_version": 3, "name": "Polylogue Browser Capture", "version": "0.1.0"},
+                    "privacy_posture": "operator-local copied-profile proof; summary omits raw turn text",
+                    "providers": summaries,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return dev_loop.ProcessResult(exit_code=0, stdout='{"ok":true}\n', stderr="", timed_out=False)
+
+    monkeypatch.setattr(dev_loop, "_run_process_tree", fake_run_process_tree)
+
+    assert (
+        dev_loop.main(
+            [
+                "--json",
+                "--log-dir",
+                str(tmp_path / "dev-loop-logs"),
+                "--archive-root",
+                str(tmp_path / "archive"),
+                "--browser-live-proof",
+                "--browser-live-profile-dir",
+                str(profile_dir),
+                "--browser-live-chatgpt-url",
+                "https://chatgpt.com/c/local-proof",
+                "--browser-live-claude-url",
+                "https://claude.ai/chat/local-proof",
+                "--browser-live-wait-s",
+                "0",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    proof = payload["browser_live_proof"]
+    assert proof["ok"] is True
+    assert proof["extension_id"] == "extension-id"
+    assert proof["providers"] == ["chatgpt", "claude"]
+    assert proof["provider_statuses"] == {"chatgpt": True, "claude": True}
+    assert "provider_urls" not in proof
+    assert proof["provider_urls_redacted"] == {
+        "chatgpt": dev_loop._redact_live_provider_url("https://chatgpt.com/c/local-proof"),
+        "claude": dev_loop._redact_live_provider_url("https://claude.ai/chat/local-proof"),
+    }
+    assert proof["provider_url_sha256"] == {
+        "chatgpt": dev_loop._hash_text("https://chatgpt.com/c/local-proof"),
+        "claude": dev_loop._hash_text("https://claude.ai/chat/local-proof"),
+    }
+    assert proof["artifact_refs"] == {
+        "chatgpt": "chatgpt/live-proof-chatgpt.json",
+        "claude": "claude-ai/live-proof-claude.json",
+    }
+    assert Path(proof["artifact_paths"]["chatgpt"]).is_file()
+    assert Path(proof["artifact_paths"]["claude"]).is_file()
+    artifacts = proof["artifacts"]
+    assert Path(artifacts["summary"]).is_file()
+    assert Path(artifacts["profile"]) == profile_dir
+    assert Path(artifacts["spool"]).is_dir()
+    env_snapshot_text = Path(artifacts["env"]).read_text(encoding="utf-8")
+    env_snapshot = json.loads(env_snapshot_text)
+    assert env_snapshot["POLYLOGUE_LIVE_PROOF_CHATGPT_URL"] == dev_loop._redact_live_provider_url(
+        "https://chatgpt.com/c/local-proof"
+    )
+    assert env_snapshot["POLYLOGUE_LIVE_PROOF_CLAUDE_URL"] == dev_loop._redact_live_provider_url(
+        "https://claude.ai/chat/local-proof"
+    )
+    assert env_snapshot["POLYLOGUE_LIVE_PROOF_CHATGPT_URL_SHA256"] == dev_loop._hash_text(
+        "https://chatgpt.com/c/local-proof"
+    )
+    assert "local-proof" not in env_snapshot_text
+    event_rows = [
+        json.loads(line)
+        for line in Path(payload["preflight"]["artifacts"]["dev_events"]).read_text(encoding="utf-8").splitlines()
+    ]
+    assert [row["event_type"] for row in event_rows[-2:]] == [
+        "browser_live_proof_requested",
+        "browser_live_proof_finished",
+    ]
+    assert event_rows[-1]["surface"] == "browser_live"
+    assert event_rows[-1]["payload"]["provider_statuses"] == {"chatgpt": True, "claude": True}
 
 
 def test_tui_plan_writes_visual_inspection_artifacts(
@@ -678,6 +945,26 @@ def test_inspect_run_summarizes_dev_loop_artifacts(
     (run_dir / "polylogued.log").write_text("daemon log\n", encoding="utf-8")
     (run_dir / "polylogued.launch.json").write_text(json.dumps({"ok": True, "pid": 1234}), encoding="utf-8")
     (browser_dir / "browser-plan.json").write_text(json.dumps({"ok": True}), encoding="utf-8")
+    (browser_dir / "browser-provider-smoke.json").write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "provider_statuses": {"chatgpt": True, "claude": True},
+                "artifacts": {"summary": "/tmp/provider.summary"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (browser_dir / "browser-live-proof.json").write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "provider_statuses": {"chatgpt": True, "claude": True},
+                "artifacts": {"summary": "/tmp/live.summary"},
+            }
+        ),
+        encoding="utf-8",
+    )
     (browser_dir / "extension-smoke.json").write_text(
         json.dumps({"ok": False, "exit_code": 1, "duration_ms": 450, "artifacts": {"stderr": "/tmp/ext.stderr"}}),
         encoding="utf-8",
@@ -706,6 +993,8 @@ def test_inspect_run_summarizes_dev_loop_artifacts(
         "surface": "browser_extension",
     }
     assert payload["summaries"]["daemon_launch"]["pid"] == 1234
+    assert payload["summaries"]["browser_provider_smoke"]["provider_statuses"] == {"chatgpt": True, "claude": True}
+    assert payload["summaries"]["browser_live_proof"]["provider_statuses"] == {"chatgpt": True, "claude": True}
     assert payload["summaries"]["tui_plan"]["ok"] is True
     assert payload["failed_summaries"] == [
         {
@@ -725,6 +1014,8 @@ def test_inspect_run_summarizes_dev_loop_artifacts(
             "artifacts": {"stderr": "/tmp/cli.stderr"},
         }
     ]
+    assert payload["artifact_index"]["browser_provider_smoke"]["summary"] == "/tmp/provider.summary"
+    assert payload["artifact_index"]["browser_live_proof"]["summary"] == "/tmp/live.summary"
     assert payload["artifact_index"]["extension_smoke"]["stderr"] == "/tmp/ext.stderr"
     assert payload["artifact_index"]["terminal_captures"][0]["stderr"] == "/tmp/cli.stderr"
     assert payload["missing_artifacts"] == []

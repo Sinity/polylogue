@@ -78,6 +78,46 @@ artifacts or reading receiver state merely because it is open in the browser.
 If the receiver is unavailable, the extension surfaces an offline state instead
 of dropping content silently.
 
+## Branch-local extension proof modes
+
+Use `devtools workspace dev-loop` when changing the receiver, extension, or
+provider adapters from a branch. The branch-local loop owns three browser proof
+levels:
+
+- `--extension-smoke` imports the real background worker with a Chrome API mock
+  and proves receiver auth rejection, receiver status, and accepted capture
+  writes without a GUI browser.
+- `--browser-provider-smoke` loads the unpacked extension into headless
+  Chrome/Chromium, maps deterministic ChatGPT and Claude fixture pages onto
+  their real supported origins, and proves content-script capture plus
+  receiver request-id/artifact evidence without cookies.
+- `--browser-live-proof` is explicit operator-local evidence for authenticated
+  copied-profile work. It opens a visible Chrome/Chromium with an
+  operator-approved copied user-data-dir, live ChatGPT/Claude conversation
+  URLs, and the unpacked extension; it writes a redacted proof summary and keeps
+  any raw captured content inside ignored local receiver spool artifacts.
+
+Generate the copied-profile checklist first:
+
+```bash
+devtools workspace dev-loop --browser-plan
+```
+
+Then run the live proof only from a local workstation with a copied profile:
+
+```bash
+devtools workspace dev-loop --browser-live-proof \
+  --browser-live-profile-dir .local/browser-profiles/<run-id>-chrome-user-data \
+  --browser-live-chatgpt-url https://chatgpt.com/c/<conversation-id> \
+  --browser-live-claude-url https://claude.ai/chat/<conversation-id>
+```
+
+The live proof refuses CI by default and rejects common live profile roots or
+Chrome singleton lock files unless a local operator explicitly overrides the
+guardrail. Summaries redact source URLs and provider session ids, omit raw turn
+text, and record provider/adapter identity, role coverage, receiver request ids,
+and spool artifact refs.
+
 ## Current residual map for #1824 / #1847
 
 Fixed in this slice: default web origins no longer cross the local receiver
