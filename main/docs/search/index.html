@@ -1621,6 +1621,12 @@ same shape across daemon HTTP (<code>GET /api/facets</code>), MCP (<code>facets<
 buckets if the filter chain narrows away every value.</li>
 <li><code>global</code> — counts over the unfiltered archive. Always populated.</li>
 <li><code>scoped_to_query</code> — <code>true</code> whenever any filter narrowed the view.</li>
+<li><code>complete_families</code> / <code>deferred_families</code> / <code>family_status</code> — route-state
+metadata for each facet family. HTTP readers use this to distinguish an
+actually-empty bucket from a family intentionally not materialized in the
+current response.</li>
+<li><code>generated_at</code>, <code>stale</code>, <code>stale_age_s</code>, <code>budget_exceeded</code> — freshness and
+budget metadata surfaced to the web workbench.</li>
 <li><code>idf</code> — inverse-document-frequency per facet value, computed against
 the global universe. Higher = rarer = stronger signal; near zero =
 value appears in almost every session. Disable with
@@ -1630,6 +1636,16 @@ value appears in almost every session. Disable with
 mirror the <em>active</em> view (scoped when filtered, global otherwise) for
 backward compatibility with surfaces written before #1269. Consumers
 that need both views should read <code>scoped</code> and <code>global</code> directly.</p>
+<p>Daemon HTTP keeps expensive archive-wide families lazy for workbench
+first paint. <code>GET /api/facets</code> includes origin/tag/count buckets and marks
+<code>repos</code> plus <code>action_types</code> as <code>deferred_by_default</code>. Clients that need the
+full set can call <code>GET /api/facets?include_deferred=1&amp;budget_ms=5000</code> or
+<code>GET /api/facets?families=repos,action_types</code>; a budget overrun returns
+the existing bucket fields plus <code>budget_exceeded=true</code> and per-family
+deferred reasons instead of blocking the page indefinitely. HTTP workbench
+requests attach request IDs and bounded <code>AbortController</code> timeouts; the daemon
+observes closed client sockets inside facet SQLite progress handlers so
+cancelled/timed-out browser requests can interrupt already-started scans.</p>
 <pre><code class="language-bash">polylogue facets                     # global only (no filters)
 polylogue facets -o chatgpt-export   # scoped to ChatGPT exports + global side-by-side
 polylogue facets -q &quot;vector store&quot;   # scoped to FTS hits

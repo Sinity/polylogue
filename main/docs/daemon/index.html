@@ -573,7 +573,14 @@ Query params include <code>target_ref</code>, <code>scope_ref</code>, <code>kind
 <code>context_inject</code>, and <code>limit</code>. The default status scope is
 <code>active,candidate</code>; use <code>status=all</code> for an explicit full lifecycle read.</p>
 <h3>GET /api/facets</h3>
-<p>Query faceted aggregations.</p>
+<p>Query faceted aggregations. The route returns <code>FacetsResponse</code>, including
+<code>complete_families</code>, <code>deferred_families</code>, <code>generated_at</code>, <code>stale</code>,
+<code>stale_age_s</code>, <code>budget_exceeded</code>, and <code>family_status</code>. Repo and action
+families are deferred from first-paint responses by default; request them
+with <code>include_deferred=1</code> or <code>families=repos,action_types</code>, optionally
+bounded by <code>budget_ms</code>. The daemon also polls the client socket from SQLite
+progress handlers while computing facet SQL, so browser aborts/timeouts can
+stop already-started archive scans instead of waiting for response write.</p>
 <h3>GET /api/sources</h3>
 <p>List configured watch sources and their availability.</p>
 <h3>GET /api/raw_artifacts/:id</h3>
