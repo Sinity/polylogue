@@ -27,6 +27,8 @@ from pathlib import Path
 import pytest
 
 from polylogue.errors import SchemaVersionMismatchError
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.schema import (
     SCHEMA_VERSION,
     _ensure_schema,
@@ -146,6 +148,32 @@ def test_matching_version_database_ensures_runtime_indexes(tmp_path: Path) -> No
             ("session_events", "idx_session_events_source_message"),
             ("session_agent_policies", "idx_session_agent_policies_source_message"),
             ("session_provider_usage_events", "idx_session_provider_usage_events_source_message"),
+            ("messages", "idx_messages_message_type"),
+            ("messages", "idx_messages_material_origin"),
+        ):
+            assert any(row[1] == index_name for row in conn.execute(f"PRAGMA index_list({table})"))
+    finally:
+        conn.close()
+
+
+def test_read_only_archive_open_ensures_runtime_indexes(tmp_path: Path) -> None:
+    """Read surfaces should not wait for a later write to gain runtime indexes."""
+    initialize_active_archive_root(tmp_path)
+    index_db = tmp_path / "index.db"
+    conn = sqlite3.connect(index_db)
+    try:
+        conn.execute("DROP INDEX idx_messages_message_type")
+        conn.execute("DROP INDEX idx_messages_material_origin")
+        conn.commit()
+    finally:
+        conn.close()
+
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        assert archive._read_only is True
+
+    conn = sqlite3.connect(index_db)
+    try:
+        for table, index_name in (
             ("messages", "idx_messages_message_type"),
             ("messages", "idx_messages_material_origin"),
         ):

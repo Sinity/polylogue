@@ -84,6 +84,7 @@ from polylogue.storage.insights.session.runtime import SessionInsightStatusSnaps
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.search.query_support import normalize_fts5_query
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+    archive_tier_spec,
     initialize_active_archive_root,
     initialize_archive_database,
 )
@@ -144,6 +145,7 @@ from polylogue.storage.sqlite.connection_profile import (
 )
 from polylogue.storage.sqlite.queries.sessions_identity import session_id_prefix_bounds
 from polylogue.storage.sqlite.queries.tool_usage import ToolUsageProviderCoverageRow, ToolUsageRow
+from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 from polylogue.types import SessionId
 
 
@@ -376,6 +378,8 @@ class ArchiveStore:
         if initialize:
             initialize_active_archive_root(archive_root)
         if read_only:
+            self._ensure_read_runtime_indexes()
+        if read_only:
             self._conn = sqlite3.connect(f"file:{self.index_db_path}?mode=ro", uri=True)
             pragma_statements = READ_CONNECTION_PRAGMA_STATEMENTS
         else:
@@ -408,6 +412,22 @@ class ArchiveStore:
             not (archive_root / filename).exists()
             for filename in ("source.db", "index.db", "embeddings.db", "user.db", "ops.db")
         )
+
+    def _ensure_read_runtime_indexes(self) -> None:
+        """Best-effort performance-index ensure before opening the read connection."""
+        if not self.index_db_path.exists():
+            return
+        try:
+            with sqlite3.connect(self.index_db_path) as conn:
+                current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+                if current_version != archive_tier_spec(ArchiveTier.INDEX).version:
+                    return
+                for statement in WRITE_CONNECTION_PRAGMA_STATEMENTS:
+                    conn.execute(statement)
+                ensure_runtime_indexes_sync(conn)
+                conn.commit()
+        except sqlite3.Error:
+            return
 
     def close(self) -> None:
         self._conn.close()
