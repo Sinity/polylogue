@@ -927,6 +927,7 @@ def _diagnose(
         "receiver_archive_state_missing_lifecycle",
         "receiver_archive_state_captured_without_archived_state",
         "receiver_archive_state_not_archived",
+        "receiver_archive_state_not_captured",
         "receiver_archive_state_missing_raw_row_evidence",
         "receiver_archive_state_missing_index_evidence",
         "receiver_archive_state_missing_index_messages",

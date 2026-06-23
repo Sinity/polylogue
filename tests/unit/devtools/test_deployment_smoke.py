@@ -1020,7 +1020,16 @@ def test_deployment_smoke_rejects_receiver_archive_state_without_index_evidence(
     assert probe.error == "receiver_archive_state_missing_index_evidence"
 
 
-def test_deployment_smoke_diagnoses_receiver_archive_state_without_index_evidence() -> None:
+@pytest.mark.parametrize(
+    "receiver_error",
+    [
+        "receiver_archive_state_missing_index_evidence",
+        "receiver_archive_state_not_captured",
+    ],
+)
+def test_deployment_smoke_diagnoses_receiver_archive_state_without_query_visibility(
+    receiver_error: str,
+) -> None:
     diagnostics = deployment_smoke._diagnose(
         commands=[
             deployment_smoke.CommandProbe(
@@ -1068,7 +1077,7 @@ def test_deployment_smoke_diagnoses_receiver_archive_state_without_index_evidenc
                 "indexed_session_exists": False,
             },
             ok=False,
-            error="receiver_archive_state_missing_index_evidence",
+            error=receiver_error,
         ),
     )
 
