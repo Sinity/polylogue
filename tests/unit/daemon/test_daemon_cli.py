@@ -1711,6 +1711,11 @@ def test_run_daemon_services_drains_servers_when_main_task_is_cancelled() -> Non
 
     browser_server = BlockingServer()
     api_server = BlockingServer()
+    interrupted_cleanup_calls = 0
+
+    def mark_interrupted_cleanup() -> None:
+        nonlocal interrupted_cleanup_calls
+        interrupted_cleanup_calls += 1
 
     async def exercise() -> None:
         task = asyncio.create_task(
@@ -1747,6 +1752,7 @@ def test_run_daemon_services_drains_servers_when_main_task_is_cancelled() -> Non
         patch.object(daemon_cli, "_periodic_status_snapshot_refresh", wait_forever),
         patch.object(daemon_cli, "_periodic_convergence_check", lambda _sources, **_kwargs: wait_forever()),
         patch.object(daemon_cli, "_sweep_orphaned_blob_leases", wait_forever),
+        patch.object(daemon_cli, "_mark_interrupted_live_ingest_attempts_on_shutdown", mark_interrupted_cleanup),
         patch("polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check", wait_forever),
         patch("polylogue.daemon.convergence.DaemonConverger", return_value=FakeConverger()),
         patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=()),
@@ -1758,6 +1764,7 @@ def test_run_daemon_services_drains_servers_when_main_task_is_cancelled() -> Non
     assert browser_server.close_called is True
     assert api_server.shutdown_called is True
     assert api_server.close_called is True
+    assert interrupted_cleanup_calls == 1
 
 
 def test_run_daemon_services_schema_block_skips_db_background_work() -> None:

@@ -154,6 +154,16 @@ def _heartbeat_counts(db: Path) -> tuple[int, int, str]:
         conn.close()
 
 
+def _mark_interrupted_live_ingest_attempts_on_shutdown() -> None:
+    """Close current-process running ingest attempts during graceful shutdown."""
+    from polylogue.sources.live.cursor import CursorStore
+
+    # CursorStore construction runs the same interrupted-attempt recovery used
+    # on daemon startup. Calling it at shutdown keeps Ctrl-C dogfood runs from
+    # leaving false in-flight work until the next daemon start.
+    CursorStore(_active_index_db_path())
+
+
 async def _configure_fts_automerge() -> None:
     """Persist FTS5 automerge=0 for all surfaces at daemon startup (#1851).
 
@@ -1007,6 +1017,8 @@ async def run_daemon_services(
                 if not mt.done():
                     mt.cancel()
             await _drain_tasks(maintenance_tasks, timeout=5.0)
+
+            await asyncio.to_thread(_mark_interrupted_live_ingest_attempts_on_shutdown)
 
             if server is not None:
                 server.server_close()
