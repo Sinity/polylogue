@@ -519,6 +519,7 @@ components:
           - path
           - config
           - runtime
+          - candidate
           title: Target
           type: string
         input:
@@ -539,6 +540,7 @@ components:
           - path
           - config
           - runtime
+          - assertion_candidate
           title: Input Unit
           type: string
         cardinality_state:
@@ -727,6 +729,7 @@ components:
           - path
           - config
           - runtime
+          - assertion_candidate
           title: Unit
           type: string
         completion_context:

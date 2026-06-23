@@ -91,7 +91,9 @@ workflow/hook points at a removed command.
      durable decisions unless evidence supports the claim.
    - Evidence: demo/live fixtures with instruction dumps and real decisions;
      JSON and Markdown handoff outputs distinguish quoted evidence, inferred
-     summary, accepted/rejected candidates, and unavailable source material.
+     summary, accepted/rejected/deferred candidates, unavailable source
+     material, and disabled review actions with reasons. Default handoffs redact
+     raw absolute paths unless an explicit raw/no-redact path is requested.
 
 6. **Make configuration explicit before adding more knobs (#2309).**
    - Classify settings as startup config, deployment policy, mutable user

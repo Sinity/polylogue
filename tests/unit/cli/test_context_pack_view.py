@@ -57,16 +57,34 @@ def test_context_pack_view_reads_archive_from_archive_tiers(tmp_path: Path, caps
             )
         )
 
-    run_context_pack_view(_archive_env(archive_root), query="hello", max_sessions=1, max_messages=1)
+    project_path = "/realm/project/polylogue"
+    run_context_pack_view(
+        _archive_env(archive_root),
+        query="hello archive",
+        project_path=project_path,
+        max_sessions=1,
+        max_messages=1,
+    )
 
     output = capsys.readouterr().out
     payload = json.loads(output)
     assert payload["total_sessions"] == 1
     assert payload["total_messages"] == 1
+    assert payload["selection_strategy"] == "relaxed_project_term_recall"
+    assert payload["scope"]["read_views"] == ["context-pack"]
+    assert payload["scope"]["project_path"] == "<redacted-path>/polylogue"
+    assert payload["evidence_refs"] == ["codex-session:context-pack-v1"]
+    assert payload["redaction_policy"] == "public_refs_and_redacted_paths"
+    assert payload["token_estimate"] > 0
+    assert payload["size_estimate"]["json_bytes"] > 0
+    assert payload["size_estimate"]["message_text_bytes"] > 0
+    assert any(omission["reason"] == "redacted" for omission in payload["omissions"])
     assert payload["provenance"]["archive_runtime"] == "archive_file_set"
-    assert payload["provenance"]["archive_root"] == str(archive_root)
-    assert payload["provenance"]["active_db_path"] == str(archive_root / "index.db")
-    assert payload["query_context"]["query"] == "hello"
+    assert payload["provenance"]["redacted"] is True
+    assert payload["provenance"]["archive_root"] is None
+    assert payload["provenance"]["active_db_path"] is None
+    assert payload["provenance"]["redaction_policy"] == "public_refs_and_redacted_paths"
+    assert payload["query_context"]["query"] == "hello archive"
     assert payload["query_context"]["sessions_included"] == 1
     session = payload["sessions"][0]
     assert session["session_id"] == "codex-session:context-pack-v1"
@@ -75,6 +93,21 @@ def test_context_pack_view_reads_archive_from_archive_tiers(tmp_path: Path, caps
     assert "source" not in session
     assert session["messages"][0]["role"] == "user"
     assert session["messages"][0]["text"] == "hello archive pack"
+
+    run_context_pack_view(
+        _archive_env(archive_root),
+        query="hello archive",
+        project_path=project_path,
+        max_sessions=1,
+        max_messages=1,
+        no_redact=True,
+    )
+    raw_payload = json.loads(capsys.readouterr().out)
+    assert raw_payload["redaction_policy"] == "raw_paths_explicit_opt_in"
+    assert raw_payload["provenance"]["redacted"] is False
+    assert raw_payload["scope"]["project_path"] == project_path
+    assert raw_payload["provenance"]["archive_root"] == str(archive_root)
+    assert raw_payload["provenance"]["active_db_path"] == str(archive_root / "index.db")
 
 
 def test_context_pack_view_reads_injectable_assertions_from_user_tier(

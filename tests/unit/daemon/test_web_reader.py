@@ -1939,6 +1939,25 @@ class TestReaderViewProfiles:
         assert context_pack["view"] == "context-pack"
         context_payload = cast(dict[str, object], context_pack["payload"])
         assert context_payload["total_sessions"] == 1
+        assert context_payload["selection_strategy"] == "session-id"
+        assert context_payload["redaction_policy"] == "public_refs_and_redacted_paths"
+        assert context_payload["evidence_refs"] == [C1]
+        assert isinstance(context_payload["token_estimate"], int)
+        assert context_payload["token_estimate"] > 0
+        context_size_estimate = cast(dict[str, object], context_payload["size_estimate"])
+        assert isinstance(context_size_estimate["json_bytes"], int)
+        assert isinstance(context_size_estimate["message_text_bytes"], int)
+        assert context_size_estimate["json_bytes"] > 0
+        assert context_size_estimate["message_text_bytes"] > 0
+        context_scope = cast(dict[str, object], context_payload["scope"])
+        assert context_scope["seed_refs"] == [f"session:{C1}"]
+        context_provenance = cast(dict[str, object], context_payload["provenance"])
+        assert context_provenance["redacted"] is True
+        assert "archive_root" not in context_provenance
+        assert "active_db_path" not in context_provenance
+        assert any(
+            omission["reason"] == "redacted" for omission in cast(list[dict[str, object]], context_payload["omissions"])
+        )
         context_query = cast(dict[str, object], context_payload["query_context"])
         assert context_query["query_matched"] == 1
         context_sessions = cast(list[dict[str, object]], context_payload["sessions"])
@@ -1994,6 +2013,15 @@ class TestReaderRecoveryEndpoint:
         packet = cast(dict[str, object], payload["work_packet"])
         assert packet["session_id"] == C1
         assert packet["evidence_refs"]
+        assert packet["selection_strategy"] == "single_session_recovery_digest_v0"
+        assert packet["redaction_policy"] == "public_refs_and_redacted_local_paths"
+        assert isinstance(packet["token_estimate"], int)
+        assert packet["token_estimate"] > 0
+        assert packet["omissions"]
+        assert packet["evidence_windows"]
+        packet_size_estimate = cast(dict[str, object], packet["size_estimate"])
+        assert isinstance(packet_size_estimate["json_bytes"], int)
+        assert packet_size_estimate["json_bytes"] > 0
         assert "raw_artifacts" not in json.dumps(payload)
 
     def test_recovery_endpoint_returns_work_packet_markdown_envelope(self, workspace_env: dict[str, Path]) -> None:

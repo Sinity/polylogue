@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
 ActionEffect = Literal["read", "write", "destructive", "stream", "ops", "config", "import"]
-InputUnit = Literal["none", "query_result_set", "session", "path", "config", "runtime"]
+InputUnit = Literal["none", "query_result_set", "session", "path", "config", "runtime", "assertion_candidate"]
 ActionCardinality = Literal["any", "singleton", "explicit_multi", "destructive_multi"]
 ActionFormat = Literal["human", "json", "ndjson"]
 MachineEnvelope = Literal["result_set", "item", "mutation", "error", "stream_item"]
-ActionTarget = Literal["none", "selection", "session", "path", "config", "runtime"]
+ActionTarget = Literal["none", "selection", "session", "path", "config", "runtime", "candidate"]
 ActionSafetyLevel = Literal["safe", "mutating", "destructive", "operational"]
 ActionDestination = Literal["terminal", "stdout", "browser", "clipboard", "file", "api", "mcp"]
 CompletionContext = Literal[
@@ -111,6 +112,71 @@ class ActionAffordanceListPayload(BaseModel):
     actions: tuple[ActionAffordancePayload, ...]
 
 
+CandidateReviewDecision = Literal["accept", "reject", "defer", "supersede"]
+
+
+def assertion_candidate_review_affordances(
+    *,
+    candidate_ref: str | None = None,
+    disabled_reasons: Mapping[CandidateReviewDecision, str | None] | None = None,
+) -> tuple[ActionAffordancePayload, ...]:
+    """Return shared review affordances for derived assertion candidates.
+
+    Candidate review is a contextual surface rather than a top-level query
+    action.  It still uses the same DTO so JSON/Markdown pack consumers see
+    stable machine-readable ids and disabled reasons instead of display-only
+    prose.
+    """
+
+    reasons = dict(disabled_reasons or {})
+    base_disabled_reason = "candidate_ref_required" if not candidate_ref else None
+
+    payloads: list[ActionAffordancePayload] = []
+    for decision in ("accept", "reject", "defer", "supersede"):
+        disabled_reason = reasons.get(decision) or base_disabled_reason
+        payloads.append(
+            ActionAffordancePayload(
+                id=f"assertion_candidate.{decision}",
+                path=("assertion-candidate", decision),
+                effect="write",
+                target="candidate",
+                input=ActionInputPayload(unit="assertion_candidate"),
+                execution=ActionExecutionPayload(
+                    cardinality_state="singleton",
+                    guards=("candidate_ref_required",),
+                    requires_daemon=False,
+                ),
+                output=ActionOutputPayload(
+                    destination_support=("terminal", "api", "mcp"),
+                    format_support=("json",),
+                    default_format="json",
+                    machine_envelope="mutation",
+                ),
+                safety=ActionSafetyPayload(
+                    safety_level="mutating",
+                    confirmation_command=None,
+                    selection_command=None,
+                ),
+                availability=ActionAvailabilityPayload(
+                    disabled_reason=disabled_reason,
+                    next_actions=("read", "context-pack"),
+                ),
+                input_unit="assertion_candidate",
+                cardinality_state="singleton",
+                safety_level="mutating",
+                destination_support=("terminal", "api", "mcp"),
+                format_support=("json",),
+                default_format="json",
+                machine_envelope="mutation",
+                disabled_reason=disabled_reason,
+                next_actions=("read", "context-pack"),
+                guards=("candidate_ref_required",),
+                requires_daemon=False,
+            )
+        )
+    return tuple(payloads)
+
+
 __all__ = [
     "ActionAffordanceListPayload",
     "ActionAffordancePayload",
@@ -125,7 +191,9 @@ __all__ = [
     "ActionFormat",
     "ActionSafetyLevel",
     "ActionTarget",
+    "CandidateReviewDecision",
     "CompletionContext",
     "InputUnit",
     "MachineEnvelope",
+    "assertion_candidate_review_affordances",
 ]

@@ -18,10 +18,13 @@ from polylogue.mcp.context_pack import (
     ContextPackDecisions,
     ContextPackIntent,
     ContextPackMessage,
+    ContextPackOmission,
     ContextPackPayload,
     ContextPackProvenance,
     ContextPackQueryContext,
+    ContextPackScope,
     ContextPackSession,
+    ContextPackSizeEstimate,
     _build_project_context,
     _summarize_actions,
     archive_context_pack_active,
@@ -62,6 +65,185 @@ def _date_text(value: object) -> str | None:
     if callable(isoformat):
         return str(isoformat())
     return str(value)
+
+
+def _context_pack_redaction_policy(redact_paths: bool) -> str:
+    if redact_paths:
+        return "public_refs_and_redacted_paths"
+    return "raw_paths_explicit_opt_in"
+
+
+def _context_pack_path_value(value: str | None, *, redact_paths: bool) -> str | None:
+    if value is None or not redact_paths or not value.startswith("/"):
+        return value
+    name = Path(value).name or "path"
+    return f"<redacted-path>/{name}"
+
+
+def _context_pack_provenance(
+    *,
+    archive_root: Path,
+    active_db_path: Path,
+    redact_paths: bool,
+) -> ContextPackProvenance:
+    return ContextPackProvenance(
+        generated_at=datetime.now(UTC).isoformat(),
+        redacted=redact_paths,
+        archive_runtime="archive_file_set",
+        archive_root=None if redact_paths else str(archive_root),
+        active_db_path=None if redact_paths else str(active_db_path),
+        redaction_policy=_context_pack_redaction_policy(redact_paths),
+    )
+
+
+def _context_pack_scope(
+    *,
+    seed_session_id: str | None,
+    project_path: str | None,
+    project_repo: str | None,
+    since: str | None,
+    until: str | None,
+    origin: str | None,
+    query: str | None,
+    conv_limit: int,
+    msg_limit: int,
+    max_text: int,
+    include_messages: bool,
+    redact_paths: bool,
+) -> ContextPackScope:
+    return ContextPackScope(
+        seed_refs=([f"session:{seed_session_id}"] if seed_session_id else []),
+        read_views=["context-pack"],
+        project_path=_context_pack_path_value(project_path, redact_paths=redact_paths),
+        project_repo=project_repo,
+        origin=origin,
+        since=since,
+        until=until,
+        query=query,
+        include_messages=include_messages,
+        limits={"sessions": conv_limit, "messages_per_session": msg_limit, "message_text_chars": max_text},
+    )
+
+
+def _context_pack_evidence_refs(pack_sessions: list[ContextPackSession]) -> list[str]:
+    return [session.session_id for session in pack_sessions]
+
+
+def _context_pack_message_text_bytes(pack_sessions: list[ContextPackSession]) -> int:
+    return sum(len(message.text.encode("utf-8")) for session in pack_sessions for message in session.messages)
+
+
+def _context_pack_token_estimate(
+    *,
+    pack_sessions: list[ContextPackSession],
+    decisions: list[str],
+    omissions: list[ContextPackOmission],
+) -> int:
+    texts: list[str] = [*decisions]
+    texts.extend(session.title or "" for session in pack_sessions)
+    texts.extend(message.text for session in pack_sessions for message in session.messages)
+    texts.extend(omission.detail for omission in omissions)
+    word_count = sum(len(text.split()) for text in texts if text)
+    return max(1, word_count) if texts or pack_sessions or omissions else 0
+
+
+def _context_pack_omissions(
+    *,
+    pack_sessions: list[ContextPackSession],
+    seed_session_id: str | None,
+    query: str | None,
+    include_messages: bool,
+    msg_limit: int,
+    max_text: int,
+    redact_paths: bool,
+) -> list[ContextPackOmission]:
+    omissions: list[ContextPackOmission] = []
+    if seed_session_id is not None and not pack_sessions:
+        omissions.append(
+            ContextPackOmission(
+                ref=f"session:{seed_session_id}",
+                view="context-pack",
+                reason="not_found",
+                detail="Requested seed session was not found in the archive index.",
+            )
+        )
+    elif query and not pack_sessions:
+        omissions.append(
+            ContextPackOmission(
+                query=query,
+                view="context-pack",
+                reason="not_found",
+                detail="No sessions matched the strict or recall context-pack selection attempts.",
+            )
+        )
+    if not include_messages:
+        omissions.append(
+            ContextPackOmission(
+                view="messages",
+                reason="policy",
+                detail="Message bodies were excluded by the caller; session-level metadata remains selected.",
+                evidence_refs=[session.session_id for session in pack_sessions],
+            )
+        )
+    for session in pack_sessions:
+        if len(session.messages) < session.message_count and include_messages:
+            omissions.append(
+                ContextPackOmission(
+                    ref=f"session:{session.session_id}",
+                    view="messages",
+                    reason="budget",
+                    detail=(
+                        f"Included {len(session.messages)} message snippets out of {session.message_count}; "
+                        f"limit={msg_limit}, max_text={max_text}."
+                    ),
+                    evidence_refs=[session.session_id],
+                )
+            )
+        if include_messages and session.message_count and not session.messages:
+            omissions.append(
+                ContextPackOmission(
+                    ref=f"session:{session.session_id}",
+                    view="messages",
+                    reason="not_found",
+                    detail="Session was selected, but message text was unavailable to this read view.",
+                    evidence_refs=[session.session_id],
+                )
+            )
+    if redact_paths:
+        omissions.append(
+            ContextPackOmission(
+                view="provenance.paths",
+                reason="redacted",
+                detail="Absolute archive and active database paths are omitted unless the caller opts into raw paths.",
+                evidence_refs=[session.session_id for session in pack_sessions],
+            )
+        )
+    return omissions
+
+
+def _context_pack_caveats(
+    *,
+    pack_sessions: list[ContextPackSession],
+    relaxed_filters: list[str],
+    omissions: list[ContextPackOmission],
+) -> list[str]:
+    caveats: list[str] = []
+    if not pack_sessions:
+        caveats.append("no_sessions_selected")
+    if relaxed_filters:
+        caveats.append("selection_relaxed:" + ",".join(relaxed_filters))
+    for omission in omissions:
+        caveat = f"omitted:{omission.view or omission.reason}:{omission.reason}"
+        if caveat not in caveats:
+            caveats.append(caveat)
+    return caveats
+
+
+def _finalize_context_pack_payload(payload: ContextPackPayload) -> ContextPackPayload:
+    json_bytes = len(payload.model_dump_json(exclude_none=True).encode("utf-8"))
+    return payload.model_copy(
+        update={"size_estimate": payload.size_estimate.model_copy(update={"json_bytes": json_bytes})}
+    )
 
 
 async def build_archive_context_pack_payload(
@@ -189,7 +371,51 @@ async def build_archive_context_pack_payload(
             )
 
     total_matching = len(sessions)
-    return ContextPackPayload(
+    omissions = _context_pack_omissions(
+        pack_sessions=pack_sessions,
+        seed_session_id=seed_session_id,
+        query=query,
+        include_messages=include_messages,
+        msg_limit=msg_limit,
+        max_text=max_text,
+        redact_paths=redact_paths,
+    )
+    token_estimate = _context_pack_token_estimate(
+        pack_sessions=pack_sessions,
+        decisions=assertion_decisions,
+        omissions=omissions,
+    )
+    payload = ContextPackPayload(
+        selection_strategy=match_strategy,
+        scope=_context_pack_scope(
+            seed_session_id=seed_session_id,
+            project_path=project_path,
+            project_repo=project_repo,
+            since=since,
+            until=until,
+            origin=origin,
+            query=query,
+            conv_limit=conv_limit,
+            msg_limit=msg_limit,
+            max_text=max_text,
+            include_messages=include_messages,
+            redact_paths=redact_paths,
+        ),
+        omissions=omissions,
+        evidence_refs=_context_pack_evidence_refs(pack_sessions),
+        caveats=_context_pack_caveats(
+            pack_sessions=pack_sessions,
+            relaxed_filters=relaxed_filters,
+            omissions=omissions,
+        ),
+        redaction_policy=_context_pack_redaction_policy(redact_paths),
+        token_estimate=token_estimate,
+        size_estimate=ContextPackSizeEstimate(
+            message_text_bytes=_context_pack_message_text_bytes(pack_sessions),
+            session_count=len(pack_sessions),
+            message_count=sum(len(session.messages) for session in pack_sessions),
+            token_estimate=token_estimate,
+        ),
         decisions=ContextPackDecisions(items=assertion_decisions),
         project=_build_project_context((), redact=redact_paths),
         date_range=ContextPackDateRange(
@@ -213,17 +439,16 @@ async def build_archive_context_pack_payload(
         ),
         sessions=pack_sessions,
         action_summaries=[],
-        provenance=ContextPackProvenance(
-            generated_at=datetime.now(UTC).isoformat(),
-            redacted=redact_paths,
-            archive_runtime="archive_file_set",
-            archive_root=str(archive_root),
-            active_db_path=str(archive_root / "index.db"),
+        provenance=_context_pack_provenance(
+            archive_root=archive_root,
+            active_db_path=archive_root / "index.db",
+            redact_paths=redact_paths,
         ),
         total_sessions=total_matching,
         total_messages=sum(int(conv.message_count) for conv in sessions[:conv_limit]),
         total_tool_calls=0,
     )
+    return _finalize_context_pack_payload(payload)
 
 
 def run_context_pack_view(
@@ -352,10 +577,55 @@ def run_context_pack_view(
             )
         )
 
+    redact_paths = not no_redact
+    omissions = _context_pack_omissions(
+        pack_sessions=pack_sessions,
+        seed_session_id=None,
+        query=query,
+        include_messages=True,
+        msg_limit=msg_limit,
+        max_text=0,
+        redact_paths=redact_paths,
+    )
+    token_estimate = _context_pack_token_estimate(
+        pack_sessions=pack_sessions,
+        decisions=assertion_decisions,
+        omissions=omissions,
+    )
     payload = ContextPackPayload(
+        selection_strategy=selection.match_strategy,
+        scope=_context_pack_scope(
+            seed_session_id=None,
+            project_path=project_path,
+            project_repo=project_repo,
+            since=since,
+            until=until,
+            origin=origin,
+            query=query,
+            conv_limit=conv_limit,
+            msg_limit=msg_limit,
+            max_text=0,
+            include_messages=True,
+            redact_paths=redact_paths,
+        ),
+        omissions=omissions,
+        evidence_refs=_context_pack_evidence_refs(pack_sessions),
+        caveats=_context_pack_caveats(
+            pack_sessions=pack_sessions,
+            relaxed_filters=list(selection.relaxed_filters),
+            omissions=omissions,
+        ),
+        redaction_policy=_context_pack_redaction_policy(redact_paths),
+        token_estimate=token_estimate,
+        size_estimate=ContextPackSizeEstimate(
+            message_text_bytes=_context_pack_message_text_bytes(pack_sessions),
+            session_count=len(pack_sessions),
+            message_count=sum(len(session.messages) for session in pack_sessions),
+            token_estimate=token_estimate,
+        ),
         intent=ContextPackIntent(),
         decisions=ContextPackDecisions(items=assertion_decisions),
-        project=_build_project_context(aggregated_events, redact=not no_redact),
+        project=_build_project_context(aggregated_events, redact=redact_paths),
         date_range=ContextPackDateRange(
             since=since,
             until=until,
@@ -377,18 +647,17 @@ def run_context_pack_view(
         ),
         sessions=pack_sessions,
         action_summaries=action_summaries,
-        provenance=ContextPackProvenance(
-            redacted=not no_redact,
-            archive_runtime="archive_file_set",
-            archive_root=str(env.config.archive_root),
-            active_db_path=str(env.config.db_path),
+        provenance=_context_pack_provenance(
+            archive_root=env.config.archive_root,
+            active_db_path=env.config.db_path,
+            redact_paths=redact_paths,
         ),
         total_sessions=total_matching,
         total_messages=total_msg,
         total_tool_calls=total_tools,
     )
 
-    click.echo(serialize_surface_payload(payload))
+    click.echo(serialize_surface_payload(_finalize_context_pack_payload(payload)))
 
 
 def _archive_context_pack_active(env: AppEnv) -> bool:
@@ -486,7 +755,51 @@ def _build_archive_context_pack(
                 )
             )
 
-    return ContextPackPayload(
+    omissions = _context_pack_omissions(
+        pack_sessions=pack_sessions,
+        seed_session_id=None,
+        query=query,
+        include_messages=True,
+        msg_limit=msg_limit,
+        max_text=0,
+        redact_paths=redact,
+    )
+    token_estimate = _context_pack_token_estimate(
+        pack_sessions=pack_sessions,
+        decisions=assertion_decisions,
+        omissions=omissions,
+    )
+    payload = ContextPackPayload(
+        selection_strategy=selection.match_strategy,
+        scope=_context_pack_scope(
+            seed_session_id=None,
+            project_path=project_path,
+            project_repo=project_repo,
+            since=since,
+            until=until,
+            origin=origin,
+            query=query,
+            conv_limit=conv_limit,
+            msg_limit=msg_limit,
+            max_text=0,
+            include_messages=True,
+            redact_paths=redact,
+        ),
+        omissions=omissions,
+        evidence_refs=_context_pack_evidence_refs(pack_sessions),
+        caveats=_context_pack_caveats(
+            pack_sessions=pack_sessions,
+            relaxed_filters=list(selection.relaxed_filters),
+            omissions=omissions,
+        ),
+        redaction_policy=_context_pack_redaction_policy(redact),
+        token_estimate=token_estimate,
+        size_estimate=ContextPackSizeEstimate(
+            message_text_bytes=_context_pack_message_text_bytes(pack_sessions),
+            session_count=len(pack_sessions),
+            message_count=sum(len(session.messages) for session in pack_sessions),
+            token_estimate=token_estimate,
+        ),
         intent=ContextPackIntent(),
         decisions=ContextPackDecisions(items=assertion_decisions),
         project=_build_project_context((), redact=redact),
@@ -511,13 +824,13 @@ def _build_archive_context_pack(
         ),
         sessions=pack_sessions,
         action_summaries=[],
-        provenance=ContextPackProvenance(
-            redacted=redact,
-            archive_runtime="archive_file_set",
-            archive_root=str(archive_root),
-            active_db_path=str(archive_root / "index.db"),
+        provenance=_context_pack_provenance(
+            archive_root=archive_root,
+            active_db_path=archive_root / "index.db",
+            redact_paths=redact,
         ),
         total_sessions=total_matching,
         total_messages=total_msg,
         total_tool_calls=total_tools,
     )
+    return _finalize_context_pack_payload(payload)

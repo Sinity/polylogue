@@ -9,11 +9,13 @@ read-model candidates.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timezone
+from pathlib import PurePosixPath
 from typing import Literal, TypeVar
 
 from pydantic import Field, field_validator, model_validator
@@ -23,6 +25,10 @@ from polylogue.archive.session.domain_models import Session
 from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.insights.archive_models import ArchiveInsightModel
 from polylogue.insights.run_projection import RunProjection, build_run_projection
+from polylogue.surfaces.action_affordances import (
+    ActionAffordancePayload,
+    assertion_candidate_review_affordances,
+)
 
 RECOVERY_TRANSFORM_ID = "recovery_digest_v0"
 RECOVERY_TRANSFORM_VERSION = 1
@@ -44,10 +50,21 @@ WorkPacketSection = Literal[
     "run_state",
     "tools",
     "decisions",
+    "candidate_review",
     "assertions",
     "evidence_gaps",
 ]
 WorkPacketSupport = Literal["raw_evidence", "assertion", "inference", "caveat", "missing_evidence"]
+DecisionCandidateReviewStatus = Literal["accepted", "rejected", "deferred"]
+RecoveryEvidenceWindowKind = Literal[
+    "quoted_evidence",
+    "inferred_summary",
+    "accepted_candidate",
+    "rejected_candidate",
+    "deferred_candidate",
+    "unavailable_source_material",
+]
+RecoveryPackOmissionReason = Literal["budget", "unsupported", "not_found", "policy", "redacted", "missing_evidence"]
 SubagentChildLinkStatus = Literal["resolved", "unresolved", "repaired", "quarantined"]
 
 _GITHUB_REPO_REF = r"[\w.-]+/[\w.-]+#"
@@ -70,6 +87,15 @@ _CHECK_FAIL_RE = re.compile(r"\b(?P<name>[A-Za-z0-9_.() -]+)\s+\.\.\.\s+(?:FAIL|
 _COMMIT_SHA_RE = re.compile(r"\b(?P<sha>[0-9a-f]{7,40})\b", re.IGNORECASE)
 _DECISION_RE = re.compile(r"\b(decision|decided|choose|chosen):?\s+(?P<text>.+)", re.IGNORECASE)
 _STATUS_HEADING_RE = re.compile(r"^\s*(goal|done|in flight|blockers?|next):\s*(?P<text>.+)$", re.IGNORECASE)
+_INSTRUCTION_DUMP_MARKER_RE = re.compile(
+    r"\b(agents\.md|claude\.md|system prompt|developer instruction|turbo mandate|must not|must always|"
+    r"you are chatgpt|you are working in|verification budget|completion report required)\b",
+    re.IGNORECASE,
+)
+_PRODUCT_DECISION_ANCHOR_RE = re.compile(
+    r"\b(product decision|implementation decision|durable decision|we decided|decision record|adr|accepted decision)\b",
+    re.IGNORECASE,
+)
 _RUNSTATE_SECTION_RE = re.compile(
     r"^\s*(goal|done|in flight|blockers?|next(?: action)?s?):\s*(?P<text>.*)$",
     re.IGNORECASE,
@@ -249,12 +275,58 @@ class DecisionCandidate(ArchiveInsightModel):
     kind: Literal["decision", "run_state"]
     text: str
     raw_refs: tuple[TransformRawRef, ...]
+    status: DecisionCandidateReviewStatus = "accepted"
+    reason: str | None = None
+    candidate_ref: str | None = None
 
     @model_validator(mode="after")
     def _requires_raw_refs(self) -> DecisionCandidate:
         if not self.raw_refs:
             raise ValueError("DecisionCandidate requires at least one raw ref")
         return self
+
+
+class RecoveryPacketScope(ArchiveInsightModel):
+    """What raw material a recovery work packet selected."""
+
+    seed_refs: tuple[str, ...] = ()
+    read_views: tuple[str, ...] = ()
+    selection_limits: dict[str, int] = Field(default_factory=dict)
+    included_sections: tuple[str, ...] = ()
+    session_count: int = 1
+    message_count: int = 0
+
+
+class RecoveryPackOmission(ArchiveInsightModel):
+    """Explicitly omitted or unavailable work-packet material."""
+
+    ref: str | None = None
+    view: str | None = None
+    reason: RecoveryPackOmissionReason
+    detail: str
+    evidence_refs: tuple[EvidenceRef, ...] = ()
+
+
+class RecoveryEvidenceWindow(ArchiveInsightModel):
+    """Typed evidence-window vocabulary for successor handoffs."""
+
+    kind: RecoveryEvidenceWindowKind
+    label: str
+    text: str
+    support: WorkPacketSupport = "raw_evidence"
+    evidence_refs: tuple[EvidenceRef, ...] = ()
+    candidate_ref: str | None = None
+
+
+class RecoveryPacketSizeEstimate(ArchiveInsightModel):
+    """Approximate size/cost posture for a recovery handoff packet."""
+
+    raw_bytes: int = 0
+    normal_read_bytes: int = 0
+    resume_bundle_bytes: int = 0
+    markdown_bytes: int = 0
+    json_bytes: int = 0
+    token_estimate: int = 0
 
 
 class RecoveryWorkPacketEntry(ArchiveInsightModel):
@@ -267,6 +339,7 @@ class RecoveryWorkPacketEntry(ArchiveInsightModel):
     object_refs: tuple[ObjectRef, ...] = ()
     support: WorkPacketSupport = "raw_evidence"
     metadata: dict[str, str] = Field(default_factory=dict)
+    action_affordances: tuple[ActionAffordancePayload, ...] = ()
 
     @model_validator(mode="after")
     def _requires_evidence_refs(self) -> RecoveryWorkPacketEntry:
@@ -282,11 +355,20 @@ class RecoveryWorkPacket(ArchiveInsightModel):
     title: str
     source_origin: str
     message_count: int
+    generated_at: str = ""
+    selection_strategy: str = "single_session_recovery_digest_v0"
+    scope: RecoveryPacketScope = Field(default_factory=RecoveryPacketScope)
     git_branch: str | None = None
     working_directories: tuple[str, ...] = ()
     target_refs: tuple[ObjectRef, ...] = ()
     entries: tuple[RecoveryWorkPacketEntry, ...] = ()
     evidence_refs: tuple[EvidenceRef, ...]
+    evidence_windows: tuple[RecoveryEvidenceWindow, ...] = ()
+    omissions: tuple[RecoveryPackOmission, ...] = ()
+    caveats: tuple[str, ...] = ()
+    redaction_policy: str = "public_refs_and_redacted_local_paths"
+    token_estimate: int = 0
+    size_estimate: RecoveryPacketSizeEstimate = Field(default_factory=RecoveryPacketSizeEstimate)
 
     @model_validator(mode="after")
     def _requires_evidence_refs(self) -> RecoveryWorkPacket:
@@ -470,7 +552,14 @@ def render_resume_bundle(
         source_origin=str(session.origin),
         message_count=len(session.messages),
         git_branch=session.git_branch,
-        working_directories=tuple(session.working_directories),
+        scope=RecoveryPacketScope(
+            seed_refs=(f"session:{session.id}",),
+            read_views=("recovery", "work-packet"),
+            selection_limits={"sessions": 1, "entry_soft_cap": 120},
+            session_count=1,
+            message_count=len(session.messages),
+        ),
+        working_directories=tuple(_redact_local_path(path) for path in session.working_directories),
         target_refs=_work_packet_target_refs(str(session.id), session.git_branch),
         entries=tuple(
             _work_packet_entries(
@@ -505,7 +594,26 @@ def render_work_packet(packet: RecoveryWorkPacket) -> str:
         f"- session_id: {packet.session_id}",
         f"- origin: {packet.source_origin}",
         f"- messages: {packet.message_count}",
+        f"- selection_strategy: {packet.selection_strategy}",
+        f"- redaction_policy: {packet.redaction_policy}",
     ]
+    if packet.token_estimate:
+        lines.append(f"- token_estimate: {packet.token_estimate}")
+    if packet.generated_at:
+        lines.append(f"- generated_at: {packet.generated_at}")
+    if packet.scope.seed_refs:
+        lines.append(f"- seed_refs: {', '.join(packet.scope.seed_refs)}")
+    if packet.scope.read_views:
+        lines.append(f"- read_views: {', '.join(packet.scope.read_views)}")
+    if packet.size_estimate.raw_bytes or packet.size_estimate.json_bytes:
+        lines.append(
+            "- size_estimate: "
+            f"raw_bytes={packet.size_estimate.raw_bytes}; "
+            f"normal_read_bytes={packet.size_estimate.normal_read_bytes}; "
+            f"resume_bundle_bytes={packet.size_estimate.resume_bundle_bytes}; "
+            f"markdown_bytes={packet.size_estimate.markdown_bytes}; "
+            f"json_bytes={packet.size_estimate.json_bytes}"
+        )
     if packet.git_branch:
         lines.append(f"- branch: {packet.git_branch}")
     if packet.target_refs:
@@ -596,6 +704,10 @@ def render_work_packet(packet: RecoveryWorkPacket) -> str:
     lines.extend(_work_packet_line(entry) for entry in decision_entries[:8])
     if not decision_entries:
         lines.append("- none extracted")
+    review_entries = _packet_section(packet, "candidate_review")
+    if review_entries:
+        lines.extend(["", "## Candidate Review"])
+        lines.extend(_work_packet_line(entry) for entry in review_entries[:12])
     assertion_entries = _packet_section(packet, "assertions")
     if assertion_entries:
         lines.extend(["", "## Assertion Claims"])
@@ -604,35 +716,191 @@ def render_work_packet(packet: RecoveryWorkPacket) -> str:
     if gap_entries:
         lines.extend(["", "## Evidence Gaps"])
         lines.extend(_work_packet_line(entry) for entry in gap_entries[:8])
+    if packet.omissions:
+        lines.extend(["", "## Omissions"])
+        for omission in packet.omissions[:12]:
+            ref = f" ref={omission.ref}" if omission.ref else ""
+            view = f" view={omission.view}" if omission.view else ""
+            evidence = _evidence_refs_text(omission.evidence_refs)
+            evidence_suffix = f" [evidence: {evidence}]" if evidence else ""
+            lines.append(f"- [{omission.reason}]{ref}{view}: {omission.detail}{evidence_suffix}")
+    if packet.caveats:
+        lines.extend(["", "## Caveats"])
+        lines.extend(f"- {caveat}" for caveat in packet.caveats[:12])
     lines.extend(["", "## Evidence"])
-    lines.append("Every packet row carries evidence refs and a support marker.")
+    if packet.evidence_windows:
+        for window in packet.evidence_windows[:20]:
+            evidence = _evidence_refs_text(window.evidence_refs)
+            candidate = f" candidate={window.candidate_ref}" if window.candidate_ref else ""
+            evidence_suffix = f" [evidence: {evidence}]" if evidence else ""
+            lines.append(f"- {window.kind}: {window.label}{candidate}: {window.text}{evidence_suffix}")
+    else:
+        lines.append("Every packet row carries evidence refs and a support marker.")
     return "\n".join(lines).strip() + "\n"
 
 
 def build_recovery_work_packet(digest: RecoveryDigest) -> RecoveryWorkPacket:
     """Build the storage-free continuation packet DTO from a recovery digest."""
 
-    return RecoveryWorkPacket(
+    evidence_refs = tuple(ref.to_evidence_ref() for ref in digest.raw_refs)
+    entries = tuple(
+        _work_packet_entries(
+            events=digest.events,
+            subagent_reports=digest.subagent_reports,
+            run_state=digest.run_state,
+            tool_summaries=digest.tool_summaries,
+            decisions=digest.decision_candidates,
+            run_projection=digest.run_projection,
+            packet_raw_refs=digest.raw_refs,
+        )
+    )
+    token_estimate = _estimate_work_packet_tokens(digest=digest, entries=entries)
+    size_estimate = RecoveryPacketSizeEstimate(
+        raw_bytes=digest.size_metrics.raw_bytes,
+        normal_read_bytes=digest.size_metrics.normal_read_bytes,
+        resume_bundle_bytes=digest.size_metrics.resume_bundle_bytes,
+        token_estimate=token_estimate,
+    )
+    omitted = _recovery_packet_omissions(entries)
+    caveats = _recovery_packet_caveats(entries=entries, omissions=omitted)
+    packet = RecoveryWorkPacket(
         session_id=digest.session_id,
         title=digest.title or digest.session_id,
         source_origin=digest.transform.source_origin,
         message_count=digest.size_metrics.message_count,
-        git_branch=digest.git_branch,
-        working_directories=digest.working_directories,
-        target_refs=_work_packet_target_refs(digest.session_id, digest.git_branch),
-        entries=tuple(
-            _work_packet_entries(
-                events=digest.events,
-                subagent_reports=digest.subagent_reports,
-                run_state=digest.run_state,
-                tool_summaries=digest.tool_summaries,
-                decisions=digest.decision_candidates,
-                run_projection=digest.run_projection,
-                packet_raw_refs=digest.raw_refs,
-            )
+        generated_at=digest.transform.computed_at,
+        selection_strategy="single_session_recovery_digest_v0",
+        scope=RecoveryPacketScope(
+            seed_refs=(f"session:{digest.session_id}",),
+            read_views=("recovery", "work-packet"),
+            selection_limits={"sessions": 1, "entry_soft_cap": 120},
+            included_sections=tuple(sorted({entry.section for entry in entries})),
+            session_count=1,
+            message_count=digest.size_metrics.message_count,
         ),
-        evidence_refs=tuple(ref.to_evidence_ref() for ref in digest.raw_refs),
+        git_branch=digest.git_branch,
+        working_directories=tuple(_redact_local_path(path) for path in digest.working_directories),
+        target_refs=_work_packet_target_refs(digest.session_id, digest.git_branch),
+        entries=entries,
+        evidence_refs=evidence_refs,
+        evidence_windows=_recovery_evidence_windows(entries=entries, omissions=omitted),
+        omissions=omitted,
+        caveats=caveats,
+        redaction_policy="public_refs_and_redacted_local_paths",
+        token_estimate=token_estimate,
+        size_estimate=size_estimate,
     )
+    rendered = packet.render_markdown()
+    final_size_estimate = size_estimate.model_copy(
+        update={
+            "markdown_bytes": len(rendered.encode("utf-8")),
+            "json_bytes": len(packet.model_dump_json(exclude_none=True).encode("utf-8")),
+        }
+    )
+    return packet.model_copy(update={"size_estimate": final_size_estimate})
+
+
+def _estimate_work_packet_tokens(*, digest: RecoveryDigest, entries: Sequence[RecoveryWorkPacketEntry]) -> int:
+    texts = [digest.title or digest.session_id, digest.transform.source_origin]
+    texts.extend(entry.text for entry in entries)
+    texts.extend(
+        value
+        for entry in entries
+        for value in (
+            entry.label,
+            *entry.metadata.values(),
+        )
+        if value
+    )
+    word_count = sum(len(text.split()) for text in texts if text)
+    return max(1, word_count)
+
+
+def _recovery_packet_omissions(entries: Sequence[RecoveryWorkPacketEntry]) -> tuple[RecoveryPackOmission, ...]:
+    omissions: list[RecoveryPackOmission] = []
+    for entry in entries:
+        if entry.support != "missing_evidence":
+            continue
+        omissions.append(
+            RecoveryPackOmission(
+                ref=None,
+                view=entry.label,
+                reason="missing_evidence",
+                detail=entry.text,
+                evidence_refs=entry.evidence_refs,
+            )
+        )
+    return tuple(omissions)
+
+
+def _recovery_packet_caveats(
+    *,
+    entries: Sequence[RecoveryWorkPacketEntry],
+    omissions: Sequence[RecoveryPackOmission],
+) -> tuple[str, ...]:
+    caveats: list[str] = []
+    for entry in entries:
+        if entry.support == "caveat":
+            _append_unique(caveats, f"{entry.section}:{entry.label}")
+        if entry.metadata.get("candidate_status") in {"rejected", "deferred"}:
+            _append_unique(caveats, f"candidate_{entry.metadata['candidate_status']}:{entry.label}")
+    for omission in omissions:
+        _append_unique(caveats, f"missing:{omission.view or omission.reason}")
+    return tuple(caveats)
+
+
+def _recovery_evidence_windows(
+    *,
+    entries: Sequence[RecoveryWorkPacketEntry],
+    omissions: Sequence[RecoveryPackOmission],
+) -> tuple[RecoveryEvidenceWindow, ...]:
+    windows: list[RecoveryEvidenceWindow] = []
+    for entry in entries:
+        candidate_ref = entry.metadata.get("candidate_ref")
+        kind = _evidence_window_kind(entry)
+        windows.append(
+            RecoveryEvidenceWindow(
+                kind=kind,
+                label=f"{entry.section}:{entry.label}",
+                text=entry.text,
+                support=entry.support,
+                evidence_refs=entry.evidence_refs,
+                candidate_ref=candidate_ref,
+            )
+        )
+    for omission in omissions:
+        windows.append(
+            RecoveryEvidenceWindow(
+                kind="unavailable_source_material",
+                label=f"omission:{omission.view or omission.reason}",
+                text=omission.detail,
+                support="missing_evidence",
+                evidence_refs=omission.evidence_refs,
+            )
+        )
+    return tuple(windows)
+
+
+def _evidence_window_kind(entry: RecoveryWorkPacketEntry) -> RecoveryEvidenceWindowKind:
+    status = entry.metadata.get("candidate_status")
+    if status == "accepted":
+        return "accepted_candidate"
+    if status == "rejected":
+        return "rejected_candidate"
+    if status == "deferred":
+        return "deferred_candidate"
+    if entry.support == "raw_evidence":
+        return "quoted_evidence"
+    if entry.support == "missing_evidence":
+        return "unavailable_source_material"
+    return "inferred_summary"
+
+
+def _redact_local_path(path: str) -> str:
+    if not path or not path.startswith("/"):
+        return path
+    name = PurePosixPath(path).name or "path"
+    return f"<redacted-path>/{name}"
 
 
 def _packet_section(packet: RecoveryWorkPacket, section: WorkPacketSection) -> tuple[RecoveryWorkPacketEntry, ...]:
@@ -651,7 +919,33 @@ def _support_marker(entry: RecoveryWorkPacketEntry) -> str:
 
 
 def _work_packet_line(entry: RecoveryWorkPacketEntry) -> str:
-    return f"- {_support_marker(entry)} {entry.label}: {entry.text}"
+    suffixes: list[str] = []
+    evidence = _evidence_refs_text(entry.evidence_refs)
+    if evidence:
+        suffixes.append(f"evidence: {evidence}")
+    actions = _action_affordances_text(entry.action_affordances)
+    if actions:
+        suffixes.append(f"actions: {actions}")
+    status = entry.metadata.get("candidate_status")
+    reason = entry.metadata.get("candidate_reason")
+    if status:
+        suffixes.append(f"status: {status}")
+    if reason:
+        suffixes.append(f"reason: {reason}")
+    suffix = f" [{' | '.join(suffixes)}]" if suffixes else ""
+    return f"- {_support_marker(entry)} {entry.label}: {entry.text}{suffix}"
+
+
+def _evidence_refs_text(refs: Sequence[EvidenceRef]) -> str:
+    return ", ".join(ref.format() for ref in refs)
+
+
+def _action_affordances_text(actions: Sequence[ActionAffordancePayload]) -> str:
+    parts: list[str] = []
+    for action in actions:
+        disabled = f" disabled={action.disabled_reason}" if action.disabled_reason else ""
+        parts.append(f"{action.id}{disabled}")
+    return ", ".join(parts)
 
 
 def _object_refs_line(entry: RecoveryWorkPacketEntry) -> str:
@@ -685,7 +979,7 @@ def _work_packet_entries(
             "provider_origin": run.provider_origin,
         }
         if run.cwd:
-            metadata["cwd"] = run.cwd
+            metadata["cwd"] = _redact_local_path(run.cwd)
         if run.git_branch:
             metadata["branch"] = run.git_branch
         if run.native_parent_session_id:
@@ -803,12 +1097,32 @@ def _work_packet_entries(
             evidence_refs=_to_evidence_refs(tool.raw_refs),
         )
     for decision in decisions:
+        status = decision.status
+        decision_metadata: dict[str, str] = {
+            "candidate_status": status,
+            "candidate_ref": decision.candidate_ref or "",
+        }
+        if decision.reason:
+            decision_metadata["candidate_reason"] = decision.reason
+        if status == "accepted":
+            section: WorkPacketSection = "decisions"
+            support: WorkPacketSupport = "inference"
+            label = decision.kind
+        else:
+            section = "candidate_review"
+            support = "caveat"
+            label = f"{status}_{decision.kind}"
         yield RecoveryWorkPacketEntry(
-            section="decisions",
-            label=decision.kind,
+            section=section,
+            label=label,
             text=decision.text,
-            support="inference",
+            support=support,
+            metadata=decision_metadata,
             evidence_refs=_to_evidence_refs(decision.raw_refs),
+            action_affordances=assertion_candidate_review_affordances(
+                candidate_ref=decision.candidate_ref,
+                disabled_reasons={"supersede": "replacement_assertion_required"},
+            ),
         )
     if not events:
         yield RecoveryWorkPacketEntry(
@@ -906,7 +1220,7 @@ def _tool_packet_metadata(tool: ToolSummary) -> dict[str, str]:
     if issue_refs:
         metadata["issue_refs"] = ", ".join(issue_refs)
     if tool.file_refs:
-        metadata["file_refs"] = ", ".join(tool.file_refs)
+        metadata["file_refs"] = ", ".join(_redact_local_path(ref) for ref in tool.file_refs)
     if tool.commit_refs:
         metadata["commit_refs"] = ", ".join(tool.commit_refs)
     if tool.test_evidence:
@@ -923,7 +1237,7 @@ def _tool_object_refs(tool: ToolSummary) -> tuple[ObjectRef, ...]:
         *(ref for ref in (tool_call_ref,) if ref is not None),
         *_github_object_refs("github-pr", tool.pr_refs),
         *_github_object_refs("github-issue", issue_refs),
-        *(ObjectRef(kind="file", object_id=ref) for ref in tool.file_refs),
+        *(ObjectRef(kind="file", object_id=_redact_local_path(ref)) for ref in tool.file_refs),
         *(ObjectRef(kind="commit", object_id=ref) for ref in tool.commit_refs),
     )
 
@@ -1573,24 +1887,70 @@ def _extract_decision_candidates(session: Session, messages: Sequence[Message]) 
     seen: set[tuple[str, str]] = set()
     for message in messages:
         ref = _message_ref(session, message)
+        dump_rejection_reason = _instruction_dump_rejection_reason(message.text or "")
         for line in (message.text or "").splitlines():
             decision = _DECISION_RE.search(line)
             if decision:
+                text = _preview(decision.group("text"), limit=240)
+                status, reason = _candidate_review_status_and_reason(line, dump_rejection_reason)
                 item = DecisionCandidate(
-                    kind="decision", text=_preview(decision.group("text"), limit=240), raw_refs=(ref,)
+                    kind="decision",
+                    text=text,
+                    raw_refs=(ref,),
+                    status=status,
+                    reason=reason,
+                    candidate_ref=_candidate_ref(
+                        session_id=str(session.id), message_id=str(message.id), kind="decision", text=text
+                    ),
                 )
                 key = (item.kind, item.text)
                 if key not in seen:
                     seen.add(key)
                     yield item
-            status = _STATUS_HEADING_RE.search(line)
-            if status:
-                text = f"{status.group(1).lower()}: {_preview(status.group('text'), limit=240)}"
-                item = DecisionCandidate(kind="run_state", text=text, raw_refs=(ref,))
+            status_match = _STATUS_HEADING_RE.search(line)
+            if status_match:
+                text = f"{status_match.group(1).lower()}: {_preview(status_match.group('text'), limit=240)}"
+                candidate_status, reason = _candidate_review_status_and_reason(line, dump_rejection_reason)
+                item = DecisionCandidate(
+                    kind="run_state",
+                    text=text,
+                    raw_refs=(ref,),
+                    status=candidate_status,
+                    reason=reason,
+                    candidate_ref=_candidate_ref(
+                        session_id=str(session.id), message_id=str(message.id), kind="run_state", text=text
+                    ),
+                )
                 key = (item.kind, item.text)
                 if key not in seen:
                     seen.add(key)
                     yield item
+
+
+def _candidate_review_status_and_reason(
+    line: str,
+    dump_rejection_reason: str | None,
+) -> tuple[DecisionCandidateReviewStatus, str | None]:
+    if dump_rejection_reason is None:
+        return "accepted", None
+    if _PRODUCT_DECISION_ANCHOR_RE.search(line):
+        return "accepted", "product_decision_anchor"
+    return "rejected", dump_rejection_reason
+
+
+def _instruction_dump_rejection_reason(text: str) -> str | None:
+    line_count = len(text.splitlines())
+    word_count = len(text.split())
+    marker_count = len(_INSTRUCTION_DUMP_MARKER_RE.findall(text))
+    imperative_count = sum(1 for token in ("MUST", "NEVER", "Do not", "Do NOT", "You are", "Run ") if token in text)
+    if (line_count >= 30 or word_count >= 600) and (marker_count >= 2 or imperative_count >= 4):
+        return "instruction_dump_without_local_decision_evidence"
+    return None
+
+
+def _candidate_ref(*, session_id: str, message_id: str, kind: str, text: str) -> str:
+    digest = hashlib.sha256(f"{session_id}\0{message_id}\0{kind}\0{text}".encode()).hexdigest()[:16]
+    return f"candidate:{digest}"
 
 
 def _session_raw_bytes(session: Session, messages: Sequence[Message]) -> int:
@@ -1912,12 +2272,21 @@ __all__ = [
     "RECOVERY_TRANSFORM_VERSION",
     "TRANSFORM_REGISTRY",
     "DecisionCandidate",
+    "DecisionCandidateReviewStatus",
     "ForensicIndex",
     "ForensicIndexEntry",
     "RecoveryDigest",
+    "RecoveryEvidenceWindow",
+    "RecoveryEvidenceWindowKind",
     "RecoveryEvent",
+    "RecoveryPackOmission",
+    "RecoveryPackOmissionReason",
+    "RecoveryPacketScope",
+    "RecoveryPacketSizeEstimate",
     "RecoveryReportPreset",
     "RecoverySizeMetrics",
+    "RecoveryWorkPacket",
+    "RecoveryWorkPacketEntry",
     "RunStateSummary",
     "SubagentReport",
     "ToolSummary",

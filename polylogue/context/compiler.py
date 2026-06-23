@@ -24,7 +24,7 @@ from polylogue.surfaces.payloads import AssertionClaimPayload
 RecoveryContextKind = Literal["recovery_digest", "recovery_report", "work_packet"]
 ContextPurpose = Literal["continue", "review", "handoff", "debug", "export"]
 ContextSegmentKind = Literal["recovery", "read_view", "assertion", "caveat"]
-ContextOmissionReason = Literal["budget", "unsupported", "not_found", "policy", "redacted"]
+ContextOmissionReason = Literal["budget", "unsupported", "not_found", "policy", "redacted", "missing_evidence"]
 
 _SUPPORTED_REPORTS: frozenset[str] = frozenset({"continue", "blame", "work-packet"})
 
@@ -82,6 +82,8 @@ class ContextImage(ArchiveInsightModel):
     """Compiled, storage-free context payload over archive refs and views."""
 
     spec: ContextSpec
+    selection_strategy: str = "single_session_recovery_digest_v0"
+    redaction_policy: str = "default"
     segments: tuple[ContextSegment, ...]
     object_refs: tuple[ObjectRef, ...] = ()
     evidence_refs: tuple[EvidenceRef, ...] = ()
@@ -89,6 +91,7 @@ class ContextImage(ArchiveInsightModel):
     omitted: tuple[ContextOmission, ...] = ()
     caveats: tuple[str, ...] = ()
     token_estimate: int = 0
+    size_estimate: dict[str, int] = Field(default_factory=dict)
 
 
 class ContextSnapshotRecord(ArchiveInsightModel):
@@ -212,6 +215,19 @@ def compile_recovery_context(
 def context_image_from_recovery(compilation: RecoveryContextCompilation) -> ContextImage:
     """Promote a recovery compilation into the general context-image shape."""
 
+    packet = compilation.work_packet
+    packet_omitted: tuple[ContextOmission, ...] = ()
+    if packet is not None:
+        packet_omitted = tuple(
+            ContextOmission(
+                ref=omission.ref,
+                view=omission.view,
+                reason=omission.reason,
+                detail=omission.detail,
+            )
+            for omission in packet.omissions
+        )
+
     segment = ContextSegment(
         segment_id=f"recovery:{compilation.session_id}:{compilation.report or compilation.kind}",
         kind="recovery",
@@ -233,14 +249,24 @@ def context_image_from_recovery(compilation: RecoveryContextCompilation) -> Cont
         include_candidates=False,
     )
     assertion_refs = tuple(claim.assertion_id for claim in compilation.assertion_claims)
+    token_estimate = packet.token_estimate if packet is not None and packet.token_estimate else segment.token_estimate
+    size_estimate = (
+        packet.size_estimate.model_dump(mode="json")
+        if packet is not None
+        else {"markdown_bytes": len((compilation.markdown or "").encode("utf-8")), "token_estimate": token_estimate}
+    )
     return ContextImage(
         spec=spec,
+        selection_strategy=packet.selection_strategy if packet is not None else "single_session_recovery_digest_v0",
+        redaction_policy=packet.redaction_policy if packet is not None else spec.redaction_policy,
         segments=(segment,),
         object_refs=compilation.object_refs,
         evidence_refs=compilation.evidence_refs,
         assertion_refs=assertion_refs,
+        omitted=packet_omitted,
         caveats=compilation.caveats,
-        token_estimate=segment.token_estimate,
+        token_estimate=token_estimate,
+        size_estimate=cast(dict[str, int], size_estimate),
     )
 
 
@@ -295,6 +321,9 @@ def context_snapshot_record_from_image(
         "include_assertions": _metadata_value_to_text(image.spec.include_assertions),
         "include_candidates": _metadata_value_to_text(image.spec.include_candidates),
         "redaction_policy": _metadata_value_to_text(image.spec.redaction_policy),
+        "context_redaction_policy": _metadata_value_to_text(image.redaction_policy),
+        "selection_strategy": _metadata_value_to_text(image.selection_strategy),
+        "size_estimate": _metadata_value_to_text(image.size_estimate),
         "omitted_count": _metadata_value_to_text(len(image.omitted)),
         "assertion_refs": _metadata_value_to_text(image.assertion_refs),
         "caveats": _metadata_value_to_text(image.caveats),
