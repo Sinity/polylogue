@@ -152,6 +152,61 @@ roots = ["{missing_root}"]
     } in diagnostics
 
 
+def test_effective_config_payload_reports_invalid_home_expansion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    workspace_env: dict[str, Path],
+) -> None:
+    from polylogue.config import effective_config_payload, load_polylogue_config
+
+    cfg_path = tmp_path / "polylogue.toml"
+    raw_root = "~polylogue-user-that-should-not-exist/source"
+    cfg_path.write_text(
+        f"""
+[sources]
+roots = ["{raw_root}"]
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+
+    payload = effective_config_payload(load_polylogue_config(config_path=cfg_path))
+
+    diagnostics = payload["diagnostics"]
+    assert isinstance(diagnostics, list)
+    assert any(
+        diag.get("code") == "config_path_invalid"
+        and diag.get("severity") == "error"
+        and diag.get("key") == "source_roots"
+        and raw_root in str(diag.get("message"))
+        for diag in diagnostics
+        if isinstance(diag, dict)
+    )
+
+
+def test_effective_config_payload_reports_env_relative_archive_root(
+    monkeypatch: pytest.MonkeyPatch,
+    workspace_env: dict[str, Path],
+) -> None:
+    from polylogue.config import effective_config_payload, load_polylogue_config
+
+    monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", "relative-archive")
+
+    payload = effective_config_payload(load_polylogue_config())
+
+    diagnostics = payload["diagnostics"]
+    assert isinstance(diagnostics, list)
+    assert any(
+        diag.get("code") == "config_path_not_absolute"
+        and diag.get("severity") == "error"
+        and diag.get("key") == "archive_root"
+        and diag.get("env_var") == "POLYLOGUE_ARCHIVE_ROOT"
+        for diag in diagnostics
+        if isinstance(diag, dict)
+    )
+
+
 def test_effective_config_payload_reports_embedding_enabled_without_key(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

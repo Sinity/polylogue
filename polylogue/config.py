@@ -1391,6 +1391,13 @@ def _iter_path_config_values(key: str, value: object) -> list[str]:
     return [str(value)]
 
 
+def _expand_config_path(raw_path: str) -> Path | None:
+    try:
+        return Path(raw_path).expanduser()
+    except RuntimeError:
+        return None
+
+
 def _config_path_diagnostics(resolved: PolylogueConfig) -> list[dict[str, object]]:
     diagnostics: list[dict[str, object]] = []
     for entry in _CONFIG_INVENTORY:
@@ -1399,10 +1406,25 @@ def _config_path_diagnostics(resolved: PolylogueConfig) -> list[dict[str, object
         value = resolved.raw.get(entry.key)
         # Defaults may legitimately point at not-yet-created first-run paths.
         # Operator-provided paths must be explicit enough to audit.
-        if resolved.layer_of(entry.key) == "default":
+        if resolved.layer_of(entry.key) == "default" and not (entry.env_var and entry.env_var in os.environ):
             continue
         for raw_path in _iter_path_config_values(entry.key, value):
-            path = Path(raw_path).expanduser()
+            path = _expand_config_path(raw_path)
+            if path is None:
+                diagnostics.append(
+                    _config_diagnostic(
+                        code="config_path_invalid",
+                        severity="error",
+                        key=entry.key,
+                        message=f"{entry.key} resolves to an invalid path: {raw_path!r}.",
+                        next_action=(
+                            f"Set {entry.toml_path or entry.key} to an absolute path with a valid home expansion"
+                            + (f" or override {entry.env_var}" if entry.env_var else "")
+                            + "."
+                        ),
+                    )
+                )
+                continue
             if not path.is_absolute():
                 diagnostics.append(
                     _config_diagnostic(
