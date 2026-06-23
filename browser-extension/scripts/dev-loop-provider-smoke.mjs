@@ -161,6 +161,9 @@ function generateCertificate(certDir) {
     ],
     { encoding: "utf8" },
   );
+  if (result.error) {
+    throw new Error(`openssl certificate generation failed: ${result.error.message}`);
+  }
   if (result.status !== 0) {
     throw new Error(`openssl certificate generation failed: ${result.stderr || result.stdout || result.status}`);
   }
@@ -236,22 +239,27 @@ function terminateProcess(child) {
   });
 }
 
-async function waitForExtensionWorker(debuggingPort, expectedWorkerSuffix) {
+async function waitForExtensionWorker(debuggingPort, expectedWorkerSuffix, expectedManifestName) {
   const deadline = Date.now() + timeoutMs;
   let targets = [];
   while (Date.now() < deadline) {
     targets = await waitJson(`http://127.0.0.1:${debuggingPort}/json/list`, Math.min(2000, timeoutMs));
     const candidates = targets.filter(
-      (target) => target.type === "service_worker" && target.url.endsWith(expectedWorkerSuffix),
+      (target) => target.type === "service_worker" && target.url.startsWith("chrome-extension://"),
     );
     for (const candidate of candidates) {
       const client = await connectCdp(candidate.webSocketDebuggerUrl);
       await client.call("Runtime.enable");
-      return { worker: candidate, client };
+      const manifestName = await evaluateJson(client, "chrome.runtime.getManifest().name").catch(() => null);
+      if (manifestName === expectedManifestName) return { worker: candidate, client };
+      if (candidates.length === 1) return { worker: candidate, client };
+      client.close();
     }
     await sleep(250);
   }
-  throw new Error(`Polylogue extension service worker not found; targets=${JSON.stringify(targets)}`);
+  throw new Error(
+    `Polylogue extension service worker not found; expectedSuffix=${expectedWorkerSuffix}; targets=${JSON.stringify(targets)}`
+  );
 }
 
 async function openProviderTarget(browserClient, debuggingPort, url) {
@@ -285,6 +293,9 @@ async function configureExtension(workerClient) {
   return evaluateJson(
     workerClient,
     `(async () => {
+      if (!globalThis.chrome?.storage?.local) {
+        throw new Error("extension service-worker CDP target does not expose chrome.storage.local");
+      }
       await chrome.storage.local.set({
         receiverBaseUrl: ${JSON.stringify(receiverBaseUrl)},
         receiverAuthToken: ${JSON.stringify(receiverAuthToken)}
@@ -298,6 +309,9 @@ async function captureProvider(workerClient, providerConfig) {
   return evaluateJson(
     workerClient,
     `(async () => {
+      if (!globalThis.chrome?.tabs?.query) {
+        throw new Error("extension service-worker CDP target does not expose chrome.tabs");
+      }
       const deadline = Date.now() + ${JSON.stringify(timeoutMs)};
       let last = null;
       while (Date.now() < deadline) {
@@ -435,7 +449,7 @@ async function main() {
       await waitForReadyPage(client);
     }
 
-    const { worker, client } = await waitForExtensionWorker(debuggingPort, expectedWorkerSuffix);
+    const { worker, client } = await waitForExtensionWorker(debuggingPort, expectedWorkerSuffix, localManifest.name);
     workerClient = client;
     const extensionId = new URL(worker.url).host;
     const configuredReceiver = await configureExtension(workerClient);

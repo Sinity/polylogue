@@ -790,6 +790,26 @@ def test_deployment_smoke_accepts_materialized_browser_capture_at_latest_mtime(t
     assert probe.error is None
 
 
+def test_deployment_smoke_accepts_legacy_spooled_id_normalized_by_index(tmp_path: Path) -> None:
+    legacy_id = "chatgpt:6a232355-ac3c-83eb-a93d-9c70697bfc18:9f658806"
+    native_id = "6a232355-ac3c-83eb-a93d-9c70697bfc18"
+    capture = _write_spooled_capture(tmp_path, provider_session_id=legacy_id)
+    _create_browser_source_db(
+        tmp_path,
+        file_mtime_ms=int(capture.stat().st_mtime * 1000),
+        capture_path=capture,
+        native_id=native_id,
+    )
+    _create_browser_index_db(tmp_path, native_id=native_id)
+
+    probe = deployment_smoke._probe_browser_capture_archive(archive_root=tmp_path)
+
+    assert probe.ok is True
+    assert probe.latest_capture_provider_session_id == legacy_id
+    assert probe.latest_indexed_native_id == native_id
+    assert probe.error is None
+
+
 def test_deployment_smoke_accepts_list_wrapped_browser_capture_envelope(tmp_path: Path) -> None:
     capture = _write_list_wrapped_spooled_capture(tmp_path)
     _create_browser_source_db(

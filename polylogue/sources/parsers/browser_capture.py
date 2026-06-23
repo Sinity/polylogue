@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from polylogue.browser_capture.identity import legacy_browser_capture_native_id
 from polylogue.browser_capture.models import BrowserCaptureEnvelope, looks_like_browser_capture
 from polylogue.core.enums import Provider
 from polylogue.sources.parsers.base_models import ParsedAttachment, ParsedMessage, ParsedSession
+
+
+def _legacy_native_id(provider: Provider, provider_session_id: str | None) -> str | None:
+    return legacy_browser_capture_native_id(provider, provider_session_id)
 
 
 def looks_like(payload: object) -> bool:
@@ -15,10 +20,16 @@ def looks_like(payload: object) -> bool:
 def parse(payload: object, fallback_id: str) -> ParsedSession:
     """Parse a browser-capture envelope into the canonical parser contract."""
     envelope = BrowserCaptureEnvelope.model_validate(payload)
+    provider = envelope.session.provider if envelope.session.provider is not Provider.UNKNOWN else Provider.UNKNOWN
+    provider_session_id = _legacy_native_id(provider, envelope.session.provider_session_id) or fallback_id
     if envelope.session.provider is Provider.CHATGPT and envelope.raw_provider_payload:
         from polylogue.sources.parsers.chatgpt import parse as parse_chatgpt
 
-        return parse_chatgpt(envelope.raw_provider_payload, fallback_id)
+        return parse_chatgpt(envelope.raw_provider_payload, provider_session_id)
+    if envelope.session.provider is Provider.CLAUDE_AI and envelope.raw_provider_payload:
+        from polylogue.sources.parsers.claude.ai_parser import parse_ai as parse_claude_ai
+
+        return parse_claude_ai(envelope.raw_provider_payload, provider_session_id)
 
     seen_turns: set[str] = set()
     messages: list[ParsedMessage] = []
@@ -71,7 +82,6 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
             )
         )
 
-    provider = envelope.session.provider if envelope.session.provider is not Provider.UNKNOWN else Provider.UNKNOWN
     active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
     if active_leaf_message_provider_id is not None:
         messages = [
@@ -82,8 +92,8 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
         ]
     return ParsedSession(
         source_name=provider,
-        provider_session_id=envelope.session.provider_session_id or fallback_id,
-        title=envelope.session.title or envelope.provenance.page_title or fallback_id,
+        provider_session_id=provider_session_id,
+        title=envelope.session.title or envelope.provenance.page_title or provider_session_id,
         created_at=envelope.session.created_at,
         updated_at=envelope.session.updated_at or envelope.provenance.captured_at,
         messages=messages,

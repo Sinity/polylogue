@@ -250,6 +250,25 @@ def suspend_fts_triggers_sync(conn: sqlite3.Connection, *, mark_stale: bool = Tr
         conn.execute(f"DROP TRIGGER IF EXISTS {name}")
 
 
+def message_fts_triggers_present_sync(conn: sqlite3.Connection) -> bool:
+    """Return true when the block-backed message FTS triggers are present."""
+    return _triggers_present_sync(conn, _BLOCKS_FTS_TRIGGER_NAMES)
+
+
+def suspend_message_fts_triggers_sync(conn: sqlite3.Connection) -> None:
+    """Drop only block-backed message FTS triggers inside the caller's transaction."""
+    for name in _BLOCKS_FTS_TRIGGER_NAMES:
+        conn.execute(f"DROP TRIGGER IF EXISTS {name}")
+
+
+def restore_message_fts_triggers_sync(conn: sqlite3.Connection) -> None:
+    """Restore only block-backed message FTS triggers inside the caller's transaction."""
+    if not _table_exists_sync(conn, "blocks") or not _table_exists_sync(conn, "messages_fts"):
+        return
+    for ddl in _BLOCKS_FTS_TRIGGER_DDL:
+        conn.execute(ddl)
+
+
 def restore_fts_triggers_sync(conn: sqlite3.Connection) -> None:
     """Re-create FTS triggers after bulk insert."""
     suspend_fts_triggers_sync(conn)
@@ -995,6 +1014,7 @@ __all__ = [
     "message_fts_readiness_sync",
     "message_fts_search_readiness_async",
     "message_fts_search_readiness_sync",
+    "message_fts_triggers_present_sync",
     "rebuild_fts_index_async",
     "rebuild_fts_index_sync",
     "rebuild_session_insight_fts_sync",
@@ -1003,6 +1023,8 @@ __all__ = [
     "repair_message_fts_index_sync",
     "reset_message_fts_index_sync",
     "replace_fts_rows_for_messages_sync",
+    "restore_message_fts_triggers_sync",
     "restore_fts_triggers_sync",
+    "suspend_message_fts_triggers_sync",
     "suspend_fts_triggers_sync",
 ]

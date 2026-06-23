@@ -203,19 +203,25 @@ async function main() {
     while (Date.now() < deadline && !worker) {
       targets = await waitJson(`http://127.0.0.1:${debuggingPort}/json/list`, Math.min(2000, timeoutMs));
       const candidates = targets.filter(
-        (target) => target.type === "service_worker" && target.url.endsWith(expectedWorkerSuffix)
+        (target) => target.type === "service_worker" && target.url.startsWith("chrome-extension://")
       );
       for (const candidate of candidates) {
         const client = await connectCdp(candidate.webSocketDebuggerUrl);
         await client.call("Runtime.enable");
-        worker = candidate;
-        workerClient = client;
-        break;
+        const manifestName = await evaluateJson(client, "chrome.runtime.getManifest().name").catch(() => null);
+        if (manifestName === localManifest.name || candidates.length === 1) {
+          worker = candidate;
+          workerClient = client;
+          break;
+        }
+        client.close();
       }
       if (!worker) await sleep(250);
     }
     if (!worker || !workerClient) {
-      throw new Error(`Polylogue extension service worker not found; targets=${JSON.stringify(targets)}`);
+      throw new Error(
+        `Polylogue extension service worker not found; expectedSuffix=${expectedWorkerSuffix}; targets=${JSON.stringify(targets)}`
+      );
     }
     const extensionId = new URL(worker.url).host;
     const authHeader = JSON.stringify(`Bearer ${receiverAuthToken}`);

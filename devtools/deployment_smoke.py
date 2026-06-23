@@ -18,6 +18,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from polylogue.browser_capture.identity import legacy_browser_capture_native_id
+
 _CURRENT_USER = getpass.getuser()
 _HOME = Path.home()
 SYSTEMWIDE_PATH = ":".join(
@@ -514,7 +516,11 @@ def _probe_browser_capture_archive(*, archive_root: Path) -> BrowserCaptureArchi
                 latest_indexed_message_count = int(row[3] or 0)
                 if latest_indexed_message_count <= 0:
                     error = "latest_spooled_indexed_without_messages"
-                elif latest_provider_session_id is not None and latest_indexed_native_id != latest_provider_session_id:
+                elif (
+                    latest_provider_session_id is not None
+                    and latest_indexed_native_id
+                    != legacy_browser_capture_native_id(latest_provider, latest_provider_session_id)
+                ):
                     error = "latest_spooled_indexed_native_id_mismatch"
         except sqlite3.Error as exc:
             error = f"index:{type(exc).__name__}: {exc}"

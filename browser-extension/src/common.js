@@ -14,6 +14,15 @@
   function sessionIdFromUrl(provider, url) {
     const parsed = new URL(url);
     const parts = parsed.pathname.split("/").filter(Boolean);
+    if (provider === "chatgpt") {
+      const marker = parts.indexOf("c");
+      if (marker >= 0 && parts[marker + 1]) return parts[marker + 1];
+      return null;
+    }
+    if (provider === "claude-ai" && parts[0] === "chat" && parts[1]) {
+      return parts[1];
+    }
+    if (provider === "claude-ai") return null;
     const sessionToken = parts.at(-1) || parsed.pathname || parsed.hostname;
     return `${provider}:${sessionToken}:${fnv1a(parsed.origin + parsed.pathname)}`;
   }
@@ -36,6 +45,9 @@
   }) {
     const sourceUrl = window.location.href;
     const stableProviderSessionId = providerSessionId || sessionIdFromUrl(provider, sourceUrl);
+    if (!stableProviderSessionId) {
+      throw new Error(`cannot capture ${provider} page without a provider-native conversation id`);
+    }
     const stableCaptureId = stableProviderSessionId.startsWith(`${provider}:`)
       ? stableProviderSessionId
       : `${provider}:${stableProviderSessionId}`;

@@ -23,6 +23,15 @@ function fnv1a(text) {
 function sessionIdFromUrl(provider, url) {
   const parsed = new URL(url);
   const parts = parsed.pathname.split("/").filter(Boolean);
+  if (provider === "chatgpt") {
+    const marker = parts.indexOf("c");
+    if (marker >= 0 && parts[marker + 1]) return parts[marker + 1];
+    return null;
+  }
+  if (provider === "claude-ai" && parts[0] === "chat" && parts[1]) {
+    return parts[1];
+  }
+  if (provider === "claude-ai") return null;
   const sessionToken =
     parts.at(-1) || parsed.pathname || parsed.hostname;
   return `${provider}:${sessionToken}:${fnv1a(parsed.origin + parsed.pathname)}`;
@@ -45,10 +54,13 @@ function buildEnvelope({
   updatedAt = null,
   providerMeta = {},
   rawProviderPayload = null,
+  sourceUrl = "https://chatgpt.com/c/test-conv",
 }) {
-  const sourceUrl = "https://chatgpt.com/c/test-conv";
   const stableProviderSessionId =
     providerSessionId || sessionIdFromUrl(provider, sourceUrl);
+  if (!stableProviderSessionId) {
+    throw new Error(`cannot capture ${provider} page without a provider-native conversation id`);
+  }
   const stableCaptureId = stableProviderSessionId.startsWith(`${provider}:`)
     ? stableProviderSessionId
     : `${provider}:${stableProviderSessionId}`;
@@ -124,20 +136,28 @@ describe("fnv1a", () => {
 // ---------------------------------------------------------------------------
 
 describe("sessionIdFromUrl", () => {
-  it("extracts last path segment as token", () => {
+  it("extracts ChatGPT conversation id as provider-native token", () => {
     const id = sessionIdFromUrl(
       "chatgpt",
       "https://chatgpt.com/c/abc-123",
     );
-    expect(id).toMatch(/^chatgpt:abc-123:/);
+    expect(id).toBe("abc-123");
   });
 
-  it("includes provider prefix", () => {
+  it("extracts ChatGPT custom-GPT route conversation id", () => {
+    const id = sessionIdFromUrl(
+      "chatgpt",
+      "https://chatgpt.com/g/g-p-abc/c/conv-123",
+    );
+    expect(id).toBe("conv-123");
+  });
+
+  it("extracts Claude conversation id as provider-native token", () => {
     const id = sessionIdFromUrl(
       "claude-ai",
       "https://claude.ai/chat/test-conv",
     );
-    expect(id).toMatch(/^claude-ai:test-conv:/);
+    expect(id).toBe("test-conv");
   });
 
   it("handles URL with query params", () => {
@@ -145,17 +165,33 @@ describe("sessionIdFromUrl", () => {
       "chatgpt",
       "https://chatgpt.com/c/conv?q=1",
     );
-    expect(id).toMatch(/^chatgpt:conv:/);
+    expect(id).toBe("conv");
   });
 
-  it("does not duplicate provider prefix in capture id", () => {
+  it("does not invent ChatGPT ids for non-conversation routes", () => {
+    const id = sessionIdFromUrl(
+      "chatgpt",
+      "https://chatgpt.com/",
+    );
+    expect(id).toBeNull();
+  });
+
+  it("does not invent Claude ids for non-conversation routes", () => {
+    const id = sessionIdFromUrl(
+      "claude-ai",
+      "https://claude.ai/new",
+    );
+    expect(id).toBeNull();
+  });
+
+  it("keeps provider prefix in capture id but not session id", () => {
     const envelope = buildEnvelope({
       provider: "chatgpt",
       adapterName: "chatgpt-dom-v1",
       turns: [{ role: "user", text: "Hello" }],
     });
-    expect(envelope.session.provider_session_id).toMatch(/^chatgpt:/);
-    expect(envelope.capture_id).toBe(envelope.session.provider_session_id);
+    expect(envelope.session.provider_session_id).toBe("test-conv");
+    expect(envelope.capture_id).toBe("chatgpt:test-conv");
   });
 });
 
@@ -216,6 +252,15 @@ describe("buildEnvelope", () => {
     expect(envelope.provenance.capture_mode).toBe("snapshot");
     expect(envelope.session.provider).toBe("chatgpt");
     expect(envelope.session.turns).toHaveLength(1);
+  });
+
+  it("rejects supported provider pages without native conversation ids", () => {
+    expect(() => buildEnvelope({
+      provider: "chatgpt",
+      adapterName: "chatgpt-dom-v1",
+      turns: [{ role: "user", text: "Hello" }],
+      sourceUrl: "https://chatgpt.com/",
+    })).toThrow("cannot capture chatgpt page without a provider-native conversation id");
   });
 
   it("assigns ordinals to turns", () => {

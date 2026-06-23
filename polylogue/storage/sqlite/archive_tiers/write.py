@@ -26,6 +26,12 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
     ParsedSessionEvent,
 )
+from polylogue.storage.fts.fts_lifecycle import (
+    message_fts_triggers_present_sync,
+    restore_message_fts_triggers_sync,
+    suspend_message_fts_triggers_sync,
+)
+from polylogue.storage.fts.sql import delete_session_rows_sql, insert_session_rows_sql
 from polylogue.storage.search.query_support import normalize_fts5_query
 
 _SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
@@ -286,22 +292,27 @@ def write_parsed_session_to_archive(
                 (active_leaf_message_id, session_id),
             )
         else:
-            _clear_session_projection_rows(conn, session_id)
-            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
-        _write_messages(
-            conn,
-            session_id,
-            messages,
-            position_offset=position_offset,
-            duplicate_native_ids=duplicate_message_native_ids,
-        )
-        _write_blocks(
-            conn,
-            session_id,
-            messages,
-            position_offset=position_offset,
-            duplicate_native_ids=duplicate_message_native_ids,
-        )
+            _replace_full_session_messages_and_blocks(
+                conn,
+                session_id,
+                messages,
+                duplicate_native_ids=duplicate_message_native_ids,
+            )
+        if merge_append:
+            _write_messages(
+                conn,
+                session_id,
+                messages,
+                position_offset=position_offset,
+                duplicate_native_ids=duplicate_message_native_ids,
+            )
+            _write_blocks(
+                conn,
+                session_id,
+                messages,
+                position_offset=position_offset,
+                duplicate_native_ids=duplicate_message_native_ids,
+            )
         _write_attachments(
             conn,
             session_id,
@@ -1221,6 +1232,39 @@ def _write_blocks(
         """,
         rows(),
     )
+
+
+def _replace_full_session_messages_and_blocks(
+    conn: sqlite3.Connection,
+    session_id: str,
+    messages: list[ParsedMessage],
+    *,
+    duplicate_native_ids: frozenset[str],
+) -> None:
+    use_scoped_fts_rebuild = message_fts_triggers_present_sync(conn)
+    if use_scoped_fts_rebuild:
+        conn.execute(delete_session_rows_sql(1), (session_id,))
+        suspend_message_fts_triggers_sync(conn)
+    try:
+        _clear_session_projection_rows(conn, session_id)
+        conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+        _write_messages(
+            conn,
+            session_id,
+            messages,
+            duplicate_native_ids=duplicate_native_ids,
+        )
+        _write_blocks(
+            conn,
+            session_id,
+            messages,
+            duplicate_native_ids=duplicate_native_ids,
+        )
+        if use_scoped_fts_rebuild:
+            conn.execute(insert_session_rows_sql(1), (session_id,))
+    finally:
+        if use_scoped_fts_rebuild:
+            restore_message_fts_triggers_sync(conn)
 
 
 def _refresh_session_counts(conn: sqlite3.Connection, session_id: str) -> None:

@@ -27,7 +27,7 @@ from polylogue.logging import get_logger
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.sources.decoders import _iter_json_stream
-from polylogue.sources.dispatch import STREAM_RECORD_PROVIDERS
+from polylogue.sources.dispatch import STREAM_RECORD_PROVIDERS, is_jsonl_source_path, is_stream_record_provider
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import (
     RawSessionRecord,
@@ -178,21 +178,6 @@ def _normalized_session(
     if convo.updated_at is None and isinstance(effective_created, str) and effective_created:
         updates["updated_at"] = effective_created
     return convo.model_copy(update=updates) if updates else convo
-
-
-def _is_stream_record_provider(source_path: str | None, provider: str | Provider | None) -> bool:
-    if provider is None:
-        return False
-    if not _is_jsonl_source_path(source_path):
-        return False
-    return Provider.from_string(provider) in STREAM_RECORD_PROVIDERS
-
-
-def _is_jsonl_source_path(source_path: str | None) -> bool:
-    normalized = (source_path or "").lower()
-    return normalized.endswith((".jsonl", ".jsonl.txt", ".ndjson")) or any(
-        marker in normalized for marker in (".jsonl.", ".ndjson.")
-    )
 
 
 def _record_result(
@@ -640,14 +625,14 @@ def ingest_record(
             error=error,
         )
 
-    if _is_stream_record_provider(raw_record.source_path, stored_payload_provider or raw_record.source_name):
+    if is_stream_record_provider(raw_record.source_path, stored_payload_provider or raw_record.source_name):
         if validation_mode is ValidationMode.OFF and (
             stream_plan := _build_fast_stream_parse_plan(context, payload_provider=stored_payload_provider)
         ):
             return _run_parse_plan(context, stream_plan)
         if stream_plan := _build_stream_parse_plan(context, payload_provider=stored_payload_provider):
             return _run_parse_plan(context, stream_plan)
-    elif _is_jsonl_source_path(raw_record.source_path):
+    elif is_jsonl_source_path(raw_record.source_path):
         if stream_plan := _build_stream_parse_plan(context, payload_provider=stored_payload_provider):
             return _run_parse_plan(context, stream_plan)
 

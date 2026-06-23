@@ -27,6 +27,8 @@ from pathlib import Path
 import pytest
 
 from polylogue.errors import SchemaVersionMismatchError
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.schema import (
     SCHEMA_VERSION,
     _ensure_schema,
@@ -121,6 +123,63 @@ def test_matching_version_database_opens_cleanly(tmp_path: Path) -> None:
     _ensure_schema(conn)
     assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     conn.close()
+
+
+def test_matching_version_database_ensures_runtime_indexes(tmp_path: Path) -> None:
+    """Runtime index extensions are safe on existing same-version archives.
+
+    These indexes are performance guards, not schema-version migrations: a
+    current archive can gain them without rebuilding from source.
+    """
+    db_path = tmp_path / "runtime-indexes.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        _ensure_schema(conn)
+        for index_name in (
+            "idx_session_events_source_message",
+            "idx_session_agent_policies_source_message",
+            "idx_session_provider_usage_events_source_message",
+            "idx_messages_message_type",
+            "idx_messages_material_origin",
+        ):
+            conn.execute(f"DROP INDEX {index_name}")
+        _ensure_schema(conn)
+        for table, index_name in (
+            ("session_events", "idx_session_events_source_message"),
+            ("session_agent_policies", "idx_session_agent_policies_source_message"),
+            ("session_provider_usage_events", "idx_session_provider_usage_events_source_message"),
+            ("messages", "idx_messages_message_type"),
+            ("messages", "idx_messages_material_origin"),
+        ):
+            assert any(row[1] == index_name for row in conn.execute(f"PRAGMA index_list({table})"))
+    finally:
+        conn.close()
+
+
+def test_read_only_archive_open_ensures_runtime_indexes(tmp_path: Path) -> None:
+    """Read surfaces should not wait for a later write to gain runtime indexes."""
+    initialize_active_archive_root(tmp_path)
+    index_db = tmp_path / "index.db"
+    conn = sqlite3.connect(index_db)
+    try:
+        conn.execute("DROP INDEX idx_messages_message_type")
+        conn.execute("DROP INDEX idx_messages_material_origin")
+        conn.commit()
+    finally:
+        conn.close()
+
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        assert archive._read_only is True
+
+    conn = sqlite3.connect(index_db)
+    try:
+        for table, index_name in (
+            ("messages", "idx_messages_message_type"),
+            ("messages", "idx_messages_material_origin"),
+        ):
+            assert any(row[1] == index_name for row in conn.execute(f"PRAGMA index_list({table})"))
+    finally:
+        conn.close()
 
 
 def test_future_schema_version_is_rejected(tmp_path: Path) -> None:
