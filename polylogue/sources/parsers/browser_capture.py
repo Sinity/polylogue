@@ -2,36 +2,14 @@
 
 from __future__ import annotations
 
+from polylogue.browser_capture.identity import legacy_browser_capture_native_id
 from polylogue.browser_capture.models import BrowserCaptureEnvelope, looks_like_browser_capture
 from polylogue.core.enums import Provider
 from polylogue.sources.parsers.base_models import ParsedAttachment, ParsedMessage, ParsedSession
 
 
 def _legacy_native_id(provider: Provider, provider_session_id: str | None) -> str | None:
-    """Recover native ids from old browser-extension synthetic session ids."""
-    if not provider_session_id:
-        return None
-    provider_prefix = provider.value
-    synthetic_prefix = f"{provider_prefix}:"
-    if provider_session_id.startswith(synthetic_prefix):
-        parts = provider_session_id.split(":")
-        if len(parts) == 3 and parts[1] and "/" not in parts[1]:
-            return parts[1]
-        if provider is Provider.CHATGPT and len(parts) == 4 and parts[1] == "WEB" and parts[2]:
-            return f"WEB:{parts[2]}"
-    hyphen_prefix = f"{provider_prefix}-"
-    if provider_session_id.startswith(hyphen_prefix):
-        import re
-
-        match = re.search(
-            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
-            provider_session_id,
-        )
-        if match:
-            if provider is Provider.CHATGPT and provider_session_id.startswith("chatgpt-WEB-"):
-                return f"WEB:{match.group(0)}"
-            return match.group(0)
-    return provider_session_id
+    return legacy_browser_capture_native_id(provider, provider_session_id)
 
 
 def looks_like(payload: object) -> bool:

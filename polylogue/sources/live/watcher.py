@@ -507,14 +507,17 @@ class LiveWatcher:
         start_offset = max(cursor.byte_offset, 0)
         if stat.st_size <= start_offset:
             return False
-        bytes_to_probe = min(stat.st_size - start_offset, _INCOMPLETE_APPEND_PROBE_BYTES)
+        remaining_bytes = stat.st_size - start_offset
+        bytes_to_probe = min(remaining_bytes, _INCOMPLETE_APPEND_PROBE_BYTES)
         try:
             with path.open("rb") as handle:
                 handle.seek(start_offset)
                 payload = handle.read(bytes_to_probe)
-        except FileNotFoundError:
+        except OSError:
             return True
         if b"\n" in payload:
+            return False
+        if bytes_to_probe < remaining_bytes:
             return False
         record_deferred_append_cursor(
             self._cursor,

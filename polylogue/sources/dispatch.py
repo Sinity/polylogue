@@ -80,6 +80,23 @@ def _record_sessions(record: PayloadRecord) -> list[JSONValue] | None:
     return sessions if isinstance(sessions, list) else None
 
 
+def is_jsonl_source_path(source_path: str | None) -> bool:
+    """Return whether a path is a JSONL/NDJSON source path."""
+    normalized_path = (source_path or "").lower()
+    return normalized_path.endswith((".jsonl", ".jsonl.txt", ".ndjson")) or any(
+        marker in normalized_path for marker in (".jsonl.", ".ndjson.")
+    )
+
+
+def is_stream_record_provider(source_path: str | None, provider: str | Provider | None) -> bool:
+    """Return whether a source/provider pair should use stream-record parsing."""
+    if provider is None:
+        return False
+    if not is_jsonl_source_path(source_path):
+        return False
+    return Provider.from_string(provider) in STREAM_RECORD_PROVIDERS
+
+
 def _looks_like_gemini_mapping(record: PayloadRecord) -> bool:
     return "chunkedPrompt" in record or isinstance(record.get("chunks"), list)
 
@@ -689,6 +706,8 @@ __all__ = [
     "LoweredPayloadSpec",
     "_detect_provider_from_raw_bytes",
     "detect_provider",
+    "is_jsonl_source_path",
+    "is_stream_record_provider",
     "parse_drive_payload",
     "parse_payload",
     "parse_stream_payload",

@@ -244,15 +244,16 @@ async function waitForExtensionWorker(debuggingPort, expectedWorkerSuffix, expec
     for (const candidate of candidates) {
       const client = await connectCdp(candidate.webSocketDebuggerUrl);
       await client.call("Runtime.enable");
-      if (candidate.url.endsWith(expectedWorkerSuffix)) return { worker: candidate, client };
-      if (candidates.length === 1) return { worker: candidate, client };
       const manifestName = await evaluateJson(client, "chrome.runtime.getManifest().name").catch(() => null);
       if (manifestName === expectedManifestName) return { worker: candidate, client };
+      if (candidates.length === 1) return { worker: candidate, client };
       client.close();
     }
     await sleep(250);
   }
-  throw new Error(`Polylogue extension service worker not found; targets=${JSON.stringify(targets)}`);
+  throw new Error(
+    `Polylogue extension service worker not found; expectedSuffix=${expectedWorkerSuffix}; targets=${JSON.stringify(targets)}`
+  );
 }
 
 async function openProviderTarget(browserClient, debuggingPort, url) {

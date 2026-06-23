@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from polylogue.browser_capture.identity import legacy_browser_capture_native_id
 from polylogue.browser_capture.models import (
     BrowserCaptureEnvelope,
     looks_like_browser_capture,
@@ -19,6 +20,7 @@ from polylogue.browser_capture.models import (
 from polylogue.browser_capture.receiver import (
     write_capture_envelope,
 )
+from polylogue.core.enums import Provider
 from polylogue.sources.parsers.browser_capture import parse as parse_browser_capture
 
 # ---------------------------------------------------------------------------
@@ -149,6 +151,36 @@ def _invalid_payloads() -> list[tuple[str, dict[str, object]]]:
 # ---------------------------------------------------------------------------
 # Acceptance: valid payloads
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("provider", "provider_session_id", "expected"),
+    [
+        (Provider.CHATGPT, "chatgpt:abc123:deadbeef", "abc123"),
+        (
+            "chatgpt",
+            "chatgpt:WEB:00000000-0000-0000-0000-000000000001:deadbeef",
+            "WEB:00000000-0000-0000-0000-000000000001",
+        ),
+        (
+            "chatgpt",
+            "chatgpt-WEB-00000000-0000-0000-0000-000000000002-deadbeef",
+            "WEB:00000000-0000-0000-0000-000000000002",
+        ),
+        (
+            "claude-ai",
+            "claude-ai-00000000-0000-0000-0000-000000000003-deadbeef",
+            "00000000-0000-0000-0000-000000000003",
+        ),
+        ("chatgpt", "chatgpt:/:deadbeef", "chatgpt:/:deadbeef"),
+    ],
+)
+def test_legacy_browser_capture_native_id_normalizes_synthetic_ids(
+    provider: Provider | str,
+    provider_session_id: str,
+    expected: str,
+) -> None:
+    assert legacy_browser_capture_native_id(provider, provider_session_id) == expected
 
 
 class TestReceiverAcceptsValidPayload:
