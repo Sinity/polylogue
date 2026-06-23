@@ -426,22 +426,38 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
     due_debt = [
         debt
         for debt in cursor.list_convergence_debt(limit=limit)
-        if debt.subject_type in {"source_path", "session_id"} and _debt_retry_due(debt, now=now)
+        if debt.subject_type in {"source_path", "session_id", "fts_surface"} and _debt_retry_due(debt, now=now)
     ]
     if not due_debt:
         return 0
     session_ids = tuple(dict.fromkeys(debt.subject_id for debt in due_debt if debt.subject_type == "session_id"))
     paths = tuple(dict.fromkeys([Path(debt.subject_id) for debt in due_debt if debt.subject_type == "source_path"]))
-    if not paths and not session_ids:
+    fts_surfaces = tuple(dict.fromkeys(debt.subject_id for debt in due_debt if debt.subject_type == "fts_surface"))
+    if not paths and not session_ids and not fts_surfaces:
         return 0
     converger = DaemonConverger(stages=make_default_convergence_stages(db), max_workers=2)
     path_states, _path_timings = converger.converge_batch(paths)
     session_states, _session_timings = converger.converge_sessions(session_ids)
+    fts_surface_results = _drain_fts_surface_debt(db, fts_surfaces)
     retried = 0
     for debt in due_debt:
         subject_states: list[object | None]
         if debt.subject_type == "session_id":
             subject_states = [session_states.get(debt.subject_id)]
+        elif debt.subject_type == "fts_surface":
+            if fts_surface_results.get(debt.subject_id) is True:
+                cursor.clear_convergence_debt(subject_type=debt.subject_type, subject_id=debt.subject_id)
+                retried += 1
+                continue
+            cursor.clear_convergence_debt(subject_type=debt.subject_type, subject_id=debt.subject_id)
+            cursor.record_convergence_debt(
+                stage=debt.stage,
+                subject_type=debt.subject_type,
+                subject_id=debt.subject_id,
+                error="global FTS surface repair did not converge",
+            )
+            retried += 1
+            continue
         else:
             subject_states = [path_states.get(Path(debt.subject_id))]
         converged = all(state is not None and bool(getattr(state, "converged", False)) for state in subject_states)
@@ -469,6 +485,20 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
             )
         retried += 1
     return retried
+
+
+def _drain_fts_surface_debt(db: Path, surfaces: tuple[str, ...]) -> dict[str, bool]:
+    if not surfaces:
+        return {}
+    from polylogue.daemon.convergence_stages import repair_messages_fts_surface
+
+    results: dict[str, bool] = {}
+    for surface in surfaces:
+        if surface != "messages_fts":
+            results[surface] = False
+            continue
+        results[surface] = repair_messages_fts_surface(db)
+    return results
 
 
 def _debt_retry_due(debt: object, *, now: datetime) -> bool:

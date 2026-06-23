@@ -371,6 +371,7 @@ def _clear_session_projection_rows(conn: sqlite3.Connection, session_id: str) ->
         """,
         (session_id,),
     )
+    _purge_session_message_fts_when_delete_trigger_missing(conn, session_id)
     for table in (
         "blocks",
         "attachment_refs",
@@ -385,6 +386,28 @@ def _clear_session_projection_rows(conn: sqlite3.Connection, session_id: str) ->
     ):
         conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
     conn.execute("DELETE FROM session_links WHERE src_session_id = ?", (session_id,))
+
+
+def _purge_session_message_fts_when_delete_trigger_missing(conn: sqlite3.Connection, session_id: str) -> None:
+    """Delete current session FTS rows before block deletion when triggers are suspended."""
+    trigger_row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = 'messages_fts_ad'",
+    ).fetchone()
+    if trigger_row is not None:
+        return
+    table_rows = conn.execute(
+        """
+        SELECT name
+        FROM sqlite_master
+        WHERE type IN ('table', 'virtual table')
+          AND name IN ('messages_fts', 'messages_fts_docsize')
+        """,
+    ).fetchall()
+    if {str(row[0]) for row in table_rows} != {"messages_fts", "messages_fts_docsize"}:
+        return
+    from polylogue.storage.fts.sql import delete_session_rows_sql
+
+    conn.execute(delete_session_rows_sql(1), (session_id,))
 
 
 def upsert_session_profile_costs(

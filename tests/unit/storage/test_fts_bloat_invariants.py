@@ -15,6 +15,10 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from polylogue.archive.message.roles import Role
+from polylogue.core.enums import BlockType, Provider
+from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+
 
 def _seed_session(conn: sqlite3.Connection, native_id: str = "c1") -> str:
     conn.execute(
@@ -196,5 +200,60 @@ def test_session_replacement_purges_fts_when_delete_triggers_missing(tmp_path: P
             """
         ).fetchone()[0]
         assert message_orphans == 0
+    finally:
+        conn.close()
+
+
+def test_parsed_session_rewrite_purges_fts_when_bulk_triggers_suspended(tmp_path: Path) -> None:
+    """Full session rewrite must not orphan old FTS rowids in dropped-trigger bulk mode."""
+    from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync, restore_fts_triggers_sync
+    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+    from polylogue.storage.sqlite.schema import SCHEMA_DDL
+
+    def parsed_session(*texts: str) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="bulk-rewrite-orphan",
+            title="Bulk rewrite orphan",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.USER,
+                    text="\n".join(texts),
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text) for text in texts],
+                )
+            ],
+        )
+
+    conn = sqlite3.connect(str(tmp_path / "fts_bulk_rewrite.db"))
+    try:
+        conn.executescript(SCHEMA_DDL)
+        write_parsed_session_to_archive(conn, parsed_session("old orphan needle", "old removed block"))
+        old_block_rowids = {row[0] for row in conn.execute("SELECT rowid FROM blocks").fetchall()}
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 2
+
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("DROP TRIGGER messages_fts_ad")
+        conn.execute("DROP TRIGGER messages_fts_ai")
+        conn.execute("DROP TRIGGER messages_fts_au")
+        write_parsed_session_to_archive(conn, parsed_session("new orphan needle"))
+        restore_fts_triggers_sync(conn)
+        repair_message_fts_index_sync(conn, ["codex-session:bulk-rewrite-orphan"])
+        conn.commit()
+
+        new_block_rowids = {row[0] for row in conn.execute("SELECT rowid FROM blocks").fetchall()}
+        assert old_block_rowids - new_block_rowids
+        message_orphans = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM messages_fts_docsize AS d
+            LEFT JOIN blocks AS b ON b.rowid = d.id
+            WHERE b.rowid IS NULL
+            """
+        ).fetchone()[0]
+        assert message_orphans == 0
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'old'").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'new'").fetchone()[0] == 1
     finally:
         conn.close()

@@ -77,7 +77,7 @@ def test_polylogued_status_json_reports_daemon_components(
     assert live["source_count"] == 2
     assert live["existing_source_count"] == 1
     assert browser_capture["spool_ready"] is True
-    assert "spool_path" not in browser_capture
+    assert browser_capture["spool_path"] == str(tmp_path / "captures")
 
 
 def test_polylogued_status_plain_reports_daemon_components(tmp_path: Path) -> None:
@@ -222,6 +222,47 @@ def test_drain_convergence_debt_retries_session_subjects_without_source_lookup(
         debt_after = cursor.list_convergence_debt()
 
     assert retried == 1
+    assert debt_after == []
+
+
+@pytest.mark.contract
+@pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor")
+def test_drain_convergence_debt_retries_global_messages_fts_surface(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    db = tmp_path / "index.db"
+    cursor = CursorStore(db)
+    cursor.record_convergence_debt(
+        stage="fts",
+        subject_type="fts_surface",
+        subject_id="messages_fts",
+        error="startup found stale messages_fts freshness ledger",
+    )
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute(
+            "UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00'",
+        )
+        conn.commit()
+    repairs: list[Path] = []
+
+    def fake_repair_messages_fts_surface(path: Path) -> bool:
+        repairs.append(path)
+        return True
+
+    monkeypatch.setattr(
+        "polylogue.daemon.convergence_stages.repair_messages_fts_surface",
+        fake_repair_messages_fts_surface,
+    )
+
+    retried = daemon_cli._drain_convergence_debt_once(db)
+    debt_after = cursor.list_convergence_debt()
+
+    assert retried == 1
+    assert repairs == [db]
     assert debt_after == []
 
 
@@ -751,6 +792,7 @@ def test_archive_message_fts_startup_large_drift_is_deferred(monkeypatch: pytest
 
     rebuilds: list[FakeConnection] = []
     records: list[dict[str, object]] = []
+    debts: list[dict[str, object]] = []
 
     monkeypatch.setattr("polylogue.storage.sqlite.archive_tiers.bootstrap.initialize_archive_tier", lambda *_args: None)
     monkeypatch.setattr("polylogue.storage.fts.freshness.ensure_fts_freshness_table_sync", lambda _conn: None)
@@ -762,8 +804,20 @@ def test_archive_message_fts_startup_large_drift_is_deferred(monkeypatch: pytest
         lambda _conn, **kwargs: records.append(kwargs),
     )
 
+    class FakeCursorStore:
+        def __init__(self, db_path: Path) -> None:
+            assert db_path == Path("/archive/index.db")
+
+        def record_convergence_debt(self, **kwargs: object) -> None:
+            debts.append(kwargs)
+
+    monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursorStore)
+
     assert (
-        fts_startup._ensure_archive_messages_fts_startup_readiness_sync(cast(sqlite3.Connection, FakeConnection()))
+        fts_startup._ensure_archive_messages_fts_startup_readiness_sync(
+            cast(sqlite3.Connection, FakeConnection()),
+            db_path=Path("/archive/index.db"),
+        )
         is True
     )
 
@@ -776,7 +830,15 @@ def test_archive_message_fts_startup_large_drift_is_deferred(monkeypatch: pytest
             "indexed_rows": 100_000,
             "missing_rows": 150_000,
             "excess_rows": 0,
-            "detail": "archive message FTS drift exceeds startup repair budget; run explicit FTS repair to refresh search",
+            "detail": "archive message FTS drift exceeds startup repair budget; scheduled global FTS surface repair",
+        }
+    ]
+    assert debts == [
+        {
+            "stage": "fts",
+            "subject_type": "fts_surface",
+            "subject_id": "messages_fts",
+            "error": "archive message FTS drift exceeds startup repair budget; scheduled global FTS surface repair",
         }
     ]
 
@@ -1267,9 +1329,9 @@ def test_ensure_fts_startup_readiness_uses_extended_write_timeout(
     seen_busy_timeout: list[int] = []
     real_ensure = fts_startup._ensure_archive_messages_fts_startup_readiness_sync
 
-    def wrapped_ensure(conn: sqlite3.Connection) -> bool:
+    def wrapped_ensure(conn: sqlite3.Connection, *, db_path: Path | None = None) -> bool:
         seen_busy_timeout.append(int(conn.execute("PRAGMA busy_timeout").fetchone()[0]))
-        return real_ensure(conn)
+        return real_ensure(conn, db_path=db_path)
 
     monkeypatch.setattr(fts_startup, "_ensure_archive_messages_fts_startup_readiness_sync", wrapped_ensure)
 

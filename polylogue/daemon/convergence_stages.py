@@ -1085,6 +1085,22 @@ def _archive_fts_execute_sessions(db_path: Path, session_ids: Sequence[str]) -> 
         return False
 
 
+def repair_messages_fts_surface(db_path: Path) -> bool:
+    """Repair the whole archive ``messages_fts`` surface after global drift."""
+    archive_db = _active_archive_index_path(db_path) or db_path
+    try:
+        conn = _open_archive_insight_write_connection(archive_db)
+        try:
+            _archive_rebuild_messages_fts(conn)
+            conn.commit()
+            return not _archive_fts_needs_repair(conn)
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("fts: archive global messages_fts repair failed", exc_info=True)
+        return False
+
+
 def _archive_pending_embedding_session_ids(conn: sqlite3.Connection, session_ids: Sequence[str]) -> list[str]:
     from polylogue.storage.embeddings.materialization import select_pending_archive_session_window
 

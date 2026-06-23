@@ -117,7 +117,16 @@ def _active_fts_startup_db_path() -> Path:
     return paths.active_index_db_path()
 
 
-def _ensure_archive_messages_fts_startup_readiness_sync(conn: sqlite3.Connection) -> bool:
+_MESSAGE_FTS_STARTUP_REPAIR_DETAIL = (
+    "archive message FTS drift exceeds startup repair budget; scheduled global FTS surface repair"
+)
+
+
+def _ensure_archive_messages_fts_startup_readiness_sync(
+    conn: sqlite3.Connection,
+    *,
+    db_path: Path | None = None,
+) -> bool:
     """Run message FTS startup maintenance when applicable."""
     try:
         has_blocks_table = table_exists_sync(conn, "blocks")
@@ -140,7 +149,8 @@ def _ensure_archive_messages_fts_startup_readiness_sync(conn: sqlite3.Connection
             logger.info("daemon: archive message FTS startup readiness trusted freshness ledger")
             return True
         if _message_fts_freshness_row_stale_sync(freshness_row):
-            logger.warning("daemon: archive message FTS startup readiness preserving stale freshness ledger")
+            logger.warning("daemon: archive message FTS startup readiness found stale freshness ledger")
+            _record_message_fts_surface_debt(db_path, "startup found stale messages_fts freshness ledger")
             return True
     source_rows = _count_or_zero(conn, "SELECT COUNT(*) FROM blocks WHERE search_text != ''")
     indexed_rows = _count_or_zero(conn, "SELECT COUNT(*) FROM messages_fts_docsize") if docsize_exists else 0
@@ -156,19 +166,20 @@ def _ensure_archive_messages_fts_startup_readiness_sync(conn: sqlite3.Connection
         else:
             logger.warning(
                 "daemon: archive message FTS drift exceeds startup repair budget; "
-                "leaving stale for explicit repair "
+                "scheduled global FTS surface repair "
                 "(source_rows=%s indexed_rows=%s drift_rows=%s max_startup_rebuild_rows=%s)",
                 source_rows,
                 indexed_rows,
                 drift_rows,
                 _ARCHIVE_MESSAGES_FTS_STARTUP_REBUILD_MAX_DRIFT_ROWS,
             )
+            _record_message_fts_surface_debt(db_path, _MESSAGE_FTS_STARTUP_REPAIR_DETAIL)
 
     ready = fts_exists and triggers_present and indexed_rows == source_rows
     drift_detail = (
         "archive startup FTS readiness failed"
         if abs(source_rows - indexed_rows) <= _ARCHIVE_MESSAGES_FTS_STARTUP_REBUILD_MAX_DRIFT_ROWS
-        else ("archive message FTS drift exceeds startup repair budget; run explicit FTS repair to refresh search")
+        else _MESSAGE_FTS_STARTUP_REPAIR_DETAIL
     )
     record_fts_surface_state_sync(
         conn,
@@ -181,6 +192,22 @@ def _ensure_archive_messages_fts_startup_readiness_sync(conn: sqlite3.Connection
         detail=None if ready else drift_detail,
     )
     return True
+
+
+def _record_message_fts_surface_debt(db_path: Path | None, error: str) -> None:
+    if db_path is None:
+        return
+    try:
+        from polylogue.sources.live.cursor import CursorStore
+
+        CursorStore(db_path).record_convergence_debt(
+            stage="fts",
+            subject_type="fts_surface",
+            subject_id="messages_fts",
+            error=error,
+        )
+    except Exception:
+        logger.warning("daemon: failed to record messages_fts convergence debt", exc_info=True)
 
 
 def _message_fts_freshness_row_sync(
@@ -303,7 +330,7 @@ def ensure_fts_startup_readiness_sync() -> None:
     conn: sqlite3.Connection | None = None
     try:
         conn = _open_fts_startup_write_connection(db)
-        if _ensure_archive_messages_fts_startup_readiness_sync(conn):
+        if _ensure_archive_messages_fts_startup_readiness_sync(conn, db_path=db):
             conn.commit()
             return
         logger.info("daemon: FTS startup check skipped — current archive blocks table absent.")
