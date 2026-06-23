@@ -5929,15 +5929,11 @@ def _ensure_messages_fts_ready(conn: sqlite3.Connection) -> None:
     "Search index" response instead of surfacing a raw ``no such table`` /
     empty-result 200.
     """
-    from polylogue.errors import DatabaseError
+    from polylogue.maintenance.targets import build_maintenance_target_catalog
+    from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_search_readiness_sync
 
-    repair_hint = "Run `polylogue ops doctor --repair` to rebuild the search index."
-    if not _table_exists(conn, "messages_fts"):
-        raise DatabaseError(f"Search index not built. {repair_hint}")
-    text_blocks = _count_scalar(conn, "SELECT COUNT(*) FROM blocks WHERE search_text != ''")
-    fts_rows = _count_scalar(conn, "SELECT COUNT(*) FROM messages_fts")
-    if fts_rows < text_blocks:
-        raise DatabaseError(f"Search index is incomplete. {repair_hint}")
+    repair_hint = build_maintenance_target_catalog().repair_hint(("dangling_fts",), include_run_all=True)
+    check_fts_readiness(message_fts_search_readiness_sync(conn), repair_hint)
 
 
 def _epoch_ms_from_iso(value: object) -> int | None:

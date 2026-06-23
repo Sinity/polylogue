@@ -13,6 +13,7 @@ READY = "ready"
 STALE = "stale"
 UNKNOWN = "unknown"
 MESSAGE_SURFACE = "messages_fts"
+_MESSAGE_FTS_TRIGGER_NAMES = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
 
 _CREATE_TABLE_SQL = f"""
     CREATE TABLE IF NOT EXISTS {FRESHNESS_TABLE} (
@@ -132,11 +133,31 @@ def _message_fts_source_has_rows_sync(conn: sqlite3.Connection) -> bool | None:
     return row is not None
 
 
+def _message_fts_triggers_present_sync(conn: sqlite3.Connection) -> bool:
+    placeholders = ", ".join("?" for _ in _MESSAGE_FTS_TRIGGER_NAMES)
+    row = conn.execute(
+        f"SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN ({placeholders})",
+        _MESSAGE_FTS_TRIGGER_NAMES,
+    ).fetchone()
+    return row is not None and int(row[0] or 0) == len(_MESSAGE_FTS_TRIGGER_NAMES)
+
+
 async def _message_fts_source_has_rows_async(conn: aiosqlite.Connection) -> bool | None:
     if not await _named_table_exists_async(conn, "blocks"):
         return None
     row = await (await conn.execute("SELECT 1 FROM blocks WHERE search_text != '' LIMIT 1")).fetchone()
     return row is not None
+
+
+async def _message_fts_triggers_present_async(conn: aiosqlite.Connection) -> bool:
+    placeholders = ", ".join("?" for _ in _MESSAGE_FTS_TRIGGER_NAMES)
+    row = await (
+        await conn.execute(
+            f"SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN ({placeholders})",
+            _MESSAGE_FTS_TRIGGER_NAMES,
+        )
+    ).fetchone()
+    return row is not None and int(row[0] or 0) == len(_MESSAGE_FTS_TRIGGER_NAMES)
 
 
 def ensure_fts_freshness_table_sync(conn: sqlite3.Connection) -> None:
@@ -326,6 +347,8 @@ def message_fts_recorded_ready_trusted_sync(conn: sqlite3.Connection) -> bool:
     if row is None:
         return False
     record = dict(zip(selected, row, strict=True))
+    if not _message_fts_triggers_present_sync(conn):
+        return False
     return freshness_ready_record_trusted(
         state=str(record["state"]),
         source_rows=_int_or_zero(record.get("source_rows")),
@@ -359,6 +382,8 @@ async def message_fts_recorded_ready_trusted_async(conn: aiosqlite.Connection) -
     record = dict(zip(selected, row, strict=True))
     source_rows = _int_or_zero(record.get("source_rows"))
     indexed_rows = _int_or_zero(record.get("indexed_rows"))
+    if not await _message_fts_triggers_present_async(conn):
+        return False
     return freshness_ready_record_trusted(
         state=str(record["state"]),
         source_rows=source_rows,

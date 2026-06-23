@@ -141,6 +141,52 @@ def test_search_readiness_rejects_poisoned_zero_count_ready_marker(tmp_path: Pat
     assert recorded == (1, 0, "exact message readiness failed")
 
 
+def test_search_readiness_rejects_ready_marker_when_triggers_are_missing(tmp_path: Path) -> None:
+    db = tmp_path / "archive.db"
+    conn = sqlite3.connect(db)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE blocks (
+                block_id TEXT, message_id TEXT, session_id TEXT, block_type TEXT, text TEXT, search_text TEXT
+            );
+            CREATE VIRTUAL TABLE messages_fts USING fts5(
+                block_id UNINDEXED, message_id UNINDEXED, session_id UNINDEXED, block_type UNINDEXED, text,
+                content='', contentless_delete=1
+            );
+            CREATE TABLE fts_freshness_state (
+                surface TEXT PRIMARY KEY, state TEXT NOT NULL, checked_at TEXT NOT NULL,
+                source_rows INTEGER NOT NULL DEFAULT 0, indexed_rows INTEGER NOT NULL DEFAULT 0,
+                missing_rows INTEGER NOT NULL DEFAULT 0, excess_rows INTEGER NOT NULL DEFAULT 0,
+                duplicate_rows INTEGER NOT NULL DEFAULT 0, detail TEXT
+            );
+            INSERT INTO blocks VALUES ('block-1', 'msg-1', 'conv-1', 'text', 'needle freshness', 'needle freshness');
+            INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
+            SELECT rowid, block_id, message_id, session_id, block_type, search_text FROM blocks;
+            INSERT INTO fts_freshness_state (
+                surface, state, checked_at, source_rows, indexed_rows,
+                missing_rows, excess_rows, duplicate_rows, detail
+            )
+            VALUES ('messages_fts', 'ready', 'now', 1, 1, 0, 0, 0, NULL);
+            """
+        )
+
+        readiness = message_fts_search_readiness_sync(conn)
+        state = message_fts_recorded_state_sync(conn)
+        recorded = conn.execute(
+            "SELECT state, source_rows, indexed_rows, detail FROM fts_freshness_state WHERE surface='messages_fts'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert readiness["ready"] is False
+    assert readiness["triggers_present"] is False
+    assert readiness["total_rows"] == 1
+    assert readiness["indexed_rows"] == 1
+    assert state == "stale"
+    assert recorded == ("stale", 1, 1, "exact message readiness failed")
+
+
 def test_search_readiness_uses_blocks_as_zero_count_trust_source(tmp_path: Path) -> None:
     """A ready|0|0 ledger is untrusted when the actual FTS source has rows."""
     db = tmp_path / "archive.db"
