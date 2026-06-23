@@ -410,6 +410,16 @@ generation recorded, the static `MIN_AGE_S` floor applies on its own.
 snapshot of daemon-relevant state read directly from the archive SQLite
 database. The probe is read-only and does not talk to the running daemon.
 
+Raw acquisition, index materialization, and FTS readiness are treated as one
+auditable convergence contract. A `source.db.raw_sessions` row that is not
+explicitly skipped and has no matching `index.db.sessions` row is
+`raw-materialization` archive debt; daemon status exposes it through
+`component_readiness.raw_materialization` and
+`raw_materialization_readiness` instead of reporting the archive as simply
+healthy. FTS readiness is likewise a freshness invariant, not a best-effort
+cache: stale or untrusted recorded counts make search readiness non-ready until
+the index is demonstrably current.
+
 For #845-style before/after convergence evidence snapshots:
 
 ```bash

@@ -481,7 +481,15 @@ class TestNoArchiveStatus:
         assert readiness["caveats"] == []
         assert readiness["repair_hint"] == "polylogue ops embed backfill --max-sessions 10"
 
-    def test_direct_status_json_maps_archive_surface_component_readiness(self, tmp_path: Path) -> None:
+    def test_direct_status_json_maps_archive_surface_component_readiness(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from polylogue.surfaces.payloads import (
+            ArchiveDebtListPayload,
+            ArchiveDebtRowPayload,
+            ArchiveDebtTotalsPayload,
+        )
+
         env = _make_app_env()
         db_anchor = tmp_path / "index.db"
         initialize_archive_database(db_anchor, ArchiveTier.INDEX)
@@ -524,6 +532,27 @@ class TestNoArchiveStatus:
                 "tool_usage": {"ready": True, "blockers": [], "evidence": {"action_count": 4}},
             },
         }
+        raw_materialization_debt = ArchiveDebtListPayload(
+            generated_at="2026-06-23T00:00:00+00:00",
+            archive_root=str(tmp_path),
+            rows=(
+                ArchiveDebtRowPayload(
+                    debt_ref="debt:raw-materialization:chatgpt-export:parsed-without-session",
+                    kind="raw-materialization",
+                    stage="parse",
+                    subject_ref="raw-origin:chatgpt-export",
+                    severity="warning",
+                    status="actionable",
+                    owner="daemon",
+                    summary="4 chatgpt-export raw artifact(s) parsed but have no materialized session",
+                ),
+            ),
+            totals=ArchiveDebtTotalsPayload(total=1, warning=1, actionable=1),
+        )
+        monkeypatch.setattr(
+            "polylogue.operations.archive_debt.archive_debt_list",
+            lambda **_kwargs: raw_materialization_debt,
+        )
 
         with (
             patch("polylogue.paths.db_path", return_value=db_anchor),
@@ -539,9 +568,11 @@ class TestNoArchiveStatus:
         readiness = components["search"]
         profiles = components["session_profiles"]
         tool_usage = components["tool_usage"]
+        raw_materialization = components["raw_materialization"]
         assertions = components["assertions"]
         transforms = components["transforms"]
         assert payload["archive_readiness"] == archive_readiness
+        assert payload["raw_materialization_readiness"]["total"] == 1
         assert archive["component"] == "archive_sessions"
         assert archive["scope"] == "archive"
         assert archive["state"] == "ready"
@@ -557,6 +588,10 @@ class TestNoArchiveStatus:
         assert profiles["repair_hint"] == "polylogue ops maintenance run --target session_insights"
         assert tool_usage["scope"] == "actions"
         assert tool_usage["counts"] == {"action_count": 4}
+        assert raw_materialization["scope"] == "archive"
+        assert raw_materialization["state"] == "stale"
+        assert raw_materialization["counts"]["total"] == 1
+        assert raw_materialization["repair_hint"] == "polylogue ops debt list --kind raw-materialization"
         assert assertions["scope"] == "user"
         assert assertions["state"] == "ready"
         assert assertions["counts"] == {"assertion_count": 1, "target_count": 1, "active_count": 1}

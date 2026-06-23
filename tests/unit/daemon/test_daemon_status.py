@@ -302,6 +302,60 @@ def test_daemon_status_payload_links_unified_archive_debt(monkeypatch: pytest.Mo
     assert rows[0]["debt_ref"] == "debt:embedding:catchup:backlog"
 
 
+def test_daemon_status_marks_raw_materialization_debt_not_ready(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from polylogue.surfaces.payloads import (
+        ArchiveDebtListPayload,
+        ArchiveDebtRowPayload,
+        ArchiveDebtTotalsPayload,
+    )
+
+    payload = ArchiveDebtListPayload(
+        generated_at="2026-06-22T00:00:00+00:00",
+        archive_root=str(tmp_path),
+        rows=(
+            ArchiveDebtRowPayload(
+                debt_ref="debt:raw-materialization:aistudio-drive:parsed-without-session",
+                kind="raw-materialization",
+                stage="parse",
+                subject_ref="raw-origin:aistudio-drive",
+                severity="warning",
+                status="actionable",
+                owner="daemon",
+                summary="238 aistudio-drive raw artifact(s) parsed but have no materialized session",
+            ),
+        ),
+        totals=ArchiveDebtTotalsPayload(total=1, warning=1, actionable=1),
+    )
+
+    monkeypatch.setattr("polylogue.daemon.status.archive_root", lambda: tmp_path)
+    monkeypatch.setattr("polylogue.operations.archive_debt.archive_debt_list", lambda **_kwargs: payload)
+
+    with (
+        patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
+        patch("polylogue.daemon.status._blob_size_info", return_value=0),
+        patch("polylogue.daemon.status._fts_readiness_info", return_value={"messages_ready": True}),
+        patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
+    ):
+        status_payload = daemon_status_payload(sources=())
+
+    materialization = cast(dict[str, object], status_payload["raw_materialization_readiness"])
+    assert materialization["total"] == 1
+    assert materialization["warning"] == 1
+
+    readiness = cast(dict[str, object], status_payload["component_readiness"])
+    raw_component = cast(dict[str, object], readiness["raw_materialization"])
+    assert raw_component["state"] == "stale"
+    assert raw_component["summary"] == "raw evidence pending materialization"
+    assert raw_component["repair_hint"] == "polylogue ops debt list --kind raw-materialization"
+    counts = cast(dict[str, object], raw_component["counts"])
+    assert counts["total"] == 1
+
+    lines = format_daemon_status_lines(status_payload)
+    assert "Raw materialization: 1 debt row(s), 0 critical, 1 warning, 0 blocked" in lines
+
+
 def test_daemon_status_payload_maps_component_readiness(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     db.touch()

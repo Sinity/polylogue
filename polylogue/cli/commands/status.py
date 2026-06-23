@@ -70,6 +70,13 @@ def _fast_count(conn: Any, sql: str, params: tuple[object, ...] = ()) -> int:
     return int(row[0] or 0) if row is not None else 0
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value) if value is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
 def _fast_fts_doc_count(conn: Any) -> int:
     # Exact FTS coverage is no longer a direct-status fallback concern.
     # Counting the FTS shadow table can fault gigabytes of pages during
@@ -948,6 +955,7 @@ def _show_direct_json(env: AppEnv, *, include_archive_readiness: bool = False) -
         active_root,
         include_archive_readiness=include_archive_readiness,
     )
+    raw_materialization_readiness = _direct_raw_materialization_readiness(active_root)
     payload: dict[str, Any] = {
         "daemon_liveness": False,
         "archive_root": str(root),
@@ -962,10 +970,12 @@ def _show_direct_json(env: AppEnv, *, include_archive_readiness: bool = False) -
         "archive_facade_routes": _archive_facade_route_status(),
         "archive_cli_routes": _archive_cli_route_status(),
         "archive_runtime_paths": _archive_runtime_path_status(),
+        "raw_materialization_readiness": raw_materialization_readiness,
         "component_readiness": _direct_component_readiness(
             env,
             active_root=active_root,
             archive_readiness=archive_readiness,
+            raw_materialization_readiness=raw_materialization_readiness,
         ),
         "next_action": diag.next_action,
         "diagnostic": diagnostic_payload(diag),
@@ -991,6 +1001,7 @@ def _direct_component_readiness(
     *,
     active_root: Path,
     archive_readiness: dict[str, Any] | None = None,
+    raw_materialization_readiness: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return additive component readiness for direct status JSON."""
     components: dict[str, Any] = {}
@@ -1014,6 +1025,11 @@ def _direct_component_readiness(
         except Exception:
             pass
     try:
+        raw_component = _direct_raw_materialization_component(raw_materialization_readiness)
+        components[raw_component["component"]] = raw_component
+    except Exception:
+        pass
+    try:
         from polylogue.readiness.capability import component_from_embedding_payload
         from polylogue.storage.embeddings.status_payload import embedding_status_payload
 
@@ -1033,6 +1049,81 @@ def _direct_component_readiness(
     except Exception:
         pass
     return components
+
+
+def _direct_raw_materialization_readiness(active_root: Path) -> dict[str, Any]:
+    try:
+        from polylogue.operations.archive_debt import archive_debt_list
+
+        payload = archive_debt_list(
+            archive_root=active_root,
+            kinds=("raw-materialization",),
+            limit=None,
+            exact_fts=False,
+        )
+    except Exception:
+        return {
+            "available": False,
+            "total": 0,
+            "critical": 0,
+            "warning": 0,
+            "actionable": 0,
+            "blocked": 0,
+            "sampled_rows": [],
+        }
+    rows = [row for row in payload.rows if row.kind == "raw-materialization"]
+    return {
+        "available": True,
+        "total": len(rows),
+        "critical": sum(1 for row in rows if row.severity == "critical"),
+        "warning": sum(1 for row in rows if row.severity == "warning"),
+        "actionable": sum(1 for row in rows if row.status == "actionable"),
+        "blocked": sum(1 for row in rows if row.status == "blocked"),
+        "sampled_rows": [row.model_dump(mode="json", exclude_none=True) for row in rows[:5]],
+    }
+
+
+def _direct_raw_materialization_component(readiness: dict[str, Any] | None) -> dict[str, Any]:
+    from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
+
+    payload = readiness or {}
+    available = bool(payload.get("available", False))
+    total = _safe_int(payload.get("total"))
+    critical = _safe_int(payload.get("critical"))
+    warning = _safe_int(payload.get("warning"))
+    actionable = _safe_int(payload.get("actionable"))
+    blocked = _safe_int(payload.get("blocked"))
+    if not available:
+        state = CapabilityReadinessState.UNKNOWN
+        summary = "unknown"
+    elif total == 0:
+        state = CapabilityReadinessState.READY
+        summary = "ready"
+    elif blocked > 0:
+        state = CapabilityReadinessState.BLOCKED
+        summary = "raw evidence blocked"
+    elif critical > 0:
+        state = CapabilityReadinessState.POISONED
+        summary = "raw evidence not materialized"
+    else:
+        state = CapabilityReadinessState.STALE
+        summary = "raw evidence pending materialization"
+    return ComponentReadiness(
+        component="raw_materialization",
+        scope="archive",
+        state=state,
+        summary=summary,
+        counts={
+            "total": total,
+            "critical": critical,
+            "warning": warning,
+            "actionable": actionable,
+            "blocked": blocked,
+        },
+        repair_hint=None
+        if state == CapabilityReadinessState.READY
+        else "polylogue ops debt list --kind raw-materialization",
+    ).to_dict()
 
 
 def _direct_assertion_component(active_root: Path) -> dict[str, Any]:
@@ -1204,6 +1295,16 @@ def _show_direct_status(
                     include_archive_readiness=include_archive_readiness,
                 ),
             )
+            materialization = _direct_raw_materialization_readiness(active_root)
+            materialization_total = _safe_int(materialization.get("total"))
+            if materialization_total:
+                env.ui.console.print(
+                    "  Raw materialization: "
+                    f"{materialization_total} debt row(s), "
+                    f"{_safe_int(materialization.get('critical'))} critical, "
+                    f"{_safe_int(materialization.get('warning'))} warning, "
+                    f"{_safe_int(materialization.get('blocked'))} blocked"
+                )
             _render_archive_facade_routes(env, _archive_facade_route_status())
             _render_archive_cli_routes(env, _archive_cli_route_status())
             _render_archive_runtime_paths(env, _archive_runtime_path_status())

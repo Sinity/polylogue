@@ -99,6 +99,16 @@ class EmbeddingReadiness(BaseModel):
     embedding_latest_catchup_run: dict[str, object] | None = None
 
 
+class RawMaterializationReadiness(BaseModel):
+    available: bool = True
+    total: int = 0
+    critical: int = 0
+    warning: int = 0
+    actionable: int = 0
+    blocked: int = 0
+    sampled_rows: list[dict[str, object]] = Field(default_factory=list)
+
+
 class ArchiveTierStatus(BaseModel):
     name: Literal["source", "index", "embeddings", "user", "ops"]
     path: str
@@ -233,6 +243,7 @@ class DaemonStatus(BaseModel):
     fts_readiness: FTSReadiness = Field(default_factory=FTSReadiness)
     insight_freshness: InsightFreshness = Field(default_factory=InsightFreshness)
     embedding_readiness: EmbeddingReadiness = Field(default_factory=EmbeddingReadiness)
+    raw_materialization_readiness: RawMaterializationReadiness = Field(default_factory=RawMaterializationReadiness)
     archive_storage: ArchiveStorageStatus = Field(default_factory=ArchiveStorageStatus)
     component_readiness: dict[str, object] = Field(default_factory=dict)
     browser_capture_active: bool = False
@@ -1510,6 +1521,7 @@ def _daemon_component_readiness(
     fts_readiness: FTSReadiness,
     insight_freshness: InsightFreshness,
     embedding_readiness: EmbeddingReadiness,
+    raw_materialization_readiness: RawMaterializationReadiness,
     archive_storage: ArchiveStorageStatus,
     live_ingest_attempts: LiveIngestAttemptSummary,
 ) -> dict[str, object]:
@@ -1526,6 +1538,7 @@ def _daemon_component_readiness(
             scope="daemon",
         ).to_dict(),
         "search": _component_from_fts_readiness(fts_readiness).to_dict(),
+        "raw_materialization": _component_from_raw_materialization_readiness(raw_materialization_readiness).to_dict(),
         "session_profiles": _component_from_insight_freshness(insight_freshness).to_dict(),
         "embeddings": _component_from_daemon_embedding_readiness(embedding_readiness).to_dict(),
         "archive_storage": _component_from_archive_storage(archive_storage).to_dict(),
@@ -1567,6 +1580,42 @@ def _component_from_fts_readiness(readiness: FTSReadiness) -> ComponentReadiness
             "coverage_pct": readiness.coverage_pct,
         },
         repair_hint=None if readiness.messages_ready else "polylogue ops maintenance run --target dangling_fts",
+    )
+
+
+def _component_from_raw_materialization_readiness(
+    readiness: RawMaterializationReadiness,
+) -> ComponentReadiness:
+    if not readiness.available:
+        state = CapabilityReadinessState.UNKNOWN
+        summary = "unknown"
+    elif readiness.total == 0:
+        state = CapabilityReadinessState.READY
+        summary = "ready"
+    elif readiness.blocked > 0:
+        state = CapabilityReadinessState.BLOCKED
+        summary = "raw evidence blocked"
+    elif readiness.critical > 0:
+        state = CapabilityReadinessState.POISONED
+        summary = "raw evidence not materialized"
+    else:
+        state = CapabilityReadinessState.STALE
+        summary = "raw evidence pending materialization"
+    return ComponentReadiness(
+        component="raw_materialization",
+        scope="archive",
+        state=state,
+        summary=summary,
+        counts={
+            "total": readiness.total,
+            "critical": readiness.critical,
+            "warning": readiness.warning,
+            "actionable": readiness.actionable,
+            "blocked": readiness.blocked,
+        },
+        repair_hint=None
+        if state == CapabilityReadinessState.READY
+        else ("polylogue ops debt list --kind raw-materialization"),
     )
 
 
@@ -1704,6 +1753,37 @@ def _component_from_live_ingest(summary: LiveIngestAttemptSummary) -> ComponentR
     )
 
 
+def _raw_materialization_readiness_info() -> RawMaterializationReadiness:
+    """Summarize acquired-but-not-materialized raw evidence for readiness.
+
+    This is intentionally narrower than the full archive-debt endpoint: daemon
+    status needs the invariant that raw acquisition and index materialization
+    do not silently diverge.
+    """
+    try:
+        from polylogue.operations.archive_debt import archive_debt_list
+
+        payload = archive_debt_list(
+            archive_root=archive_root(),
+            kinds=("raw-materialization",),
+            limit=None,
+            exact_fts=False,
+        )
+    except Exception:
+        return RawMaterializationReadiness(available=False)
+
+    rows = [row for row in payload.rows if row.kind == "raw-materialization"]
+    return RawMaterializationReadiness(
+        available=True,
+        total=len(rows),
+        critical=sum(1 for row in rows if row.severity == "critical"),
+        warning=sum(1 for row in rows if row.severity == "warning"),
+        actionable=sum(1 for row in rows if row.status == "actionable"),
+        blocked=sum(1 for row in rows if row.status == "blocked"),
+        sampled_rows=[row.model_dump(mode="json", exclude_none=True) for row in rows[:5]],
+    )
+
+
 def build_daemon_status(
     *,
     sources: tuple[WatchSource, ...] | None = None,
@@ -1727,6 +1807,7 @@ def build_daemon_status(
     storage_info = _archive_storage_info()
     fts = _fts_readiness_info()
     freshness = _insight_freshness_info()
+    raw_materialization_readiness = _raw_materialization_readiness_info()
     live_cursor = _live_cursor_summary_info()
     live_ingest_attempts = _live_ingest_attempt_summary_info()
     active_db = _active_status_db_path()
@@ -1832,12 +1913,14 @@ def build_daemon_status(
         fts_readiness=fts_readiness,
         insight_freshness=insight_freshness,
         embedding_readiness=embedding_readiness,
+        raw_materialization_readiness=raw_materialization_readiness,
         archive_storage=storage_info,
         component_readiness=_daemon_component_readiness(
             component_state=component_state,
             fts_readiness=fts_readiness,
             insight_freshness=insight_freshness,
             embedding_readiness=embedding_readiness,
+            raw_materialization_readiness=raw_materialization_readiness,
             archive_storage=storage_info,
             live_ingest_attempts=live_ingest_attempts,
         ),
@@ -1908,6 +1991,7 @@ def daemon_status_payload(
             "operations": status.current_operations,
             "last_ingestion_batch": last_ingestion,
             "fts_readiness": status.fts_readiness.model_dump(),
+            "raw_materialization_readiness": status.raw_materialization_readiness.model_dump(),
             "embedding_readiness": status.embedding_readiness.model_dump(),
             "memory": {
                 "rss_current_mb": status.rss_current_mb,
@@ -2147,6 +2231,17 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
                                 f"baseline p95 {p95:.0f}s over {baseline_sample_count} samples; "
                                 f"current {multiplier:.1f}x{confidence_tag}{anomaly_tag}"
                             )
+    materialization = payload.get("raw_materialization_readiness")
+    if isinstance(materialization, dict):
+        materialization_total = _safe_int(materialization.get("total"))
+        if materialization_total > 0:
+            lines.append(
+                "Raw materialization: "
+                f"{materialization_total} debt row(s), "
+                f"{_safe_int(materialization.get('critical'))} critical, "
+                f"{_safe_int(materialization.get('warning'))} warning, "
+                f"{_safe_int(materialization.get('blocked'))} blocked"
+            )
     # Health summary
     health = payload.get("health")
     if isinstance(health, dict):
