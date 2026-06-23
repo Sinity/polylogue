@@ -22,6 +22,7 @@ from polylogue.cli.machine_main import run_machine_entry
 from polylogue.cli.query_group import QueryFirstGroupBase
 from polylogue.cli.shared.formatting import should_use_plain
 from polylogue.cli.shared.types import AppEnv
+from polylogue.cli.shell_words import completion_words
 from polylogue.cli.verb_names import QUERY_VERB_NAMES
 from polylogue.logging import configure_logging
 from polylogue.version import POLYLOGUE_VERSION
@@ -82,11 +83,7 @@ class QueryFirstGroup(QueryFirstGroupBase):
 
 
 def _completion_words() -> tuple[str, ...]:
-    raw_words = os.environ.get("COMP_WORDS", "")
-    words = tuple(part for part in raw_words.split() if part)
-    if words and words[0] == "polylogue":
-        return words[1:]
-    return words
+    return completion_words()
 
 
 def _is_after_then_completion() -> bool:

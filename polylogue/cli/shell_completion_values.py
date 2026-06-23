@@ -9,7 +9,6 @@ yet and degrades to an empty completion list.
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Final
 
@@ -37,6 +36,7 @@ from polylogue.archive.query.metadata import (
     terminal_query_sources,
 )
 from polylogue.archive.query.spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES, QUERY_SEQUENCE_ACTION_TYPES
+from polylogue.cli.shell_words import completion_words
 from polylogue.core.enums import MaterialOrigin
 from polylogue.paths import active_index_db_path
 
@@ -196,11 +196,7 @@ def _complete_query_expression_values(
 
 
 def _completion_words() -> tuple[str, ...]:
-    raw_words = os.environ.get("COMP_WORDS", "")
-    words = tuple(part for part in raw_words.split() if part)
-    if words and words[0] == "polylogue":
-        return words[1:]
-    return words
+    return completion_words()
 
 
 def _structural_completion_context(incomplete: str) -> tuple[str, str] | None:
