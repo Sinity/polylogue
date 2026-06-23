@@ -117,6 +117,9 @@ class SemanticSessionMessageLike(SemanticMessageLike, Protocol):
     def is_user(self) -> bool: ...
 
     @property
+    def is_human_authored(self) -> bool: ...
+
+    @property
     def is_assistant(self) -> bool: ...
 
     @property
@@ -218,6 +221,7 @@ def build_message_semantic_facts(message: SemanticSessionMessageLike) -> Message
         attachment_count=len(message.attachments),
         word_count=message.word_count,
         is_user=message.is_user,
+        is_human_authored=message.is_human_authored,
         is_assistant=message.is_assistant,
         is_dialogue=message.is_dialogue,
         is_context_dump=message.is_context_dump,

@@ -729,7 +729,7 @@ def _collect_enrichment_text_bands(analysis: SessionAnalysis | None) -> _Enrichm
         text = str(message.text or "").strip()
         if not text:
             continue
-        if message.is_user and not message.is_noise:
+        if message.is_human_authored and not message.is_noise:
             user_texts.append(message.text)
             text_lower = message.text.lower()
             if any(marker in text_lower for marker in _BLOCKER_MARKERS):
