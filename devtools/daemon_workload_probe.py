@@ -28,7 +28,7 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 # Bumped when the JSON shape gains new top-level keys or changes a field type.
 # The compare path uses this to refuse incompatible inputs loudly.
-REPORT_VERSION = 11  # v11 makes large-table diagnostic counts estimated by default.
+REPORT_VERSION = 12  # v12 exposes physical DB/table locations for logical observability surfaces.
 UNKNOWN_TABLE_COUNT = -2
 
 _EXPECTED_FTS_TRIGGERS: tuple[str, ...] = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
@@ -858,6 +858,73 @@ def _boundary_table_counts(
             for table in _OPS_BOUNDARY_TABLES:
                 counts.setdefault(table, -1)
     return counts
+
+
+def _location_entry(
+    db_path: Path,
+    *,
+    table: str,
+    tier: str,
+    logical_table: str | None = None,
+) -> dict[str, Any]:
+    exists = False
+    if db_path.exists():
+        try:
+            conn = open_readonly_connection(db_path)
+            try:
+                exists = _table_exists(conn, table)
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            exists = False
+    return {
+        "logical_table": logical_table or table,
+        "physical_table": table,
+        "tier": tier,
+        "db_path": str(db_path),
+        "exists": exists,
+    }
+
+
+def _observability_locations(
+    db: Path,
+    *,
+    observed_db: Path | None,
+    ops_db: Path | None,
+) -> dict[str, Any]:
+    index_db = observed_db or db
+    source_db = db.with_name("source.db")
+    resolved_ops_db = ops_db or db.with_name("ops.db")
+    logical_tables = {
+        "live_ingest_attempt": _location_entry(
+            resolved_ops_db,
+            table="ingest_attempts",
+            tier="ops",
+            logical_table="live_ingest_attempt",
+        ),
+        "live_ingest_attempt_stage_events": _location_entry(
+            resolved_ops_db,
+            table="daemon_stage_events",
+            tier="ops",
+            logical_table="live_ingest_attempt_stage_events",
+        ),
+        "convergence_debt": _location_entry(resolved_ops_db, table="convergence_debt", tier="ops"),
+        "raw_sessions": _location_entry(source_db, table="raw_sessions", tier="source"),
+        "sessions": _location_entry(index_db, table="sessions", tier="index"),
+        "messages": _location_entry(index_db, table="messages", tier="index"),
+        "blocks": _location_entry(index_db, table="blocks", tier="index"),
+        "messages_fts": _location_entry(index_db, table="messages_fts", tier="index"),
+        "pending_blob_refs": _location_entry(source_db, table="pending_blob_refs", tier="source"),
+    }
+    return {
+        "archive_root": str(db.parent),
+        "tiers": {
+            "index": str(index_db),
+            "source": str(source_db),
+            "ops": str(resolved_ops_db),
+        },
+        "logical_tables": logical_tables,
+    }
 
 
 def _archive_tier_state(
@@ -1932,6 +1999,7 @@ def probe(
             "report_version": REPORT_VERSION,
             "captured_at": _now_iso(),
             "db_path": str(db),
+            "observability_locations": _observability_locations(db, observed_db=observed_db, ops_db=ops_db),
             "attempt_counts": _attempt_counts(conn, ops_db=ops_db),
             "recent_attempts": recent_attempts,
             "storage_route_counts": _storage_route_counts(conn, ops_db=ops_db),

@@ -539,6 +539,7 @@ def test_probe_payload_carries_stable_top_level_shape(tmp_path: Path) -> None:
         "report_version",
         "captured_at",
         "db_path",
+        "observability_locations",
         "attempt_counts",
         "storage_route_counts",
         "recent_attempts",
@@ -558,6 +559,11 @@ def test_probe_payload_carries_stable_top_level_shape(tmp_path: Path) -> None:
     assert payload["report_version"] == REPORT_VERSION
     assert payload["boundary_table_count_mode"] == "exact"
     assert payload["archive_tiers"]["table_count_mode"] == "exact"
+    locations = payload["observability_locations"]
+    assert locations["logical_tables"]["live_ingest_attempt"]["tier"] == "ops"
+    assert locations["logical_tables"]["live_ingest_attempt"]["physical_table"] == "ingest_attempts"
+    assert locations["logical_tables"]["raw_sessions"]["tier"] == "source"
+    assert locations["logical_tables"]["sessions"]["tier"] == "index"
 
     # Boundary counts cover the daemon-relevant tables.
     counts = payload["boundary_table_counts"]

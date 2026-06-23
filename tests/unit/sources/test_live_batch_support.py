@@ -119,6 +119,12 @@ def test_streaming_sized_full_ingest_uses_archive(
         "polylogue.sources.live.batch._jsonl_provider_and_session_artifact",
         lambda _path, fallback_provider: (fallback_provider, True),
     )
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch.parse_payload",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("streaming-sized JSONL ingest must not materialize through parse_payload")
+        ),
+    )
 
     result = processor._ingest_full_paths_sync([source], source_name="codex")
 

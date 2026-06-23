@@ -35,7 +35,12 @@ from polylogue.logging import get_logger
 from polylogue.paths import blob_store_root
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
 from polylogue.sources.decoders import _iter_json_stream, _ZipEntryValidator
-from polylogue.sources.dispatch import _detect_provider_from_raw_bytes, parse_payload
+from polylogue.sources.dispatch import (
+    STREAM_RECORD_PROVIDERS,
+    _detect_provider_from_raw_bytes,
+    parse_payload,
+    parse_stream_payload,
+)
 from polylogue.sources.live.append_ingest import ingest_append_plans
 from polylogue.sources.live.batch_observability import (
     record_attempt_progress,
@@ -109,6 +114,18 @@ logger = get_logger(__name__)
 LiveBatchEventEmitter = Callable[[str, dict[str, object]], None]
 _ARCHIVE_RUNTIME_TIERS = ",".join(spec.tier.value for spec in ARCHIVE_TIER_SPECS.values())
 _ARCHIVE_NATIVE_WRITE_TIERS = "source,index"
+
+
+def _is_stream_record_provider(source_path: str | None, provider: str | Provider | None) -> bool:
+    if provider is None:
+        return False
+    normalized_path = (source_path or "").lower()
+    if not (
+        normalized_path.endswith((".jsonl", ".jsonl.txt", ".ndjson"))
+        or any(marker in normalized_path for marker in (".jsonl.", ".ndjson."))
+    ):
+        return False
+    return Provider.from_string(provider) in STREAM_RECORD_PROVIDERS
 
 
 def _iso_to_epoch_ms(value: str) -> int:
@@ -1135,17 +1152,34 @@ class LiveBatchProcessor:
                 try:
                     provider = record.payload_provider or Provider.from_string(record.source_name)
                     payload = raw_payloads.get(record.raw_id)
-                    if payload is None:
-                        with blob_store.open(record.raw_id) as payload_handle:
-                            payloads = list(_iter_json_stream(payload_handle, Path(record.source_path).name))
+                    source_name = Path(record.source_path).name
+                    fallback_id = Path(record.source_path).stem
+                    if _is_stream_record_provider(record.source_path, str(provider)):
+                        if payload is None:
+                            with blob_store.open(record.raw_id) as payload_handle:
+                                sessions = parse_stream_payload(
+                                    provider,
+                                    _iter_json_stream(payload_handle, source_name),
+                                    fallback_id,
+                                )
+                        else:
+                            sessions = parse_stream_payload(
+                                provider,
+                                _iter_json_stream(BytesIO(payload), source_name),
+                                fallback_id,
+                            )
                     else:
-                        payloads = list(_iter_json_stream(BytesIO(payload), Path(record.source_path).name))
-                    sessions = parse_payload(
-                        provider,
-                        payloads,
-                        Path(record.source_path).stem,
-                        source_path=record.source_path,
-                    )
+                        if payload is None:
+                            with blob_store.open(record.raw_id) as payload_handle:
+                                payloads = list(_iter_json_stream(payload_handle, source_name))
+                        else:
+                            payloads = list(_iter_json_stream(BytesIO(payload), source_name))
+                        sessions = parse_payload(
+                            provider,
+                            payloads,
+                            fallback_id,
+                            source_path=record.source_path,
+                        )
                     if not sessions:
                         continue
                     acquired_at_ms = _iso_to_epoch_ms(record.acquired_at)
