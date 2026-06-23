@@ -1148,7 +1148,12 @@ schema shape:
 - Schema bumps are deletes-then-defines, never deltas. A schema change
   edits the owning tier DDL/version and documents the re-ingest expectation.
   No upgrade helpers are added for the bump.
-- Index schema version 5 adds `messages.material_origin` plus authored-user
+- Index schema version 6 adds `session_provider_usage_events` for
+  provider-reported token usage events and single-model rollup repair from
+  those events. Existing index tiers must be rebuilt from source evidence so
+  Codex `token_count` records materialize into durable provider usage rows
+  instead of disappearing after parse.
+- Index schema version 5 added `messages.material_origin` plus authored-user
   aggregate columns on `sessions`. Existing index tiers must be rebuilt from
   source evidence so Claude Code `role=user` protocol/context/generated-pack
   rows move out of authored-user accounting while provider-role counts remain
