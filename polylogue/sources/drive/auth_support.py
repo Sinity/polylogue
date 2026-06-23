@@ -6,7 +6,7 @@ import importlib
 import json
 from pathlib import Path
 from types import ModuleType
-from typing import Protocol
+from typing import Any, Protocol
 
 from polylogue.logging import get_logger
 from polylogue.sources.drive.types import (
@@ -21,6 +21,20 @@ from polylogue.sources.drive.types import (
 )
 
 logger = get_logger(__name__)
+
+
+class _AuthRequestLike(Protocol):
+    def __call__(self, *args: Any, **kwargs: Any) -> object: ...
+
+
+def _bounded_auth_request(request: _AuthRequestLike, *, timeout_s: int) -> _AuthRequestLike:
+    def _request(*args: Any, **kwargs: Any) -> object:
+        requested_timeout = kwargs.get("timeout")
+        if requested_timeout is None or (isinstance(requested_timeout, int | float) and requested_timeout > timeout_s):
+            kwargs["timeout"] = timeout_s
+        return request(*args, **kwargs)
+
+    return _request
 
 
 class DriveAuthPrompter(Protocol):
@@ -125,8 +139,7 @@ def refresh_credentials_if_needed(
             import google.auth.transport.requests as _gtr
 
             transport = _gtr.Request()
-            transport.session.timeout = 30
-            creds.refresh(transport)
+            creds.refresh(_bounded_auth_request(transport, timeout_s=30))
         except Exception as exc:
             raise DriveAuthError(
                 f"Failed to refresh OAuth token: {exc}. Try re-authenticating with 'polylogue ops auth'."

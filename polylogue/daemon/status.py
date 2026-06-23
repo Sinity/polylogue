@@ -310,6 +310,13 @@ def browser_capture_status_payload(
     return json_document(payload)
 
 
+def browser_capture_status_public_payload(spool_path: Path | None = None) -> JSONDocument:
+    """Return browser-capture status safe for the daemon web/status API."""
+    payload = dict(browser_capture_status_payload(spool_path))
+    payload.pop("spool_path", None)
+    return json_document(payload)
+
+
 def _db_size_info() -> dict[str, object]:
     dbf = _active_status_db_path()
     info: dict[str, object] = {"db_path": str(dbf)}
@@ -1971,7 +1978,7 @@ def daemon_status_payload(
             "component_state": status.component_state.model_dump(),
             "component_readiness": status.component_readiness,
             "live": live_source_status_payload(watch_sources),
-            "browser_capture": browser_capture_status_payload(browser_capture_spool_path),
+            "browser_capture": browser_capture_status_public_payload(browser_capture_spool_path),
             "db_path": str(_active_status_db_path()),
             "db_size_bytes": status.db_size_bytes,
             "wal_size_bytes": status.wal_size_bytes,

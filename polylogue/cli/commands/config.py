@@ -45,82 +45,48 @@ config_command.add_command(paths_command)
 
 
 def _show_config(env: AppEnv, output_format: str, show_layers: bool) -> None:
-    from polylogue.config import (
-        describe_config_layers,
-        effective_config_payload,
-        format_config_toml,
-        is_secret_config_key,
-        load_polylogue_config,
-        redact_secret_value,
-    )
+    from polylogue.config import effective_config_payload, format_config_toml, load_polylogue_config
 
     cfg = load_polylogue_config()
-
-    def _display_value(key: str) -> object:
-        raw_value = cfg.raw.get(key)
-        if is_secret_config_key(key):
-            return redact_secret_value(raw_value)
-        return raw_value
-
-    if show_layers:
-        # ``console.print`` interprets ``[brackets]`` as Rich markup; disable
-        # markup so JSON output and TOML section headers survive verbatim.
-        # Secret-bearing keys are redacted before display so the layer dump
-        # never reveals a cleartext secret.
-        layer_paths = describe_config_layers()
-        payload: dict[str, object] = {
-            "layers": {
-                "default": "built-in defaults",
-                "site": layer_paths["site"],
-                "user": layer_paths["user"],
-                "env": "POLYLOGUE_* environment variables",
-                "cli": "CLI overrides (per-invocation)",
-            },
-            "values": {
-                key: {"value": _display_value(key), "layer": cfg.layer_of(key)} for key in sorted(cfg.raw.keys())
-            },
-        }
-        if output_format == "json":
-            import json
-
-            env.ui.console.print(
-                json.dumps(effective_config_payload(cfg), indent=2, default=str),
-                markup=False,
-                highlight=False,
-            )
-        else:
-            lines = ["# Polylogue config layer sources", ""]
-            layers_section = payload["layers"]
-            assert isinstance(layers_section, dict)
-            lines.append("[layers]")
-            for layer_name, descriptor in layers_section.items():
-                lines.append(f"# {layer_name}: {descriptor}")
-            lines.append("")
-            lines.append("[values]")
-            values_section = payload["values"]
-            assert isinstance(values_section, dict)
-            for key, info in values_section.items():
-                assert isinstance(info, dict)
-                value = info.get("value")
-                layer = info.get("layer")
-                lines.append(f"{key} = {value!r}  # layer = {layer}")
-            env.ui.console.print("\n".join(lines), markup=False, highlight=False)
-        return
+    payload = effective_config_payload(cfg)
 
     if output_format == "json":
         import json
 
         # ``console.print`` interprets ``[brackets]`` as Rich markup, which
-        # would mangle JSON output. Print without markup parsing to preserve
-        # exact bytes. Secret-bearing keys are redacted in the effective
-        # config payload so the JSON dump never reveals a cleartext secret.
+        # would mangle JSON output and TOML section headers. Print without
+        # markup parsing to preserve exact bytes. Secret-bearing keys are
+        # redacted by ``effective_config_payload``.
         env.ui.console.print(
-            json.dumps(effective_config_payload(cfg), indent=2, default=str),
+            json.dumps(payload, indent=2, default=str),
             markup=False,
             highlight=False,
         )
-    else:
-        env.ui.console.print(format_config_toml(cfg.raw), markup=False, highlight=False)
+        return
+
+    if show_layers:
+        lines = ["# Polylogue config layer sources", ""]
+        layers_section = payload["layers"]
+        assert isinstance(layers_section, dict)
+        lines.append("[layers]")
+        for layer_name, descriptor in layers_section.items():
+            lines.append(f"# {layer_name}: {descriptor}")
+        lines.append("")
+        lines.append("[values]")
+        values_section = payload["values"]
+        assert isinstance(values_section, dict)
+        for key in sorted(values_section):
+            info = values_section[key]
+            assert isinstance(info, dict)
+            value = info.get("value")
+            layer = info.get("source_layer")
+            owner = info.get("owner_class")
+            reload_behavior = info.get("reload_behavior")
+            lines.append(f"{key} = {value!r}  # layer = {layer}; owner = {owner}; reload = {reload_behavior}")
+        env.ui.console.print("\n".join(lines), markup=False, highlight=False)
+        return
+
+    env.ui.console.print(format_config_toml(cfg.raw), markup=False, highlight=False)
 
 
 __all__ = ["config_command"]

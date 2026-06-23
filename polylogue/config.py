@@ -30,8 +30,6 @@ from .paths import (
     active_index_db_path as default_db_path,
 )
 
-_MISSING = object()
-
 
 class ConfigError(PolylogueError):
     """Configuration error."""
@@ -226,7 +224,7 @@ class PolylogueConfig:
         The receiver is OFF by default (closes #1604 — the routes were
         previously unconditionally enabled in front of the auth gate
         despite a code comment claiming otherwise). Operators opt in
-        via TOML ``observability_enabled = true`` or the env var
+        via TOML ``[observability] enabled = true`` or the env var
         ``POLYLOGUE_OBSERVABILITY_ENABLED=1``.
         """
         return bool(self._data.get("observability_enabled"))
@@ -237,7 +235,7 @@ class PolylogueConfig:
 
         Default 8 MiB matches typical OTLP exporter batch sizes; clients
         sending more receive 413. Configurable via TOML
-        ``otlp_max_body_bytes`` or env ``POLYLOGUE_OTLP_MAX_BODY_BYTES``.
+        ``[observability] otlp_max_body_bytes = ...`` or env ``POLYLOGUE_OTLP_MAX_BODY_BYTES``.
         """
         return int(str(self._data.get("otlp_max_body_bytes", 8 * 1024 * 1024)))
 
@@ -265,6 +263,10 @@ class PolylogueConfig:
     @property
     def force_plain(self) -> bool:
         return bool(self._data.get("force_plain"))
+
+    @property
+    def no_color(self) -> bool:
+        return bool(self._data.get("no_color"))
 
     @property
     def theme(self) -> str:
@@ -304,7 +306,7 @@ class PolylogueConfig:
 
     @property
     def browser_capture_allowed_origins(self) -> str:
-        return str(self._data.get("browser_capture_allowed_origins", "127.0.0.1"))
+        return str(self._data.get("browser_capture_allowed_origins", "chrome-extension://*"))
 
     @property
     def notification_backend(self) -> str:
@@ -459,21 +461,478 @@ class PolylogueConfig:
         return tuple(rows)
 
 
-@dataclass(frozen=True, slots=True)
-class ConfigInventoryEntry:
-    """Public configuration key metadata for effective-state reporting."""
-
-    key: str
-    toml_path: str | None
-    env_var: str | None
-    cli_override: str | None
-    owner_class: str
-    reload_behavior: str
-
-
 #: Default site-wide configuration path. Overridable through the
 #: ``POLYLOGUE_SITE_CONFIG`` env var (primarily for tests and packaging).
 DEFAULT_SITE_CONFIG_PATH = Path("/etc/polylogue/polylogue.toml")
+
+
+_MISSING = object()
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigInventoryEntry:
+    """Single public configuration knob and its inspection metadata.
+
+    The inventory owns TOML/env/CLI surface metadata. Loader/rendering code
+    below consumes the same entries, so the list is not a decorative ledger
+    that can drift away from implementation.
+    """
+
+    key: str
+    owner_class: str
+    reload_behavior: str
+    toml_path: str | None = None
+    env_var: str | None = None
+    cli_override: str | None = None
+    description: str = ""
+    toml_kind: str = "scalar"
+
+    @property
+    def effective_path(self) -> str:
+        return f"polylogue config --format json values.{self.key}"
+
+
+_CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
+    ConfigInventoryEntry(
+        "archive_root",
+        toml_path="archive.root",
+        env_var="POLYLOGUE_ARCHIVE_ROOT",
+        owner_class="path-layout",
+        reload_behavior="startup-bound",
+        description="Archive root containing source/index/embeddings/user/ops stores.",
+    ),
+    ConfigInventoryEntry(
+        "daemon_url",
+        env_var="POLYLOGUE_DAEMON_URL",
+        cli_override="polylogue status --daemon-url",
+        owner_class="network-security",
+        reload_behavior="per-invocation-client",
+        description="Client-side base URL used by CLI surfaces that call the daemon API.",
+    ),
+    ConfigInventoryEntry(
+        "daemon_host",
+        toml_path="daemon.host",
+        env_var="POLYLOGUE_DAEMON_HOST",
+        owner_class="network-security",
+        reload_behavior="startup-bound",
+        description="Legacy daemon listen host alias kept for TOML/Nix compatibility.",
+    ),
+    ConfigInventoryEntry(
+        "daemon_port",
+        toml_path="daemon.port",
+        env_var="POLYLOGUE_DAEMON_PORT",
+        owner_class="network-security",
+        reload_behavior="startup-bound",
+        description="Legacy daemon listen port alias kept for TOML/Nix compatibility.",
+    ),
+    ConfigInventoryEntry(
+        "api_host",
+        toml_path="daemon.api.host",
+        env_var="POLYLOGUE_API_HOST",
+        cli_override="polylogued run --api-host",
+        owner_class="network-security",
+        reload_behavior="startup-bound",
+        description="Daemon HTTP API listen host.",
+    ),
+    ConfigInventoryEntry(
+        "api_port",
+        toml_path="daemon.api.port",
+        env_var="POLYLOGUE_API_PORT",
+        cli_override="polylogued run --api-port",
+        owner_class="network-security",
+        reload_behavior="startup-bound",
+        description="Daemon HTTP API listen port.",
+    ),
+    ConfigInventoryEntry(
+        "api_auth_token",
+        toml_path="daemon.api.auth_token",
+        env_var="POLYLOGUE_API_AUTH_TOKEN",
+        cli_override="polylogued run --api-auth-token",
+        owner_class="network-security",
+        reload_behavior="startup-bound",
+        description="Bearer token required when the daemon API is exposed beyond loopback.",
+    ),
+    ConfigInventoryEntry(
+        "browser_capture_host",
+        toml_path="daemon.browser_capture.host",
+        env_var="POLYLOGUE_BROWSER_CAPTURE_HOST",
+        cli_override="polylogued run --host",
+        owner_class="network-security",
+        reload_behavior="startup-bound",
+        description="Browser-capture receiver listen host.",
+    ),
+    ConfigInventoryEntry(
+        "browser_capture_port",
+        toml_path="daemon.browser_capture.port",
+        env_var="POLYLOGUE_BROWSER_CAPTURE_PORT",
+        cli_override="polylogued run --port",
+        owner_class="network-security",
+        reload_behavior="startup-bound",
+        description="Browser-capture receiver listen port.",
+    ),
+    ConfigInventoryEntry(
+        "browser_capture_allowed_origins",
+        toml_path="daemon.browser_capture.allowed_origins",
+        env_var="POLYLOGUE_BROWSER_CAPTURE_ALLOWED_ORIGINS",
+        cli_override="polylogued run --browser-capture-origin",
+        owner_class="network-security",
+        reload_behavior="startup-bound",
+        description="Comma-separated browser-capture CORS origins.",
+    ),
+    ConfigInventoryEntry(
+        "browser_capture_allow_remote",
+        toml_path="daemon.browser_capture.allow_remote",
+        env_var="POLYLOGUE_BROWSER_CAPTURE_ALLOW_REMOTE",
+        cli_override="polylogued run --insecure-allow-remote",
+        owner_class="network-security",
+        reload_behavior="startup-bound",
+        description="Explicit opt-in for non-loopback browser-capture/API binding.",
+    ),
+    ConfigInventoryEntry(
+        "browser_capture_auth_token",
+        toml_path="daemon.browser_capture.auth_token",
+        env_var="POLYLOGUE_BROWSER_CAPTURE_AUTH_TOKEN",
+        cli_override="polylogued run --browser-capture-auth-token",
+        owner_class="network-security",
+        reload_behavior="startup-bound",
+        description="Bearer token for browser-capture requests when web origins or remote binds are enabled.",
+    ),
+    ConfigInventoryEntry(
+        "browser_capture_spool_path",
+        toml_path="daemon.browser_capture.spool_path",
+        env_var="POLYLOGUE_BROWSER_CAPTURE_SPOOL_PATH",
+        cli_override="polylogued run --spool",
+        owner_class="path-layout",
+        reload_behavior="startup-bound",
+        description="Spool directory for browser-capture JSONL before archive ingestion.",
+    ),
+    ConfigInventoryEntry(
+        "watch_debounce_s",
+        toml_path="daemon.watch.debounce_s",
+        env_var="POLYLOGUE_WATCH_DEBOUNCE_S",
+        cli_override="polylogued run --debounce-s",
+        owner_class="resource-policy",
+        reload_behavior="startup-bound",
+        description="Quiet period before the live watcher parses a changed file.",
+    ),
+    ConfigInventoryEntry(
+        "source_roots",
+        toml_path="sources.roots",
+        cli_override="polylogued run --root",
+        owner_class="path-layout",
+        reload_behavior="startup-bound",
+        description="Additional source roots watched by the daemon.",
+    ),
+    ConfigInventoryEntry(
+        "embedding_enabled",
+        toml_path="embedding.enabled",
+        env_var="POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS",
+        owner_class="provider-cost-control",
+        reload_behavior="daemon-loop",
+        description="Explicit opt-in for daemon-driven embedding catch-up and spend.",
+    ),
+    ConfigInventoryEntry(
+        "embedding_model",
+        toml_path="embedding.model",
+        owner_class="provider-cost-control",
+        reload_behavior="daemon-loop",
+        description="Embedding provider model name.",
+    ),
+    ConfigInventoryEntry(
+        "embedding_dimension",
+        toml_path="embedding.dimension",
+        owner_class="provider-cost-control",
+        reload_behavior="daemon-loop",
+        description="Embedding vector dimension expected in the archive.",
+    ),
+    ConfigInventoryEntry(
+        "embedding_max_cost_usd",
+        toml_path="embedding.max_cost_usd",
+        owner_class="provider-cost-control",
+        reload_behavior="daemon-loop",
+        description="Soft spend cap for embedding work.",
+    ),
+    ConfigInventoryEntry(
+        "voyage_api_key",
+        toml_path="embedding.voyage_api_key",
+        env_var="VOYAGE_API_KEY",
+        owner_class="provider-cost-control",
+        reload_behavior="daemon-loop",
+        description="Voyage provider API key presence; always redacted in inspection output.",
+    ),
+    ConfigInventoryEntry(
+        "observability_enabled",
+        toml_path="observability.enabled",
+        env_var="POLYLOGUE_OBSERVABILITY_ENABLED",
+        owner_class="network-security",
+        reload_behavior="request-time",
+        description="Enable OTLP/observability HTTP ingestion routes.",
+    ),
+    ConfigInventoryEntry(
+        "otlp_max_body_bytes",
+        toml_path="observability.otlp_max_body_bytes",
+        env_var="POLYLOGUE_OTLP_MAX_BODY_BYTES",
+        owner_class="resource-policy",
+        reload_behavior="request-time",
+        description="Maximum accepted OTLP request body size.",
+    ),
+    ConfigInventoryEntry(
+        "log_level",
+        toml_path="logging.level",
+        owner_class="presentation-preference",
+        reload_behavior="startup-bound",
+        description="Python logging verbosity.",
+    ),
+    ConfigInventoryEntry(
+        "force_plain",
+        toml_path="logging.force_plain",
+        env_var="POLYLOGUE_FORCE_PLAIN",
+        cli_override="polylogue --plain",
+        owner_class="presentation-preference",
+        reload_behavior="per-invocation-client",
+        description="Force plain output and avoid Rich layout primitives.",
+    ),
+    ConfigInventoryEntry(
+        "no_color",
+        env_var="NO_COLOR",
+        owner_class="presentation-preference",
+        reload_behavior="per-invocation-client",
+        description="Standards-based terminal request to suppress ANSI color output.",
+    ),
+    ConfigInventoryEntry(
+        "theme",
+        toml_path="ui.theme",
+        env_var="POLYLOGUE_THEME",
+        owner_class="presentation-preference",
+        reload_behavior="per-invocation-client",
+        description="Terminal/web semantic theme mode: dark, light, or auto.",
+    ),
+    ConfigInventoryEntry(
+        "schema_validation",
+        toml_path="schema.validation",
+        env_var="POLYLOGUE_SCHEMA_VALIDATION",
+        owner_class="deployment-policy",
+        reload_behavior="per-invocation-client",
+        description="Schema validation mode used by CLI/import surfaces.",
+    ),
+    ConfigInventoryEntry(
+        "slow_query_notice_seconds",
+        toml_path="ui.slow_query_notice_seconds",
+        env_var="POLYLOGUE_SLOW_QUERY_NOTICE_SECONDS",
+        owner_class="presentation-preference",
+        reload_behavior="per-invocation-client",
+        description="Threshold for slow-query user notices.",
+    ),
+    ConfigInventoryEntry(
+        "notification_backend",
+        toml_path="notifications.backend",
+        env_var="POLYLOGUE_NOTIFICATION_BACKEND",
+        owner_class="deployment-policy",
+        reload_behavior="daemon-loop",
+        description="Health notification backend: log/stdout/webhook/apprise/email.",
+    ),
+    ConfigInventoryEntry(
+        "notification_webhook_url",
+        toml_path="notifications.webhook_url",
+        env_var="POLYLOGUE_NOTIFICATION_WEBHOOK_URL",
+        owner_class="deployment-policy",
+        reload_behavior="daemon-loop",
+        description="Webhook endpoint for daemon health notifications.",
+    ),
+    ConfigInventoryEntry(
+        "notification_webhook_secret",
+        toml_path="notifications.webhook_secret",
+        env_var="POLYLOGUE_NOTIFICATION_WEBHOOK_SECRET",
+        owner_class="deployment-policy",
+        reload_behavior="daemon-loop",
+        description="Shared webhook secret; always redacted in inspection output.",
+    ),
+    ConfigInventoryEntry(
+        "notification_apprise_urls",
+        toml_path="notifications.apprise_urls",
+        env_var="POLYLOGUE_NOTIFICATION_APPRISE_URLS",
+        owner_class="deployment-policy",
+        reload_behavior="daemon-loop",
+        description="Apprise notification URLs.",
+    ),
+    ConfigInventoryEntry(
+        "notification_email_host",
+        toml_path="notifications.email.host",
+        env_var="POLYLOGUE_NOTIFICATION_EMAIL_HOST",
+        owner_class="deployment-policy",
+        reload_behavior="daemon-loop",
+        description="SMTP host for health notifications.",
+    ),
+    ConfigInventoryEntry(
+        "notification_email_port",
+        toml_path="notifications.email.port",
+        env_var="POLYLOGUE_NOTIFICATION_EMAIL_PORT",
+        owner_class="deployment-policy",
+        reload_behavior="daemon-loop",
+        description="SMTP port for health notifications.",
+    ),
+    ConfigInventoryEntry(
+        "notification_email_username",
+        toml_path="notifications.email.username",
+        env_var="POLYLOGUE_NOTIFICATION_EMAIL_USERNAME",
+        owner_class="deployment-policy",
+        reload_behavior="daemon-loop",
+        description="SMTP username.",
+    ),
+    ConfigInventoryEntry(
+        "notification_email_password",
+        toml_path="notifications.email.password",
+        env_var="POLYLOGUE_NOTIFICATION_EMAIL_PASSWORD",
+        owner_class="deployment-policy",
+        reload_behavior="daemon-loop",
+        description="SMTP password; always redacted in inspection output.",
+    ),
+    ConfigInventoryEntry(
+        "notification_email_from",
+        toml_path="notifications.email.from",
+        env_var="POLYLOGUE_NOTIFICATION_EMAIL_FROM",
+        owner_class="deployment-policy",
+        reload_behavior="daemon-loop",
+        description="SMTP sender address.",
+    ),
+    ConfigInventoryEntry(
+        "notification_email_to",
+        toml_path="notifications.email.to",
+        env_var="POLYLOGUE_NOTIFICATION_EMAIL_TO",
+        owner_class="deployment-policy",
+        reload_behavior="daemon-loop",
+        description="SMTP recipient list.",
+    ),
+    ConfigInventoryEntry(
+        "notification_email_subject_prefix",
+        toml_path="notifications.email.subject_prefix",
+        env_var="POLYLOGUE_NOTIFICATION_EMAIL_SUBJECT_PREFIX",
+        owner_class="deployment-policy",
+        reload_behavior="daemon-loop",
+        description="SMTP subject prefix.",
+    ),
+    ConfigInventoryEntry(
+        "notification_email_use_tls",
+        toml_path="notifications.email.use_tls",
+        env_var="POLYLOGUE_NOTIFICATION_EMAIL_USE_TLS",
+        owner_class="deployment-policy",
+        reload_behavior="daemon-loop",
+        description="Use implicit TLS for SMTP notifications.",
+    ),
+    ConfigInventoryEntry(
+        "notification_email_use_starttls",
+        toml_path="notifications.email.use_starttls",
+        env_var="POLYLOGUE_NOTIFICATION_EMAIL_USE_STARTTLS",
+        owner_class="deployment-policy",
+        reload_behavior="daemon-loop",
+        description="Use STARTTLS for SMTP notifications.",
+    ),
+    ConfigInventoryEntry(
+        "notification_email_max_per_hour",
+        toml_path="notifications.email.max_per_hour",
+        env_var="POLYLOGUE_NOTIFICATION_EMAIL_MAX_PER_HOUR",
+        owner_class="deployment-policy",
+        reload_behavior="daemon-loop",
+        description="Throttle health notification email volume.",
+    ),
+    ConfigInventoryEntry(
+        "health_check_interval_s",
+        toml_path="health.check_interval_s",
+        env_var="POLYLOGUE_HEALTH_CHECK_INTERVAL_S",
+        owner_class="resource-policy",
+        reload_behavior="daemon-loop",
+        description="Periodic health-check interval.",
+    ),
+    ConfigInventoryEntry(
+        "health_check_tiers",
+        toml_path="health.check_tiers",
+        env_var="POLYLOGUE_HEALTH_CHECK_TIERS",
+        owner_class="resource-policy",
+        reload_behavior="daemon-loop",
+        description="Comma-separated health-check tiers.",
+    ),
+    ConfigInventoryEntry(
+        "health_fts_auto_restore",
+        toml_path="health.fts_auto_restore",
+        env_var="POLYLOGUE_HEALTH_FTS_AUTO_RESTORE",
+        owner_class="resource-policy",
+        reload_behavior="daemon-loop",
+        description="Allow health checks to repair FTS trigger drift automatically.",
+    ),
+    ConfigInventoryEntry(
+        "health_blob_integrity_sample_size",
+        toml_path="health.blob_integrity_sample_size",
+        env_var="POLYLOGUE_HEALTH_BLOB_INTEGRITY_SAMPLE_SIZE",
+        owner_class="resource-policy",
+        reload_behavior="daemon-loop",
+        description="Bounded sample size for blob-integrity health checks.",
+    ),
+    ConfigInventoryEntry(
+        "health_convergence_debt",
+        toml_path="health.convergence_debt",
+        owner_class="resource-policy",
+        reload_behavior="daemon-loop",
+        description="Nested convergence-debt SLO thresholds.",
+        toml_kind="table",
+    ),
+    ConfigInventoryEntry(
+        "health_cursor_lag",
+        toml_path="health.cursor_lag",
+        owner_class="resource-policy",
+        reload_behavior="daemon-loop",
+        description="Nested cursor-lag SLO thresholds.",
+        toml_kind="table",
+    ),
+    ConfigInventoryEntry(
+        "subscription_plans",
+        toml_path="cost.subscription.plans",
+        owner_class="provider-cost-control",
+        reload_behavior="per-invocation-client",
+        description="Subscription plan rows used by cost/outlook reporting.",
+        toml_kind="array-table",
+    ),
+)
+
+_CONFIG_INVENTORY_BY_KEY = {entry.key: entry for entry in _CONFIG_INVENTORY}
+_ENV_CONFIG_KEY_MAP = {entry.env_var: entry.key for entry in _CONFIG_INVENTORY if entry.env_var}
+_INT_CONFIG_KEYS = frozenset(
+    {
+        "api_port",
+        "daemon_port",
+        "browser_capture_port",
+        "embedding_dimension",
+        "health_check_interval_s",
+        "health_blob_integrity_sample_size",
+        "notification_email_port",
+        "notification_email_max_per_hour",
+        "otlp_max_body_bytes",
+    }
+)
+_FLOAT_CONFIG_KEYS = frozenset({"embedding_max_cost_usd", "slow_query_notice_seconds", "watch_debounce_s"})
+_BOOL_CONFIG_KEYS = frozenset(
+    {
+        "browser_capture_allow_remote",
+        "embedding_enabled",
+        "force_plain",
+        "no_color",
+        "health_fts_auto_restore",
+        "notification_email_use_tls",
+        "notification_email_use_starttls",
+        "observability_enabled",
+    }
+)
+
+
+def _toml_section_layout() -> list[tuple[str, list[tuple[str, str]]]]:
+    sections: dict[str, list[tuple[str, str]]] = {}
+    for entry in _CONFIG_INVENTORY:
+        if not entry.toml_path or entry.toml_kind != "scalar":
+            continue
+        section, _, short_key = entry.toml_path.rpartition(".")
+        if not section:
+            continue
+        sections.setdefault(section, []).append((short_key, entry.key))
+    return list(sections.items())
 
 
 def _site_config_path() -> Path | None:
@@ -539,7 +998,7 @@ def _default_config_values() -> dict[str, object]:
         "api_port": 8766,
         "api_auth_token": None,
         "browser_capture_port": 8765,
-        "browser_capture_allowed_origins": "127.0.0.1",
+        "browser_capture_allowed_origins": "chrome-extension://*",
         # Stays opt-in: the daemon embed stage is gated separately on a
         # config TOML flag or POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS so that
         # supplying VOYAGE_API_KEY (e.g., for one-off CLI use) does not
@@ -558,10 +1017,13 @@ def _default_config_values() -> dict[str, object]:
         # below is intentionally low enough to act as a safety net for a
         # first-time user without an explicit configuration.
         "embedding_max_cost_usd": 5.0,
+        "voyage_api_key": None,
         "log_level": "INFO",
         "force_plain": False,
+        "no_color": False,
         "theme": "",
         "schema_validation": "advisory",
+        "slow_query_notice_seconds": None,
         "notification_backend": "log",
         "notification_webhook_url": None,
         "notification_webhook_secret": None,
@@ -580,212 +1042,16 @@ def _default_config_values() -> dict[str, object]:
         "health_check_tiers": "fast",
         "health_fts_auto_restore": False,
         "health_blob_integrity_sample_size": 100,
+        "health_convergence_debt": {},
+        "health_cursor_lag": {},
         "watch_debounce_s": 2.0,
         "browser_capture_host": "127.0.0.1",
         "browser_capture_spool_path": "",
         "browser_capture_auth_token": None,
         "browser_capture_allow_remote": False,
         "source_roots": (),
+        "subscription_plans": (),
     }
-
-
-_ENV_CONFIG_KEY_MAP: dict[str, str] = {
-    "POLYLOGUE_ARCHIVE_ROOT": "archive_root",
-    "POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS": "embedding_enabled",
-    "POLYLOGUE_OBSERVABILITY_ENABLED": "observability_enabled",
-    "POLYLOGUE_OTLP_MAX_BODY_BYTES": "otlp_max_body_bytes",
-    "VOYAGE_API_KEY": "voyage_api_key",
-    "POLYLOGUE_FORCE_PLAIN": "force_plain",
-    "POLYLOGUE_THEME": "theme",
-    "POLYLOGUE_SLOW_QUERY_NOTICE_SECONDS": "slow_query_notice_seconds",
-    "POLYLOGUE_SCHEMA_VALIDATION": "schema_validation",
-    "POLYLOGUE_NOTIFICATION_BACKEND": "notification_backend",
-    "POLYLOGUE_NOTIFICATION_WEBHOOK_URL": "notification_webhook_url",
-    "POLYLOGUE_NOTIFICATION_WEBHOOK_SECRET": "notification_webhook_secret",
-    "POLYLOGUE_NOTIFICATION_APPRISE_URLS": "notification_apprise_urls",
-    "POLYLOGUE_NOTIFICATION_EMAIL_HOST": "notification_email_host",
-    "POLYLOGUE_NOTIFICATION_EMAIL_PORT": "notification_email_port",
-    "POLYLOGUE_NOTIFICATION_EMAIL_USERNAME": "notification_email_username",
-    "POLYLOGUE_NOTIFICATION_EMAIL_PASSWORD": "notification_email_password",
-    "POLYLOGUE_NOTIFICATION_EMAIL_FROM": "notification_email_from",
-    "POLYLOGUE_NOTIFICATION_EMAIL_TO": "notification_email_to",
-    "POLYLOGUE_HEALTH_CHECK_INTERVAL_S": "health_check_interval_s",
-    "POLYLOGUE_HEALTH_CHECK_TIERS": "health_check_tiers",
-    "POLYLOGUE_HEALTH_FTS_AUTO_RESTORE": "health_fts_auto_restore",
-    "POLYLOGUE_HEALTH_BLOB_INTEGRITY_SAMPLE_SIZE": "health_blob_integrity_sample_size",
-    "POLYLOGUE_API_HOST": "api_host",
-    "POLYLOGUE_API_PORT": "api_port",
-    "POLYLOGUE_API_AUTH_TOKEN": "api_auth_token",
-    "POLYLOGUE_BROWSER_CAPTURE_PORT": "browser_capture_port",
-    "POLYLOGUE_BROWSER_CAPTURE_HOST": "browser_capture_host",
-    "POLYLOGUE_WATCH_DEBOUNCE_S": "watch_debounce_s",
-}
-
-
-_TOML_PATH_BY_CONFIG_KEY: dict[str, str] = {
-    "archive_root": "archive.root",
-    "daemon_host": "daemon.host",
-    "daemon_port": "daemon.port",
-    "api_host": "daemon.api.host",
-    "api_port": "daemon.api.port",
-    "api_auth_token": "daemon.api.auth_token",
-    "browser_capture_host": "daemon.browser_capture.host",
-    "browser_capture_port": "daemon.browser_capture.port",
-    "browser_capture_allowed_origins": "daemon.browser_capture.allowed_origins",
-    "browser_capture_allow_remote": "daemon.browser_capture.allow_remote",
-    "browser_capture_auth_token": "daemon.browser_capture.auth_token",
-    "browser_capture_spool_path": "daemon.browser_capture.spool_path",
-    "watch_debounce_s": "daemon.watch.debounce_s",
-    "source_roots": "sources.roots",
-    "embedding_enabled": "embedding.enabled",
-    "embedding_model": "embedding.model",
-    "embedding_dimension": "embedding.dimension",
-    "embedding_max_cost_usd": "embedding.max_cost_usd",
-    "voyage_api_key": "embedding.voyage_api_key",
-    "observability_enabled": "daemon.observability.enabled",
-    "otlp_max_body_bytes": "daemon.observability.otlp_max_body_bytes",
-    "log_level": "logging.level",
-    "force_plain": "logging.force_plain",
-    "theme": "ui.theme",
-    "slow_query_notice_seconds": "ui.slow_query_notice_seconds",
-    "schema_validation": "schema_validation",
-    "notification_backend": "notifications.backend",
-    "notification_webhook_url": "notifications.webhook_url",
-    "notification_webhook_secret": "notifications.webhook_secret",
-    "notification_apprise_urls": "notifications.apprise_urls",
-    "notification_email_host": "notifications.email.host",
-    "notification_email_port": "notifications.email.port",
-    "notification_email_username": "notifications.email.username",
-    "notification_email_password": "notifications.email.password",
-    "notification_email_from": "notifications.email.from",
-    "notification_email_to": "notifications.email.to",
-    "notification_email_subject_prefix": "notifications.email.subject_prefix",
-    "notification_email_use_tls": "notifications.email.use_tls",
-    "notification_email_use_starttls": "notifications.email.use_starttls",
-    "notification_email_max_per_hour": "notifications.email.max_per_hour",
-    "health_check_interval_s": "health.check_interval_s",
-    "health_check_tiers": "health.check_tiers",
-    "health_fts_auto_restore": "health.fts_auto_restore",
-    "health_blob_integrity_sample_size": "health.blob_integrity_sample_size",
-    "health_convergence_debt": "health.convergence_debt",
-    "health_cursor_lag": "health.cursor_lag",
-    "subscription_plans": "cost.subscription.plans",
-}
-
-
-_CONFIG_KEY_BY_ENV = {key: env for env, key in _ENV_CONFIG_KEY_MAP.items()}
-
-
-def _config_owner_class(key: str) -> str:
-    if key in {"archive_root", "source_roots", "browser_capture_spool_path"}:
-        return "path-layout"
-    if key.startswith(("api_", "browser_capture_", "notification_")) or key.startswith("observability_"):
-        return "network-security"
-    if key.startswith("embedding_") or key in {"voyage_api_key", "subscription_plans"}:
-        return "provider-cost-control"
-    if key in {"force_plain", "theme", "log_level", "slow_query_notice_seconds"}:
-        return "presentation-preference"
-    if key.startswith("health_") or key in {"watch_debounce_s", "otlp_max_body_bytes"}:
-        return "resource-policy"
-    if key in {"schema_validation"}:
-        return "deployment-policy"
-    return "runtime-config"
-
-
-def _config_reload_behavior(key: str) -> str:
-    if key in {"force_plain", "theme", "log_level", "slow_query_notice_seconds"}:
-        return "per-invocation-client"
-    if key.startswith("embedding_"):
-        return "daemon-loop"
-    if key.startswith("health_"):
-        return "daemon-loop"
-    return "startup-bound"
-
-
-def config_inventory() -> tuple[ConfigInventoryEntry, ...]:
-    """Return the maintained public config inventory."""
-    keys = set(_default_config_values()) | set(_TOML_PATH_BY_CONFIG_KEY) | set(_CONFIG_KEY_BY_ENV)
-    return tuple(
-        ConfigInventoryEntry(
-            key=key,
-            toml_path=_TOML_PATH_BY_CONFIG_KEY.get(key),
-            env_var=_CONFIG_KEY_BY_ENV.get(key),
-            cli_override=None,
-            owner_class=_config_owner_class(key),
-            reload_behavior=_config_reload_behavior(key),
-        )
-        for key in sorted(keys)
-    )
-
-
-def config_inventory_by_key() -> dict[str, ConfigInventoryEntry]:
-    """Return config inventory keyed by flat config key."""
-    return {entry.key: entry for entry in config_inventory()}
-
-
-def _inventory_entry_payload(entry: ConfigInventoryEntry, *, default: object = _MISSING) -> dict[str, object]:
-    secret = is_secret_config_key(entry.key)
-    payload: dict[str, object] = {
-        "key": entry.key,
-        "toml_path": entry.toml_path,
-        "env_var": entry.env_var,
-        "cli_override": entry.cli_override,
-        "owner_class": entry.owner_class,
-        "reload_behavior": entry.reload_behavior,
-        "secret": secret,
-        "redaction": "presence" if secret else "none",
-    }
-    if default is not _MISSING:
-        payload["default"] = redact_secret_value(default) if secret else default
-    return payload
-
-
-def config_inventory_payload() -> list[dict[str, object]]:
-    """Return JSON-serializable inventory metadata for public config keys."""
-    defaults = _default_config_values()
-    return [_inventory_entry_payload(entry, default=defaults.get(entry.key, _MISSING)) for entry in config_inventory()]
-
-
-def effective_config_payload(
-    resolved: PolylogueConfig,
-    *,
-    include_inventory: bool = True,
-) -> dict[str, object]:
-    """Return redacted effective config values with source-layer metadata."""
-    layer_paths = describe_config_layers()
-    inventory = config_inventory_by_key()
-    keys = [entry.key for entry in config_inventory()]
-    keys.extend(sorted(key for key in resolved.raw if key not in inventory))
-    values: dict[str, object] = {}
-    for key in keys:
-        value = resolved.raw.get(key)
-        entry = inventory.get(key)
-        secret = is_secret_config_key(key)
-        display_value = redact_secret_value(value) if secret else value
-        values[key] = {
-            "value": display_value,
-            "source_layer": resolved.layer_of(key),
-            "secret": secret,
-            "secret_present": bool(secret and display_value == SECRET_SET_PLACEHOLDER),
-            "toml_path": entry.toml_path if entry is not None else None,
-            "env_var": entry.env_var if entry is not None else None,
-            "cli_override": entry.cli_override if entry is not None else None,
-            "owner_class": entry.owner_class if entry is not None else "unknown",
-            "reload_behavior": entry.reload_behavior if entry is not None else "unknown",
-        }
-    payload: dict[str, object] = {
-        "layers": {
-            "default": "built-in defaults",
-            "site": layer_paths["site"],
-            "user": layer_paths["user"],
-            "env": "POLYLOGUE_*, provider credential, and presentation environment variables",
-            "cli": "CLI overrides (per-invocation)",
-        },
-        "values": values,
-    }
-    if include_inventory:
-        payload["inventory"] = config_inventory_payload()
-    return payload
 
 
 def _apply_toml_layer(
@@ -819,7 +1085,7 @@ def load_polylogue_config(
     site_config_path: Path | None = None,
     cli_overrides: dict[str, object] | None = None,
 ) -> PolylogueConfig:
-    """Load resolved Polylogue config with four-layer precedence.
+    """Load resolved Polylogue config with five-layer precedence.
 
     Precedence (low → high), per #829:
 
@@ -894,74 +1160,12 @@ def describe_config_layers(
 def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
     """Merge TOML sections into the flat config dict.
 
-    Each section maps short keys (as written in TOML) to canonical flat keys
-    in ``cfg``. For example, ``[archive] root = "/x"`` maps to
-    ``cfg["archive_root"] = "/x"``.
+    The scalar mapping is generated from :data:`_CONFIG_INVENTORY`, keeping
+    loader and inspection metadata on the same rails. Specialized nested
+    tables remain explicit because their shape is owned by downstream typed
+    decoders rather than by this flat config layer.
     """
-    section_keys: dict[str, dict[str, str]] = {
-        "archive": {"root": "archive_root"},
-        "daemon": {
-            "host": "daemon_host",
-            "port": "daemon_port",
-        },
-        "daemon.api": {
-            "host": "api_host",
-            "port": "api_port",
-            "auth_token": "api_auth_token",
-        },
-        "daemon.browser_capture": {
-            "host": "browser_capture_host",
-            "port": "browser_capture_port",
-            "allowed_origins": "browser_capture_allowed_origins",
-            "allow_remote": "browser_capture_allow_remote",
-            "auth_token": "browser_capture_auth_token",
-            "spool_path": "browser_capture_spool_path",
-        },
-        "daemon.watch": {
-            "debounce_s": "watch_debounce_s",
-        },
-        "sources": {
-            "roots": "source_roots",
-        },
-        "embedding": {
-            "enabled": "embedding_enabled",
-            "model": "embedding_model",
-            "dimension": "embedding_dimension",
-            "max_cost_usd": "embedding_max_cost_usd",
-            "voyage_api_key": "voyage_api_key",
-        },
-        "logging": {
-            "level": "log_level",
-            "force_plain": "force_plain",
-        },
-        "ui": {
-            "theme": "theme",
-        },
-        "notifications": {
-            "backend": "notification_backend",
-            "webhook_url": "notification_webhook_url",
-            "webhook_secret": "notification_webhook_secret",
-            "apprise_urls": "notification_apprise_urls",
-        },
-        "notifications.email": {
-            "host": "notification_email_host",
-            "port": "notification_email_port",
-            "username": "notification_email_username",
-            "password": "notification_email_password",
-            "from": "notification_email_from",
-            "to": "notification_email_to",
-            "subject_prefix": "notification_email_subject_prefix",
-            "use_tls": "notification_email_use_tls",
-            "use_starttls": "notification_email_use_starttls",
-            "max_per_hour": "notification_email_max_per_hour",
-        },
-        "health": {
-            "check_interval_s": "health_check_interval_s",
-            "check_tiers": "health_check_tiers",
-            "fts_auto_restore": "health_fts_auto_restore",
-        },
-    }
-    for section, key_map in section_keys.items():
+    for section, key_pairs in _toml_section_layout():
         # Walk dotted paths for nested TOML sections like [daemon.api]
         section_data: object = toml_data
         for part in section.split("."):
@@ -971,13 +1175,19 @@ def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
                 section_data = None
                 break
         if isinstance(section_data, dict):
-            for short_key, flat_key in key_map.items():
+            for short_key, flat_key in key_pairs:
                 if short_key in section_data:
                     value = section_data[short_key]
                     if isinstance(value, list):
                         cfg[flat_key] = tuple(value)
                     else:
                         cfg[flat_key] = value
+
+    # Back-compat for early observability TOML examples that used
+    # top-level scalar keys before the inventory made the section explicit.
+    for legacy_key in ("observability_enabled", "otlp_max_body_bytes"):
+        if legacy_key in toml_data:
+            cfg[legacy_key] = toml_data[legacy_key]
 
     # [health.convergence_debt] — typed nested table with per-family overrides.
     # See polylogue/daemon/convergence_debt_alert.py for shape and semantics.
@@ -1001,31 +1211,38 @@ def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
         cfg["subscription_plans"] = tuple(p for p in plans if isinstance(p, dict))
 
 
+def _coerce_env_value(cfg_key: str, value: str) -> object:
+    """Coerce environment values according to the config inventory key type."""
+    if cfg_key in _BOOL_CONFIG_KEYS:
+        lowered = value.strip().lower()
+        if lowered in ("1", "true", "yes", "on"):
+            return True
+        if lowered in ("0", "false", "no", "off"):
+            return False
+        return value
+    if cfg_key in _INT_CONFIG_KEYS:
+        try:
+            return int(value)
+        except ValueError:
+            return _MISSING
+    if cfg_key in _FLOAT_CONFIG_KEYS:
+        try:
+            return float(value)
+        except ValueError:
+            return _MISSING
+    return value
+
+
 def _apply_env_overrides(cfg: dict[str, object]) -> None:
-    """Apply POLYLOGUE_* environment variable overrides."""
-    # Keys that must be stored as int
-    _int_keys = {
-        "api_port",
-        "daemon_port",
-        "browser_capture_port",
-        "health_check_interval_s",
-        "health_blob_integrity_sample_size",
-        "notification_email_port",
-        "notification_email_max_per_hour",
-    }
+    """Apply public environment variable overrides from the config inventory."""
     for env_var, cfg_key in _ENV_CONFIG_KEY_MAP.items():
         value = os.environ.get(env_var)
-        if value is not None:
-            # Coerce booleans
-            if value.lower() in ("1", "true", "yes"):
-                cfg[cfg_key] = True
-            elif value.lower() in ("0", "false", "no"):
-                cfg[cfg_key] = False
-            elif cfg_key in _int_keys:
-                with __import__("contextlib").suppress(ValueError):
-                    cfg[cfg_key] = int(value)
-            else:
-                cfg[cfg_key] = value
+        if value is None:
+            continue
+        coerced = _coerce_env_value(cfg_key, value)
+        if coerced is _MISSING:
+            continue
+        cfg[cfg_key] = coerced
 
 
 #: Flat config keys whose values are secrets and must never be rendered in
@@ -1087,12 +1304,124 @@ def redact_config_mapping(cfg: Mapping[str, object]) -> dict[str, object]:
     return redacted
 
 
+def _json_safe_config_value(value: object) -> object:
+    """Return a JSON/TOML-display-safe value without losing scalar types."""
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, tuple):
+        return [_json_safe_config_value(item) for item in value]
+    if isinstance(value, list):
+        return [_json_safe_config_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_safe_config_value(item) for key, item in value.items()}
+    return value
+
+
+def config_display_value(key: str, value: object) -> object:
+    """Return a public inspection value, redacting secret-bearing keys."""
+    if is_secret_config_key(key):
+        return redact_secret_value(value)
+    return _json_safe_config_value(value)
+
+
+def config_inventory() -> tuple[ConfigInventoryEntry, ...]:
+    """Return the maintained public configuration inventory."""
+    return _CONFIG_INVENTORY
+
+
+def config_inventory_by_key() -> dict[str, ConfigInventoryEntry]:
+    """Return configuration inventory entries keyed by flat config key."""
+    return dict(_CONFIG_INVENTORY_BY_KEY)
+
+
+def _inventory_entry_payload(entry: ConfigInventoryEntry, *, default: object = _MISSING) -> dict[str, object]:
+    secret = is_secret_config_key(entry.key)
+    payload: dict[str, object] = {
+        "key": entry.key,
+        "toml_path": entry.toml_path,
+        "toml_kind": entry.toml_kind,
+        "env_var": entry.env_var,
+        "cli_override": entry.cli_override,
+        "owner_class": entry.owner_class,
+        "secret": secret,
+        "redaction": "presence" if secret else "none",
+        "reload_behavior": entry.reload_behavior,
+        "effective_path": entry.effective_path,
+        "description": entry.description,
+    }
+    payload["default"] = None if default is _MISSING else config_display_value(entry.key, default)
+    return payload
+
+
+def config_inventory_payload() -> list[dict[str, object]]:
+    """Return inventory rows ready for JSON/docs consumption."""
+    defaults = _default_config_values()
+    return [_inventory_entry_payload(entry, default=defaults.get(entry.key, _MISSING)) for entry in _CONFIG_INVENTORY]
+
+
+def effective_config_payload(
+    cfg: PolylogueConfig | None = None,
+    *,
+    include_inventory: bool = True,
+) -> dict[str, object]:
+    """Return redacted effective config values with source/layer metadata.
+
+    This is the machine contract behind ``polylogue config --format json``.
+    Secret-bearing values expose presence only (``<set>``/``<unset>``) while
+    still reporting which layer supplied the value.
+    """
+    resolved = cfg if cfg is not None else load_polylogue_config()
+    defaults = _default_config_values()
+    values: dict[str, object] = {}
+
+    ordered_keys = [entry.key for entry in _CONFIG_INVENTORY]
+    ordered_keys.extend(sorted(key for key in resolved.raw if key not in _CONFIG_INVENTORY_BY_KEY))
+
+    for key in ordered_keys:
+        entry = _CONFIG_INVENTORY_BY_KEY.get(key)
+        value = resolved.raw.get(key, defaults.get(key))
+        layer = resolved.layer_of(key)
+        secret = is_secret_config_key(key)
+        secret_present = bool(secret and redact_secret_value(value) == SECRET_SET_PLACEHOLDER)
+        values[key] = {
+            "value": config_display_value(key, value),
+            "source_layer": layer,
+            # Kept for the original --show-layers JSON wording and simple jq paths.
+            "layer": layer,
+            "secret": secret,
+            "secret_present": secret_present,
+            "toml_path": entry.toml_path if entry is not None else None,
+            "env_var": entry.env_var if entry is not None else None,
+            "cli_override": entry.cli_override if entry is not None else None,
+            "owner_class": entry.owner_class if entry is not None else "unknown",
+            "reload_behavior": entry.reload_behavior if entry is not None else "unknown",
+            "effective_path": entry.effective_path
+            if entry is not None
+            else f"polylogue config --format json values.{key}",
+            "default": config_display_value(key, defaults.get(key)) if key in defaults else None,
+        }
+
+    layer_paths = describe_config_layers()
+    payload: dict[str, object] = {
+        "layers": {
+            "default": "built-in defaults",
+            "site": layer_paths["site"],
+            "user": layer_paths["user"],
+            "env": "POLYLOGUE_*, provider credential, and presentation environment variables",
+            "cli": "CLI overrides (per-invocation)",
+        },
+        "values": values,
+    }
+    if include_inventory:
+        payload["inventory"] = config_inventory_payload()
+    return payload
+
+
 def format_config_toml(cfg: dict[str, object]) -> str:
     """Render loaded config as TOML for display.
 
-    Round-trips with :func:`_merge_toml`: the generated TOML uses short keys
-    inside their sections (``[archive] root = ...``) so the output can be
-    written back as a ``polylogue.toml`` file and re-loaded.
+    Round-trips with :func:`_merge_toml`: scalar keys are rendered from the
+    same inventory-driven TOML layout that the loader consumes.
 
     Secret-bearing keys are redacted to a presence placeholder
     (:data:`SECRET_SET_PLACEHOLDER` / :data:`SECRET_UNSET_PLACEHOLDER`) so the
@@ -1100,103 +1429,10 @@ def format_config_toml(cfg: dict[str, object]) -> str:
     serialized with a real TOML emitter (``tomli_w``) rather than raw f-string
     interpolation so quotes/backslashes/newlines cannot corrupt the output.
     """
-    # (section_name, [(short_key, flat_key), ...])
-    sections_layout: list[tuple[str, list[tuple[str, str]]]] = [
-        ("archive", [("root", "archive_root")]),
-        (
-            "daemon",
-            [
-                ("host", "daemon_host"),
-                ("port", "daemon_port"),
-            ],
-        ),
-        (
-            "daemon.api",
-            [
-                ("host", "api_host"),
-                ("port", "api_port"),
-                ("auth_token", "api_auth_token"),
-            ],
-        ),
-        (
-            "daemon.browser_capture",
-            [
-                ("host", "browser_capture_host"),
-                ("port", "browser_capture_port"),
-                ("allowed_origins", "browser_capture_allowed_origins"),
-                ("allow_remote", "browser_capture_allow_remote"),
-                ("auth_token", "browser_capture_auth_token"),
-            ],
-        ),
-        (
-            "daemon.watch",
-            [("debounce_s", "watch_debounce_s")],
-        ),
-        (
-            "sources",
-            [("roots", "source_roots")],
-        ),
-        (
-            "embedding",
-            [
-                ("enabled", "embedding_enabled"),
-                ("model", "embedding_model"),
-                ("dimension", "embedding_dimension"),
-                ("max_cost_usd", "embedding_max_cost_usd"),
-                ("voyage_api_key", "voyage_api_key"),
-            ],
-        ),
-        (
-            "logging",
-            [
-                ("level", "log_level"),
-                ("force_plain", "force_plain"),
-            ],
-        ),
-        (
-            "ui",
-            [
-                ("theme", "theme"),
-            ],
-        ),
-        (
-            "notifications",
-            [
-                ("backend", "notification_backend"),
-                ("webhook_url", "notification_webhook_url"),
-                ("webhook_secret", "notification_webhook_secret"),
-                ("apprise_urls", "notification_apprise_urls"),
-            ],
-        ),
-        (
-            "notifications.email",
-            [
-                ("host", "notification_email_host"),
-                ("port", "notification_email_port"),
-                ("username", "notification_email_username"),
-                ("password", "notification_email_password"),
-                ("from", "notification_email_from"),
-                ("to", "notification_email_to"),
-                ("subject_prefix", "notification_email_subject_prefix"),
-                ("use_tls", "notification_email_use_tls"),
-                ("use_starttls", "notification_email_use_starttls"),
-                ("max_per_hour", "notification_email_max_per_hour"),
-            ],
-        ),
-        (
-            "health",
-            [
-                ("check_interval_s", "health_check_interval_s"),
-                ("check_tiers", "health_check_tiers"),
-                ("fts_auto_restore", "health_fts_auto_restore"),
-            ],
-        ),
-    ]
-
     import tomli_w
 
     lines: list[str] = []
-    for section, key_pairs in sections_layout:
+    for section, key_pairs in _toml_section_layout():
         section_table: dict[str, object] = {}
         for short_key, flat_key in key_pairs:
             if flat_key not in cfg:
@@ -1204,13 +1440,7 @@ def format_config_toml(cfg: dict[str, object]) -> str:
             value = cfg[flat_key]
             if value is None:
                 continue
-            if is_secret_config_key(flat_key):
-                section_table[short_key] = redact_secret_value(value)
-                continue
-            if isinstance(value, tuple):
-                section_table[short_key] = list(value)
-            else:
-                section_table[short_key] = value
+            section_table[short_key] = config_display_value(flat_key, value)
         if section_table:
             lines.append(f"[{section}]")
             # ``tomli_w`` escapes quotes/backslashes/newlines correctly, so a
@@ -1235,6 +1465,7 @@ __all__ = [
     "SECRET_SET_PLACEHOLDER",
     "SECRET_UNSET_PLACEHOLDER",
     "Source",
+    "config_display_value",
     "config_inventory",
     "config_inventory_by_key",
     "config_inventory_payload",

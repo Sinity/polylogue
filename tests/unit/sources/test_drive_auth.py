@@ -449,6 +449,47 @@ def test_refresh_credentials_if_needed_contract(tmp_path: Path, monkeypatch: pyt
     mgr._token_store.save.assert_called_once_with("drive_token", '{"token":"fresh"}')
 
 
+def test_refresh_credentials_caps_google_auth_request_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    token_path = tmp_path / "token.json"
+    mgr = DriveAuthManager(ui=None, token_path=token_path)
+    mgr._token_store = MagicMock()
+    creds = _creds(valid=False, expired=True, token_json='{"token":"fresh"}')
+    seen_timeouts: list[object] = []
+
+    class FakeRequest:
+        def __call__(self, *args: object, **kwargs: object) -> SimpleNamespace:
+            del args
+            seen_timeouts.append(kwargs.get("timeout"))
+            return SimpleNamespace(status=200, data=b"{}")
+
+    def refresh(request: object) -> None:
+        request(method="POST", url="https://oauth.example/token", headers={}, body=b"")  # type: ignore[operator]
+        request(  # type: ignore[operator]
+            method="POST",
+            url="https://oauth.example/token",
+            headers={},
+            body=b"",
+            timeout=120,
+        )
+        request(  # type: ignore[operator]
+            method="POST",
+            url="https://oauth.example/token",
+            headers={},
+            body=b"",
+            timeout=5,
+        )
+        creds.valid = True
+        creds.expired = False
+
+    creds.refresh.side_effect = refresh
+    monkeypatch.setattr("google.auth.transport.requests.Request", lambda: FakeRequest())
+
+    result = mgr._refresh_credentials_if_needed(creds, token_path)
+
+    assert result is creds
+    assert seen_timeouts == [30, 30, 5]
+
+
 def test_load_credentials_uses_manual_flow_when_local_server_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

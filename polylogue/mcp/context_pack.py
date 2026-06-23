@@ -101,6 +101,43 @@ class ContextPackProvenance(BaseModel):
     archive_runtime: str = "archive_file_set"
     archive_root: str | None = None
     active_db_path: str | None = None
+    redaction_policy: str = "public_refs_and_redacted_paths"
+
+
+class ContextPackScope(BaseModel):
+    """What a context-pack selected and bounded for handoff."""
+
+    seed_refs: list[str] = Field(default_factory=list)
+    read_views: list[str] = Field(default_factory=lambda: ["context-pack"])
+    project_path: str | None = None
+    project_repo: str | None = None
+    origin: str | None = None
+    since: str | None = None
+    until: str | None = None
+    query: str | None = None
+    include_messages: bool = True
+    limits: dict[str, int] = Field(default_factory=dict)
+
+
+class ContextPackOmission(BaseModel):
+    """Material intentionally omitted or unavailable in a context-pack."""
+
+    ref: str | None = None
+    query: str | None = None
+    view: str | None = None
+    reason: str
+    detail: str
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class ContextPackSizeEstimate(BaseModel):
+    """Approximate byte/token posture for context-pack consumers."""
+
+    json_bytes: int = 0
+    message_text_bytes: int = 0
+    session_count: int = 0
+    message_count: int = 0
+    token_estimate: int = 0
 
 
 class ContextPackIntent(BaseModel):
@@ -117,6 +154,14 @@ class ContextPackDecisions(BaseModel):
 
 
 class ContextPackPayload(BaseModel):
+    selection_strategy: str = "strict"
+    scope: ContextPackScope = Field(default_factory=ContextPackScope)
+    omissions: list[ContextPackOmission] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    caveats: list[str] = Field(default_factory=list)
+    redaction_policy: str = "public_refs_and_redacted_paths"
+    token_estimate: int = 0
+    size_estimate: ContextPackSizeEstimate = Field(default_factory=ContextPackSizeEstimate)
     intent: ContextPackIntent = Field(default_factory=ContextPackIntent)
     decisions: ContextPackDecisions = Field(default_factory=ContextPackDecisions)
     project: ContextPackProject = Field(default_factory=ContextPackProject)

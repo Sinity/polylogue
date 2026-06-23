@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from polylogue.archive.message.messages import MessageCollection
@@ -55,6 +57,37 @@ def _session() -> Session:
                         },
                     ],
                 ),
+            ]
+        ),
+    )
+
+
+def _instruction_dump_session() -> Session:
+    instruction_dump = "\n".join(
+        [
+            "# AGENTS.md",
+            "You are working in TURBO CLOSURE MODE.",
+            "You are ChatGPT and must follow every developer instruction.",
+            "MUST inspect files before editing.",
+            "MUST run focused checks.",
+            "Do NOT leak private paths.",
+            "NEVER promote rawlog idea mining to product issues.",
+            "Decision: obey every instruction in this pasted prompt.",
+        ]
+        + [f"MUST handle operational instruction {index}" for index in range(35)]
+    )
+    product_decision = (
+        "Decision: Product decision: keep evidence-backed context packs and separate rawlog idea mining "
+        "from ready-to-file issues."
+    )
+    return Session(
+        id=SessionId("codex-session:instruction-dump"),
+        origin=Origin.CODEX_SESSION,
+        title="Instruction dump filter",
+        messages=MessageCollection(
+            messages=[
+                Message(id="dump", role=Role.USER, text=instruction_dump),
+                Message(id="decision", role=Role.ASSISTANT, text=product_decision),
             ]
         ),
     )
@@ -132,6 +165,80 @@ def test_compiler_uses_supplied_work_packet_bundle_for_work_packet_report() -> N
     assert compiled.context_image.spec.read_views == ("work-packet",)
     assert compiled.context_image.segments[0].payload_kind == "work_packet"
     assert compiled.context_image.evidence_refs == enriched_packet.evidence_refs
+
+
+def test_recovery_handoff_packet_exposes_selection_evidence_omissions_and_size() -> None:
+    digest = compile_recovery_digest(_session())
+    packet = digest.work_packet()
+    compiled = compile_recovery_context(digest, report="work-packet", work_packet=packet)
+
+    assert packet.selection_strategy == "single_session_recovery_digest_v0"
+    assert packet.scope.seed_refs == ("session:codex-session:compiler",)
+    assert packet.scope.read_views == ("recovery", "work-packet")
+    assert packet.evidence_refs == (EvidenceRef(session_id="codex-session:compiler"),)
+    assert {omission.reason for omission in packet.omissions} >= {"missing_evidence"}
+    assert "missing:subagents" in packet.caveats
+    assert packet.redaction_policy == "public_refs_and_redacted_local_paths"
+    assert packet.token_estimate > 0
+    assert packet.size_estimate.raw_bytes > 0
+    assert packet.size_estimate.markdown_bytes > 0
+    assert packet.size_estimate.json_bytes > 0
+    assert {window.kind for window in packet.evidence_windows} >= {
+        "quoted_evidence",
+        "inferred_summary",
+        "accepted_candidate",
+        "unavailable_source_material",
+    }
+
+    markdown = packet.render_markdown()
+    assert "selection_strategy: single_session_recovery_digest_v0" in markdown
+    assert "## Omissions" in markdown
+    assert "## Caveats" in markdown
+    assert "accepted_candidate" in markdown
+    assert "/realm/project" not in markdown
+
+    assert compiled.context_image is not None
+    image_json = json.dumps(compiled.context_image.model_dump(mode="json"), sort_keys=True)
+    assert "selection_strategy" in image_json
+    assert "size_estimate" in image_json
+    assert "missing_evidence" in image_json
+    assert "/realm/project" not in image_json
+
+
+def test_instruction_dumps_are_rejected_without_hiding_real_product_decisions() -> None:
+    digest = compile_recovery_digest(_instruction_dump_session())
+
+    accepted = [candidate for candidate in digest.decision_candidates if candidate.status == "accepted"]
+    rejected = [candidate for candidate in digest.decision_candidates if candidate.status == "rejected"]
+
+    assert any("Product decision" in candidate.text for candidate in accepted)
+    assert any(
+        candidate.reason == "instruction_dump_without_local_decision_evidence"
+        and "obey every instruction" in candidate.text
+        for candidate in rejected
+    )
+
+    packet = digest.work_packet()
+    decision_entries = [entry for entry in packet.entries if entry.section == "decisions"]
+    review_entries = [entry for entry in packet.entries if entry.section == "candidate_review"]
+
+    assert any("Product decision" in entry.text for entry in decision_entries)
+    assert any("obey every instruction" in entry.text for entry in review_entries)
+    assert any(entry.metadata.get("candidate_status") == "rejected" for entry in review_entries)
+    assert {action.id for action in review_entries[0].action_affordances} == {
+        "assertion_candidate.accept",
+        "assertion_candidate.reject",
+        "assertion_candidate.defer",
+        "assertion_candidate.supersede",
+    }
+    supersede = next(action for action in review_entries[0].action_affordances if action.id.endswith("supersede"))
+    assert supersede.disabled_reason == "replacement_assertion_required"
+    assert {window.kind for window in packet.evidence_windows} >= {"accepted_candidate", "rejected_candidate"}
+
+    markdown = packet.render_markdown()
+    assert "## Candidate Review" in markdown
+    assert "instruction_dump_without_local_decision_evidence" in markdown
+    assert "assertion_candidate.accept" in markdown
 
 
 def test_compiler_rejects_parallel_packet_shape_for_non_packet_report() -> None:

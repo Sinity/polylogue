@@ -180,6 +180,17 @@ class TestBuildContextPackRegistration:
             result = invoke_surface(fn, max_sessions=1, detail_level="summary")
             parsed = json.loads(result)
             assert parsed["provenance"]["redacted"] is True
+            assert parsed["redaction_policy"] == "public_refs_and_redacted_paths"
+            assert "archive_root" not in parsed["provenance"]
+            assert "active_db_path" not in parsed["provenance"]
+            assert any(omission["reason"] == "redacted" for omission in parsed["omissions"])
+
+            raw_result = invoke_surface(fn, max_sessions=1, detail_level="summary", redact_paths=False)
+            raw = json.loads(raw_result)
+            assert raw["provenance"]["redacted"] is False
+            assert raw["redaction_policy"] == "raw_paths_explicit_opt_in"
+            assert raw["provenance"]["archive_root"] == str(archive_root)
+            assert raw["provenance"]["active_db_path"] == str(archive_root / "index.db")
         finally:
             _set_runtime_services(None)
 
@@ -236,9 +247,15 @@ class TestBuildContextPackRegistration:
             result = invoke_surface(fn, query="needle", max_sessions=1, max_messages_per_session=1)
             parsed = json.loads(result)
             assert parsed["total_sessions"] == 1
+            assert parsed["selection_strategy"] == "strict"
+            assert parsed["scope"]["read_views"] == ["context-pack"]
+            assert parsed["evidence_refs"] == ["codex-session:mcp-context-v1"]
+            assert parsed["token_estimate"] > 0
+            assert parsed["size_estimate"]["json_bytes"] > 0
             assert parsed["provenance"]["archive_runtime"] == "archive_file_set"
-            assert parsed["provenance"]["archive_root"] == str(archive_root)
-            assert parsed["provenance"]["active_db_path"] == str(archive_root / "index.db")
+            assert parsed["provenance"]["redacted"] is True
+            assert "archive_root" not in parsed["provenance"]
+            assert "active_db_path" not in parsed["provenance"]
             session = parsed["sessions"][0]
             assert session["session_id"] == "codex-session:mcp-context-v1"
             assert session["origin"] == "codex-session"
@@ -289,7 +306,9 @@ class TestBuildContextPackRegistration:
             parsed = json.loads(result)
             assert parsed["total_sessions"] == 1
             assert parsed["provenance"]["archive_runtime"] == "archive_file_set"
-            assert parsed["provenance"]["active_db_path"] == str(archive_root / "index.db")
+            assert parsed["provenance"]["redacted"] is True
+            assert "active_db_path" not in parsed["provenance"]
+            assert any(omission["reason"] == "redacted" for omission in parsed["omissions"])
             assert parsed["sessions"][0]["session_id"] == "codex-session:mcp-context-v1-mixed"
         finally:
             _set_runtime_services(None)

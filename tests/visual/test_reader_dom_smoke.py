@@ -290,6 +290,11 @@ def test_reader_search_query_no_results_and_facets_evidence(
     assert "diagnostics" in no_results
     assert facets["scoped_to_query"] is True
     assert facets["origins"] == {"claude-code-session": 1}
+    assert "generated_at" in facets
+    deferred_families = cast(dict[str, object], facets["deferred_families"])
+    family_status = cast(dict[str, dict[str, object]], facets["family_status"])
+    assert deferred_families == {"repos": "deferred_by_default", "action_types": "deferred_by_default"}
+    assert family_status["repos"]["state"] == "deferred"
     assert_no_private_paths(json.dumps(query), context="reader search JSON")
     assert_no_private_paths(json.dumps(no_results), context="reader no-results JSON")
     assert_no_private_paths(json.dumps(facets), context="reader query facets JSON")
@@ -304,6 +309,7 @@ def test_reader_search_query_no_results_and_facets_evidence(
             "no_results_total": no_results["total"],
             "diagnostics_present": "diagnostics" in no_results,
             "facet_scope": facets["scoped_to_query"],
+            "facet_deferred_families": sorted(deferred_families.keys()),
             "private_path_safe": True,
         },
     )
@@ -710,6 +716,8 @@ def test_reader_empty_and_degraded_evidence(reader_workspace: ReaderWorkspace, t
     assert empty_list["total"] == 0
     assert empty_list["items"] == []
     assert empty_facets["total_sessions"] == 0
+    assert set(cast(list[str], empty_facets["complete_families"])) >= {"total_counts", "origins", "tags"}
+    assert empty_facets["deferred_families"] == {"repos": "deferred_by_default", "action_types": "deferred_by_default"}
     assert degraded_status == 503
     degraded_payload = json.loads(degraded_body)
     assert degraded_payload["ok"] is False
@@ -727,6 +735,7 @@ def test_reader_empty_and_degraded_evidence(reader_workspace: ReaderWorkspace, t
         checks={
             "empty_total": empty_list["total"],
             "empty_facets_total": empty_facets["total_sessions"],
+            "empty_facets_deferred": sorted(cast(dict[str, object], empty_facets["deferred_families"]).keys()),
             "degraded_status": degraded_status,
             "sanitized_error": True,
             "private_path_safe": True,

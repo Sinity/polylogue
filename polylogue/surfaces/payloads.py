@@ -2206,9 +2206,11 @@ FacetFamilyRouteState = Literal["complete", "deferred", "error"]
 class FacetFamilyStatusPayload(SurfacePayloadModel):
     """Route-visible status for one facet family.
 
-    Empty facet buckets can mean either "empty result" or "not computed for
-    this response". The status map makes that distinction explicit for web,
-    CLI, and automation surfaces.
+    The web workbench consumes this metadata to keep cheap first paint
+    truthful when optional archive-wide families are deferred or budgeted.
+    Existing bucket fields remain present on :class:`FacetsResponse`; this
+    status map says whether an empty bucket means "actually empty" or
+    "not materialized in this response" (#2304).
     """
 
     state: FacetFamilyRouteState
@@ -2228,6 +2230,14 @@ class FacetsResponse(SurfacePayloadModel):
     """
 
     scoped_to_query: bool = False
+    generated_at: str | None = None
+    stale: bool = False
+    stale_age_s: float | None = None
+    budget_exceeded: bool = False
+    complete_families: tuple[str, ...] = ()
+    deferred_families: dict[str, str] = Field(default_factory=dict)
+    family_errors: dict[str, str] = Field(default_factory=dict)
+    family_status: dict[str, FacetFamilyStatusPayload] = Field(default_factory=dict)
     origins: dict[str, int] = Field(default_factory=dict)
     tags: dict[str, int] = Field(default_factory=dict)
     repos: dict[str, int] = Field(default_factory=dict)
@@ -2248,14 +2258,6 @@ class FacetsResponse(SurfacePayloadModel):
         serialization_alias="global",
     )
     idf: dict[str, dict[str, float]] = Field(default_factory=dict)
-    generated_at: str | None = None
-    stale: bool = False
-    stale_age_s: float | None = None
-    budget_exceeded: bool = False
-    complete_families: tuple[str, ...] = ()
-    deferred_families: dict[str, str] = Field(default_factory=dict)
-    family_errors: dict[str, str] = Field(default_factory=dict)
-    family_status: dict[str, FacetFamilyStatusPayload] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 

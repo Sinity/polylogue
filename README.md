@@ -39,8 +39,8 @@ polylogue --latest read --to browser  # open it in the local reader instead
 `polylogue init` detects known session sources and writes a starter
 `polylogue.toml`; the daemon takes it from there. `polylogue config --format
 json` prints the redacted effective state, source layer, and inventory metadata
-for every public config key, so deployments and smoke diagnostics can agree on
-what is really running. For the narrated first run, see
+for every public knob, so Nix/HM deployments, MCP clients, and smoke diagnostics
+can agree on what is really running. For the narrated first run, see
 [docs/getting-started.md](docs/getting-started.md) and
 [docs/onboarding.md](docs/onboarding.md). Other install channels (Nix, Homebrew,
 container) are in [docs/installation.md](docs/installation.md).

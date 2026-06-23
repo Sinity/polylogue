@@ -57,6 +57,18 @@ _DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS = 3600
 _pidfile_path: Path | None = None
 
 
+def _bind_hosts_overlap(left: str, right: str) -> bool:
+    """Return True when two bind hosts can occupy the same socket address space."""
+    left_norm = left.strip().lower()
+    right_norm = right.strip().lower()
+    wildcard_hosts = {"", "0.0.0.0", "::"}
+    if left_norm == right_norm:
+        return True
+    if left_norm in wildcard_hosts or right_norm in wildcard_hosts:
+        return True
+    return is_loopback_host(left_norm) and is_loopback_host(right_norm)
+
+
 def _cleanup_pidfile() -> None:
     """Remove the daemon pidfile on exit."""
     global _pidfile_path
@@ -707,6 +719,18 @@ async def run_daemon_services(
     _process_start.started_at_wall()
     archive_root_path = Path(archive_root())
 
+    if (
+        enable_api
+        and enable_browser_capture
+        and api_port == browser_capture_port
+        and _bind_hosts_overlap(api_host, browser_capture_host)
+    ):
+        raise click.UsageError(
+            f"Daemon API {api_host}:{api_port} conflicts with browser-capture "
+            f"receiver {browser_capture_host}:{browser_capture_port}. "
+            f"Set distinct --api-port/--port values or bind one component to a non-overlapping host."
+        )
+
     # Non-localhost API binding requires explicit opt-in AND an auth token.
     if enable_api and not is_loopback_host(api_host):
         if not browser_capture_allow_remote:
@@ -1324,7 +1348,9 @@ def health_command(
     default=None,
     help="Daemon API auth token (generate one if not provided; write to archive root).",
 )
+@click.pass_context
 def run_command(
+    ctx: click.Context,
     roots: tuple[Path, ...],
     debounce_s: float,
     host: str,
@@ -1346,6 +1372,48 @@ def run_command(
     """
     _enable_faulthandler_if_supported()
     configure_logging()
+
+    from polylogue.config import load_polylogue_config
+
+    cfg = load_polylogue_config()
+
+    def parameter_is_default(name: str) -> bool:
+        source = ctx.get_parameter_source(name)
+        return source is None or source is click.core.ParameterSource.DEFAULT
+
+    if not roots and cfg.source_roots:
+        roots = tuple(Path(root).expanduser() for root in cfg.source_roots)
+    if parameter_is_default("debounce_s"):
+        debounce_s = cfg.watch_debounce_s
+    if parameter_is_default("host"):
+        if cfg.layer_of("browser_capture_host") != "default":
+            host = cfg.browser_capture_host
+        elif cfg.layer_of("daemon_host") != "default":
+            host = cfg.daemon_host
+    if parameter_is_default("port") and cfg.layer_of("browser_capture_port") != "default":
+        port = cfg.browser_capture_port
+    if parameter_is_default("spool_path") and cfg.browser_capture_spool_path:
+        spool_path = Path(cfg.browser_capture_spool_path).expanduser()
+    if parameter_is_default("insecure_allow_remote"):
+        insecure_allow_remote = cfg.browser_capture_allow_remote
+    if parameter_is_default("browser_capture_auth_token") and cfg.browser_capture_auth_token:
+        browser_capture_auth_token = cfg.browser_capture_auth_token
+    if not browser_capture_origins and cfg.layer_of("browser_capture_allowed_origins") != "default":
+        browser_capture_origins = tuple(
+            origin.strip() for origin in cfg.browser_capture_allowed_origins.split(",") if origin.strip()
+        )
+    if parameter_is_default("api_host"):
+        if cfg.layer_of("api_host") != "default":
+            api_host = cfg.api_host
+        elif cfg.layer_of("daemon_host") != "default":
+            api_host = cfg.daemon_host
+    if parameter_is_default("api_port"):
+        if cfg.layer_of("api_port") != "default":
+            api_port = cfg.api_port
+        elif cfg.layer_of("daemon_port") != "default":
+            api_port = cfg.daemon_port
+    if parameter_is_default("api_auth_token") and cfg.api_auth_token:
+        api_auth_token = cfg.api_auth_token
 
     enable_watch = not no_watch
     enable_browser_capture = not no_browser_capture

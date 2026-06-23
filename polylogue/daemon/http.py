@@ -7,14 +7,17 @@ import contextlib
 import functools
 import json
 import os
+import select
+import socket
 import sqlite3
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePath
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 from urllib.parse import parse_qs, urlparse
 
 from polylogue.core.json import JSONDocument
@@ -72,19 +75,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 RouteMethod = Literal["GET", "POST", "DELETE"]
-_FACET_CORE_FAMILIES = ("total_counts", "origins", "tags")
-_FACET_EXPENSIVE_FAMILIES = ("repos", "action_types")
-_FACET_COMPLETE_ARCHIVE_FAMILIES = (
-    "total_counts",
-    "origins",
-    "tags",
-    "repos",
-    "message_types",
-    "action_types",
-    "has_flags",
-)
-_FACET_DEFERRED_REASON = "deferred_by_default"
-_FACET_BUDGET_REASON = "budget_exceeded"
+_FacetQueryResult = TypeVar("_FacetQueryResult")
 
 
 @dataclass(frozen=True)
@@ -118,6 +109,74 @@ class _StaticPostRoute:
     segments: tuple[str, ...]
     handler_name: str
     passes_path: bool = False
+
+
+@dataclass(frozen=True)
+class _ArchiveFacetBucketResult:
+    payload: FacetBucketsPayload
+    complete_families: tuple[str, ...]
+    deferred_families: dict[str, str]
+    family_errors: dict[str, str]
+    budget_exceeded: bool = False
+
+
+_FACET_CORE_FAMILIES = ("total_counts", "origins", "tags")
+_FACET_EXPENSIVE_FAMILIES = ("repos", "action_types")
+_FACET_COMPLETE_ARCHIVE_FAMILIES = (
+    "total_counts",
+    "origins",
+    "tags",
+    "repos",
+    "message_types",
+    "action_types",
+    "has_flags",
+)
+_FACET_DEFAULT_OPTIONAL_BUDGET_MS = 1500
+_FACET_DEFERRED_REASON = "deferred_by_default"
+_FACET_BUDGET_REASON = "budget_exceeded"
+_FACET_CANCELLED_REASON = "client_disconnected"
+_CLIENT_DISCONNECT_ERRORS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
+
+
+class _FacetBudgetExceededError(RuntimeError):
+    """Raised when a route-bounded optional facet family overruns its budget."""
+
+
+class _ClientDisconnectedDuringComputeError(ConnectionAbortedError):
+    """Raised when a long-running route sees its peer close the socket."""
+
+
+def _socket_peer_disconnected(connection: object | None) -> bool:
+    """Best-effort loopback HTTP peer-close probe without consuming request bytes.
+
+    ``BaseHTTPRequestHandler`` only observes many browser aborts when writing the
+    response, which is too late for archive-wide SQLite work. A readable socket
+    whose one-byte peek returns ``b""`` means the peer has closed; readable
+    bytes mean HTTP pipelining/keepalive data, so the current request should keep
+    running. Unsupported socket-like objects return ``False`` so tests and custom
+    servers do not get false cancellation.
+    """
+
+    if connection is None or not hasattr(connection, "recv"):
+        return False
+    flags = getattr(socket, "MSG_PEEK", None)
+    if flags is None:
+        return False
+    try:
+        readable, _, _ = select.select([connection], [], [], 0)
+    except (OSError, TypeError, ValueError):
+        return False
+    if not readable:
+        return False
+    try:
+        data = connection.recv(1, flags)
+    except BlockingIOError:
+        return False
+    except _CLIENT_DISCONNECT_ERRORS:
+        return True
+    except OSError:
+        return True
+    return bool(data == b"")
 
 
 def _route_segments(pattern: str) -> tuple[str, ...]:
@@ -374,6 +433,68 @@ def _archive_origin_filter(params: dict[str, list[str]]) -> tuple[str | None, tu
         )
         return (origins[0] if len(origins) == 1 else None), origins
     return None, ()
+
+
+def _utc_timestamp_json() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _truthy_query_param(params: dict[str, list[str]], key: str) -> bool:
+    values = params.get(key) or []
+    if not values:
+        return False
+    return values[-1].strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def _facet_requested_optional_families(params: dict[str, list[str]]) -> set[str]:
+    requested: set[str] = set()
+    for key in ("family", "families", "include"):
+        for value in params.get(key) or []:
+            requested.update(token.strip().lower() for token in value.split(",") if token.strip())
+
+    if _truthy_query_param(params, "include_deferred") or _truthy_query_param(params, "include_expensive"):
+        requested.update(_FACET_EXPENSIVE_FAMILIES)
+    if "all" in requested or "*" in requested:
+        requested.update(_FACET_EXPENSIVE_FAMILIES)
+    if "repo" in requested:
+        requested.add("repos")
+    if "actions" in requested or "action" in requested:
+        requested.add("action_types")
+    return {family for family in requested if family in _FACET_EXPENSIVE_FAMILIES}
+
+
+def _facet_budget_ms(params: dict[str, list[str]]) -> int:
+    for key in ("budget_ms", "facet_budget_ms"):
+        values = params.get(key) or []
+        if not values:
+            continue
+        try:
+            return max(int(values[-1]), 0)
+        except (TypeError, ValueError):
+            return _FACET_DEFAULT_OPTIONAL_BUDGET_MS
+    return _FACET_DEFAULT_OPTIONAL_BUDGET_MS
+
+
+def _facet_family_status_map(
+    complete_families: Sequence[str],
+    deferred_families: Mapping[str, str],
+    family_errors: Mapping[str, str],
+) -> dict[str, dict[str, object]]:
+    statuses: dict[str, dict[str, object]] = {}
+    for family in complete_families:
+        statuses[family] = {"state": "complete", "stale": False}
+    for family, reason in deferred_families.items():
+        statuses[family] = {"state": "deferred", "reason": reason, "stale": False}
+    for family, error in family_errors.items():
+        statuses[family] = {"state": "error", "error": error, "stale": False}
+    return statuses
+
+
+def _facet_error_text(exc: BaseException) -> str:
+    message = str(exc).strip()
+    if not message:
+        message = exc.__class__.__name__
+    return f"{exc.__class__.__name__}: {message}"
 
 
 def _archive_tag_filter(params: dict[str, list[str]]) -> tuple[str, ...]:
@@ -801,7 +922,7 @@ def daemon_safe_handler(fn: Callable[..., Any]) -> Callable[..., Any]:
                     field=field,
                 ).model_dump(mode="json"),
             )
-        except (BrokenPipeError, ConnectionResetError):
+        except _CLIENT_DISCONNECT_ERRORS:
             logger.debug("daemon http client disconnected in %s", fn.__name__)
         except Exception:
             logger.exception("unhandled error in %s", fn.__name__)
@@ -965,6 +1086,24 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     # Helpers
     # ------------------------------------------------------------------
 
+    def _client_disconnected(self) -> bool:
+        return _socket_peer_disconnected(getattr(self, "connection", None))
+
+    def _raise_if_client_disconnected(self) -> None:
+        if self._client_disconnected():
+            raise _ClientDisconnectedDuringComputeError(_FACET_CANCELLED_REASON)
+
+    def _request_id_header(self) -> str | None:
+        request_id = self.headers.get("X-Request-ID", "")
+        if not request_id or len(request_id) > 128 or "\r" in request_id or "\n" in request_id:
+            return None
+        return request_id
+
+    def _send_request_id_header(self) -> None:
+        request_id = self._request_id_header()
+        if request_id:
+            self.send_header("X-Request-ID", request_id)
+
     def _send_json(
         self,
         status: HTTPStatus,
@@ -976,6 +1115,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self.send_response(status.value)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw)))
+        self._send_request_id_header()
         if extra_headers:
             for name, value in extra_headers.items():
                 self.send_header(name, value)
@@ -987,6 +1127,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self.send_response(status.value)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
+        self._send_request_id_header()
         self.end_headers()
         self.wfile.write(raw)
 
@@ -1006,6 +1147,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self.send_response(status.value)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(raw)))
+        self._send_request_id_header()
         self.end_headers()
         self.wfile.write(raw)
 
@@ -1170,7 +1312,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     # BrokenPipeError from wfile.write(). Stdlib lets that escape as a
     # traceback to journal; we demote it to debug — the client has already
     # given up by the time we know.
-    _CLIENT_DISCONNECT = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
+    _CLIENT_DISCONNECT = _CLIENT_DISCONNECT_ERRORS
 
     def do_GET(self) -> None:
         try:
@@ -3222,57 +3364,83 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         query = self._get_param(params, "query") or self._get_param(params, "contains") or ""
         origin, origins = _archive_origin_filter(params)
-        requested_families = self._requested_facet_families(params)
-        if requested_families & set(_FACET_EXPENSIVE_FAMILIES):
-            requested_families.update(_FACET_EXPENSIVE_FAMILIES)
-        include_heavy_families = bool(requested_families & set(_FACET_EXPENSIVE_FAMILIES))
-        budget_ms = self._facet_budget_ms(params)
-        budget_exceeded = include_heavy_families and budget_ms == 0
-        if budget_exceeded:
-            include_heavy_families = False
-        complete_families: tuple[str, ...] = _FACET_CORE_FAMILIES
-        if include_heavy_families:
-            complete_families = (
-                *complete_families,
-                *tuple(sorted(requested_families & set(_FACET_EXPENSIVE_FAMILIES))),
-            )
-        deferred_reason = _FACET_BUDGET_REASON if budget_exceeded else _FACET_DEFERRED_REASON
-        deferred_families = (
-            dict.fromkeys(sorted(set(_FACET_EXPENSIVE_FAMILIES) - set(complete_families)), deferred_reason)
-            if not include_heavy_families
-            else {}
-        )
         scoped_to_query = bool(query or origin or origins)
+        requested_optional = _facet_requested_optional_families(params)
+        optional_budget_ms = _facet_budget_ms(params) if requested_optional else None
+        deadline_s = None if optional_budget_ms is None else time.monotonic() + (optional_budget_ms / 1000)
+        default_deferred = {
+            family: _FACET_DEFERRED_REASON for family in _FACET_EXPENSIVE_FAMILIES if family not in requested_optional
+        }
         with ArchiveStore.open_existing(archive_root) as archive:
-            global_payload = self._archive_facet_bucket(archive, include_heavy_families=include_heavy_families)
+            global_result = self._archive_facet_bucket(
+                archive,
+                optional_families=requested_optional,
+                deadline_s=deadline_s,
+            )
             if scoped_to_query:
                 session_ids: tuple[str, ...] = ()
                 if query:
-                    hits = archive.search_summaries(query, limit=10_000, origin=origin, origins=origins)
+                    hits = self._run_archive_facet_query(
+                        archive,
+                        deadline_s=None,
+                        compute=lambda: archive.search_summaries(
+                            query,
+                            limit=10_000,
+                            origin=origin,
+                            origins=origins,
+                        ),
+                    )
                     session_ids = tuple(dict.fromkeys(hit.session_id for hit in hits))
                     if not session_ids:
-                        scoped_payload = FacetBucketsPayload()
+                        scoped_result = _ArchiveFacetBucketResult(
+                            payload=FacetBucketsPayload(),
+                            complete_families=_FACET_CORE_FAMILIES,
+                            deferred_families={},
+                            family_errors={},
+                        )
                     else:
-                        scoped_payload = self._archive_facet_bucket(
+                        scoped_result = self._archive_facet_bucket(
                             archive,
                             origin=origin,
                             origins=origins,
                             session_ids=session_ids,
-                            include_heavy_families=include_heavy_families,
+                            optional_families=requested_optional,
+                            deadline_s=deadline_s,
                         )
                 else:
-                    scoped_payload = self._archive_facet_bucket(
+                    scoped_result = self._archive_facet_bucket(
                         archive,
                         origin=origin,
                         origins=origins,
-                        include_heavy_families=include_heavy_families,
+                        optional_families=requested_optional,
+                        deadline_s=deadline_s,
                     )
             else:
-                scoped_payload = global_payload
-        active = scoped_payload if scoped_to_query else global_payload
+                scoped_result = global_result
+        active = scoped_result.payload if scoped_to_query else global_result.payload
+        deferred_families = {
+            **default_deferred,
+            **global_result.deferred_families,
+            **scoped_result.deferred_families,
+        }
+        family_errors = {**global_result.family_errors, **scoped_result.family_errors}
+        complete_families = tuple(
+            family
+            for family in _FACET_COMPLETE_ARCHIVE_FAMILIES
+            if family in set(global_result.complete_families) and family in set(scoped_result.complete_families)
+        )
+        budget_exceeded = global_result.budget_exceeded or scoped_result.budget_exceeded
         return FacetsResponse.model_validate(
             {
                 "scoped_to_query": scoped_to_query,
+                "generated_at": _utc_timestamp_json(),
+                "stale": False,
+                "stale_age_s": None,
+                "budget_exceeded": budget_exceeded,
+                "complete_families": complete_families,
+                "deferred_families": deferred_families,
+                "family_errors": family_errors,
+                "family_status": _facet_family_status_map(complete_families, deferred_families, family_errors),
                 "origins": active.origins,
                 "tags": active.tags,
                 "repos": active.repos,
@@ -3281,67 +3449,59 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 "has_flags": active.has_flags,
                 "total_sessions": active.total_sessions,
                 "total_messages": active.total_messages,
-                "scoped": scoped_payload,
-                "global": global_payload,
-                "complete_families": complete_families,
-                "deferred_families": deferred_families,
-                "family_errors": {},
-                "family_status": self._facet_family_status_map(
-                    complete_families=complete_families,
-                    deferred_families=deferred_families,
-                    family_errors={},
-                ),
-                "generated_at": datetime.now(UTC).isoformat(),
-                "stale": False,
-                "stale_age_s": None,
-                "budget_exceeded": budget_exceeded,
+                "scoped": scoped_result.payload,
+                "global": global_result.payload,
             }
         ).model_dump(mode="json", by_alias=True)
 
-    def _facet_budget_ms(self, params: dict[str, list[str]]) -> int | None:
-        for key in ("budget_ms", "facet_budget_ms"):
-            values = params.get(key) or []
-            if not values:
-                continue
-            try:
-                return max(int(values[-1]), 0)
-            except (TypeError, ValueError):
-                return None
-        return None
-
-    def _facet_family_status_map(
+    def _run_archive_facet_query(
         self,
+        archive: ArchiveStore,
         *,
-        complete_families: Sequence[str],
-        deferred_families: Mapping[str, str],
-        family_errors: Mapping[str, str],
-    ) -> dict[str, dict[str, object]]:
-        statuses: dict[str, dict[str, object]] = {}
-        for family in complete_families:
-            statuses[family] = {"state": "complete", "stale": False}
-        for family, reason in deferred_families.items():
-            statuses[family] = {"state": "deferred", "reason": reason, "stale": False}
-        for family, error in family_errors.items():
-            statuses[family] = {"state": "error", "error": error, "stale": False}
-        return statuses
+        deadline_s: float | None,
+        compute: Callable[[], _FacetQueryResult],
+    ) -> _FacetQueryResult:
+        """Run one facet SQL step with budget and client-abort interruption.
 
-    def _requested_facet_families(self, params: dict[str, list[str]]) -> set[str]:
-        requested = {"origins", "tags"}
-        families_raw = self._get_param(params, "families") or ""
-        for family in families_raw.split(","):
-            normalized = family.strip().replace("-", "_")
-            if normalized in {"origin", "origins"}:
-                requested.add("origins")
-            elif normalized in {"tag", "tags"}:
-                requested.add("tags")
-            elif normalized in {"repo", "repos"}:
-                requested.add("repos")
-            elif normalized in {"action", "actions", "action_type", "action_types"}:
-                requested.add("action_types")
-        include_expensive = (self._get_param(params, "include_expensive") or "").strip().lower()
-        if include_expensive in {"1", "true", "yes", "on"}:
-            requested.update({"repos", "action_types"})
-        return requested
+        Browser-side ``AbortController`` cancellation only helps the server if
+        the request thread periodically observes the dead socket. SQLite's
+        progress handler gives long scans/joins that observation point while
+        preserving the existing optional-family budget contract.
+        """
+
+        conn = getattr(archive, "_conn", None)
+
+        def _deadline_expired() -> bool:
+            return deadline_s is not None and time.monotonic() >= deadline_s
+
+        def _raise_if_interrupted() -> None:
+            self._raise_if_client_disconnected()
+            if _deadline_expired():
+                raise _FacetBudgetExceededError(_FACET_BUDGET_REASON)
+
+        _raise_if_interrupted()
+
+        def _sqlite_progress() -> int:
+            if self._client_disconnected():
+                return 1
+            return 1 if _deadline_expired() else 0
+
+        if conn is not None:
+            conn.set_progress_handler(_sqlite_progress, 1000)
+        try:
+            result = compute()
+            _raise_if_interrupted()
+            return result
+        except sqlite3.OperationalError as exc:
+            if "interrupted" in str(exc).lower():
+                if self._client_disconnected():
+                    raise _ClientDisconnectedDuringComputeError(_FACET_CANCELLED_REASON) from exc
+                if _deadline_expired():
+                    raise _FacetBudgetExceededError(_FACET_BUDGET_REASON) from exc
+            raise
+        finally:
+            if conn is not None:
+                conn.set_progress_handler(None, 0)
 
     def _archive_facet_bucket(
         self,
@@ -3350,26 +3510,75 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         origin: str | None = None,
         origins: tuple[str, ...] = (),
         session_ids: tuple[str, ...] = (),
-        include_heavy_families: bool = False,
-    ) -> FacetBucketsPayload:
+        optional_families: set[str] | None = None,
+        deadline_s: float | None = None,
+    ) -> _ArchiveFacetBucketResult:
         from polylogue.surfaces.payloads import FacetBucketsPayload
 
-        stats = archive.stats(origin=origin, origins=origins, session_ids=session_ids)
-        return FacetBucketsPayload(
-            origins=archive.stats_by("origin", origin=origin, origins=origins, session_ids=session_ids),
-            tags=archive.stats_by("tag", origin=origin, origins=origins, session_ids=session_ids),
-            repos=(
-                archive.stats_by("repo", origin=origin, origins=origins, session_ids=session_ids)
-                if include_heavy_families
-                else {}
-            ),
-            action_types=(
-                archive.stats_by("action", origin=origin, origins=origins, session_ids=session_ids)
-                if include_heavy_families
-                else {}
-            ),
+        optional_families = optional_families or set()
+        stats = self._run_archive_facet_query(
+            archive,
+            deadline_s=None,
+            compute=lambda: archive.stats(origin=origin, origins=origins, session_ids=session_ids),
+        )
+        repos: dict[str, int] = {}
+        action_types: dict[str, int] = {}
+        complete = set(_FACET_CORE_FAMILIES)
+        deferred: dict[str, str] = {}
+        errors: dict[str, str] = {}
+        budget_exceeded = False
+
+        if "repos" in optional_families:
+            try:
+                repos = self._run_archive_facet_query(
+                    archive,
+                    deadline_s=deadline_s,
+                    compute=lambda: archive.stats_by("repo", origin=origin, origins=origins, session_ids=session_ids),
+                )
+                complete.add("repos")
+            except _FacetBudgetExceededError:
+                deferred["repos"] = _FACET_BUDGET_REASON
+                budget_exceeded = True
+            except _CLIENT_DISCONNECT_ERRORS:
+                raise
+            except Exception as exc:
+                errors["repos"] = _facet_error_text(exc)
+
+        if "action_types" in optional_families:
+            try:
+                action_types = self._run_archive_facet_query(
+                    archive,
+                    deadline_s=deadline_s,
+                    compute=lambda: archive.stats_by("action", origin=origin, origins=origins, session_ids=session_ids),
+                )
+                complete.add("action_types")
+            except _FacetBudgetExceededError:
+                deferred["action_types"] = _FACET_BUDGET_REASON
+                budget_exceeded = True
+            except _CLIENT_DISCONNECT_ERRORS:
+                raise
+            except Exception as exc:
+                errors["action_types"] = _facet_error_text(exc)
+
+        tags = self._run_archive_facet_query(
+            archive,
+            deadline_s=None,
+            compute=lambda: archive.stats_by("tag", origin=origin, origins=origins, session_ids=session_ids),
+        )
+        payload = FacetBucketsPayload(
+            origins=dict(stats.origins),
+            tags=tags,
+            repos=repos,
+            action_types=action_types,
             total_sessions=stats.total_sessions,
             total_messages=stats.total_messages,
+        )
+        return _ArchiveFacetBucketResult(
+            payload=payload,
+            complete_families=tuple(family for family in _FACET_COMPLETE_ARCHIVE_FAMILIES if family in complete),
+            deferred_families=deferred,
+            family_errors=errors,
+            budget_exceeded=budget_exceeded,
         )
 
     @daemon_safe_handler

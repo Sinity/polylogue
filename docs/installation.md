@@ -290,30 +290,31 @@ cachix use polylogue
   services.polylogue = {
     enable = true;
     package = inputs.polylogue.packages.${pkgs.system}.default;
-    discoverSources = [ "claude-code" "codex" ];
     settings = {
       archive.root = "/var/lib/polylogue";
-      daemon.port = 8766;
-      daemon.watch-debounce-s = 30;
-      browser-capture = {
-        host = "127.0.0.1";
-        port = 8765;
-        spool-path = "/var/lib/polylogue/browser-capture";
-      };
+      daemon-api.port = 8766;
+      browser-capture.port = 8765;
+      embedding.enabled = false;
     };
   };
 }
 ```
 
 The module wires a `polylogued.service` systemd unit running `polylogued run`
-(watch + browser-capture + HTTP API). All `services.polylogue.settings.*`
-options map to runtime-loadable entries in the generated `polylogue.toml`;
-startup-bound values such as watch roots, debounce, API bind, and
-browser-capture bind/spool/auth/origins are also passed as `polylogued run`
-flags so the systemd process matches the rendered config. Options are
-documented inline in [`nix/module.nix`](../nix/module.nix). Per-unit hardening
-defaults (`Nice = 10`, `IOSchedulingClass = idle`, `MemoryHigh = 2G`,
-`MemoryMax = 2G`) are tunable under `services.polylogue.service.*`.
+(watch + browser-capture + HTTP API). `services.polylogue.settings.*` renders
+the same `polylogue.toml` schema used outside Nix; `polylogued run` reads that
+effective config instead of receiving duplicated `ExecStart` flags. Keep bearer
+tokens in environment/secret-manager wiring when possible, because setting them
+in `settings.*` writes them into the generated TOML. Per-unit hardening defaults
+(`Nice = 10`, `IOSchedulingClass = idle`, `MemoryHigh = 2G`, `MemoryMax = 2G`)
+are tunable under `services.polylogue.service.*`; they are deployment policy,
+not archive config.
+
+After deploying, use `polylogue config --format json` to inspect effective
+values and source layers, and `devtools workspace deployment-smoke --json` to capture the
+package versions, archive root, daemon URL, browser-capture receiver URL,
+optional browser executable path, and cgroup resource signals visible on the
+host.
 
 ### Home Manager module
 
@@ -324,22 +325,14 @@ defaults (`Nice = 10`, `IOSchedulingClass = idle`, `MemoryHigh = 2G`,
   programs.polylogued = {
     enable = true;
     package = inputs.polylogue.packages.${pkgs.system}.default;
-    discoverSources = [ "claude-code" "codex" ];
-    settings = {
-      daemon.port = 8766;
-      daemon.watch-debounce-s = 30;
-      browser-capture.port = 8765;
-    };
+    settings.daemon-api.port = 8766;
   };
 }
 ```
 
-The HM module declares a `systemd.user.services.polylogued` unit. Set
-`programs.polylogued.autoStart = false;` to keep the unit available but not
-started at login. By default it writes
-`$XDG_CONFIG_HOME/polylogue/polylogue.toml`; set
-`programs.polylogued.configLocation = "store";` when you want only a Nix store
-config path passed via `POLYLOGUE_CONFIG`.
+The HM module declares a `systemd.user.services.polylogued` unit and renders the
+same TOML schema as the NixOS module. Set `programs.polylogued.autoStart =
+false;` to keep the unit available but not started at login.
 
 ### Building locally
 
