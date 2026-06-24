@@ -15,6 +15,7 @@ from click.shell_completion import CompletionItem
 if TYPE_CHECKING:
     from polylogue.cli.root_request import RootModeRequest
     from polylogue.cli.select import SelectPrintField
+    from polylogue.surfaces.payloads import FacetsResponse
 
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.viewport import (
@@ -89,6 +90,47 @@ def _emit_idf_buckets(idf: dict[str, dict[str, float]], *, limit: int = _FACET_T
         if remaining > 0:
             suffix = "value" if remaining == 1 else "values"
             click.echo(f"      … {remaining} more {suffix} omitted from terminal view; use --format json for full IDF.")
+
+
+def emit_facets_response(response: FacetsResponse, *, output_format: str | None) -> None:
+    """Emit a facets response in the shared terminal or JSON shape."""
+
+    if output_format == "json":
+        click.echo(json.dumps(response.model_dump(mode="json", by_alias=True), indent=2))
+        return
+    scope_label = "scoped" if response.scoped_to_query else "global"
+
+    def _status_label(family: str) -> str:
+        status = response.family_status.get(family)
+        return status.label if status is not None and status.label else family.replace("_", " ").title()
+
+    click.echo(f"Facets ({scope_label}) — matched result set:")
+    click.echo(f"  sessions: {response.scoped.total_sessions}  messages: {response.scoped.total_messages}")
+    click.echo("  Family states:")
+    ordered_families = [
+        *response.complete_families,
+        *(family for family in response.deferred_families if family not in response.complete_families),
+    ]
+    for family in ordered_families:
+        status = response.family_status.get(family)
+        if status is None:
+            continue
+        detail = f" — {status.state}"
+        if status.reason:
+            detail += f" ({status.reason}; use --include-deferred)"
+        if status.canonicalization and family in {"repos", "role_counts", "material_origins"}:
+            detail += f"; {status.canonicalization}"
+        click.echo(f"    {family}: {_status_label(family)}{detail}")
+    _emit_facet_bucket(_status_label("origins"), response.scoped.origins)
+    _emit_facet_bucket(_status_label("tags"), response.scoped.tags)
+    _emit_facet_bucket(_status_label("repos"), response.scoped.repos)
+    _emit_facet_bucket(_status_label("role_counts"), response.scoped.role_counts)
+    _emit_facet_bucket(_status_label("material_origins"), response.scoped.material_origins)
+    _emit_facet_bucket(_status_label("message_types"), response.scoped.message_types)
+    _emit_facet_bucket(_status_label("action_types"), response.scoped.action_types)
+    _emit_facet_bucket(_status_label("has_flags"), response.scoped.has_flags)
+    _emit_facet_bucket("Omitted/noisy facet counts (not canonical facets)", response.scoped.omitted)
+    _emit_idf_buckets(response.idf)
 
 
 # Deferred imports: RootModeRequest triggers the archive.query.spec →
@@ -1399,42 +1441,7 @@ def analyze_verb(
         response = run_coroutine_sync(
             env.polylogue.facets(spec, include_idf=not no_idf, include_deferred=include_deferred)
         )
-        if output_format == "json":
-            click.echo(_json.dumps(response.model_dump(mode="json", by_alias=True), indent=2))
-            return
-        scope_label = "scoped" if response.scoped_to_query else "global"
-
-        def _status_label(family: str) -> str:
-            status = response.family_status.get(family)
-            return status.label if status is not None and status.label else family.replace("_", " ").title()
-
-        click.echo(f"Facets ({scope_label}) — matched result set:")
-        click.echo(f"  sessions: {response.scoped.total_sessions}  messages: {response.scoped.total_messages}")
-        click.echo("  Family states:")
-        ordered_families = [
-            *response.complete_families,
-            *(family for family in response.deferred_families if family not in response.complete_families),
-        ]
-        for family in ordered_families:
-            status = response.family_status.get(family)
-            if status is None:
-                continue
-            detail = f" — {status.state}"
-            if status.reason:
-                detail += f" ({status.reason}; use --include-deferred)"
-            if status.canonicalization and family in {"repos", "role_counts", "material_origins"}:
-                detail += f"; {status.canonicalization}"
-            click.echo(f"    {family}: {_status_label(family)}{detail}")
-        _emit_facet_bucket(_status_label("origins"), response.scoped.origins)
-        _emit_facet_bucket(_status_label("tags"), response.scoped.tags)
-        _emit_facet_bucket(_status_label("repos"), response.scoped.repos)
-        _emit_facet_bucket(_status_label("role_counts"), response.scoped.role_counts)
-        _emit_facet_bucket(_status_label("material_origins"), response.scoped.material_origins)
-        _emit_facet_bucket(_status_label("message_types"), response.scoped.message_types)
-        _emit_facet_bucket(_status_label("action_types"), response.scoped.action_types)
-        _emit_facet_bucket(_status_label("has_flags"), response.scoped.has_flags)
-        _emit_facet_bucket("Omitted/noisy facet counts (not canonical facets)", response.scoped.omitted)
-        _emit_idf_buckets(response.idf)
+        emit_facets_response(response, output_format=output_format)
         return
 
     if cost_outlook:
