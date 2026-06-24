@@ -38,6 +38,23 @@ LOOPBACK_ORIGIN_PREFIXES: tuple[str, ...] = (
 )
 
 
+def bind_hosts_overlap(left: str, right: str) -> bool:
+    """Return True when two bind host strings can claim the same socket.
+
+    Wildcard binds (``0.0.0.0``/``::``/empty) overlap everything on the same
+    port. Distinct concrete loopback strings also overlap because the browser
+    shell and daemon API treat the loopback family as one local trust boundary.
+    """
+    left_norm = left.strip().lower()
+    right_norm = right.strip().lower()
+    wildcard_hosts = {"", "0.0.0.0", "::"}
+    if left_norm == right_norm:
+        return True
+    if left_norm in wildcard_hosts or right_norm in wildcard_hosts:
+        return True
+    return is_loopback_host(left_norm) and is_loopback_host(right_norm)
+
+
 def is_loopback_origin(origin: str) -> bool:
     """Return True if a browser ``Origin`` header points at a loopback host.
 
@@ -70,4 +87,10 @@ def is_loopback_origin(origin: str) -> bool:
     return False
 
 
-__all__ = ["LOOPBACK_HOST_NAMES", "LOOPBACK_ORIGIN_PREFIXES", "is_loopback_host", "is_loopback_origin"]
+__all__ = [
+    "LOOPBACK_HOST_NAMES",
+    "LOOPBACK_ORIGIN_PREFIXES",
+    "bind_hosts_overlap",
+    "is_loopback_host",
+    "is_loopback_origin",
+]

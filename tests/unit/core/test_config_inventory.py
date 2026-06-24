@@ -141,15 +141,19 @@ roots = ["{missing_root}"]
 
     diagnostics = payload["diagnostics"]
     assert isinstance(diagnostics, list)
-    assert {
-        "code": "configured_source_root_missing",
-        "severity": "warning",
-        "key": "source_roots",
-        "toml_path": "sources.roots",
-        "env_var": None,
-        "message": f"Configured source root does not exist: {missing_root}.",
-        "next_action": "Remove the stale source root or create/mount it before running the daemon.",
-    } in diagnostics
+    matches = [
+        diag for diag in diagnostics if isinstance(diag, dict) and diag.get("code") == "configured_source_root_missing"
+    ]
+    assert matches
+    diag = matches[0]
+    assert diag["severity"] == "warning"
+    assert diag["key"] == "source_roots"
+    assert diag["toml_path"] == "sources.roots"
+    assert diag["env_var"] is None
+    assert diag["source_layer"] == "user"
+    assert diag["value"] == [str(missing_root)]
+    assert diag["message"] == f"Configured source root does not exist: {missing_root}."
+    assert diag["next_action"] == "Remove the stale source root or create/mount it before running the daemon."
 
 
 def test_effective_config_payload_reports_invalid_home_expansion(
@@ -197,14 +201,16 @@ def test_effective_config_payload_reports_env_relative_archive_root(
 
     diagnostics = payload["diagnostics"]
     assert isinstance(diagnostics, list)
-    assert any(
-        diag.get("code") == "config_path_not_absolute"
-        and diag.get("severity") == "error"
-        and diag.get("key") == "archive_root"
-        and diag.get("env_var") == "POLYLOGUE_ARCHIVE_ROOT"
-        for diag in diagnostics
-        if isinstance(diag, dict)
-    )
+    matches = [
+        diag for diag in diagnostics if isinstance(diag, dict) and diag.get("code") == "config_path_not_absolute"
+    ]
+    assert matches
+    diag = matches[0]
+    assert diag["severity"] == "error"
+    assert diag["key"] == "archive_root"
+    assert diag["env_var"] == "POLYLOGUE_ARCHIVE_ROOT"
+    assert diag["source_layer"] == "env"
+    assert diag["value"] == "relative-archive"
 
 
 def test_config_diagnostics_use_resolved_snapshot_not_ambient_environment(
@@ -229,6 +235,125 @@ def test_config_diagnostics_use_resolved_snapshot_not_ambient_environment(
         for diag in diagnostics
         if isinstance(diag, dict)
     )
+
+
+def test_effective_config_payload_reports_remote_api_without_auth_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    workspace_env: dict[str, Path],
+) -> None:
+    from polylogue.config import effective_config_payload, load_polylogue_config
+
+    cfg_path = tmp_path / "polylogue.toml"
+    cfg_path.write_text(
+        """
+[daemon.api]
+host = "0.0.0.0"
+
+[daemon.browser_capture]
+allow_remote = true
+auth_token = "browser-token"
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+    monkeypatch.delenv("POLYLOGUE_API_AUTH_TOKEN", raising=False)
+
+    payload = effective_config_payload(load_polylogue_config(config_path=cfg_path))
+
+    diagnostics = payload["diagnostics"]
+    assert isinstance(diagnostics, list)
+    matches = [
+        diag
+        for diag in diagnostics
+        if isinstance(diag, dict) and diag.get("code") == "api_remote_bind_requires_auth_token"
+    ]
+    assert matches
+    diag = matches[0]
+    assert diag["key"] == "api_auth_token"
+    assert diag["toml_path"] == "daemon.api.auth_token"
+    assert diag["env_var"] == "POLYLOGUE_API_AUTH_TOKEN"
+    assert diag["source_layer"] == "default"
+    assert diag["value"] == "<unset>"
+    assert diag["secret"] is True
+    assert diag["secret_present"] is False
+    assert diag["related_keys"] == ["api_host", "browser_capture_allow_remote"]
+    assert "browser-token" not in str(payload)
+
+
+def test_effective_config_payload_reports_browser_capture_web_origin_without_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    workspace_env: dict[str, Path],
+) -> None:
+    from polylogue.config import effective_config_payload, load_polylogue_config
+
+    cfg_path = tmp_path / "polylogue.toml"
+    cfg_path.write_text(
+        """
+[daemon.browser_capture]
+allowed_origins = "chrome-extension://*,https://workbench.example"
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+    monkeypatch.delenv("POLYLOGUE_BROWSER_CAPTURE_AUTH_TOKEN", raising=False)
+
+    payload = effective_config_payload(load_polylogue_config(config_path=cfg_path))
+
+    diagnostics = payload["diagnostics"]
+    assert isinstance(diagnostics, list)
+    matches = [
+        diag
+        for diag in diagnostics
+        if isinstance(diag, dict) and diag.get("code") == "browser_capture_web_origin_requires_auth_token"
+    ]
+    assert matches
+    diag = matches[0]
+    assert diag["key"] == "browser_capture_auth_token"
+    assert diag["source_layer"] == "default"
+    assert diag["value"] == "<unset>"
+    assert diag["secret_present"] is False
+    assert diag["related_keys"] == ["browser_capture_allowed_origins"]
+    assert "1 non-extension origin" in str(diag["message"])
+    assert "https://workbench.example" not in str(diag["message"])
+
+
+def test_effective_config_payload_reports_api_browser_capture_port_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    workspace_env: dict[str, Path],
+) -> None:
+    from polylogue.config import effective_config_payload, load_polylogue_config
+
+    cfg_path = tmp_path / "polylogue.toml"
+    cfg_path.write_text(
+        """
+[daemon.api]
+port = 9999
+
+[daemon.browser_capture]
+port = 9999
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+
+    payload = effective_config_payload(load_polylogue_config(config_path=cfg_path))
+
+    diagnostics = payload["diagnostics"]
+    assert isinstance(diagnostics, list)
+    matches = [
+        diag
+        for diag in diagnostics
+        if isinstance(diag, dict) and diag.get("code") == "daemon_api_browser_capture_port_conflict"
+    ]
+    assert matches
+    diag = matches[0]
+    assert diag["key"] == "api_port"
+    assert diag["source_layer"] == "user"
+    assert diag["value"] == 9999
+    assert diag["related_keys"] == ["browser_capture_port", "api_host", "browser_capture_host"]
 
 
 def test_effective_config_payload_reports_embedding_enabled_without_key(

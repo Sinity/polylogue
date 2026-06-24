@@ -709,20 +709,29 @@ def test_reader_empty_and_degraded_evidence(reader_workspace: ReaderWorkspace, t
     with running_reader_server(reader_workspace, sessions=False) as (_, base_url):
         empty_list = cast(dict[str, object], get_json(base_url, "/api/sessions"))
         empty_facets = cast(dict[str, object], get_json(base_url, "/api/facets"))
+        empty_shell_status, _, empty_shell = get_text(base_url, "/")
 
     with running_reader_server(reader_workspace, sessions=True, message_fts=False) as (_, base_url):
         degraded_status, _, degraded_body = get_text(base_url, "/api/sessions?query=Hello")
 
     assert empty_list["total"] == 0
     assert empty_list["items"] == []
+    assert cast(dict[str, object], empty_list["route_state"])["state"] == "empty"
+    assert empty_shell_status == 200
+    assert "sessionList" in empty_shell
+    assert "data-sidebar-state" in empty_shell
+    assert "data-route-state-name" in empty_shell
     assert empty_facets["total_sessions"] == 0
     assert set(cast(list[str], empty_facets["complete_families"])) >= {"total_counts", "origins", "tags"}
     assert empty_facets["deferred_families"] == {"repos": "deferred_by_default", "action_types": "deferred_by_default"}
-    assert degraded_status == 503
+    assert degraded_status == 200
     degraded_payload = json.loads(degraded_body)
-    assert degraded_payload["ok"] is False
-    assert degraded_payload["error"] == "DatabaseError"
-    assert "Search index" in degraded_payload["detail"]
+    assert degraded_payload["total"] is None
+    assert degraded_payload["hits"] == []
+    assert degraded_payload["route_state"]["state"] == "degraded"
+    assert degraded_payload["route_state"]["component"] == "message_fts"
+    assert "Search index" in degraded_payload["route_state"]["reason"]
+    assert degraded_payload["diagnostics"]["reasons"][0]["code"] == "search_index_degraded"
     assert "Traceback" not in degraded_body
     assert_no_private_paths(json.dumps(empty_list), context="reader empty list JSON")
     assert_no_private_paths(degraded_body, context="reader degraded JSON")
@@ -734,10 +743,12 @@ def test_reader_empty_and_degraded_evidence(reader_workspace: ReaderWorkspace, t
         fixture_id="reader-visual-synthetic-empty-and-degraded-v1",
         checks={
             "empty_total": empty_list["total"],
+            "empty_route_state": cast(dict[str, object], empty_list["route_state"])["state"],
             "empty_facets_total": empty_facets["total_sessions"],
             "empty_facets_deferred": sorted(cast(dict[str, object], empty_facets["deferred_families"]).keys()),
             "degraded_status": degraded_status,
-            "sanitized_error": True,
+            "degraded_route_state": degraded_payload["route_state"]["state"],
+            "sanitized_degraded_payload": True,
             "private_path_safe": True,
         },
     )

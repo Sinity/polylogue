@@ -185,6 +185,16 @@ def _seed_empty_schema(workspace: dict[str, Path]) -> None:
     ArchiveStore(workspace["archive_root"]).close()
 
 
+def _degrade_message_fts(workspace: dict[str, Path]) -> None:
+    """Drop the message search index so /api/sessions?query=... can report degraded route readiness."""
+
+    with sqlite3.connect(workspace["archive_root"] / "index.db") as conn:
+        for trigger in ("messages_fts_ai", "messages_fts_ad", "messages_fts_au"):
+            conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+        conn.execute("DROP TABLE IF EXISTS messages_fts")
+        conn.commit()
+
+
 def _seed_test_db(workspace: dict[str, Path]) -> None:
     """Seed a archive with three single-message sessions."""
     from polylogue.archive.message.roles import Role
@@ -611,6 +621,10 @@ class TestReaderSearchState:
             "renderReadViewSelector",
             "renderRouteStateNotice",
             "renderInlineRouteFailure",
+            "sessionList",
+            "data-route-state-name",
+            "data-route-state",
+            "data-sidebar-state",
             "AbortController",
             "timeoutMs",
             "request_timeout_after_",
@@ -663,6 +677,8 @@ class TestReaderSearchState:
         assert row["actions"]["open"]["enabled"] is True
         assert row["actions"]["annotate"]["enabled"] is True
         assert row["actions"]["annotate"]["state"] == "enabled"
+        assert payload["route_state"]["state"] == "ready"
+        assert payload["route_state"]["route"] == "/api/sessions"
 
     def test_facets_envelope_includes_scoped_flag(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
@@ -1611,6 +1627,8 @@ class TestReaderDegradedStates:
         assert isinstance(payload, dict)
         assert payload["total"] == 0
         assert payload["items"] == []
+        assert payload["route_state"]["state"] == "empty"
+        assert payload["route_state"]["reason"] == "Archive contains no sessions."
 
     def test_empty_archive_facets_returns_no_origins(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env, seeded=False) as (_, base_url):
@@ -1625,6 +1643,27 @@ class TestReaderDegradedStates:
         assert isinstance(payload, dict)
         # Archive non-empty (3 convs seeded) but query matches none.
         assert payload["total"] == 0
+        assert payload["route_state"]["state"] == "no_results"
+        assert payload["route_state"]["reason"] == "No sessions matched the active query or filters."
+        assert payload["diagnostics"]["message"] == "No sessions matched 'nonexistent_term_xyz'."
+
+    def test_degraded_search_index_returns_route_state_not_zero_results(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            _degrade_message_fts(workspace_env)
+            status, payload = _get_json_ex(base_url, "/api/sessions?query=Hello")
+        assert status == 200
+        assert payload["total"] is None
+        assert payload["hits"] == []
+        route_state = cast(dict[str, object], payload["route_state"])
+        diagnostics = cast(dict[str, object], payload["diagnostics"])
+        reasons = cast(list[dict[str, object]], diagnostics["reasons"])
+        assert route_state["state"] == "degraded"
+        assert route_state["component"] == "message_fts"
+        assert "Search index" in str(route_state["reason"])
+        assert reasons[0]["code"] == "search_index_degraded"
 
 
 class TestReaderQueryCompletions:
@@ -2372,14 +2411,18 @@ class TestSharedQueryPayloads:
         assert d["archive_session_count"] == 42
 
     def test_session_list_response_shape(self) -> None:
-        from polylogue.surfaces.payloads import SessionListResponse
+        from polylogue.surfaces.payloads import RouteReadinessPayload, SessionListResponse
 
-        r = SessionListResponse(items=(), total=0, limit=50, offset=0)
+        route_state = RouteReadinessPayload(
+            state="empty", route="/api/sessions", reason="Archive contains no sessions."
+        )
+        r = SessionListResponse(items=(), total=0, limit=50, offset=0, route_state=route_state)
         d = r.model_dump(mode="json")
         assert d["items"] == []
         assert d["total"] == 0
         assert d["limit"] == 50
         assert d["offset"] == 0
+        assert d["route_state"]["state"] == "empty"
 
     def test_reader_target_ref_and_action_payloads_roundtrip(self) -> None:
         from polylogue.surfaces.payloads import (
@@ -2440,6 +2483,7 @@ class TestSharedQueryPayloads:
         d = r.model_dump(mode="json")
         assert d["diagnostics"] is not None
         assert d["diagnostics"]["message"] == "No results."
+        assert d["route_state"] is None
 
     def test_facets_response_shape(self) -> None:
         from polylogue.surfaces.payloads import FacetFamilyStatusPayload, FacetsResponse, FacetTimeRange
@@ -2724,6 +2768,8 @@ class TestReaderInformability:
         assert "function fallbackCommand" in body
         assert "function renderRouteStateNotice" in body
         assert "function renderInlineRouteFailure" in body
+        assert "setRouteState('sessionList'" in body
+        assert "renderRouteStateNotice('sessionList'" in body
         assert "Retry" in body
         assert "stale_available" in body
         assert "/api/status" in body

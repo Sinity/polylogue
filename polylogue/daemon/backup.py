@@ -36,6 +36,7 @@ BACKUP_PROFILES: tuple[BackupProfile, ...] = (
     "rebuildable_cache_exclude",
     "diagnostics_bundle",
 )
+_MISSING_BLOB_WARNING_SAMPLE_LIMIT = 10
 
 
 class BackupResult(BaseModel):
@@ -225,16 +226,25 @@ def _copy_referenced_blobs(*, source_db: Path, backup_root: Path, warnings: list
     blob_dst_root = backup_root / "blob"
     count = 0
     size = 0
+    missing_count = 0
+    missing_samples: list[str] = []
     for hash_hex in sorted(hashes):
         src = store.blob_path(hash_hex)
         if not src.exists():
-            warnings.append(f"referenced blob missing: {hash_hex}")
+            missing_count += 1
+            if len(missing_samples) < _MISSING_BLOB_WARNING_SAMPLE_LIMIT:
+                missing_samples.append(hash_hex)
             continue
         dst = blob_dst_root / hash_hex[:2] / hash_hex[2:]
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
         count += 1
         size += dst.stat().st_size
+    if missing_count:
+        warnings.append(
+            "referenced blobs missing: "
+            f"{missing_count} total" + (f" (sample: {', '.join(missing_samples)})" if missing_samples else "")
+        )
     return count, size
 
 
