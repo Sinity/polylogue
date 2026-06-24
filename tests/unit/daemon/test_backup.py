@@ -299,6 +299,22 @@ def test_backup_archive_diagnostics_profile_copies_only_ops_tier(
     assert manifest["omitted_tiers"] == ["source.db", "index.db", "embeddings.db", "user.db"]
 
 
+def test_backup_verification_scratch_stays_near_backup_output(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    db_setup(workspace_env)
+    backup_parent = tmp_path / "backups"
+
+    result = backup_archive(output_dir=backup_parent, profile="user_overlays", verify=True)
+
+    assert result.ok
+    assert result.verified is True
+    scratch_parent = Path(str(result.verification["scratch_parent"]))
+    assert scratch_parent == backup_parent
+    assert not str(scratch_parent).startswith("/tmp/")
+
+
 def test_backup_result_formats_non_default_omissions_neutrally() -> None:
     from polylogue.daemon.backup import BackupResult, format_backup_result
 

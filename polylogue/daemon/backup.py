@@ -12,6 +12,7 @@ defragmented copy. Falls back to a file copy with WAL checkpoint first.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sqlite3
 import tempfile
@@ -410,6 +411,22 @@ def _verify_backup_result(result: BackupResult) -> None:
         result.error = str(verification.get("error") or "backup verification failed")
 
 
+def _backup_verification_scratch_parent(path: Path) -> Path | None:
+    """Choose scratch placement near the backup to avoid root ``/tmp`` I/O."""
+    env_tmpdir = os.environ.get("POLYLOGUE_BACKUP_VERIFY_TMPDIR")
+    candidates = (path.parent, Path(env_tmpdir) if env_tmpdir else None, Path("/realm/tmp"))
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
 def _copy_backup_artifact_to_scratch(source: Path, scratch_root: Path) -> Path:
     restore_root = scratch_root / "restore"
     if source.is_dir():
@@ -421,7 +438,8 @@ def _copy_backup_artifact_to_scratch(source: Path, scratch_root: Path) -> Path:
 
 
 def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
-    with tempfile.TemporaryDirectory(prefix="polylogue-backup-verify-") as raw_tmp:
+    scratch_parent = _backup_verification_scratch_parent(path)
+    with tempfile.TemporaryDirectory(prefix="polylogue-backup-verify-", dir=scratch_parent) as raw_tmp:
         restored = _copy_backup_artifact_to_scratch(path, Path(raw_tmp))
         if not restored.is_dir():
             return {"ok": False, "mode": "archive_file_set", "error": "backup output is not a directory"}
@@ -454,6 +472,7 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             "manifest_blob_count": blob_count,
             "restored_blob_count": restored_blob_count,
             "scratch_restore": "temporary",
+            "scratch_parent": str(Path(raw_tmp).parent),
         }
 
 
