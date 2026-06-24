@@ -1239,13 +1239,6 @@ def _emit_delete(
     dry_run = bool(params.get("dry_run"))
     force = bool(params.get("force"))
     count = len(session_ids)
-    if count == 0:
-        click.echo(
-            MutationResultPayload(status="ok", operation="delete", session_count=0, affected_count=0).to_json(
-                exclude_none=True
-            )
-        )
-        return
     if dry_run:
         # ``session_count`` = matched, ``affected_count`` = deleted (0 in a
         # preview); ``session_ids`` enumerates the sessions that would be deleted.
@@ -1257,6 +1250,13 @@ def _emit_delete(
                 affected_count=0,
                 session_ids=tuple(session_ids),
             ).to_json(exclude_none=True)
+        )
+        return
+    if count == 0:
+        click.echo(
+            MutationResultPayload(status="ok", operation="delete", session_count=0, affected_count=0).to_json(
+                exclude_none=True
+            )
         )
         return
     if not force:
