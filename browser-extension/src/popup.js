@@ -11,6 +11,30 @@ function hostLabel(url) {
   }
 }
 
+function contentScriptFiles(url) {
+  try {
+    const parsed = new URL(url || "");
+    if (parsed.hostname === "chatgpt.com" || parsed.hostname.endsWith(".chatgpt.com")) {
+      return ["src/common.js", "src/content/chatgpt.js"];
+    }
+    if (parsed.hostname === "claude.ai" || parsed.hostname.endsWith(".claude.ai")) {
+      return ["src/common.js", "src/content/claude.js"];
+    }
+  } catch {
+    return [];
+  }
+  return [];
+}
+
+async function ensureCaptureScripts(tab) {
+  const files = contentScriptFiles(tab?.url || "");
+  if (!tab?.id || !files.length) return false;
+  for (const file of files) {
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: [file] });
+  }
+  return true;
+}
+
 function setBadge(kind, text) {
   const badge = document.getElementById("badge");
   badge.className = `badge ${kind}`;
@@ -73,10 +97,16 @@ document.getElementById("save").addEventListener("click", async () => {
 document.getElementById("capture").addEventListener("click", async () => {
   const tab = await activeTab();
   if (!tab?.id) return;
-  const result = await chrome.tabs.sendMessage(tab.id, { type: "polylogue.capturePage" }).catch((error) => ({
+  let result = await chrome.tabs.sendMessage(tab.id, { type: "polylogue.capturePage" }).catch((error) => ({
     ok: false,
     error: String(error.message || error)
   }));
+  if (!result?.ok && (await ensureCaptureScripts(tab))) {
+    result = await chrome.tabs.sendMessage(tab.id, { type: "polylogue.capturePage" }).catch((error) => ({
+      ok: false,
+      error: String(error.message || error)
+    }));
+  }
   if (!result?.ok) {
     await chrome.storage.local.set({
       polylogueState: {
