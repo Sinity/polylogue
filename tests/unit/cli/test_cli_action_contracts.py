@@ -240,30 +240,32 @@ def test_delete_contract_guard_refuses_plain_forceless_delete(workspace_env: dic
     _assert_contract_declares_guard(("delete",), "dry_run_or_yes_required")
 
     runner = CliRunner()
-    with patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=["session-1"]):
+    with (
+        patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb") as resolve,
+        patch("polylogue.cli.archive_query.execute_delete_by_session_ids") as execute_delete,
+    ):
         result = runner.invoke(cli, ["--plain", "find", "needle", "then", "delete"])
 
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
-    assert payload["operation"] == "delete"
-    assert payload["status"] == "aborted"
-    assert payload["detail"] == "confirmation_required"
-    assert payload["affected_count"] == 0
+    assert result.exit_code != 0
+    assert "--yes" in result.output
+    assert "--dry-run" in result.output
+    resolve.assert_not_called()
+    execute_delete.assert_not_called()
 
 
-def test_delete_contract_aborted_payload_matches_mutation_schema(workspace_env: dict[str, Path]) -> None:
-    """The destructive-action guard emits the declared mutation envelope."""
-    import jsonschema
-
+def test_delete_contract_plain_forceless_delete_does_not_emit_mutation(
+    workspace_env: dict[str, Path],
+) -> None:
+    """The destructive-action guard rejects before mutation envelope execution."""
     _assert_contract_declares_guard(("delete",), "dry_run_or_yes_required")
-    schema = _load_cli_output_schema("mutation-result")
 
     runner = CliRunner()
-    with patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=["session-1"]):
+    with patch("polylogue.cli.archive_query.execute_delete_by_session_ids") as execute_delete:
         result = runner.invoke(cli, ["--plain", "find", "needle", "then", "delete"])
 
-    assert result.exit_code == 0, result.output
-    jsonschema.validate(instance=json.loads(result.output), schema=schema)
+    assert result.exit_code != 0
+    assert "confirmation_required" not in result.output
+    execute_delete.assert_not_called()
 
 
 def test_delete_contract_guard_allows_dry_run_preview(workspace_env: dict[str, Path]) -> None:
@@ -282,6 +284,23 @@ def test_delete_contract_guard_allows_dry_run_preview(workspace_env: dict[str, P
     assert payload["session_count"] == len(session_ids)
     assert payload["affected_count"] == 0
     assert payload["session_ids"] == session_ids
+
+
+def test_delete_contract_dry_run_empty_preview_is_explicit(workspace_env: dict[str, Path]) -> None:
+    """An empty dry-run is a preview envelope, not a completed deletion."""
+    _assert_contract_declares_guard(("delete",), "dry_run_or_yes_required")
+
+    runner = CliRunner()
+    with patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=[]):
+        result = runner.invoke(cli, ["--plain", "find", "needle", "then", "delete", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["operation"] == "delete"
+    assert payload["status"] == "preview"
+    assert payload["session_count"] == 0
+    assert payload["affected_count"] == 0
+    assert payload["session_ids"] == []
 
 
 def test_delete_contract_preview_payload_matches_mutation_schema(workspace_env: dict[str, Path]) -> None:

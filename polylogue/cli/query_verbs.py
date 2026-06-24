@@ -793,6 +793,8 @@ def delete_verb(ctx: click.Context, dry_run: bool, yes_flag: bool, all_flag: boo
         session_ids = resolve_session_ids_for_verb(env, request)
         execute_delete_by_session_ids(env, session_ids, force=True, dry_run=True)
         return
+    if not yes_flag:
+        raise click.UsageError("delete requires --yes for actual deletion; use --dry-run to preview.")
 
     # Enforce cardinality before any destructive action.
     session_ids = resolve_session_ids_for_verb(env, request)
