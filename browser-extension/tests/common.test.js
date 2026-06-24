@@ -44,6 +44,19 @@ function visibleText(node) {
     .trim();
 }
 
+function randomHex(length) {
+  return "a".repeat(length);
+}
+
+function temporarySessionId(storage = new Map()) {
+  const key = "polylogue:chatgpt-temporary-session-id";
+  const existing = storage.get(key);
+  if (existing && /^temporary:[0-9a-f]{24}$/.test(existing)) return existing;
+  const created = `temporary:${randomHex(24)}`;
+  storage.set(key, created);
+  return created;
+}
+
 function buildEnvelope({
   provider,
   adapterName,
@@ -56,12 +69,13 @@ function buildEnvelope({
   providerMeta = {},
   rawProviderPayload = null,
   sourceUrl = "https://chatgpt.com/c/test-conv",
+  temporaryIdStorage = new Map(),
 }) {
   const stableProviderSessionId =
     providerSessionId || sessionIdFromUrl(provider, sourceUrl);
   const resolvedProviderSessionId =
     stableProviderSessionId === "__polylogue_temporary_chat__"
-      ? `temporary:${fnv1a(`${sourceUrl}:${turns.map((turn) => `${turn.role}:${turn.text || ""}`).join("\n")}`)}`
+      ? temporarySessionId(temporaryIdStorage)
       : stableProviderSessionId;
   if (!resolvedProviderSessionId) {
     throw new Error(`cannot capture ${provider} page without a provider-native conversation id`);
@@ -277,11 +291,13 @@ describe("buildEnvelope", () => {
     })).toThrow("cannot capture chatgpt page without a provider-native conversation id");
   });
 
-  it("assigns deterministic local ids for ChatGPT temporary chats", () => {
+  it("assigns stable local ids for ChatGPT temporary chats", () => {
+    const temporaryIdStorage = new Map();
     const envelope = buildEnvelope({
       provider: "chatgpt",
       adapterName: "chatgpt-dom-v1",
       sourceUrl: "https://chatgpt.com/?temporary-chat=true",
+      temporaryIdStorage,
       turns: [
         { role: "user", text: "Important temporary prompt" },
         { role: "assistant", text: "Important temporary answer" },
@@ -291,13 +307,15 @@ describe("buildEnvelope", () => {
       provider: "chatgpt",
       adapterName: "chatgpt-dom-v1",
       sourceUrl: "https://chatgpt.com/?temporary-chat=true",
+      temporaryIdStorage,
       turns: [
         { role: "user", text: "Important temporary prompt" },
         { role: "assistant", text: "Important temporary answer" },
+        { role: "assistant", text: "Later streamed answer" },
       ],
     });
 
-    expect(envelope.session.provider_session_id).toMatch(/^temporary:[0-9a-f]{8}$/);
+    expect(envelope.session.provider_session_id).toMatch(/^temporary:[0-9a-f]{24}$/);
     expect(envelope.capture_id).toBe(`chatgpt:${envelope.session.provider_session_id}`);
     expect(repeated.session.provider_session_id).toBe(envelope.session.provider_session_id);
   });

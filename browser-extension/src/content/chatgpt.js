@@ -1,4 +1,7 @@
 (function () {
+  if (window.__polylogueChatgptCaptureInstalled) return;
+  window.__polylogueChatgptCaptureInstalled = true;
+
   const domAdapterName = "chatgpt-dom-v1";
   const nativeAdapterName = "chatgpt-native-v1";
   const nativeCaptureMessage = "polylogue.chatgpt.nativeCapture";

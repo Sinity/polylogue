@@ -1,6 +1,7 @@
 (function () {
   const SCHEMA_VERSION = 1;
   const CAPTURE_KIND = "browser_llm_session";
+  const TEMPORARY_CHAT_ID_KEY = "polylogue:chatgpt-temporary-session-id";
 
   function fnv1a(text) {
     let hash = 0x811c9dc5;
@@ -32,6 +33,27 @@
     return (node?.innerText || node?.textContent || "").replace(/\s+\n/g, "\n").trim();
   }
 
+  function randomHex(length) {
+    const bytes = new Uint8Array(Math.ceil(length / 2));
+    if (globalThis.crypto?.getRandomValues) {
+      globalThis.crypto.getRandomValues(bytes);
+      return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("").slice(0, length);
+    }
+    return `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`.slice(0, length).padEnd(length, "0");
+  }
+
+  function temporarySessionId() {
+    try {
+      const existing = window.sessionStorage.getItem(TEMPORARY_CHAT_ID_KEY);
+      if (existing && /^temporary:[0-9a-f]{24}$/.test(existing)) return existing;
+      const created = `temporary:${randomHex(24)}`;
+      window.sessionStorage.setItem(TEMPORARY_CHAT_ID_KEY, created);
+      return created;
+    } catch {
+      return `temporary:${randomHex(24)}`;
+    }
+  }
+
   function buildEnvelope({
     provider,
     adapterName,
@@ -48,7 +70,7 @@
     const urlSessionId = providerSessionId || sessionIdFromUrl(provider, sourceUrl);
     const stableProviderSessionId =
       urlSessionId === "__polylogue_temporary_chat__"
-      ? `temporary:${fnv1a(`${sourceUrl}:${turns.map((turn) => `${turn.role}:${turn.text || ""}`).join("\n")}`)}`
+      ? temporarySessionId()
         : urlSessionId;
     if (!stableProviderSessionId) {
       throw new Error(`cannot capture ${provider} page without a provider-native conversation id`);
@@ -110,13 +132,16 @@
     });
   }
 
+  const existingCapture = window.polylogueCapture || {};
   window.polylogueCapture = {
+    ...existingCapture,
     buildEnvelope,
     sessionIdFromUrl,
-    capturePage: null,
+    capturePage: existingCapture.capturePage || null,
     fnv1a,
     refreshArchiveState,
     sendCapture,
+    temporarySessionId,
     visibleText
   };
 })();

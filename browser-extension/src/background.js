@@ -1,4 +1,27 @@
 const DEFAULT_RECEIVER = "http://127.0.0.1:8765";
+const BACKGROUND_CAPTURE_MIN_INTERVAL_MS = 30000;
+const recentBackgroundCaptures = new Map();
+
+function injectionPlanForUrl(url) {
+  try {
+    const parsed = new URL(url || "");
+    if (parsed.hostname === "chatgpt.com" || parsed.hostname.endsWith(".chatgpt.com")) {
+      return [
+        { files: ["src/content/chatgpt_bridge.js"], world: "MAIN" },
+        { files: ["src/common.js", "src/content/chatgpt.js"] },
+      ];
+    }
+    if (parsed.hostname === "claude.ai" || parsed.hostname.endsWith(".claude.ai")) {
+      return [
+        { files: ["src/content/claude_bridge.js"], world: "MAIN" },
+        { files: ["src/common.js", "src/content/claude.js"] },
+      ];
+    }
+  } catch {
+    return [];
+  }
+  return [];
+}
 
 async function receiverSettings() {
   const stored = await chrome.storage.local.get({
@@ -73,6 +96,72 @@ async function getJson(path) {
   }
   return { ...body, receiver_request_id: receiverRequestId };
 }
+
+async function ensureCaptureScripts(tab) {
+  const plan = injectionPlanForUrl(tab?.url || tab?.pendingUrl || "");
+  if (!tab?.id || !plan.length || !chrome.scripting?.executeScript) return false;
+  for (const step of plan) {
+    const details = { target: { tabId: tab.id }, files: step.files };
+    if (step.world) details.world = step.world;
+    await chrome.scripting.executeScript(details);
+  }
+  return true;
+}
+
+async function captureTab(tab, reason = "background") {
+  if (!tab?.id || !injectionPlanForUrl(tab.url || tab.pendingUrl || "").length) return null;
+  const now = Date.now();
+  const lastCaptureAt = recentBackgroundCaptures.get(tab.id) || 0;
+  if (reason !== "extension_installed_or_updated" && now - lastCaptureAt < BACKGROUND_CAPTURE_MIN_INTERVAL_MS) {
+    return { ok: false, skipped: true, reason: "background_capture_throttled" };
+  }
+  recentBackgroundCaptures.set(tab.id, now);
+  await ensureCaptureScripts(tab);
+  try {
+    const result = await chrome.tabs.sendMessage(tab.id, {
+      type: "polylogue.capturePage",
+      reason
+    });
+    if (result?.ok) {
+      await setState({
+        online: true,
+        captured: true,
+        last_capture: result.captureResult || result,
+        archive_state: result.archiveState || null,
+        last_receiver_request_id:
+          result.captureResult?.receiver_request_id || result.archiveState?.receiver_request_id || null
+      });
+    }
+    return result;
+  } catch (error) {
+    return { ok: false, error: String(error.message || error) };
+  }
+}
+
+async function captureSupportedTabs(reason) {
+  if (!chrome.tabs?.query) return;
+  const tabs = await chrome.tabs.query({});
+  await Promise.allSettled(tabs.map((tab) => captureTab(tab, reason)));
+}
+
+chrome.runtime.onInstalled?.addListener(() => {
+  void captureSupportedTabs("extension_installed_or_updated");
+});
+
+chrome.runtime.onStartup?.addListener(() => {
+  void captureSupportedTabs("browser_started");
+});
+
+chrome.tabs?.onUpdated?.addListener((_tabId, changeInfo, tab) => {
+  if (changeInfo.status === "complete") {
+    void captureTab(tab, "tab_updated");
+  }
+});
+
+chrome.tabs?.onActivated?.addListener(async ({ tabId }) => {
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (tab) void captureTab(tab, "tab_activated");
+});
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   (async () => {
