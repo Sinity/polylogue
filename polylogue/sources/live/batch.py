@@ -116,6 +116,18 @@ _ARCHIVE_RUNTIME_TIERS = ",".join(spec.tier.value for spec in ARCHIVE_TIER_SPECS
 _ARCHIVE_NATIVE_WRITE_TIERS = "source,index"
 
 
+def _single_route_stage_payload(*, append_file_count: int, full_file_count: int) -> dict[str, object] | None:
+    if append_file_count > 0 and full_file_count == 0:
+        return {"storage_route": "archive_append"}
+    if full_file_count > 0 and append_file_count == 0:
+        return {
+            "storage_route": "archive_full",
+            "storage_tiers": _ARCHIVE_RUNTIME_TIERS,
+            "storage_write_tiers": _ARCHIVE_NATIVE_WRITE_TIERS,
+        }
+    return None
+
+
 def _iso_to_epoch_ms(value: str) -> int:
     return int(datetime.fromisoformat(value).timestamp() * 1000)
 
@@ -227,6 +239,7 @@ class LiveBatchProcessor:
                 parse_time_s=parse_time_s,
                 current_source=plans[0].source_name,
                 current_path=plans[0].path,
+                stage_payload={"storage_route": "archive_append"},
             )
             t0 = time.perf_counter()
             try:
@@ -256,6 +269,7 @@ class LiveBatchProcessor:
                 convergence_time_s=convergence_time_s,
                 current_source=plans[0].source_name,
                 current_path=plans[0].path,
+                stage_payload={"storage_route": "archive_append"},
             )
             _converged_paths, elapsed, timings, convergence_debt = await asyncio.to_thread(
                 self._converge_paths,
@@ -450,6 +464,10 @@ class LiveBatchProcessor:
                     len(full_result.succeeded) / max(parse_elapsed, 0.01),
                 )
 
+        summary_stage_payload = _single_route_stage_payload(
+            append_file_count=append_file_count,
+            full_file_count=len(full_paths),
+        )
         self._record_attempt_progress(
             attempt_id,
             phase="cursor_update",
@@ -460,6 +478,7 @@ class LiveBatchProcessor:
             parse_time_s=parse_time_s,
             convergence_time_s=convergence_time_s,
             stale_cursor_write_count=stale_cursor_write_count,
+            stage_payload=summary_stage_payload,
         )
 
         if succeeded_paths:
@@ -518,6 +537,7 @@ class LiveBatchProcessor:
             total_time_s=metrics.total_time_s,
             stage_timings_s=metrics.stage_timings_s,
             stale_cursor_write_count=stale_cursor_write_count,
+            stage_payload=summary_stage_payload,
         )
         self._cursor.finish_ingest_attempt(
             attempt_id,
