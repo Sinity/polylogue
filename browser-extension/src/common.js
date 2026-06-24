@@ -78,6 +78,10 @@
     const stableCaptureId = stableProviderSessionId.startsWith(`${provider}:`)
       ? stableProviderSessionId
       : `${provider}:${stableProviderSessionId}`;
+    const sessionProviderMeta = { ...providerMeta };
+    if (urlSessionId === "__polylogue_temporary_chat__" || stableProviderSessionId.startsWith("temporary:")) {
+      sessionProviderMeta.session_kind = "temporary";
+    }
     const now = new Date().toISOString();
     const envelope = {
       polylogue_capture_kind: CAPTURE_KIND,
@@ -100,7 +104,7 @@
         created_at: createdAt,
         updated_at: updatedAt || now,
         model,
-        provider_meta: providerMeta,
+        provider_meta: sessionProviderMeta,
         turns: turns.map((turn, ordinal) => ({
           provider_turn_id: turn.provider_turn_id || `${stableProviderSessionId}:turn:${ordinal}:${fnv1a(turn.role + ":" + (turn.text || ""))}`,
           role: turn.role,
