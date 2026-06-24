@@ -557,17 +557,29 @@ def test_read_verb_recovery_report_selector_rejects_unknown() -> None:
         option.type.convert("incident", option, click.Context(query_verbs.read_verb))
 
 
+def _continue_verb_kwargs(**overrides: object) -> dict[str, object]:
+    defaults: dict[str, object] = {
+        "destination": "terminal",
+        "out_path": None,
+        "candidates": False,
+        "repo_path": None,
+        "cwd": None,
+        "recent_files": (),
+        "candidate_limit": 10,
+        "output_format": None,
+    }
+    defaults.update(overrides)
+    return defaults
+
+
 def test_continue_verb_renders_recovery_continue_report() -> None:
     """``find QUERY then continue`` reuses the recovery continue report surface."""
     _, child = _context_pair(query_terms=("id:codex-session:abc123",))
     wrapped = getattr(query_verbs.continue_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
-    with (
-        patch("polylogue.cli.query_verbs._resolve_target_session_id", return_value="codex-session:abc123"),
-        patch("polylogue.cli.query_verbs.run_read_view") as run_read_view,
-    ):
-        wrapped(child, "clipboard", None, False, None, None, (), 10, None)
+    with patch("polylogue.cli.query_verbs.run_read_view") as run_read_view:
+        wrapped(child, **_continue_verb_kwargs(destination="clipboard"))
 
     invocation = run_read_view.call_args.args[2]
     assert invocation == ReadViewInvocation(
@@ -578,6 +590,24 @@ def test_continue_verb_renders_recovery_continue_report() -> None:
         out_path=None,
         options=read_view_handlers.ReadViewRecoveryOptions(report="continue"),
     )
+
+
+def test_continue_verb_rejects_ambiguous_ranked_results() -> None:
+    """``find QUERY then continue`` requires a singleton query result."""
+    _, child = _context_pair(query_terms=("needle",))
+    child.obj = SimpleNamespace(config=SimpleNamespace())
+    wrapped = getattr(query_verbs.continue_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+
+    def _close_and_return(coro: object) -> list[str]:
+        close = getattr(coro, "close", None)
+        if callable(close):
+            close()
+        return ["session-1", "session-2"]
+
+    with patch("polylogue.cli.query_verbs.run_coroutine_sync", side_effect=_close_and_return):
+        with pytest.raises(click.UsageError, match="Narrow the query to one session"):
+            wrapped(child, **_continue_verb_kwargs())
 
 
 def test_continue_verb_json_emits_context_image(capsys: pytest.CaptureFixture[str]) -> None:
@@ -611,8 +641,7 @@ def test_continue_verb_json_emits_context_image(capsys: pytest.CaptureFixture[st
     wrapped = getattr(query_verbs.continue_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
-    with patch("polylogue.cli.query_verbs._resolve_target_session_id", return_value="codex-session:abc123"):
-        wrapped(child, "terminal", None, False, None, None, (), 10, "json")
+    wrapped(child, **_continue_verb_kwargs(output_format="json"))
 
     emitted = json.loads(capsys.readouterr().out)
     assert emitted["spec"]["purpose"] == "continue"
@@ -637,14 +666,14 @@ def test_continue_candidates_ranks_context_without_session_resolution() -> None:
     ):
         wrapped(
             child,
-            "terminal",
-            None,
-            True,
-            "/workspace/polylogue",
-            "/workspace/polylogue",
-            ("polylogue/cli/query_verbs.py",),
-            3,
-            "json",
+            **_continue_verb_kwargs(
+                candidates=True,
+                repo_path="/workspace/polylogue",
+                cwd="/workspace/polylogue",
+                recent_files=("polylogue/cli/query_verbs.py",),
+                candidate_limit=3,
+                output_format="json",
+            ),
         )
 
     resolve_target.assert_not_called()
@@ -665,7 +694,7 @@ def test_continue_candidate_options_require_candidate_mode() -> None:
     assert callable(wrapped)
 
     with pytest.raises(click.UsageError, match="only valid with continue --candidates"):
-        wrapped(child, "terminal", None, False, "/workspace/polylogue", None, (), 10, None)
+        wrapped(child, **_continue_verb_kwargs(repo_path="/workspace/polylogue"))
 
 
 def test_resolve_target_session_id_uses_query_terms(workspace_env: dict[str, Path]) -> None:

@@ -178,7 +178,7 @@ domains:
       - tests/unit/storage/test_session_insight_mapper_fallbacks.py
       - tests/unit/scenarios/test_insight_surfaces.py
     notes: >
-      partial — mapper fallbacks and surface exercises covered; rebuild
+      partial — mapper fallbacks and surface checks covered; rebuild
       correctness not directly tested
 
   # -- Surfaces -----------------------------------------------------------

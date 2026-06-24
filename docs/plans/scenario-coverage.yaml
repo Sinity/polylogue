@@ -1,7 +1,7 @@
 # Scenario-coverage manifest.
 #
 # Declares verification scenario families and their subject coverage.
-# Each family groups scenarios that exercise a common surface or
+# Each family groups scenarios that verify a common surface or
 # concern. Verification closure comes from executable scenarios and
 # coverage gaps, not maturity self-declarations.
 #
@@ -14,17 +14,17 @@ description: >
 
 families:
   - name: cli_surfaces
-    description: CLI command surface exercises
+    description: CLI command surface checks
     subject: cli_surface
     scenario_count: dynamic
     location: polylogue/scenarios/cli_surfaces.py
     notes: >
-      Generates CLI-surface exercises and variants (live, memory
+      Generates CLI-surface checks and variants (live, memory
       budget) from CliSurfaceFamily definitions. Covers all CLI
       commands via help-output and exit-code assertions.
 
   - name: insight_surfaces
-    description: Insight command surface exercises
+    description: Insight command surface checks
     subject: cli_surface
     scenario_count: dynamic
     location: polylogue/scenarios/insight_surfaces.py
@@ -33,7 +33,7 @@ families:
       rendering contracts. Includes live and contract variants.
 
   - name: operational_surfaces
-    description: Operational surface exercises
+    description: Operational surface checks
     subject: operational_resilience
     scenario_count: dynamic
     location: polylogue/scenarios/operational_surfaces.py

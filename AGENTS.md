@@ -646,17 +646,15 @@ need the host clock (timing benchmarks, fuzz harnesses, the
 `frozen_clock` self-tests) add their path to the allowlist with a
 one-line rationale; everything else migrates to the fixture.
 
-## Scenario Exercises
+## Demo Verification
 
 ```bash
-# Seeded (fast, no real data)
-POLYLOGUE_FORCE_PLAIN=1 polylogue audit --only exercises --tier 0
+# Seed and verify the deterministic local demo archive
+polylogue demo seed --force --with-overlays
+polylogue demo verify --require-overlays
 
-# Schema audit (instant)
-POLYLOGUE_FORCE_PLAIN=1 polylogue audit --only audit
-
-# Live (against real DB)
-POLYLOGUE_FORCE_PLAIN=1 polylogue audit --live --only exercises --tier 0
+# Daemon-backed demo convergence
+polylogue import --demo --wait --timeout 30 --with-overlays
 ```
 
 ## Mutation Testing
@@ -1656,7 +1654,7 @@ repo verification checks and evidence records, not end-user archive workflows.
 | `devtools lab policy schema-versioning` | Enforce the policy boundary documented in docs/internals.md § 'Schema Versioning Model'. Polylogue intentionally has no in-place storage schema upgrade chain; archive-shape changes edit the canonical DDL and require a fresh rebuild from source. |
 | `devtools lab provider completeness` | Inspect detector, parser, fixture, schema, docs, ImportExplain, and caveat coverage before claiming a provider/importer mode is product-ready. |
 | `devtools lab probe capture-regression` | Turn a live or probe failure JSON summary into a replayable local regression artifact. |
-| `devtools lab probe pipeline` | Exercise real pipeline stages and optionally capture emitted summaries as regression cases. |
+| `devtools lab probe pipeline` | Run real pipeline stages and optionally capture emitted summaries as regression cases. |
 | `devtools lab probe turso` | Collect executable evidence before changing production storage backends: Python binding availability, generated-column support, FTS compatibility, MVCC, CDC, vector functions, ATTACH, and WAL pragma behavior. |
 | `devtools lab projections` | Inspect the unified projection inventory that feeds runtime coverage, generated docs, and control-plane maps. |
 | `devtools lab smoke` | Run direct archive and reader smoke sets outside the archive CLI. |

@@ -222,17 +222,15 @@ need the host clock (timing benchmarks, fuzz harnesses, the
 `frozen_clock` self-tests) add their path to the allowlist with a
 one-line rationale; everything else migrates to the fixture.
 
-## Scenario Exercises
+## Demo Verification
 
 ```bash
-# Seeded (fast, no real data)
-POLYLOGUE_FORCE_PLAIN=1 polylogue audit --only exercises --tier 0
+# Seed and verify the deterministic local demo archive
+polylogue demo seed --force --with-overlays
+polylogue demo verify --require-overlays
 
-# Schema audit (instant)
-POLYLOGUE_FORCE_PLAIN=1 polylogue audit --only audit
-
-# Live (against real DB)
-POLYLOGUE_FORCE_PLAIN=1 polylogue audit --live --only exercises --tier 0
+# Daemon-backed demo convergence
+polylogue import --demo --wait --timeout 30 --with-overlays
 ```
 
 ## Mutation Testing

@@ -106,7 +106,7 @@ surfaces:
   testing_docs:
     path: TESTING.md
     notes: >
-      Test suite layout, patterns, scenario exercises, mutation testing
+      Test suite layout, patterns, demo verification, mutation testing
       policy. Root-level, manually maintained.
 
   agent_guide:
