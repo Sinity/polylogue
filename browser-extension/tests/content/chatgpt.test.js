@@ -33,6 +33,54 @@ function conversationIdFromUrl(url) {
   return marker >= 0 && parts[marker + 1] ? parts[marker + 1] : null;
 }
 
+async function fetchNativePayloadOnDemand(pageUrl, fetchImpl) {
+  const conversationId = conversationIdFromUrl(pageUrl);
+  if (!conversationId) return null;
+  try {
+    const response = await fetchImpl(
+      `/backend-api/conversation/${encodeURIComponent(conversationId)}`,
+      {
+        credentials: "include",
+        cache: "no-store",
+      },
+    );
+    const contentType = response.headers.get("content-type") || "";
+    if (!response.ok || !contentType.includes("application/json")) return null;
+    const payload = await response.clone().json();
+    if (!payload || typeof payload !== "object" || !payload.mapping) return null;
+    const payloadConversationId = payload.conversation_id || payload.id;
+    if (payloadConversationId && String(payloadConversationId) !== conversationId)
+      return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function makeFetchResponse(payload, options = {}) {
+  const {
+    ok = true,
+    contentType = "application/json",
+    throws = false,
+  } = options;
+  return {
+    ok,
+    headers: {
+      get(name) {
+        return name.toLowerCase() === "content-type" ? contentType : null;
+      },
+    },
+    clone() {
+      return {
+        async json() {
+          if (throws) throw new Error("bad json");
+          return payload;
+        },
+      };
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -164,5 +212,84 @@ describe("chatgpt conversationIdFromUrl", () => {
 
   it("returns null outside conversation routes", () => {
     expect(conversationIdFromUrl("https://chatgpt.com/g/g-p-abc")).toBe(null);
+  });
+});
+
+describe("chatgpt fetchNativePayloadOnDemand", () => {
+  it("fetches the current conversation JSON with credentials", async () => {
+    const payload = {
+      conversation_id: "conv-123",
+      title: "Native ChatGPT title",
+      mapping: { node: { message: { content: { parts: ["hello"] } } } },
+    };
+    const calls = [];
+    const fetchImpl = async (...args) => {
+      calls.push(args);
+      return makeFetchResponse(payload);
+    };
+
+    await expect(
+      fetchNativePayloadOnDemand("https://chatgpt.com/c/conv-123", fetchImpl),
+    ).resolves.toEqual(payload);
+    expect(calls).toEqual([
+      [
+        "/backend-api/conversation/conv-123",
+        { credentials: "include", cache: "no-store" },
+      ],
+    ]);
+  });
+
+  it("supports custom GPT conversation routes", async () => {
+    const payload = { id: "conv-123", mapping: { node: {} } };
+    const calls = [];
+    const fetchImpl = async (...args) => {
+      calls.push(args);
+      return makeFetchResponse(payload);
+    };
+
+    await expect(
+      fetchNativePayloadOnDemand(
+        "https://chatgpt.com/g/g-p-abc/c/conv-123",
+        fetchImpl,
+      ),
+    ).resolves.toEqual(payload);
+    expect(calls[0][0]).toBe("/backend-api/conversation/conv-123");
+  });
+
+  it("rejects mismatched, non-json, failed, malformed, and off-route payloads", async () => {
+    await expect(
+      fetchNativePayloadOnDemand("https://chatgpt.com/c/conv-123", async () =>
+        makeFetchResponse({ conversation_id: "other", mapping: {} }),
+      ),
+    ).resolves.toBe(null);
+    await expect(
+      fetchNativePayloadOnDemand("https://chatgpt.com/c/conv-123", async () =>
+        makeFetchResponse({ conversation_id: "conv-123", mapping: {} }, {
+          contentType: "text/html",
+        }),
+      ),
+    ).resolves.toBe(null);
+    await expect(
+      fetchNativePayloadOnDemand("https://chatgpt.com/c/conv-123", async () =>
+        makeFetchResponse({ conversation_id: "conv-123", mapping: {} }, {
+          ok: false,
+        }),
+      ),
+    ).resolves.toBe(null);
+    await expect(
+      fetchNativePayloadOnDemand("https://chatgpt.com/c/conv-123", async () =>
+        makeFetchResponse({ conversation_id: "conv-123" }),
+      ),
+    ).resolves.toBe(null);
+    await expect(
+      fetchNativePayloadOnDemand("https://chatgpt.com/c/conv-123", async () =>
+        makeFetchResponse(null, { throws: true }),
+      ),
+    ).resolves.toBe(null);
+    await expect(
+      fetchNativePayloadOnDemand("https://chatgpt.com/", async () =>
+        makeFetchResponse({ mapping: {} }),
+      ),
+    ).resolves.toBe(null);
   });
 });
