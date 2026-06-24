@@ -1,5 +1,84 @@
 (function () {
-  const adapterName = "claude-ai-dom-v1";
+  const domAdapterName = "claude-ai-dom-v1";
+  const nativeAdapterName = "claude-ai-native-v1";
+  const nativeCaptureMessage = "polylogue.claude.nativeCapture";
+  const nativeCaptures = [];
+
+  function conversationIdFromUrl(url = window.location.href) {
+    const parsed = new URL(url);
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    return parts[0] === "chat" && parts[1] ? parts[1] : null;
+  }
+
+  function injectNativeCaptureBridge() {
+    const root = document.documentElement || document.head || document.body;
+    if (!root) {
+      window.setTimeout(injectNativeCaptureBridge, 0);
+      return;
+    }
+    const script = document.createElement("script");
+    script.textContent = `(() => {
+      const messageType = ${JSON.stringify(nativeCaptureMessage)};
+      const currentOrigin = window.location.origin;
+      window.__polylogueClaudeCapturedFetches = Array.isArray(window.__polylogueClaudeCapturedFetches)
+        ? window.__polylogueClaudeCapturedFetches
+        : [];
+      function post(capture) {
+        window.postMessage({ type: messageType, capture }, currentOrigin);
+      }
+      function remember(capture) {
+        window.__polylogueClaudeCapturedFetches.push(capture);
+        if (window.__polylogueClaudeCapturedFetches.length > 8) {
+          window.__polylogueClaudeCapturedFetches.splice(0, window.__polylogueClaudeCapturedFetches.length - 8);
+        }
+        post(capture);
+      }
+      const existingCaptures = window.__polylogueClaudeCapturedFetches.slice(-8);
+      window.__polylogueClaudeCapturedFetches = existingCaptures;
+      for (const capture of existingCaptures) post(capture);
+      if (window.__polylogueClaudeFetchHookInstalled) return;
+      window.__polylogueClaudeFetchHookInstalled = true;
+      const originalFetch = window.fetch;
+      window.fetch = async function polylogueClaudeFetch(input) {
+        const response = await originalFetch.apply(this, arguments);
+        try {
+          const url = typeof input === "string" ? input : input && input.url;
+          const absolute = new URL(url, window.location.href);
+          const isConversation = absolute.origin === currentOrigin
+            && /\\/api\\/organizations\\/[^/?#]+\\/chat_conversations\\/[^/?#]+/.test(absolute.pathname);
+          const contentType = response.headers.get("content-type") || "";
+          if (isConversation && contentType.includes("application/json")) {
+            const body = await response.clone().text();
+            if (body.includes('"chat_messages"')) {
+              remember({
+                url: absolute.href,
+                status: response.status,
+                ok: response.ok,
+                contentType,
+                body,
+                capturedAt: new Date().toISOString()
+              });
+            }
+          }
+        } catch (_error) {
+          // Capture must never perturb the Claude.ai page's own request path.
+        }
+        return response;
+      };
+    })();`;
+    root.appendChild(script);
+    script.remove();
+  }
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== window || event.origin !== window.location.origin) return;
+    const data = event.data || {};
+    if (data.type !== nativeCaptureMessage || !data.capture) return;
+    nativeCaptures.push(data.capture);
+    if (nativeCaptures.length > 8) nativeCaptures.splice(0, nativeCaptures.length - 8);
+  });
+
+  injectNativeCaptureBridge();
 
   function roleFromNode(node, index) {
     const role = node.getAttribute("data-message-author-role") || node.getAttribute("data-testid") || "";
@@ -20,20 +99,127 @@
       .filter(Boolean);
   }
 
-  async function capture() {
-    const turns = collectTurns();
-    if (!turns.length) return { ok: false, error: "no_turns" };
-    const envelope = window.polylogueCapture.buildEnvelope({
+  function textFromMessage(message) {
+    if (!message || typeof message !== "object") return "";
+    if (typeof message.text === "string" && message.text) return message.text;
+    if (typeof message.content === "string" && message.content) return message.content;
+    if (Array.isArray(message.content)) {
+      return message.content
+        .map((part) => {
+          if (typeof part === "string") return part;
+          if (part && typeof part === "object" && typeof part.text === "string") return part.text;
+          return "";
+        })
+        .filter(Boolean)
+        .join("\n");
+    }
+    return "";
+  }
+
+  function roleFromNativeMessage(message) {
+    const raw = message && (message.sender || message.role || message.author);
+    if (raw === "human" || raw === "user") return "user";
+    if (raw === "assistant" || raw === "claude") return "assistant";
+    if (raw === "system" || raw === "tool") return raw;
+    return "unknown";
+  }
+
+  function collectNativeTurns(payload) {
+    const messages = payload && payload.chat_messages;
+    if (!Array.isArray(messages)) return [];
+    return messages
+      .map((message, index) => {
+        const text = textFromMessage(message);
+        if (!text) return null;
+        return {
+          provider_turn_id: String(message.uuid || message.id || `claude-message-${index}`),
+          role: roleFromNativeMessage(message),
+          text,
+          timestamp: message.created_at || message.updated_at || null,
+          parent_turn_id: message.parent_message_uuid || message.parent_uuid || null,
+          provider_meta: {
+            model: message.model || null,
+            sender: message.sender || message.role || null,
+            capture_source: "claude_chat_conversations_api"
+          }
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function parseNativeCapture(capture) {
+    if (!capture || !capture.ok || typeof capture.body !== "string") return null;
+    const currentConversationId = conversationIdFromUrl();
+    if (!currentConversationId || !String(capture.url || "").includes(`/chat_conversations/${currentConversationId}`)) {
+      return null;
+    }
+    try {
+      const payload = JSON.parse(capture.body);
+      if (!payload || typeof payload !== "object" || !Array.isArray(payload.chat_messages)) return null;
+      if (payload.uuid && String(payload.uuid) !== currentConversationId) return null;
+      return payload;
+    } catch {
+      return null;
+    }
+  }
+
+  function latestNativePayload() {
+    for (let index = nativeCaptures.length - 1; index >= 0; index -= 1) {
+      const payload = parseNativeCapture(nativeCaptures[index]);
+      if (payload) return payload;
+    }
+    return null;
+  }
+
+  function modelFromNativePayload(payload) {
+    const messages = payload && payload.chat_messages;
+    if (!Array.isArray(messages)) return null;
+    for (const message of messages) {
+      if (typeof message.model === "string" && message.model) return message.model;
+    }
+    return null;
+  }
+
+  function buildNativeEnvelope(payload) {
+    const turns = collectNativeTurns(payload);
+    if (!turns.length) return null;
+    return window.polylogueCapture.buildEnvelope({
       provider: "claude-ai",
-      adapterName,
-      turns
+      adapterName: nativeAdapterName,
+      turns,
+      providerSessionId: String(payload.uuid || conversationIdFromUrl()),
+      title: typeof payload.name === "string" && payload.name ? payload.name : null,
+      createdAt: payload.created_at || null,
+      updatedAt: payload.updated_at || null,
+      model: modelFromNativePayload(payload),
+      providerMeta: {
+        capture_source: "claude_chat_conversations_api",
+        message_count: Array.isArray(payload.chat_messages) ? payload.chat_messages.length : 0
+      },
+      rawProviderPayload: payload
     });
-    const captureResult = await window.polylogueCapture.sendCapture(envelope);
+  }
+
+  async function capture() {
+    const nativePayload = latestNativePayload();
+    const envelope = nativePayload ? buildNativeEnvelope(nativePayload) : null;
+    const fallbackEnvelope = () => {
+      const turns = collectTurns();
+      if (!turns.length) return null;
+      return window.polylogueCapture.buildEnvelope({
+        provider: "claude-ai",
+        adapterName: domAdapterName,
+        turns
+      });
+    };
+    const finalEnvelope = envelope || fallbackEnvelope();
+    if (!finalEnvelope) return { ok: false, error: "no_turns" };
+    const captureResult = await window.polylogueCapture.sendCapture(finalEnvelope);
     const archiveState = await window.polylogueCapture.refreshArchiveState(
       "claude-ai",
-      envelope.session.provider_session_id
+      finalEnvelope.session.provider_session_id
     );
-    return { ok: true, envelope, captureResult, archiveState };
+    return { ok: true, envelope: finalEnvelope, captureResult, archiveState };
   }
 
   let timer = 0;

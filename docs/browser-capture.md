@@ -118,8 +118,8 @@ session merely because the evidence arrived through an extension.
 | ChatGPT authenticated page fallback | `chatgpt-dom-v1` | Visible turns in the browser-capture envelope | browser-capture DOM parser | `chatgpt-export:<url /c/<id>>` |
 | ChatGPT GDPR/export file | provider import | Export JSON `mapping` payload | normal ChatGPT parser | `chatgpt-export:<conversation_id or id>` |
 | ChatGPT shared-link helper | standalone public-share script | React Router share stream reduced to export-shaped messages | separate conversion input, not the extension payload | provider-native share conversation id when converted |
-| Claude.ai authenticated page | `claude-ai-dom-v1` today | Visible turns in the browser-capture envelope | browser-capture DOM parser | `claude-ai-export:<url /chat/<id>>` |
-| Claude.ai native/export payload | provider import or future adapter | `chat_messages` payload under provider import or `raw_provider_payload` | delegated to the normal Claude.ai parser | `claude-ai-export:<uuid>` |
+| Claude.ai authenticated page | `claude-ai-native-v1` when the conversation API response is observed; `claude-ai-dom-v1` fallback | Full `/api/organizations/.../chat_conversations/<id>` JSON under `raw_provider_payload`; otherwise visible turns in the browser-capture envelope | delegated to the normal Claude.ai parser for native payloads; browser-capture DOM parser for fallback | `claude-ai-export:<uuid or url /chat/<id>>` |
+| Claude.ai GDPR/export file | provider import | `chat_messages` payload | normal Claude.ai parser | `claude-ai-export:<uuid>` |
 
 The ChatGPT content script hooks same-origin fetches for authenticated
 conversation JSON and keeps only a bounded recent window in page memory. On
@@ -136,10 +136,11 @@ updates the same archive session instead of creating a second visible session.
 Fallback DOM captures are therefore acceptable as temporary live evidence, but
 not as a reason to prefer DOM over a clean provider payload.
 
-The Claude.ai parser already accepts native `chat_messages` payloads through
-`raw_provider_payload`, and archive tests pin coalescing with direct Claude.ai
-imports. The shipped extension adapter is still DOM-only, so native Claude.ai
-fetch capture remains a fidelity residual rather than a parser/storage gap.
+The Claude.ai content script also hooks same-origin conversation fetches and
+uses native payloads when the response is the current
+`/chat_conversations/<id>` JSON shape with `chat_messages`. DOM extraction
+remains a fallback for pages where the provider response is not available to
+the content script.
 
 ## Local auth and origin policy
 
