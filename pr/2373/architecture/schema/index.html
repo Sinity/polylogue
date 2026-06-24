@@ -1,0 +1,664 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Schema — Polylogue</title>
+    <style>
+
+        :root {
+            --bg-primary: #0B0E14;
+            --bg-secondary: #13171F;
+            --bg-tertiary: #1A1F2A;
+            --text-primary: #E6E8EC;
+            --text-secondary: #8B919A;
+            --text-tertiary: #555B63;
+            --accent: #3B82F6;
+            --accent-hover: #2563EB;
+            --border: #1E2430;
+            --shadow: rgba(0, 0, 0, 0.4);
+            --green: #22C55E;
+            --yellow: #EAB308;
+            --red: #EF4444;
+            --provider-claude-code: #D97706;
+            --provider-codex: #3B82F6;
+            --provider-chatgpt: #10B981;
+            --provider-gemini: #8B5CF6;
+            --provider-claude-ai: #F59E0B;
+            --header-height: 56px;
+            --nav-width: 240px;
+            --content-max-width: 720px;
+            --footer-height: 40px;
+            --font-body: &#39;Inter&#39;, system-ui, -apple-system, sans-serif;
+            --font-code: &#39;JetBrains Mono&#39;, &#39;Fira Code&#39;, monospace;
+        }
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg-primary: #FAFAFA;
+                --bg-secondary: #FFFFFF;
+                --bg-tertiary: #F3F4F6;
+                --text-primary: #111827;
+                --text-secondary: #6B7280;
+                --text-tertiary: #9CA3AF;
+                --border: #E5E7EB;
+                --shadow: rgba(0, 0, 0, 0.08);
+            }
+        }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html { font-size: 15px; }
+        body {
+            font-family: var(--font-body);
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
+        }
+        .site-header {
+            position: sticky; top: 0; z-index: 10;
+            height: var(--header-height);
+            background-color: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; padding: 0 1.5rem; gap: 1rem;
+        }
+        .site-header .logo { font-weight: 700; font-size: 1.1rem; color: var(--text-primary); text-decoration: none; white-space: nowrap; }
+        .site-header .logo span { color: var(--accent); }
+        .site-header .search-bar { flex: 1; max-width: 400px; margin: 0 auto; }
+        .site-header .search-bar input {
+            width: 100%; padding: 0.4rem 0.75rem; border-radius: 6px;
+            border: 1px solid var(--border); background-color: var(--bg-tertiary);
+            color: var(--text-primary); font-family: var(--font-body); font-size: 0.9rem;
+        }
+        .site-header .theme-toggle {
+            background: none; border: 1px solid var(--border); border-radius: 6px;
+            padding: 0.3rem 0.6rem; cursor: pointer; color: var(--text-secondary); font-size: 0.9rem;
+        }
+        .page-layout { display: flex; min-height: calc(100vh - var(--header-height)); }
+        .site-nav {
+            width: var(--nav-width); flex-shrink: 0; padding: 2rem 1.5rem;
+            background-color: var(--bg-primary); border-right: 1px solid var(--border);
+            overflow-y: auto; position: sticky; top: var(--header-height);
+            height: calc(100vh - var(--header-height));
+        }
+        .site-nav .nav-section { margin-bottom: 1.5rem; }
+        .site-nav .nav-section-title { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-tertiary); margin-bottom: 0.5rem; }
+        .site-nav a { display: block; padding: 0.3rem 0; color: var(--text-secondary); text-decoration: none; font-size: 0.9rem; }
+        .site-nav a:hover { color: var(--text-primary); }
+        .site-nav a.active { color: var(--accent); font-weight: 500; }
+        .content { flex: 1; max-width: var(--content-max-width); margin: 0 auto; padding: 2rem 2rem 4rem; width: 100%; }
+        h1 { font-size: 1.87rem; font-weight: 600; line-height: 1.3; margin: 2rem 0 1rem; }
+        h1:first-child { margin-top: 0; }
+        h2 { font-size: 1.47rem; font-weight: 600; line-height: 1.3; margin: 2rem 0 0.75rem; }
+        h3 { font-size: 1.2rem; font-weight: 600; line-height: 1.4; margin: 1.5rem 0 0.5rem; }
+        p { margin-bottom: 1rem; }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { color: var(--accent-hover); }
+        code { font-family: var(--font-code); font-size: 0.87rem; background-color: var(--bg-tertiary); padding: 0.15em 0.4em; border-radius: 3px; }
+        pre { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 1rem 1.25rem; overflow-x: auto; margin-bottom: 1.25rem; font-size: 0.87rem; line-height: 1.5; }
+        pre code { background: none; padding: 0; font-size: inherit; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 1.25rem; font-size: 0.9rem; }
+        th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+        th { font-weight: 600; color: var(--text-secondary); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+        .card { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; }
+        .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+        .stat-card { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; text-align: center; }
+        .stat-card .stat-value { font-size: 2rem; font-weight: 700; color: var(--accent); }
+        .stat-card .stat-label { font-size: 0.8rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.25rem; }
+        .badge { display: inline-block; padding: 0.15em 0.5em; border-radius: 4px; font-size: 0.8rem; font-weight: 500; }
+        .badge-green { background-color: rgba(34, 197, 94, 0.15); color: var(--green); }
+        .badge-yellow { background-color: rgba(234, 179, 8, 0.15); color: var(--yellow); }
+        .badge-red { background-color: rgba(239, 68, 68, 0.15); color: var(--red); }
+        .site-footer { height: var(--footer-height); display: flex; align-items: center; justify-content: space-between; padding: 0 1.5rem; border-top: 1px solid var(--border); font-size: 0.8rem; color: var(--text-tertiary); }
+        .site-footer a { color: var(--text-secondary); }
+        .home-hero { text-align: center; padding: 4rem 0 3rem; }
+        .home-hero h1 { font-size: 3rem; margin-bottom: 0.5rem; }
+        .home-hero .tagline { font-size: 1.2rem; color: var(--text-secondary); margin-bottom: 2rem; }
+        .home-hero .hero-search { max-width: 500px; margin: 0 auto 3rem; }
+        .home-hero .hero-search input { width: 100%; padding: 0.75rem 1rem; border-radius: 8px; border: 1px solid var(--border); background-color: var(--bg-secondary); color: var(--text-primary); font-family: var(--font-body); font-size: 1rem; }
+        .home-links { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; margin-top: 2rem; }
+        .home-links a { display: inline-block; padding: 0.6rem 1.5rem; border-radius: 6px; background-color: var(--bg-secondary); border: 1px solid var(--border); font-weight: 500; }
+        .home-links a:hover { background-color: var(--bg-tertiary); border-color: var(--accent); }
+        @media (max-width: 768px) {
+            .site-nav { display: none; }
+            .content { padding: 1.5rem 1rem; }
+            .home-hero h1 { font-size: 2rem; }
+        }
+        @media print {
+            .site-header, .site-nav, .site-footer { display: none; }
+            .content { max-width: none; padding: 0; }
+            body { background: white; color: black; }
+        }
+
+pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.highlight .hll { background-color: #49483e }
+.highlight { background: #272822; color: #F8F8F2 }
+.highlight .c { color: #959077 } /* Comment */
+.highlight .err { color: #ED007E; background-color: #1E0010 } /* Error */
+.highlight .esc { color: #F8F8F2 } /* Escape */
+.highlight .g { color: #F8F8F2 } /* Generic */
+.highlight .k { color: #66D9EF } /* Keyword */
+.highlight .l { color: #AE81FF } /* Literal */
+.highlight .n { color: #F8F8F2 } /* Name */
+.highlight .o { color: #FF4689 } /* Operator */
+.highlight .x { color: #F8F8F2 } /* Other */
+.highlight .p { color: #F8F8F2 } /* Punctuation */
+.highlight .ch { color: #959077 } /* Comment.Hashbang */
+.highlight .cm { color: #959077 } /* Comment.Multiline */
+.highlight .cp { color: #959077 } /* Comment.Preproc */
+.highlight .cpf { color: #959077 } /* Comment.PreprocFile */
+.highlight .c1 { color: #959077 } /* Comment.Single */
+.highlight .cs { color: #959077 } /* Comment.Special */
+.highlight .gd { color: #FF4689 } /* Generic.Deleted */
+.highlight .ge { color: #F8F8F2; font-style: italic } /* Generic.Emph */
+.highlight .ges { color: #F8F8F2; font-weight: bold; font-style: italic } /* Generic.EmphStrong */
+.highlight .gr { color: #F8F8F2 } /* Generic.Error */
+.highlight .gh { color: #F8F8F2 } /* Generic.Heading */
+.highlight .gi { color: #A6E22E } /* Generic.Inserted */
+.highlight .go { color: #66D9EF } /* Generic.Output */
+.highlight .gp { color: #FF4689; font-weight: bold } /* Generic.Prompt */
+.highlight .gs { color: #F8F8F2; font-weight: bold } /* Generic.Strong */
+.highlight .gu { color: #959077 } /* Generic.Subheading */
+.highlight .gt { color: #F8F8F2 } /* Generic.Traceback */
+.highlight .kc { color: #66D9EF } /* Keyword.Constant */
+.highlight .kd { color: #66D9EF } /* Keyword.Declaration */
+.highlight .kn { color: #FF4689 } /* Keyword.Namespace */
+.highlight .kp { color: #66D9EF } /* Keyword.Pseudo */
+.highlight .kr { color: #66D9EF } /* Keyword.Reserved */
+.highlight .kt { color: #66D9EF } /* Keyword.Type */
+.highlight .ld { color: #E6DB74 } /* Literal.Date */
+.highlight .m { color: #AE81FF } /* Literal.Number */
+.highlight .s { color: #E6DB74 } /* Literal.String */
+.highlight .na { color: #A6E22E } /* Name.Attribute */
+.highlight .nb { color: #F8F8F2 } /* Name.Builtin */
+.highlight .nc { color: #A6E22E } /* Name.Class */
+.highlight .no { color: #66D9EF } /* Name.Constant */
+.highlight .nd { color: #A6E22E } /* Name.Decorator */
+.highlight .ni { color: #F8F8F2 } /* Name.Entity */
+.highlight .ne { color: #A6E22E } /* Name.Exception */
+.highlight .nf { color: #A6E22E } /* Name.Function */
+.highlight .nl { color: #F8F8F2 } /* Name.Label */
+.highlight .nn { color: #F8F8F2 } /* Name.Namespace */
+.highlight .nx { color: #A6E22E } /* Name.Other */
+.highlight .py { color: #F8F8F2 } /* Name.Property */
+.highlight .nt { color: #FF4689 } /* Name.Tag */
+.highlight .nv { color: #F8F8F2 } /* Name.Variable */
+.highlight .ow { color: #FF4689 } /* Operator.Word */
+.highlight .pm { color: #F8F8F2 } /* Punctuation.Marker */
+.highlight .w { color: #F8F8F2 } /* Text.Whitespace */
+.highlight .mb { color: #AE81FF } /* Literal.Number.Bin */
+.highlight .mf { color: #AE81FF } /* Literal.Number.Float */
+.highlight .mh { color: #AE81FF } /* Literal.Number.Hex */
+.highlight .mi { color: #AE81FF } /* Literal.Number.Integer */
+.highlight .mo { color: #AE81FF } /* Literal.Number.Oct */
+.highlight .sa { color: #E6DB74 } /* Literal.String.Affix */
+.highlight .sb { color: #E6DB74 } /* Literal.String.Backtick */
+.highlight .sc { color: #E6DB74 } /* Literal.String.Char */
+.highlight .dl { color: #E6DB74 } /* Literal.String.Delimiter */
+.highlight .sd { color: #E6DB74 } /* Literal.String.Doc */
+.highlight .s2 { color: #E6DB74 } /* Literal.String.Double */
+.highlight .se { color: #AE81FF } /* Literal.String.Escape */
+.highlight .sh { color: #E6DB74 } /* Literal.String.Heredoc */
+.highlight .si { color: #E6DB74 } /* Literal.String.Interpol */
+.highlight .sx { color: #E6DB74 } /* Literal.String.Other */
+.highlight .sr { color: #E6DB74 } /* Literal.String.Regex */
+.highlight .s1 { color: #E6DB74 } /* Literal.String.Single */
+.highlight .ss { color: #E6DB74 } /* Literal.String.Symbol */
+.highlight .bp { color: #F8F8F2 } /* Name.Builtin.Pseudo */
+.highlight .fm { color: #A6E22E } /* Name.Function.Magic */
+.highlight .vc { color: #F8F8F2 } /* Name.Variable.Class */
+.highlight .vg { color: #F8F8F2 } /* Name.Variable.Global */
+.highlight .vi { color: #F8F8F2 } /* Name.Variable.Instance */
+.highlight .vm { color: #F8F8F2 } /* Name.Variable.Magic */
+.highlight .il { color: #AE81FF } /* Literal.Number.Integer.Long */
+    </style>
+    
+</head>
+<body>
+    <header class="site-header">
+        <a href="/polylogue/" class="logo">poly<span>logue</span></a>
+        <div class="search-bar">
+            <input type="search" placeholder="Search docs..." id="search-input">
+        </div>
+        <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+            <span class="light-icon">☀</span>
+            <span class="dark-icon">☾</span>
+        </button>
+    </header>
+    <div class="page-layout">
+        <nav class="site-nav" id="site-nav">
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Documentation</div>
+                
+                <a href="/polylogue/docs/getting-started/" >
+                    Getting Started
+                </a>
+                
+                <a href="/polylogue/docs/search/" >
+                    Search
+                </a>
+                
+                <a href="/polylogue/docs/providers/" >
+                    Providers
+                </a>
+                
+                <a href="/polylogue/docs/insights/" >
+                    Insights
+                </a>
+                
+                <a href="/polylogue/docs/export/" >
+                    Export
+                </a>
+                
+                <a href="/polylogue/docs/daemon/" >
+                    Daemon
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Reference</div>
+                
+                <a href="/polylogue/reference/cli/" >
+                    CLI
+                </a>
+                
+                <a href="/polylogue/reference/mcp/" >
+                    MCP
+                </a>
+                
+                <a href="/polylogue/reference/api/" >
+                    API
+                </a>
+                
+                <a href="/polylogue/reference/config/" >
+                    Config
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Architecture</div>
+                
+                <a href="/polylogue/architecture/rings/" >
+                    Rings
+                </a>
+                
+                <a href="/polylogue/architecture/internals/" >
+                    Internals
+                </a>
+                
+                <a href="/polylogue/architecture/schema/" class="active">
+                    Schema
+                </a>
+                
+                <a href="/polylogue/architecture/contributing/" >
+                    Contributing
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Verifiability</div>
+                
+                <a href="/polylogue/verifiability/catalog/" >
+                    Catalog
+                </a>
+                
+                <a href="/polylogue/verifiability/coverage/" >
+                    Coverage
+                </a>
+                
+                <a href="/polylogue/verifiability/mutation/" >
+                    Mutation
+                </a>
+                
+                <a href="/polylogue/verifiability/freshness/" >
+                    Freshness
+                </a>
+                
+                <a href="/polylogue/verifiability/drift/" >
+                    Drift
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Design</div>
+                
+                <a href="/polylogue/design/second-brain/" >
+                    Second Brain
+                </a>
+                
+                <a href="/polylogue/design/time-machine/" >
+                    Time Machine
+                </a>
+                
+                <a href="/polylogue/design/project-memory/" >
+                    Project Memory
+                </a>
+                
+                <a href="/polylogue/design/agent-first-mcp/" >
+                    Agent-First MCP
+                </a>
+                
+                <a href="/polylogue/design/archive-storytelling/" >
+                    Archive Storytelling
+                </a>
+                
+                <a href="/polylogue/design/whole-product/" >
+                    Whole Product
+                </a>
+                
+            </div>
+            
+        </nav>
+        <main class="content">
+            
+<p><a href="README.md">← Back to Docs</a></p>
+<h1>Database Schema</h1>
+<p>Polylogue does not store the archive in one SQLite file. The archive is a <strong>set
+of SQLite files split by durability class</strong>, all in WAL mode. Each file (a
+&quot;tier&quot;) owns a distinct kind of data and carries its own independent schema
+version. This page describes the conceptual shape and points at the canonical
+DDL; for the deeper invariant detail see <a href="internals.md">Internals</a> and
+<a href="architecture.md">Architecture</a>.</p>
+<h2>Authoritative source</h2>
+<p>The DDL under
+<a href="../polylogue/storage/sqlite/archive_tiers/"><code>polylogue/storage/sqlite/archive_tiers/</code></a>
+is the <strong>single source of truth</strong> for tables, columns, CHECK constraints, and
+indexes. This document deliberately does not re-list every column, because an
+exhaustive column table drifts from the DDL and goes stale. When you need an
+exact column, read the tier file named below — do not trust a prose summary
+over the <code>CREATE TABLE</code> statement.</p>
+<table>
+<thead>
+<tr>
+<th>Tier file</th>
+<th>Tier</th>
+<th>Version constant</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>source.py</code></td>
+<td><code>source.db</code></td>
+<td><code>SOURCE_SCHEMA_VERSION = 1</code></td>
+</tr>
+<tr>
+<td><code>index.py</code></td>
+<td><code>index.db</code></td>
+<td><code>INDEX_SCHEMA_VERSION = 7</code></td>
+</tr>
+<tr>
+<td><code>embeddings.py</code></td>
+<td><code>embeddings.db</code></td>
+<td><code>EMBEDDINGS_SCHEMA_VERSION = 1</code></td>
+</tr>
+<tr>
+<td><code>user.py</code></td>
+<td><code>user.db</code></td>
+<td><code>USER_SCHEMA_VERSION = 3</code></td>
+</tr>
+<tr>
+<td><code>ops.py</code></td>
+<td><code>ops.db</code></td>
+<td><code>OPS_SCHEMA_VERSION = 1</code></td>
+</tr>
+</tbody>
+</table>
+<p>There is no single global &quot;schema version&quot; number. Each tier is versioned and
+bootstrapped independently.</p>
+<p>The runtime table inventory per tier is also enumerated in
+<code>polylogue/cli/commands/status.py</code> (<code>_ARCHIVE_TIER_TABLES</code>), which <code>polylogue status</code> uses to report row counts; that dict is a useful cross-check against
+the DDL.</p>
+<h2>The Five Tiers</h2>
+<h3><code>source.db</code> — raw acquisition (rebuild-from-source)</h3>
+<p>Stores acquired bytes and source evidence. Everything downstream is rebuilt
+from this tier, so it is the durable record of <em>what was ingested</em>.</p>
+<p>Core tables: <code>raw_sessions</code> (one row per acquired payload, keyed by <code>raw_id</code>,
+carrying <code>origin</code>, <code>native_id</code>, <code>blob_hash</code>, and parse/validation state),
+<code>raw_artifacts</code> (artifact-taxonomy classification per acquired file),
+<code>blob_refs</code> / <code>pending_blob_refs</code> / <code>gc_generations</code> (content-addressed blob
+references and the lease/GC bookkeeping described in
+<a href="internals.md#blob-store-model">Internals § Blob Store Model</a>),
+<code>raw_hook_events</code>, and <code>history_sidecars</code>.</p>
+<h3><code>index.db</code> — parsed tree, search, and insights (rebuildable)</h3>
+<p>The parsed session/message/block tree, full-text search indexes, cross-session
+topology, and the materialized read models. Rebuildable from <code>source.db</code>.</p>
+<p>Core tables: <code>sessions</code>, <code>messages</code>, <code>blocks</code>, plus the <code>actions</code> <strong>view</strong>
+(not a table — see below), <code>session_links</code> (typed cross-session edges),
+<code>threads</code> / <code>thread_sessions</code>, attachment tables (<code>attachments</code>,
+<code>attachment_refs</code>, <code>attachment_native_ids</code>), <code>paste_spans</code>, cost tables
+(<code>price_catalogs</code>, <code>model_prices</code>, <code>session_reported_costs</code>,
+<code>session_model_usage</code>), the auto-tag side of <code>session_tags</code>, and the insight
+read models (<code>session_profiles</code>, <code>session_work_events</code>, <code>session_phases</code>,
+<code>session_latency_profiles</code>, <code>session_tag_rollups</code>, <code>threads</code>) plus
+<code>insight_materialization</code> for cache invalidation.</p>
+<h3><code>embeddings.db</code> — vectors (rebuildable, expensive)</h3>
+<p><code>message_embeddings</code> (a <code>vec0</code> virtual table, 1024-dimensional float
+embeddings), <code>message_embeddings_meta</code>, and <code>embedding_status</code>. Populated only
+when embedding is enabled with a valid Voyage key (see
+<a href="architecture.md#embedding-pipeline">Architecture § Embedding Pipeline</a>).
+Rebuildable, but re-embedding costs Voyage API calls.</p>
+<h3><code>user.db</code> — irreplaceable human input (back up this one)</h3>
+<p>The only tier that is not rebuildable from source. Its canonical table is
+<code>assertions</code>: user marks, annotations, corrections, suppressions, tags,
+metadata, saved views, recall packs, workspaces, blackboard notes, candidate
+claims, and operator judgments are all assertion rows with lifecycle state.
+Candidate review uses the closed status vocabulary <code>candidate</code>, <code>accepted</code>,
+<code>rejected</code>, <code>deferred</code>, and <code>superseded</code>; active assertions are separate
+durable claims and are not returned by candidate-review reads. <code>index.db.session_tags</code>
+remains a rebuildable auto-tag/read-model projection; human-owned tag and
+metadata writes do not have separate user-tier tables.</p>
+<h3><code>ops.db</code> — disposable daemon telemetry</h3>
+<p>Ingest cursors (<code>ingest_cursor</code>), ingest attempts (<code>ingest_attempts</code>),
+convergence debt (<code>convergence_debt</code>), cursor-lag samples, daemon stage/event
+logs, embedding catch-up runs, and OTLP spans/telemetry. Safe to discard; the
+daemon repopulates it.</p>
+<h2>Schema/data-model ownership matrix (#2246)</h2>
+<p>This matrix records the current owner for the evidence-cockpit concepts that
+were ambiguous during #2246. It is intentionally source-grounded: canonical DDL
+stays in <code>polylogue/storage/sqlite/archive_tiers/</code>, and this prose names the
+storage owner rather than duplicating full table definitions.</p>
+<table>
+<thead>
+<tr>
+<th>Concept</th>
+<th>Current owner</th>
+<th>Contract</th>
+<th>Status / residual</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Raw import explanation</td>
+<td><code>source.db</code> raw acquisition rows plus <code>index.db</code> produced sessions/messages/blocks/actions</td>
+<td>ImportExplain remains a read payload over raw sessions, artifacts, hook events, sidecars, blobs, parse/validation state, and produced index rows.</td>
+<td>No parallel ImportExplain table. Add one only as a cache/index for the landed payload after a measured read gap.</td>
+</tr>
+<tr>
+<td>Actions/tool results</td>
+<td><code>index.db.blocks</code> plus the <code>actions</code> view</td>
+<td>Tool-use/result pairing is session-scoped: <code>tool_id</code> and <code>session_id</code> must both match.</td>
+<td>Covered by DDL and regression tests with duplicate provider-local tool ids.</td>
+</tr>
+<tr>
+<td>Provider session lifecycle events</td>
+<td><code>index.db.session_events</code></td>
+<td>Narrow provider-native lifecycle markers. The current closed event type is <code>compaction</code>.</td>
+<td>The name does not claim ownership of all observed events.</td>
+</tr>
+<tr>
+<td>Observed events and context snapshots</td>
+<td>Derived query/read surfaces for now</td>
+<td>Durable tables are deferred until ref resolution, OTel projection, or query surfaces need stable row identity or indexing.</td>
+<td>No speculative <code>observed_events</code> or <code>context_snapshots</code> table.</td>
+</tr>
+<tr>
+<td>User overlays</td>
+<td><code>user.db.assertions</code></td>
+<td>Human marks, annotations, corrections, suppressions, tags, metadata, saved views, recall packs, workspaces, blackboard notes, candidates, and judgments are assertion rows.</td>
+<td>Deleted specific overlay tables are not current storage. <code>index.db.session_tags</code> is only a rebuildable/search/read projection.</td>
+</tr>
+<tr>
+<td>Refs</td>
+<td>Resolver/read boundary first</td>
+<td>Refs may live inside payload JSON, evidence refs, target refs, and work/context refs.</td>
+<td>No global refs table until resolver usage proves unresolved-ref auditing or performance needs persistence.</td>
+</tr>
+<tr>
+<td>Archive debt and readiness</td>
+<td><code>ops.db</code> for disposable operator state; <code>source.db</code>/<code>index.db</code> for durable evidence read by diagnostics</td>
+<td>Raw-materialization debt, FTS trust, and provider-usage gaps are diagnostics over tier state, not a new durable domain.</td>
+<td>Debt rows in <code>ops.db</code> are disposable. Durable facts remain in source/index tables.</td>
+</tr>
+<tr>
+<td>OTel spans</td>
+<td><code>source.db.otlp_spans</code> and <code>ops.db.otlp_spans</code> with distinct meanings</td>
+<td>Source-tier spans are raw/source-correlated evidence tied to origin/native session ids; ops-tier spans are daemon/runtime telemetry.</td>
+<td>Read paths should choose the tier by durability, not by table name alone.</td>
+</tr>
+<tr>
+<td>Embeddings</td>
+<td><code>embeddings.db</code></td>
+<td>One active 1024-dimensional <code>message_embeddings</code> vec table plus metadata/status.</td>
+<td>Multiple providers/dimensions require a deliberate schema design before another embedding family is added.</td>
+</tr>
+</tbody>
+</table>
+<h2>JSON payload contracts</h2>
+<p>SQLite <code>STRICT</code> mode does not make a <code>TEXT</code> column JSON-shaped. New executable
+JSON checks should use the shared helpers in <code>archive_tiers/common.py</code> so the
+contract is visible in canonical DDL instead of hand-written per table. Index
+schema version 7 enforces object JSON for <code>blocks.tool_input</code> and
+<code>session_provider_usage_events.payload_json</code>, two hot read-path columns with
+current typed writers. Broader payload columns such as insight evidence,
+inference, enrichment, work-event arrays, source hook payloads, and user
+assertion JSON should be constrained only after their historical write shapes
+are audited and the required tier-version/rebuild consequence is documented.</p>
+<h2>Identifiers</h2>
+<p>Primary keys in <code>index.db</code> are <strong>generated</strong> from natural components rather than
+opaque UUIDs (see the <code>GENERATED ALWAYS AS (...) STORED</code> columns in <code>index.py</code>):</p>
+<ul>
+<li><code>sessions.session_id</code> = <code>origin || ':' || native_id</code></li>
+<li><code>messages.message_id</code> = <code>session_id || ':' || COALESCE(native_id, position || '.' || variant_index)</code></li>
+<li><code>blocks.block_id</code> = <code>message_id || ':' || position</code></li>
+</ul>
+<p><code>origin</code> is a closed vocabulary (<code>Origin</code> enum in <code>polylogue/core/enums.py</code>,
+e.g. <code>claude-code-session</code>, <code>claude-ai-export</code>, <code>chatgpt-export</code>,
+<code>codex-session</code>, <code>aistudio-drive</code>) enforced by a SQL <code>CHECK</code>. It is the public
+source-origin token; the provider-wire <code>Provider</code> enum is used only at the
+parsing/schema boundary.</p>
+<h2>Timestamps, hashes, and types</h2>
+<ul>
+<li><strong>Timestamps</strong> are stored as integer epoch milliseconds in <code>*_at_ms</code> columns
+(e.g. <code>created_at_ms</code>, <code>updated_at_ms</code>, <code>occurred_at_ms</code>).</li>
+<li><strong>Content hashes</strong> are 32-byte <code>BLOB</code> columns (<code>CHECK(length(...) = 32)</code>),
+SHA-256 over the NFC-normalized session payload — title, timestamps,
+messages, attachments, and blocks. User metadata (tags, summaries, notes) is
+<strong>excluded</strong> from the hash, so editing it does not trigger re-import. See
+<a href="internals.md#content-hash-model">Internals § Content Hash Model</a>.</li>
+<li>Tables use SQLite <code>STRICT</code> mode and closed-enum <code>CHECK</code> constraints generated
+from the <code>StrEnum</code> vocabularies in <code>polylogue/core/enums.py</code>.</li>
+</ul>
+<h2>Content blocks are first-class rows</h2>
+<p>Structured message content lives in the <code>blocks</code> table — one row per block,
+keyed <code>(message_id, position)</code>, with a <code>block_type</code> constrained to the
+<code>BlockType</code> enum (<code>text</code>, <code>thinking</code>, <code>reasoning</code>, <code>tool_use</code>, <code>tool_result</code>,
+<code>image</code>, <code>code</code>, <code>document</code>). Tool calls carry <code>tool_name</code>, <code>tool_id</code>, and
+<code>tool_input</code>; <code>tool_command</code> and <code>tool_path</code> are virtual generated columns
+extracted from <code>tool_input</code> JSON.</p>
+<p><code>actions</code> is a <strong>view</strong>, not a table: it left-joins <code>tool_use</code> blocks to their
+matching <code>tool_result</code> block by <strong>both</strong> <code>tool_id</code> and <code>session_id</code>. Provider
+<code>tool_id</code> values are treated as session-local evidence, so the view must not
+pair a use block with a same-id result block from another session.</p>
+<h2>Full-text search</h2>
+<p><code>index.db</code> carries three FTS5 virtual tables, all using the <code>unicode61</code>
+tokenizer (no porter stemmer in this SQLite build):</p>
+<table>
+<thead>
+<tr>
+<th>Virtual table</th>
+<th>Indexes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>messages_fts</code></td>
+<td>Block <code>search_text</code> (text + tool name + command/path), contentless (<code>content=''</code>, <code>contentless_delete=1</code>)</td>
+</tr>
+<tr>
+<td><code>session_work_events_fts</code></td>
+<td>Work-event search text</td>
+</tr>
+<tr>
+<td><code>threads_fts</code></td>
+<td>Thread search text</td>
+</tr>
+</tbody>
+</table>
+<p><code>messages_fts</code> is kept in sync with <code>blocks</code> by the <code>messages_fts_ai/ad/au</code>
+triggers. During bulk ingest these triggers are suspended for performance and
+restored before commit; see <a href="internals.md#fts5-model">Internals § FTS5 Model</a>
+for the drift-detection and repair behavior.</p>
+<h2>Schema Versioning — fresh-only, no upgrade chain</h2>
+<p>Polylogue has <strong>no in-place schema upgrade chain</strong>. On startup each tier's
+on-disk <code>PRAGMA user_version</code> is compared against its tier constant:</p>
+<ul>
+<li><strong>Empty file</strong> (<code>user_version == 0</code>): bootstrap fresh.</li>
+<li><strong>Version match</strong>: open as-is.</li>
+<li><strong>Anything else</strong> (older or newer): the database is <strong>rejected</strong>.</li>
+</ul>
+<p>A version mismatch is resolved by re-acquiring from source, not by patching the
+file in place. The operator moves the archive aside and re-ingests:</p>
+<pre><code class="language-bash">polylogue ops reset --database &amp;&amp; polylogued run
+</code></pre>
+<p>Schema bumps are deletes-then-defines edits of the owning tier DDL, never
+deltas. The bootstrap branching that decides fresh-init vs. open vs. reject is
+shared across sync and async backends in
+<code>storage/sqlite/schema_bootstrap.py</code>. See
+<a href="internals.md#schema-versioning-model">Internals § Schema Versioning Model</a> and
+<a href="../CONTRIBUTING.md#schema-touching-changes">CONTRIBUTING § Schema-Touching Changes</a>.</p>
+<h2>Inspecting an archive</h2>
+<pre><code class="language-bash">polylogue ops status                    # daemon/archive snapshot, including per-tier row counts
+polylogue ops maintenance archive-plan  # planned archive file set
+polylogue ops doctor                     # schema health + referential integrity
+polylogue ops doctor --schemas           # provider-schema conformance over raw records
+</code></pre>
+<p>The <code>devtools lab schema roundtrip</code> command verifies committed provider
+schema packages reload and roundtrip cleanly through typed models.</p>
+<hr />
+<p><strong>See also:</strong> <a href="architecture.md">Architecture</a> · <a href="internals.md">Internals</a> · <a href="data-model.md">Data Model</a> · <a href="configuration.md">Configuration</a></p>
+
+<hr style="margin: 3rem 0 1rem; border-color: var(--border);">
+<nav style="display: flex; justify-content: space-between; font-size: 0.9rem;">
+    <a href="/polylogue/architecture/internals/">← Internals</a>
+    <a href="/polylogue/architecture/contributing/">Contributing →</a>
+</nav>
+
+        </main>
+    </div>
+    <footer class="site-footer">
+        <span>Polylogue — your AI memory</span>
+        <a href="https://github.com/Sinity/polylogue">GitHub</a>
+    </footer>
+    <script>
+        function toggleTheme() {
+            var html = document.documentElement;
+            var current = html.getAttribute('data-theme');
+            html.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+            localStorage.setItem('theme', current === 'dark' ? 'light' : 'dark');
+        }
+        (function() {
+            var saved = localStorage.getItem('theme');
+            if (saved) document.documentElement.setAttribute('data-theme', saved);
+        })();
+    </script>
+    
+</body>
+</html>
