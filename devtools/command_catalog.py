@@ -530,7 +530,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "verification lab",
         "Run typed pipeline probes against synthetic, staged, or archive-subset inputs.",
         "devtools.pipeline_probe",
-        use_when="Exercise real pipeline stages and optionally capture emitted summaries as regression cases.",
+        use_when="Run real pipeline stages and optionally capture emitted summaries as regression cases.",
         examples=(
             "devtools lab probe pipeline --provider chatgpt --stage parse",
             "devtools lab probe pipeline --input-mode archive-subset --capture-regression live-parse-drift",
