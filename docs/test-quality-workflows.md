@@ -462,9 +462,9 @@ fails when a declared target or representative test path disappears, when an
 row has no representative tests.
 
 When adding a new domain, parser, or surface, add or update its row in the matrix
-alongside the test that exercises it. The legacy free-text catalog at
-`docs/plans/test-coverage-domains.yaml` is now superseded by the matrix; new
-coverage information should land in the matrix first.
+alongside the test that exercises it. `docs/plans/test-coverage-domains.yaml` is
+retained only as audited qualitative background with path-existence validation;
+new coverage information should land in the closure matrix first.
 
 ## Workflow Guidance
 

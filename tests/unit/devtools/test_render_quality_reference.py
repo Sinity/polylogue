@@ -170,6 +170,8 @@ def test_build_document_includes_live_registry_sections() -> None:
     assert "| `validation-lane` | `runtime-substrate-hardening` |" in rendered
     assert "| `inferred-corpus-scenario` | `chatgpt:v1` |" in rendered
     assert "`session-insight-repair-loop`" in rendered
+    assert "new coverage information should land in the closure matrix first" in rendered
+    assert "legacy free-text catalog" not in rendered
 
 
 def test_build_document_includes_runtime_coverage_section() -> None:
