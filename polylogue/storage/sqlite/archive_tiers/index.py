@@ -11,6 +11,7 @@ from polylogue.core.enums import (
     Origin,
     PasteBoundary,
     Role,
+    WebConstructType,
 )
 from polylogue.storage.sqlite.archive_tiers.common import (
     CONTENT_HASH_CHECK,
@@ -19,7 +20,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 7
+INDEX_SCHEMA_VERSION = 8
 
 INDEX_DDL = f"""
 CREATE TABLE IF NOT EXISTS sessions (
@@ -86,6 +87,11 @@ CREATE TABLE IF NOT EXISTS messages (
     material_origin     TEXT NOT NULL DEFAULT 'unknown' CHECK ({check("material_origin", MaterialOrigin)}),
     model_name          TEXT,
     model_effort        TEXT,
+    sender_name         TEXT,
+    recipient           TEXT,
+    delivery_status     TEXT,
+    end_turn            INTEGER CHECK(end_turn IN (0, 1) OR end_turn IS NULL),
+    user_context_text   TEXT,
     has_tool_use        INTEGER NOT NULL DEFAULT 0 CHECK(has_tool_use IN (0, 1)),
     has_thinking        INTEGER NOT NULL DEFAULT 0 CHECK(has_thinking IN (0, 1)),
     has_paste           INTEGER NOT NULL DEFAULT 0 CHECK(has_paste IN (0, 1)),
@@ -163,6 +169,44 @@ ON blocks(block_type);
 CREATE INDEX IF NOT EXISTS idx_blocks_tool_id
 ON blocks(tool_id)
 WHERE tool_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS web_content_constructs (
+    construct_id    TEXT GENERATED ALWAYS AS (block_id || ':' || position) STORED UNIQUE,
+    session_id      TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    message_id      TEXT NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE,
+    block_id        TEXT NOT NULL REFERENCES blocks(block_id) ON DELETE CASCADE,
+    position        INTEGER NOT NULL CHECK(position >= 0),
+    provider        TEXT NOT NULL,
+    construct_type  TEXT NOT NULL CHECK ({check("construct_type", WebConstructType)}),
+    provider_key    TEXT,
+    title           TEXT,
+    url             TEXT,
+    text            TEXT,
+    source_id       TEXT,
+    group_id        TEXT,
+    group_title     TEXT,
+    query           TEXT,
+    asset_pointer   TEXT,
+    mime_type       TEXT,
+    status          TEXT,
+    task_id         TEXT,
+    task_type       TEXT,
+    rank            INTEGER,
+    start_index     INTEGER,
+    end_index       INTEGER,
+    PRIMARY KEY(block_id, position)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_web_constructs_session_type
+ON web_content_constructs(session_id, construct_type);
+
+CREATE INDEX IF NOT EXISTS idx_web_constructs_url
+ON web_content_constructs(url)
+WHERE url IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_web_constructs_query
+ON web_content_constructs(query)
+WHERE query IS NOT NULL;
 
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     block_id UNINDEXED,

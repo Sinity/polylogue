@@ -196,7 +196,14 @@ def extract_messages_from_chat_messages(
                 )
             )
             message_position += 1
-        for att_idx, meta in enumerate(item.get("attachments") or item.get("files") or [], start=1):
+        raw_attachments: list[object] = []
+        attachments_value = item.get("attachments")
+        files_value = item.get("files")
+        if isinstance(attachments_value, list):
+            raw_attachments.extend(attachments_value)
+        if isinstance(files_value, list):
+            raw_attachments.extend(files_value)
+        for att_idx, meta in enumerate(raw_attachments, start=1):
             attachment = attachment_from_meta(meta, message_id, att_idx)
             if attachment:
                 attachments.append(attachment)

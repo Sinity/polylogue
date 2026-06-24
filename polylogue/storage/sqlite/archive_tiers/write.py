@@ -52,6 +52,33 @@ class ArchiveBlockRow:
 
 
 @dataclass(frozen=True, slots=True)
+class ArchiveWebConstructRow:
+    construct_id: str
+    session_id: str
+    message_id: str
+    block_id: str
+    position: int
+    provider: str
+    construct_type: str
+    provider_key: str | None = None
+    title: str | None = None
+    url: str | None = None
+    text: str | None = None
+    source_id: str | None = None
+    group_id: str | None = None
+    group_title: str | None = None
+    query: str | None = None
+    asset_pointer: str | None = None
+    mime_type: str | None = None
+    status: str | None = None
+    task_id: str | None = None
+    task_type: str | None = None
+    rank: int | None = None
+    start_index: int | None = None
+    end_index: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ArchiveAttachmentRow:
     attachment_id: str
     message_id: str | None
@@ -294,8 +321,7 @@ def write_parsed_session_to_archive(
         else:
             _replace_full_session_messages_and_blocks(
                 conn,
-                session_id,
-                messages,
+                session,
                 duplicate_native_ids=duplicate_message_native_ids,
             )
         if merge_append:
@@ -312,6 +338,13 @@ def write_parsed_session_to_archive(
                 messages,
                 position_offset=position_offset,
                 duplicate_native_ids=duplicate_message_native_ids,
+            )
+            _write_web_constructs(
+                conn,
+                session,
+                position_offset=position_offset,
+                duplicate_native_ids=duplicate_message_native_ids,
+                replace_session=False,
             )
         _write_attachments(
             conn,
@@ -378,6 +411,11 @@ def _write_ingest_flag_tags(conn: sqlite3.Connection, session_id: str, flags: li
             """,
             (session_id, normalized),
         )
+
+
+def upsert_parser_ingest_flag_tags(conn: sqlite3.Connection, session_id: str, flags: list[str]) -> None:
+    """Upsert parser-owned ingest flag tags for an already-materialized session."""
+    _write_ingest_flag_tags(conn, session_id, flags)
 
 
 def _clear_session_projection_rows(conn: sqlite3.Connection, session_id: str) -> None:
@@ -1157,6 +1195,11 @@ def _write_messages(
                 _enum_value(message.material_origin),
                 _sqlite_text(message.model_name),
                 _sqlite_text(message.model_effort),
+                _sqlite_text(message.sender_name),
+                _sqlite_text(message.recipient),
+                _sqlite_text(message.delivery_status),
+                None if message.end_turn is None else int(message.end_turn),
+                _sqlite_text(message.user_context_text),
                 _has_block(message, BlockType.TOOL_USE),
                 _has_block(message, BlockType.THINKING),
                 _has_paste(message),
@@ -1180,11 +1223,12 @@ def _write_messages(
         """
         INSERT OR REPLACE INTO messages (
             session_id, native_id, parent_message_id, position, role, message_type, material_origin,
-            model_name, model_effort, has_tool_use, has_thinking, has_paste, paste_boundary,
+            model_name, model_effort, sender_name, recipient, delivery_status, end_turn, user_context_text,
+            has_tool_use, has_thinking, has_paste, paste_boundary,
             variant_index, is_active_path, is_active_leaf, word_count,
             input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
             duration_ms, content_hash, occurred_at_ms
-        ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows(),
     )
@@ -1234,13 +1278,87 @@ def _write_blocks(
     )
 
 
+def _write_web_constructs(
+    conn: sqlite3.Connection,
+    session: ParsedSession,
+    *,
+    position_offset: int = 0,
+    duplicate_native_ids: frozenset[str] = frozenset(),
+    replace_session: bool = True,
+) -> None:
+    origin = origin_from_provider(session.source_name)
+    session_id = archive_session_id(origin.value, session.provider_session_id)
+    provider = _enum_value(session.source_name)
+    rows: list[tuple[object, ...]] = []
+    block_ids: list[str] = []
+    for fallback_position, message in enumerate(session.messages):
+        message_id = _message_id(
+            session_id,
+            message,
+            fallback_position,
+            position_offset=position_offset,
+            duplicate_native_ids=duplicate_native_ids,
+        )
+        blocks = _message_blocks(message)
+        for block_position, block in enumerate(blocks):
+            block_id = f"{message_id}:{block_position}"
+            block_ids.append(block_id)
+            for construct_position, construct in enumerate(block.web_constructs):
+                rows.append(
+                    (
+                        session_id,
+                        message_id,
+                        block_id,
+                        construct_position,
+                        provider,
+                        _enum_value(construct.construct_type),
+                        _sqlite_text(construct.provider_key),
+                        _sqlite_text(construct.title),
+                        _sqlite_text(construct.url),
+                        _sqlite_text(construct.text),
+                        _sqlite_text(construct.source_id),
+                        _sqlite_text(construct.group_id),
+                        _sqlite_text(construct.group_title),
+                        _sqlite_text(construct.query),
+                        _sqlite_text(construct.asset_pointer),
+                        _sqlite_text(construct.mime_type),
+                        _sqlite_text(construct.status),
+                        _sqlite_text(construct.task_id),
+                        _sqlite_text(construct.task_type),
+                        construct.rank,
+                        construct.start_index,
+                        construct.end_index,
+                    )
+                )
+
+    if replace_session:
+        conn.execute("DELETE FROM web_content_constructs WHERE session_id = ?", (session_id,))
+    else:
+        conn.executemany(
+            "DELETE FROM web_content_constructs WHERE block_id = ?", ((block_id,) for block_id in block_ids)
+        )
+
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO web_content_constructs (
+            session_id, message_id, block_id, position, provider, construct_type,
+            provider_key, title, url, text, source_id, group_id, group_title,
+            query, asset_pointer, mime_type, status, task_id, task_type,
+            rank, start_index, end_index
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+
+
 def _replace_full_session_messages_and_blocks(
     conn: sqlite3.Connection,
-    session_id: str,
-    messages: list[ParsedMessage],
+    session: ParsedSession,
     *,
     duplicate_native_ids: frozenset[str],
 ) -> None:
+    origin = origin_from_provider(session.source_name)
+    session_id = archive_session_id(origin.value, session.provider_session_id)
     use_scoped_fts_rebuild = message_fts_triggers_present_sync(conn)
     if use_scoped_fts_rebuild:
         conn.execute(delete_session_rows_sql(1), (session_id,))
@@ -1251,13 +1369,18 @@ def _replace_full_session_messages_and_blocks(
         _write_messages(
             conn,
             session_id,
-            messages,
+            session.messages,
             duplicate_native_ids=duplicate_native_ids,
         )
         _write_blocks(
             conn,
             session_id,
-            messages,
+            session.messages,
+            duplicate_native_ids=duplicate_native_ids,
+        )
+        _write_web_constructs(
+            conn,
+            session,
             duplicate_native_ids=duplicate_native_ids,
         )
         if use_scoped_fts_rebuild:
@@ -2539,6 +2662,7 @@ __all__ = [
     "apply_insight_materialization",
     "upsert_insight_materialization",
     "upsert_session_phase",
+    "upsert_parser_ingest_flag_tags",
     "upsert_session_tag",
     "upsert_session_work_event",
     "read_archive_session_envelope",

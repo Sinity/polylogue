@@ -11,6 +11,7 @@ from polylogue.browser_capture.receiver import write_capture_envelope
 from polylogue.config import Source, get_config
 from polylogue.core.enums import Provider
 from polylogue.sources.dispatch import detect_provider, parse_payload
+from polylogue.sources.parsers.browser_capture import TEMPORARY_CHAT_INGEST_FLAG
 from tests.infra.archive_scenarios import open_index_db
 
 
@@ -234,6 +235,19 @@ def test_browser_capture_non_native_raw_payload_keeps_envelope_turns() -> None:
     assert session.provider_session_id == "temporary:abc123"
     assert [message.provider_message_id for message in session.messages] == ["u1", "a1"]
     assert [message.text for message in session.messages] == ["Draft the plan", "Here is the plan"]
+    assert session.ingest_flags == [TEMPORARY_CHAT_INGEST_FLAG]
+
+
+def test_browser_capture_session_kind_marks_temporary_chat() -> None:
+    payload = _capture_payload()
+    session_payload = payload["session"]
+    assert isinstance(session_payload, dict)
+    session_payload["provider_meta"] = {"session_kind": "temporary"}
+
+    parsed = parse_payload(Provider.CHATGPT, payload, "file-fallback")
+
+    assert parsed[0].provider_session_id == "conv-123"
+    assert parsed[0].ingest_flags == [TEMPORARY_CHAT_INGEST_FLAG]
 
 
 def test_browser_capture_raw_chatgpt_normalizes_legacy_synthetic_fallback_id() -> None:

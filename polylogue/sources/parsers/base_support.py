@@ -5,13 +5,14 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType
+from polylogue.core.enums import BlockType, WebConstructType
 from polylogue.core.hashing import hash_text
 
 from .base_models import (
     ParsedAttachment,
     ParsedContentBlock,
     ParsedMessage,
+    ParsedWebConstruct,
 )
 
 
@@ -75,6 +76,40 @@ def content_blocks_from_segments(content: object) -> list[ParsedContentBlock]:
                     metadata={k: v for k, v in seg.items() if k not in ("type", "media_type")},
                 )
             )
+        elif seg_type == "token_budget":
+            remaining = seg.get("remaining")
+            if remaining is not None:
+                blocks.append(
+                    ParsedContentBlock(
+                        type=BlockType.TEXT,
+                        text=f"[Claude token budget remaining: {remaining}]",
+                        web_constructs=[
+                            ParsedWebConstruct(
+                                construct_type=WebConstructType.TOKEN_BUDGET,
+                                provider_key="token_budget",
+                                text=str(remaining),
+                            )
+                        ],
+                    )
+                )
+        elif seg_type == "voice_note":
+            text = seg.get("text") or ""
+            title = seg.get("title")
+            if text or title:
+                blocks.append(
+                    ParsedContentBlock(
+                        type=BlockType.TEXT,
+                        text=str(text or title),
+                        web_constructs=[
+                            ParsedWebConstruct(
+                                construct_type=WebConstructType.VOICE_NOTE,
+                                provider_key="voice_note",
+                                title=str(title) if title else None,
+                                text=str(text) if text else None,
+                            )
+                        ],
+                    )
+                )
         elif seg_type == "code":
             text = seg.get("text") or seg.get("code") or ""
             if text:
@@ -97,24 +132,26 @@ def _make_attachment_id(seed: str) -> str:
 def attachment_from_meta(meta: object, message_id: str | None, index: int) -> ParsedAttachment | None:
     if not isinstance(meta, dict):
         return None
-    attachment_id = meta.get("id") or meta.get("file_id") or meta.get("fileId") or meta.get("uuid")
+    attachment_id = (
+        meta.get("id") or meta.get("file_id") or meta.get("fileId") or meta.get("uuid") or meta.get("file_uuid")
+    )
     name = meta.get("name") or meta.get("filename") or meta.get("file_name")
     if not attachment_id:
         if not name:
             return None
         seed = f"{message_id or 'msg'}:{name}:{index}"
         attachment_id = _make_attachment_id(seed)
-    size_raw = meta.get("size") or meta.get("size_bytes") or meta.get("sizeBytes")
+    size_raw = meta.get("size") or meta.get("size_bytes") or meta.get("sizeBytes") or meta.get("file_size")
     size_bytes = None
     if isinstance(size_raw, (int, str)):
         try:
             size_bytes = int(size_raw)
         except ValueError:
             size_bytes = None
-    mime_type = meta.get("mimeType") or meta.get("mime_type") or meta.get("content_type")
+    mime_type = meta.get("mimeType") or meta.get("mime_type") or meta.get("content_type") or meta.get("file_type")
     # #1252: promote native identifiers when present. claude-code/codex
     # attachments arrive via OAuth-authenticated session/export.
-    file_id_raw = meta.get("file_id") or meta.get("fileId")
+    file_id_raw = meta.get("file_id") or meta.get("fileId") or meta.get("file_uuid")
     drive_id_raw = meta.get("drive_id") or meta.get("driveId")
     return ParsedAttachment(
         provider_attachment_id=str(attachment_id),

@@ -10,7 +10,11 @@ import pytest
 
 from polylogue.scenarios import CorpusSpec
 from polylogue.sources.parsers.base import ParsedSession
-from polylogue.sources.parsers.chatgpt import _coerce_float, extract_messages_from_mapping
+from polylogue.sources.parsers.chatgpt import (
+    SHARED_CONVERSATION_INDEX_INGEST_FLAG,
+    _coerce_float,
+    extract_messages_from_mapping,
+)
 from polylogue.sources.parsers.chatgpt import looks_like as chatgpt_looks_like
 from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
 from polylogue.sources.parsers.claude import looks_like_ai, looks_like_code
@@ -61,6 +65,66 @@ def test_provider_format_detection(data: object, expected: bool, check_fn: Provi
     """Unified format detection across all providers."""
     result = check_fn(data)
     assert result == expected, f"Failed {desc}"
+
+
+def test_chatgpt_rich_web_metadata_is_promoted_to_typed_constructs() -> None:
+    messages, _ = extract_messages_from_mapping(
+        {
+            "node-1": {
+                "id": "node-1",
+                "message": {
+                    "id": "msg-1",
+                    "author": {"role": "assistant", "name": "research_kickoff_tool.start_research_task"},
+                    "recipient": "canmore.update_textdoc",
+                    "create_time": 1,
+                    "content": {"content_type": "text", "parts": ["Research answer"]},
+                    "metadata": {
+                        "canvas": {"textdoc_id": "canvas-1"},
+                        "content_references": [{"url": "https://example.test/ref"}],
+                        "search_result_groups": [{"query": "polylogue"}],
+                        "search_queries": ["polylogue browser capture"],
+                        "selected_sources": [{"title": "Source"}],
+                        "async_task_type": "deep_research",
+                        "async_task_id": "task-1",
+                        "citations": [{"start_ix": 0, "end_ix": 8}],
+                    },
+                },
+            }
+        }
+    )
+
+    constructs = messages[0].blocks[0].web_constructs
+    assert [construct.construct_type.value for construct in constructs] == [
+        "canvas",
+        "content_reference",
+        "content_reference",
+        "search_query",
+        "selected_source",
+        "async_task",
+    ]
+    assert constructs[0].source_id == "canvas-1"
+    assert constructs[1].url == "https://example.test/ref"
+    assert constructs[2].start_index == 0
+    assert constructs[3].query == "polylogue browser capture"
+    assert constructs[4].title == "Source"
+    assert constructs[5].task_type == "deep_research"
+    assert constructs[5].task_id == "task-1"
+    assert messages[0].blocks[0].metadata is None
+
+
+def test_chatgpt_shared_conversation_index_shell_is_tagged() -> None:
+    session = chatgpt_parse(
+        {
+            "conversation_id": "shared-conv",
+            "id": "share-row",
+            "is_anonymous": True,
+            "title": "Shared title only",
+        },
+        "fallback",
+    )
+
+    assert session.messages == []
+    assert SHARED_CONVERSATION_INDEX_INGEST_FLAG in session.ingest_flags
 
 
 # COERCE FLOAT - MERGED WITH FORMAT DETECTION ABOVE
@@ -413,12 +477,7 @@ def test_chatgpt_parse_synthetic_branching() -> None:
 
 
 def test_chatgpt_metadata_extracted_into_content_blocks() -> None:
-    """ChatGPT message-level metadata is extracted into content-block metadata.
-
-    Proves the parser lifts ChatGPT message metadata (model, author_name,
-    recipient, status, end_turn, citations, code_execution, user_context) onto
-    ``ParsedContentBlock.metadata`` rather than an opaque provider_meta blob.
-    """
+    """ChatGPT message metadata is extracted into typed parser fields."""
     # Build a ChatGPT mapping payload with rich message-level metadata.
     payload: dict[str, object] = {
         "title": "Metadata Roundtrip Test",
@@ -462,29 +521,25 @@ def test_chatgpt_metadata_extracted_into_content_blocks() -> None:
     parsed = chatgpt_parse(payload, "roundtrip-test")
     assert parsed.source_name == "chatgpt"
 
-    # The assistant message should have content_blocks with chatgpt_ metadata.
     assistant_msg = next(m for m in parsed.messages if m.role == "assistant")
     assert len(assistant_msg.blocks) >= 1
-    block_meta = assistant_msg.blocks[0].metadata
-    assert block_meta is not None, "content_block metadata should be set"
-    assert block_meta.get("chatgpt_model") == "gpt-4"
-    assert block_meta.get("chatgpt_author_name") == "dalle"
-    assert block_meta.get("chatgpt_recipient") == "dalle.text2im"
-    assert block_meta.get("chatgpt_status") == "finished_successfully"
-    assert block_meta.get("chatgpt_end_turn") is True
-    assert isinstance(block_meta.get("chatgpt_citations"), list)
-    assert isinstance(block_meta.get("chatgpt_code_execution"), dict)
-    assert isinstance(block_meta.get("chatgpt_user_context"), dict)
+    assert assistant_msg.model_name == "gpt-4"
+    assert assistant_msg.sender_name == "dalle"
+    assert assistant_msg.recipient == "dalle.text2im"
+    assert assistant_msg.delivery_status == "finished_successfully"
+    assert assistant_msg.end_turn is True
+    assert assistant_msg.user_context_text == "I like cats"
+    constructs = assistant_msg.blocks[0].web_constructs
+    assert any(construct.construct_type.value == "content_reference" for construct in constructs)
+    assert any(construct.construct_type.value == "async_task" for construct in constructs)
+    assert assistant_msg.blocks[0].metadata is None
 
-    # The user message should also have model metadata.
     user_msg = next(m for m in parsed.messages if m.role == "user")
     assert len(user_msg.blocks) >= 1
-    user_block_meta = user_msg.blocks[0].metadata
-    assert user_block_meta is not None
-    assert user_block_meta.get("chatgpt_model") == "gpt-4"
-    # User message should NOT have tool-specific metadata.
-    assert "chatgpt_author_name" not in user_block_meta
-    assert "chatgpt_recipient" not in user_block_meta
+    assert user_msg.model_name == "gpt-4"
+    assert user_msg.sender_name is None
+    assert user_msg.recipient is None
+    assert user_msg.blocks[0].metadata is None
 
 
 # =============================================================================
@@ -650,8 +705,8 @@ def test_chatgpt_metadata_permutation_extracted_by_parser(
     desc: str,
     expected_fields: dict[str, object],
 ) -> None:
-    """Catalog-driven: each metadata field permutation is extracted by the parser
-    onto the first content block's metadata."""
+    """Catalog-driven: each metadata field lands in a typed parser field."""
+    _ = expected_fields
     payload = _build_chatgpt_message_metadata_payload(meta_spec)
 
     parsed = chatgpt_parse(payload, "permutation-test")
@@ -660,20 +715,30 @@ def test_chatgpt_metadata_permutation_extracted_by_parser(
 
     blocks = parsed.messages[0].blocks
     assert len(blocks) >= 1
-    meta = blocks[0].metadata
-    assert isinstance(meta, dict), f"Expected dict metadata, got {type(meta)}: {desc}"
+    message = parsed.messages[0]
+    constructs = blocks[0].web_constructs
+    assert blocks[0].metadata is None
 
-    for field_name, expected_value in expected_fields.items():
-        actual = meta.get(field_name)
-        if isinstance(expected_value, dict):
-            assert isinstance(actual, dict), f"[{desc}] Expected dict for {field_name}, got {type(actual)}"
-            for k, v in expected_value.items():
-                assert actual.get(k) == v, f"[{desc}] {field_name}.{k}: expected {v!r}, got {actual.get(k)!r}"
-        elif isinstance(expected_value, list):
-            assert isinstance(actual, list), f"[{desc}] Expected list for {field_name}, got {type(actual)}"
-            assert actual == expected_value, f"[{desc}] {field_name}: expected {expected_value!r}, got {actual!r}"
-        else:
-            assert actual == expected_value, f"[{desc}] {field_name}: expected {expected_value!r}, got {actual!r}"
+    if "model_slug" in meta_spec:
+        assert message.model_name == meta_spec["model_slug"], desc
+    if meta_spec.get("is_tool_message"):
+        assert message.sender_name == "dalle", desc
+        assert message.recipient == "dalle.text2im", desc
+    else:
+        assert message.sender_name is None, desc
+        assert message.recipient is None, desc
+    if "message_status" in meta_spec:
+        assert message.delivery_status == meta_spec["message_status"], desc
+    if "end_turn" in meta_spec:
+        assert message.end_turn is meta_spec["end_turn"], desc
+    if "citations" in meta_spec:
+        reference = next(construct for construct in constructs if construct.construct_type.value == "content_reference")
+        assert reference.title == "Ref" or reference.title == "A", desc
+    if "aggregate_result" in meta_spec:
+        task = next(construct for construct in constructs if construct.construct_type.value == "async_task")
+        assert task.text in {"ok", "done"}, desc
+    if "user_context_message_data" in meta_spec:
+        assert message.user_context_text in {"likes cats", "needs help"}, desc
 
 
 # ---------------------------------------------------------------------------

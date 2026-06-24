@@ -202,7 +202,9 @@
       model: modelFromNativePayload(payload),
       providerMeta: {
         capture_source: "claude_chat_conversations_api",
-        message_count: Array.isArray(payload.chat_messages) ? payload.chat_messages.length : 0
+        message_count: Array.isArray(payload.chat_messages) ? payload.chat_messages.length : 0,
+        is_temporary: payload.is_temporary === true,
+        session_kind: payload.is_temporary === true ? "temporary" : null
       },
       rawProviderPayload: payload
     });
@@ -219,6 +221,7 @@
         adapterName: domAdapterName,
         turns,
         providerMeta: {
+          capture_fidelity: "dom_degraded",
           native_attempts: nativeAttemptDiagnostics.slice(-6)
         }
       });

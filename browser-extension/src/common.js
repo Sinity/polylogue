@@ -25,6 +25,13 @@
       return parts[1];
     }
     if (provider === "claude-ai") return null;
+    if (provider === "grok") {
+      const grokPathId = parts.find((part, index) => parts[index - 1] === "chat" || parts[index - 1] === "grok");
+      if (grokPathId) return grokPathId;
+      const queryId = parsed.searchParams.get("conversation") || parsed.searchParams.get("conversationId");
+      if (queryId) return queryId;
+      return `dom:${fnv1a(parsed.origin + parsed.pathname + parsed.search)}`;
+    }
     const sessionToken = parts.at(-1) || parsed.pathname || parsed.hostname;
     return `${provider}:${sessionToken}:${fnv1a(parsed.origin + parsed.pathname)}`;
   }
@@ -78,6 +85,13 @@
     const stableCaptureId = stableProviderSessionId.startsWith(`${provider}:`)
       ? stableProviderSessionId
       : `${provider}:${stableProviderSessionId}`;
+    const sessionProviderMeta = {
+      capture_fidelity: rawProviderPayload ? "native_full" : "dom_degraded",
+      ...providerMeta,
+    };
+    if (urlSessionId === "__polylogue_temporary_chat__" || stableProviderSessionId.startsWith("temporary:")) {
+      sessionProviderMeta.session_kind = "temporary";
+    }
     const now = new Date().toISOString();
     const envelope = {
       polylogue_capture_kind: CAPTURE_KIND,
@@ -100,7 +114,7 @@
         created_at: createdAt,
         updated_at: updatedAt || now,
         model,
-        provider_meta: providerMeta,
+        provider_meta: sessionProviderMeta,
         turns: turns.map((turn, ordinal) => ({
           provider_turn_id: turn.provider_turn_id || `${stableProviderSessionId}:turn:${ordinal}:${fnv1a(turn.role + ":" + (turn.text || ""))}`,
           role: turn.role,

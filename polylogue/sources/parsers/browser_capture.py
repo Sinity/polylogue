@@ -10,6 +10,8 @@ from polylogue.browser_capture.models import BrowserCaptureEnvelope, looks_like_
 from polylogue.core.enums import Provider
 from polylogue.sources.parsers.base_models import ParsedAttachment, ParsedMessage, ParsedSession
 
+TEMPORARY_CHAT_INGEST_FLAG = "capture:temporary-chat"
+
 
 def _legacy_native_id(provider: Provider, provider_session_id: str | None) -> str | None:
     return legacy_browser_capture_native_id(provider, provider_session_id)
@@ -26,6 +28,13 @@ def _has_chatgpt_native_payload(payload: object) -> TypeGuard[Mapping[str, objec
 
 def _has_claude_ai_native_payload(payload: object) -> TypeGuard[Mapping[str, object]]:
     return isinstance(payload, dict) and isinstance(payload.get("chat_messages"), list)
+
+
+def _ingest_flags_for_browser_capture(envelope: BrowserCaptureEnvelope, provider_session_id: str) -> list[str]:
+    session_kind = envelope.session.provider_meta.get("session_kind")
+    if session_kind == "temporary" or provider_session_id.startswith("temporary:"):
+        return [TEMPORARY_CHAT_INGEST_FLAG]
+    return []
 
 
 def parse(payload: object, fallback_id: str) -> ParsedSession:
@@ -111,7 +120,8 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
         messages=messages,
         active_leaf_message_provider_id=active_leaf_message_provider_id,
         attachments=attachments,
+        ingest_flags=_ingest_flags_for_browser_capture(envelope, provider_session_id),
     )
 
 
-__all__ = ["looks_like", "parse"]
+__all__ = ["TEMPORARY_CHAT_INGEST_FLAG", "looks_like", "parse"]

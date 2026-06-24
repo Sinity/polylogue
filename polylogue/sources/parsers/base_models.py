@@ -9,9 +9,43 @@ from pydantic import AliasChoices, BaseModel, Field, field_validator, model_vali
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, MaterialOrigin, Provider, TitleSource
+from polylogue.core.enums import BlockType, MaterialOrigin, Provider, TitleSource, WebConstructType
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
 from polylogue.core.timestamps import parse_timestamp
+
+
+class ParsedWebConstruct(BaseModel):
+    """Typed construct projected from rich web UI/export payloads.
+
+    Raw provider JSON remains in source evidence. This model carries the
+    normalized fields that are useful for archive reads, search, and later
+    provider-specific projections without reintroducing provider_meta bags.
+    """
+
+    construct_type: WebConstructType
+    provider_key: str | None = None
+    title: str | None = None
+    url: str | None = None
+    text: str | None = None
+    source_id: str | None = None
+    group_id: str | None = None
+    group_title: str | None = None
+    query: str | None = None
+    asset_pointer: str | None = None
+    mime_type: str | None = None
+    status: str | None = None
+    task_id: str | None = None
+    task_type: str | None = None
+    rank: int | None = None
+    start_index: int | None = None
+    end_index: int | None = None
+
+    @field_validator("construct_type", mode="before")
+    @classmethod
+    def coerce_construct_type(cls, v: object) -> WebConstructType:
+        if isinstance(v, WebConstructType):
+            return v
+        return WebConstructType(str(v).strip().lower())
 
 
 class ParsedContentBlock(BaseModel):
@@ -34,6 +68,7 @@ class ParsedContentBlock(BaseModel):
     tool_input: Mapping[str, object] | None = None
     media_type: str | None = None
     metadata: dict[str, object] | None = None
+    web_constructs: list[ParsedWebConstruct] = Field(default_factory=list)
 
     @field_validator("type", mode="before")
     @classmethod
@@ -80,6 +115,11 @@ class ParsedMessage(BaseModel):
     model_name: str | None = None
     model_effort: str | None = None
     duration_ms: int | None = None
+    sender_name: str | None = None
+    recipient: str | None = None
+    delivery_status: str | None = None
+    end_turn: bool | None = None
+    user_context_text: str | None = None
     paste_spans: list[ParsedPasteEvidence] = Field(default_factory=list)
 
     @field_validator("role", mode="before")

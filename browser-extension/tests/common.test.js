@@ -83,6 +83,13 @@ function buildEnvelope({
   const stableCaptureId = resolvedProviderSessionId.startsWith(`${provider}:`)
     ? resolvedProviderSessionId
     : `${provider}:${resolvedProviderSessionId}`;
+  const sessionProviderMeta = { ...providerMeta };
+  if (
+    stableProviderSessionId === "__polylogue_temporary_chat__" ||
+    resolvedProviderSessionId.startsWith("temporary:")
+  ) {
+    sessionProviderMeta.session_kind = "temporary";
+  }
   const now = new Date().toISOString();
   const envelope = {
     polylogue_capture_kind: "browser_llm_session",
@@ -105,7 +112,7 @@ function buildEnvelope({
       created_at: createdAt,
       updated_at: updatedAt || now,
       model,
-      provider_meta: providerMeta,
+      provider_meta: sessionProviderMeta,
       turns: turns.map((turn, ordinal) => ({
         provider_turn_id:
           turn.provider_turn_id ||
@@ -317,7 +324,9 @@ describe("buildEnvelope", () => {
 
     expect(envelope.session.provider_session_id).toMatch(/^temporary:[0-9a-f]{24}$/);
     expect(envelope.capture_id).toBe(`chatgpt:${envelope.session.provider_session_id}`);
+    expect(envelope.session.provider_meta.session_kind).toBe("temporary");
     expect(repeated.session.provider_session_id).toBe(envelope.session.provider_session_id);
+    expect(repeated.session.provider_meta.session_kind).toBe("temporary");
   });
 
   it("assigns ordinals to turns", () => {

@@ -73,6 +73,7 @@ CORE_RUNTIME_PROVIDERS: Final[tuple[str, ...]] = (
     "gemini-cli",
     "hermes",
     "antigravity",
+    "grok",
     "drive",
     "unknown",
 )
@@ -86,6 +87,7 @@ CORE_SCHEMA_PROVIDERS: Final[tuple[str, ...]] = (
     "gemini-cli",
     "hermes",
     "antigravity",
+    "grok",
 )
 
 _RUNTIME_PROVIDER_ALIASES: Final[dict[str, str]] = {
@@ -97,6 +99,9 @@ _RUNTIME_PROVIDER_ALIASES: Final[dict[str, str]] = {
     "aistudio": "gemini",
     "ai-studio": "gemini",
     "hermes-agent": "hermes",
+    "xai": "grok",
+    "x-ai": "grok",
+    "twitter-grok": "grok",
     "cursor": "codex",
 }
 

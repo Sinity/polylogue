@@ -140,6 +140,7 @@ def _session_data(
     stats_tuple: object | None = None,
     attachment_tuples: list[ParsedAttachment] | None = None,
     attachment_ref_tuples: list[AttachmentRefSpec] | None = None,
+    ingest_flags: list[str] | None = None,
     append_only: bool = False,
 ) -> SessionWritePayload:
     del stats_tuple
@@ -169,6 +170,7 @@ def _session_data(
         messages=messages,
         attachments=attachments,
         session_events=list(action_tuples or []),
+        ingest_flags=list(ingest_flags or []),
     )
     return SessionWritePayload(
         session_id=session_id,
@@ -577,6 +579,59 @@ def test_write_session_force_write_updates_message_time(tmp_path: Path) -> None:
         assert rows[0]["native_id"] == "msg-1"
         assert rows[0]["role"] == "user"
         assert rows[0]["occurred_at_ms"] == 1777636800000
+
+
+def test_write_session_upserts_ingest_flags_when_content_is_unchanged(tmp_path: Path) -> None:
+    """Parser-owned auto-tags still converge when the content hash is unchanged."""
+    with open_connection(tmp_path / "index.db") as conn:
+        first = _session_data(
+            "codex-session:unchanged-tags",
+            content_hash="same-hash",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex-session:unchanged-tags",
+                    role="user",
+                    text="hello",
+                    content_hash="msg-hash",
+                    sort_key=1777636800.0,
+                )
+            ],
+        )
+        changed, _ = _write_session(conn, first)
+        assert changed is True
+
+        recapture = _session_data(
+            "codex-session:unchanged-tags",
+            content_hash="same-hash",
+            ingest_flags=["capture:temporary-chat"],
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex-session:unchanged-tags",
+                    role="user",
+                    text="hello",
+                    content_hash="msg-hash",
+                    sort_key=1777636800.0,
+                )
+            ],
+        )
+        unchanged, counts = _write_session(conn, recapture)
+        conn.commit()
+
+        tags = conn.execute(
+            """
+            SELECT tag, tag_source, method
+            FROM session_tags
+            WHERE session_id = ?
+            """,
+            ("codex-session:unchanged-tags",),
+        ).fetchall()
+        assert unchanged is False
+        assert counts["skipped_sessions"] == 1
+        assert [(row["tag"], row["tag_source"], row["method"]) for row in tags] == [
+            ("capture:temporary-chat", "auto", "parser")
+        ]
 
 
 def test_write_session_skips_shorter_duplicate_raw_source(tmp_path: Path) -> None:
