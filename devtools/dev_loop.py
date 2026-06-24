@@ -1252,19 +1252,21 @@ def build_browser_plan(*, preflight: dict[str, Any]) -> dict[str, object]:
     web_shell_url = f"http://127.0.0.1:{api_port}/"
     receiver_token = os.environ.get("POLYLOGUE_BROWSER_CAPTURE_AUTH_TOKEN", "")
 
-    chrome_command = [
-        "google-chrome-stable",
+    chromium_command = [
+        "chromium",
         f"--user-data-dir={profile_dir}",
+        "--enable-unsafe-extension-debugging",
         f"--unsafely-treat-insecure-origin-as-secure={receiver_url}",
         f"--disable-extensions-except={extension_root}",
         f"--load-extension={extension_root}",
         "--new-window",
         web_shell_url,
     ]
-    chromium_command = ["chromium", *chrome_command[1:]]
+    google_chrome_command = ["google-chrome-stable", *chromium_command[1:]]
     live_launch_command = [
-        "google-chrome-stable",
+        "chromium",
         f"--user-data-dir={live_profile_dir}",
+        "--enable-unsafe-extension-debugging",
         f"--unsafely-treat-insecure-origin-as-secure={receiver_url}",
         f"--disable-extensions-except={extension_root}",
         f"--load-extension={extension_root}",
@@ -1351,8 +1353,9 @@ def build_browser_plan(*, preflight: dict[str, Any]) -> dict[str, object]:
         "receiver_auth_configured": bool(receiver_token),
         "web_shell_url": web_shell_url,
         "commands": {
-            "chrome": chrome_command,
+            "preferred": chromium_command,
             "chromium": chromium_command,
+            "google_chrome": google_chrome_command,
         },
         "supported_probe_urls": {
             "chatgpt": "https://chatgpt.com/",
@@ -1429,14 +1432,16 @@ def build_browser_plan(*, preflight: dict[str, Any]) -> dict[str, object]:
             "",
             "## Launch",
             "",
-            "```bash",
-            shlex.join(chrome_command),
-            "```",
-            "",
-            "If your Chromium binary is named `chromium`:",
+            "Preferred automated browser:",
             "",
             "```bash",
             shlex.join(chromium_command),
+            "```",
+            "",
+            "Branded Chrome fallback for manual/visible runs:",
+            "",
+            "```bash",
+            shlex.join(google_chrome_command),
             "```",
             "",
             "## Configure",
