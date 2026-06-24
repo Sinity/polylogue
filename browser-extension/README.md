@@ -84,17 +84,22 @@ receiver token, checks receiver status, and posts a deterministic capture
 envelope. Artifacts are written under `.cache/dev-loop/<run-id>/browser/`.
 This proves the extension service-worker HTTP path without using real
 ChatGPT/Claude.ai profile data. The provider page smoke then loads the unpacked
-extension into real headless Chrome/Chromium, serves deterministic ChatGPT and
+extension into real headless Chromium/Chrome, serves deterministic ChatGPT and
 Claude fixture pages behind a local CONNECT proxy on their normal origins, opens
-those pages through the extension worker's `chrome.tabs.create` API, triggers
-the content-script capture path through the same worker-visible tabs, and
-verifies provider/adapter identity, receiver request ids, and spool artifacts
-without copying browser profiles or writing raw turn text into the summary. If
-manifest content-script delivery is unavailable in the headless fixture browser,
-the smoke uses the same `chrome.scripting.executeScript` retry path as the popup
-and records the `injection_mode`. If Chrome creates the page target but the
-worker cannot see the corresponding tab, the summary records both the CDP page
-target and the worker-visible tab inventory.
+those pages through extension-owned tab APIs, triggers the content-script
+capture path through extension-visible tabs, and verifies provider/adapter
+identity, receiver request ids, and spool artifacts without copying browser
+profiles or writing raw turn text into the summary. Automated unpacked-extension
+proof prefers Chromium or Chrome for Testing, including the local Nix-store
+Chromium when it is not on `PATH`, because branded Google Chrome 137+ can expose
+a partial service-worker target while withholding content-script and extension
+page behavior from `--load-extension` automation. Set
+`POLYLOGUE_PROVIDER_SMOKE_CHROME=/path/to/browser` to override the binary. If
+manifest content-script delivery is unavailable in the fixture browser, the
+smoke uses the same `chrome.scripting.executeScript` retry path as the popup and
+records the `injection_mode`. If Chrome creates the page target but the
+extension cannot see the corresponding tab, the summary records both the CDP
+page target and the extension-visible tab inventory.
 
 For live authenticated ChatGPT/Claude.ai work, generate the operator-local plan
 and run the copied-profile proof from the repo instead of inventing a private
@@ -185,8 +190,8 @@ npm run test:watch    # watch mode
 npm run lint          # eslint
 npm run validate      # in-tree manifest validation
 npm run dev-loop-smoke # background worker -> local receiver smoke
-npm run dev-loop-browser-smoke # real Chrome service worker -> local receiver smoke
-npm run dev-loop-provider-smoke # real Chrome content scripts -> deterministic provider fixtures
+npm run dev-loop-browser-smoke # real Chromium/Chrome service worker -> local receiver smoke
+npm run dev-loop-provider-smoke # real Chromium/Chrome content scripts -> deterministic provider fixtures
 npm run dev-loop-live-provider-proof # visible copied-profile live provider proof
 npm run build         # build Chrome .zip + Firefox .xpi under dist/
 npm run screenshots   # capture store-submission screenshots (Playwright)
