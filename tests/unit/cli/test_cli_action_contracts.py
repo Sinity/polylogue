@@ -122,14 +122,14 @@ def test_virtual_find_counterpart_is_query_parser_keyword() -> None:
     assert explicit_query
 
 
-def test_post_verb_json_alias_normalizes_to_verb_format() -> None:
-    """`read REF --json` is accepted as the natural spelling of `read REF --format json`."""
+def test_post_verb_json_alias_is_owned_by_verb_format_option() -> None:
+    """`read REF --json` is accepted as a verb-local output alias."""
     click_args, query_terms, has_subcommand, explicit_query = _split_query_mode_args(
         cli,
         ["read", "chatgpt-export:conv-123", "--json"],
     )
 
-    assert click_args == ["read", "chatgpt-export:conv-123", "--format", "json"]
+    assert click_args == ["read", "chatgpt-export:conv-123", "--json"]
     assert query_terms == ()
     assert has_subcommand
     assert not explicit_query
@@ -140,39 +140,39 @@ def test_post_verb_json_alias_normalizes_to_verb_format() -> None:
     [
         (
             ["find", "needle", "then", "read", "--json"],
-            ["read", "--format", "json"],
+            ["read", "--json"],
         ),
         (
             ["find", "needle", "then", "continue", "--json"],
-            ["continue", "--format", "json"],
+            ["continue", "--json"],
         ),
         (
             ["find", "needle", "then", "delete", "--dry-run", "--json"],
-            ["delete", "--dry-run", "--format", "json"],
+            ["delete", "--dry-run", "--json"],
         ),
         (
             ["find", "needle", "then", "mark", "--tag-add", "reviewed", "--json"],
-            ["mark", "--tag-add", "reviewed", "--format", "json"],
+            ["mark", "--tag-add", "reviewed", "--json"],
         ),
         (
             ["find", "needle", "then", "mark", "candidates", "list", "--json"],
-            ["mark", "candidates", "list", "--format", "json"],
+            ["mark", "candidates", "list", "--json"],
         ),
         (
             ["analyze", "usage", "--json"],
-            ["analyze", "usage", "--format", "json"],
+            ["analyze", "usage", "--json"],
         ),
         (
             ["analyze", "insights", "profiles", "--json"],
-            ["analyze", "insights", "profiles", "--format", "json"],
+            ["analyze", "insights", "profiles", "--json"],
         ),
     ],
 )
-def test_post_verb_json_alias_normalizes_for_all_format_actions(
+def test_post_verb_json_alias_is_local_for_all_format_actions(
     argv: list[str],
     expected: list[str],
 ) -> None:
-    """Post-verb ``--json`` is a grammar alias for every action with ``--format json``."""
+    """Post-verb ``--json`` is a local alias for every action with ``--format json``."""
     click_args, _, has_subcommand, _ = _split_query_mode_args(cli, argv)
 
     assert click_args == expected

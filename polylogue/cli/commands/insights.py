@@ -91,6 +91,14 @@ def _build_click_params(pt: InsightType) -> list[click.Parameter]:
     )
     params.append(
         click.Option(
+            ("--json", "output_format"),
+            flag_value="json",
+            default=None,
+            help="Shortcut for --format json.",
+        )
+    )
+    params.append(
+        click.Option(
             ("--format", "-f", "output_format"),
             type=click.Choice(["json"]),
             default=None,
@@ -262,6 +270,7 @@ def _render_export_plain(result: InsightExportBundleResult) -> None:
 @click.option("--origin", "-o", default=None, help="Limit origin coverage details to one origin.")
 @click.option("--since", default=None, help="Limit coverage details to rows at/after this timestamp or date.")
 @click.option("--until", default=None, help="Limit coverage details to rows at/before this timestamp or date.")
+@click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
 @click.pass_context
 def insights_status_command(
@@ -309,6 +318,7 @@ def insights_status_command(
 @click.option("--since", default=None, help="Limit supported insights to rows at/after this timestamp or date.")
 @click.option("--until", default=None, help="Limit supported insights to rows at/before this timestamp or date.")
 @click.option("--bundle-format", type=click.Choice(["jsonl"]), default="jsonl", show_default=True)
+@click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
 @click.option(
     "--overwrite", is_flag=True, help="Replace an existing bundle directory after writing a complete new one."
@@ -412,6 +422,13 @@ def _render_audit_plain(report: InsightRigorAuditReport) -> None:
     help="Maximum rows per product to sample for the rigor profile.",
 )
 @click.option(
+    "--json",
+    "output_format",
+    flag_value="json",
+    default=None,
+    help="Shortcut for --format json.",
+)
+@click.option(
     "--format",
     "-f",
     "output_format",
@@ -448,6 +465,13 @@ def insights_audit_command(
 
 @analyze_insights_command.command("timeline")
 @click.argument("session_id")
+@click.option(
+    "--json",
+    "output_format",
+    flag_value="json",
+    default=None,
+    help="Shortcut for --format json.",
+)
 @click.option(
     "--format",
     "-f",
