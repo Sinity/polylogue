@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.daemon import backup as backup_mod
 from polylogue.daemon.backup import backup_archive
 from polylogue.storage.blob_store import BlobStore
 from tests.infra.storage_records import SessionBuilder, db_setup
@@ -299,6 +300,22 @@ def test_backup_archive_diagnostics_profile_copies_only_ops_tier(
     assert manifest["omitted_tiers"] == ["source.db", "index.db", "embeddings.db", "user.db"]
 
 
+def test_backup_verification_scratch_stays_near_backup_output(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    db_setup(workspace_env)
+    backup_parent = tmp_path / "backups"
+
+    result = backup_archive(output_dir=backup_parent, profile="user_overlays", verify=True)
+
+    assert result.ok
+    assert result.verified is True
+    scratch_parent = Path(str(result.verification["scratch_parent"]))
+    assert scratch_parent == backup_parent
+    assert not str(scratch_parent).startswith("/tmp/")
+
+
 def test_backup_result_formats_non_default_omissions_neutrally() -> None:
     from polylogue.daemon.backup import BackupResult, format_backup_result
 
@@ -308,6 +325,30 @@ def test_backup_result_formats_non_default_omissions_neutrally() -> None:
 
     assert "  Omitted by profile: source.db" in lines
     assert all("rebuildable/disposable" not in line for line in lines)
+
+
+def test_backup_missing_blob_warnings_are_bounded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hashes = tuple(f"{idx:064x}" for idx in range(25))
+    monkeypatch.setattr(backup_mod, "_source_blob_hashes", lambda _source_db: hashes)
+    monkeypatch.setattr(backup_mod, "blob_store_root", lambda: tmp_path / "blob-store")
+
+    warnings: list[str] = []
+    count, size = backup_mod._copy_referenced_blobs(
+        source_db=tmp_path / "source.db",
+        backup_root=tmp_path / "backup",
+        warnings=warnings,
+    )
+
+    assert count == 0
+    assert size == 0
+    assert len(warnings) == 1
+    assert "25 total" in warnings[0]
+    assert hashes[0] in warnings[0]
+    assert hashes[9] in warnings[0]
+    assert hashes[10] not in warnings[0]
 
 
 def test_backup_archive_requires_precious_tiers(workspace_env: dict[str, Path], tmp_path: Path) -> None:

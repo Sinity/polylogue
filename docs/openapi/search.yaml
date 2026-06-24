@@ -818,6 +818,61 @@ components:
           title: Inspect Path
       title: ReaderActionAvailabilityPayload
       type: object
+    RouteReadinessPayload:
+      additionalProperties: false
+      description: 'Route-visible readiness state for a web reader panel.
+
+
+        ``total=0`` can mean an empty archive, a scoped no-result query, or a
+
+        degraded backend that cannot compute results. This payload lets browserless
+
+        tests and the web shell distinguish those states without guessing from
+
+        counters alone (#2304).'
+      properties:
+        state:
+          enum:
+          - ready
+          - loading
+          - empty
+          - no_results
+          - stale
+          - degraded
+          - failed
+          - budget_exceeded
+          title: State
+          type: string
+        route:
+          title: Route
+          type: string
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Reason
+        component:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Component
+        generated_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Generated At
+        stale_available:
+          default: false
+          title: Stale Available
+          type: boolean
+      required:
+      - state
+      - route
+      title: RouteReadinessPayload
+      type: object
     SessionSearchHitPayload:
       additionalProperties: false
       description: Search-hit payload with summary identity and match evidence.
@@ -1106,6 +1161,11 @@ components:
         diagnostics:
           anyOf:
           - $ref: '#/components/schemas/QueryMissDiagnosticsPayload'
+          - type: 'null'
+          default: null
+        route_state:
+          anyOf:
+          - $ref: '#/components/schemas/RouteReadinessPayload'
           - type: 'null'
           default: null
       required:
@@ -2438,7 +2498,7 @@ x-polylogue-route-contracts:
   kind: read_query
   stability: stable
   auth_policy: bearer_if_configured
-  response_contract: SearchEnvelope
+  response_contract: SearchEnvelope / SessionListResponse with route_state
 - method: GET
   pattern: /api/facets
   kind: read_query

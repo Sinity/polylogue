@@ -16,6 +16,7 @@ from pathlib import Path
 
 import tomllib
 
+from .core.loopback import bind_hosts_overlap, is_loopback_host
 from .errors import PolylogueError
 from .paths import (
     GEMINI_DRIVE_FOLDER,
@@ -1365,9 +1366,12 @@ def _config_diagnostic(
     key: str,
     message: str,
     next_action: str,
+    cfg: PolylogueConfig | None = None,
+    value_key: str | None = None,
+    related_keys: tuple[str, ...] = (),
 ) -> dict[str, object]:
     entry = _CONFIG_INVENTORY_BY_KEY.get(key)
-    return {
+    payload: dict[str, object] = {
         "code": code,
         "severity": severity,
         "key": key,
@@ -1376,6 +1380,21 @@ def _config_diagnostic(
         "message": message,
         "next_action": next_action,
     }
+    if cfg is not None:
+        display_key = value_key or key
+        value = cfg.raw.get(display_key)
+        secret = is_secret_config_key(display_key)
+        payload.update(
+            {
+                "source_layer": cfg.layer_of(display_key),
+                "value": config_display_value(display_key, value),
+                "secret": secret,
+                "secret_present": bool(secret and redact_secret_value(value) == SECRET_SET_PLACEHOLDER),
+            }
+        )
+    if related_keys:
+        payload["related_keys"] = list(related_keys)
+    return payload
 
 
 def _iter_path_config_values(key: str, value: object) -> list[str]:
@@ -1421,6 +1440,7 @@ def _config_path_diagnostics(resolved: PolylogueConfig) -> list[dict[str, object
                             + (f" or override {entry.env_var}" if entry.env_var else "")
                             + "."
                         ),
+                        cfg=resolved,
                     )
                 )
                 continue
@@ -1436,6 +1456,7 @@ def _config_path_diagnostics(resolved: PolylogueConfig) -> list[dict[str, object
                             + (f" or override {entry.env_var}" if entry.env_var else "")
                             + "."
                         ),
+                        cfg=resolved,
                     )
                 )
                 continue
@@ -1447,8 +1468,134 @@ def _config_path_diagnostics(resolved: PolylogueConfig) -> list[dict[str, object
                         key=entry.key,
                         message=f"Configured source root does not exist: {raw_path}.",
                         next_action="Remove the stale source root or create/mount it before running the daemon.",
+                        cfg=resolved,
                     )
                 )
+    return diagnostics
+
+
+def _configured_browser_capture_origins(resolved: PolylogueConfig) -> tuple[str, ...]:
+    return tuple(origin.strip() for origin in resolved.browser_capture_allowed_origins.split(",") if origin.strip())
+
+
+def _is_browser_extension_origin_pattern(origin: str) -> bool:
+    return origin == "chrome-extension://*" or origin.startswith("chrome-extension://")
+
+
+def _config_network_diagnostics(resolved: PolylogueConfig) -> list[dict[str, object]]:
+    diagnostics: list[dict[str, object]] = []
+    api_is_remote = not is_loopback_host(resolved.api_host)
+    browser_capture_is_remote = not is_loopback_host(resolved.browser_capture_host)
+
+    if api_is_remote and not resolved.browser_capture_allow_remote:
+        diagnostics.append(
+            _config_diagnostic(
+                code="api_remote_bind_requires_allow_remote",
+                severity="error",
+                key="api_host",
+                message=f"Daemon API host {resolved.api_host!r} is not loopback but remote binding is not enabled.",
+                next_action=(
+                    "Set daemon.browser_capture.allow_remote = true / POLYLOGUE_BROWSER_CAPTURE_ALLOW_REMOTE=true "
+                    "only with an API auth token, or bind daemon.api.host to 127.0.0.1."
+                ),
+                cfg=resolved,
+                related_keys=("browser_capture_allow_remote", "api_auth_token"),
+            )
+        )
+    if api_is_remote and resolved.browser_capture_allow_remote and not resolved.api_auth_token:
+        diagnostics.append(
+            _config_diagnostic(
+                code="api_remote_bind_requires_auth_token",
+                severity="error",
+                key="api_auth_token",
+                message=f"Daemon API host {resolved.api_host!r} is remote-enabled without an API bearer token.",
+                next_action=(
+                    "Set daemon.api.auth_token / POLYLOGUE_API_AUTH_TOKEN or bind daemon.api.host to a loopback address."
+                ),
+                cfg=resolved,
+                related_keys=("api_host", "browser_capture_allow_remote"),
+            )
+        )
+
+    if browser_capture_is_remote and not resolved.browser_capture_allow_remote:
+        diagnostics.append(
+            _config_diagnostic(
+                code="browser_capture_remote_bind_requires_allow_remote",
+                severity="error",
+                key="browser_capture_host",
+                message=(
+                    f"Browser-capture host {resolved.browser_capture_host!r} is not loopback "
+                    "but remote binding is not enabled."
+                ),
+                next_action=(
+                    "Set daemon.browser_capture.allow_remote = true / POLYLOGUE_BROWSER_CAPTURE_ALLOW_REMOTE=true "
+                    "only with a browser-capture auth token, or bind daemon.browser_capture.host to 127.0.0.1."
+                ),
+                cfg=resolved,
+                related_keys=("browser_capture_allow_remote", "browser_capture_auth_token"),
+            )
+        )
+    if resolved.browser_capture_allow_remote and not resolved.browser_capture_auth_token:
+        diagnostics.append(
+            _config_diagnostic(
+                code="browser_capture_remote_requires_auth_token",
+                severity="error",
+                key="browser_capture_auth_token",
+                message="Remote browser-capture opt-in is set without a browser-capture bearer token.",
+                next_action=(
+                    "Set daemon.browser_capture.auth_token / POLYLOGUE_BROWSER_CAPTURE_AUTH_TOKEN, "
+                    "or disable daemon.browser_capture.allow_remote."
+                ),
+                cfg=resolved,
+                related_keys=("browser_capture_allow_remote", "browser_capture_host"),
+            )
+        )
+
+    web_origins = tuple(
+        origin
+        for origin in _configured_browser_capture_origins(resolved)
+        if not _is_browser_extension_origin_pattern(origin)
+    )
+    if web_origins and not resolved.browser_capture_auth_token:
+        diagnostics.append(
+            _config_diagnostic(
+                code="browser_capture_web_origin_requires_auth_token",
+                severity="error",
+                key="browser_capture_auth_token",
+                message=(
+                    "Browser-capture web origins require a bearer token; "
+                    f"{len(web_origins)} non-extension origin(s) are configured."
+                ),
+                next_action=(
+                    "Set daemon.browser_capture.auth_token / POLYLOGUE_BROWSER_CAPTURE_AUTH_TOKEN, "
+                    "or remove non-extension origins from daemon.browser_capture.allowed_origins."
+                ),
+                cfg=resolved,
+                related_keys=("browser_capture_allowed_origins",),
+            )
+        )
+
+    if resolved.api_port == resolved.browser_capture_port and bind_hosts_overlap(
+        resolved.api_host, resolved.browser_capture_host
+    ):
+        diagnostics.append(
+            _config_diagnostic(
+                code="daemon_api_browser_capture_port_conflict",
+                severity="error",
+                key="api_port",
+                message=(
+                    f"Daemon API {resolved.api_host}:{resolved.api_port} conflicts with browser-capture "
+                    f"receiver {resolved.browser_capture_host}:{resolved.browser_capture_port}."
+                ),
+                next_action=(
+                    "Set distinct daemon.api.port and daemon.browser_capture.port values, "
+                    "or bind one component to a non-overlapping host."
+                ),
+                cfg=resolved,
+                related_keys=("browser_capture_port", "api_host", "browser_capture_host"),
+            )
+        )
+
     return diagnostics
 
 
@@ -1456,6 +1603,7 @@ def config_diagnostics(cfg: PolylogueConfig | None = None) -> list[dict[str, obj
     """Return typed diagnostics for the resolved effective configuration."""
     resolved = cfg if cfg is not None else load_polylogue_config()
     diagnostics = _config_path_diagnostics(resolved)
+    diagnostics.extend(_config_network_diagnostics(resolved))
     if resolved.embedding_enabled and not resolved.voyage_api_key:
         diagnostics.append(
             _config_diagnostic(
@@ -1467,6 +1615,7 @@ def config_diagnostics(cfg: PolylogueConfig | None = None) -> list[dict[str, obj
                     "Set VOYAGE_API_KEY, run `polylogue ops embed enable --voyage-api-key ...`, "
                     "or disable embedding convergence."
                 ),
+                cfg=resolved,
             )
         )
     return diagnostics

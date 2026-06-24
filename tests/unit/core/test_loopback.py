@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.core.loopback import is_loopback_host, is_loopback_origin
+from polylogue.core.loopback import bind_hosts_overlap, is_loopback_host, is_loopback_origin
 
 
 class TestIsLoopbackHost:
@@ -46,6 +46,32 @@ class TestIsLoopbackHost:
     )
     def test_non_loopback_rejected(self, host: str) -> None:
         assert is_loopback_host(host) is False
+
+
+class TestBindHostsOverlap:
+    @pytest.mark.parametrize(
+        ("left", "right"),
+        [
+            ("127.0.0.1", "127.0.0.1"),
+            ("127.0.0.1", "localhost"),
+            ("0.0.0.0", "127.0.0.1"),
+            ("::", "127.0.0.1"),
+            ("", "192.168.1.10"),
+        ],
+    )
+    def test_overlapping_bind_hosts(self, left: str, right: str) -> None:
+        assert bind_hosts_overlap(left, right) is True
+
+    @pytest.mark.parametrize(
+        ("left", "right"),
+        [
+            ("127.0.0.1", "192.168.1.10"),
+            ("10.0.0.1", "192.168.1.10"),
+            ("::1", "192.168.1.10"),
+        ],
+    )
+    def test_non_overlapping_bind_hosts(self, left: str, right: str) -> None:
+        assert bind_hosts_overlap(left, right) is False
 
 
 class TestIsLoopbackOrigin:

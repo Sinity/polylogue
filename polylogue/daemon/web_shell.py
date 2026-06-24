@@ -390,8 +390,9 @@ var state = {
   readViewProfiles: [], selectedReadView: 'messages', readViewProfileError: '',
   readViewPayloads: {}, readViewErrors: {},
   // Shared route-state ledger for optional workbench routes (#2304). Values
-  // are idle/loading/ready/stale/error/budget_exceeded and always retain the
-  // route plus fallback command needed to recover outside the shell.
+  // carry route readiness such as loading/ready/empty/no_results/stale/
+  // degraded/failed/budget_exceeded and always retain the route plus fallback
+  // command needed to recover outside the shell.
   routeStates: {}, inFlight: {facets: null}, selectedLoadError: null,
   // Per-session similarity panel cache (#1123). Keyed by
   // session_id; populated on demand when the Similar inspector
@@ -548,10 +549,10 @@ function setRouteState(name, patch) {
 
 function routeStateQuality(routeState) {
   if (!routeState) return '';
-  if (routeState.state === 'ready') return 'canonical';
+  if (routeState.state === 'ready' || routeState.state === 'empty' || routeState.state === 'no_results') return 'canonical';
   if (routeState.state === 'stale') return 'stale';
-  if (routeState.state === 'loading' || routeState.state === 'budget_exceeded') return 'partial';
-  if (routeState.state === 'error') return 'unavailable';
+  if (routeState.state === 'loading' || routeState.state === 'degraded' || routeState.state === 'budget_exceeded') return 'partial';
+  if (routeState.state === 'error' || routeState.state === 'failed') return 'unavailable';
   return '';
 }
 
@@ -566,7 +567,8 @@ function renderRouteStateNotice(name, label, retryJs) {
   if (rs.error) parts.push(rs.error);
   if (rs.stale_available) parts.push('showing stale data');
   if (rs.state === 'budget_exceeded') parts.push('budget exceeded');
-  var html = '<div class="sidebar-state q-' + escAttr(quality) + '"><div class="state-icon">!</div>'
+  var html = '<div class="sidebar-state q-' + escAttr(quality) + '" data-route-state-name="' + escAttr(name)
+    + '" data-route-state="' + escAttr(rs.state || '') + '"><div class="state-icon">!</div>'
     + '<div><strong>' + esc(title) + '</strong><br>' + esc(parts.join(' · ') || 'checking route')
     + '<br><code>' + esc(rs.fallback || (rs.route ? fallbackCommand(rs.route) : 'polylogue daemon status')) + '</code></div>';
   if (retryJs) html += '<button class="user-action" onclick="' + escAttr(retryJs) + '">Retry</button>';
@@ -648,21 +650,38 @@ async function loadSessions(opts) {
   params.set('offset', String(state.offset));
   if (state.origin) params.set('origin', state.origin);
   if (state.query) params.set('query', state.query);
+  var route = '/api/sessions?' + params;
   // Capture pre-load id set so we can animate newly-arrived rows after render.
   var beforeIds = {};
   (state.sessions || []).forEach(function(c) { beforeIds[c.id] = true; });
+  setRouteState('sessionList', {
+    state: 'loading', route: route, error: '', status: '', stale_available: !!(state.sessions && state.sessions.length)
+  });
+  renderSessions();
   try {
-    var data = await fetchJSON('/api/sessions?' + params, {timeoutMs: 8000});
+    var data = await fetchJSON(route, {timeoutMs: 8000});
     state.sessions = sessionsFromListPayload(data);
-    state.total = data.total || 0;
+    state.total = (data.total === null || data.total === undefined) ? null : Number(data.total || 0);
     state.actionAffordances = data.action_affordances || [];
     document.getElementById('footer-result').textContent =
       (state.total > 0) ? (state.total + ' results') : '';
+    var routePayload = data.route_state || {};
+    var inferredState = (state.total === 0)
+      ? ((state.query || state.origin) ? 'no_results' : 'empty')
+      : (state.total === null ? 'degraded' : 'ready');
+    setRouteState('sessionList', {
+      state: routePayload.state || inferredState,
+      route: routePayload.route || route,
+      status: '200',
+      error: routePayload.reason || '',
+      component: routePayload.component || '',
+      stale_available: !!routePayload.stale_available
+    });
     if (state.routeStates.status && state.routeStates.status.state !== 'ready') updateStatusCountsUnknown('degraded');
   } catch(e) {
     state.sessions = [];
-    state.total = 0;
-    renderSidebarState('error', 'Failed to load sessions');
+    state.total = null;
+    setRouteState('sessionList', Object.assign({state: 'failed', stale_available: false}, routeErrorDetails(e, route)));
   }
   renderSessions();
   // After render, animate rows that are newly present (either flagged by
@@ -1009,13 +1028,23 @@ function renderApiDebugChip() {
 function renderSidebarState(kind, msg) {
   var icons = {empty: '\u25a1', noresults: '\u25a2', error: '\u2715', loading: '\u2014'};
   document.getElementById('conv-list').innerHTML =
-    '<div class="sidebar-state"><div class="state-icon">' + (icons[kind] || '') + '</div>' + esc(msg) + '</div>';
+    '<div class="sidebar-state" data-sidebar-state="' + escAttr(kind) + '"><div class="state-icon">'
+    + (icons[kind] || '') + '</div>' + esc(msg) + '</div>';
 }
 
 function renderSessions() {
   var el = document.getElementById('conv-list');
   var items = state.sessions;
   if (!items || !items.length) {
+    var listRouteState = state.routeStates.sessionList || {};
+    if (listRouteState.state === 'loading') {
+      renderSidebarState('loading', 'Loading sessions from ' + (listRouteState.route || '/api/sessions'));
+      return;
+    }
+    if (listRouteState.state === 'degraded' || listRouteState.state === 'failed' || listRouteState.state === 'error') {
+      el.innerHTML = renderRouteStateNotice('sessionList', 'Sessions', 'loadSessions()');
+      return;
+    }
     // Distinguish empty archive from filtered-no-results so the operator
     // knows whether to ingest or to clear filters. Preserve filter context
     // in the empty-state message per MK3 state matrix.

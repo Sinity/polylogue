@@ -22,7 +22,7 @@ from polylogue.api import Polylogue
 from polylogue.browser_capture.server import BrowserCaptureHTTPServer, make_server
 from polylogue.core.degraded import DegradedReason, set_degraded
 from polylogue.core.json import dumps
-from polylogue.core.loopback import is_loopback_host
+from polylogue.core.loopback import bind_hosts_overlap, is_loopback_host
 from polylogue.daemon.browser_capture import browser_capture_command
 
 # FTS startup readiness extracted to ``polylogue.daemon.fts_startup`` (#1614).
@@ -55,18 +55,6 @@ _DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS = 3600
 
 # Track the pidfile path for atexit cleanup.
 _pidfile_path: Path | None = None
-
-
-def _bind_hosts_overlap(left: str, right: str) -> bool:
-    """Return True when two bind hosts can occupy the same socket address space."""
-    left_norm = left.strip().lower()
-    right_norm = right.strip().lower()
-    wildcard_hosts = {"", "0.0.0.0", "::"}
-    if left_norm == right_norm:
-        return True
-    if left_norm in wildcard_hosts or right_norm in wildcard_hosts:
-        return True
-    return is_loopback_host(left_norm) and is_loopback_host(right_norm)
 
 
 def _cleanup_pidfile() -> None:
@@ -723,7 +711,7 @@ async def run_daemon_services(
         enable_api
         and enable_browser_capture
         and api_port == browser_capture_port
-        and _bind_hosts_overlap(api_host, browser_capture_host)
+        and bind_hosts_overlap(api_host, browser_capture_host)
     ):
         raise click.UsageError(
             f"Daemon API {api_host}:{api_port} conflicts with browser-capture "

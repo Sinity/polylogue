@@ -150,6 +150,186 @@ def test_repair_session_insights_noops_when_ready(monkeypatch: pytest.MonkeyPatc
     assert result.detail == "Session insights already ready"
 
 
+def test_repair_session_insights_dry_run_reports_archive_wide_rebuild(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class FakeArchive:
+        def session_insight_status(self) -> SessionInsightStatusSnapshot:
+            return SessionInsightStatusSnapshot(
+                total_sessions=16_358,
+                profile_rows_ready=False,
+                latency_profile_rows_ready=True,
+                work_event_inference_rows_ready=True,
+                work_event_inference_fts_ready=True,
+                phase_inference_rows_ready=True,
+                threads_ready=True,
+                threads_fts_ready=True,
+                tag_rollups_ready=True,
+                missing_profile_row_count=103,
+            )
+
+        def __enter__(self) -> FakeArchive:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
+        lambda _archive_root, read_only=False: FakeArchive(),
+    )
+
+    result = repair_mod.repair_session_insights(_config(tmp_path), dry_run=True)
+
+    assert result.success is True
+    assert result.repaired_count == 16_358
+    assert result.detail == (
+        "Would: rebuild archive-wide session insights for 16,358 session(s) to repair 103 debt row(s)"
+    )
+
+
+def test_repair_session_insights_dry_run_reports_scoped_rebuild(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class FakeArchive:
+        def session_insight_status(self) -> SessionInsightStatusSnapshot:
+            return SessionInsightStatusSnapshot(
+                total_sessions=16_358,
+                profile_rows_ready=False,
+                latency_profile_rows_ready=True,
+                work_event_inference_rows_ready=True,
+                work_event_inference_fts_ready=True,
+                phase_inference_rows_ready=True,
+                threads_ready=True,
+                threads_fts_ready=True,
+                tag_rollups_ready=True,
+                missing_profile_row_count=103,
+            )
+
+        def __enter__(self) -> FakeArchive:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
+        lambda _archive_root, read_only=False: FakeArchive(),
+    )
+
+    result = repair_mod.repair_session_insights(
+        _config(tmp_path),
+        dry_run=True,
+        session_ids=("a", "b", "c"),
+    )
+
+    assert result.success is True
+    assert result.repaired_count == 3
+    assert result.detail == "Would: rebuild session insights for 3 scoped session(s)"
+
+
+def test_repair_session_insights_uses_candidate_session_ids(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE sessions (session_id TEXT PRIMARY KEY, sort_key_ms REAL);
+        CREATE TABLE session_profiles (
+            session_id TEXT PRIMARY KEY,
+            materializer_version INTEGER,
+            source_sort_key REAL,
+            work_event_count INTEGER,
+            phase_count INTEGER
+        );
+        CREATE TABLE session_latency_profiles (
+            session_id TEXT PRIMARY KEY,
+            materializer_version INTEGER,
+            source_sort_key REAL
+        );
+        CREATE TABLE session_work_events (session_id TEXT);
+        CREATE TABLE session_phases (session_id TEXT);
+        CREATE TABLE insight_materialization (insight_type TEXT, session_id TEXT);
+        """
+    )
+    conn.executemany(
+        "INSERT INTO sessions(session_id, sort_key_ms) VALUES (?, ?)",
+        (("ready", 1_000.0), ("missing", 2_000.0)),
+    )
+    conn.execute(
+        """
+        INSERT INTO session_profiles(
+            session_id, materializer_version, source_sort_key, work_event_count, phase_count
+        )
+        VALUES ('ready', ?, 1.0, 0, 0)
+        """,
+        (repair_mod._session_insight_materializer_version(),),
+    )
+    conn.execute(
+        """
+        INSERT INTO session_latency_profiles(session_id, materializer_version, source_sort_key)
+        VALUES ('ready', ?, 1.0)
+        """,
+        (repair_mod._session_insight_materializer_version(),),
+    )
+    conn.executemany(
+        "INSERT INTO insight_materialization(insight_type, session_id) VALUES (?, 'ready')",
+        (
+            ("session_profile",),
+            ("latency",),
+            ("work_events",),
+            ("phases",),
+            ("thread",),
+        ),
+    )
+
+    calls: list[tuple[str, ...] | None] = []
+
+    class FakeArchive:
+        _conn = conn
+
+        def session_insight_status(self) -> SessionInsightStatusSnapshot:
+            return next(statuses)
+
+        def __enter__(self) -> FakeArchive:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+    stale_status = SessionInsightStatusSnapshot(
+        total_sessions=2,
+        profile_rows_ready=False,
+        latency_profile_rows_ready=True,
+        work_event_inference_rows_ready=True,
+        work_event_inference_fts_ready=True,
+        phase_inference_rows_ready=True,
+        threads_ready=True,
+        threads_fts_ready=True,
+        tag_rollups_ready=True,
+        missing_profile_row_count=1,
+    )
+    statuses = iter((stale_status, _ready_session_insight_status()))
+
+    def fake_rebuild(_archive: FakeArchive, *, session_ids: tuple[str, ...] | None, **_kwargs: object) -> Any:
+        calls.append(session_ids)
+        return SessionInsightCounts(profiles=1)
+
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
+        lambda _archive_root, read_only=False: FakeArchive(),
+    )
+    monkeypatch.setattr(
+        "polylogue.api.archive._rebuild_archive_session_insights",
+        fake_rebuild,
+    )
+
+    result = repair_mod.repair_session_insights(_config(tmp_path), dry_run=False)
+
+    assert result.success is True
+    assert result.repaired_count == 1
+    assert calls == [("missing",)]
+
+
 def test_repair_session_insights_uses_stale_profile_candidates(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     calls: list[tuple[str, tuple[str, ...] | None]] = []
 

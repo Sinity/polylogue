@@ -155,7 +155,14 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "Branch-local launcher metadata for the web shell; allowlisted fields only, no raw environment dump.",
     ),
     RouteContract("GET", "/api/events", "operational", "stable", "bearer_if_configured", "SSE or JSON event poll"),
-    RouteContract("GET", "/api/sessions", "read_query", "stable", "bearer_if_configured", "SearchEnvelope"),
+    RouteContract(
+        "GET",
+        "/api/sessions",
+        "read_query",
+        "stable",
+        "bearer_if_configured",
+        "SearchEnvelope / SessionListResponse with route_state",
+    ),
     RouteContract(
         "GET",
         "/api/facets",

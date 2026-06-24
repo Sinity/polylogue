@@ -376,7 +376,7 @@ def seed_reader_assertion_claims(workspace: ReaderWorkspace) -> None:
 
 def _degrade_message_fts(workspace: ReaderWorkspace) -> None:
     """Drop the native message FTS virtual table and its sync triggers so a real
-    query degrades to a sanitized 503 "Search index" response, mirroring an
+    query degrades to an explicit "Search index" route-state response, mirroring an
     interrupted bulk import that never rebuilt the search index."""
     db = index_db_path(workspace)
     conn = sqlite3.connect(str(db))

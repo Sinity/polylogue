@@ -929,6 +929,35 @@ class SessionNeighborCandidatePayload(SurfacePayloadModel):
 # ---------------------------------------------------------------------------
 
 
+RouteReadinessState: TypeAlias = Literal[
+    "ready",
+    "loading",
+    "empty",
+    "no_results",
+    "stale",
+    "degraded",
+    "failed",
+    "budget_exceeded",
+]
+
+
+class RouteReadinessPayload(SurfacePayloadModel):
+    """Route-visible readiness state for a web reader panel.
+
+    ``total=0`` can mean an empty archive, a scoped no-result query, or a
+    degraded backend that cannot compute results. This payload lets browserless
+    tests and the web shell distinguish those states without guessing from
+    counters alone (#2304).
+    """
+
+    state: RouteReadinessState
+    route: str
+    reason: str | None = None
+    component: str | None = None
+    generated_at: str | None = None
+    stale_available: bool = False
+
+
 class QueryErrorPayload(SurfacePayloadModel):
     """Shared error payload for daemon HTTP, MCP, and other surfaces.
 
@@ -994,6 +1023,7 @@ class SessionListResponse(SurfacePayloadModel):
     offset: int
     query_description: list[str] = Field(default_factory=list)
     diagnostics: QueryMissDiagnosticsPayload | None = None
+    route_state: RouteReadinessPayload | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1075,6 +1105,7 @@ class SearchEnvelope(SurfacePayloadModel):
     ranking_policy_version: str = RANKING_POLICY_VERSION
     action_affordances: tuple[ActionAffordancePayload, ...] = ()
     diagnostics: QueryMissDiagnosticsPayload | None = None
+    route_state: RouteReadinessPayload | None = None
 
 
 QueryUnitKind: TypeAlias = Literal[
@@ -2549,6 +2580,8 @@ __all__ = [
     "RunQueryRowPayload",
     "QueryMissDiagnosticsPayload",
     "QueryMissReasonPayload",
+    "RouteReadinessPayload",
+    "RouteReadinessState",
     "ContextSnapshotQueryRowPayload",
     "ObservedEventQueryRowPayload",
     "OtelLogRecordPayload",

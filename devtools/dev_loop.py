@@ -33,6 +33,108 @@ _RECEIVER_SMOKE_TOKEN = "polylogue-dev-loop-token"
 _SENSITIVE_ENV_NAME_RE = re.compile(r"(TOKEN|SECRET|PASSWORD|PASS|KEY|CREDENTIAL|AUTH)", re.IGNORECASE)
 _LOG = logging.getLogger(__name__)
 
+_DEV_LOOP_AUTHORITIES: dict[str, dict[str, object]] = {
+    "preflight": {
+        "label": "source-only-preflight",
+        "description": "Inspect checkout, branch-local paths, deployed service state, and selected ports without starting browsers or using live profiles.",
+        "source_safe": True,
+        "cloud_safe": True,
+        "requires_browser": False,
+        "requires_copied_profile": False,
+        "local_only": False,
+    },
+    "launch_daemon": {
+        "label": "source-only-branch-daemon",
+        "description": "Start polylogued from this checkout with explicit branch-local archive, ports, run id, and log directory.",
+        "source_safe": True,
+        "cloud_safe": True,
+        "requires_browser": False,
+        "requires_copied_profile": False,
+        "local_only": False,
+    },
+    "capture_cli": {
+        "label": "source-only-cli-capture",
+        "description": "Run a CLI command with branch-local POLYLOGUE_* environment and persisted stdout/stderr/transcript artifacts.",
+        "source_safe": True,
+        "cloud_safe": True,
+        "requires_browser": False,
+        "requires_copied_profile": False,
+        "local_only": False,
+    },
+    "receiver_smoke": {
+        "label": "source-only-deterministic-receiver-smoke",
+        "description": "Run an in-process loopback receiver auth/spool smoke with synthetic capture payloads only.",
+        "source_safe": True,
+        "cloud_safe": True,
+        "requires_browser": False,
+        "requires_copied_profile": False,
+        "local_only": False,
+    },
+    "extension_smoke": {
+        "label": "source-only-deterministic-extension-smoke",
+        "description": "Exercise the extension background worker against a temporary receiver with a Chrome API mock and synthetic payloads.",
+        "source_safe": True,
+        "cloud_safe": True,
+        "requires_browser": False,
+        "requires_copied_profile": False,
+        "local_only": False,
+    },
+    "browser_smoke": {
+        "label": "local-browser-deterministic-extension-smoke",
+        "description": "Load the unpacked extension in headless Chrome/Chromium against a temporary receiver without live cookies.",
+        "source_safe": True,
+        "cloud_safe": False,
+        "requires_browser": True,
+        "requires_copied_profile": False,
+        "local_only": True,
+    },
+    "browser_provider_smoke": {
+        "label": "local-browser-deterministic-provider-smoke",
+        "description": "Load deterministic ChatGPT/Claude fixture pages in headless Chrome/Chromium and verify content-script capture without live cookies.",
+        "source_safe": True,
+        "cloud_safe": False,
+        "requires_browser": True,
+        "requires_copied_profile": False,
+        "local_only": True,
+    },
+    "browser_plan": {
+        "label": "local-browser-control-handoff-plan",
+        "description": "Write exact local browser launch/configuration artifacts without claiming to control or certify the operator browser.",
+        "source_safe": True,
+        "cloud_safe": False,
+        "requires_browser": True,
+        "requires_copied_profile": False,
+        "local_only": True,
+    },
+    "browser_live_proof": {
+        "label": "operator-local-copied-profile-live-proof",
+        "description": "Visible local Chrome/Chromium proof using an operator-approved copied profile; never CI/cloud evidence and never a source-only claim.",
+        "source_safe": False,
+        "cloud_safe": False,
+        "requires_browser": True,
+        "requires_copied_profile": True,
+        "local_only": True,
+    },
+    "tui_plan": {
+        "label": "source-owned-local-terminal-plan",
+        "description": "Write branch-local terminal/TUI recording commands and artifact paths; terminal control remains local.",
+        "source_safe": True,
+        "cloud_safe": True,
+        "requires_browser": False,
+        "requires_copied_profile": False,
+        "local_only": False,
+    },
+    "inspect_run": {
+        "label": "source-only-run-artifact-inspection",
+        "description": "Summarize persisted run-local artifacts and report missing or failed surfaces without rerunning browser/profile proofs.",
+        "source_safe": True,
+        "cloud_safe": True,
+        "requires_browser": False,
+        "requires_copied_profile": False,
+        "local_only": False,
+    },
+}
+
 
 @dataclass(frozen=True, slots=True)
 class CommandResult:
@@ -391,6 +493,7 @@ def run_receiver_smoke(*, spool_path: Path) -> dict[str, object]:
         and accepted_status == 202
         and artifact_path is not None
         and artifact_path.exists(),
+        "authority": _authority("receiver_smoke"),
         "host": str(host),
         "port": int(port),
         "spool_path": str(spool_path),
@@ -503,6 +606,7 @@ def run_extension_smoke(*, preflight: dict[str, Any]) -> dict[str, object]:
     ok = exit_code == 0 and artifact_path is not None and artifact_path.exists()
     payload: dict[str, object] = {
         "ok": ok,
+        "authority": _authority("extension_smoke"),
         "exit_code": exit_code,
         "duration_ms": duration_ms,
         "extension_root": str(extension_root),
@@ -637,6 +741,7 @@ def run_browser_smoke(*, preflight: dict[str, Any]) -> dict[str, object]:
     ok = exit_code == 0 and artifact_path is not None and artifact_path.exists()
     payload: dict[str, object] = {
         "ok": ok,
+        "authority": _authority("browser_smoke"),
         "exit_code": exit_code,
         "duration_ms": duration_ms,
         "extension_id": extension_id,
@@ -838,6 +943,7 @@ def run_browser_provider_smoke(*, preflight: dict[str, Any]) -> dict[str, object
     )
     payload: dict[str, object] = {
         "ok": ok,
+        "authority": _authority("browser_provider_smoke"),
         "exit_code": exit_code,
         "duration_ms": duration_ms,
         "extension_id": extension_id,
@@ -1008,6 +1114,7 @@ def run_browser_live_proof(
     )
     payload: dict[str, object] = {
         "ok": ok,
+        "authority": _authority("browser_live_proof"),
         "exit_code": exit_code,
         "duration_ms": duration_ms,
         "extension_id": extension_id,
@@ -1989,6 +2096,354 @@ def _dev_loop_run_id(*, branch: str | None, commit: str | None, api_port: int, b
     return f"{branch_part}-{commit_part}-api{api_port}-capture{browser_capture_port}"
 
 
+def _authority(name: str) -> dict[str, object]:
+    authority = _DEV_LOOP_AUTHORITIES[name]
+    return dict(authority)
+
+
+def _dev_loop_cli_args(
+    *,
+    api_port: int,
+    browser_capture_port: int,
+    archive: Path,
+    logs: Path,
+    extra_args: list[str],
+) -> list[str]:
+    return [
+        "devtools",
+        "workspace",
+        "dev-loop",
+        "--api-port",
+        str(api_port),
+        "--browser-capture-port",
+        str(browser_capture_port),
+        "--archive-root",
+        str(archive),
+        "--log-dir",
+        str(logs),
+        *extra_args,
+    ]
+
+
+def _artifact_state(
+    path: Path,
+    *,
+    kind: str,
+    expected_after: str,
+    required_now: bool = False,
+) -> dict[str, object]:
+    exists = path.exists()
+    state = "present" if exists else "degraded" if required_now else "planned"
+    return {
+        "path": str(path),
+        "kind": kind,
+        "exists": exists,
+        "state": state,
+        "expected_after": expected_after,
+    }
+
+
+def _dev_loop_artifact_status(
+    *,
+    archive: Path,
+    logs: Path,
+    run_log_dir: Path,
+    daemon_log: Path,
+    browser_artifact_dir: Path,
+    terminal_artifact_dir: Path,
+    tui_artifact_dir: Path,
+    preflight_json: Path,
+    dev_events: Path,
+    prepare: bool,
+) -> dict[str, dict[str, object]]:
+    return {
+        "archive_root": _artifact_state(
+            archive,
+            kind="directory",
+            expected_after="--prepare",
+            required_now=prepare,
+        ),
+        "log_dir": _artifact_state(logs, kind="directory", expected_after="--prepare", required_now=prepare),
+        "run_log_dir": _artifact_state(
+            run_log_dir,
+            kind="directory",
+            expected_after="--prepare or any event-producing dev-loop action",
+            required_now=prepare,
+        ),
+        "browser_dir": _artifact_state(
+            browser_artifact_dir,
+            kind="directory",
+            expected_after="--prepare, --browser-plan, or any browser smoke/proof",
+            required_now=prepare,
+        ),
+        "terminal_dir": _artifact_state(
+            terminal_artifact_dir,
+            kind="directory",
+            expected_after="--prepare or --capture-cli",
+            required_now=prepare,
+        ),
+        "tui_dir": _artifact_state(
+            tui_artifact_dir,
+            kind="directory",
+            expected_after="--prepare or --tui-plan",
+            required_now=prepare,
+        ),
+        "preflight_json": _artifact_state(
+            preflight_json,
+            kind="file",
+            expected_after="--prepare",
+            required_now=prepare,
+        ),
+        "dev_events": _artifact_state(
+            dev_events,
+            kind="jsonl",
+            expected_after="--launch-daemon, --capture-cli, --browser-plan, --tui-plan, or a smoke/proof action",
+        ),
+        "daemon_log": _artifact_state(daemon_log, kind="log", expected_after="--launch-daemon"),
+    }
+
+
+def _dev_loop_action(
+    *,
+    name: str,
+    purpose: str,
+    command: list[str],
+    artifact_dir: Path,
+    authority_name: str,
+    writes: list[Path] | None = None,
+) -> dict[str, object]:
+    authority = _authority(authority_name)
+    return {
+        "name": name,
+        "purpose": purpose,
+        "command": command,
+        "command_text": shlex.join(command),
+        "artifact_dir": str(artifact_dir),
+        "writes": [str(path) for path in writes or []],
+        "authority": authority,
+    }
+
+
+def _build_operator_plan(
+    *,
+    root: Path,
+    archive: Path,
+    logs: Path,
+    run_id: str,
+    run_log_dir: Path,
+    daemon_log: Path,
+    browser_artifact_dir: Path,
+    terminal_artifact_dir: Path,
+    tui_artifact_dir: Path,
+    preflight_json: Path,
+    dev_events: Path,
+    api_port: int,
+    browser_capture_port: int,
+    prepared: bool,
+) -> dict[str, object]:
+    browser_plan_json = browser_artifact_dir / "browser-plan.json"
+    tui_plan_json = tui_artifact_dir / "tui-plan.json"
+    live_profile_dir = root / ".local" / "browser-profiles" / f"{run_id}-chrome-user-data"
+    prepare_command = _dev_loop_cli_args(
+        api_port=api_port,
+        browser_capture_port=browser_capture_port,
+        archive=archive,
+        logs=logs,
+        extra_args=["--prepare"],
+    )
+    launch_command = _dev_loop_cli_args(
+        api_port=api_port,
+        browser_capture_port=browser_capture_port,
+        archive=archive,
+        logs=logs,
+        extra_args=["--launch-daemon", "--json"],
+    )
+    receiver_smoke_command = _dev_loop_cli_args(
+        api_port=api_port,
+        browser_capture_port=browser_capture_port,
+        archive=archive,
+        logs=logs,
+        extra_args=["--receiver-smoke", "--json"],
+    )
+    extension_smoke_command = _dev_loop_cli_args(
+        api_port=api_port,
+        browser_capture_port=browser_capture_port,
+        archive=archive,
+        logs=logs,
+        extra_args=["--extension-smoke", "--json"],
+    )
+    browser_smoke_command = _dev_loop_cli_args(
+        api_port=api_port,
+        browser_capture_port=browser_capture_port,
+        archive=archive,
+        logs=logs,
+        extra_args=["--browser-smoke", "--json"],
+    )
+    browser_provider_smoke_command = _dev_loop_cli_args(
+        api_port=api_port,
+        browser_capture_port=browser_capture_port,
+        archive=archive,
+        logs=logs,
+        extra_args=["--browser-provider-smoke", "--json"],
+    )
+    browser_plan_command = _dev_loop_cli_args(
+        api_port=api_port,
+        browser_capture_port=browser_capture_port,
+        archive=archive,
+        logs=logs,
+        extra_args=["--browser-plan", "--json"],
+    )
+    live_proof_command = _dev_loop_cli_args(
+        api_port=api_port,
+        browser_capture_port=browser_capture_port,
+        archive=archive,
+        logs=logs,
+        extra_args=[
+            "--browser-live-proof",
+            "--browser-live-profile-dir",
+            str(live_profile_dir),
+            "--browser-live-chatgpt-url",
+            "https://chatgpt.com/c/<conversation-id>",
+            "--browser-live-claude-url",
+            "https://claude.ai/chat/<conversation-id>",
+            "--json",
+        ],
+    )
+    tui_plan_command = _dev_loop_cli_args(
+        api_port=api_port,
+        browser_capture_port=browser_capture_port,
+        archive=archive,
+        logs=logs,
+        extra_args=["--tui-plan", "--json"],
+    )
+    inspect_command = ["devtools", "workspace", "dev-loop", "--inspect-run", str(run_log_dir), "--json"]
+    capture_cli_command = _dev_loop_cli_args(
+        api_port=api_port,
+        browser_capture_port=browser_capture_port,
+        archive=archive,
+        logs=logs,
+        extra_args=["--capture-cli", "--", "polylogue", "ops", "status"],
+    )
+
+    actions = [
+        _dev_loop_action(
+            name="prepare",
+            purpose="create the branch-local archive/run artifact directories and write preflight.json",
+            command=prepare_command,
+            artifact_dir=run_log_dir,
+            authority_name="preflight",
+            writes=[preflight_json, browser_artifact_dir, terminal_artifact_dir, tui_artifact_dir],
+        ),
+        _dev_loop_action(
+            name="launch_daemon",
+            purpose="start the branch-local daemon from source with selected ports/archive/logs",
+            command=launch_command,
+            artifact_dir=run_log_dir,
+            authority_name="launch_daemon",
+            writes=[daemon_log, run_log_dir / "polylogued.launch.json", run_log_dir / "polylogued.pid", dev_events],
+        ),
+        _dev_loop_action(
+            name="receiver_smoke",
+            purpose="prove receiver auth rejection and synthetic capture spool acceptance without browser/profile state",
+            command=receiver_smoke_command,
+            artifact_dir=run_log_dir / "receiver-smoke-spool",
+            authority_name="receiver_smoke",
+        ),
+        _dev_loop_action(
+            name="extension_smoke",
+            purpose="exercise the extension background-worker receiver path with deterministic synthetic data",
+            command=extension_smoke_command,
+            artifact_dir=browser_artifact_dir,
+            authority_name="extension_smoke",
+            writes=[browser_artifact_dir / "extension-smoke.json", dev_events],
+        ),
+        _dev_loop_action(
+            name="browser_smoke",
+            purpose="load the unpacked extension in local headless Chrome/Chromium against a temporary receiver",
+            command=browser_smoke_command,
+            artifact_dir=browser_artifact_dir,
+            authority_name="browser_smoke",
+            writes=[browser_artifact_dir / "browser-smoke.json", dev_events],
+        ),
+        _dev_loop_action(
+            name="browser_provider_smoke",
+            purpose="verify deterministic provider fixture content-script capture in local headless Chrome/Chromium",
+            command=browser_provider_smoke_command,
+            artifact_dir=browser_artifact_dir,
+            authority_name="browser_provider_smoke",
+            writes=[browser_artifact_dir / "browser-provider-smoke.json", dev_events],
+        ),
+        _dev_loop_action(
+            name="browser_plan",
+            purpose="write local browser-control handoff commands, profile dirs, and copied-profile checklist",
+            command=browser_plan_command,
+            artifact_dir=browser_artifact_dir,
+            authority_name="browser_plan",
+            writes=[browser_plan_json, browser_artifact_dir / "browser-plan.md", dev_events],
+        ),
+        _dev_loop_action(
+            name="browser_live_proof",
+            purpose="operator-local visible copied-profile proof against live provider pages; never source-only/cloud evidence",
+            command=live_proof_command,
+            artifact_dir=browser_artifact_dir,
+            authority_name="browser_live_proof",
+            writes=[browser_artifact_dir / "browser-live-proof.json", dev_events],
+        ),
+        _dev_loop_action(
+            name="capture_cli_status",
+            purpose="record a branch-local CLI transcript with stdout/stderr/env/summary artifacts",
+            command=capture_cli_command,
+            artifact_dir=terminal_artifact_dir,
+            authority_name="capture_cli",
+            writes=[terminal_artifact_dir],
+        ),
+        _dev_loop_action(
+            name="tui_plan",
+            purpose="write local terminal/TUI recording commands and artifact paths",
+            command=tui_plan_command,
+            artifact_dir=tui_artifact_dir,
+            authority_name="tui_plan",
+            writes=[tui_plan_json, tui_artifact_dir / "tui-plan.md", dev_events],
+        ),
+        _dev_loop_action(
+            name="inspect_run",
+            purpose="summarize the run-local artifacts after any daemon/CLI/browser action",
+            command=inspect_command,
+            artifact_dir=run_log_dir,
+            authority_name="inspect_run",
+        ),
+    ]
+    checks = {
+        str(action["name"]): action
+        for action in actions
+        if action["name"]
+        in {
+            "receiver_smoke",
+            "extension_smoke",
+            "browser_smoke",
+            "browser_provider_smoke",
+            "browser_live_proof",
+        }
+    }
+    next_action = actions[1] if prepared else actions[0]
+    return {
+        "run_id": run_id,
+        "artifact_dir": str(run_log_dir),
+        "next_command_name": next_action["name"],
+        "next_command": next_action["command_text"],
+        "next_artifact_dir": next_action["artifact_dir"],
+        "ports": {"api": api_port, "browser_capture": browser_capture_port},
+        "urls": {
+            "api_url": f"http://127.0.0.1:{api_port}",
+            "web_url": f"http://127.0.0.1:{api_port}/",
+            "receiver_url": f"http://127.0.0.1:{browser_capture_port}",
+        },
+        "actions": actions,
+        "checks": checks,
+        "authority_levels": {name: _authority(name) for name in sorted(_DEV_LOOP_AUTHORITIES)},
+    }
+
+
 def build_dev_loop_status(
     *,
     repo_root: Path | None = None,
@@ -2035,6 +2490,79 @@ def build_dev_loop_status(
         if int(status.get("owner_count") or 0) > 0:
             warnings.append(f"{name} port {status['port']} already has a listener")
 
+    api_url = f"http://127.0.0.1:{api_port}"
+    web_url = f"{api_url}/"
+    receiver_url = f"http://127.0.0.1:{browser_capture_port}"
+    artifact_status = _dev_loop_artifact_status(
+        archive=archive,
+        logs=logs,
+        run_log_dir=run_log_dir,
+        daemon_log=daemon_log,
+        browser_artifact_dir=browser_artifact_dir,
+        terminal_artifact_dir=terminal_artifact_dir,
+        tui_artifact_dir=tui_artifact_dir,
+        preflight_json=preflight_json,
+        dev_events=dev_events,
+        prepare=prepare,
+    )
+    if prepare:
+        artifact_status["preflight_json"]["exists"] = True
+        artifact_status["preflight_json"]["state"] = "present"
+    operator_plan = _build_operator_plan(
+        root=root,
+        archive=archive,
+        logs=logs,
+        run_id=run_id,
+        run_log_dir=run_log_dir,
+        daemon_log=daemon_log,
+        browser_artifact_dir=browser_artifact_dir,
+        terminal_artifact_dir=terminal_artifact_dir,
+        tui_artifact_dir=tui_artifact_dir,
+        preflight_json=preflight_json,
+        dev_events=dev_events,
+        api_port=api_port,
+        browser_capture_port=browser_capture_port,
+        prepared=prepare,
+    )
+    plan_actions = {str(action["name"]): action for action in cast(list[dict[str, object]], operator_plan["actions"])}
+    plan_checks = cast(dict[str, dict[str, object]], operator_plan["checks"])
+    commands = {
+        "stop_system_service": "systemctl --user stop polylogued.service",
+        "prepare": str(plan_actions["prepare"]["command_text"]),
+        "prepare_isolated": "devtools workspace dev-loop --isolated-ports --prepare",
+        "save_preflight": (
+            f"mkdir -p {run_log_dir} && devtools workspace dev-loop --api-port {api_port} "
+            f"--browser-capture-port {browser_capture_port} --json > {preflight_json}"
+        ),
+        "launch_daemon": str(plan_actions["launch_daemon"]["command_text"]),
+        "receiver_smoke": str(plan_checks["receiver_smoke"]["command_text"]),
+        "extension_smoke": str(plan_checks["extension_smoke"]["command_text"]),
+        "browser_smoke": str(plan_checks["browser_smoke"]["command_text"]),
+        "browser_provider_smoke": str(plan_checks["browser_provider_smoke"]["command_text"]),
+        "browser_plan": str(plan_actions["browser_plan"]["command_text"]),
+        "browser_live_proof": str(plan_checks["browser_live_proof"]["command_text"]),
+        "tui_plan": str(plan_actions["tui_plan"]["command_text"]),
+        "inspect_run": str(plan_actions["inspect_run"]["command_text"]),
+        "run_daemon": (
+            f"env POLYLOGUE_ARCHIVE_ROOT={archive} "
+            f"POLYLOGUE_API_PORT={api_port} "
+            f"POLYLOGUE_BROWSER_CAPTURE_PORT={browser_capture_port} "
+            f"POLYLOGUE_DEV_LOOP_RUN_ID={run_id} "
+            f"POLYLOGUE_DEV_LOOP_LOG_DIR={run_log_dir} "
+            f"PYTHONPATH={root}${{PYTHONPATH:+:${{PYTHONPATH}}}} "
+            f"{shlex.quote(sys.executable)} -c 'from polylogue.daemon.cli import main; main()' "
+            f"run --api-port {api_port} --port {browser_capture_port} 2>&1 | tee {daemon_log}"
+        ),
+        "open_web_shell": web_url,
+        "receiver_status": f"curl -sf {receiver_url}/v1/status",
+        "capture_cli_status": (
+            "script -q -c "
+            f"'env POLYLOGUE_ARCHIVE_ROOT={archive} polylogue ops status' "
+            f"{terminal_artifact_dir / 'polylogue-ops-status.typescript'}"
+        ),
+        "terminal_tui_plan": str(plan_actions["tui_plan"]["command_text"]),
+    }
+
     payload = {
         "repo_root": str(root),
         "branch": branch,
@@ -2046,6 +2574,10 @@ def build_dev_loop_status(
         "dev_archive_root": str(archive),
         "log_dir": str(logs),
         "run_log_dir": str(run_log_dir),
+        "artifact_dir": str(run_log_dir),
+        "api_url": api_url,
+        "web_url": web_url,
+        "receiver_url": receiver_url,
         "artifacts": {
             "daemon_log": str(daemon_log),
             "browser_dir": str(browser_artifact_dir),
@@ -2066,54 +2598,9 @@ def build_dev_loop_status(
             "POLYLOGUE_DEV_LOOP_RUN_ID": run_id,
             "POLYLOGUE_DEV_LOOP_LOG_DIR": str(run_log_dir),
         },
-        "commands": {
-            "stop_system_service": "systemctl --user stop polylogued.service",
-            "prepare": (
-                f"devtools workspace dev-loop --api-port {api_port} "
-                f"--browser-capture-port {browser_capture_port} --prepare"
-            ),
-            "prepare_isolated": "devtools workspace dev-loop --isolated-ports --prepare",
-            "save_preflight": (
-                f"mkdir -p {run_log_dir} && devtools workspace dev-loop --api-port {api_port} "
-                f"--browser-capture-port {browser_capture_port} --json > {preflight_json}"
-            ),
-            "receiver_smoke": (
-                f"devtools workspace dev-loop --api-port {api_port} "
-                f"--browser-capture-port {browser_capture_port} --receiver-smoke --json"
-            ),
-            "browser_plan": (
-                f"devtools workspace dev-loop --api-port {api_port} "
-                f"--browser-capture-port {browser_capture_port} --browser-plan"
-            ),
-            "browser_live_proof": (
-                f"devtools workspace dev-loop --api-port {api_port} "
-                f"--browser-capture-port {browser_capture_port} --browser-live-proof "
-                f"--browser-live-profile-dir {archive.parent / 'browser-profiles' / (run_id + '-chrome-user-data')} "
-                "--browser-live-chatgpt-url https://chatgpt.com/c/<conversation-id> "
-                "--browser-live-claude-url https://claude.ai/chat/<conversation-id>"
-            ),
-            "run_daemon": (
-                f"env POLYLOGUE_ARCHIVE_ROOT={archive} "
-                f"POLYLOGUE_API_PORT={api_port} "
-                f"POLYLOGUE_BROWSER_CAPTURE_PORT={browser_capture_port} "
-                f"POLYLOGUE_DEV_LOOP_RUN_ID={run_id} "
-                f"POLYLOGUE_DEV_LOOP_LOG_DIR={run_log_dir} "
-                f"PYTHONPATH={root}${{PYTHONPATH:+:${{PYTHONPATH}}}} "
-                f"{shlex.quote(sys.executable)} -c 'from polylogue.daemon.cli import main; main()' "
-                f"run --api-port {api_port} --port {browser_capture_port} 2>&1 | tee {daemon_log}"
-            ),
-            "open_web_shell": f"http://127.0.0.1:{api_port}/",
-            "receiver_status": f"curl -sf http://127.0.0.1:{browser_capture_port}/v1/status",
-            "capture_cli_status": (
-                "script -q -c "
-                f"'env POLYLOGUE_ARCHIVE_ROOT={archive} polylogue ops status' "
-                f"{terminal_artifact_dir / 'polylogue-ops-status.typescript'}"
-            ),
-            "capture_tui_placeholder": (
-                "Record branch-local TUI/terminal runs into "
-                f"{tui_artifact_dir}; use the local terminal-control surface or VHS when visual playback is needed"
-            ),
-        },
+        "commands": commands,
+        "artifact_status": artifact_status,
+        "plan": operator_plan,
         "warnings": warnings,
     }
     if prepare:
@@ -2130,6 +2617,13 @@ def _print_human(payload: dict[str, Any]) -> None:
     print(f"  archive: {payload['dev_archive_root']}")
     print(f"  logs:    {payload['log_dir']}")
     print(f"  run log: {payload['run_log_dir']}")
+    print(f"  artifacts: {payload.get('artifact_dir', payload['run_log_dir'])}")
+    if payload.get("api_url"):
+        print(f"  api:     {payload['api_url']}")
+    if payload.get("web_url"):
+        print(f"  web:     {payload['web_url']}")
+    if payload.get("receiver_url"):
+        print(f"  receiver:{payload['receiver_url']}")
     service = payload["system_service"]
     assert isinstance(service, dict)
     print(
@@ -2147,6 +2641,29 @@ def _print_human(payload: dict[str, Any]) -> None:
         print("  warnings:")
         for warning in warnings:
             print(f"    - {warning}")
+    plan = payload.get("plan")
+    if isinstance(plan, dict):
+        print("\nPlan:")
+        print(f"  next:      {plan.get('next_command_name')}")
+        print(f"  command:   {plan.get('next_command')}")
+        print(f"  artifacts: {plan.get('next_artifact_dir')}")
+        checks = plan.get("checks")
+        if isinstance(checks, dict):
+            print("  checks:")
+            for name in (
+                "receiver_smoke",
+                "extension_smoke",
+                "browser_smoke",
+                "browser_provider_smoke",
+                "browser_live_proof",
+            ):
+                check = checks.get(name)
+                if not isinstance(check, dict):
+                    continue
+                authority = check.get("authority")
+                label = authority.get("label") if isinstance(authority, dict) else "unknown"
+                cloud_safe = authority.get("cloud_safe") if isinstance(authority, dict) else "unknown"
+                print(f"    - {name}: {label} cloud_safe={cloud_safe} artifacts={check.get('artifact_dir')}")
     commands = payload["commands"]
     assert isinstance(commands, dict)
     print("\nCommands:")

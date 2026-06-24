@@ -44,14 +44,17 @@ from polylogue.daemon.web_shell_paste import (
     render_paste_browser_page,
     snippet_for_paste,
 )
-from polylogue.errors import PolylogueError
+from polylogue.errors import DatabaseError, PolylogueError
 from polylogue.logging import get_logger
 from polylogue.surfaces.payloads import (
     AssertionClaimListPayload,
     MutationResultPayload,
     QueryErrorPayload,
     QueryMissDiagnosticsPayload,
+    QueryMissReasonPayload,
     ReaderActionAvailabilityPayload,
+    RouteReadinessPayload,
+    RouteReadinessState,
     SessionReadViewEnvelope,
     TargetRefPayload,
     _build_flags_from_session,
@@ -439,6 +442,47 @@ def _archive_origin_filter(params: dict[str, list[str]]) -> tuple[str | None, tu
 
 def _utc_timestamp_json() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _public_route_from_request_path(raw_path: str) -> str:
+    parsed = urlparse(raw_path)
+    route = parsed.path or "/"
+    if parsed.query:
+        route = f"{route}?{parsed.query}"
+    return route
+
+
+def _route_readiness_payload(
+    state: RouteReadinessState,
+    route: str,
+    *,
+    reason: str | None = None,
+    component: str | None = None,
+    stale_available: bool = False,
+) -> dict[str, object]:
+    return RouteReadinessPayload(
+        state=state,
+        route=route,
+        reason=reason,
+        component=component,
+        generated_at=_utc_timestamp_json(),
+        stale_available=stale_available,
+    ).model_dump(mode="json")
+
+
+def _session_list_state(total: int, *, filtered: bool) -> tuple[RouteReadinessState, str | None]:
+    if total > 0:
+        return "ready", None
+    if filtered:
+        return "no_results", "No sessions matched the active query or filters."
+    return "empty", "Archive contains no sessions."
+
+
+def _search_index_degraded_reason(exc: BaseException) -> str | None:
+    text = str(exc).lower()
+    if "search index" in text or "messages_fts" in text or "fts" in text:
+        return "Search index unavailable: message FTS table is missing or degraded."
+    return None
 
 
 def _truthy_query_param(params: dict[str, list[str]], key: str) -> bool:
@@ -1718,6 +1762,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.archive.query.spec import clamp_query_limit
 
         query_params = _build_query_spec_params(params, self)
+        route = _public_route_from_request_path(self.path)
         # Clamp to the shared MAX_QUERY_LIMIT ceiling so the daemon honors the
         # same page-size cap as MCP instead of an arbitrary ?limit=99999999
         # (#1749). The default stays 50; clamp_query_limit only caps the top.
@@ -1730,7 +1775,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         archive_root = _web_reader_archive_root()
         if archive_root is not None:
-            self._send_json(HTTPStatus.OK, self._do_archive_list_sessions(archive_root, params, limit, offset))
+            self._send_json(HTTPStatus.OK, self._do_archive_list_sessions(archive_root, params, limit, offset, route))
             return
 
         async def _list(poly: Polylogue) -> object:
@@ -1860,6 +1905,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         params: dict[str, list[str]],
         limit: int,
         offset: int,
+        route: str = "/api/sessions",
     ) -> object:
         from polylogue.archive.query.expression import compile_expression
         from polylogue.archive.query.search_hits import search_query_text
@@ -1983,6 +2029,35 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "since_ms": since_ms,
             "until_ms": until_ms,
         }
+        filtered = bool(
+            fts_query
+            or spec_session_id
+            or origin
+            or origins
+            or excluded_origins
+            or tags
+            or excluded_tags
+            or repo_names
+            or has_types
+            or tool_terms
+            or excluded_tool_terms
+            or action_terms
+            or excluded_action_terms
+            or action_sequence
+            or action_text_terms
+            or referenced_paths
+            or cwd_prefix
+            or title
+            or min_messages is not None
+            or max_messages is not None
+            or min_words is not None
+            or max_words is not None
+            or since_dt is not None
+            or until_dt is not None
+            or has_paste
+            or has_tool_use
+            or has_thinking
+        )
 
         with ArchiveStore.open_existing(archive_root) as archive:
             # Resolve an ``id:`` clause once, up front, so both branches share one
@@ -1999,6 +2074,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     if fts_query:
                         from polylogue.operations.action_contracts import query_result_action_affordance_payloads
 
+                        reason = "No session matched the id filter."
                         return {
                             "query": fts_query,
                             "retrieval_lane": "dialogue",
@@ -2008,27 +2084,76 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                             "total": 0,
                             "limit": limit,
                             "offset": offset,
+                            "route_state": _route_readiness_payload("no_results", route, reason=reason),
                             "action_affordances": [
                                 action.model_dump(mode="json") for action in query_result_action_affordance_payloads()
                             ],
                         }
-                    return {"items": [], "total": 0, "limit": limit, "offset": offset}
+                    reason = "No session matched the id filter."
+                    return {
+                        "items": [],
+                        "total": 0,
+                        "limit": limit,
+                        "offset": offset,
+                        "route_state": _route_readiness_payload("no_results", route, reason=reason),
+                    }
                 except ValueError as exc:
                     raise QuerySpecError("id", spec_session_id) from exc
             if fts_query:
                 from polylogue.operations.action_contracts import query_result_action_affordance_payloads
 
-                hits = self._run_archive_bounded_query(
-                    archive,
-                    deadline_s=None,
-                    compute=lambda: archive.search_summaries(
-                        fts_query,
-                        limit=limit,
-                        offset=offset,
-                        session_id=resolved_session_id,
-                        **_filter_kw,  # type: ignore[arg-type]
-                    ),
-                )
+                try:
+                    hits = self._run_archive_bounded_query(
+                        archive,
+                        deadline_s=None,
+                        compute=lambda: archive.search_summaries(
+                            fts_query,
+                            limit=limit,
+                            offset=offset,
+                            session_id=resolved_session_id,
+                            **_filter_kw,  # type: ignore[arg-type]
+                        ),
+                    )
+                except (DatabaseError, sqlite3.Error) as exc:
+                    degraded_reason = _search_index_degraded_reason(exc)
+                    if degraded_reason is None:
+                        raise
+                    diagnostics = QueryMissDiagnosticsPayload(
+                        message=degraded_reason,
+                        filters=(f"query={fts_query!r}",),
+                        reasons=(
+                            QueryMissReasonPayload(
+                                code="search_index_degraded",
+                                severity="warning",
+                                summary=degraded_reason,
+                                detail="The sessions route returned an explicit degraded state instead of a zero-hit "
+                                "result because the archive search index could not be read.",
+                            ),
+                        ),
+                        archive_session_count=None,
+                    ).model_dump(mode="json", by_alias=True)
+                    return {
+                        "query": fts_query,
+                        "retrieval_lane": "dialogue",
+                        "ranking_policy": "mixed-bm25-rrf-vector",
+                        "ranking_policy_version": "1",
+                        "hits": [],
+                        "total": None,
+                        "limit": limit,
+                        "offset": offset,
+                        "diagnostics": diagnostics,
+                        "route_state": _route_readiness_payload(
+                            "degraded",
+                            route,
+                            reason=degraded_reason,
+                            component="message_fts",
+                            stale_available=False,
+                        ),
+                        "action_affordances": [
+                            action.model_dump(mode="json") for action in query_result_action_affordance_payloads()
+                        ],
+                    }
+                route_state_name, route_state_reason = _session_list_state(len(hits), filtered=True)
                 payload: dict[str, object] = {
                     "query": fts_query,
                     "retrieval_lane": "dialogue",
@@ -2038,6 +2163,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "total": len(hits),
                     "limit": limit,
                     "offset": offset,
+                    "route_state": _route_readiness_payload(route_state_name, route, reason=route_state_reason),
                     "action_affordances": [
                         action.model_dump(mode="json") for action in query_result_action_affordance_payloads()
                     ],
@@ -2046,8 +2172,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     # Zero-result query: attach a diagnostics envelope (matching
                     # the archive reader contract) so the surface can explain the
                     # miss instead of rendering a bare empty list.
-                    from polylogue.surfaces.payloads import QueryMissDiagnosticsPayload
-
                     archive_count = self._run_archive_bounded_query(
                         archive,
                         deadline_s=None,
@@ -2092,11 +2216,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     compute=lambda: archive.count_sessions(**_filter_kw),  # type: ignore[arg-type]
                 )
             )
+            route_state_name, route_state_reason = _session_list_state(total, filtered=filtered)
             return {
                 "items": [self._archive_summary_payload(summary) for summary in summaries],
                 "total": total,
                 "limit": limit,
                 "offset": offset,
+                "route_state": _route_readiness_payload(route_state_name, route, reason=route_state_reason),
             }
 
     def _archive_summary_payload(self, summary: ArchiveSessionSummary) -> dict[str, object]:

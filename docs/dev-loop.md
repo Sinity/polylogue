@@ -26,6 +26,40 @@ It reports:
   path to use;
 - a concrete `polylogued run` command with branch-local environment variables.
 
+`--json` is intended to be enough for a source-only agent to choose the next
+step without reading `devtools/dev_loop.py`. In addition to the legacy `commands`
+map it includes stable top-level aliases:
+
+```text
+run_id
+artifact_dir
+api_url
+web_url
+receiver_url
+plan.next_command
+plan.next_artifact_dir
+```
+
+`plan.actions[]` records exact argv lists and shell-rendered command text for
+preparation, daemon launch, receiver/extension/browser smokes, browser/TUI
+plans, copied-profile live proof, CLI capture, and run inspection. The
+`plan.checks` entries carry an authority label and booleans for `source_safe`,
+`cloud_safe`, `requires_browser`, and `requires_copied_profile`, so a cloud
+source checkout can distinguish deterministic smokes from local browser or
+operator-profile evidence. `artifact_status` reports each core path as
+`present`, `planned`, or `degraded` instead of making agents infer whether a
+missing file is expected before a daemon/browser action has run.
+
+Authority summary:
+
+| Surface | Authority label | Cloud-safe | Profile/cookie state |
+| --- | --- | --- | --- |
+| `--receiver-smoke` | `source-only-deterministic-receiver-smoke` | yes | none |
+| `--extension-smoke` | `source-only-deterministic-extension-smoke` | yes | none |
+| `--browser-smoke` | `local-browser-deterministic-extension-smoke` | no | none |
+| `--browser-provider-smoke` | `local-browser-deterministic-provider-smoke` | no | none |
+| `--browser-live-proof` | `operator-local-copied-profile-live-proof` | no | operator-approved copied profile only |
+
 The default branch-local paths are:
 
 ```text

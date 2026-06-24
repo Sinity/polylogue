@@ -461,6 +461,77 @@
       "title": "ReaderActionAvailabilityPayload",
       "type": "object"
     },
+    "RouteReadinessPayload": {
+      "additionalProperties": false,
+      "description": "Route-visible readiness state for a web reader panel.\n\n``total=0`` can mean an empty archive, a scoped no-result query, or a\ndegraded backend that cannot compute results. This payload lets browserless\ntests and the web shell distinguish those states without guessing from\ncounters alone (#2304).",
+      "properties": {
+        "component": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Component"
+        },
+        "generated_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Generated At"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "route": {
+          "title": "Route",
+          "type": "string"
+        },
+        "stale_available": {
+          "default": false,
+          "title": "Stale Available",
+          "type": "boolean"
+        },
+        "state": {
+          "enum": [
+            "ready",
+            "loading",
+            "empty",
+            "no_results",
+            "stale",
+            "degraded",
+            "failed",
+            "budget_exceeded"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state",
+        "route"
+      ],
+      "title": "RouteReadinessPayload",
+      "type": "object"
+    },
     "SessionSearchHitPayload": {
       "additionalProperties": false,
       "description": "Search-hit payload with summary identity and match evidence.",
@@ -875,6 +946,17 @@
     "retrieval_lane": {
       "title": "Retrieval Lane",
       "type": "string"
+    },
+    "route_state": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RouteReadinessPayload"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "sort": {
       "anyOf": [

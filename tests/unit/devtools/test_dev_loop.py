@@ -4,6 +4,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -104,6 +105,10 @@ def test_build_dev_loop_status_uses_branch_local_paths_and_warnings(
     assert Path(str(payload["dev_archive_root"])).is_dir()
     assert Path(str(payload["log_dir"])).is_dir()
     assert payload["run_log_dir"] == str(repo / ".cache" / "dev-loop" / "feature-dev-loop-abc1234-api9999-capture9998")
+    assert payload["artifact_dir"] == payload["run_log_dir"]
+    assert payload["api_url"] == "http://127.0.0.1:9999"
+    assert payload["web_url"] == "http://127.0.0.1:9999/"
+    assert payload["receiver_url"] == "http://127.0.0.1:9998"
     assert Path(str(payload["run_log_dir"])).is_dir()
     assert Path(str(payload["artifacts"]["browser_dir"])).is_dir()
     assert Path(str(payload["artifacts"]["terminal_dir"])).is_dir()
@@ -120,11 +125,37 @@ def test_build_dev_loop_status_uses_branch_local_paths_and_warnings(
     assert "run --api-port 9999 --port 9998" in payload["commands"]["run_daemon"]
     assert "polylogue ops status" in payload["commands"]["capture_cli_status"]
     assert payload["commands"]["capture_cli_status"].endswith("terminal/polylogue-ops-status.typescript")
-    assert payload["commands"]["capture_tui_placeholder"].endswith(
-        "tui; use the local terminal-control surface or VHS when visual playback is needed"
-    )
+    assert payload["commands"]["terminal_tui_plan"].endswith("--tui-plan --json")
+    assert payload["commands"]["launch_daemon"].startswith("devtools workspace dev-loop")
+    assert "--archive-root" in payload["commands"]["launch_daemon"]
+    assert "--log-dir" in payload["commands"]["launch_daemon"]
     assert payload["suggested_env"]["POLYLOGUE_ARCHIVE_ROOT"] == str(repo / ".local" / "dev-archive")
     assert payload["suggested_env"]["POLYLOGUE_DEV_LOOP_RUN_ID"] == payload["run_id"]
+    artifact_status = payload["artifact_status"]
+    assert artifact_status["run_log_dir"]["state"] == "present"
+    assert artifact_status["preflight_json"]["state"] == "present"
+    assert artifact_status["daemon_log"]["state"] == "planned"
+    plan = payload["plan"]
+    assert plan["run_id"] == payload["run_id"]
+    assert plan["artifact_dir"] == payload["run_log_dir"]
+    assert plan["next_command_name"] == "launch_daemon"
+    assert plan["next_artifact_dir"] == payload["run_log_dir"]
+    assert "--launch-daemon" in plan["next_command"]
+    assert plan["urls"] == {
+        "api_url": "http://127.0.0.1:9999",
+        "web_url": "http://127.0.0.1:9999/",
+        "receiver_url": "http://127.0.0.1:9998",
+    }
+    receiver_smoke = plan["checks"]["receiver_smoke"]
+    assert receiver_smoke["artifact_dir"].endswith("receiver-smoke-spool")
+    assert receiver_smoke["authority"]["label"] == "source-only-deterministic-receiver-smoke"
+    assert receiver_smoke["authority"]["cloud_safe"] is True
+    extension_smoke = plan["checks"]["extension_smoke"]
+    assert extension_smoke["artifact_dir"] == payload["artifacts"]["browser_dir"]
+    live_proof = plan["checks"]["browser_live_proof"]
+    assert live_proof["authority"]["label"] == "operator-local-copied-profile-live-proof"
+    assert live_proof["authority"]["cloud_safe"] is False
+    assert live_proof["authority"]["requires_copied_profile"] is True
     assert payload["warnings"] == [
         "systemwide polylogued.service is active; stop it or use isolated ports before branch-local runs",
         "api port 9999 already has a listener",
@@ -172,9 +203,16 @@ def test_build_dev_loop_status_marks_isolated_ports_without_service_warning(
     assert payload["warnings"] == []
     assert payload["suggested_env"]["POLYLOGUE_API_PORT"] == "9911"
     assert payload["suggested_env"]["POLYLOGUE_BROWSER_CAPTURE_PORT"] == "9912"
-    assert "--api-port 9911 --browser-capture-port 9912 --prepare" in payload["commands"]["prepare"]
+    prepare_command = payload["commands"]["prepare"]
+    assert "--api-port 9911" in prepare_command
+    assert "--browser-capture-port 9912" in prepare_command
+    assert "--archive-root" in prepare_command
+    assert "--log-dir" in prepare_command
+    assert prepare_command.endswith("--prepare")
     assert payload["commands"]["prepare_isolated"] == "devtools workspace dev-loop --isolated-ports --prepare"
     assert "--api-port 9911 --browser-capture-port 9912 --json" in payload["commands"]["save_preflight"]
+    assert payload["plan"]["next_command_name"] == "launch_daemon"
+    assert payload["plan"]["authority_levels"]["browser_live_proof"]["cloud_safe"] is False
 
 
 def test_main_isolated_ports_allocates_free_ports(
@@ -254,6 +292,9 @@ def test_receiver_smoke_proves_auth_rejection_and_acceptance(tmp_path: Path) -> 
     assert payload["unauthenticated_error"] == "unauthorized"
     assert payload["authenticated_status"] == 202
     assert payload["artifact_ref"] == "chatgpt/dev-loop-smoke-e368c8af2a6b.json"
+    authority = cast(dict[str, object], payload["authority"])
+    assert authority["label"] == "source-only-deterministic-receiver-smoke"
+    assert authority["cloud_safe"] is True
     assert Path(str(payload["artifact_path"])).is_file()
 
 

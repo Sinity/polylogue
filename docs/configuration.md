@@ -151,9 +151,13 @@ for diagnostics.
 The JSON form also includes a `diagnostics` array. Each item has stable
 `code`, `severity`, `key`, `toml_path`, `env_var`, `message`, and
 `next_action` fields so deployment smoke, agents, and shell scripts can tell
-configuration debt from daemon/runtime failures. Current diagnostics cover
-operator-supplied path-layout problems and `embedding.enabled = true` without
-a configured Voyage key.
+configuration debt from daemon/runtime failures. Diagnostics also include the
+redacted effective `value`, `source_layer`, `secret`, and `secret_present` when
+the source can be determined, plus `related_keys` for multi-key contradictions.
+Current diagnostics cover operator-supplied path-layout problems, unsafe
+network/auth combinations, API/browser-capture port conflicts, web-origin
+browser capture without bearer auth, and `embedding.enabled = true` without a
+configured Voyage key.
 
 ### State classes
 
@@ -273,12 +277,16 @@ auth_token = "..."
 
 [daemon.browser_capture]
 allow_remote = true
+auth_token = "..."
 ```
 
-Browser-capture web origins fail closed without a browser-capture auth token.
-Extension origins such as `chrome-extension://*` are allowed by default for the
-local receiver; ordinary web origins such as `https://workbench.example` require
-`daemon.browser_capture.auth_token` or `POLYLOGUE_BROWSER_CAPTURE_AUTH_TOKEN`.
+Browser-capture remote opt-in and web origins fail closed without a
+browser-capture auth token. Extension origins such as `chrome-extension://*` are
+allowed by default for the local receiver; ordinary web origins such as
+`https://workbench.example` require `daemon.browser_capture.auth_token` or
+`POLYLOGUE_BROWSER_CAPTURE_AUTH_TOKEN`. The config diagnostics payload reports
+these failures before daemon startup, including whether the missing token would
+come from the default, TOML, env, or CLI layer.
 
 Embeddings are provider-cost work. `VOYAGE_API_KEY` alone supplies a credential
 but does not enable daemon embedding convergence. Set `embedding.enabled = true`
