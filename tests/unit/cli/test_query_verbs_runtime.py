@@ -955,6 +955,10 @@ def test_delete_verb_updates_confirmation_and_dry_run_flags() -> None:
     # uses force=True internally so it never triggers an interactive prompt.
     with (
         patch(
+            "polylogue.cli.verb_cardinality.probe_session_ids_for_verb",
+            return_value=["alpha-id"],
+        ) as probe_ids,
+        patch(
             "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
             return_value=["alpha-id"],
         ) as resolve,
@@ -964,6 +968,7 @@ def test_delete_verb_updates_confirmation_and_dry_run_flags() -> None:
         wrapped(child, True, False, False)
 
     legacy.assert_not_called()
+    probe_ids.assert_called_once()
     resolve.assert_called_once()
     args, kwargs = execute.call_args
     assert list(args[1]) == ["alpha-id"]

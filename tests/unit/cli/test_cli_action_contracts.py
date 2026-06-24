@@ -274,8 +274,11 @@ def test_delete_contract_guard_allows_dry_run_preview(workspace_env: dict[str, P
 
     session_ids = ["session-1", "session-2"]
     runner = CliRunner()
-    with patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=session_ids):
-        result = runner.invoke(cli, ["--plain", "find", "needle", "then", "delete", "--dry-run"])
+    with (
+        patch("polylogue.cli.verb_cardinality.probe_session_ids_for_verb", return_value=session_ids[:2]),
+        patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=session_ids),
+    ):
+        result = runner.invoke(cli, ["--plain", "find", "needle", "then", "delete", "--dry-run", "--all"])
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
@@ -291,7 +294,10 @@ def test_delete_contract_dry_run_empty_preview_is_explicit(workspace_env: dict[s
     _assert_contract_declares_guard(("delete",), "dry_run_or_yes_required")
 
     runner = CliRunner()
-    with patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=[]):
+    with (
+        patch("polylogue.cli.verb_cardinality.probe_session_ids_for_verb", return_value=[]),
+        patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=[]),
+    ):
         result = runner.invoke(cli, ["--plain", "find", "needle", "then", "delete", "--dry-run"])
 
     assert result.exit_code == 0, result.output
@@ -312,8 +318,11 @@ def test_delete_contract_preview_payload_matches_mutation_schema(workspace_env: 
 
     session_ids = ["session-1", "session-2"]
     runner = CliRunner()
-    with patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=session_ids):
-        result = runner.invoke(cli, ["--plain", "find", "needle", "then", "delete", "--dry-run"])
+    with (
+        patch("polylogue.cli.verb_cardinality.probe_session_ids_for_verb", return_value=session_ids[:2]),
+        patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=session_ids),
+    ):
+        result = runner.invoke(cli, ["--plain", "find", "needle", "then", "delete", "--dry-run", "--all"])
 
     assert result.exit_code == 0, result.output
     jsonschema.validate(instance=json.loads(result.output), schema=schema)

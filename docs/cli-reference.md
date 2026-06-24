@@ -361,7 +361,7 @@ Usage: polylogue delete [OPTIONS]
   Examples:
       polylogue find id:abc then delete --dry-run
       polylogue find id:abc then delete --yes
-      polylogue find 'repo:polylogue since:7d' then delete --dry-run
+      polylogue find 'repo:polylogue since:7d' then delete --dry-run --all
       polylogue find 'repo:polylogue since:7d' then delete --yes --all
 
 Options:
