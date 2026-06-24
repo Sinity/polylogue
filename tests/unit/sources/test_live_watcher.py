@@ -820,7 +820,11 @@ def test_unchanged_file_uses_stat_fast_path_without_fingerprint_read(
     def fail_fingerprint(path: Path) -> tuple[str, int]:
         raise AssertionError(f"unchanged file should not be fingerprinted: {path}")
 
+    def fail_tail_hash(path: Path, size: int) -> tuple[str, int]:
+        raise AssertionError(f"stat-stable unchanged file should not read tail hash: {path} ({size})")
+
     monkeypatch.setattr(live_watcher, "fingerprint_file", fail_fingerprint)
+    monkeypatch.setattr(live_watcher, "tail_hash_from_path", fail_tail_hash)
 
     assert watcher._needs_work(f) is False
 
