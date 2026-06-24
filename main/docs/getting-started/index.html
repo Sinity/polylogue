@@ -362,15 +362,18 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <p><a href="README.md">← Back to Docs</a></p>
 <h1>Getting Started</h1>
 <p>A 5-minute quickstart for Polylogue.</p>
-<h2>Install</h2>
-<pre><code class="language-bash">pip install polylogue
+<h2>Enter the source checkout</h2>
+<pre><code class="language-bash">git clone https://github.com/Sinity/polylogue.git
+cd polylogue
+nix develop
 </code></pre>
 <p>Verify:</p>
 <pre><code class="language-bash">polylogue --version
 # polylogue X.Y.Z (commit 0000000)
 </code></pre>
-<p>No configuration file needed. Polylogue follows XDG conventions and works out of
-the box.</p>
+<p>No packaged PyPI/Homebrew/container install path is documented as current until
+release artifacts exist and have been smoke-tested. From the dev shell,
+Polylogue follows XDG conventions and works without a mandatory config file.</p>
 <h2>First search</h2>
 <p>Point Polylogue at your AI chat exports, then search:</p>
 <pre><code class="language-bash">polylogue &quot;css refactor&quot;

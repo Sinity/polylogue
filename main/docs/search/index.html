@@ -423,10 +423,12 @@ pipeline-stage     ::= &quot;sort&quot; &quot;by&quot; &quot;time&quot; [&quot;a
 <p>Compact queries select sessions:</p>
 <pre><code class="language-bash">polylogue repo:polylogue tag:active -&quot;stale plan&quot; &quot;query envelope&quot;
 polylogue origin:(codex-session|claude-code-session) messages:&gt;=10 words:&lt;=2000
+polylogue session:codex-session:abc123
 polylogue near:id:codex-session:abc123
 </code></pre>
 <p>Explicit Boolean session queries also select sessions:</p>
 <pre><code class="language-bash">polylogue sessions where '(repo:polylogue OR repo:sinex) AND NOT tag:stale'
+polylogue sessions where 'session:codex-session:abc123'
 polylogue sessions where 'exists message(role:assistant AND text:timeout)'
 polylogue sessions where 'seq(action:file_edit -&gt; action:shell)'
 polylogue sessions where 'seq(action:file_edit -&gt; action:shell AND output:failed -&gt; action:file_edit)'
@@ -480,7 +482,10 @@ and <code>offset N</code> for SQL-backed terminal rows (<code>messages</code>, <
 caller/API caps, and query-string offsets are added to the caller offset.
 Runtime-transform terminal rows (<code>runs</code>, <code>observed-events</code>, <code>context-snapshots</code>)
 reject sort/aggregate stages until they have streaming or aggregate lowerers;
-they must not collect every projected row in memory merely to sort a page.</p>
+they must not collect every projected row in memory merely to sort a page.
+Pipeline syntax is terminal-row syntax: session-selector surfaces reject piped
+queries, including aggregate stages like <code>group by role | count</code>, instead of
+dropping those stages and widening the query to <code>exists message(...)</code>.</p>
 <p><code>--explain --format json</code> reports terminal pipelines as a <code>unit_source</code> AST with
 ordered <code>pipeline_stages</code>. Session-scoped pipelines include a <code>session_scope</code>
 stage carrying the original session predicate, followed by any terminal
@@ -545,6 +550,11 @@ text terms.</p>
 <td><code>id</code></td>
 <td>Session id or prefix</td>
 <td><code>id:codex-session:abc</code></td>
+</tr>
+<tr>
+<td><code>session</code></td>
+<td>Exact session ref alias for <code>id</code></td>
+<td><code>session:codex-session:abc</code></td>
 </tr>
 <tr>
 <td><code>title</code></td>

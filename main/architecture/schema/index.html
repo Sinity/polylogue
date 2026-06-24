@@ -392,7 +392,7 @@ over the <code>CREATE TABLE</code> statement.</p>
 <tr>
 <td><code>index.py</code></td>
 <td><code>index.db</code></td>
-<td><code>INDEX_SCHEMA_VERSION = 6</code></td>
+<td><code>INDEX_SCHEMA_VERSION = 7</code></td>
 </tr>
 <tr>
 <td><code>embeddings.py</code></td>
@@ -457,6 +457,87 @@ human-owned tag and metadata writes do not have separate user-tier tables.</p>
 convergence debt (<code>convergence_debt</code>), cursor-lag samples, daemon stage/event
 logs, embedding catch-up runs, and OTLP spans/telemetry. Safe to discard; the
 daemon repopulates it.</p>
+<h2>Schema/data-model ownership matrix (#2246)</h2>
+<p>This matrix records the current owner for the evidence-cockpit concepts that
+were ambiguous during #2246. It is intentionally source-grounded: canonical DDL
+stays in <code>polylogue/storage/sqlite/archive_tiers/</code>, and this prose names the
+storage owner rather than duplicating full table definitions.</p>
+<table>
+<thead>
+<tr>
+<th>Concept</th>
+<th>Current owner</th>
+<th>Contract</th>
+<th>Status / residual</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Raw import explanation</td>
+<td><code>source.db</code> raw acquisition rows plus <code>index.db</code> produced sessions/messages/blocks/actions</td>
+<td>ImportExplain remains a read payload over raw sessions, artifacts, hook events, sidecars, blobs, parse/validation state, and produced index rows.</td>
+<td>No parallel ImportExplain table. Add one only as a cache/index for the landed payload after a measured read gap.</td>
+</tr>
+<tr>
+<td>Actions/tool results</td>
+<td><code>index.db.blocks</code> plus the <code>actions</code> view</td>
+<td>Tool-use/result pairing is session-scoped: <code>tool_id</code> and <code>session_id</code> must both match.</td>
+<td>Covered by DDL and regression tests with duplicate provider-local tool ids.</td>
+</tr>
+<tr>
+<td>Provider session lifecycle events</td>
+<td><code>index.db.session_events</code></td>
+<td>Narrow provider-native lifecycle markers. The current closed event type is <code>compaction</code>.</td>
+<td>The name does not claim ownership of all observed events.</td>
+</tr>
+<tr>
+<td>Observed events and context snapshots</td>
+<td>Derived query/read surfaces for now</td>
+<td>Durable tables are deferred until ref resolution, OTel projection, or query surfaces need stable row identity or indexing.</td>
+<td>No speculative <code>observed_events</code> or <code>context_snapshots</code> table.</td>
+</tr>
+<tr>
+<td>User overlays</td>
+<td><code>user.db.assertions</code></td>
+<td>Human marks, annotations, corrections, suppressions, tags, metadata, saved views, recall packs, workspaces, blackboard notes, candidates, and judgments are assertion rows.</td>
+<td>Deleted specific overlay tables are not current storage. <code>index.db.session_tags</code> is only a rebuildable/search/read projection.</td>
+</tr>
+<tr>
+<td>Refs</td>
+<td>Resolver/read boundary first</td>
+<td>Refs may live inside payload JSON, evidence refs, target refs, and work/context refs.</td>
+<td>No global refs table until resolver usage proves unresolved-ref auditing or performance needs persistence.</td>
+</tr>
+<tr>
+<td>Archive debt and readiness</td>
+<td><code>ops.db</code> for disposable operator state; <code>source.db</code>/<code>index.db</code> for durable evidence read by diagnostics</td>
+<td>Raw-materialization debt, FTS trust, and provider-usage gaps are diagnostics over tier state, not a new durable domain.</td>
+<td>Debt rows in <code>ops.db</code> are disposable. Durable facts remain in source/index tables.</td>
+</tr>
+<tr>
+<td>OTel spans</td>
+<td><code>source.db.otlp_spans</code> and <code>ops.db.otlp_spans</code> with distinct meanings</td>
+<td>Source-tier spans are raw/source-correlated evidence tied to origin/native session ids; ops-tier spans are daemon/runtime telemetry.</td>
+<td>Read paths should choose the tier by durability, not by table name alone.</td>
+</tr>
+<tr>
+<td>Embeddings</td>
+<td><code>embeddings.db</code></td>
+<td>One active 1024-dimensional <code>message_embeddings</code> vec table plus metadata/status.</td>
+<td>Multiple providers/dimensions require a deliberate schema design before another embedding family is added.</td>
+</tr>
+</tbody>
+</table>
+<h2>JSON payload contracts</h2>
+<p>SQLite <code>STRICT</code> mode does not make a <code>TEXT</code> column JSON-shaped. New executable
+JSON checks should use the shared helpers in <code>archive_tiers/common.py</code> so the
+contract is visible in canonical DDL instead of hand-written per table. Index
+schema version 7 enforces object JSON for <code>blocks.tool_input</code> and
+<code>session_provider_usage_events.payload_json</code>, two hot read-path columns with
+current typed writers. Broader payload columns such as insight evidence,
+inference, enrichment, work-event arrays, source hook payloads, and user
+assertion JSON should be constrained only after their historical write shapes
+are audited and the required tier-version/rebuild consequence is documented.</p>
 <h2>Identifiers</h2>
 <p>Primary keys in <code>index.db</code> are <strong>generated</strong> from natural components rather than
 opaque UUIDs (see the <code>GENERATED ALWAYS AS (...) STORED</code> columns in <code>index.py</code>):</p>
@@ -490,8 +571,9 @@ keyed <code>(message_id, position)</code>, with a <code>block_type</code> constr
 <code>tool_input</code>; <code>tool_command</code> and <code>tool_path</code> are virtual generated columns
 extracted from <code>tool_input</code> JSON.</p>
 <p><code>actions</code> is a <strong>view</strong>, not a table: it left-joins <code>tool_use</code> blocks to their
-matching <code>tool_result</code> block (by <code>tool_id</code>) so tool executions read as paired
-records without a separate materialization.</p>
+matching <code>tool_result</code> block by <strong>both</strong> <code>tool_id</code> and <code>session_id</code>. Provider
+<code>tool_id</code> values are treated as session-local evidence, so the view must not
+pair a use block with a same-id result block from another session.</p>
 <h2>Full-text search</h2>
 <p><code>index.db</code> carries three FTS5 virtual tables, all using the <code>unicode61</code>
 tokenizer (no porter stemmer in this SQLite build):</p>
