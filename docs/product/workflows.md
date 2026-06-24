@@ -39,7 +39,7 @@ The matrix is rendered from `ACTION_CONTRACTS`, the same source used by `polylog
 | `read` | `selection` / `query_result_set` | `explicit_multi` | `safe` | `human`<br>`json`<br>`ndjson` | `terminal`<br>`stdout`<br>`browser`<br>`clipboard`<br>`file`<br>`api`<br>`mcp` | polylogue find QUERY then select | `continue`<br>`mark`<br>`delete` |
 | `continue` | `selection` / `query_result_set` | `singleton` | `safe` | `human`<br>`json` | `terminal`<br>`stdout`<br>`clipboard`<br>`file`<br>`api`<br>`mcp` | polylogue find QUERY then select | `read`<br>`mark` |
 | `select` | `selection` / `query_result_set` | `singleton` | `safe` | `human`<br>`json` | `terminal`<br>`stdout`<br>`api`<br>`mcp` | — | `read`<br>`continue`<br>`analyze`<br>`mark`<br>`delete` |
-| `mark` | `selection` / `query_result_set` | `explicit_multi` | `mutating` | `human` | `terminal`<br>`stdout`<br>`api`<br>`mcp` | polylogue find QUERY then select | `read`<br>`analyze` |
+| `mark` | `selection` / `query_result_set` | `explicit_multi` | `mutating` | `human`<br>`json` | `terminal`<br>`stdout`<br>`api`<br>`mcp` | polylogue find QUERY then select | `read`<br>`analyze` |
 | `analyze` | `selection` / `query_result_set` | `any` | `safe` | `human`<br>`json`<br>`ndjson` | `terminal`<br>`stdout`<br>`file`<br>`api`<br>`mcp` | — | `select`<br>`read` |
 | `delete` | `selection` / `query_result_set` | `destructive_multi` | `destructive` | `human` | `terminal`<br>`stdout`<br>`api`<br>`mcp` | polylogue find QUERY then select<br>confirm: `polylogue find QUERY then delete --dry-run` | `find` |
 | `import` | `path` / `path` | `singleton` | `mutating` | `human` | `terminal`<br>`stdout`<br>`api` | — | `ops`<br>`read`<br>`analyze` |

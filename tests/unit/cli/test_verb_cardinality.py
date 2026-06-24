@@ -251,7 +251,14 @@ class TestMarkVerbCardinality:
             note_text,
             apply_all,
             first_only,
+            None,
         )
+
+    @staticmethod
+    def _close_coroutine(coro: object) -> None:
+        close = getattr(coro, "close", None)
+        if callable(close):
+            close()
 
     def test_singleton_match_applies_operations(self) -> None:
         _, child = _context_pair()
@@ -268,7 +275,7 @@ class TestMarkVerbCardinality:
             ),
             patch(
                 "polylogue.api.sync.bridge.run_coroutine_sync",
-                side_effect=lambda coro: None,
+                side_effect=self._close_coroutine,
             ),
         ):
             # Should not raise.
@@ -298,7 +305,7 @@ class TestMarkVerbCardinality:
             ),
             patch(
                 "polylogue.api.sync.bridge.run_coroutine_sync",
-                side_effect=lambda coro: None,
+                side_effect=self._close_coroutine,
             ),
         ):
             # Should not raise — --all is present.
@@ -315,7 +322,7 @@ class TestMarkVerbCardinality:
             ),
             patch(
                 "polylogue.api.sync.bridge.run_coroutine_sync",
-                side_effect=lambda coro: None,
+                side_effect=self._close_coroutine,
             ),
         ):
             # Should not raise — --first is present.

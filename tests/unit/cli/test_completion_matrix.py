@@ -699,7 +699,7 @@ def test_query_action_mutating_guard_completion_per_shell(
     mark_items = dict(_run_completion_for_partial(shell, comp_cls, ["find", "id:abc", "then", "mark"], "--"))
     delete_items = dict(_run_completion_for_partial(shell, comp_cls, ["find", "id:abc", "then", "delete"], "--"))
 
-    assert {"--tag-add", "--all", "--first"}.issubset(mark_items)
+    assert {"--tag-add", "--all", "--first", "--format"}.issubset(mark_items)
     assert {"--dry-run", "--yes", "--all"}.issubset(delete_items)
 
 
