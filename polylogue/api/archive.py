@@ -79,11 +79,15 @@ if TYPE_CHECKING:
     from polylogue.storage.repository import SessionRepository
     from polylogue.storage.search.models import SearchResult
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
-    from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
+    from polylogue.storage.sqlite.archive_tiers.user_write import (
+        ArchiveAssertionCandidateReviewEnvelope,
+        ArchiveAssertionEnvelope,
+    )
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
     from polylogue.storage.usage import ProviderUsageReport
     from polylogue.surfaces.payloads import (
         ArchiveDebtListPayload,
+        AssertionCandidateReviewListPayload,
         AssertionClaimPayload,
         AssertionJudgmentResultPayload,
         BulkTagMutationResult,
@@ -759,6 +763,38 @@ def _archive_list_assertion_claims(
                 scope_ref=scope_ref,
                 statuses=statuses,
                 context_inject=context_inject,
+                limit=limit,
+            )
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return []
+
+
+def _archive_list_assertion_candidate_reviews(
+    config: Config,
+    *,
+    target_ref: str | None = None,
+    kinds: Sequence[str | AssertionKind] | None = None,
+    statuses: Sequence[str | AssertionStatus] | None = None,
+    limit: int | None = None,
+) -> list[Any]:
+    """Return candidate-review rows from ``user.db`` without active claims."""
+
+    from polylogue.storage.sqlite.archive_tiers.user_write import list_assertion_candidate_reviews
+
+    user_db = _active_archive_root(config) / "user.db"
+    if not user_db.exists():
+        return []
+    try:
+        conn = sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            return list_assertion_candidate_reviews(
+                conn,
+                target_ref=target_ref,
+                kinds=kinds,
+                statuses=statuses,
                 limit=limit,
             )
         finally:
@@ -1724,6 +1760,37 @@ class PolylogueArchiveMixin:
             target_ref=target_ref,
             statuses=(AssertionStatus.CANDIDATE,),
             limit=limit,
+        )
+
+    async def list_assertion_candidate_reviews(
+        self,
+        *,
+        target_ref: str | None = None,
+        kinds: Sequence[str | AssertionKind] | None = None,
+        statuses: Sequence[str | AssertionStatus] | None = None,
+        limit: int | None = None,
+    ) -> AssertionCandidateReviewListPayload:
+        """List candidate assertion review state separately from active claims."""
+
+        from polylogue.storage.sqlite.archive_tiers.user_write import ASSERTION_CANDIDATE_REVIEW_STATUSES
+        from polylogue.surfaces.payloads import AssertionCandidateReviewListPayload
+
+        candidate_statuses = ASSERTION_CANDIDATE_REVIEW_STATUSES if statuses is None else statuses
+        review_rows = cast(
+            list["ArchiveAssertionCandidateReviewEnvelope"],
+            _archive_list_assertion_candidate_reviews(
+                self.config,
+                target_ref=target_ref,
+                kinds=kinds,
+                statuses=candidate_statuses,
+                limit=limit,
+            ),
+        )
+        return AssertionCandidateReviewListPayload.from_envelopes(
+            review_rows,
+            limit=limit if limit is not None else len(review_rows),
+            target_ref=target_ref,
+            candidate_statuses=candidate_statuses,
         )
 
     async def judge_assertion_candidate(

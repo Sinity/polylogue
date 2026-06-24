@@ -4,7 +4,7 @@
 
 # Test Quality Workflows
 
-This reference is generated from the live validation-lane, mutation-campaign, and benchmark-campaign registries.
+This reference is generated from the executable validation-lane, mutation-campaign, and benchmark-campaign registries. It is navigation over concrete commands, not a separate proof ledger.
 
 Current registry snapshot:
 
@@ -74,6 +74,8 @@ per-suite JSON parsing, surface invocation, archive seeding, or cross-surface or
 
 ### Validation lanes
 
+Validation lanes are optional wrappers over executable checks. Prefer the focused pytest or `devtools test` command for a narrow edit; use a lane when you need the composed command set it declares.
+
 ```bash
 devtools lab lanes --list
 devtools lab lanes --lane frontier-local
@@ -131,7 +133,7 @@ devtools lab probe pipeline --input-mode archive-subset --source-db "$XDG_DATA_H
 devtools lab probe pipeline --input-mode archive-subset --manifest-in /tmp/polylogue-probe-real.json --stage parse --workdir /tmp/polylogue-probe-replay
 ```
 
-### Demo and visual evidence
+### Demo and visual behavior checks
 
 ```bash
 devtools test tests/unit/cli/test_demo_command.py tests/unit/demo/test_demo_seed_verify.py tests/visual
@@ -176,7 +178,7 @@ Use the named lanes through the runner.
 
 | Lane | Timeout (s) | Description |
 | --- | ---: | --- |
-| `live-archive-smoke` | 1800 | Manual verification-lab archive-smoke lane |
+| `live-archive-smoke` | 1800 | Manual lab archive-smoke lane |
 | `live-archive-subset-parse-probe` | 1800 | Live archive medium archive-subset parse probe with persisted manifest/workdir artifacts |
 | `live-embed-stats` | 120 | Live archive embedding status JSON view |
 | `live-insights-coverage-day` | 180 | Live archive day coverage insight surface over the recent semantic slice |
@@ -295,7 +297,7 @@ These inferred corpus specs come from the live schema registry and participate i
 
 ## Scenario Projection Catalog
 
-These are the authored scenario-bearing projections currently feeding runtime coverage and related control-plane maps.
+These projections explain which executable lanes, inferred fixture scenarios, or benchmark campaigns feed runtime coverage maps.
 
 | Source | Projection | Path Targets | Artifact Targets | Operation Targets | Maintenance Targets | Tags | Description |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -359,7 +361,7 @@ These are the authored scenario-bearing projections currently feeding runtime co
 | `validation-lane` | `inference-tier-contracts` | — | — | — | — | — | Inference-tier work-event/phase/profile contracts with confidence/provenance-bearing semantic payloads |
 | `validation-lane` | `live-archive-slow` | `retrieval-band-readiness-loop`<br>`embedding-status-query-loop`<br>`session-query-loop`<br>`session-insight-status-query-loop`<br>`message-fts-readiness-loop` | `embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`embedding_status_results`<br>`message_fts`<br>`session_query_results`<br>`session_insight_status_results`<br>`archive_readiness` | `project-retrieval-band-readiness`<br>`query-embedding-status`<br>`cli.json-contract`<br>`query-sessions`<br>`query-session-insight-status`<br>`project-archive-readiness` | — | `live`<br>`embeddings`<br>`readiness`<br>`retrieval`<br>`insights`<br>`status`<br>`maintenance` | Broader live archive dogfood lane including retrieval/readiness and live scenario checks |
 | `validation-lane` | `live-archive-small` | `retrieval-band-readiness-loop`<br>`embedding-status-query-loop`<br>`session-query-loop`<br>`session-insight-status-query-loop`<br>`message-fts-readiness-loop` | `embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`embedding_status_results`<br>`message_fts`<br>`session_query_results`<br>`session_insight_status_results`<br>`archive_readiness` | `project-retrieval-band-readiness`<br>`query-embedding-status`<br>`cli.json-contract`<br>`query-sessions`<br>`query-session-insight-status`<br>`project-archive-readiness` | — | `live`<br>`embeddings`<br>`readiness`<br>`retrieval`<br>`insights`<br>`status`<br>`maintenance` | Bounded live archive retrieval/readiness/health dogfood lane |
-| `validation-lane` | `live-archive-smoke` | — | — | — | — | — | Manual verification-lab archive-smoke lane |
+| `validation-lane` | `live-archive-smoke` | — | — | — | — | — | Manual lab archive-smoke lane |
 | `validation-lane` | `live-archive-subset-parse-probe` | `source-acquisition-loop`<br>`raw-reparse-loop`<br>`raw-archive-ingest-loop` | `configured_sources`<br>`source_payload_stream`<br>`raw_validation_state`<br>`artifact_observation_rows`<br>`validation_backlog`<br>`parse_backlog`<br>`parse_quarantine`<br>`archive_session_rows` | `acquire-raw-sessions`<br>`plan-validation-backlog`<br>`plan-parse-backlog`<br>`ingest-archive-runtime` | — | `live`<br>`probe`<br>`parse` | Live archive medium archive-subset parse probe with persisted manifest/workdir artifacts |
 | `validation-lane` | `live-embed-stats` | `retrieval-band-readiness-loop`<br>`embedding-status-query-loop` | `embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`embedding_status_results` | `project-retrieval-band-readiness`<br>`query-embedding-status`<br>`cli.json-contract` | — | `live`<br>`embeddings`<br>`readiness` | Live archive embedding status JSON view |
 | `validation-lane` | `live-insights-coverage-day` | `archive-coverage-query-loop` | `archive_session_rows`<br>`session_profile_rows`<br>`archive_coverage_results` | `query-archive-coverage` | — | `insights`<br>`coverage` | Live archive day coverage insight surface over the recent semantic slice |
@@ -474,4 +476,4 @@ When changing code in a narrow domain:
 4. rerun the full correctness lane before closing the work
 5. update `docs/plans/test-closure-matrix.yaml` if the domain's representative tests change
 
-When a new validation lane, mutation campaign, or benchmark campaign is added, regenerate this document.
+When a new validation lane, mutation campaign, or benchmark campaign is added, make sure it dispatches concrete commands and regenerate this document.

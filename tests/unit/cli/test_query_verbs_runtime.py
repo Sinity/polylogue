@@ -99,6 +99,7 @@ def test_read_all_and_analyze_count_update_parent_request() -> None:
                 False,
                 "id,title",
                 False,
+                False,
             )
 
     bulk_export.assert_not_called()
@@ -148,6 +149,7 @@ def test_read_all_and_analyze_count_update_parent_request() -> None:
                 False,
                 None,
                 False,
+                False,
             )
 
     bulk_export.assert_not_called()
@@ -159,14 +161,14 @@ def test_read_all_and_analyze_count_update_parent_request() -> None:
     wrapped_analyze = getattr(query_verbs.analyze_verb.callback, "__wrapped__", None)
     assert callable(wrapped_analyze)
     with patch("polylogue.cli.query_verbs._execute_query_verb") as execute:
-        wrapped_analyze(child, True, None, False, False, None, "linear", False, None, None)
+        wrapped_analyze(child, True, None, False, False, None, "linear", False, False, None, None)
 
     count_request = execute.call_args.args[1]
     assert isinstance(count_request, RootModeRequest)
     assert count_request.query_params()["count_only"] is True
 
     with pytest.raises(click.UsageError, match="does not support --limit"):
-        wrapped_analyze(child, True, None, False, False, None, "linear", False, None, 5)
+        wrapped_analyze(child, True, None, False, False, None, "linear", False, False, None, 5)
 
 
 def test_read_direct_ref_emits_shared_resolution_payload(capsys: pytest.CaptureFixture[str]) -> None:
@@ -219,6 +221,7 @@ def test_read_direct_ref_emits_shared_resolution_payload(capsys: pytest.CaptureF
             no_file_reads=False,
             prose_only=False,
             fields=None,
+            first_only=False,
             show_views=False,
             ref="session:abc",
         )
@@ -236,7 +239,7 @@ def test_analyze_verb_toggles_stats_only_and_updates_grouping() -> None:
     assert callable(wrapped)
 
     with patch("polylogue.cli.query_verbs._execute_query_verb") as execute:
-        wrapped(child, False, None, False, False, None, "linear", False, None, None)
+        wrapped(child, False, None, False, False, None, "linear", False, False, None, None)
 
     request = execute.call_args.args[1]
     assert isinstance(request, RootModeRequest)
@@ -244,7 +247,7 @@ def test_analyze_verb_toggles_stats_only_and_updates_grouping() -> None:
     assert request.query_params()["query"] == ("alpha",)
 
     with patch("polylogue.cli.query_verbs._execute_query_verb") as execute:
-        wrapped(child, False, "origin", False, False, None, "linear", False, "markdown", 3)
+        wrapped(child, False, "origin", False, False, None, "linear", False, False, "markdown", 3)
 
     grouped_request = execute.call_args.args[1]
     assert isinstance(grouped_request, RootModeRequest)
@@ -372,7 +375,10 @@ def test_read_verb_summary_dispatches_to_execute_query_verb() -> None:
     wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
-    with patch("polylogue.cli.read_views.standard.execute_query_request") as execute:
+    with (
+        patch("polylogue.cli.query_verbs._resolve_query_action_session_id", return_value=None),
+        patch("polylogue.cli.read_views.standard.execute_query_request") as execute,
+    ):
         wrapped(child, **_read_verb_kwargs(view="summary"))
 
     execute.assert_called_once()
@@ -405,7 +411,7 @@ def test_read_verb_summary_preserves_search_within_exact_ref() -> None:
     assert callable(wrapped)
 
     with (
-        patch("polylogue.cli.query_verbs._resolve_target_session_id", return_value="codex-session:abc123"),
+        patch("polylogue.cli.query_verbs._resolve_query_action_session_id", return_value="codex-session:abc123"),
         patch("polylogue.cli.read_views.standard.execute_query_request") as execute,
     ):
         wrapped(child, **_read_verb_kwargs(view="summary", output_format="json"))
@@ -988,3 +994,29 @@ def test_delete_verb_updates_confirmation_and_dry_run_flags() -> None:
     _, confirmed_kwargs = execute_confirmed.call_args
     assert confirmed_kwargs.get("force") is True
     assert confirmed_kwargs.get("dry_run") is None
+
+
+def test_terminal_facet_helpers_sort_and_bound_noisy_rows(capsys: pytest.CaptureFixture[str]) -> None:
+    values = {f"value-{index:02d}": 20 - index for index in range(14)}
+
+    query_verbs._emit_facet_bucket("Omitted/noisy facet counts (not canonical facets)", values, limit=12)
+
+    output = capsys.readouterr().out
+    assert "Omitted/noisy facet counts (not canonical facets):" in output
+    assert "value-00: 20" in output
+    assert "value-11: 9" in output
+    assert "value-12: 8" not in output
+    assert "… 2 more values omitted from terminal view; use --format json for full buckets." in output
+
+
+def test_terminal_idf_helper_bounds_rows(capsys: pytest.CaptureFixture[str]) -> None:
+    idf = {"tags": {f"tag-{index:02d}": float(30 - index) for index in range(13)}}
+
+    query_verbs._emit_idf_buckets(idf, limit=12)
+
+    output = capsys.readouterr().out
+    assert "IDF (higher = rarer, partitions more strongly):" in output
+    assert "tag-00: 30.000" in output
+    assert "tag-11: 19.000" in output
+    assert "tag-12: 18.000" not in output
+    assert "… 1 more value omitted from terminal view; use --format json for full IDF." in output

@@ -16,6 +16,7 @@ from click.shell_completion import CompletionItem
 
 from polylogue.cli.click_command_registration import _LazyCommand, _LazyGroup, register_root_commands
 from polylogue.cli.click_option_groups import apply_query_mode_options
+from polylogue.cli.command_inventory import ROOT_COMMAND_ROLE_SECTIONS
 from polylogue.cli.help_markdown import render_help_markdown
 from polylogue.cli.machine_main import extract_option as _extract_option
 from polylogue.cli.machine_main import run_machine_entry
@@ -33,6 +34,45 @@ if TYPE_CHECKING:
 
 class QueryFirstGroup(QueryFirstGroupBase):
     """Project-specific query-first CLI group."""
+
+    def format_commands(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        """Group root commands by product role instead of one flat command drawer."""
+        rows_by_section: list[tuple[str, list[tuple[str, str]], str | None]] = []
+        rendered: set[str] = set()
+        for section in ROOT_COMMAND_ROLE_SECTIONS:
+            rows: list[tuple[str, str]] = []
+            for name in section.commands:
+                cmd = self.get_command(ctx, name)
+                if cmd is None:
+                    continue
+                rendered.add(name)
+                help_text = cmd.get_short_help_str()
+                rows.append((name, help_text))
+            if rows:
+                rows_by_section.append((section.title, rows, section.footer))
+
+        remaining: list[tuple[str, str]] = []
+        for name in self.list_commands(ctx):
+            if name in rendered:
+                continue
+            cmd = self.get_command(ctx, name)
+            if cmd is None or cmd.hidden:
+                continue
+            remaining.append((name, cmd.get_short_help_str()))
+        if remaining:
+            rows_by_section.append(("Other commands", remaining, None))
+        if not rows_by_section:
+            return
+
+        with formatter.section("Commands"):
+            for index, (title, rows, footer) in enumerate(rows_by_section):
+                if index:
+                    formatter.write_paragraph()
+                formatter.write_text(f"{title}:")
+                with formatter.indentation():
+                    formatter.write_dl(rows)
+                    if footer:
+                        formatter.write_text(footer)
 
     def handle_default_mode(self, ctx: click.Context) -> None:
         _handle_query_mode(ctx)
@@ -295,11 +335,10 @@ def cli(
 
     \b
     Product roles:
-        Query actions:     find QUERY then read|select|mark|analyze|delete|continue
-        Runtime status:    polylogue ops status
+        Search/read/action:   find QUERY then read|select|mark|analyze|delete|continue
         Setup/demo/evidence:  config, init, import, demo, tutorial
-        Reader/TUI:        dashboard --status, dashboard
-        Operations:        ops diagnostics, ops maintenance, ops backup
+        Reader/TUI:           dashboard --status, dashboard
+        Operations:           status (same as polylogue ops status), ops diagnostics, ops maintenance, ops backup
 
     \b
     Query mode (default):
@@ -395,9 +434,12 @@ cli.add_command(find_help)
 register_root_commands(cli)
 
 _QUERY_VERB_HELP: dict[str, str] = {
+    "analyze": "Analyze matched sessions and named facet families.",
     "continue": "Compile a successor-agent continuation report.",
     "delete": "Delete matched sessions.",
+    "mark": "Mark selected sessions; review candidates under mark candidates.",
     "read": "Read matched sessions (route to view/destination).",
+    "select": "Select one matched session or print candidate identities.",
 }
 
 for _verb in sorted(QUERY_VERB_NAMES):

@@ -140,7 +140,7 @@ STAGES: tuple[TutorialStage, ...] = (
         number=4,
         title="Your first search",
         probe=_stage_first_search,
-        action_text="Try: polylogue 'hello'",
+        action_text="Try: polylogue find 'hello' then read",
     ),
 )
 
@@ -204,7 +204,10 @@ def tutorial_command(env: AppEnv, non_interactive: bool) -> None:
                 console.print("\n  [dim]Tutorial paused. Re-run `polylogue tutorial` to resume.[/dim]")
                 sys.exit(0)
     if satisfied_count == total:
-        console.print("\n[green]Ready.[/green] Try `polylogue find QUERY then read` or `polylogue dashboard`.")
+        console.print(
+            "\n[green]Ready.[/green] Try `polylogue find QUERY then read`, "
+            "or `polylogue dashboard --status` before launching the terminal TUI."
+        )
     else:
         console.print(
             f"\n[yellow]Checklist incomplete.[/yellow] {satisfied_count}/{total} stages are ready; "

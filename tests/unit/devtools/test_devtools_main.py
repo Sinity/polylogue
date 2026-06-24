@@ -26,7 +26,7 @@ def test_list_commands_json_includes_generated_surface(capsys: pytest.CaptureFix
 def test_list_commands_human_output(capsys: pytest.CaptureFixture[str]) -> None:
     assert devtools_main.main(["--list-commands"]) == 0
     captured = capsys.readouterr()
-    assert "verification lab surface:" in captured.out
+    assert "lab check surface:" in captured.out
     assert "lab smoke" in captured.out
     assert "lab schema generate" in captured.out
     assert "lab schema promote" in captured.out

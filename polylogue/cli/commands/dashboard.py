@@ -48,7 +48,9 @@ def _dashboard_launch_evidence() -> dict[str, object]:
         "surface": "terminal_tui",
         "launches": "Textual dashboard in the current terminal",
         "daemon_api_url": daemon_url,
-        "web_reader_url": daemon_url,
+        "reader_surface": "terminal_tui",
+        "web_reader_url": None,
+        "web_reader_launch_attempted": False,
         "daemon_api_reachable": False,
         "failure_reason": None,
     }
@@ -66,9 +68,9 @@ def _emit_dashboard_evidence(evidence: dict[str, object], *, output_format: str)
     if output_format == "json":
         click.echo(json.dumps(evidence, indent=2, sort_keys=True))
         return
-    click.echo("Dashboard surface: terminal TUI")
-    click.echo(f"Daemon API: {evidence['daemon_api_url']}")
-    click.echo(f"Web reader: {evidence['web_reader_url']}")
+    click.echo("Dashboard surface: terminal TUI (Textual)")
+    click.echo(f"Daemon API status probe: {evidence['daemon_api_url']}")
+    click.echo("Web reader launch: not attempted by this command")
     if evidence["daemon_api_reachable"]:
         click.echo("Readiness: daemon API reachable")
     else:

@@ -1,4 +1,4 @@
-"""Subprocess-backed CLI boundary for verification-lab smoke scenarios."""
+"""Subprocess-backed CLI boundary for lab smoke scenarios."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def invoke_polylogue_cli(
     cwd: Path | None = None,
     timeout: float = 60.0,
 ) -> CliInvocationResult:
-    """Run the real public CLI entrypoint for verification-lab smoke checks."""
+    """Run the real public CLI entrypoint for lab smoke checks."""
     cli_path = _project_polylogue_cli()
     if cli_path is None:
         return _invoke_python_polylogue_cli(execution, env=env, cwd=cwd or _PROJECT_ROOT, timeout=timeout)

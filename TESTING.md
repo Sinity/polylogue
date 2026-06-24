@@ -123,8 +123,10 @@ focused selections. During or after a run, inspect
 selected/deselected node IDs, collection duration, slowest setup/call/teardown
 phases, captured output, and termination reason if a focused run stalls.
 
-For the generated validation-lane, mutation-campaign, and benchmark inventory,
-see [docs/test-quality-workflows.md](docs/test-quality-workflows.md).
+For optional lane, mutation-campaign, and benchmark inventories, see
+[docs/test-quality-workflows.md](docs/test-quality-workflows.md). Those registries are
+secondary navigation over executable checks; the source of truth for behavior is
+pytest plus the concrete `polylogue`/`devtools` commands they invoke.
 
 ## Test Suite Layout
 
@@ -222,16 +224,29 @@ need the host clock (timing benchmarks, fuzz harnesses, the
 `frozen_clock` self-tests) add their path to the allowlist with a
 one-line rationale; everything else migrates to the fixture.
 
-## Demo Verification
+## Demo and Visual Behavior Checks
+
+The deterministic demo archive is the supported private-data-free way to run
+read/search examples and reader smoke checks. The direct seed/verify commands
+create a ready-to-query archive without daemon scheduling; the import path uses
+the daemon and can wait for the same semantic verifier.
 
 ```bash
-# Seed and verify the deterministic local demo archive
-polylogue demo seed --force --with-overlays
-polylogue demo verify --require-overlays
+# Source-only demo archive, no daemon required
+polylogue demo seed --root "$POLYLOGUE_ARCHIVE_ROOT" --force --with-overlays --format json
+polylogue demo verify --root "$POLYLOGUE_ARCHIVE_ROOT" --require-overlays --format json
+polylogue demo script --shell bash
 
-# Daemon-backed demo convergence
+# Daemon-backed demo path, waits for convergence before returning
 polylogue import --demo --wait --timeout 30 --with-overlays
+
+# Behavior-backed docs/visual lane
+uv run devtools test tests/unit/cli/test_demo_command.py tests/unit/demo/test_demo_seed_verify.py tests/visual
 ```
+
+Browser or deployment media remains local operator evidence unless the run is
+backed by an explicit command artifact. The fast visual lane is browserless and
+checks HTTP/DOM/API contracts rather than screenshots.
 
 ## Mutation Testing
 

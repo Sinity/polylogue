@@ -403,6 +403,7 @@ class AssertionStatus(PolylogueStrEnum):
     CANDIDATE = "candidate"
     ACCEPTED = "accepted"
     REJECTED = "rejected"
+    DEFERRED = "deferred"
     SUPERSEDED = "superseded"
     DELETED = "deleted"
     INACTIVE = "inactive"

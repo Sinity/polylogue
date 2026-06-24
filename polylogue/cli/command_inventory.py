@@ -23,6 +23,39 @@ class CommandPath:
         return "help-" + "-".join(self.path)
 
 
+@dataclass(frozen=True, slots=True)
+class RootCommandRoleSection:
+    """Human-facing command grouping for the root help screen."""
+
+    title: str
+    commands: tuple[str, ...]
+    footer: str | None = None
+
+
+ROOT_COMMAND_ROLE_SECTIONS: tuple[RootCommandRoleSection, ...] = (
+    RootCommandRoleSection(
+        title="Search, read, and action workflows",
+        commands=("find", "read", "select", "mark", "analyze", "delete", "continue"),
+        footer="Use `find QUERY then ACTION`; root action words act on the query result set.",
+    ),
+    RootCommandRoleSection(
+        title="Setup, import, and evidence",
+        commands=("config", "init", "import", "demo", "tutorial"),
+        footer="Use these for first-run setup, source import, demo archives, and onboarding checks.",
+    ),
+    RootCommandRoleSection(
+        title="Reader and local UI",
+        commands=("dashboard",),
+        footer="`dashboard` launches the terminal TUI; `dashboard --status` prints launch evidence.",
+    ),
+    RootCommandRoleSection(
+        title="Operations and maintenance",
+        commands=("status", "ops"),
+        footer="`polylogue status` is the root shortcut for `polylogue ops status`; deeper maintenance stays under `ops`.",
+    ),
+)
+
+
 def iter_command_paths(command: click.Command, *, include_root: bool = False) -> tuple[CommandPath, ...]:
     """Return the recursive command-path inventory for a Click command tree."""
     paths: list[CommandPath] = []
@@ -45,4 +78,9 @@ def iter_command_paths(command: click.Command, *, include_root: bool = False) ->
     return tuple(paths)
 
 
-__all__ = ["CommandPath", "iter_command_paths"]
+__all__ = [
+    "CommandPath",
+    "ROOT_COMMAND_ROLE_SECTIONS",
+    "RootCommandRoleSection",
+    "iter_command_paths",
+]

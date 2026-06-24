@@ -20,6 +20,7 @@ from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 from urllib.parse import parse_qs, urlparse
 
+from polylogue.archive.viewport import READ_VIEW_HTTP_CAPABILITIES, read_view_http_capability_payloads
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.core.json import JSONDocument
 from polylogue.core.loopback import is_loopback_host, is_loopback_origin
@@ -213,56 +214,6 @@ def _parameterized_get_route(pattern: str, handler_name: str, *, passes_params: 
         handler_name=handler_name,
         passes_params=passes_params,
     )
-
-
-@dataclass(frozen=True)
-class _ReadViewHttpCapability:
-    view_id: str
-    formats: tuple[str, ...]
-    query_params: tuple[str, ...] = ()
-
-    def to_payload(self) -> JSONDocument:
-        return {
-            "supported": True,
-            "route": "/api/sessions/{session_id}/read",
-            "formats": list(self.formats),
-            "query_params": list(self.query_params),
-        }
-
-
-_SESSION_READ_VIEW_HTTP_CAPABILITIES: dict[str, _ReadViewHttpCapability] = {
-    "messages": _ReadViewHttpCapability(
-        "messages",
-        ("json",),
-        (
-            "limit",
-            "offset",
-            "message_role",
-            "message_type",
-            "no_code_blocks",
-            "no_file_reads",
-            "no_tool_calls",
-            "no_tool_outputs",
-            "prose_only",
-        ),
-    ),
-    "recovery": _ReadViewHttpCapability("recovery", ("json", "markdown"), ("report",)),
-    "raw": _ReadViewHttpCapability("raw", ("json",)),
-    "context": _ReadViewHttpCapability("context", ("json",), ("related_limit",)),
-    "context-pack": _ReadViewHttpCapability(
-        "context-pack", ("json",), ("include_messages", "max_messages", "max_text", "no_redact")
-    ),
-    "neighbors": _ReadViewHttpCapability("neighbors", ("json",), ("limit", "window_hours")),
-    "correlation": _ReadViewHttpCapability(
-        "correlation", ("json",), ("confidence_threshold", "repo_path", "since_hours")
-    ),
-}
-
-
-def _read_view_http_capability_payloads() -> dict[str, JSONDocument]:
-    """Return daemon execution capabilities keyed by read-view id."""
-
-    return {view_id: capability.to_payload() for view_id, capability in _SESSION_READ_VIEW_HTTP_CAPABILITIES.items()}
 
 
 def _read_view_payload_field_values(payload: object, field_name: str, *, max_depth: int = 4) -> tuple[str, ...]:
@@ -3005,7 +2956,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         from polylogue.archive.viewport import read_view_profile_payloads
 
-        capabilities = _read_view_http_capability_payloads()
+        capabilities = read_view_http_capability_payloads()
         profiles = []
         for profile in read_view_profile_payloads():
             view_id = profile.get("view_id")
@@ -3146,7 +3097,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         view = (self._get_param(params, "view", "messages") or "messages").strip().lower()
         output_format = (self._get_param(params, "format", "json") or "json").strip().lower()
-        capability = _SESSION_READ_VIEW_HTTP_CAPABILITIES.get(view)
+        capability = READ_VIEW_HTTP_CAPABILITIES.get(view)
         if capability is None:
             self._send_error(HTTPStatus.BAD_REQUEST, "unsupported_read_view")
             return

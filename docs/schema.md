@@ -79,8 +79,11 @@ The only tier that is not rebuildable from source. Its canonical table is
 `assertions`: user marks, annotations, corrections, suppressions, tags,
 metadata, saved views, recall packs, workspaces, blackboard notes, candidate
 claims, and operator judgments are all assertion rows with lifecycle state.
-`index.db.session_tags` remains a rebuildable auto-tag/read-model projection;
-human-owned tag and metadata writes do not have separate user-tier tables.
+Candidate review uses the closed status vocabulary `candidate`, `accepted`,
+`rejected`, `deferred`, and `superseded`; active assertions are separate
+durable claims and are not returned by candidate-review reads. `index.db.session_tags`
+remains a rebuildable auto-tag/read-model projection; human-owned tag and
+metadata writes do not have separate user-tier tables.
 
 ### `ops.db` — disposable daemon telemetry
 

@@ -8,9 +8,9 @@
 # Updated 2026-04-29 from realized codebase state.
 
 description: >
-  Scenario families and their subject coverage across the polylogue
-  verification-lab surface. Documents which surfaces have executable
-  scenario specifications and which lack them.
+  Scenario families and their subject coverage across Polylogue lab
+  surfaces. Documents which surfaces have executable scenario specifications
+  and which lack them.
 
 families:
   - name: cli_surfaces

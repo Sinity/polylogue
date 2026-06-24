@@ -2,9 +2,9 @@
 # name: test_root_help_snapshot
   '''
   Usage: cli [OPTIONS] COMMAND [ARGS]...
-  
+
     Polylogue - AI session archive.
-  
+
     Dispatch model (query-first):
         Use `polylogue find QUERY then ACTION` for query-result workflows.
         Quoted query text is also accepted when followed by an action:
@@ -12,18 +12,18 @@
         Run `polylogue --help` to see the full subcommand list, or
         `polylogue --diagnose <args>` to have the parser explain how it
         routed your invocation.
-  
+
     Product roles:
+        Search/read/action:   find QUERY then read|select|mark|analyze|delete|continue
         Setup/demo/evidence:  config, init, import, demo, tutorial
-        Reader/TUI:        dashboard
-        Operations:        polylogue ops status, ops diagnostics, ops maintenance, ops backup
-        Query actions:     find QUERY then read|select|mark|analyze|delete|continue
-  
+        Reader/TUI:           dashboard --status, dashboard
+        Operations:           status (same as polylogue ops status), ops diagnostics, ops maintenance, ops backup
+
     Query mode (default):
         polylogue find "search terms"
         polylogue --origin claude-ai-export --since "last week" find "search terms"
         polylogue --latest find 'repo:polylogue' then read --to browser
-  
+
     Verbs (actions on matched sessions):
         polylogue find id:abc then read          # exact ref: one selected session
         polylogue find id:abc then select --json # expose selected-session identity
@@ -32,7 +32,7 @@
         polylogue find id:abc then analyze --facets
         polylogue find "urgent" then delete --dry-run
         polylogue find 'repo:polylogue' then read --all --format ndjson
-  
+
     Combined filters:
         polylogue --referenced-path README.md find 'repo:polylogue' then read
         polylogue find 'actions where tool:bash AND text:pytest' then read --view messages
@@ -42,16 +42,16 @@
         polylogue --origin claude-code-session --since 2026-01-01 find 'repo:polylogue' then analyze --by repo --format json
         polylogue find 'actions where action:file_edit AND path:polylogue/cli' then read --view messages
         polylogue find 'near:"sqlite locking bug in parser"' then read
-  
+
     Modifiers (write operations):
         polylogue find "urgent" then mark --tag-add review
-  
+
     See also:
         polylogue --help                  # this screen
         polylogue find --help             # query workflow help
         polylogue <subcommand> --help     # per-subcommand help
         polylogue --diagnose <args>       # explain parser decisions
-  
+
   Options:
     --help-markdown                 Emit the full --help tree (root + every
                                     subcommand) as Markdown and exit.
@@ -159,21 +159,37 @@
                                     the strict command floor.
     --version                       Show the version and exit.
     -h, --help                      Show this message and exit.
-  
+
   Commands:
-    analyze
-    config     Show resolved Polylogue configuration with precedence sources.
-    continue   Compile a successor-agent continuation report.
-    dashboard  Launch the terminal dashboard TUI.
-    delete     Delete matched sessions.
-    demo       Seed and verify the deterministic demo archive.
-    import     Import sessions from configured sources.
-    init       Detect chat sources and write a starter polylogue.toml.
-    mark
-    ops        Run operational archive and daemon commands.
-    read       Read matched sessions (route to view/destination).
-    select
-    tutorial   Inspect first-run setup state.
-  
+    Search, read, and action workflows:
+      find      Search the archive, then optionally run an...
+      read      Read matched sessions (route to view/destination).
+      select    Select one matched session or print candidate identities.
+      mark      Mark selected sessions; review candidates under mark candidates.
+      analyze   Analyze matched sessions and named facet families.
+      delete    Delete matched sessions.
+      continue  Compile a successor-agent continuation report.
+      Use `find QUERY then ACTION`; root action words act on the query result set.
+
+    Setup, import, and evidence:
+      config    Show resolved Polylogue configuration with...
+      init      Detect chat sources and write a starter polylogue.toml.
+      import    Import sessions from configured sources.
+      demo      Seed and verify the deterministic demo archive.
+      tutorial  Inspect first-run setup state.
+      Use these for first-run setup, source import, demo archives, and onboarding
+      checks.
+
+    Reader and local UI:
+      dashboard  Launch the terminal dashboard TUI.
+      `dashboard` launches the terminal TUI; `dashboard --status` prints launch
+      evidence.
+
+    Operations and maintenance:
+      status  Show daemon and archive status.
+      ops     Run operational archive and daemon commands.
+      `polylogue status` is the root shortcut for `polylogue ops status`; deeper
+      maintenance stays under `ops`.
+
   '''
 # ---

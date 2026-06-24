@@ -11,7 +11,7 @@ Tiers:
              Full non-integration pytest run that seeds/updates .cache/testmon/testmondata.
   --all/--full
              Explicit full non-integration pytest diagnostic.
-  --lab      Default testmon baseline plus verification-lab smoke and SLO checks.
+  --lab      Default testmon baseline plus lab smoke and SLO checks.
 
 Output formats:
   --json     Machine-readable JSON to stdout (human progress to stderr).
@@ -1177,8 +1177,7 @@ def main(argv: list[str] | None = None) -> int:
         "--lab",
         action="store_true",
         help=(
-            "Run the default pytest-testmon baseline plus verification-lab "
-            "scenario and verify-slos checks; does not imply --all."
+            "Run the default pytest-testmon baseline plus lab scenario and verify-slos checks; does not imply --all."
         ),
     )
     parser.add_argument("--history", action="store_true", help="Print last 10 verify runs and exit.")

@@ -31,6 +31,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     assertion_id_for_promoted_candidate,
     assertion_id_for_transform_candidate,
     judge_assertion_candidate,
+    list_assertion_candidate_reviews,
     list_assertion_candidates,
     list_assertion_claims,
     list_assertions_for_export,
@@ -1035,8 +1036,8 @@ def test_candidate_assertion_defer_records_reason_without_promoting(tmp_path: Pa
         )
 
         assert result.resulting_assertion is None
-        assert result.candidate.status == "candidate"
-        assert candidate.assertion_id in {item.assertion_id for item in list_assertion_candidates(conn)}
+        assert result.candidate.status is AssertionStatus.DEFERRED
+        assert candidate.assertion_id not in {item.assertion_id for item in list_assertion_candidates(conn)}
         assert result.judgment.value == {
             "decision": "defer",
             "candidate_ref": f"assertion:{candidate.assertion_id}",
@@ -1047,6 +1048,12 @@ def test_candidate_assertion_defer_records_reason_without_promoting(tmp_path: Pa
             *candidate.evidence_refs,
             f"assertion:{candidate.assertion_id}",
         ]
+        review_rows = list_assertion_candidate_reviews(conn, statuses=(AssertionStatus.DEFERRED,))
+        assert [(row.candidate.assertion_id, row.candidate.status) for row in review_rows] == [
+            (candidate.assertion_id, AssertionStatus.DEFERRED)
+        ]
+        assert review_rows[0].latest_judgment is not None
+        assert review_rows[0].latest_judgment.assertion_id == result.judgment.assertion_id
     finally:
         conn.close()
 
@@ -1083,5 +1090,88 @@ def test_candidate_assertion_supersede_records_replacement_and_lineage(tmp_path:
             "reason": "replacement is more precise",
             "resulting_assertion_ref": f"assertion:{result.resulting_assertion.assertion_id}",
         }
+    finally:
+        conn.close()
+
+
+def test_candidate_reviews_survive_remirror_without_becoming_authoritative(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "user.db")
+    try:
+        digest = compile_recovery_digest(_recovery_candidate_session())
+        duplicate_digest = digest.model_copy(update={"decision_candidates": (digest.decision_candidates[0],) * 3})
+        candidates = upsert_transform_candidate_assertions(
+            conn,
+            duplicate_digest,
+            now_ms=1_700_000_000_000,
+        )
+        upsert_assertion(
+            conn,
+            assertion_id="durable-user-decision",
+            target_ref=f"session:{digest.session_id}",
+            kind=AssertionKind.DECISION,
+            body_text="This is already durable user-authored state.",
+            status=AssertionStatus.ACTIVE,
+            now_ms=1_700_000_001_000,
+        )
+
+        accepted = judge_assertion_candidate(
+            conn,
+            candidate_ref=f"assertion:{candidates[0].assertion_id}",
+            decision="accept",
+            reason="confirmed",
+            actor_ref="user:local",
+            now_ms=1_700_000_010_000,
+        )
+        rejected = judge_assertion_candidate(
+            conn,
+            candidate_ref=f"assertion:{candidates[1].assertion_id}",
+            decision="reject",
+            reason="unsupported",
+            actor_ref="user:local",
+            now_ms=1_700_000_011_000,
+        )
+        deferred = judge_assertion_candidate(
+            conn,
+            candidate_ref=f"assertion:{candidates[2].assertion_id}",
+            decision="defer",
+            reason="needs another source",
+            actor_ref="user:local",
+            now_ms=1_700_000_012_000,
+        )
+
+        remirrored = upsert_transform_candidate_assertions(
+            conn,
+            duplicate_digest,
+            now_ms=1_700_000_020_000,
+        )
+        statuses_by_id = {item.assertion_id: item.status for item in remirrored}
+        assert statuses_by_id == {
+            candidates[0].assertion_id: AssertionStatus.ACCEPTED,
+            candidates[1].assertion_id: AssertionStatus.REJECTED,
+            candidates[2].assertion_id: AssertionStatus.DEFERRED,
+        }
+        assert all(item.updated_at_ms < 1_700_000_020_000 for item in remirrored)
+        assert list_assertion_candidates(conn) == []
+
+        assert accepted.resulting_assertion is not None
+        active_claims = list_assertion_claims(conn, target_ref=f"session:{digest.session_id}", statuses=("active",))
+        assert {claim.assertion_id for claim in active_claims} == {
+            "durable-user-decision",
+            accepted.resulting_assertion.assertion_id,
+        }
+
+        reviews = list_assertion_candidate_reviews(conn, target_ref=f"session:{digest.session_id}")
+        assert [row.candidate.assertion_id for row in reviews] == [
+            deferred.candidate.assertion_id,
+            rejected.candidate.assertion_id,
+            accepted.candidate.assertion_id,
+        ]
+        assert {row.candidate.status for row in reviews} == {
+            AssertionStatus.ACCEPTED,
+            AssertionStatus.REJECTED,
+            AssertionStatus.DEFERRED,
+        }
+        assert "durable-user-decision" not in {row.candidate.assertion_id for row in reviews}
+        assert all(row.latest_judgment is not None for row in reviews)
     finally:
         conn.close()

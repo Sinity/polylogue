@@ -21,9 +21,9 @@ the owning issue/PR verification section and the tracked visual tests under
 `tests/visual/`; old coding-agent handoff packs are not accepted as
 verification authority.
 
-Representative media has to be evidence, not decoration. Acceptable public
-proof comes from commands that run against synthetic fixtures or a fresh local
-browser profile and produce a named artifact: the DOM smoke lane below,
+Representative media has to be evidence, not decoration. Public evidence must
+point to commands that run against synthetic fixtures or an explicitly local
+operator profile and produce a named artifact: the DOM smoke lane below,
 `devtools lab smoke run reader-visual-smoke`,
 `devtools workspace dev-loop --tui-plan`,
 `devtools workspace dev-loop --browser-provider-smoke`, or

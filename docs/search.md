@@ -371,11 +371,13 @@ are rejected instead of silently coercing row queries back to session queries.
 Transform and recovery jobs may emit assertion rows with `status:candidate`.
 Candidate rows are private, carry `context_policy.inject=false`, and keep
 `promotion_required=true` until an operator makes an explicit judgment. They
-can be inspected like any other assertion row:
+can be inspected like any other assertion row, or through the review list that
+keeps pending candidates separate from already judged lifecycle rows:
 
 ```bash
 polylogue assertions where 'status:candidate AND target:session:codex-session:abc123' --format json
 polylogue mark candidates list --target-ref session:codex-session:abc123 --format json
+polylogue mark candidates review --target-ref session:codex-session:abc123 --format json
 ```
 
 The judgment workflow lives under `polylogue mark candidates` and writes
@@ -388,11 +390,19 @@ polylogue mark candidates defer assertion:candidate-id --reason "needs another s
 polylogue mark candidates supersede assertion:candidate-id --kind summary --body "replacement claim" --format json
 ```
 
+The closed assertion status vocabulary is `active`, `candidate`, `accepted`,
+`rejected`, `deferred`, `superseded`, `deleted`, and `inactive`; unknown values
+fail at the typed boundary instead of being rendered as generic strings.
 `accept` and `supersede` create an active assertion whose evidence includes the
 candidate assertion ref and whose `supersedes` lineage points at the candidate.
-`reject` and `defer` preserve a judgment assertion with the reason and leave a
-durable lifecycle record. No candidate assertion is injected into compiled
-context unless a later surface asks for candidates explicitly.
+`reject` writes `status:rejected`, and `defer` writes `status:deferred`; both
+preserve a judgment assertion with the reason and leave a durable lifecycle
+record. Judged candidates remain in `mark candidates review` with disabled
+action reasons such as `candidate_already_accepted`, `candidate_already_rejected`,
+`candidate_deferred`, or `candidate_superseded`, while `mark candidates list`
+only shows candidates still awaiting judgment. No candidate assertion is
+injected into compiled context unless a later surface asks for candidates
+explicitly.
 
 Pending candidate judgments also appear in the operator debt cockpit:
 

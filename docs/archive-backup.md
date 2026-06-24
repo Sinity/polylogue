@@ -60,6 +60,11 @@ Restore expectations:
 - `user.db` must survive ordinary `polylogue ops reset --database` and
   `polylogue ops reset --all`; deleting it requires the explicit
   `--include-user-db` opt-in.
+- Assertion candidates, accepted/rejected/deferred judgments, and promoted
+  active assertions all live in `user.db`. Rebuilding `index.db` from
+  `source.db` must not turn rejected or deferred inference candidates back into
+  actionable user assertions, and editing assertion metadata is outside the raw
+  session content-hash boundary.
 - `index.db` may be rebuilt from `source.db` when schema versions change.
 - `embeddings.db` may be rebuilt, but restore it when possible to avoid
   provider cost and delay.

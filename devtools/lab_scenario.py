@@ -125,7 +125,7 @@ def run_tier_0() -> dict[str, str]:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run verification-lab smoke sets.")
+    parser = argparse.ArgumentParser(description="Run executable archive and reader smoke sets.")
     subparsers = parser.add_subparsers(dest="action", required=True)
     run_parser = subparsers.add_parser("run", help="Run a named smoke set.")
     run_parser.add_argument("scenario", choices=_SCENARIO_NAMES, help="Smoke set to run.")

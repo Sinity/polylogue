@@ -1939,6 +1939,8 @@ class TestReaderQueryUnits:
 
 class TestReaderViewProfiles:
     def test_read_view_profiles_endpoint_exposes_shared_profile_semantics(self) -> None:
+        from polylogue.archive.viewport import read_view_http_capability_payloads
+
         with _running_server_without_seed() as (_server, base_url):
             payload = _get_json(base_url, "/api/read-view-profiles")
 
@@ -1947,6 +1949,11 @@ class TestReaderViewProfiles:
         read_views = payload["read_views"]
         assert isinstance(read_views, list)
         profiles = {profile["view_id"]: profile for profile in read_views}
+        http_capabilities = read_view_http_capability_payloads()
+        endpoint_http_capabilities = {
+            view_id: profile.get("http") for view_id, profile in profiles.items() if profile.get("http")
+        }
+        assert endpoint_http_capabilities == http_capabilities
         assert profiles["raw"]["lossiness"] == "raw"
         assert profiles["raw"]["evidence_policy"] == "required"
         raw_http = cast(dict[str, object], profiles["raw"]["http"])

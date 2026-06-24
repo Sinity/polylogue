@@ -9,7 +9,7 @@
   '''
   {
     "avg_messages_per_session": 5.0,
-    "db_size_bytes": 552960,
+    "db_size_bytes": <SIZE_BYTES>,
     "embedded_messages": 0,
     "embedded_sessions": 0,
     "embedding_coverage_percent": 0.0,
@@ -317,7 +317,7 @@
       "source": {
         "path": "<PATH>",
         "exists": true,
-        "size_bytes": 131072,
+        "size_bytes": <SIZE_BYTES>,
         "expected_user_version": 1,
         "user_version": 1,
         "version_status": "ok",
@@ -332,7 +332,7 @@
       "index": {
         "path": "<PATH>",
         "exists": true,
-        "size_bytes": 552960,
+        "size_bytes": <SIZE_BYTES>,
         "expected_user_version": 7,
         "user_version": 7,
         "version_status": "ok",
@@ -351,7 +351,7 @@
       "embeddings": {
         "path": "<PATH>",
         "exists": true,
-        "size_bytes": 57344,
+        "size_bytes": <SIZE_BYTES>,
         "expected_user_version": 1,
         "user_version": 1,
         "version_status": "ok",
@@ -362,7 +362,7 @@
       "user": {
         "path": "<PATH>",
         "exists": true,
-        "size_bytes": 24576,
+        "size_bytes": <SIZE_BYTES>,
         "expected_user_version": 3,
         "user_version": 3,
         "version_status": "ok",
@@ -373,7 +373,7 @@
       "ops": {
         "path": "<PATH>",
         "exists": true,
-        "size_bytes": 118784,
+        "size_bytes": <SIZE_BYTES>,
         "expected_user_version": 1,
         "user_version": 1,
         "version_status": "ok",
@@ -398,17 +398,17 @@
     "archive_facade_routes": {
       "checked": true,
       "source": "static_facade_route_catalog",
-      "total_method_count": 124,
-      "archive_ready_method_count": 123,
+      "total_method_count": 125,
+      "archive_ready_method_count": 124,
       "unsupported_method_count": 0,
       "route_counts": {
-        "archive_routed": 109,
+        "archive_routed": 110,
         "archive_direct": 14,
         "not_archive_runtime": 1
       },
       "tier_counts": {
         "user": 38,
-        "index": 81,
+        "index": 82,
         "none": 1,
         "source": 4
       },
@@ -904,6 +904,11 @@
           "tier": "user",
           "detail": "writes blackboard notes through user.db"
         },
+        "provider_usage_report": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "delegates to the provider usage report archive helper"
+        },
         "query_completions": {
           "route": "archive_routed",
           "tier": "index",
@@ -1097,7 +1102,7 @@
       ],
       "facade_tier_route_counts": {
         "user": 38,
-        "index": 81,
+        "index": 82,
         "none": 1,
         "source": 4
       },

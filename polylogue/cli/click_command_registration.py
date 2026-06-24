@@ -146,6 +146,7 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("import_command"),
     _L("init"),
     _L("ops"),
+    _L("status"),
     _L("tutorial"),
 )
 

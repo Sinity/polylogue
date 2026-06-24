@@ -82,19 +82,21 @@
         `polylogue --diagnose <args>` to have the parser explain how it
         routed your invocation.
     Product roles:
+        Search<PATH>:   find QUERY then read|select|mark|analyze|delete|cont
+  inue
         Setup<PATH>:  config, init, import, demo, tutorial
-        Reader<PATH>:        dashboard
-        Operations:        polylogue ops status, ops diagnostics, ops maintenance,
-   ops backup
-        Query actions:     find QUERY then read|select|mark|analyze|delete|continu
-  e
+        Reader<PATH>:           dashboard --status, dashboard
+        Operations:           status (same as polylogue ops status), ops diagnosti
+  cs, ops maintenance, ops backup
     Query mode (default):
         polylogue find "search terms"
         polylogue --origin claude-ai-export --since "last week" find "search terms
   "
         polylogue --latest find 'repo:polylogue' then read --to browser
     Verbs (actions on matched sessions):
-        polylogue find id:abc then read
+        polylogue find id:abc then read          # exact ref: one selected session
+        polylogue find id:abc then select --json # expose selected-session identit
+  y
         polylogue find id:abc then read --view messages
         polylogue find id:abc then read --to browser
         polylogue find id:abc then analyze --facets
@@ -232,19 +234,33 @@
     --version                       Show the version and exit.
     -h, --help                      Show this message and exit.
   Commands:
-    analyze
-    config     Show resolved Polylogue configuration with precedence sources.
-    continue   Compile a successor-agent continuation report.
-    dashboard  Launch the terminal dashboard TUI.
-    delete     Delete matched sessions.
-    demo       Seed and verify the deterministic demo archive.
-    import     Import sessions from configured sources.
-    init       Detect chat sources and write a starter polylogue.toml.
-    mark
-    ops        Run operational archive and daemon commands.
-    read       Read matched sessions (route to view<PATH>).
-    select
-    tutorial   Inspect first-run setup state.
+    Search, read, and action workflows:
+      find      Search the archive, then optionally run an...
+      read      Read matched sessions (route to view<PATH>).
+      select    Select one matched session or print candidate identities.
+      mark      Mark selected sessions; review candidates under mark candidates.
+      analyze   Analyze matched sessions and named facet families.
+      delete    Delete matched sessions.
+      continue  Compile a successor-agent continuation report.
+      Use `find QUERY then ACTION`; root action words act on the query result
+      set.
+    Setup, import, and evidence:
+      config    Show resolved Polylogue configuration with...
+      init      Detect chat sources and write a starter polylogue.toml.
+      import    Import sessions from configured sources.
+      demo      Seed and verify the deterministic demo archive.
+      tutorial  Inspect first-run setup state.
+      Use these for first-run setup, source import, demo archives, and
+      onboarding checks.
+    Reader and local UI:
+      dashboard  Launch the terminal dashboard TUI.
+      `dashboard` launches the terminal TUI; `dashboard --status` prints launch
+      evidence.
+    Operations and maintenance:
+      status  Show daemon and archive status.
+      ops     Run operational archive and daemon commands.
+      `polylogue status` is the root shortcut for `polylogue ops status`; deeper
+      maintenance stays under `ops`.
   '''
 # ---
 # name: TestTerminalDimensions.test_help_at_narrow_width
@@ -263,13 +279,13 @@
   in how it
         routed your invocation.
     Product roles:
-        Setup<PATH>:  config, init, import, demo, tutoria
-  l
-        Reader<PATH>:        dashboard
-        Operations:        polylogue ops status, ops diagnosti
-  cs, ops maintenance, ops backup
-        Query actions:     find QUERY then read|select|mark|an
-  alyze|delete|continue
+        Search<PATH>:   find QUERY then read|select|mark
+  |analyze|delete|continue
+        Setup<PATH>:  config, init, import, demo, tuto
+  rial
+        Reader<PATH>:           dashboard --status, dashboard
+        Operations:           status (same as polylogue ops st
+  atus), ops diagnostics, ops maintenance, ops backup
     Query mode (default):
         polylogue find "search terms"
         polylogue --origin claude-ai-export --since "last week
@@ -277,7 +293,10 @@
         polylogue --latest find 'repo:polylogue' then read --t
   o browser
     Verbs (actions on matched sessions):
-        polylogue find id:abc then read
+        polylogue find id:abc then read          # exact ref:
+  one selected session
+        polylogue find id:abc then select --json # expose sele
+  cted-session identity
         polylogue find id:abc then read --view messages
         polylogue find id:abc then read --to browser
         polylogue find id:abc then analyze --facets
@@ -494,22 +513,43 @@
     -h, --help                      Show this message and exit
   .
   Commands:
-    analyze
-    config     Show resolved Polylogue configuration with prec
-  edence sources.
-    continue   Compile a successor-agent continuation report.
-    dashboard  Launch the terminal dashboard TUI.
-    delete     Delete matched sessions.
-    demo       Seed and verify the deterministic demo archive.
-    import     Import sessions from configured sources.
-    init       Detect chat sources and write a starter polylog
-  ue.toml.
-    mark
-    ops        Run operational archive and daemon commands.
-    read       Read matched sessions (route to view<PATH>
-  n).
-    select
-    tutorial   Inspect first-run setup state.
+    Search, read, and action workflows:
+      find      Search the archive, then optionally run an...
+      read      Read matched sessions (route to view<PATH>
+  on).
+      select    Select one matched session or print candidate
+  identities.
+      mark      Mark selected sessions; review candidates unde
+  r mark candidates.
+      analyze   Analyze matched sessions and named facet famil
+  ies.
+      delete    Delete matched sessions.
+      continue  Compile a successor-agent continuation report.
+      Use `find QUERY then ACTION`; root action words act on t
+  he query result
+      set.
+    Setup, import, and evidence:
+      config    Show resolved Polylogue configuration with...
+      init      Detect chat sources and write a starter polylo
+  gue.toml.
+      import    Import sessions from configured sources.
+      demo      Seed and verify the deterministic demo archive
+  .
+      tutorial  Inspect first-run setup state.
+      Use these for first-run setup, source import, demo archi
+  ves, and
+      onboarding checks.
+    Reader and local UI:
+      dashboard  Launch the terminal dashboard TUI.
+      `dashboard` launches the terminal TUI; `dashboard --stat
+  us` prints launch
+      evidence.
+    Operations and maintenance:
+      status  Show daemon and archive status.
+      ops     Run operational archive and daemon commands.
+      `polylogue status` is the root shortcut for `polylogue o
+  ps status`; deeper
+      maintenance stays under `ops`.
   '''
 # ---
 # name: TestTerminalDimensions.test_help_at_wide_width
@@ -524,16 +564,17 @@
         `polylogue --diagnose <args>` to have the parser explain how it
         routed your invocation.
     Product roles:
+        Search<PATH>:   find QUERY then read|select|mark|analyze|delete|continue
         Setup<PATH>:  config, init, import, demo, tutorial
-        Reader<PATH>:        dashboard
-        Operations:        polylogue ops status, ops diagnostics, ops maintenance, ops backup
-        Query actions:     find QUERY then read|select|mark|analyze|delete|continue
+        Reader<PATH>:           dashboard --status, dashboard
+        Operations:           status (same as polylogue ops status), ops diagnostics, ops maintenance, ops backup
     Query mode (default):
         polylogue find "search terms"
         polylogue --origin claude-ai-export --since "last week" find "search terms"
         polylogue --latest find 'repo:polylogue' then read --to browser
     Verbs (actions on matched sessions):
-        polylogue find id:abc then read
+        polylogue find id:abc then read          # exact ref: one selected session
+        polylogue find id:abc then select --json # expose selected-session identity
         polylogue find id:abc then read --view messages
         polylogue find id:abc then read --to browser
         polylogue find id:abc then analyze --facets
@@ -667,18 +708,32 @@
     --version                       Show the version and exit.
     -h, --help                      Show this message and exit.
   Commands:
-    analyze
-    config     Show resolved Polylogue configuration with precedence sources.
-    continue   Compile a successor-agent continuation report.
-    dashboard  Launch the terminal dashboard TUI.
-    delete     Delete matched sessions.
-    demo       Seed and verify the deterministic demo archive.
-    import     Import sessions from configured sources.
-    init       Detect chat sources and write a starter polylogue.toml.
-    mark
-    ops        Run operational archive and daemon commands.
-    read       Read matched sessions (route to view<PATH>).
-    select
-    tutorial   Inspect first-run setup state.
+    Search, read, and action workflows:
+      find      Search the archive, then optionally run an...
+      read      Read matched sessions (route to view<PATH>).
+      select    Select one matched session or print candidate identities.
+      mark      Mark selected sessions; review candidates under mark candidates.
+      analyze   Analyze matched sessions and named facet families.
+      delete    Delete matched sessions.
+      continue  Compile a successor-agent continuation report.
+      Use `find QUERY then ACTION`; root action words act on the query result
+      set.
+    Setup, import, and evidence:
+      config    Show resolved Polylogue configuration with...
+      init      Detect chat sources and write a starter polylogue.toml.
+      import    Import sessions from configured sources.
+      demo      Seed and verify the deterministic demo archive.
+      tutorial  Inspect first-run setup state.
+      Use these for first-run setup, source import, demo archives, and
+      onboarding checks.
+    Reader and local UI:
+      dashboard  Launch the terminal dashboard TUI.
+      `dashboard` launches the terminal TUI; `dashboard --status` prints launch
+      evidence.
+    Operations and maintenance:
+      status  Show daemon and archive status.
+      ops     Run operational archive and daemon commands.
+      `polylogue status` is the root shortcut for `polylogue ops status`; deeper
+      maintenance stays under `ops`.
   '''
 # ---

@@ -263,6 +263,7 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "neighbor_candidate_payloads": ("archive_routed", "index", "builds neighbor DTOs from index.db"),
     "parse_file": ("archive_routed", "source", "writes source.db and index.db directly"),
     "post_blackboard_note": ("archive_routed", "user", "writes blackboard notes through user.db"),
+    "provider_usage_report": ("archive_routed", "index", "delegates to the provider usage report archive helper"),
     "parse_sources": ("archive_routed", "source", "writes source.db and index.db directly"),
     "query_units": ("archive_routed", "index", "queries terminal archive units from index.db"),
     "query_completions": ("archive_routed", "index", "returns query DSL completions from index.db metadata"),
@@ -771,9 +772,11 @@ def status_command(
 ) -> None:
     """Show daemon and archive health.
 
-    Queries the running polylogued daemon for archive status: daemon
-    liveness, ingestion progress, FTS coverage, insight freshness, and
-    component health. Read-only — does not modify state.
+    Root ``polylogue status`` and ``polylogue ops status`` are the same
+    read-only operational surface. It queries the running polylogued daemon
+    for liveness, ingestion progress, FTS coverage, insight freshness, and
+    component health; when the daemon is unavailable it falls back to bounded
+    local archive checks.
     """
     if json_alias and output_format is None:
         output_format = "json"

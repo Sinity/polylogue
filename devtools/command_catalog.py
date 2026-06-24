@@ -158,7 +158,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "render quality-reference",
         "generated surfaces",
-        "Render docs/test-quality-workflows.md from live validation, mutation, and benchmark registries.",
+        "Render docs/test-quality-workflows.md from executable lane, mutation, and benchmark registries.",
         "devtools.render_quality_reference",
     ),
     CommandSpec(
@@ -253,7 +253,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "verification lab",
         "Run named validation lanes.",
         "devtools.run_validation_lanes",
-        use_when="List, dry-run, or execute authored validation lanes from the verification lab registry.",
+        use_when="List, dry-run, or execute authored validation lanes from the executable lane registry.",
         examples=(
             "devtools lab lanes --list",
             "devtools lab lanes --lane frontier-local",
@@ -563,7 +563,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "lab smoke",
         "verification lab",
-        "Run verification-lab smoke sets.",
+        "Run direct archive and reader smoke sets.",
         "devtools.lab_scenario",
         use_when="Run direct archive and reader smoke sets outside the archive CLI.",
         examples=(
@@ -586,7 +586,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Compare two committed schema package versions for a provider.",
         "devtools.schema_inspect",
         entrypoint="compare_main",
-        use_when="Review schema package drift between committed versions in the verification-lab surface.",
+        use_when="Review schema package drift between committed versions in the lab surface.",
         examples=("devtools lab schema compare --provider chatgpt --from v1 --to v2 --markdown",),
     ),
     CommandSpec(

@@ -52,6 +52,12 @@ class TestRootHelpStructure:
         assert "Usage:" in result.output, f"missing 'Usage:' section: {result.output!r}"
         assert "Options:" in result.output, f"missing 'Options:' section: {result.output!r}"
         assert "Commands:" in result.output, f"missing 'Commands:' section: {result.output!r}"
+        assert "Search, read, and action workflows:" in result.output
+        assert "Setup, import, and evidence:" in result.output
+        assert "Reader and local UI:" in result.output
+        assert "Operations and maintenance:" in result.output
+        assert "find" in result.output
+        assert "status" in result.output
 
     def test_root_help_alias_short_flag(self, runner: CliRunner) -> None:
         """``-h`` is an alias for ``--help`` per the root group config."""
@@ -101,7 +107,7 @@ class TestEverySubcommandHasHelp:
                 continue
             if line.startswith("Usage:"):
                 continue
-            if line in ("Options:", "Commands:"):
+            if line in ("Options:", "Commands:") or line.endswith(":"):
                 continue
             substantive.append(line)
         assert substantive, f"{path.display_name} --help has no substantive description lines: {result.output!r}"

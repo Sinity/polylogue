@@ -547,8 +547,10 @@ focused selections. During or after a run, inspect
 selected/deselected node IDs, collection duration, slowest setup/call/teardown
 phases, captured output, and termination reason if a focused run stalls.
 
-For the generated validation-lane, mutation-campaign, and benchmark inventory,
-see [docs/test-quality-workflows.md](docs/test-quality-workflows.md).
+For optional lane, mutation-campaign, and benchmark inventories, see
+[docs/test-quality-workflows.md](docs/test-quality-workflows.md). Those registries are
+secondary navigation over executable checks; the source of truth for behavior is
+pytest plus the concrete `polylogue`/`devtools` commands they invoke.
 
 ## Test Suite Layout
 
@@ -646,16 +648,29 @@ need the host clock (timing benchmarks, fuzz harnesses, the
 `frozen_clock` self-tests) add their path to the allowlist with a
 one-line rationale; everything else migrates to the fixture.
 
-## Demo Verification
+## Demo and Visual Behavior Checks
+
+The deterministic demo archive is the supported private-data-free way to run
+read/search examples and reader smoke checks. The direct seed/verify commands
+create a ready-to-query archive without daemon scheduling; the import path uses
+the daemon and can wait for the same semantic verifier.
 
 ```bash
-# Seed and verify the deterministic local demo archive
-polylogue demo seed --force --with-overlays
-polylogue demo verify --require-overlays
+# Source-only demo archive, no daemon required
+polylogue demo seed --root "$POLYLOGUE_ARCHIVE_ROOT" --force --with-overlays --format json
+polylogue demo verify --root "$POLYLOGUE_ARCHIVE_ROOT" --require-overlays --format json
+polylogue demo script --shell bash
 
-# Daemon-backed demo convergence
+# Daemon-backed demo path, waits for convergence before returning
 polylogue import --demo --wait --timeout 30 --with-overlays
+
+# Behavior-backed docs/visual lane
+uv run devtools test tests/unit/cli/test_demo_command.py tests/unit/demo/test_demo_seed_verify.py tests/visual
 ```
+
+Browser or deployment media remains local operator evidence unless the run is
+backed by an explicit command artifact. The fast visual lane is browserless and
+checks HTTP/DOM/API contracts rather than screenshots.
 
 ## Mutation Testing
 
@@ -751,8 +766,8 @@ Leaf adapters over archive operations and derived insights.
 
 - schema inference and verification
 - synthetic corpus generation
-- deterministic demo fixtures and verification-lab acceptance flows
-- validation lanes, mutation campaigns, benchmark campaigns
+- deterministic demo fixtures and behavior-backed archive/reader smoke checks
+- optional validation lanes, mutation campaigns, and benchmark campaigns that dispatch executable commands
 
 Primary modules:
 
@@ -1150,6 +1165,11 @@ schema shape:
   and `session_provider_usage_events.payload_json`. Existing index tiers must
   be rebuilt from source evidence so the canonical read model is recreated with
   the stricter JSON contract.
+- Provider usage accounting is audited as a source-derived read model: exact
+  event rows (`session_provider_usage_events`), text-only estimates, unsupported
+  origins, source rows acquired but not materialized, and stale
+  `session_model_usage` rollups are distinct diagnostic states. Cache read/write
+  token lanes remain labelled and are not merged into generic input/output.
 - Index schema version 6 added `session_provider_usage_events` for
   provider-reported token usage events and single-model rollup repair from
   those events. Existing index tiers must be rebuilt from source evidence so
@@ -1616,18 +1636,18 @@ scripts and agents.
 repo readiness: generated-surface rendering, baseline verification, validation
 lane dispatch, package/build checks, and branch/PR readiness gates.
 
-Domain validation semantics belong in the verification-lab, schema, scenario,
-or insight modules first. A `devtools` command may expose them only as a thin
-operator entrypoint that delegates to the owning lab or insight implementation.
+Domain validation semantics belong in lab, schema, scenario, or insight
+modules first. A `devtools` command may expose them only as a thin operator
+entrypoint that delegates to the owning executable check implementation.
 
 Routine command placement:
 
 - keep repo state, rendering, packaging, and PR-readiness orchestration in
   `devtools`;
 - keep archive/insight workflows in `polylogue` CLI/API surfaces;
-- keep evidence/scenario behavior behind the verification-lab surface;
-- prefer validation lanes and `devtools verify --lab` to compose lab checks
-  rather than duplicating domain checks inside `devtools verify`.
+- keep evidence/scenario behavior in lab modules with executable command entrypoints;
+- prefer validation lanes and `devtools verify --lab` to compose executable
+  lab checks rather than duplicating domain checks inside `devtools verify`.
 
 <!-- BEGIN GENERATED: devtools-command-catalog -->
 ## Command Catalog
@@ -1642,15 +1662,15 @@ devtools status
 devtools status --json
 ```
 
-## Verification Lab Surface
+## Executable Lab Checks
 
-The verification-lab operator surface intentionally lives in `devtools` for now. These commands operate on
-repo verification checks and evidence records, not end-user archive workflows.
+These commands are thin wrappers around concrete schema, provider, pipeline, smoke, and lane checks.
+They are not a proof ledger or end-user archive workflow.
 
 | Command | Role |
 | --- | --- |
 | `devtools lab graph` | Inspect the authored runtime graph and see which scenarios currently cover declared artifacts and operations. |
-| `devtools lab lanes` | List, dry-run, or execute authored validation lanes from the verification lab registry. |
+| `devtools lab lanes` | List, dry-run, or execute authored validation lanes from the executable lane registry. |
 | `devtools lab policy schema-versioning` | Enforce the policy boundary documented in docs/internals.md § 'Schema Versioning Model'. Polylogue intentionally has no in-place storage schema upgrade chain; archive-shape changes edit the canonical DDL and require a fresh rebuild from source. |
 | `devtools lab provider completeness` | Inspect detector, parser, fixture, schema, docs, ImportExplain, and caveat coverage before claiming a provider/importer mode is product-ready. |
 | `devtools lab probe capture-regression` | Turn a live or probe failure JSON summary into a replayable local regression artifact. |
@@ -1659,7 +1679,7 @@ repo verification checks and evidence records, not end-user archive workflows.
 | `devtools lab projections` | Inspect the unified projection inventory that feeds runtime coverage, generated docs, and control-plane maps. |
 | `devtools lab smoke` | Run direct archive and reader smoke sets outside the archive CLI. |
 | `devtools lab schema audit` | Check committed schema package quality gates without presenting them as normal archive usage. |
-| `devtools lab schema compare` | Review schema package drift between committed versions in the verification-lab surface. |
+| `devtools lab schema compare` | Review schema package drift between committed versions in the lab surface. |
 | `devtools lab schema explain` | Inspect schema package annotations, semantic roles, and review evidence from the lab surface. |
 | `devtools lab schema generate` | Refresh provider schema package artifacts from archive observations outside the archive CLI. |
 | `devtools lab schema list` | Inspect committed provider schema package catalogs without presenting them as normal archive usage. |
@@ -1703,7 +1723,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools render openapi` | Render docs/openapi/search.yaml from typed daemon query payload models. |
 | `devtools render pages` | Build the GitHub Pages documentation site into .cache/site/. |
 | `devtools render product-workflows` | Render docs/product/workflows.md from executable query-action workflow registries. |
-| `devtools render quality-reference` | Render docs/test-quality-workflows.md from live validation, mutation, and benchmark registries. |
+| `devtools render quality-reference` | Render docs/test-quality-workflows.md from executable lane, mutation, and benchmark registries. |
 | `devtools render topology-projection` | Generate docs/plans/topology-target.yaml from the current tree using placement rules. |
 | `devtools render topology-status` | Render docs/topology-status.md from the topology projection and realized tree. |
 
@@ -1715,7 +1735,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools release readiness` | Validate the externally-presentable release gate definition. |
 | `devtools release verify-distribution` | Verify wheel/sdist installed artifacts expose only supported runtime entrypoints. |
 
-### Verification Lab
+### Lab Checks
 
 | Command | Description |
 | --- | --- |
@@ -1734,7 +1754,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools lab schema list` | List committed schema packages, versions, and evidence manifests. |
 | `devtools lab schema promote` | Promote a schema evidence cluster into a registered package version. |
 | `devtools lab schema roundtrip` | Verify committed provider schema packages reload and roundtrip cleanly. |
-| `devtools lab smoke` | Run verification-lab smoke sets. |
+| `devtools lab smoke` | Run direct archive and reader smoke sets. |
 | `devtools lab snapshot read-surface` | Capture and compare archive read-surface snapshots. |
 
 ### Verification

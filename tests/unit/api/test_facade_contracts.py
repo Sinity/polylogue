@@ -37,7 +37,7 @@ import pytest
 from polylogue import Polylogue
 from polylogue.api.archive import SessionNotFoundError
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import AssertionKind, BlockType, MaterialOrigin, Origin, Provider
+from polylogue.core.enums import AssertionKind, AssertionStatus, BlockType, MaterialOrigin, Origin, Provider
 from polylogue.errors import DatabaseError, PolylogueError
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -130,6 +130,7 @@ READ_NULLARY_METHODS: frozenset[str] = frozenset(
         "list_session_cost_insights",
         "list_cost_rollup_insights",
         "list_archive_debt_insights",
+        "provider_usage_report",
         "count_sessions",
         "rebuild_index",
         "get_index_status",
@@ -235,6 +236,7 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "explain_import",
         "archive_debt",
         "list_assertion_claim_payloads",
+        "list_assertion_candidate_reviews",
         "judge_assertion_candidate",
         "neighbor_candidate_payloads",
         "recovery_read_payload",
@@ -4312,5 +4314,18 @@ async def test_facade_judges_candidate_assertion_in_user_tier(workspace_env: dic
         assert result.resulting_assertion is not None
         assert result.resulting_assertion.kind == "decision"
         assert result.resulting_assertion.supersedes == ("assertion:candidate-api-1",)
+        post_candidates = await archive.list_assertion_candidates()
+        assert post_candidates == []
+
+        review = await archive.list_assertion_candidate_reviews()
+        assert review.mode == "assertion-candidate-review-list"
+        assert review.durable_assertions_excluded is True
+        assert [item.candidate.assertion_id for item in review.items] == ["candidate-api-1"]
+        assert review.items[0].review_status == "accepted"
+        assert review.items[0].candidate.status is AssertionStatus.ACCEPTED
+        assert review.items[0].latest_judgment is not None
+        assert review.items[0].latest_judgment.decision == "accept"
+        disabled = {action.availability.disabled_reason for action in review.items[0].action_affordances}
+        assert disabled == {"candidate_already_accepted"}
     finally:
         await archive.close()
