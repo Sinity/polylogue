@@ -17,6 +17,7 @@
     if (provider === "chatgpt") {
       const marker = parts.indexOf("c");
       if (marker >= 0 && parts[marker + 1]) return parts[marker + 1];
+      if (parsed.searchParams.get("temporary-chat") === "true") return "__polylogue_temporary_chat__";
       return null;
     }
     if (provider === "claude-ai" && parts[0] === "chat" && parts[1]) {
@@ -44,7 +45,11 @@
     rawProviderPayload = null
   }) {
     const sourceUrl = window.location.href;
-    const stableProviderSessionId = providerSessionId || sessionIdFromUrl(provider, sourceUrl);
+    const urlSessionId = providerSessionId || sessionIdFromUrl(provider, sourceUrl);
+    const stableProviderSessionId =
+      urlSessionId === "__polylogue_temporary_chat__"
+      ? `temporary:${fnv1a(`${sourceUrl}:${turns.map((turn) => `${turn.role}:${turn.text || ""}`).join("\n")}`)}`
+        : urlSessionId;
     if (!stableProviderSessionId) {
       throw new Error(`cannot capture ${provider} page without a provider-native conversation id`);
     }
@@ -75,12 +80,13 @@
         model,
         provider_meta: providerMeta,
         turns: turns.map((turn, ordinal) => ({
-          provider_turn_id: turn.provider_turn_id || `${stableProviderSessionId}:turn:${ordinal}:${fnv1a(turn.role + ":" + turn.text)}`,
+          provider_turn_id: turn.provider_turn_id || `${stableProviderSessionId}:turn:${ordinal}:${fnv1a(turn.role + ":" + (turn.text || ""))}`,
           role: turn.role,
-          text: turn.text,
+          text: turn.text || null,
           timestamp: turn.timestamp || null,
           ordinal,
           parent_turn_id: turn.parent_turn_id || null,
+          attachments: Array.isArray(turn.attachments) ? turn.attachments : [],
           provider_meta: turn.provider_meta || {}
         }))
       }

@@ -53,6 +53,59 @@
     return index % 2 === 0 ? "user" : "assistant";
   }
 
+  function attachmentNameFromNode(node) {
+    const label = node.getAttribute("aria-label") || "";
+    const download = node.getAttribute("download") || "";
+    const alt = node.getAttribute("alt") || "";
+    const text = window.polylogueCapture.visibleText(node);
+    const href = node.getAttribute("href") || node.getAttribute("src") || "";
+    const basename = href.split(/[/?#]/).filter(Boolean).at(-1) || "";
+    const candidates = [label, download, alt, text, basename]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean);
+    const extensionPattern =
+      "zip|tar|tgz|gz|bz2|xz|7z|rar|md|txt|pdf|doc|docx|json|jsonl|csv|tsv|py|js|ts|tsx|jsx|rs|go|java|c|cc|cpp|h|hpp|png|jpe?g|gif|webp|svg|mp3|mp4|wav|webm";
+    const filePattern = new RegExp(`(?:^|\\s)([^\\s@/]+\\.(?:${extensionPattern}))(?:\\s|$)`, "i");
+    for (const candidate of candidates) {
+      const fileNameMatch = candidate.match(filePattern);
+      if (fileNameMatch) return fileNameMatch[1].trim();
+    }
+    return null;
+  }
+
+  function collectAttachments(node, turnIndex) {
+    const selector = [
+      '[role="group"][aria-label]',
+      "a[download]",
+      "a[href][aria-label]",
+      "img[alt]",
+      "img[src]"
+    ].join(",");
+    const seen = new Set();
+    const attachments = [];
+    for (const candidate of node.querySelectorAll(selector)) {
+      const name = attachmentNameFromNode(candidate);
+      if (!name) continue;
+      const rawHref = candidate.getAttribute("href") || candidate.getAttribute("src") || null;
+      const url = rawHref && /^https?:\/\//i.test(rawHref) ? rawHref : null;
+      const key = `${name}\n${url || ""}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      attachments.push({
+        provider_attachment_id: `dom:${window.polylogueCapture.fnv1a(`${turnIndex}:${key}`)}`,
+        name,
+        url,
+        provider_meta: {
+          dom_selector_index: turnIndex,
+          dom_label: candidate.getAttribute("aria-label") || null,
+          dom_text: window.polylogueCapture.visibleText(candidate) || null,
+          capture_source: "chatgpt_dom_attachment"
+        }
+      });
+    }
+    return attachments;
+  }
+
   function collectTurns() {
     const nodes = [
       ...document.querySelectorAll('[data-testid^="conversation-turn-"], article, [data-message-author-role]')
@@ -62,7 +115,10 @@
         const explicitRole = node.getAttribute("data-message-author-role");
         const role = explicitRole || roleFromNode(node, index);
         const text = window.polylogueCapture.visibleText(node);
-        return text ? { role, text, provider_meta: { selector_index: index } } : null;
+        const attachments = collectAttachments(node, index);
+        return text || attachments.length
+          ? { role, text, attachments, provider_meta: { selector_index: index } }
+          : null;
       })
       .filter(Boolean);
   }

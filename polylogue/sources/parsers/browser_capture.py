@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import TypeGuard
+
 from polylogue.browser_capture.identity import legacy_browser_capture_native_id
 from polylogue.browser_capture.models import BrowserCaptureEnvelope, looks_like_browser_capture
 from polylogue.core.enums import Provider
@@ -17,19 +20,28 @@ def looks_like(payload: object) -> bool:
     return looks_like_browser_capture(payload)
 
 
+def _has_chatgpt_native_payload(payload: object) -> TypeGuard[Mapping[str, object]]:
+    return isinstance(payload, dict) and isinstance(payload.get("mapping"), dict)
+
+
+def _has_claude_ai_native_payload(payload: object) -> TypeGuard[Mapping[str, object]]:
+    return isinstance(payload, dict) and isinstance(payload.get("chat_messages"), list)
+
+
 def parse(payload: object, fallback_id: str) -> ParsedSession:
     """Parse a browser-capture envelope into the canonical parser contract."""
     envelope = BrowserCaptureEnvelope.model_validate(payload)
     provider = envelope.session.provider if envelope.session.provider is not Provider.UNKNOWN else Provider.UNKNOWN
     provider_session_id = _legacy_native_id(provider, envelope.session.provider_session_id) or fallback_id
-    if envelope.session.provider is Provider.CHATGPT and envelope.raw_provider_payload:
+    raw_provider_payload = envelope.raw_provider_payload
+    if envelope.session.provider is Provider.CHATGPT and _has_chatgpt_native_payload(raw_provider_payload):
         from polylogue.sources.parsers.chatgpt import parse as parse_chatgpt
 
-        return parse_chatgpt(envelope.raw_provider_payload, provider_session_id)
-    if envelope.session.provider is Provider.CLAUDE_AI and envelope.raw_provider_payload:
+        return parse_chatgpt(raw_provider_payload, provider_session_id)
+    if envelope.session.provider is Provider.CLAUDE_AI and _has_claude_ai_native_payload(raw_provider_payload):
         from polylogue.sources.parsers.claude.ai_parser import parse_ai as parse_claude_ai
 
-        return parse_claude_ai(envelope.raw_provider_payload, provider_session_id)
+        return parse_claude_ai(raw_provider_payload, provider_session_id)
 
     seen_turns: set[str] = set()
     messages: list[ParsedMessage] = []

@@ -26,6 +26,7 @@ function sessionIdFromUrl(provider, url) {
   if (provider === "chatgpt") {
     const marker = parts.indexOf("c");
     if (marker >= 0 && parts[marker + 1]) return parts[marker + 1];
+    if (parsed.searchParams.get("temporary-chat") === "true") return "__polylogue_temporary_chat__";
     return null;
   }
   if (provider === "claude-ai" && parts[0] === "chat" && parts[1]) {
@@ -58,12 +59,16 @@ function buildEnvelope({
 }) {
   const stableProviderSessionId =
     providerSessionId || sessionIdFromUrl(provider, sourceUrl);
-  if (!stableProviderSessionId) {
+  const resolvedProviderSessionId =
+    stableProviderSessionId === "__polylogue_temporary_chat__"
+      ? `temporary:${fnv1a(`${sourceUrl}:${turns.map((turn) => `${turn.role}:${turn.text || ""}`).join("\n")}`)}`
+      : stableProviderSessionId;
+  if (!resolvedProviderSessionId) {
     throw new Error(`cannot capture ${provider} page without a provider-native conversation id`);
   }
-  const stableCaptureId = stableProviderSessionId.startsWith(`${provider}:`)
-    ? stableProviderSessionId
-    : `${provider}:${stableProviderSessionId}`;
+  const stableCaptureId = resolvedProviderSessionId.startsWith(`${provider}:`)
+    ? resolvedProviderSessionId
+    : `${provider}:${resolvedProviderSessionId}`;
   const now = new Date().toISOString();
   const envelope = {
     polylogue_capture_kind: "browser_llm_session",
@@ -81,7 +86,7 @@ function buildEnvelope({
     },
     session: {
       provider,
-      provider_session_id: stableProviderSessionId,
+      provider_session_id: resolvedProviderSessionId,
       title: title || "Test Page",
       created_at: createdAt,
       updated_at: updatedAt || now,
@@ -90,12 +95,13 @@ function buildEnvelope({
       turns: turns.map((turn, ordinal) => ({
         provider_turn_id:
           turn.provider_turn_id ||
-          `${stableProviderSessionId}:turn:${ordinal}:${fnv1a(turn.role + ":" + turn.text)}`,
+          `${resolvedProviderSessionId}:turn:${ordinal}:${fnv1a(turn.role + ":" + (turn.text || ""))}`,
         role: turn.role,
-        text: turn.text,
+        text: turn.text || null,
         timestamp: turn.timestamp || null,
         ordinal,
         parent_turn_id: turn.parent_turn_id || null,
+        attachments: Array.isArray(turn.attachments) ? turn.attachments : [],
         provider_meta: turn.provider_meta || {},
       })),
     },
@@ -174,6 +180,14 @@ describe("sessionIdFromUrl", () => {
       "https://chatgpt.com/",
     );
     expect(id).toBeNull();
+  });
+
+  it("marks ChatGPT temporary-chat routes for local identity assignment", () => {
+    const id = sessionIdFromUrl(
+      "chatgpt",
+      "https://chatgpt.com/?temporary-chat=true",
+    );
+    expect(id).toBe("__polylogue_temporary_chat__");
   });
 
   it("does not invent Claude ids for non-conversation routes", () => {
@@ -263,6 +277,31 @@ describe("buildEnvelope", () => {
     })).toThrow("cannot capture chatgpt page without a provider-native conversation id");
   });
 
+  it("assigns deterministic local ids for ChatGPT temporary chats", () => {
+    const envelope = buildEnvelope({
+      provider: "chatgpt",
+      adapterName: "chatgpt-dom-v1",
+      sourceUrl: "https://chatgpt.com/?temporary-chat=true",
+      turns: [
+        { role: "user", text: "Important temporary prompt" },
+        { role: "assistant", text: "Important temporary answer" },
+      ],
+    });
+    const repeated = buildEnvelope({
+      provider: "chatgpt",
+      adapterName: "chatgpt-dom-v1",
+      sourceUrl: "https://chatgpt.com/?temporary-chat=true",
+      turns: [
+        { role: "user", text: "Important temporary prompt" },
+        { role: "assistant", text: "Important temporary answer" },
+      ],
+    });
+
+    expect(envelope.session.provider_session_id).toMatch(/^temporary:[0-9a-f]{8}$/);
+    expect(envelope.capture_id).toBe(`chatgpt:${envelope.session.provider_session_id}`);
+    expect(repeated.session.provider_session_id).toBe(envelope.session.provider_session_id);
+  });
+
   it("assigns ordinals to turns", () => {
     const envelope = buildEnvelope({
       provider: "chatgpt",
@@ -314,6 +353,34 @@ describe("buildEnvelope", () => {
     expect(envelope.session.turns[0].provider_meta).toEqual({
       selector_index: 0,
     });
+  });
+
+  it("passes through browser-observed turn attachments", () => {
+    const envelope = buildEnvelope({
+      provider: "chatgpt",
+      adapterName: "chatgpt-dom-v1",
+      turns: [
+        {
+          role: "user",
+          text: "See attached",
+          attachments: [
+            {
+              provider_attachment_id: "dom:abc123",
+              name: "polylogue-all.tar.gz",
+              provider_meta: { capture_source: "chatgpt_dom_attachment" },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(envelope.session.turns[0].attachments).toEqual([
+      {
+        provider_attachment_id: "dom:abc123",
+        name: "polylogue-all.tar.gz",
+        provider_meta: { capture_source: "chatgpt_dom_attachment" },
+      },
+    ]);
   });
 
   it("accepts null model", () => {
