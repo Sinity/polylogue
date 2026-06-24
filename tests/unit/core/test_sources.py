@@ -114,6 +114,7 @@ def test_originating_lab_attribution() -> None:
         Provider.ANTIGRAVITY: "google",
         Provider.DRIVE: "google",
         Provider.HERMES: "nous",
+        Provider.GROK: "xai",
         Provider.UNKNOWN: "unknown",
     }
     for provider, lab in expected_labs.items():

@@ -47,6 +47,7 @@ class Origin(PolylogueStrEnum):
     GEMINI_CLI_SESSION = "gemini-cli-session"
     HERMES_SESSION = "hermes-session"
     ANTIGRAVITY_SESSION = "antigravity-session"
+    GROK_EXPORT = "grok-export"
     CHATGPT_EXPORT = "chatgpt-export"
     CLAUDE_AI_EXPORT = "claude-ai-export"
     AISTUDIO_DRIVE = "aistudio-drive"
@@ -74,6 +75,7 @@ class Provider(PolylogueStrEnum):
     GEMINI_CLI = "gemini-cli"
     HERMES = "hermes"
     ANTIGRAVITY = "antigravity"
+    GROK = "grok"
     DRIVE = "drive"
     UNKNOWN = "unknown"
 
@@ -219,6 +221,22 @@ class BlockType(PolylogueStrEnum):
         if isinstance(value, cls):
             return value
         return cls(str(value).strip().lower())
+
+
+class WebConstructType(PolylogueStrEnum):
+    """Typed web-export constructs projected out of provider payloads."""
+
+    CANVAS = "canvas"
+    CONTENT_REFERENCE = "content_reference"
+    SEARCH_QUERY = "search_query"
+    SEARCH_RESULT = "search_result"
+    SELECTED_SOURCE = "selected_source"
+    IMAGE_RESULT = "image_result"
+    ASYNC_TASK = "async_task"
+    AUDIO_ASSET = "audio_asset"
+    AUDIO_TRANSCRIPTION = "audio_transcription"
+    TOKEN_BUDGET = "token_budget"
+    VOICE_NOTE = "voice_note"
 
 
 class SemanticBlockType(PolylogueStrEnum):

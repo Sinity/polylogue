@@ -15,6 +15,9 @@
         --warn: #9a5b00;
         --bad: #ad2f2f;
         --accent: #325d8f;
+        --gpt: #10a37f;
+        --claude: #d97745;
+        --grok: #111827;
       }
       * {
         box-sizing: border-box;
@@ -42,6 +45,21 @@
         font-size: 16px;
         letter-spacing: 0;
       }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+      }
+      .mark {
+        display: grid;
+        place-items: center;
+        width: 30px;
+        height: 30px;
+        border-radius: 7px;
+        color: #fff;
+        background: var(--accent);
+        font-weight: 700;
+      }
       .subtitle {
         color: var(--muted);
         font-size: 12px;
@@ -58,6 +76,27 @@
       .badge.ok { background: var(--ok); }
       .badge.warn { background: var(--warn); }
       .badge.bad { background: var(--bad); }
+      .provider-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        justify-content: flex-end;
+      }
+      .provider-logo {
+        display: inline-grid;
+        place-items: center;
+        min-width: 24px;
+        height: 24px;
+        padding: 0 6px;
+        border-radius: 6px;
+        color: #fff;
+        font-size: 11px;
+        font-weight: 700;
+      }
+      .provider-logo.chatgpt { background: var(--gpt); }
+      .provider-logo.claude-ai { background: var(--claude); }
+      .provider-logo.grok { background: var(--grok); }
+      .provider-logo.unknown { background: var(--muted); }
       section {
         padding: 12px 0;
         border-bottom: 1px solid var(--line);
@@ -122,22 +161,54 @@
         color: var(--muted);
         white-space: pre-wrap;
       }
+      .log {
+        display: grid;
+        gap: 6px;
+        max-height: 124px;
+        overflow: auto;
+        padding-right: 2px;
+      }
+      .log-item {
+        display: grid;
+        grid-template-columns: 44px minmax(0, 1fr);
+        gap: 8px;
+        padding: 6px 0;
+        border-top: 1px solid var(--line);
+      }
+      .log-time {
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .log-title {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .log-meta {
+        color: var(--muted);
+        font-size: 11px;
+      }
     </style>
   </head>
   <body>
     <main>
       <header>
-        <div>
-          <h1>Polylogue Capture</h1>
-          <div class="subtitle">ChatGPT and Claude.ai web sync</div>
+        <div class="brand">
+          <div class="mark">P</div>
+          <div>
+            <h1>Polylogue Capture</h1>
+            <div class="subtitle">ChatGPT, Claude.ai, Grok</div>
+          </div>
         </div>
         <div id="badge" class="badge">checking</div>
       </header>
 
       <section>
-        <div class="row"><span class="label">Page</span><span id="page" class="value">Unknown</span></div>
+        <div class="row"><span class="label">Page</span><span id="page" class="value provider-chip">Unknown</span></div>
         <div class="row"><span class="label">Receiver</span><span id="receiver" class="value">127.0.0.1:8765</span></div>
         <div class="row"><span class="label">Archive</span><span id="archive" class="value">Not checked</span></div>
+        <div class="row"><span class="label">Mode</span><span id="mode" class="value">--</span></div>
+        <div class="row"><span class="label">Turns</span><span id="turns" class="value">--</span></div>
         <div class="row"><span class="label">Request</span><span id="receiver-request" class="value">--</span></div>
       </section>
 
@@ -146,7 +217,15 @@
         <div class="controls">
           <button id="capture" class="primary">Capture page</button>
           <button id="check">Check status</button>
+          <button id="sync-open-tabs">Sync open tabs</button>
+          <button id="copy-ref">Copy ref</button>
+          <button id="open-polylogue">Open in Polylogue</button>
         </div>
+      </section>
+
+      <section>
+        <div class="row"><span class="label">Recent log</span><span id="log-count" class="value">0</span></div>
+        <div id="log" class="log"></div>
       </section>
 
       <section>

@@ -42,7 +42,10 @@ from polylogue.pipeline.services.process_pool import process_pool_executor
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime import RawSessionRecord
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import (
+    upsert_parser_ingest_flag_tags,
+    write_parsed_session_to_archive,
+)
 from polylogue.storage.sqlite.connection import _load_sqlite_vec
 from polylogue.storage.sqlite.connection_profile import (
     DB_TIMEOUT,
@@ -237,6 +240,8 @@ def _write_session(
         delta, skipped_messages = _append_delta_payload(conn, payload)
         counts["skipped_messages"] = skipped_messages
         if delta is None:
+            if payload.parsed_session.ingest_flags:
+                upsert_parser_ingest_flag_tags(conn, payload.session_id, payload.parsed_session.ingest_flags)
             counts["skipped_sessions"] = 1
             counts["skipped_attachments"] = payload.attachment_count
             counts["skipped_session_events"] = len(payload.parsed_session.session_events)
@@ -247,6 +252,8 @@ def _write_session(
         merge_append = True
 
     if not force_write and content_unchanged:
+        if payload.parsed_session.ingest_flags:
+            upsert_parser_ingest_flag_tags(conn, payload.session_id, payload.parsed_session.ingest_flags)
         counts["skipped_sessions"] = 1
         counts["skipped_messages"] = payload.message_count
         counts["skipped_attachments"] = payload.attachment_count

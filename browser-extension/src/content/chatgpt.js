@@ -337,7 +337,8 @@
       providerMeta: {
         capture_source: "chatgpt_backend_api",
         current_node: payload.current_node || null,
-        mapping_node_count: payload.mapping ? Object.keys(payload.mapping).length : 0
+        mapping_node_count: payload.mapping ? Object.keys(payload.mapping).length : 0,
+        is_temporary: payload.is_temporary === true
       },
       rawProviderPayload: payload
     });
@@ -354,6 +355,7 @@
         adapterName: domAdapterName,
         turns,
         providerMeta: {
+          capture_fidelity: "dom_degraded",
           native_attempts: nativeAttemptDiagnostics.slice(-6)
         }
       });

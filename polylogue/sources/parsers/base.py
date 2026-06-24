@@ -11,6 +11,7 @@ from .base_models import (
     ParsedPasteEvidence,
     ParsedSession,
     ParsedSessionEvent,
+    ParsedWebConstruct,
     RawSessionData,
 )
 from .base_support import (
@@ -24,6 +25,7 @@ __all__ = [
     "ParsedMessage",
     "ParsedAttachment",
     "ParsedPasteEvidence",
+    "ParsedWebConstruct",
     "ParsedSession",
     "ParsedSessionEvent",
     "RawSessionData",

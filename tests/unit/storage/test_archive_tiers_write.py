@@ -6,7 +6,7 @@ from pathlib import Path
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, Provider, TitleSource
+from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, Provider, TitleSource, WebConstructType
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
@@ -14,6 +14,7 @@ from polylogue.sources.parsers.base import (
     ParsedPasteEvidence,
     ParsedSession,
     ParsedSessionEvent,
+    ParsedWebConstruct,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -45,6 +46,63 @@ def _connect(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
     return conn
+
+
+def test_archive_tiers_writer_materializes_typed_web_constructs(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="construct-session",
+        title="Construct session",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                text="answer with source",
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TEXT,
+                        text="answer with source",
+                        web_constructs=[
+                            ParsedWebConstruct(
+                                construct_type=WebConstructType.CONTENT_REFERENCE,
+                                provider_key="content_references",
+                                title="Source",
+                                url="https://example.test/source",
+                                rank=0,
+                            ),
+                            ParsedWebConstruct(
+                                construct_type=WebConstructType.CANVAS,
+                                provider_key="canvas",
+                                source_id="canvas-1",
+                            ),
+                        ],
+                    )
+                ],
+            )
+        ],
+    )
+    session_id = write_parsed_session_to_archive(conn, session)
+
+    rows = conn.execute(
+        """
+        SELECT construct_type, provider_key, title, url, source_id, rank
+        FROM web_content_constructs
+        WHERE session_id = ?
+        ORDER BY position
+        """,
+        (session_id,),
+    ).fetchall()
+    assert [row["construct_type"] for row in rows] == ["content_reference", "canvas"]
+    assert rows[0]["provider_key"] == "content_references"
+    assert rows[0]["title"] == "Source"
+    assert rows[0]["url"] == "https://example.test/source"
+    assert rows[0]["rank"] == 0
+    assert rows[1]["source_id"] == "canvas-1"
+
+    envelope = read_archive_session_envelope(conn, session_id)
+    assert envelope is not None
+    assert envelope.messages[0].blocks[0].metadata is None
 
 
 def test_archive_tiers_writer_materializes_codex_session(tmp_path: Path) -> None:

@@ -1,5 +1,6 @@
 const DEFAULT_RECEIVER = "http://127.0.0.1:8765";
 const BACKGROUND_CAPTURE_MIN_INTERVAL_MS = 30000;
+const CAPTURE_LOG_LIMIT = 80;
 const recentBackgroundCaptures = new Map();
 
 function injectionPlanForUrl(url) {
@@ -16,6 +17,16 @@ function injectionPlanForUrl(url) {
         { files: ["src/content/claude_bridge.js"], world: "MAIN" },
         { files: ["src/common.js", "src/content/claude.js"] },
       ];
+    }
+    if (
+      parsed.hostname === "grok.com" ||
+      parsed.hostname.endsWith(".grok.com") ||
+      parsed.hostname === "x.com" ||
+      parsed.hostname.endsWith(".x.com") ||
+      parsed.hostname === "twitter.com" ||
+      parsed.hostname.endsWith(".twitter.com")
+    ) {
+      return [{ files: ["src/common.js", "src/content/grok.js"] }];
     }
   } catch {
     return [];
@@ -42,11 +53,59 @@ async function saveReceiverSettings(receiverBaseUrl, receiverAuthToken = "") {
   return receiverSettings();
 }
 
+function sessionKey(provider, providerSessionId) {
+  return `${provider || "unknown"}:${providerSessionId || "unknown"}`;
+}
+
+async function appendCaptureLog(entry) {
+  const stored = await chrome.storage.local.get({ polylogueCaptureLog: [] });
+  const prior = Array.isArray(stored.polylogueCaptureLog) ? stored.polylogueCaptureLog : [];
+  const next = [
+    {
+      at: new Date().toISOString(),
+      ...entry,
+    },
+    ...prior,
+  ].slice(0, CAPTURE_LOG_LIMIT);
+  await chrome.storage.local.set({ polylogueCaptureLog: next });
+  return next;
+}
+
+async function updateSessionLedger({ provider, providerSessionId, patch }) {
+  if (!provider || !providerSessionId) return null;
+  const stored = await chrome.storage.local.get({ polylogueSessionLedger: {} });
+  const ledger =
+    stored.polylogueSessionLedger && typeof stored.polylogueSessionLedger === "object"
+      ? stored.polylogueSessionLedger
+      : {};
+  const key = sessionKey(provider, providerSessionId);
+  const next = {
+    ...(ledger[key] || {}),
+    provider,
+    provider_session_id: providerSessionId,
+    updated_at: new Date().toISOString(),
+    ...patch,
+  };
+  await chrome.storage.local.set({ polylogueSessionLedger: { ...ledger, [key]: next } });
+  return next;
+}
+
+function badgeForState(state) {
+  if (!state.online) return { text: "off", color: "#9b2c2c" };
+  const archiveState = state.archive_state?.state;
+  if (archiveState === "archived" || state.captured) return { text: "ok", color: "#14764e" };
+  if (archiveState === "failed" || state.error) return { text: "err", color: "#ad2f2f" };
+  if (archiveState === "spooled_only" || archiveState === "ingest_pending") return { text: "…", color: "#9a5b00" };
+  if (state.capture_mode === "dom_degraded") return { text: "dom", color: "#8a5a00" };
+  return { text: "on", color: "#325d8f" };
+}
+
 async function setState(state) {
-  await chrome.storage.local.set({ polylogueState: { ...state, updated_at: new Date().toISOString() } });
-  const text = state.captured ? "ok" : state.online ? "on" : "off";
-  await chrome.action.setBadgeText({ text });
-  await chrome.action.setBadgeBackgroundColor({ color: state.captured ? "#1f7a4d" : state.online ? "#805ad5" : "#9b2c2c" });
+  const nextState = { ...state, updated_at: new Date().toISOString() };
+  await chrome.storage.local.set({ polylogueState: nextState });
+  const badge = badgeForState(nextState);
+  await chrome.action.setBadgeText({ text: badge.text });
+  await chrome.action.setBadgeBackgroundColor({ color: badge.color });
 }
 
 function buildReceiverRequestId() {
@@ -123,17 +182,56 @@ async function captureTab(tab, reason = "background") {
       reason
     });
     if (result?.ok) {
+      const envelopeSession = result.envelope?.session || {};
+      const provider = result.captureResult?.provider || envelopeSession.provider;
+      const providerSessionId = result.captureResult?.provider_session_id || envelopeSession.provider_session_id;
+      await updateSessionLedger({
+        provider,
+        providerSessionId,
+        patch: {
+          reason,
+          tab_id: tab.id,
+          tab_url: tab.url || tab.pendingUrl || null,
+          capture_mode: envelopeSession.provider_meta?.capture_fidelity || null,
+          turn_count: Array.isArray(envelopeSession.turns) ? envelopeSession.turns.length : null,
+          attachment_count: Array.isArray(envelopeSession.turns)
+            ? envelopeSession.turns.reduce((count, turn) => count + (Array.isArray(turn.attachments) ? turn.attachments.length : 0), 0)
+            : null,
+          archive_state: result.archiveState || null,
+          receiver_request_id: result.captureResult?.receiver_request_id || result.archiveState?.receiver_request_id || null,
+          last_error: null,
+        },
+      });
+      await appendCaptureLog({
+        ok: true,
+        reason,
+        provider,
+        provider_session_id: providerSessionId,
+        tab_id: tab.id,
+        archive_state: result.archiveState?.state || null,
+        receiver_request_id: result.captureResult?.receiver_request_id || result.archiveState?.receiver_request_id || null,
+      });
       await setState({
         online: true,
         captured: true,
         last_capture: result.captureResult || result,
         archive_state: result.archiveState || null,
+        provider,
+        provider_session_id: providerSessionId,
+        capture_mode: envelopeSession.provider_meta?.capture_fidelity || null,
         last_receiver_request_id:
           result.captureResult?.receiver_request_id || result.archiveState?.receiver_request_id || null
       });
     }
     return result;
   } catch (error) {
+    await appendCaptureLog({
+      ok: false,
+      reason,
+      tab_id: tab.id,
+      tab_url: tab.url || tab.pendingUrl || null,
+      error: String(error.message || error),
+    });
     return { ok: false, error: String(error.message || error) };
   }
 }
@@ -172,10 +270,37 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }
     if (message.type === "polylogue.capture") {
       const result = await postJson("/v1/browser-captures", message.envelope);
+      const session = message.envelope?.session || {};
+      await updateSessionLedger({
+        provider: session.provider || result.provider,
+        providerSessionId: session.provider_session_id || result.provider_session_id,
+        patch: {
+          capture_mode: session.provider_meta?.capture_fidelity || null,
+          turn_count: Array.isArray(session.turns) ? session.turns.length : null,
+          attachment_count: Array.isArray(session.turns)
+            ? session.turns.reduce((count, turn) => count + (Array.isArray(turn.attachments) ? turn.attachments.length : 0), 0)
+            : null,
+          receiver_request_id: result.receiver_request_id || null,
+          artifact_ref: result.artifact_ref || null,
+          last_error: null,
+        },
+      });
+      await appendCaptureLog({
+        ok: true,
+        reason: message.reason || "content_script_capture",
+        provider: session.provider || result.provider,
+        provider_session_id: session.provider_session_id || result.provider_session_id,
+        capture_mode: session.provider_meta?.capture_fidelity || null,
+        receiver_request_id: result.receiver_request_id || null,
+        artifact_ref: result.artifact_ref || null,
+      });
       await setState({
         online: true,
         captured: true,
         last_capture: result,
+        provider: session.provider || result.provider,
+        provider_session_id: session.provider_session_id || result.provider_session_id,
+        capture_mode: session.provider_meta?.capture_fidelity || null,
         last_receiver_request_id: result.receiver_request_id || null
       });
       sendResponse(result);
@@ -191,6 +316,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         online: true,
         captured: Boolean(state.captured),
         archive_state: state,
+        provider: message.provider,
+        provider_session_id: message.provider_session_id,
         last_receiver_request_id: state.receiver_request_id || null
       });
       sendResponse(state);
@@ -207,7 +334,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       sendResponse(status);
       return;
     }
+    if (message.type === "polylogue.captureSupportedTabs") {
+      await captureSupportedTabs(message.reason || "popup_sync_open_tabs");
+      sendResponse({ ok: true });
+      return;
+    }
   })().catch(async (error) => {
+    await appendCaptureLog({
+      ok: false,
+      reason: message.type || "runtime_message",
+      error: String(error.message || error),
+      receiver_request_id: error.receiverRequestId || null,
+    });
     await setState({
       online: false,
       captured: false,

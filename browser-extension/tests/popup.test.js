@@ -21,6 +21,13 @@ function installDom() {
       <button id="check"></button>
       <button id="save"></button>
       <button id="capture"></button>
+      <button id="sync-open-tabs"></button>
+      <button id="copy-ref"></button>
+      <button id="open-polylogue"></button>
+      <span id="mode"></span>
+      <span id="turns"></span>
+      <span id="log-count"></span>
+      <div id="log"></div>
     </body>`);
   globalThis.window = dom.window;
   globalThis.document = dom.window.document;
@@ -63,7 +70,7 @@ async function loadPopup() {
   installDom();
   installChromeMock();
   await import("../src/popup.js");
-  await vi.waitFor(() => expect(globalThis.document.getElementById("page").textContent).toBe("ChatGPT"));
+  await vi.waitFor(() => expect(globalThis.document.getElementById("page").textContent).toContain("ChatGPT"));
 }
 
 describe("popup capture", () => {

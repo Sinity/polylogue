@@ -28,6 +28,7 @@ from typing import Any, TypeAlias
 import pytest
 
 from polylogue.sources.parsers.claude import looks_like_ai, parse_ai
+from polylogue.sources.parsers.claude.ai_parser import CLAUDE_DESIGN_CHAT_INGEST_FLAG, CLAUDE_TEMPORARY_CHAT_INGEST_FLAG
 from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.pipeline_roundtrip import (
     parse_payload_roundtrip,
@@ -116,6 +117,97 @@ def _payload(
     if model is not None:
         payload["model"] = model
     return payload
+
+
+def test_claude_design_chat_shape_is_parsed_as_session() -> None:
+    payload = {
+        "uuid": "design-1",
+        "title": "Design system",
+        "project": {"uuid": "project-1", "name": "Polylogue"},
+        "created_at": "2026-06-01T00:00:00Z",
+        "updated_at": "2026-06-01T00:01:00Z",
+        "messages": [
+            {
+                "uuid": "m1",
+                "role": "user",
+                "content": {
+                    "role": "user",
+                    "content": "Create a design system.",
+                    "attachments": [
+                        {
+                            "id": "att-1",
+                            "name": "brief.md",
+                            "type": "text/markdown",
+                            "content": "# brief",
+                        }
+                    ],
+                    "timestamp": "2026-06-01T00:00:01Z",
+                },
+            }
+        ],
+    }
+
+    assert looks_like_ai(payload)
+    session = parse_ai(payload, "fallback")
+
+    assert session.provider_session_id == "design-1"
+    assert session.title == "Design system"
+    assert [message.text for message in session.messages] == ["Create a design system."]
+    design_constructs = session.messages[0].blocks[0].web_constructs
+    assert len(design_constructs) == 1
+    assert design_constructs[0].construct_type.value == "canvas"
+    assert design_constructs[0].provider_key == "claude_design_chat"
+    assert design_constructs[0].title == "Polylogue"
+    assert session.attachments[0].provider_attachment_id == "att-1"
+    assert CLAUDE_DESIGN_CHAT_INGEST_FLAG in session.ingest_flags
+
+
+def test_claude_rich_segments_and_attachment_fields_are_preserved() -> None:
+    payload = {
+        "uuid": "claude-1",
+        "name": "Claude rich",
+        "is_temporary": True,
+        "chat_messages": [
+            {
+                "uuid": "m1",
+                "sender": "assistant",
+                "text": "answer\nremaining",
+                "created_at": "2026-06-01T00:00:01Z",
+                "updated_at": "2026-06-01T00:00:02Z",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "answer",
+                        "citations": [{"url": "https://example.test"}],
+                        "start_timestamp": "2026-06-01T00:00:01Z",
+                    },
+                    {"type": "token_budget", "remaining": 1234},
+                ],
+                "attachments": [
+                    {
+                        "file_name": "report.pdf",
+                        "file_size": 42,
+                        "file_type": "application/pdf",
+                        "extracted_content": "report text",
+                    }
+                ],
+                "files": [{"file_uuid": "file-1", "file_name": "source.py"}],
+            }
+        ],
+    }
+
+    session = parse_ai(payload, "fallback")
+
+    assert CLAUDE_TEMPORARY_CHAT_INGEST_FLAG in session.ingest_flags
+    assert session.messages[0].blocks[0].metadata is None
+    token_budget_constructs = session.messages[0].blocks[1].web_constructs
+    assert len(token_budget_constructs) == 1
+    assert token_budget_constructs[0].construct_type.value == "token_budget"
+    assert token_budget_constructs[0].text == "1234"
+    assert session.attachments[0].name == "report.pdf"
+    assert session.attachments[0].size_bytes == 42
+    assert session.attachments[0].mime_type == "application/pdf"
+    assert session.attachments[1].provider_attachment_id == "file-1"
 
 
 # ---------------------------------------------------------------------------

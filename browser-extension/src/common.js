@@ -25,6 +25,13 @@
       return parts[1];
     }
     if (provider === "claude-ai") return null;
+    if (provider === "grok") {
+      const grokPathId = parts.find((part, index) => parts[index - 1] === "chat" || parts[index - 1] === "grok");
+      if (grokPathId) return grokPathId;
+      const queryId = parsed.searchParams.get("conversation") || parsed.searchParams.get("conversationId");
+      if (queryId) return queryId;
+      return `dom:${fnv1a(parsed.origin + parsed.pathname + parsed.search)}`;
+    }
     const sessionToken = parts.at(-1) || parsed.pathname || parsed.hostname;
     return `${provider}:${sessionToken}:${fnv1a(parsed.origin + parsed.pathname)}`;
   }
@@ -78,7 +85,10 @@
     const stableCaptureId = stableProviderSessionId.startsWith(`${provider}:`)
       ? stableProviderSessionId
       : `${provider}:${stableProviderSessionId}`;
-    const sessionProviderMeta = { ...providerMeta };
+    const sessionProviderMeta = {
+      capture_fidelity: rawProviderPayload ? "native_full" : "dom_degraded",
+      ...providerMeta,
+    };
     if (urlSessionId === "__polylogue_temporary_chat__" || stableProviderSessionId.startsWith("temporary:")) {
       sessionProviderMeta.session_kind = "temporary";
     }

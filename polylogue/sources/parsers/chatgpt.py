@@ -3,10 +3,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, Provider
+from polylogue.core.enums import BlockType, Provider, WebConstructType
 from polylogue.core.timestamps import parse_timestamp
 
-from .base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
+from .base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession, ParsedWebConstruct
+
+SHARED_CONVERSATION_INDEX_INGEST_FLAG = "capture:chatgpt-shared-index-shell"
 
 
 def _coerce_float(value: object) -> float | None:
@@ -24,6 +26,176 @@ def _coerce_float(value: object) -> float | None:
         if parsed is not None:
             return parsed.timestamp()
     return None
+
+
+def _string_value(payload: Mapping[str, object], *keys: str) -> str | None:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return str(value)
+    return None
+
+
+def _int_value(payload: Mapping[str, object], *keys: str) -> int | None:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            try:
+                return int(value)
+            except ValueError:
+                continue
+    return None
+
+
+def _iter_mapping_items(value: object) -> list[Mapping[str, object]]:
+    if isinstance(value, Mapping):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, Mapping)]
+    return []
+
+
+def _construct_from_reference(
+    item: Mapping[str, object],
+    *,
+    construct_type: WebConstructType,
+    provider_key: str,
+    rank: int | None = None,
+    group_id: str | None = None,
+    group_title: str | None = None,
+) -> ParsedWebConstruct:
+    return ParsedWebConstruct(
+        construct_type=construct_type,
+        provider_key=provider_key,
+        title=_string_value(item, "title", "name", "source_name"),
+        url=_string_value(item, "url", "link", "source_url"),
+        text=_string_value(item, "snippet", "text", "content", "description"),
+        source_id=_string_value(item, "id", "source_id", "ref_id", "attribution_id", "textdoc_id"),
+        group_id=group_id,
+        group_title=group_title,
+        asset_pointer=_string_value(item, "asset_pointer"),
+        mime_type=_string_value(item, "mime_type", "media_type"),
+        rank=rank if rank is not None else _int_value(item, "rank", "index"),
+        start_index=_int_value(item, "start_index", "start_idx", "start_ix", "start"),
+        end_index=_int_value(item, "end_index", "end_idx", "end_ix", "end"),
+    )
+
+
+def _constructs_from_chatgpt_metadata(msg_metadata: object) -> list[ParsedWebConstruct]:
+    if not isinstance(msg_metadata, Mapping):
+        return []
+    constructs: list[ParsedWebConstruct] = []
+    for item in _iter_mapping_items(msg_metadata.get("canvas")):
+        constructs.append(
+            ParsedWebConstruct(
+                construct_type=WebConstructType.CANVAS,
+                provider_key="canvas",
+                title=_string_value(item, "title", "name"),
+                text=_string_value(item, "text", "content"),
+                source_id=_string_value(item, "id", "canvas_id", "textdoc_id"),
+                status=_string_value(item, "status"),
+            )
+        )
+    for provider_key in ("content_references", "citations", "_cite_metadata"):
+        value = msg_metadata.get(provider_key)
+        for rank, item in enumerate(_iter_mapping_items(value)):
+            constructs.append(
+                _construct_from_reference(
+                    item,
+                    construct_type=WebConstructType.CONTENT_REFERENCE,
+                    provider_key=provider_key,
+                    rank=rank,
+                )
+            )
+    search_queries = msg_metadata.get("search_queries")
+    if isinstance(search_queries, list):
+        for rank, item in enumerate(search_queries):
+            if isinstance(item, str) and item:
+                constructs.append(
+                    ParsedWebConstruct(
+                        construct_type=WebConstructType.SEARCH_QUERY,
+                        provider_key="search_queries",
+                        query=item,
+                        rank=rank,
+                    )
+                )
+            elif isinstance(item, Mapping):
+                constructs.append(
+                    ParsedWebConstruct(
+                        construct_type=WebConstructType.SEARCH_QUERY,
+                        provider_key="search_queries",
+                        query=_string_value(item, "query", "text"),
+                        title=_string_value(item, "title"),
+                        rank=rank,
+                    )
+                )
+    for group_rank, group in enumerate(_iter_mapping_items(msg_metadata.get("search_result_groups"))):
+        group_id = _string_value(group, "id", "group_id") or str(group_rank)
+        group_title = _string_value(group, "title", "name", "query")
+        candidates = (
+            group.get("results") or group.get("items") or group.get("search_results") or group.get("sources") or []
+        )
+        for rank, item in enumerate(_iter_mapping_items(candidates)):
+            constructs.append(
+                _construct_from_reference(
+                    item,
+                    construct_type=WebConstructType.SEARCH_RESULT,
+                    provider_key="search_result_groups",
+                    rank=rank,
+                    group_id=group_id,
+                    group_title=group_title,
+                )
+            )
+    for rank, item in enumerate(_iter_mapping_items(msg_metadata.get("selected_sources"))):
+        constructs.append(
+            _construct_from_reference(
+                item,
+                construct_type=WebConstructType.SELECTED_SOURCE,
+                provider_key="selected_sources",
+                rank=rank,
+            )
+        )
+    for rank, item in enumerate(_iter_mapping_items(msg_metadata.get("image_results"))):
+        constructs.append(
+            _construct_from_reference(
+                item,
+                construct_type=WebConstructType.IMAGE_RESULT,
+                provider_key="image_results",
+                rank=rank,
+            )
+        )
+    async_task_type = _string_value(msg_metadata, "async_task_type")
+    async_task_id = _string_value(msg_metadata, "async_task_id")
+    async_task_title = _string_value(msg_metadata, "async_task_title")
+    if async_task_type or async_task_id or async_task_title:
+        constructs.append(
+            ParsedWebConstruct(
+                construct_type=WebConstructType.ASYNC_TASK,
+                provider_key="async_task",
+                title=async_task_title,
+                task_id=async_task_id,
+                task_type=async_task_type,
+            )
+        )
+    for item in _iter_mapping_items(msg_metadata.get("aggregate_result")):
+        constructs.append(
+            ParsedWebConstruct(
+                construct_type=WebConstructType.ASYNC_TASK,
+                provider_key="aggregate_result",
+                title=_string_value(item, "title"),
+                text=_string_value(item, "output", "text", "stdout", "stderr"),
+                status=_string_value(item, "status", "exit_code"),
+            )
+        )
+    return constructs
 
 
 def _active_path_node_ids(mapping: Mapping[str, object], current_node: str | None) -> list[str]:
@@ -229,44 +401,45 @@ def extract_messages_from_mapping(
                             metadata={"asset_pointer": str(part.get("asset_pointer", ""))},
                         )
                     )
+                elif isinstance(part, dict) and part.get("content_type") in {
+                    "audio_asset_pointer",
+                    "audio_transcription",
+                    "real_time_user_audio_video_asset_pointer",
+                }:
+                    part_text = part.get("text")
+                    content_type = str(part.get("content_type"))
+                    content_blocks.append(
+                        ParsedContentBlock(
+                            type=BlockType.DOCUMENT,
+                            text=part_text if isinstance(part_text, str) and part_text else None,
+                            media_type=_string_value(part, "mime_type", "media_type"),
+                            web_constructs=[
+                                ParsedWebConstruct(
+                                    construct_type=(
+                                        WebConstructType.AUDIO_TRANSCRIPTION
+                                        if content_type == "audio_transcription"
+                                        else WebConstructType.AUDIO_ASSET
+                                    ),
+                                    provider_key=content_type,
+                                    text=part_text if isinstance(part_text, str) and part_text else None,
+                                    asset_pointer=_string_value(part, "asset_pointer"),
+                                    mime_type=_string_value(part, "mime_type", "media_type"),
+                                )
+                            ],
+                        )
+                    )
 
-        # Promote message-level metadata into content_block metadata so it
-        # survives parsing → materialization → storage → hydration. These
-        # are prefixed with chatgpt_ to distinguish provider-specific facts
-        # from canonical block semantics.
-        _chatgpt_block_meta: dict[str, object] = {}
-        if isinstance(msg_metadata, dict):
-            model_slug_val = msg_metadata.get("model_slug")
-            if model_slug_val:
-                _chatgpt_block_meta["chatgpt_model"] = model_slug_val
-            citations_val = msg_metadata.get("citations") or msg_metadata.get("_cite_metadata")
-            if isinstance(citations_val, (list, dict)) and citations_val:
-                _chatgpt_block_meta["chatgpt_citations"] = citations_val
-            aggregate_result_val = msg_metadata.get("aggregate_result")
-            if isinstance(aggregate_result_val, dict) and aggregate_result_val:
-                _chatgpt_block_meta["chatgpt_code_execution"] = aggregate_result_val
-            user_context_val = msg_metadata.get("user_context_message_data")
-            if isinstance(user_context_val, dict) and user_context_val:
-                _chatgpt_block_meta["chatgpt_user_context"] = user_context_val
-        if isinstance(author, dict):
-            author_name = author.get("name")
-            if isinstance(author_name, str) and author_name:
-                _chatgpt_block_meta["chatgpt_author_name"] = author_name
+        web_constructs = _constructs_from_chatgpt_metadata(msg_metadata)
+        if web_constructs:
+            if not content_blocks:
+                content_blocks.append(ParsedContentBlock(type=BlockType.TEXT))
+            first_block = content_blocks[0]
+            first_block.web_constructs.extend(web_constructs)
+
         recipient_val = msg.get("recipient")
-        if isinstance(recipient_val, str) and recipient_val and recipient_val != "all":
-            _chatgpt_block_meta["chatgpt_recipient"] = recipient_val
         status_val = msg.get("status")
-        if isinstance(status_val, str) and status_val:
-            _chatgpt_block_meta["chatgpt_status"] = status_val
         end_turn_val = msg.get("end_turn")
-        if isinstance(end_turn_val, bool):
-            _chatgpt_block_meta["chatgpt_end_turn"] = end_turn_val
-
-        if _chatgpt_block_meta:
-            for block in content_blocks:
-                if block.metadata is None:
-                    block.metadata = {}
-                block.metadata.update(_chatgpt_block_meta)
+        user_context_val = msg_metadata.get("user_context_message_data") if isinstance(msg_metadata, Mapping) else None
 
         parsed = ParsedMessage(
             provider_message_id=str(msg_id),
@@ -281,6 +454,17 @@ def extract_messages_from_mapping(
             is_active_path=node_id in active_path_id_set if active_path_ids else None,
             model_name=model_name,
             duration_ms=duration_ms,
+            sender_name=_string_value(author, "name") if isinstance(author, Mapping) else None,
+            recipient=recipient_val
+            if isinstance(recipient_val, str) and recipient_val and recipient_val != "all"
+            else None,
+            delivery_status=status_val if isinstance(status_val, str) and status_val else None,
+            end_turn=end_turn_val if isinstance(end_turn_val, bool) else None,
+            user_context_text=(
+                _string_value(user_context_val, "about_user_message", "text", "content")
+                if isinstance(user_context_val, Mapping)
+                else None
+            ),
         )
         emitted_by_node_id[node_id] = parsed.provider_message_id
         entries.append((_coerce_float(timestamp), idx, parsed))
@@ -317,6 +501,11 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     messages, attachments = extract_messages_from_mapping(mapping, current_node)
     title = payload.get("title") or payload.get("name") or fallback_id
     conv_id = payload.get("id") or payload.get("uuid") or payload.get("conversation_id")
+    ingest_flags: list[str] = []
+    if not messages and payload.get("conversation_id") and payload.get("id") and "mapping" not in payload:
+        ingest_flags.append(SHARED_CONVERSATION_INDEX_INGEST_FLAG)
+    if payload.get("is_temporary") is True:
+        ingest_flags.append("capture:temporary-chat")
 
     return ParsedSession(
         source_name=Provider.CHATGPT,
@@ -330,4 +519,5 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
             None,
         ),
         attachments=attachments,
+        ingest_flags=ingest_flags,
     )

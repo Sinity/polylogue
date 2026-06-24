@@ -122,6 +122,11 @@ _SOURCE_ANTIGRAVITY: Final[Source] = Source(
     runtime_root="~/.antigravity",
     originating_lab="google",
 )
+_SOURCE_GROK: Final[Source] = Source(
+    family="grok-export",
+    runtime_root=None,
+    originating_lab="xai",
+)
 _SOURCE_DRIVE: Final[Source] = Source(
     family="drive-takeout",
     runtime_root=None,  # acquired via Google Drive / Takeout APIs
@@ -144,6 +149,7 @@ _PROVIDER_TO_SOURCE: Final[dict[Provider, Source]] = {
     Provider.GEMINI_CLI: _SOURCE_GEMINI_CLI,
     Provider.HERMES: _SOURCE_HERMES,
     Provider.ANTIGRAVITY: _SOURCE_ANTIGRAVITY,
+    Provider.GROK: _SOURCE_GROK,
     Provider.DRIVE: _SOURCE_DRIVE,
     Provider.UNKNOWN: _SOURCE_UNKNOWN,
 }
@@ -220,6 +226,7 @@ _PROVIDER_TO_ORIGIN: Final[dict[Provider, Origin]] = {
     Provider.GEMINI_CLI: Origin.GEMINI_CLI_SESSION,
     Provider.HERMES: Origin.HERMES_SESSION,
     Provider.ANTIGRAVITY: Origin.ANTIGRAVITY_SESSION,
+    Provider.GROK: Origin.GROK_EXPORT,
     Provider.DRIVE: Origin.AISTUDIO_DRIVE,
     Provider.UNKNOWN: Origin.UNKNOWN_EXPORT,
 }
@@ -237,6 +244,7 @@ _ORIGIN_TO_LAB: Final[dict[Origin, Lab]] = {
     Origin.AISTUDIO_DRIVE: "google",
     Origin.ANTIGRAVITY_SESSION: "google",
     Origin.HERMES_SESSION: "nous",
+    Origin.GROK_EXPORT: "xai",
     Origin.UNKNOWN_EXPORT: "unknown",
 }
 
@@ -273,6 +281,7 @@ _ORIGIN_TO_PROVIDER: Final[dict[Origin, Provider]] = {
     Origin.GEMINI_CLI_SESSION: Provider.GEMINI_CLI,
     Origin.HERMES_SESSION: Provider.HERMES,
     Origin.ANTIGRAVITY_SESSION: Provider.ANTIGRAVITY,
+    Origin.GROK_EXPORT: Provider.GROK,
     Origin.CHATGPT_EXPORT: Provider.CHATGPT,
     Origin.CLAUDE_AI_EXPORT: Provider.CLAUDE_AI,
     Origin.AISTUDIO_DRIVE: Provider.GEMINI,

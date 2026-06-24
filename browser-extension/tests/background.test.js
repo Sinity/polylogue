@@ -170,4 +170,17 @@ describe("background receiver diagnostics", () => {
     expect(stored.polylogueState.captured).toBe(true);
     expect(stored.polylogueState.last_receiver_request_id).toBe("capture-request-1");
   });
+
+  it("injects Grok DOM capture scripts for open Grok/X tabs", async () => {
+    tabs = [{ id: 77, url: "https://x.com/i/grok", title: "Grok" }];
+    expect(installedListener).toBeTypeOf("function");
+
+    installedListener();
+    await vi.waitFor(() => expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledTimes(1));
+
+    expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledWith({
+      target: { tabId: 77 },
+      files: ["src/common.js", "src/content/grok.js"],
+    });
+  });
 });
