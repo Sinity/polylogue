@@ -416,10 +416,12 @@ devtools workspace dev-loop --browser-plan --extension-smoke --browser-smoke --b
 ```
 
 This starts a temporary branch-local receiver, starts a local HTTPS fixture
-server, maps `chatgpt.com` and `claude.ai` to loopback with Chrome host resolver
-rules, loads the unpacked extension into headless Chrome/Chromium, opens
-deterministic provider fixture pages on those supported origins, configures the
-extension receiver settings, and asks the content scripts to capture the page.
+server, starts a local CONNECT proxy that tunnels `chatgpt.com:443` and
+`claude.ai:443` to that fixture server, loads the unpacked extension into
+headless Chrome/Chromium, opens deterministic provider fixture pages on the
+normal provider origins through the extension worker's `chrome.tabs.create` API,
+configures the extension receiver settings, and asks the content scripts to
+capture the page through the same worker-visible tabs.
 The smoke verifies provider identity, adapter identity, user/assistant roles,
 receiver request ids, archive state request ids, and the written receiver spool
 artifacts. It appends `browser_provider_smoke_requested` /
@@ -434,16 +436,27 @@ artifacts. It appends `browser_provider_smoke_requested` /
 
 The provider smoke deliberately uses deterministic fixture pages and omits raw
 turn text from its summary. It closes the repo-owned real-browser
-content-script loop without using authenticated cookies or copied profiles. Use
-`--browser-plan` for the visible/private browser handoff when screenshots,
-copied-profile cookies, or live provider pages are needed.
+content-script loop without using authenticated cookies or copied profiles. When
+manifest content-script delivery is unavailable in the headless fixture browser,
+the smoke uses the same `chrome.scripting.executeScript` retry path as the popup
+and records `injection_mode=scripted_retry`; `injection_mode=manifest` means the
+content script was already listening. Use `--browser-plan` for the
+visible/private browser handoff when screenshots, copied-profile cookies, or
+live provider pages are needed.
+If Chrome creates the fixture page target but the extension worker cannot see
+the tab, the result records both the CDP page target and the worker-visible tab
+inventory so the failure points at browser/headless capability rather than an
+ambiguous content-script miss.
 
 If a distro Chromium headless build does not expose MV3 extension service
 workers, these smokes fail cleanly with `Polylogue extension service worker not
 found` in the smoke stderr artifact. Point `POLYLOGUE_BROWSER_SMOKE_CHROME` or
 `POLYLOGUE_PROVIDER_SMOKE_CHROME` at a Chrome/Chromium build with extension
-service-worker support, or use `--browser-plan` for the local visible-browser
-handoff.
+service-worker support. If Chrome exposes the service worker but does not
+deliver provider content scripts, the smoke records page diagnostics, tab
+inventory, and injection mode. `POLYLOGUE_PROVIDER_SMOKE_HEADLESS=0` can be used
+to repeat the same isolated-profile proof visibly, and `--browser-plan` remains
+the handoff for operator-approved live/copy-profile evidence.
 
 For GUI/browser inspection, generate a branch-local browser plan:
 

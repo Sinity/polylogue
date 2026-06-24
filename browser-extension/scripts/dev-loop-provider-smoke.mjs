@@ -6,6 +6,7 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import http from "node:http";
 import https from "node:https";
 import net from "node:net";
 import { tmpdir } from "node:os";
@@ -20,6 +21,7 @@ const profileDir =
 const keepProfile = process.env.POLYLOGUE_PROVIDER_SMOKE_KEEP_PROFILE === "1";
 const timeoutMs = Number(process.env.POLYLOGUE_PROVIDER_SMOKE_TIMEOUT_MS || "10000");
 const spoolDir = process.env.POLYLOGUE_PROVIDER_SMOKE_SPOOL_DIR || "";
+const headless = process.env.POLYLOGUE_PROVIDER_SMOKE_HEADLESS !== "0";
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -190,10 +192,45 @@ async function startProviderFixtureServer(certDir) {
     port,
     server,
     urls: {
-      chatgpt: `https://chatgpt.com:${port}/c/polylogue-dev-loop-provider-smoke`,
-      claude: `https://claude.ai:${port}/chat/polylogue-dev-loop-provider-smoke`,
+      chatgpt: "https://chatgpt.com/c/polylogue-dev-loop-provider-smoke",
+      claude: "https://claude.ai/chat/polylogue-dev-loop-provider-smoke",
     },
   };
+}
+
+async function startProviderProxyServer(fixturePort) {
+  const server = http.createServer((_request, response) => {
+    response.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+    response.end("Polylogue provider smoke proxy only supports CONNECT\n");
+  });
+  server.on("connect", (request, clientSocket, head) => {
+    const [host, portText] = String(request.url || "").split(":");
+    const port = Number(portText || "443");
+    if (!["chatgpt.com", "claude.ai"].includes(host) || port !== 443) {
+      clientSocket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+      clientSocket.destroy();
+      return;
+    }
+    const upstream = net.connect(fixturePort, "127.0.0.1", () => {
+      clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      if (head.length) upstream.write(head);
+      upstream.pipe(clientSocket);
+      clientSocket.pipe(upstream);
+    });
+    upstream.on("error", () => {
+      clientSocket.destroy();
+    });
+    clientSocket.on("error", () => {
+      upstream.destroy();
+    });
+  });
+  await new Promise((resolve, reject) => {
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  return { port, server };
 }
 
 function closeServer(server) {
@@ -262,17 +299,38 @@ async function waitForExtensionWorker(debuggingPort, expectedWorkerSuffix, expec
   );
 }
 
-async function openProviderTarget(browserClient, debuggingPort, url) {
-  const created = await browserClient.call("Target.createTarget", { url });
-  const targetId = created.targetId;
+async function openProviderTargetFromWorker(workerClient, debuggingPort, url) {
+  const createdTab = await evaluateJson(
+    workerClient,
+    `(async () => {
+      if (!globalThis.chrome?.tabs?.create) {
+        throw new Error("extension service-worker CDP target does not expose chrome.tabs.create");
+      }
+      let tab;
+      try {
+        tab = await chrome.tabs.create({url: ${JSON.stringify(url)}, active: false});
+      } catch (error) {
+        const message = String(error && error.message ? error.message : error);
+        if (!message.includes("No current window") || !globalThis.chrome?.windows?.create) {
+          throw error;
+        }
+        const createdWindow = await chrome.windows.create({url: ${JSON.stringify(url)}, focused: false, type: "normal"});
+        tab = Array.isArray(createdWindow.tabs) && createdWindow.tabs.length ? createdWindow.tabs[0] : null;
+      }
+      if (!tab) throw new Error("extension API did not return a provider tab");
+      return {id: tab.id ?? null, url: tab.url ?? null, pendingUrl: tab.pendingUrl ?? null, title: tab.title ?? null};
+    })()`,
+  );
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const targets = await waitJson(`http://127.0.0.1:${debuggingPort}/json/list`, Math.min(2000, timeoutMs));
-    const target = targets.find((candidate) => candidate.id === targetId || candidate.url === url);
+    const target = targets.find((candidate) => candidate.url === url);
     if (target?.webSocketDebuggerUrl) {
       const client = await connectCdp(target.webSocketDebuggerUrl);
       await client.call("Runtime.enable");
-      return { target, client };
+      await client.call("Page.enable");
+      await client.call("Page.navigate", { url });
+      return { target, client, tab: createdTab };
     }
     await sleep(250);
   }
@@ -289,18 +347,40 @@ async function waitForReadyPage(client) {
   throw new Error("provider fixture page did not become ready");
 }
 
+async function providerPageDiagnostics(client) {
+  return evaluateJson(
+    client,
+    `(() => ({
+      href: location.href,
+      title: document.title || null,
+      readyState: document.readyState,
+      articleCount: document.querySelectorAll("article").length,
+      hasPolylogueCapture: Boolean(window.polylogueCapture),
+      bodyTextSample: (document.body?.innerText || document.body?.textContent || "").slice(0, 240)
+    }))()`,
+  );
+}
+
 async function configureExtension(workerClient) {
   return evaluateJson(
     workerClient,
     `(async () => {
       if (!globalThis.chrome?.storage?.local) {
+        if (${JSON.stringify(receiverBaseUrl)} === "http://127.0.0.1:8765" && !${JSON.stringify(receiverAuthToken)}) {
+          return {
+            receiverBaseUrl: "http://127.0.0.1:8765",
+            receiverAuthToken: "",
+            storageConfigured: false,
+            caveat: "chrome.storage.local unavailable in service-worker CDP context; using extension defaults"
+          };
+        }
         throw new Error("extension service-worker CDP target does not expose chrome.storage.local");
       }
       await chrome.storage.local.set({
         receiverBaseUrl: ${JSON.stringify(receiverBaseUrl)},
         receiverAuthToken: ${JSON.stringify(receiverAuthToken)}
       });
-      return await chrome.storage.local.get(["receiverBaseUrl", "receiverAuthToken"]);
+      return { ...(await chrome.storage.local.get(["receiverBaseUrl", "receiverAuthToken"])), storageConfigured: true };
     })()`,
   );
 }
@@ -312,27 +392,53 @@ async function captureProvider(workerClient, providerConfig) {
       if (!globalThis.chrome?.tabs?.query) {
         throw new Error("extension service-worker CDP target does not expose chrome.tabs");
       }
+      async function sendCapture(tabId) {
+        try {
+          const result = await chrome.tabs.sendMessage(tabId, {type: "polylogue.capturePage"});
+          return {ok: Boolean(result && result.ok), result, injection_mode: "manifest"};
+        } catch (error) {
+          const message = String(error && error.message ? error.message : error);
+          if (!message.includes("Receiving end does not exist") || !globalThis.chrome?.scripting?.executeScript) {
+            return {ok: false, error: message, injection_mode: "none"};
+          }
+          await chrome.scripting.executeScript({target: {tabId}, files: ["src/common.js"]});
+          await chrome.scripting.executeScript({target: {tabId}, files: [${JSON.stringify(providerConfig.contentScriptFile)}]});
+          const result = await chrome.tabs.sendMessage(tabId, {type: "polylogue.capturePage"});
+          return {ok: Boolean(result && result.ok), result, injection_mode: "scripted_retry"};
+        }
+      }
+      const summarizeTabs = (tabs) => tabs.map((tab) => ({
+        id: typeof tab.id === "number" ? tab.id : null,
+        url: tab.url || tab.pendingUrl || null,
+        title: tab.title || null,
+        active: Boolean(tab.active)
+      }));
       const deadline = Date.now() + ${JSON.stringify(timeoutMs)};
       let last = null;
       while (Date.now() < deadline) {
         const tabs = await chrome.tabs.query({});
-        const tab = tabs.find((candidate) => {
-          try {
-            return new URL(candidate.url || "about:blank").hostname === ${JSON.stringify(providerConfig.host)};
-          } catch (_error) {
-            return false;
-          }
-        });
+        const tabInventory = summarizeTabs(tabs);
+        const expectedTabId = ${JSON.stringify(providerConfig.expectedTabId ?? null)};
+        const tab = tabs.find((candidate) => typeof expectedTabId === "number" && candidate.id === expectedTabId)
+          || tabs.find((candidate) => {
+            try {
+              return new URL(candidate.url || "about:blank").hostname === ${JSON.stringify(providerConfig.host)};
+            } catch (_error) {
+              return false;
+            }
+          });
         if (tab && typeof tab.id === "number") {
-          try {
-            const result = await chrome.tabs.sendMessage(tab.id, {type: "polylogue.capturePage"});
-            last = {tab: {id: tab.id, url: tab.url, title: tab.title}, result};
-            if (result && result.ok) return {ok: true, ...last};
-          } catch (error) {
-            last = {tab: {id: tab.id, url: tab.url, title: tab.title}, error: String(error && error.message ? error.message : error)};
-          }
+          const capture = await sendCapture(tab.id);
+          last = {
+            tab: {id: tab.id, url: tab.url, title: tab.title},
+            tab_inventory: tabInventory,
+            injection_mode: capture.injection_mode,
+            result: capture.result,
+            error: capture.error
+          };
+          if (capture.ok) return {ok: true, ...last};
         } else {
-          last = {error: "tab_not_found"};
+          last = {error: "tab_not_found", expected_host: ${JSON.stringify(providerConfig.host)}, tab_inventory: tabInventory};
         }
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
@@ -351,12 +457,13 @@ function safeProviderSummary(providerConfig, capturePayload) {
   const turns = Array.isArray(session.turns) ? session.turns : [];
   const artifactRef = typeof captureResult.artifact_ref === "string" ? captureResult.artifact_ref : null;
   const artifactPath = artifactRef && spoolDir ? path.join(spoolDir, artifactRef) : null;
+  const adapterName = typeof provenance.adapter_name === "string" ? provenance.adapter_name : null;
   const roles = turns.map((turn) => turn.role).filter(Boolean);
   const ok = Boolean(
     capturePayload?.ok &&
       result.ok === true &&
       session.provider === providerConfig.expectedProvider &&
-      provenance.adapter_name === providerConfig.expectedAdapter &&
+      providerConfig.expectedAdapters.includes(adapterName) &&
       turns.length >= 2 &&
       roles.includes("user") &&
       roles.includes("assistant") &&
@@ -368,12 +475,18 @@ function safeProviderSummary(providerConfig, capturePayload) {
   return {
     ok,
     url: providerConfig.url,
+    expected_host: providerConfig.host,
+    page_target: providerConfig.pageTarget || null,
+    page_diagnostics: providerConfig.pageDiagnostics || null,
+    opened_tab: providerConfig.openedTab || null,
     tab: capturePayload?.tab || null,
+    tab_inventory: capturePayload?.tab_inventory || null,
+    injection_mode: capturePayload?.injection_mode || null,
     expected_provider: providerConfig.expectedProvider,
     provider: session.provider || null,
     provider_session_id: session.provider_session_id || null,
-    expected_adapter: providerConfig.expectedAdapter,
-    adapter_name: provenance.adapter_name || null,
+    expected_adapters: providerConfig.expectedAdapters,
+    adapter_name: adapterName,
     turn_count: turns.length,
     roles,
     capture_result: {
@@ -398,19 +511,22 @@ async function main() {
   const chromeBinary = resolveChromeBinary();
   const debuggingPort = await freePort();
   const fixtureServer = await startProviderFixtureServer(profileDir);
+  const proxyServer = await startProviderProxyServer(fixtureServer.port);
   const chromeArgs = [
     `--user-data-dir=${profileDir}`,
     `--remote-debugging-port=${debuggingPort}`,
-    "--headless=new",
     "--no-sandbox",
+    "--disable-features=ExtensionsMenuAccessControl",
     "--ignore-certificate-errors",
     "--allow-insecure-localhost",
-    `--host-resolver-rules=MAP chatgpt.com 127.0.0.1,MAP claude.ai 127.0.0.1`,
+    `--proxy-server=http://127.0.0.1:${proxyServer.port}`,
+    "--proxy-bypass-list=127.0.0.1;localhost",
     `--unsafely-treat-insecure-origin-as-secure=${receiverBaseUrl}`,
     `--disable-extensions-except=${extensionRoot}`,
     `--load-extension=${extensionRoot}`,
     "about:blank",
   ];
+  if (headless) chromeArgs.splice(2, 0, "--headless=new");
   const chrome = spawn(chromeBinary, chromeArgs, { detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";
   let stderr = "";
@@ -433,26 +549,37 @@ async function main() {
         host: "chatgpt.com",
         url: fixtureServer.urls.chatgpt,
         expectedProvider: "chatgpt",
-        expectedAdapter: "chatgpt-dom-v1",
+        expectedAdapters: ["chatgpt-native-v1", "chatgpt-dom-v1"],
+        contentScriptFile: "src/content/chatgpt.js",
       },
       {
         key: "claude",
         host: "claude.ai",
         url: fixtureServer.urls.claude,
         expectedProvider: "claude-ai",
-        expectedAdapter: "claude-ai-dom-v1",
+        expectedAdapters: ["claude-ai-native-v1", "claude-ai-dom-v1"],
+        contentScriptFile: "src/content/claude.js",
       },
     ];
-    for (const config of providerConfigs) {
-      const { client } = await openProviderTarget(browserClient, debuggingPort, config.url);
-      pageClients.push(client);
-      await waitForReadyPage(client);
-    }
-
     const { worker, client } = await waitForExtensionWorker(debuggingPort, expectedWorkerSuffix, localManifest.name);
     workerClient = client;
     const extensionId = new URL(worker.url).host;
     const configuredReceiver = await configureExtension(workerClient);
+
+    for (const config of providerConfigs) {
+      const { client, target, tab } = await openProviderTargetFromWorker(workerClient, debuggingPort, config.url);
+      config.pageTarget = {
+        id: target.id || null,
+        type: target.type || null,
+        url: target.url || null,
+        title: target.title || null,
+      };
+      config.openedTab = tab;
+      config.expectedTabId = typeof tab?.id === "number" ? tab.id : null;
+      pageClients.push(client);
+      await waitForReadyPage(client);
+      config.pageDiagnostics = await providerPageDiagnostics(client);
+    }
 
     const providers = {};
     for (const config of providerConfigs) {
@@ -464,13 +591,15 @@ async function main() {
       ok: Object.values(providers).every((provider) => provider.ok === true),
       chrome_binary: chromeBinary,
       chrome_args: chromeArgs,
+      headless,
       debugging_port: debuggingPort,
       extension_id: extensionId,
       extension_root: extensionRoot,
       fixture_server: {
         port: fixtureServer.port,
         urls: fixtureServer.urls,
-        host_resolver_rules: "MAP chatgpt.com 127.0.0.1,MAP claude.ai 127.0.0.1",
+        proxy_port: proxyServer.port,
+        proxy_mode: "CONNECT chatgpt.com:443 and claude.ai:443 to fixture server",
       },
       manifest: {
         name: localManifest.name,
@@ -496,6 +625,7 @@ async function main() {
     if (workerClient) workerClient.close();
     if (browserClient) browserClient.close();
     await terminateProcess(chrome);
+    await closeServer(proxyServer.server);
     await closeServer(fixtureServer.server);
     if (!keepProfile && !process.env.POLYLOGUE_PROVIDER_SMOKE_PROFILE_DIR) {
       rmSync(profileDir, { recursive: true, force: true });
