@@ -1,6 +1,7 @@
-"""Tests for cardinality enforcement in mark / analyze / delete query verbs.
+"""Tests for cardinality enforcement in read / mark / analyze / delete verbs.
 
 Cardinality rules (from #1814):
+  - read:   requires exactly one result unless --all or --first.
   - mark:   requires exactly one result unless --all or --first.
   - analyze: no cardinality restriction (applies to result set).
   - delete: requires --dry-run for preview; --yes plus --all for multi-match.
@@ -11,6 +12,7 @@ All three verbs share the single :func:`check_cardinality` path from
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -85,6 +87,125 @@ class TestCheckCardinality:
     def test_cardinality_error_is_usage_error(self) -> None:
         with pytest.raises(click.UsageError):
             check_cardinality(2, allow_all=False, first_only=False, operation="test")
+
+
+# ---------------------------------------------------------------------------
+# read_verb — cardinality enforcement
+# ---------------------------------------------------------------------------
+
+
+class TestReadVerbCardinality:
+    """read_verb enforces the singleton / --all / --first contract."""
+
+    def _read_callback(self) -> object:
+        cb = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
+        assert callable(cb), "read_verb.callback must be a context-decorated function"
+        return cb
+
+    def _call_read(
+        self,
+        child: click.Context,
+        *,
+        export_all: bool = False,
+        first_only: bool = False,
+    ) -> None:
+        cb = self._read_callback()
+        cb(  # type: ignore[operator]
+            ctx=child,
+            view="summary",
+            destination="terminal",
+            output_format=None,
+            out_path=None,
+            export_all=export_all,
+            message_role=(),
+            material_origin=(),
+            message_type=None,
+            limit=None,
+            offset=0,
+            window_hours=24,
+            repo_path=None,
+            since_hours=2,
+            confidence_threshold=0.3,
+            github_api=False,
+            otlp=False,
+            related_limit=5,
+            recovery_report=None,
+            project_path=None,
+            project_repo=None,
+            since=None,
+            until=None,
+            pack_origin=None,
+            pack_query=None,
+            max_sessions=5,
+            max_messages=20,
+            no_redact=False,
+            no_code_blocks=False,
+            no_tool_calls=False,
+            no_tool_outputs=False,
+            no_file_reads=False,
+            prose_only=False,
+            fields=None,
+            first_only=first_only,
+            show_views=False,
+        )
+
+    def _read_resolution(self, session_ids: list[str]) -> AbstractContextManager[MagicMock]:
+        def _close_and_return(coro: object) -> list[str]:
+            close = getattr(coro, "close", None)
+            if callable(close):
+                close()
+            return session_ids
+
+        return patch("polylogue.cli.query_verbs.run_coroutine_sync", side_effect=_close_and_return)
+
+    def test_multi_match_without_first_or_all_raises(self) -> None:
+        _, child = _context_pair(query_terms=("needle",))
+        child.obj = SimpleNamespace(config=MagicMock())
+
+        with self._read_resolution(["id1", "id2"]):
+            with pytest.raises(click.UsageError, match="--first"):
+                self._call_read(child)
+
+    def test_multi_match_with_first_reads_first_match(self) -> None:
+        _, child = _context_pair(query_terms=("needle",))
+        child.obj = SimpleNamespace(config=MagicMock())
+
+        with (
+            self._read_resolution(["id1"]),
+            patch("polylogue.cli.query_verbs.run_read_view") as run_read_view,
+        ):
+            self._call_read(child, first_only=True)
+
+        invocation = run_read_view.call_args.args[2]
+        assert invocation.session_id == "id1"
+
+    def test_read_all_and_first_are_mutually_exclusive(self) -> None:
+        _, child = _context_pair(query_terms=("needle",))
+        child.obj = SimpleNamespace(config=MagicMock())
+
+        with pytest.raises(click.UsageError, match="mutually exclusive"):
+            self._call_read(child, export_all=True, first_only=True)
+
+    def test_read_uses_shared_check_cardinality(self) -> None:
+        _, child = _context_pair(query_terms=("needle",))
+        child.obj = SimpleNamespace(config=MagicMock())
+
+        with (
+            self._read_resolution(["id1", "id2"]),
+            patch(
+                "polylogue.cli.verb_cardinality.check_cardinality",
+                side_effect=CardinalityError("mocked error"),
+            ) as mock_check,
+        ):
+            with pytest.raises(click.UsageError, match="mocked error"):
+                self._call_read(child)
+
+        mock_check.assert_called_once_with(
+            2,
+            allow_all=False,
+            first_only=False,
+            operation="read",
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -326,6 +326,28 @@ def test_read_contract_guard_requires_out_for_file_destination(workspace_env: di
     assert "--out" in result.output
 
 
+def test_read_contract_guard_allows_first_for_multi_match(workspace_env: dict[str, Path]) -> None:
+    """The read guard advertises first-only selection for ranked result sets."""
+    _assert_contract_declares_guard(("read",), "single_match_unless_all_or_first")
+
+    def _close_and_return(coro: object) -> list[str]:
+        close = getattr(coro, "close", None)
+        if callable(close):
+            close()
+        return ["session-1"]
+
+    runner = CliRunner()
+    with (
+        patch("polylogue.cli.query_verbs.run_coroutine_sync", side_effect=_close_and_return),
+        patch("polylogue.cli.query_verbs.run_read_view") as run_read_view,
+    ):
+        result = runner.invoke(cli, ["find", "needle", "then", "read", "--first"])
+
+    assert result.exit_code == 0, result.output
+    invocation = run_read_view.call_args.args[2]
+    assert invocation.session_id == "session-1"
+
+
 def test_mark_contract_guard_requires_all_or_first_for_multi_match(workspace_env: dict[str, Path]) -> None:
     """`single_match_unless_all_or_first` is enforced before mark mutation."""
     _assert_contract_declares_guard(("mark",), "single_match_unless_all_or_first")

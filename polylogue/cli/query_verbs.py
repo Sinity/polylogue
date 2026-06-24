@@ -430,6 +430,7 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: b
 @click.option("--prose-only", is_flag=True, help="Show only prose text (--view messages).")
 @click.option("--fields", help="Fields for JSON/YAML outputs (--all).")
 @click.option("--views", "show_views", is_flag=True, help="List executable read-view profiles and exit.")
+@click.option("--first", "first_only", is_flag=True, help="Read the first matched session only.")
 @click.argument("ref", required=False)
 @click.pass_context
 def read_verb(
@@ -467,6 +468,7 @@ def read_verb(
     no_file_reads: bool,
     prose_only: bool,
     fields: str | None,
+    first_only: bool,
     show_views: bool = False,
     ref: str | None = None,
 ) -> None:
@@ -504,6 +506,10 @@ def read_verb(
         _emit_read_view_profiles(output_format)
         return
     request = _parent_request(ctx)
+    if export_all and first_only:
+        raise click.UsageError("read --all and --first are mutually exclusive.")
+    if destination == "file" and not out_path:
+        raise click.UsageError("read --to file requires --out.")
     if _explain_terminal_action(
         request,
         action="read",
@@ -511,6 +517,7 @@ def read_verb(
         destination=destination,
         format=_effective_read_output_format(request, view=view, output_format=output_format) or "default",
         all=export_all,
+        first=first_only,
     ):
         return
     if ref is not None:
@@ -544,7 +551,7 @@ def read_verb(
         )
         return
 
-    session_id = _resolve_target_session_id(request)
+    session_id = _resolve_read_session_id(env, request, first_only=first_only)
     effective_format = _effective_read_output_format(request, view=view, output_format=output_format)
     explicit_options = _explicit_read_view_options(ctx)
     if destination == "browser":
@@ -1458,6 +1465,39 @@ def _resolve_target_session_id(request: RootModeRequest) -> str | None:
     from polylogue.cli.shared.latest_resolver import resolve_session_id_from_root_params
 
     return resolve_session_id_from_root_params(dict(request.params))
+
+
+def _resolve_read_session_id(env: AppEnv, request: RootModeRequest, *, first_only: bool) -> str | None:
+    """Resolve the singleton session for ``read`` with explicit cardinality."""
+    if request.query_terms:
+        from dataclasses import replace
+
+        from polylogue.cli.verb_cardinality import CardinalityError, check_cardinality
+
+        explicit = request.params.get("conv_id")
+        if isinstance(explicit, str) and explicit:
+            return explicit
+        spec = request.query_spec()
+        if _spec_is_exact_session_ref(spec):
+            return cast("str", spec.session_id)
+        if not spec.latest and not spec.has_filters():
+            return None
+
+        read_limit = 1 if first_only else 2
+        bounded_spec = replace(spec, limit=read_limit)
+
+        async def _resolve() -> list[str]:
+            summaries = await bounded_spec.list_summaries(env.config)
+            return [str(summary.id) for summary in summaries]
+
+        session_ids = run_coroutine_sync(_resolve())
+        try:
+            check_cardinality(len(session_ids), allow_all=False, first_only=first_only, operation="read")
+        except CardinalityError as exc:
+            raise click.UsageError(str(exc)) from exc
+        return session_ids[0] if session_ids else None
+
+    return _resolve_target_session_id(request)
 
 
 QUERY_VERBS = (
