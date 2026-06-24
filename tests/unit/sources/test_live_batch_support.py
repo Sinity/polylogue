@@ -1211,3 +1211,24 @@ async def test_live_append_plans_flush_in_bounded_groups(
     assert groups == [paths[:2], paths[2:4], paths[4:]]
     assert metrics.append_file_count == 5
     assert metrics.full_file_count == 0
+    with sqlite3.connect(cursor._ops_db_path) as conn:
+        stage_payloads = [
+            (str(row[0]), json.loads(row[1]))
+            for row in conn.execute(
+                """
+                SELECT stage, payload_json
+                FROM daemon_stage_events
+                WHERE stage IN ('append_parse', 'convergence', 'cursor_update', 'completed')
+                ORDER BY observed_at_ms, rowid
+                """
+            ).fetchall()
+        ]
+    route_payloads = [(stage, payload) for stage, payload in stage_payloads if payload.get("storage_route")]
+    assert route_payloads
+    assert {payload["storage_route"] for _, payload in route_payloads} == {"archive_append"}
+    assert ("cursor_update", "archive_append") in [
+        (stage, str(payload.get("storage_route"))) for stage, payload in route_payloads
+    ]
+    assert ("completed", "archive_append") in [
+        (stage, str(payload.get("storage_route"))) for stage, payload in route_payloads
+    ]
