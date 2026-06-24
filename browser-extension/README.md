@@ -85,10 +85,16 @@ envelope. Artifacts are written under `.cache/dev-loop/<run-id>/browser/`.
 This proves the extension service-worker HTTP path without using real
 ChatGPT/Claude.ai profile data. The provider page smoke then loads the unpacked
 extension into real headless Chrome/Chromium, serves deterministic ChatGPT and
-Claude fixture pages on their supported origins, triggers the content-script
-capture path, and verifies provider/adapter identity, receiver request ids, and
-spool artifacts without copying browser profiles or writing raw turn text into
-the summary.
+Claude fixture pages behind a local CONNECT proxy on their normal origins, opens
+those pages through the extension worker's `chrome.tabs.create` API, triggers
+the content-script capture path through the same worker-visible tabs, and
+verifies provider/adapter identity, receiver request ids, and spool artifacts
+without copying browser profiles or writing raw turn text into the summary. If
+manifest content-script delivery is unavailable in the headless fixture browser,
+the smoke uses the same `chrome.scripting.executeScript` retry path as the popup
+and records the `injection_mode`. If Chrome creates the page target but the
+worker cannot see the corresponding tab, the summary records both the CDP page
+target and the worker-visible tab inventory.
 
 For live authenticated ChatGPT/Claude.ai work, generate the operator-local plan
 and run the copied-profile proof from the repo instead of inventing a private
@@ -116,8 +122,11 @@ If headless Chromium cannot expose MV3 extension service workers, the browser
 smokes fail cleanly with `Polylogue extension service worker not found` in the
 stderr artifact. Set `POLYLOGUE_BROWSER_SMOKE_CHROME` or
 `POLYLOGUE_PROVIDER_SMOKE_CHROME` to a Chrome/Chromium binary with extension
-service-worker support, or use `--browser-live-proof` with a visible copied
-profile for operator-local live-page evidence.
+service-worker support. When Chrome exposes the service worker but does not
+deliver provider content scripts, the provider smoke records page diagnostics,
+tab inventory, and injection mode. Set `POLYLOGUE_PROVIDER_SMOKE_HEADLESS=0` to
+repeat the same isolated-profile proof visibly, or use `--browser-live-proof`
+with a visible copied profile for operator-local live-page evidence.
 
 ## Supported Sites
 
