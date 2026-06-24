@@ -125,6 +125,10 @@ def test_daemon_workload_probe_reports_attempts_and_plan_shape(tmp_path: Path) -
     source_plan = payload["query_plans"]["source_path_lookup"]
     assert source_plan["hazards"] == []
     assert any("idx_raw_sessions_source_path" in item for item in source_plan["plan"])
+    fts_plan = payload["query_plans"]["message_fts_gap_probe"]
+    assert fts_plan["hazards"] == []
+    assert not any(item.startswith("unavailable:") for item in fts_plan["plan"])
+    assert any("blocks" in item for item in fts_plan["plan"])
 
 
 def test_daemon_workload_probe_defaults_to_estimated_table_counts(tmp_path: Path) -> None:

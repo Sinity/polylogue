@@ -1904,17 +1904,17 @@ def _query_plans(conn: sqlite3.Connection, *, db: Path) -> dict[str, Any]:
                 "hazards": [item for item in plan if "SCAN c" in item],
                 "storage_route": "archive_file_set",
             }
-    if _table_exists(conn, "messages") and _table_exists(conn, "messages_fts_docsize"):
-        conv_row = conn.execute("SELECT session_id FROM messages LIMIT 1").fetchone()
+    if _table_exists(conn, "blocks") and _table_exists(conn, "messages_fts_docsize"):
+        conv_row = conn.execute("SELECT session_id FROM blocks LIMIT 1").fetchone()
         if conv_row is not None:
             plan = _explain(
                 conn,
                 """
                 SELECT COUNT(*)
-                FROM messages AS m
-                LEFT JOIN messages_fts_docsize AS d ON d.id = m.rowid
-                WHERE m.text IS NOT NULL
-                  AND m.session_id IN (?)
+                FROM blocks AS b
+                LEFT JOIN messages_fts_docsize AS d ON d.id = b.rowid
+                WHERE b.search_text != ''
+                  AND b.session_id IN (?)
                   AND d.id IS NULL
                 """,
                 (conv_row[0],),
