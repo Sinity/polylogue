@@ -125,6 +125,56 @@ def test_browser_capture_prefers_raw_chatgpt_payload_when_present() -> None:
     assert session.messages[1].blocks[0].type.value == "code"
 
 
+def test_browser_capture_raw_chatgpt_payload_matches_direct_import_identity() -> None:
+    raw_payload = {
+        "conversation_id": "native-conv",
+        "title": "Native ChatGPT title",
+        "create_time": 1781442866.0,
+        "update_time": 1781442966.0,
+        "current_node": "assistant-node",
+        "mapping": {
+            "root": {"id": "root", "message": None, "parent": None, "children": ["user-node"]},
+            "user-node": {
+                "id": "user-node",
+                "parent": "root",
+                "children": ["assistant-node"],
+                "message": {
+                    "id": "native-u1",
+                    "author": {"role": "user"},
+                    "create_time": 1781442870.0,
+                    "content": {"content_type": "text", "parts": ["Native user text"]},
+                    "metadata": {},
+                },
+            },
+            "assistant-node": {
+                "id": "assistant-node",
+                "parent": "user-node",
+                "children": [],
+                "message": {
+                    "id": "native-a1",
+                    "author": {"role": "assistant"},
+                    "create_time": 1781442880.0,
+                    "content": {"content_type": "text", "parts": ["Native answer text"]},
+                    "metadata": {},
+                },
+            },
+        },
+    }
+    payload = _capture_payload()
+    payload["raw_provider_payload"] = raw_payload
+
+    direct_session = parse_payload(Provider.CHATGPT, raw_payload, "direct-fallback")[0]
+    captured_session = parse_payload(Provider.CHATGPT, payload, "capture-fallback")[0]
+
+    assert captured_session.provider_session_id == direct_session.provider_session_id == "native-conv"
+    assert captured_session.title == direct_session.title == "Native ChatGPT title"
+    assert (
+        [message.provider_message_id for message in captured_session.messages]
+        == [message.provider_message_id for message in direct_session.messages]
+        == ["native-u1", "native-a1"]
+    )
+
+
 def test_browser_capture_raw_chatgpt_without_id_uses_envelope_session_id() -> None:
     payload = _capture_payload()
     payload["raw_provider_payload"] = {

@@ -106,6 +106,41 @@ browser-capture payloads. Route metadata lives in
 `polylogue/browser_capture/route_contracts.py` so tests and future OpenAPI/web
 surfaces do not infer receiver DTO or auth semantics from handler branches.
 
+## Provider payloads and coalescing
+
+Browser capture is an acquisition path for the same provider sessions that
+GDPR/Takeout-style imports already store. It must not create a duplicate
+session merely because the evidence arrived through an extension.
+
+| Provider/path | Adapter or source | Stored payload | Parser path | Coalescing key |
+| --- | --- | --- | --- | --- |
+| ChatGPT authenticated page | `chatgpt-native-v1` | Full `/backend-api/conversation/<id>` JSON under `raw_provider_payload` | delegated to the normal ChatGPT parser | `chatgpt-export:<conversation_id or id>` |
+| ChatGPT authenticated page fallback | `chatgpt-dom-v1` | Visible turns in the browser-capture envelope | browser-capture DOM parser | `chatgpt-export:<url /c/<id>>` |
+| ChatGPT GDPR/export file | provider import | Export JSON `mapping` payload | normal ChatGPT parser | `chatgpt-export:<conversation_id or id>` |
+| ChatGPT shared-link helper | standalone public-share script | React Router share stream reduced to export-shaped messages | separate conversion input, not the extension payload | provider-native share conversation id when converted |
+| Claude.ai authenticated page | `claude-ai-dom-v1` today | Visible turns in the browser-capture envelope | browser-capture DOM parser | `claude-ai-export:<url /chat/<id>>` |
+| Claude.ai native/export payload | provider import or future adapter | `chat_messages` payload under provider import or `raw_provider_payload` | delegated to the normal Claude.ai parser | `claude-ai-export:<uuid>` |
+
+The ChatGPT content script hooks same-origin fetches for authenticated
+conversation JSON and keeps only a bounded recent window in page memory. On
+capture it sends that provider-native JSON as `raw_provider_payload`; the
+browser-capture parser then delegates to the same ChatGPT parser used by direct
+imports. This is the preferred path because it preserves branches, current
+node, message ids, timestamps, model metadata, attachments, and other fields the
+visible DOM cannot reliably expose.
+
+DOM extraction is a compatibility fallback for pages where no provider-native
+payload has been observed yet. It still uses the provider-native conversation id
+from the URL, so a later native capture or GDPR import for the same conversation
+updates the same archive session instead of creating a second visible session.
+Fallback DOM captures are therefore acceptable as temporary live evidence, but
+not as a reason to prefer DOM over a clean provider payload.
+
+The Claude.ai parser already accepts native `chat_messages` payloads through
+`raw_provider_payload`, and archive tests pin coalescing with direct Claude.ai
+imports. The shipped extension adapter is still DOM-only, so native Claude.ai
+fetch capture remains a fidelity residual rather than a parser/storage gap.
+
 ## Local auth and origin policy
 
 Default CORS is extension-only: `chrome-extension://*`. Remote web origins such
