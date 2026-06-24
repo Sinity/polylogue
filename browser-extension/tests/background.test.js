@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 let messageListener;
+let installedListener;
 let stored;
 let fetchCalls;
+let tabs;
 
 function installChromeMock() {
   stored = {
@@ -10,18 +12,31 @@ function installChromeMock() {
     receiverBaseUrl: "http://127.0.0.1:8875",
   };
   messageListener = null;
+  installedListener = null;
   fetchCalls = [];
+  tabs = [{ id: 42, url: "https://chatgpt.com/?temporary-chat=true", title: "ChatGPT" }];
   globalThis.chrome = {
     action: {
       setBadgeBackgroundColor: vi.fn(async () => undefined),
       setBadgeText: vi.fn(async () => undefined),
     },
     runtime: {
+      onInstalled: {
+        addListener: vi.fn((fn) => {
+          installedListener = fn;
+        }),
+      },
+      onStartup: {
+        addListener: vi.fn(),
+      },
       onMessage: {
         addListener: vi.fn((fn) => {
           messageListener = fn;
         }),
       },
+    },
+    scripting: {
+      executeScript: vi.fn(async () => undefined),
     },
     storage: {
       local: {
@@ -30,6 +45,28 @@ function installChromeMock() {
           stored = { ...stored, ...patch };
         }),
       },
+    },
+    tabs: {
+      get: vi.fn(async (tabId) => tabs.find((tab) => tab.id === tabId)),
+      onActivated: {
+        addListener: vi.fn(),
+      },
+      onUpdated: {
+        addListener: vi.fn(),
+      },
+      query: vi.fn(async () => tabs),
+      sendMessage: vi.fn(async () => ({
+        ok: true,
+        captureResult: {
+          receiver_request_id: "capture-request-1",
+          provider: "chatgpt",
+          provider_session_id: "temporary:abc",
+        },
+        archiveState: {
+          receiver_request_id: "state-request-1",
+          captured: true,
+        },
+      })),
     },
   };
 }
@@ -108,5 +145,29 @@ describe("background receiver diagnostics", () => {
     });
     expect(stored.polylogueState.online).toBe(false);
     expect(stored.polylogueState.last_receiver_request_id).toBe("reject-42");
+  });
+
+  it("injects capture scripts into existing provider tabs after extension update", async () => {
+    expect(installedListener).toBeTypeOf("function");
+
+    installedListener();
+    await vi.waitFor(() => expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledTimes(1));
+
+    expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledWith({
+      target: { tabId: 42 },
+      files: ["src/content/chatgpt_bridge.js"],
+      world: "MAIN",
+    });
+    expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledWith({
+      target: { tabId: 42 },
+      files: ["src/common.js", "src/content/chatgpt.js"],
+    });
+    expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
+      type: "polylogue.capturePage",
+      reason: "extension_installed_or_updated",
+    });
+    expect(stored.polylogueState.online).toBe(true);
+    expect(stored.polylogueState.captured).toBe(true);
+    expect(stored.polylogueState.last_receiver_request_id).toBe("capture-request-1");
   });
 });

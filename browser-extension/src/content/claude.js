@@ -1,4 +1,7 @@
 (function () {
+  if (window.__polylogueClaudeCaptureInstalled) return;
+  window.__polylogueClaudeCaptureInstalled = true;
+
   const domAdapterName = "claude-ai-dom-v1";
   const nativeAdapterName = "claude-ai-native-v1";
   const nativeCaptureMessage = "polylogue.claude.nativeCapture";
