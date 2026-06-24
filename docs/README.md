@@ -37,7 +37,7 @@ Use this map when you need the complete repository documentation surface. The to
 | Document | Description |
 |----------|-------------|
 | [Developer Tools](devtools.md) | `devtools` guide for generated surfaces, validation, and repo hygiene. |
-| [Test Quality Workflows](test-quality-workflows.md) | Generated validation lanes, mutation campaigns, and benchmark campaigns. |
+| [Test Quality Workflows](test-quality-workflows.md) | Optional executable lane, mutation-campaign, and benchmark registries. |
 | [Release Readiness Gate](plans/release-readiness-gate.md) | Externally-presentable release gate, required checks, and release PR evidence contract. |
 | [Visual Evidence](visual-evidence.md) | Synthetic reader DOM/media evidence lanes and local screenshot boundaries. |
 | [Release Checklist](release.md) | Cut-time packaging, installed-artifact, and publish checks. |

@@ -35,9 +35,60 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.cli.verb_names import VERB_NAMES
 from polylogue.core.enums import AssertionStatus
 from polylogue.surfaces.payloads import (
+    AssertionCandidateReviewListPayload,
     AssertionClaimListPayload,
     serialize_surface_payload,
 )
+
+_FACET_TERMINAL_BUCKET_LIMIT = 12
+_FACET_TERMINAL_IDF_LIMIT = 12
+
+
+def _sorted_nonzero_facet_values(values: dict[str, int]) -> list[tuple[str, int]]:
+    """Return deterministic non-zero facet rows for terminal output."""
+
+    return sorted(
+        ((key, count) for key, count in values.items() if count),
+        key=lambda kv: (-kv[1], kv[0]),
+    )
+
+
+def _remaining_facet_value_line(remaining: int) -> str:
+    suffix = "value" if remaining == 1 else "values"
+    return f"    … {remaining} more {suffix} omitted from terminal view; use --format json for full buckets."
+
+
+def _emit_facet_bucket(label: str, values: dict[str, int], *, limit: int = _FACET_TERMINAL_BUCKET_LIMIT) -> None:
+    """Emit one bounded facet family for terminal output."""
+
+    rows = _sorted_nonzero_facet_values(values)
+    if not rows:
+        return
+    click.echo(f"  {label}:")
+    for value, count in rows[:limit]:
+        click.echo(f"    {value}: {count}")
+    remaining = len(rows) - limit
+    if remaining > 0:
+        click.echo(_remaining_facet_value_line(remaining))
+
+
+def _emit_idf_buckets(idf: dict[str, dict[str, float]], *, limit: int = _FACET_TERMINAL_IDF_LIMIT) -> None:
+    """Emit bounded IDF details so noisy archives do not flood terminal output."""
+
+    if not idf:
+        return
+    click.echo("  IDF (higher = rarer, partitions more strongly):")
+    for family, values in idf.items():
+        rows = sorted(values.items(), key=lambda kv: (-kv[1], kv[0]))
+        if not rows:
+            continue
+        click.echo(f"    [{family}]")
+        for value, weight in rows[:limit]:
+            click.echo(f"      {value}: {weight:.3f}")
+        remaining = len(rows) - limit
+        if remaining > 0:
+            suffix = "value" if remaining == 1 else "values"
+            click.echo(f"      … {remaining} more {suffix} omitted from terminal view; use --format json for full IDF.")
 
 
 # Deferred imports: RootModeRequest triggers the archive.query.spec →
@@ -983,8 +1034,8 @@ def mark_verb(
 def mark_candidates_group() -> None:
     """Review assertion candidates for a selected session or target ref.
 
-    Candidate commands own claim judgment: list, accept, reject, defer, or
-    supersede candidate assertions. They do not apply ordinary session tags,
+    Candidate commands own review state and claim judgment: review, list,
+    accept, reject, defer, or supersede candidate assertions. They do not apply ordinary session tags,
     stars, pins, archive marks, or notes.
     """
 
@@ -1009,6 +1060,44 @@ def list_mark_candidates_command(env: AppEnv, target_ref: str | None, limit: int
     for item in items:
         detail = item.body_text or (json.dumps(item.value, sort_keys=True) if item.value is not None else "")
         click.echo(f"{item.assertion_id:<32} {item.kind:<20} {item.target_ref} {detail}")
+
+
+@mark_candidates_group.command("review")
+@click.option("--target-ref", default=None, help="Limit candidate review rows to one target object ref.")
+@click.option("--limit", "-l", type=int, default=50, show_default=True)
+@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
+@click.pass_obj
+def review_mark_candidates_command(env: AppEnv, target_ref: str | None, limit: int, output_format: str | None) -> None:
+    """List candidate assertion review state and disabled actions."""
+    payload = run_coroutine_sync(env.polylogue.list_assertion_candidate_reviews(target_ref=target_ref, limit=limit))
+    if not isinstance(payload, AssertionCandidateReviewListPayload):
+        payload = AssertionCandidateReviewListPayload.from_envelopes(
+            payload,
+            limit=limit,
+            target_ref=target_ref,
+        )
+    if output_format == "json":
+        click.echo(serialize_surface_payload(payload, exclude_none=True))
+        return
+    if not payload.items:
+        click.echo("No assertion candidate review rows found.")
+        return
+    for item in payload.items:
+        disabled = sorted(
+            {
+                action.availability.disabled_reason
+                for action in item.action_affordances
+                if action.availability.disabled_reason
+            }
+        )
+        detail = item.candidate.body_text or (
+            json.dumps(item.candidate.value, sort_keys=True) if item.candidate.value is not None else ""
+        )
+        suffix = f" disabled={','.join(disabled)}" if disabled else ""
+        click.echo(
+            f"{item.candidate.assertion_id:<32} {item.review_status:<10} "
+            f"{item.candidate.kind:<20} {item.candidate.target_ref} {detail}{suffix}"
+        )
 
 
 @mark_candidates_group.command("accept")
@@ -1072,7 +1161,7 @@ def defer_mark_candidate_command(
     actor_ref: str,
     output_format: str | None,
 ) -> None:
-    """Record a candidate assertion deferral without changing candidate status."""
+    """Record a durable candidate assertion deferral."""
     _emit_candidate_judgment(
         env,
         candidate_ref=candidate_ref,
@@ -1304,14 +1393,6 @@ def analyze_verb(
             status = response.family_status.get(family)
             return status.label if status is not None and status.label else family.replace("_", " ").title()
 
-        def _emit_bucket(family: str, values: dict[str, int]) -> None:
-            visible_values = {key: count for key, count in values.items() if count}
-            if not visible_values:
-                return
-            click.echo(f"  {_status_label(family)}:")
-            for value, cnt in sorted(visible_values.items(), key=lambda kv: (-kv[1], kv[0])):
-                click.echo(f"    {value}: {cnt}")
-
         click.echo(f"Facets ({scope_label}) — matched result set:")
         click.echo(f"  sessions: {response.scoped.total_sessions}  messages: {response.scoped.total_messages}")
         click.echo("  Family states:")
@@ -1329,21 +1410,16 @@ def analyze_verb(
             if status.canonicalization and family in {"repos", "role_counts", "material_origins"}:
                 detail += f"; {status.canonicalization}"
             click.echo(f"    {family}: {_status_label(family)}{detail}")
-        _emit_bucket("origins", response.scoped.origins)
-        _emit_bucket("tags", response.scoped.tags)
-        _emit_bucket("repos", response.scoped.repos)
-        _emit_bucket("role_counts", response.scoped.role_counts)
-        _emit_bucket("material_origins", response.scoped.material_origins)
-        _emit_bucket("message_types", response.scoped.message_types)
-        _emit_bucket("action_types", response.scoped.action_types)
-        _emit_bucket("has_flags", response.scoped.has_flags)
-        _emit_bucket("omitted", response.scoped.omitted)
-        if response.idf:
-            click.echo("  IDF (higher = rarer, partitions more strongly):")
-            for family, values in response.idf.items():
-                click.echo(f"    [{family}]")
-                for value, weight in sorted(values.items(), key=lambda kv: (-kv[1], kv[0])):
-                    click.echo(f"      {value}: {weight:.3f}")
+        _emit_facet_bucket(_status_label("origins"), response.scoped.origins)
+        _emit_facet_bucket(_status_label("tags"), response.scoped.tags)
+        _emit_facet_bucket(_status_label("repos"), response.scoped.repos)
+        _emit_facet_bucket(_status_label("role_counts"), response.scoped.role_counts)
+        _emit_facet_bucket(_status_label("material_origins"), response.scoped.material_origins)
+        _emit_facet_bucket(_status_label("message_types"), response.scoped.message_types)
+        _emit_facet_bucket(_status_label("action_types"), response.scoped.action_types)
+        _emit_facet_bucket(_status_label("has_flags"), response.scoped.has_flags)
+        _emit_facet_bucket("Omitted/noisy facet counts (not canonical facets)", response.scoped.omitted)
+        _emit_idf_buckets(response.idf)
         return
 
     if cost_outlook:

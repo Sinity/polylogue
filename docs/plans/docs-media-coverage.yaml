@@ -71,7 +71,7 @@ surfaces:
       realized tree. Generated.
 
   # User-facing media is rendered on demand from demo fixtures or
-  # verification-lab environments when a release/article/site actually
+  # lab environments when a release/article/site actually
   # needs it. The root README no longer references committed architecture
   # diagrams, screenshots, or VHS tapes, so there is no docs/media surface
   # in the repository. A future committed media asset must arrive with an

@@ -217,10 +217,16 @@ async def _turns(env: AppEnv, session_id: str, limit: int) -> None:
 @click.command("usage")
 @click.option("--origin", help="Filter to one archive origin, such as codex-session or claude-code-session.")
 @click.option(
-    "--limit", "sample_limit", type=int, default=25, help="Max diagnostic session IDs to include per sample family."
+    "--limit",
+    "-l",
+    "sample_limit",
+    type=int,
+    default=25,
+    help="Max diagnostic session IDs to include per sample family.",
 )
 @click.option(
     "--format",
+    "-f",
     "output_format",
     type=click.Choice(["text", "json"]),
     default="text",
@@ -232,8 +238,8 @@ def usage_command(ctx: click.Context, origin: str | None, sample_limit: int, out
 
     Provider event rows, provider cumulative counters, transcript words, and
     model rollups are printed as separate evidence streams so cached tokens,
-    reasoning tokens, zero-token events, missing models, and multi-model
-    sessions stay visible.
+    reasoning tokens, zero-token events, missing models, multi-model sessions,
+    source acquisition debt, and stale rollups stay visible.
     """
     import json
 
@@ -256,8 +262,22 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
     for row in origins:
         env.ui.console.print(f"\n[bold]{row.origin}[/bold]")
         env.ui.console.print(
+            "  coverage: "
+            f"provider={row.provider}  declared={row.declared_coverage}  state={row.coverage_state}  "
+            f"evidence={row.evidence_stream}"
+        )
+        if row.coverage_basis:
+            env.ui.console.print(f"    basis: {row.coverage_basis}")
+        if row.cache_semantics:
+            env.ui.console.print(f"    cache: {row.cache_semantics}")
+        env.ui.console.print(
             "  sessions: "
             f"{row.session_count}  messages: {row.message_count}  transcript_words: {row.transcript_word_count}"
+        )
+        env.ui.console.print(
+            "  source raw rows: "
+            f"acquired={row.raw_session_count}  parse_errors={row.raw_parse_error_count}  "
+            f"acquired_not_materialized={row.acquired_not_materialized_count}"
         )
         env.ui.console.print(
             "  provider events: "
@@ -268,17 +288,26 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
         env.ui.console.print(
             "  model rollup rows: "
             f"priced={row.priced_model_row_count}  origin_reported={row.origin_reported_model_row_count}  "
-            f"estimated={row.estimated_model_row_count}  multi_model_sessions={row.multi_model_session_count}"
+            f"estimated={row.estimated_model_row_count}  multi_model_sessions={row.multi_model_session_count}  "
+            f"stale_sessions={row.stale_rollup_session_count}"
         )
         env.ui.console.print(f"  provider request usage:    {_usage_counter_line(row.provider_request_usage)}")
         env.ui.console.print(f"  provider cumulative usage: {_usage_counter_line(row.provider_cumulative_usage)}")
         env.ui.console.print(f"  model rollup usage:        {_usage_counter_line(row.model_rollup_usage)}")
+        if row.rebuild_guidance:
+            env.ui.console.print(f"  rebuild: {row.rebuild_guidance}")
         for caveat in row.caveats:
             env.ui.console.print(f"    [yellow]caveat[/yellow] {caveat}")
         if row.sample_missing_model_sessions:
             env.ui.console.print("    missing-model samples: " + ", ".join(row.sample_missing_model_sessions))
         if row.sample_zero_token_sessions:
             env.ui.console.print("    zero-token samples: " + ", ".join(row.sample_zero_token_sessions))
+        if row.sample_acquired_not_materialized_raw_ids:
+            env.ui.console.print(
+                "    acquired-not-materialized raw samples: " + ", ".join(row.sample_acquired_not_materialized_raw_ids)
+            )
+        if row.sample_stale_rollup_sessions:
+            env.ui.console.print("    stale-rollup samples: " + ", ".join(row.sample_stale_rollup_sessions))
 
 
 def _usage_counter_line(counters: object) -> str:

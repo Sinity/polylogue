@@ -24,7 +24,7 @@ from devtools.command_catalog import (
 
 GROUP_HELP: dict[str, str] = {
     "bench": "Run benchmark, mutation, SLO, and resource-budget commands.",
-    "lab": "Run verification-lab evidence, schema, probe, and policy commands.",
+    "lab": "Run executable lab evidence, schema, probe, and policy commands.",
     "render": "Render and check generated repository surfaces.",
     "release": "Build, smoke, and validate release/distribution readiness.",
     "verify": "Run the local verification baseline or focused checks. Use --inner-help for baseline flags.",
@@ -54,7 +54,7 @@ def _print_inventory(*, json: bool) -> None:
 
     click.echo("Commands:")
     if verification_lab:
-        click.echo("\n  verification lab surface:")
+        click.echo("\n  lab check surface:")
         for spec in verification_lab:
             click.echo(f"    {spec.name:<25} {spec.description}")
     for category, specs in grouped_command_specs().items():

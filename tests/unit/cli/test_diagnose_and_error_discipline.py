@@ -73,7 +73,7 @@ class TestRootHelpDocumentsQueryFirst:
         assert "Setup/demo/evidence:" in result.output
         assert "Reader/TUI:" in result.output
         assert "Operations:" in result.output
-        assert "Query actions:" in result.output
+        assert "Search/read/action:" in result.output
         assert "polylogue ops status" in result.output
 
 
@@ -107,13 +107,12 @@ class TestDiagnoseBanner:
         assert "strict command floor will refuse it" in result.output
         assert "interpreting as search query" not in result.output
 
-    def test_status_strict_floor_points_to_ops_status(self, runner: CliRunner) -> None:
-        """The natural root status instinct should point at the real owner."""
-        result = runner.invoke(cli, ["status"])
-        assert result.exit_code == 2
-        assert "No such command 'status'." in result.output
+    def test_root_status_dispatches_to_operational_status_help(self, runner: CliRunner) -> None:
+        """The natural root status instinct reaches the operational owner."""
+        result = runner.invoke(cli, ["status", "--help"])
+        assert result.exit_code == 0
+        assert "Show daemon and archive health" in result.output
         assert "polylogue ops status" in result.output
-        assert "polylogue find status" in result.output
 
     def test_diagnose_banner_on_matched_subcommand(
         self,

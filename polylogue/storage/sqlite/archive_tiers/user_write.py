@@ -363,6 +363,12 @@ class ArchiveAssertionJudgmentEnvelope:
     resulting_assertion: ArchiveAssertionEnvelope | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ArchiveAssertionCandidateReviewEnvelope:
+    candidate: ArchiveAssertionEnvelope
+    latest_judgment: ArchiveAssertionEnvelope | None = None
+
+
 def upsert_suppression(
     conn: sqlite3.Connection,
     session_id: str,
@@ -1078,6 +1084,75 @@ def list_assertion_candidates(
     )
 
 
+ASSERTION_CANDIDATE_REVIEW_STATUSES: tuple[AssertionStatus, ...] = (
+    AssertionStatus.CANDIDATE,
+    AssertionStatus.ACCEPTED,
+    AssertionStatus.REJECTED,
+    AssertionStatus.DEFERRED,
+    AssertionStatus.SUPERSEDED,
+)
+
+
+def list_assertion_candidate_reviews(
+    conn: sqlite3.Connection,
+    *,
+    target_ref: str | None = None,
+    kinds: Sequence[str | AssertionKind] | None = None,
+    statuses: Sequence[str | AssertionStatus] | None = ASSERTION_CANDIDATE_REVIEW_STATUSES,
+    limit: int | None = None,
+) -> list[ArchiveAssertionCandidateReviewEnvelope]:
+    """List candidate assertion lifecycle rows with their latest judgment.
+
+    This is the review read model: it deliberately excludes promoted active
+    assertions and ordinary overlay rows, while retaining accepted/rejected/
+    deferred/superseded candidate rows so rebuilds cannot make old inference
+    candidates look actionable again.
+    """
+
+    candidates = list_assertion_claims(
+        conn,
+        kinds=ASSERTION_CLAIM_KINDS if kinds is None else kinds,
+        target_ref=target_ref,
+        statuses=statuses,
+        limit=limit,
+    )
+    return [
+        ArchiveAssertionCandidateReviewEnvelope(
+            candidate=candidate,
+            latest_judgment=_latest_candidate_judgment(conn, candidate.assertion_id),
+        )
+        for candidate in candidates
+    ]
+
+
+def _latest_candidate_judgment(
+    conn: sqlite3.Connection,
+    candidate_assertion_id: str,
+) -> ArchiveAssertionEnvelope | None:
+    if not _table_exists(conn, "assertions"):
+        return None
+    row = conn.execute(
+        f"""
+        SELECT {_ASSERTION_COLUMNS}
+        FROM assertions
+        WHERE target_ref = ?
+          AND kind = ?
+          AND COALESCE(status, ?) != ?
+        ORDER BY updated_at_ms DESC, assertion_id DESC
+        LIMIT 1
+        """,
+        (
+            f"assertion:{candidate_assertion_id}",
+            AssertionKind.JUDGMENT.value,
+            ASSERTION_DEFAULT_STATUS.value,
+            AssertionStatus.DELETED.value,
+        ),
+    ).fetchone()
+    if row is None:
+        return None
+    return _assertion_row_to_envelope(row)
+
+
 def judge_assertion_candidate(
     conn: sqlite3.Connection,
     *,
@@ -1107,7 +1182,7 @@ def judge_assertion_candidate(
     candidate_status = {
         "accept": AssertionStatus.ACCEPTED,
         "reject": AssertionStatus.REJECTED,
-        "defer": AssertionStatus.CANDIDATE,
+        "defer": AssertionStatus.DEFERRED,
         "supersede": AssertionStatus.SUPERSEDED,
     }[normalized_decision]
 
@@ -1122,11 +1197,10 @@ def judge_assertion_candidate(
             now_ms=timestamp,
         )
 
-    if candidate_status != AssertionStatus.CANDIDATE:
-        mark_assertion_status(conn, candidate_id, candidate_status, now_ms=timestamp)
-        refreshed = read_assertion_envelope(conn, candidate_id)
-        if refreshed is not None:
-            candidate = refreshed
+    mark_assertion_status(conn, candidate_id, candidate_status, now_ms=timestamp)
+    refreshed = read_assertion_envelope(conn, candidate_id)
+    if refreshed is not None:
+        candidate = refreshed
 
     evidence_refs = [*candidate.evidence_refs, f"assertion:{candidate_id}"]
     if resulting_assertion is not None:
@@ -1426,6 +1500,7 @@ def list_assertion_claims(
 
 __all__ = [
     "ASSERTION_CLAIM_KINDS",
+    "ASSERTION_CANDIDATE_REVIEW_STATUSES",
     "ASSERTION_DEFAULT_AUTHOR_KIND",
     "ASSERTION_DEFAULT_AUTHOR_REF",
     "ASSERTION_DEFAULT_CONTEXT_POLICY",
@@ -1433,6 +1508,7 @@ __all__ = [
     "ASSERTION_DEFAULT_VISIBILITY",
     "ArchiveAnnotationEnvelope",
     "ArchiveAssertionEnvelope",
+    "ArchiveAssertionCandidateReviewEnvelope",
     "ArchiveAssertionJudgmentEnvelope",
     "ArchiveBlackboardNoteEnvelope",
     "ArchiveSuppressionEnvelope",
@@ -1462,6 +1538,7 @@ __all__ = [
     "judge_assertion_candidate",
     "list_archive_blackboard_note_envelopes",
     "list_assertion_candidates",
+    "list_assertion_candidate_reviews",
     "list_assertion_claims",
     "list_assertions_for_export",
     "list_assertions_by_kind",

@@ -31,6 +31,11 @@ from pydantic import BaseModel
 from devtools.command_catalog import control_plane_command
 from devtools.render_support import write_if_changed
 from polylogue.archive.query.metadata import terminal_query_examples, terminal_query_source_list
+from polylogue.archive.viewport import (
+    read_view_http_choices,
+    read_view_http_format_choices,
+    read_view_http_query_params,
+)
 from polylogue.daemon.route_contracts import ROUTE_CONTRACTS, RouteContract
 from polylogue.surfaces.payloads import (
     RANKING_POLICY_MIXED,
@@ -75,6 +80,137 @@ def _route_contract_payload(contract: RouteContract) -> dict[str, str]:
     if contract.notes:
         payload["notes"] = contract.notes
     return payload
+
+
+def _read_view_http_description() -> str:
+    """Return route text derived from the read-view HTTP capability contract."""
+
+    views = ", ".join(f"``{view}``" for view in read_view_http_choices())
+    return (
+        "Executes one supported single-session read profile and returns the "
+        "stable ``SessionReadViewEnvelope``. Supported profiles currently "
+        f"include {views}. The envelope shape is stable; individual ``payload`` "
+        "content is the shared DTO for the selected read profile."
+    )
+
+
+def _read_view_parameter(name: str) -> dict[str, Any]:
+    """Return an OpenAPI query parameter for a contract-owned read-view option."""
+
+    details: dict[str, dict[str, Any]] = {
+        "confidence_threshold": {
+            "description": "Minimum confidence for correlation evidence.",
+            "schema": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.3},
+        },
+        "include_messages": {
+            "description": "Include message excerpts in context-pack payloads.",
+            "schema": {"type": "boolean", "default": True},
+        },
+        "limit": {
+            "description": "Messages/neighbor page size where applicable.",
+            "schema": {"type": "integer", "minimum": 1},
+        },
+        "max_messages": {
+            "description": "Maximum messages per session for context-pack.",
+            "schema": {"type": "integer", "minimum": 1},
+        },
+        "max_text": {
+            "description": "Maximum text characters per context-pack message excerpt.",
+            "schema": {"type": "integer", "minimum": 1, "default": 200},
+        },
+        "message_role": {
+            "description": "Restrict the messages view to one or more message roles.",
+            "schema": {"type": "string"},
+        },
+        "message_type": {
+            "description": "Restrict the messages view by message type.",
+            "schema": {"type": "string"},
+        },
+        "no_code_blocks": {
+            "description": "Exclude code blocks from the messages projection.",
+            "schema": {"type": "boolean", "default": False},
+        },
+        "no_file_reads": {
+            "description": "Exclude file-read material from the messages projection.",
+            "schema": {"type": "boolean", "default": False},
+        },
+        "no_redact": {
+            "description": "Return unredacted context-pack path/provenance details where available.",
+            "schema": {"type": "boolean", "default": False},
+        },
+        "no_tool_calls": {
+            "description": "Exclude tool-call material from the messages projection.",
+            "schema": {"type": "boolean", "default": False},
+        },
+        "no_tool_outputs": {
+            "description": "Exclude tool-output material from the messages projection.",
+            "schema": {"type": "boolean", "default": False},
+        },
+        "offset": {
+            "description": "Message offset for the messages view.",
+            "schema": {"type": "integer", "minimum": 0},
+        },
+        "prose_only": {
+            "description": "Show only prose text in the messages projection.",
+            "schema": {"type": "boolean", "default": False},
+        },
+        "related_limit": {
+            "description": "Number of related sessions to include in the context view.",
+            "schema": {"type": "integer", "minimum": 1, "default": 5},
+        },
+        "report": {
+            "description": "Recovery report kind for the recovery view.",
+            "schema": {"type": "string", "enum": ["digest", "work-packet"], "default": "work-packet"},
+        },
+        "repo_path": {
+            "description": "Repository path for correlation evidence.",
+            "schema": {"type": "string"},
+        },
+        "since_hours": {
+            "description": "Correlation scan window on each side of the session.",
+            "schema": {"type": "integer", "minimum": 1, "default": 2},
+        },
+        "window_hours": {
+            "description": "Neighbor discovery window in hours.",
+            "schema": {"type": "integer", "minimum": 1, "default": 24},
+        },
+    }
+    default = {
+        "description": f"Read-view option advertised by /api/read-view-profiles: {name}.",
+        "schema": {"type": "string"},
+    }
+    detail = details.get(name, default)
+    return {"name": name, "in": "query", "required": False, **detail}
+
+
+def _read_view_http_parameters() -> list[dict[str, Any]]:
+    """Return OpenAPI parameters for the read-view route from shared capabilities."""
+
+    parameters: list[dict[str, Any]] = [
+        {
+            "name": "session_id",
+            "in": "path",
+            "description": "Resolved Polylogue session id.",
+            "required": True,
+            "schema": {"type": "string"},
+        },
+        {
+            "name": "view",
+            "in": "query",
+            "description": "Read-view id from /api/read-view-profiles.",
+            "required": False,
+            "schema": {"type": "string", "enum": list(read_view_http_choices()), "default": "messages"},
+        },
+        {
+            "name": "format",
+            "in": "query",
+            "description": "Output format accepted by the selected read view.",
+            "required": False,
+            "schema": {"type": "string", "enum": list(read_view_http_format_choices()), "default": "json"},
+        },
+    ]
+    parameters.extend(_read_view_parameter(name) for name in read_view_http_query_params())
+    return parameters
 
 
 def _collect_component_schemas() -> dict[str, Any]:
@@ -455,92 +591,9 @@ def _build_openapi_document() -> dict[str, Any]:
             "/api/sessions/{session_id}/read": {
                 "get": {
                     "summary": "Execute a session read-view",
-                    "description": (
-                        "Executes one supported single-session read profile and returns the "
-                        "stable ``SessionReadViewEnvelope``. Supported profiles currently "
-                        "include ``messages``, ``recovery``, ``raw``, ``context``, "
-                        "``context-pack``, ``neighbors``, and ``correlation``. The envelope "
-                        "shape is stable; individual ``payload`` content is the shared DTO "
-                        "for the selected read profile."
-                    ),
+                    "description": _read_view_http_description(),
                     "operationId": "readSessionView",
-                    "parameters": [
-                        {
-                            "name": "session_id",
-                            "in": "path",
-                            "description": "Resolved Polylogue session id.",
-                            "required": True,
-                            "schema": {"type": "string"},
-                        },
-                        {
-                            "name": "view",
-                            "in": "query",
-                            "description": "Read-view id from /api/read-view-profiles.",
-                            "required": False,
-                            "schema": {
-                                "type": "string",
-                                "enum": [
-                                    "messages",
-                                    "recovery",
-                                    "raw",
-                                    "context",
-                                    "context-pack",
-                                    "neighbors",
-                                    "correlation",
-                                ],
-                                "default": "messages",
-                            },
-                        },
-                        {
-                            "name": "format",
-                            "in": "query",
-                            "description": "Output format. JSON for all views; recovery work packets also support markdown.",
-                            "required": False,
-                            "schema": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
-                        },
-                        {
-                            "name": "limit",
-                            "in": "query",
-                            "description": "Messages/neighbor page size where applicable.",
-                            "required": False,
-                            "schema": {"type": "integer", "minimum": 1},
-                        },
-                        {
-                            "name": "offset",
-                            "in": "query",
-                            "description": "Message offset for the messages view.",
-                            "required": False,
-                            "schema": {"type": "integer", "minimum": 0},
-                        },
-                        {
-                            "name": "report",
-                            "in": "query",
-                            "description": "Recovery report kind for the recovery view.",
-                            "required": False,
-                            "schema": {"type": "string", "enum": ["digest", "work-packet"], "default": "work-packet"},
-                        },
-                        {
-                            "name": "max_messages",
-                            "in": "query",
-                            "description": "Maximum messages per session for context-pack.",
-                            "required": False,
-                            "schema": {"type": "integer", "minimum": 1},
-                        },
-                        {
-                            "name": "window_hours",
-                            "in": "query",
-                            "description": "Neighbor discovery window in hours.",
-                            "required": False,
-                            "schema": {"type": "integer", "minimum": 1, "default": 24},
-                        },
-                        {
-                            "name": "since_hours",
-                            "in": "query",
-                            "description": "Correlation scan window on each side of the session.",
-                            "required": False,
-                            "schema": {"type": "integer", "minimum": 1, "default": 2},
-                        },
-                    ],
+                    "parameters": _read_view_http_parameters(),
                     "responses": {
                         "200": {
                             "description": "Executed read-view envelope.",

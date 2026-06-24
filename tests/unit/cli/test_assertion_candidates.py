@@ -8,7 +8,14 @@ from click.testing import CliRunner
 
 from polylogue.cli.query_verbs import mark_candidates_group
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
-from polylogue.surfaces.payloads import AssertionClaimPayload, AssertionJudgmentPayload, AssertionJudgmentResultPayload
+from polylogue.surfaces.action_affordances import assertion_candidate_review_affordances
+from polylogue.surfaces.payloads import (
+    AssertionCandidateReviewItemPayload,
+    AssertionCandidateReviewListPayload,
+    AssertionClaimPayload,
+    AssertionJudgmentPayload,
+    AssertionJudgmentResultPayload,
+)
 
 
 def _claim(status: AssertionStatus = AssertionStatus.CANDIDATE) -> AssertionClaimPayload:
@@ -38,6 +45,52 @@ def test_candidates_list_emits_shared_json_payload() -> None:
     assert payload["statuses"] == ["candidate"]
     assert payload["items"][0]["assertion_id"] == "candidate-cli-1"
     env.polylogue.list_assertion_candidates.assert_awaited_once_with(target_ref=None, limit=50)
+
+
+def test_candidates_review_emits_status_and_disabled_action_reasons() -> None:
+    item = AssertionCandidateReviewItemPayload(
+        candidate_ref="assertion:candidate-cli-1",
+        review_status="deferred",
+        candidate=_claim(status=AssertionStatus.DEFERRED),
+        latest_judgment=None,
+        action_affordances=assertion_candidate_review_affordances(
+            candidate_ref="assertion:candidate-cli-1",
+            disabled_reasons={
+                "accept": "candidate_deferred",
+                "reject": "candidate_deferred",
+                "defer": "candidate_deferred",
+                "supersede": "candidate_deferred",
+            },
+        ),
+    )
+    payload = AssertionCandidateReviewListPayload(
+        items=(item,),
+        total=1,
+        limit=50,
+        target_ref=None,
+        candidate_statuses=(AssertionStatus.CANDIDATE, AssertionStatus.DEFERRED),
+    )
+    env = SimpleNamespace(polylogue=SimpleNamespace(list_assertion_candidate_reviews=AsyncMock(return_value=payload)))
+
+    result = CliRunner().invoke(mark_candidates_group, ["review", "--format", "json"], obj=env, catch_exceptions=False)
+
+    assert result.exit_code == 0
+    rendered = json.loads(result.output)
+    assert rendered["mode"] == "assertion-candidate-review-list"
+    assert rendered["durable_assertions_excluded"] is True
+    assert rendered["candidate_statuses"] == ["candidate", "deferred"]
+    assert rendered["items"][0]["review_status"] == "deferred"
+    assert rendered["items"][0]["candidate"]["status"] == "deferred"
+    disabled = {
+        action["id"]: action["availability"]["disabled_reason"] for action in rendered["items"][0]["action_affordances"]
+    }
+    assert disabled == {
+        "assertion_candidate.accept": "candidate_deferred",
+        "assertion_candidate.reject": "candidate_deferred",
+        "assertion_candidate.defer": "candidate_deferred",
+        "assertion_candidate.supersede": "candidate_deferred",
+    }
+    env.polylogue.list_assertion_candidate_reviews.assert_awaited_once_with(target_ref=None, limit=50)
 
 
 def test_candidates_accept_emits_judgment_result_payload() -> None:

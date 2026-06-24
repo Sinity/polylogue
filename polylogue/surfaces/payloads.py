@@ -17,7 +17,11 @@ from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document
 from polylogue.core.refs import normalize_object_ref_text, normalize_public_ref_text
-from polylogue.surfaces.action_affordances import ActionAffordancePayload
+from polylogue.surfaces.action_affordances import (
+    ActionAffordancePayload,
+    CandidateReviewDecision,
+    assertion_candidate_review_affordances,
+)
 
 MutationStatus: TypeAlias = Literal[
     "ok",
@@ -78,6 +82,7 @@ if TYPE_CHECKING:
         ArchiveQueryUnitAggregateRow,
     )
     from polylogue.storage.sqlite.archive_tiers.user_write import (
+        ArchiveAssertionCandidateReviewEnvelope,
         ArchiveAssertionEnvelope,
         ArchiveAssertionJudgmentEnvelope,
     )
@@ -1457,6 +1462,125 @@ class AssertionJudgmentResultPayload(SurfacePayloadModel):
         )
 
 
+AssertionCandidateReviewStatus: TypeAlias = Literal[
+    "pending",
+    "accepted",
+    "rejected",
+    "deferred",
+    "superseded",
+    "blocked",
+]
+
+
+class AssertionCandidateReviewItemPayload(SurfacePayloadModel):
+    """One candidate assertion row with explicit review action state."""
+
+    candidate_ref: str
+    review_status: AssertionCandidateReviewStatus
+    candidate: AssertionClaimPayload
+    latest_judgment: AssertionJudgmentPayload | None = None
+    action_affordances: tuple[ActionAffordancePayload, ...]
+
+    @field_validator("candidate_ref")
+    @classmethod
+    def _validate_candidate_ref(cls, value: str) -> str:
+        return normalize_object_ref_text(value)
+
+    @classmethod
+    def from_envelope(
+        cls,
+        envelope: ArchiveAssertionCandidateReviewEnvelope,
+    ) -> AssertionCandidateReviewItemPayload:
+        candidate = AssertionClaimPayload.from_envelope(envelope.candidate)
+        latest_judgment = (
+            None
+            if envelope.latest_judgment is None
+            else AssertionJudgmentPayload.from_envelope(envelope.latest_judgment)
+        )
+        candidate_ref = f"assertion:{envelope.candidate.assertion_id}"
+        review_status = _candidate_review_status(envelope.candidate.status)
+        return cls(
+            candidate_ref=candidate_ref,
+            review_status=review_status,
+            candidate=candidate,
+            latest_judgment=latest_judgment,
+            action_affordances=assertion_candidate_review_affordances(
+                candidate_ref=candidate_ref,
+                disabled_reasons=_candidate_review_disabled_reasons(envelope.candidate.status),
+            ),
+        )
+
+
+class AssertionCandidateReviewListPayload(SurfacePayloadModel):
+    """Review-list envelope for assertion candidates, not active assertions."""
+
+    mode: Literal["assertion-candidate-review-list"] = "assertion-candidate-review-list"
+    items: tuple[AssertionCandidateReviewItemPayload, ...]
+    total: int
+    limit: int
+    target_ref: str | None = None
+    candidate_statuses: tuple[AssertionStatus, ...] | None = None
+    durable_assertions_excluded: bool = True
+
+    @field_validator("target_ref")
+    @classmethod
+    def _validate_target_ref(cls, value: str | None) -> str | None:
+        return normalize_object_ref_text(value) if value is not None else None
+
+    @classmethod
+    def from_envelopes(
+        cls,
+        envelopes: Sequence[ArchiveAssertionCandidateReviewEnvelope],
+        *,
+        limit: int,
+        target_ref: str | None = None,
+        candidate_statuses: Sequence[str | AssertionStatus] | None = None,
+    ) -> AssertionCandidateReviewListPayload:
+        items = tuple(AssertionCandidateReviewItemPayload.from_envelope(envelope) for envelope in envelopes)
+        return cls(
+            items=items,
+            total=len(items),
+            limit=limit,
+            target_ref=target_ref,
+            candidate_statuses=None
+            if candidate_statuses is None
+            else tuple(AssertionStatus.from_string(status) for status in candidate_statuses),
+        )
+
+
+def _candidate_review_status(status: AssertionStatus) -> AssertionCandidateReviewStatus:
+    if status is AssertionStatus.CANDIDATE:
+        return "pending"
+    if status is AssertionStatus.ACCEPTED:
+        return "accepted"
+    if status is AssertionStatus.REJECTED:
+        return "rejected"
+    if status is AssertionStatus.DEFERRED:
+        return "deferred"
+    if status is AssertionStatus.SUPERSEDED:
+        return "superseded"
+    return "blocked"
+
+
+def _candidate_review_disabled_reasons(
+    status: AssertionStatus,
+) -> Mapping[CandidateReviewDecision, str | None]:
+    if status is AssertionStatus.CANDIDATE:
+        return {}
+    reason = {
+        AssertionStatus.ACCEPTED: "candidate_already_accepted",
+        AssertionStatus.REJECTED: "candidate_already_rejected",
+        AssertionStatus.DEFERRED: "candidate_deferred",
+        AssertionStatus.SUPERSEDED: "candidate_superseded",
+    }.get(status, f"candidate_status_{status.value}")
+    return {
+        "accept": reason,
+        "reject": reason,
+        "defer": reason,
+        "supersede": reason,
+    }
+
+
 RecoveryReportKind: TypeAlias = Literal["digest", "work-packet"]
 RecoveryReportFormat: TypeAlias = Literal["json", "markdown"]
 
@@ -2509,6 +2633,9 @@ def validate_metadata_key(key: object) -> str | None:
 
 __all__ = [
     "ActionQueryRowPayload",
+    "AssertionCandidateReviewItemPayload",
+    "AssertionCandidateReviewListPayload",
+    "AssertionCandidateReviewStatus",
     "AssertionClaimListPayload",
     "AssertionClaimPayload",
     "AssertionJudgmentPayload",

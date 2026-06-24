@@ -64,8 +64,8 @@ Leaf adapters over archive operations and derived insights.
 
 - schema inference and verification
 - synthetic corpus generation
-- deterministic demo fixtures and verification-lab acceptance flows
-- validation lanes, mutation campaigns, benchmark campaigns
+- deterministic demo fixtures and behavior-backed archive/reader smoke checks
+- optional validation lanes, mutation campaigns, and benchmark campaigns that dispatch executable commands
 
 Primary modules:
 

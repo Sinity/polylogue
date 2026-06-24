@@ -19,8 +19,9 @@ MARKER = "devtools-command-catalog"
 
 
 def _render_table(category: str, commands: list[CommandSpec]) -> list[str]:
+    display_category = "Lab Checks" if category == "verification lab" else category.title()
     lines = [
-        f"### {category.title()}",
+        f"### {display_category}",
         "",
         "| Command | Description |",
         "| --- | --- |",
@@ -50,10 +51,10 @@ def _render_verification_lab_surface(commands: tuple[CommandSpec, ...]) -> list[
     if not commands:
         return []
     lines = [
-        "## Verification Lab Surface",
+        "## Executable Lab Checks",
         "",
-        "The verification-lab operator surface intentionally lives in `devtools` for now. These commands operate on",
-        "repo verification checks and evidence records, not end-user archive workflows.",
+        "These commands are thin wrappers around concrete schema, provider, pipeline, smoke, and lane checks.",
+        "They are not a proof ledger or end-user archive workflow.",
         "",
         "| Command | Role |",
         "| --- | --- |",

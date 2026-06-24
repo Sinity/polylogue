@@ -17,6 +17,26 @@ ViewLossiness = Literal["raw", "normalized", "filtered", "summarized", "derived"
 
 
 @dataclass(frozen=True)
+class ReadViewHttpCapability:
+    """HTTP execution metadata for a registered read-view profile."""
+
+    view_id: str
+    formats: tuple[str, ...]
+    query_params: tuple[str, ...] = ()
+    route: str = "/api/sessions/{session_id}/read"
+
+    def to_payload(self) -> JSONDocument:
+        """Return the daemon/API capability payload for this read view."""
+
+        return {
+            "supported": True,
+            "route": self.route,
+            "formats": list(self.formats),
+            "query_params": list(self.query_params),
+        }
+
+
+@dataclass(frozen=True)
 class SessionViewProfile:
     """Contract metadata for an executable session read view."""
 
@@ -199,6 +219,34 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
 
 READ_VIEW_PROFILE_BY_ID: dict[str, SessionViewProfile] = {profile.view_id: profile for profile in READ_VIEW_PROFILES}
 
+READ_VIEW_HTTP_CAPABILITIES: dict[str, ReadViewHttpCapability] = {
+    "messages": ReadViewHttpCapability(
+        "messages",
+        ("json",),
+        (
+            "limit",
+            "offset",
+            "message_role",
+            "message_type",
+            "no_code_blocks",
+            "no_file_reads",
+            "no_tool_calls",
+            "no_tool_outputs",
+            "prose_only",
+        ),
+    ),
+    "recovery": ReadViewHttpCapability("recovery", ("json", "markdown"), ("report",)),
+    "raw": ReadViewHttpCapability("raw", ("json",)),
+    "context": ReadViewHttpCapability("context", ("json",), ("related_limit",)),
+    "context-pack": ReadViewHttpCapability(
+        "context-pack", ("json",), ("include_messages", "max_messages", "max_text", "no_redact")
+    ),
+    "neighbors": ReadViewHttpCapability("neighbors", ("json",), ("limit", "window_hours")),
+    "correlation": ReadViewHttpCapability(
+        "correlation", ("json",), ("confidence_threshold", "repo_path", "since_hours")
+    ),
+}
+
 
 def read_view_choices() -> tuple[str, ...]:
     """Return the stable read-view ids accepted by ``read --view``."""
@@ -218,13 +266,76 @@ def read_view_profile_payloads() -> list[JSONDocument]:
     return [profile.to_payload() for profile in READ_VIEW_PROFILES]
 
 
+def read_view_http_choices() -> tuple[str, ...]:
+    """Return read-view ids executable through the daemon read endpoint."""
+
+    return tuple(READ_VIEW_HTTP_CAPABILITIES)
+
+
+def read_view_http_format_choices() -> tuple[str, ...]:
+    """Return read-view output formats accepted by daemon HTTP execution."""
+
+    formats: list[str] = []
+    seen: set[str] = set()
+    for capability in READ_VIEW_HTTP_CAPABILITIES.values():
+        for output_format in capability.formats:
+            if output_format not in seen:
+                seen.add(output_format)
+                formats.append(output_format)
+    return tuple(formats)
+
+
+def read_view_http_query_params() -> tuple[str, ...]:
+    """Return all query parameters accepted by daemon read-view execution."""
+
+    names: list[str] = []
+    seen: set[str] = set()
+    for capability in READ_VIEW_HTTP_CAPABILITIES.values():
+        for name in capability.query_params:
+            if name not in seen:
+                seen.add(name)
+                names.append(name)
+    return tuple(names)
+
+
+def read_view_http_capability_payloads() -> dict[str, JSONDocument]:
+    """Return daemon/API execution capabilities keyed by read-view id."""
+
+    return {view_id: capability.to_payload() for view_id, capability in READ_VIEW_HTTP_CAPABILITIES.items()}
+
+
+def validate_read_view_contracts() -> None:
+    """Fail fast when read-view execution metadata drifts from profile ids."""
+
+    profile_ids = set(READ_VIEW_PROFILE_BY_ID)
+    capability_ids = set(READ_VIEW_HTTP_CAPABILITIES)
+    unknown = sorted(capability_ids - profile_ids)
+    if unknown:
+        raise RuntimeError("read-view HTTP capability without profile: " + ", ".join(unknown))
+    for view_id, capability in READ_VIEW_HTTP_CAPABILITIES.items():
+        if capability.view_id != view_id:
+            raise RuntimeError(f"read-view HTTP capability key mismatch: {view_id} != {capability.view_id}")
+        if not capability.formats:
+            raise RuntimeError(f"read-view HTTP capability has no formats: {view_id}")
+
+
+validate_read_view_contracts()
+
+
 __all__ = [
+    "READ_VIEW_HTTP_CAPABILITIES",
     "READ_VIEW_PROFILE_BY_ID",
     "READ_VIEW_PROFILES",
+    "ReadViewHttpCapability",
     "SessionViewProfile",
     "ViewEvidencePolicy",
     "ViewLossiness",
     "get_read_view_profile",
+    "read_view_http_capability_payloads",
+    "read_view_http_choices",
+    "read_view_http_format_choices",
+    "read_view_http_query_params",
     "read_view_profile_payloads",
     "read_view_choices",
+    "validate_read_view_contracts",
 ]

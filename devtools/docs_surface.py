@@ -102,7 +102,7 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     DocsEntry(
         "Test Quality Workflows",
         "docs/test-quality-workflows.md",
-        "Generated validation lanes, mutation campaigns, and benchmark campaigns.",
+        "Optional executable lane, mutation-campaign, and benchmark registries.",
     ),
     DocsEntry(
         "Release Readiness Gate",

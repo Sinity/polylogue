@@ -81,7 +81,7 @@ Cardinality semantics are explicit: zero matches return no selected target or em
 
 `analyze --facets` names families rather than leaking raw bucket internals. Cheap default families are `total_counts`, `origins`, and `tags`. Deferred detail families are `repos`, `role_counts`, `material_origins`, `message_types`, `action_types`, and `has_flags`; JSON reports each family in `family_status` with `label`, `source`, `canonicalization`, `expensive`, freshness/degraded fields, and `deferred_families` when omitted by default.
 
-The family meanings stay separate: provider `origins` describe archive/source provider; `role_counts` are provider-reported message roles and not authoredness; `material_origins` describe human/assistant/runtime provenance; `message_types` describe normalized content kind; `tags` are user/session labels; `repos` are canonical product repository labels. Incidental archive paths and noisy repo/path tokens are reported under omitted/noisy counts instead of being presented as authoritative repositories.
+The family meanings stay separate: provider `origins` describe archive/source provider; `role_counts` are provider-reported message roles and not authoredness; `material_origins` describe human/assistant/runtime provenance; `message_types` describe normalized content kind; `tags` are user/session labels; `repos` are canonical product repository labels. Incidental archive paths and noisy repo/path tokens are reported under omitted/noisy counts instead of being presented as authoritative repositories. Terminal facet output shows a bounded top set per family and points users to `--format json` for complete buckets and IDF values.
 
 ## Completion Contract
 

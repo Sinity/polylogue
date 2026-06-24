@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 from devtools.render_openapi import _build_openapi_document
+from polylogue.archive.viewport import (
+    read_view_http_choices,
+    read_view_http_format_choices,
+    read_view_http_query_params,
+)
 
 
 def test_openapi_publishes_stable_evidence_routes() -> None:
@@ -37,3 +42,16 @@ def test_openapi_publishes_route_contract_extension() -> None:
     assert recovery["kind"] == "read_detail"
     assert recovery["auth_policy"] == "bearer_if_configured"
     assert recovery["response_contract"] == "RecoveryReadPayload"
+
+
+def test_openapi_read_view_route_uses_shared_http_capability_contract() -> None:
+    document = _build_openapi_document()
+    read_route = document["paths"]["/api/sessions/{session_id}/read"]["get"]
+    parameters = {parameter["name"]: parameter for parameter in read_route["parameters"]}
+
+    assert parameters["view"]["schema"]["enum"] == list(read_view_http_choices())
+    assert parameters["format"]["schema"]["enum"] == list(read_view_http_format_choices())
+    assert set(read_view_http_query_params()).issubset(parameters)
+    assert "context-pack" in read_route["description"]
+    assert parameters["max_text"]["schema"]["default"] == 200
+    assert parameters["message_role"]["schema"]["type"] == "string"

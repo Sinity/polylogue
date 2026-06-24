@@ -110,6 +110,11 @@ schema shape:
   and `session_provider_usage_events.payload_json`. Existing index tiers must
   be rebuilt from source evidence so the canonical read model is recreated with
   the stricter JSON contract.
+- Provider usage accounting is audited as a source-derived read model: exact
+  event rows (`session_provider_usage_events`), text-only estimates, unsupported
+  origins, source rows acquired but not materialized, and stale
+  `session_model_usage` rollups are distinct diagnostic states. Cache read/write
+  token lanes remain labelled and are not merged into generic input/output.
 - Index schema version 6 added `session_provider_usage_events` for
   provider-reported token usage events and single-model rollup repair from
   those events. Existing index tiers must be rebuilt from source evidence so

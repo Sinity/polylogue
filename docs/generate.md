@@ -6,9 +6,9 @@ Polylogue includes a built-in synthetic data generator for exploring features wi
 
 For users, the supported entrypoint is `polylogue import --demo`: it generates
 the approved deterministic fixture world and schedules it through the same
-daemon-backed import path as ordinary source imports. For tests and repository
-verification, the same generator is available through `polylogue.scenarios`,
-shared fixtures, and `devtools lab smoke`.
+daemon-backed import path as ordinary source imports. For tests and repository behavior checks, the same generator is available
+through `polylogue.scenarios`, shared fixtures, `polylogue demo seed`, and the
+thin `devtools lab smoke` wrapper.
 
 ## Quick Start
 
@@ -36,7 +36,7 @@ polylogue demo seed --root "$POLYLOGUE_ARCHIVE_ROOT" --force --with-overlays --f
 polylogue demo verify --root "$POLYLOGUE_ARCHIVE_ROOT" --require-overlays --format json
 polylogue demo script --shell bash
 
-# Repository verification-lab smokes
+# Repository behavior checks
 devtools lab smoke run archive-smoke --tier 0
 devtools test tests/unit/cli/test_demo_command.py tests/unit/demo/test_demo_seed_verify.py tests/visual
 ```
@@ -79,8 +79,8 @@ typed assertions in `user.db`.
 
 ## README Demo Evidence
 
-The deterministic archive evidence for the current demo fixture world is split
-across direct and daemon-backed checks. `tests/unit/scenarios/test_demo_archive_convergence.py`
+The deterministic archive checks for the current demo fixture world are split
+across direct and daemon-backed behavior tests. `tests/unit/scenarios/test_demo_archive_convergence.py`
 writes the same `build_demo_corpus_specs()` artifacts, converges them in
 process with `parse_sources_archive()`, and verifies:
 

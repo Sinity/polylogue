@@ -19,7 +19,7 @@ def _make_env() -> AppEnv:
     return AppEnv(ui=ui)
 
 
-def test_dashboard_status_json_reports_terminal_surface_and_daemon_url(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dashboard_status_json_reports_terminal_surface_and_no_web_launch(monkeypatch: pytest.MonkeyPatch) -> None:
     """``dashboard --status --format json`` is an operator-visible contract."""
 
     monkeypatch.setenv("POLYLOGUE_DAEMON_URL", "http://127.0.0.1:8766")
@@ -31,7 +31,9 @@ def test_dashboard_status_json_reports_terminal_surface_and_daemon_url(monkeypat
     payload = json.loads(result.output)
     assert payload["surface"] == "terminal_tui"
     assert payload["daemon_api_url"] == "http://127.0.0.1:8766"
-    assert payload["web_reader_url"] == "http://127.0.0.1:8766"
+    assert payload["reader_surface"] == "terminal_tui"
+    assert payload["web_reader_url"] is None
+    assert payload["web_reader_launch_attempted"] is False
     assert payload["daemon_api_reachable"] is False
     assert "OSError" in payload["failure_reason"]
 
@@ -54,7 +56,9 @@ def test_dashboard_default_prints_evidence_before_launching_tui() -> None:
         result = runner.invoke(dashboard_command, [], obj=_make_env())
 
     assert result.exit_code == 0, result.output
-    assert "Dashboard surface: terminal TUI" in result.output
+    assert "Dashboard surface: terminal TUI (Textual)" in result.output
+    assert "Daemon API status probe:" in result.output
+    assert "Web reader launch: not attempted by this command" in result.output
     assert "Readiness: degraded" in result.output
     assert "Launching Textual dashboard in this terminal." in result.output
 

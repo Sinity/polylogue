@@ -295,8 +295,8 @@ paths:
       summary: Execute a session read-view
       description: Executes one supported single-session read profile and returns the stable ``SessionReadViewEnvelope``.
         Supported profiles currently include ``messages``, ``recovery``, ``raw``, ``context``, ``context-pack``, ``neighbors``,
-        and ``correlation``. The envelope shape is stable; individual ``payload`` content is the shared DTO for the selected
-        read profile.
+        ``correlation``. The envelope shape is stable; individual ``payload`` content is the shared DTO for the selected read
+        profile.
       operationId: readSessionView
       parameters:
       - name: session_id
@@ -322,7 +322,7 @@ paths:
           default: messages
       - name: format
         in: query
-        description: Output format. JSON for all views; recovery work packets also support markdown.
+        description: Output format accepted by the selected read view.
         required: false
         schema:
           type: string
@@ -332,47 +332,139 @@ paths:
           default: json
       - name: limit
         in: query
-        description: Messages/neighbor page size where applicable.
         required: false
+        description: Messages/neighbor page size where applicable.
         schema:
           type: integer
           minimum: 1
       - name: offset
         in: query
-        description: Message offset for the messages view.
         required: false
+        description: Message offset for the messages view.
         schema:
           type: integer
           minimum: 0
+      - name: message_role
+        in: query
+        required: false
+        description: Restrict the messages view to one or more message roles.
+        schema:
+          type: string
+      - name: message_type
+        in: query
+        required: false
+        description: Restrict the messages view by message type.
+        schema:
+          type: string
+      - name: no_code_blocks
+        in: query
+        required: false
+        description: Exclude code blocks from the messages projection.
+        schema:
+          type: boolean
+          default: false
+      - name: no_file_reads
+        in: query
+        required: false
+        description: Exclude file-read material from the messages projection.
+        schema:
+          type: boolean
+          default: false
+      - name: no_tool_calls
+        in: query
+        required: false
+        description: Exclude tool-call material from the messages projection.
+        schema:
+          type: boolean
+          default: false
+      - name: no_tool_outputs
+        in: query
+        required: false
+        description: Exclude tool-output material from the messages projection.
+        schema:
+          type: boolean
+          default: false
+      - name: prose_only
+        in: query
+        required: false
+        description: Show only prose text in the messages projection.
+        schema:
+          type: boolean
+          default: false
       - name: report
         in: query
-        description: Recovery report kind for the recovery view.
         required: false
+        description: Recovery report kind for the recovery view.
         schema:
           type: string
           enum:
           - digest
           - work-packet
           default: work-packet
-      - name: max_messages
+      - name: related_limit
         in: query
-        description: Maximum messages per session for context-pack.
         required: false
+        description: Number of related sessions to include in the context view.
         schema:
           type: integer
           minimum: 1
+          default: 5
+      - name: include_messages
+        in: query
+        required: false
+        description: Include message excerpts in context-pack payloads.
+        schema:
+          type: boolean
+          default: true
+      - name: max_messages
+        in: query
+        required: false
+        description: Maximum messages per session for context-pack.
+        schema:
+          type: integer
+          minimum: 1
+      - name: max_text
+        in: query
+        required: false
+        description: Maximum text characters per context-pack message excerpt.
+        schema:
+          type: integer
+          minimum: 1
+          default: 200
+      - name: no_redact
+        in: query
+        required: false
+        description: Return unredacted context-pack path/provenance details where available.
+        schema:
+          type: boolean
+          default: false
       - name: window_hours
         in: query
-        description: Neighbor discovery window in hours.
         required: false
+        description: Neighbor discovery window in hours.
         schema:
           type: integer
           minimum: 1
           default: 24
+      - name: confidence_threshold
+        in: query
+        required: false
+        description: Minimum confidence for correlation evidence.
+        schema:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 0.3
+      - name: repo_path
+        in: query
+        required: false
+        description: Repository path for correlation evidence.
+        schema:
+          type: string
       - name: since_hours
         in: query
-        description: Correlation scan window on each side of the session.
         required: false
+        description: Correlation scan window on each side of the session.
         schema:
           type: integer
           minimum: 1
@@ -1366,6 +1458,7 @@ components:
       - candidate
       - accepted
       - rejected
+      - deferred
       - superseded
       - deleted
       - inactive

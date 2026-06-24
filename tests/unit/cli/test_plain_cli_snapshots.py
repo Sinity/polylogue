@@ -36,6 +36,7 @@ from polylogue.cli.click_app import cli
 _TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)?")
 _DURATION_RE = re.compile(r"\d+(?:\.\d+)?\s?(?:ms|µs|us|s)\b")
 _HEX_HASH_RE = re.compile(r"\b[a-f0-9]{12,}\b")
+_SIZE_BYTES_FIELD_RE = re.compile(r'("(?:db_)?size_bytes": )\d+')
 # Match path-like sequences (anything with a "/" between segments).
 _PATH_RE = re.compile(r"(/[A-Za-z0-9_.\-]+){2,}")
 
@@ -46,6 +47,7 @@ def _redact(text: str) -> str:
     out = _TIMESTAMP_RE.sub("<TIMESTAMP>", out)
     out = _DURATION_RE.sub("<DURATION>", out)
     out = _HEX_HASH_RE.sub("<HASH>", out)
+    out = _SIZE_BYTES_FIELD_RE.sub(r"\1<SIZE_BYTES>", out)
     return out
 
 

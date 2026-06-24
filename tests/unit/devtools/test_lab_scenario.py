@@ -1,4 +1,4 @@
-"""Tests for the verification-lab smoke command surface."""
+"""Tests for the executable lab smoke command surface."""
 
 from __future__ import annotations
 

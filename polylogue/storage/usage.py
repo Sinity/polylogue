@@ -12,6 +12,139 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from polylogue.core.enums import Origin, Provider
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderUsageCoverage:
+    """Declared provider-usage telemetry coverage for one archive origin."""
+
+    origin: str
+    provider: str
+    status: str
+    evidence_stream: str
+    event_types: tuple[str, ...] = ()
+    request_semantics: str = ""
+    cumulative_semantics: str = ""
+    cache_semantics: str = ""
+    notes: tuple[str, ...] = ()
+    rebuild_guidance: str = (
+        "rebuild index.db from source.db/raw archives so usage events and rollups are materialized from source evidence"
+    )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "origin": self.origin,
+            "provider": self.provider,
+            "status": self.status,
+            "evidence_stream": self.evidence_stream,
+            "event_types": list(self.event_types),
+            "request_semantics": self.request_semantics,
+            "cumulative_semantics": self.cumulative_semantics,
+            "cache_semantics": self.cache_semantics,
+            "notes": list(self.notes),
+            "rebuild_guidance": self.rebuild_guidance,
+        }
+
+
+_PROVIDER_USAGE_COVERAGE: tuple[ProviderUsageCoverage, ...] = (
+    ProviderUsageCoverage(
+        origin=Origin.CLAUDE_CODE_SESSION.value,
+        provider=Provider.CLAUDE_CODE.value,
+        status="exact",
+        evidence_stream="provider_reported_usage",
+        event_types=("message_usage",),
+        request_semantics="Claude Code message.usage rows are per message/request observations.",
+        cumulative_semantics="Session rollups are derived by summing message usage rows; Claude Code does not supply a separate cumulative session high-water event.",
+        cache_semantics="cache_read_input_tokens and cache_creation_input_tokens are preserved as cached_input and cache_write lanes and are not folded into generic input/output.",
+        notes=("Exact token telemetry is available only where exported records include message.usage.",),
+    ),
+    ProviderUsageCoverage(
+        origin=Origin.CODEX_SESSION.value,
+        provider=Provider.CODEX.value,
+        status="exact",
+        evidence_stream="provider_reported_usage",
+        event_types=("token_count",),
+        request_semantics="Codex last_token_usage is request/current-window telemetry and can be summed by request when present.",
+        cumulative_semantics="Codex total_token_usage is cumulative; rollups take the latest total per session/model to avoid double-counting.",
+        cache_semantics="cached_input_tokens and cache write/cache creation aliases are preserved as separate lanes and are not folded into generic input/output.",
+        notes=("model_context_window is carried on token_count events when the provider supplies it.",),
+    ),
+    ProviderUsageCoverage(
+        origin=Origin.CHATGPT_EXPORT.value,
+        provider=Provider.CHATGPT.value,
+        status="estimate_only",
+        evidence_stream="transcript_text_estimate",
+        request_semantics="ChatGPT exports do not carry reliable per-request token counters.",
+        cumulative_semantics="Provider/account UI totals are external summaries and are not reconstructed from transcript text.",
+        cache_semantics="No cache read/write token lanes are available in ChatGPT export rows.",
+        notes=("Cost-looking metadata is not treated as exact token telemetry.",),
+    ),
+    ProviderUsageCoverage(
+        origin=Origin.CLAUDE_AI_EXPORT.value,
+        provider=Provider.CLAUDE_AI.value,
+        status="estimate_only",
+        evidence_stream="transcript_text_estimate",
+        request_semantics="Claude.ai exports preserve transcript content, not provider usage counters.",
+        cumulative_semantics="No cumulative provider usage window is present in the export shape.",
+        cache_semantics="No cache read/write token lanes are available in Claude.ai export rows.",
+    ),
+    ProviderUsageCoverage(
+        origin=Origin.AISTUDIO_DRIVE.value,
+        provider=Provider.GEMINI.value,
+        status="partial",
+        evidence_stream="message_token_fields",
+        request_semantics="AI Studio/Gemini exports may carry message-level tokenCount output counters on some records.",
+        cumulative_semantics="No provider cumulative session usage window is available from Drive prompt exports.",
+        cache_semantics="No cache read/write token lanes are available from Drive prompt exports.",
+        notes=("Input tokens and cache semantics are missing unless a future export shape supplies them explicitly.",),
+    ),
+    ProviderUsageCoverage(
+        origin=Origin.GEMINI_CLI_SESSION.value,
+        provider=Provider.GEMINI_CLI.value,
+        status="partial",
+        evidence_stream="message_token_fields",
+        request_semantics="Local Gemini CLI documents may carry generic usage/tokens dictionaries per message.",
+        cumulative_semantics="No provider cumulative session usage window is available.",
+        cache_semantics="Generic cache_read/cache_write keys are preserved when present, but their provider semantics are not independently verified.",
+    ),
+    ProviderUsageCoverage(
+        origin=Origin.HERMES_SESSION.value,
+        provider=Provider.HERMES.value,
+        status="partial",
+        evidence_stream="message_token_fields",
+        request_semantics="Hermes local-agent documents may carry generic usage/tokens dictionaries per message.",
+        cumulative_semantics="No provider cumulative session usage window is available.",
+        cache_semantics="Generic cache_read/cache_write keys are preserved when present, but their provider semantics are not independently verified.",
+    ),
+    ProviderUsageCoverage(
+        origin=Origin.ANTIGRAVITY_SESSION.value,
+        provider=Provider.ANTIGRAVITY.value,
+        status="unsupported",
+        evidence_stream="transcript_text_only",
+        request_semantics="No provider usage telemetry parser is implemented for this origin.",
+        cumulative_semantics="No cumulative provider usage window is available.",
+        cache_semantics="No cache read/write token lanes are available.",
+    ),
+    ProviderUsageCoverage(
+        origin=Origin.UNKNOWN_EXPORT.value,
+        provider=Provider.UNKNOWN.value,
+        status="unsupported",
+        evidence_stream="transcript_text_only",
+        request_semantics="Unknown exports are parsed for transcript content only.",
+        cumulative_semantics="No cumulative provider usage window is available.",
+        cache_semantics="No cache read/write token lanes are available.",
+    ),
+)
+
+_PROVIDER_USAGE_COVERAGE_BY_ORIGIN = {item.origin: item for item in _PROVIDER_USAGE_COVERAGE}
+
+
+def provider_usage_coverage_matrix() -> tuple[ProviderUsageCoverage, ...]:
+    """Return the declared provider usage coverage matrix."""
+
+    return _PROVIDER_USAGE_COVERAGE
+
 
 @dataclass(frozen=True, slots=True)
 class UsageCounters:
@@ -74,9 +207,21 @@ class OriginUsageReport:
     """Usage evidence summary for one archive origin."""
 
     origin: str
+    provider: str = "unknown"
+    declared_coverage: str = "unsupported"
+    coverage_state: str = "unsupported"
+    coverage_basis: str = ""
+    evidence_stream: str = "transcript_text_only"
+    request_semantics: str = ""
+    cumulative_semantics: str = ""
+    cache_semantics: str = ""
+    rebuild_guidance: str = ""
     session_count: int = 0
     message_count: int = 0
     transcript_word_count: int = 0
+    raw_session_count: int = 0
+    raw_parse_error_count: int = 0
+    acquired_not_materialized_count: int = 0
     provider_event_session_count: int = 0
     provider_event_count: int = 0
     token_count_event_count: int = 0
@@ -87,19 +232,34 @@ class OriginUsageReport:
     priced_model_row_count: int = 0
     origin_reported_model_row_count: int = 0
     estimated_model_row_count: int = 0
+    stale_rollup_session_count: int = 0
     provider_request_usage: UsageCounters = field(default_factory=UsageCounters)
     provider_cumulative_usage: UsageCounters = field(default_factory=UsageCounters)
     model_rollup_usage: UsageCounters = field(default_factory=UsageCounters)
     sample_missing_model_sessions: tuple[str, ...] = ()
     sample_zero_token_sessions: tuple[str, ...] = ()
+    sample_acquired_not_materialized_raw_ids: tuple[str, ...] = ()
+    sample_stale_rollup_sessions: tuple[str, ...] = ()
     caveats: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {
             "origin": self.origin,
+            "provider": self.provider,
+            "declared_coverage": self.declared_coverage,
+            "coverage_state": self.coverage_state,
+            "coverage_basis": self.coverage_basis,
+            "evidence_stream": self.evidence_stream,
+            "request_semantics": self.request_semantics,
+            "cumulative_semantics": self.cumulative_semantics,
+            "cache_semantics": self.cache_semantics,
+            "rebuild_guidance": self.rebuild_guidance,
             "session_count": self.session_count,
             "message_count": self.message_count,
             "transcript_word_count": self.transcript_word_count,
+            "raw_session_count": self.raw_session_count,
+            "raw_parse_error_count": self.raw_parse_error_count,
+            "acquired_not_materialized_count": self.acquired_not_materialized_count,
             "provider_event_session_count": self.provider_event_session_count,
             "provider_event_count": self.provider_event_count,
             "token_count_event_count": self.token_count_event_count,
@@ -110,11 +270,14 @@ class OriginUsageReport:
             "priced_model_row_count": self.priced_model_row_count,
             "origin_reported_model_row_count": self.origin_reported_model_row_count,
             "estimated_model_row_count": self.estimated_model_row_count,
+            "stale_rollup_session_count": self.stale_rollup_session_count,
             "provider_request_usage": self.provider_request_usage.to_dict(),
             "provider_cumulative_usage": self.provider_cumulative_usage.to_dict(),
             "model_rollup_usage": self.model_rollup_usage.to_dict(),
             "sample_missing_model_sessions": list(self.sample_missing_model_sessions),
             "sample_zero_token_sessions": list(self.sample_zero_token_sessions),
+            "sample_acquired_not_materialized_raw_ids": list(self.sample_acquired_not_materialized_raw_ids),
+            "sample_stale_rollup_sessions": list(self.sample_stale_rollup_sessions),
             "caveats": list(self.caveats),
         }
 
@@ -126,10 +289,12 @@ class ProviderUsageReport:
     archive_root: str
     origins: tuple[OriginUsageReport, ...]
     caveats: tuple[str, ...] = ()
+    coverage_matrix: tuple[ProviderUsageCoverage, ...] = _PROVIDER_USAGE_COVERAGE
 
     def to_dict(self) -> dict[str, object]:
         return {
             "archive_root": self.archive_root,
+            "coverage_matrix": [item.to_dict() for item in self.coverage_matrix],
             "origins": [origin.to_dict() for origin in self.origins],
             "caveats": list(self.caveats),
         }
@@ -181,49 +346,89 @@ def provider_usage_report_from_connection(
         )
 
     base_by_origin = _base_session_stats(conn, origin)
-    model_by_origin = _model_rollup_stats(conn, origin) if _table_exists(conn, "session_model_usage") else {}
-    model_counts_by_origin = _model_row_counts(conn, origin) if _table_exists(conn, "session_model_usage") else {}
-    multi_model_by_origin = (
-        _multi_model_session_counts(conn, origin) if _table_exists(conn, "session_model_usage") else {}
-    )
+    model_table_present = _table_exists(conn, "session_model_usage")
+    usage_event_table_present = _table_exists(conn, "session_provider_usage_events")
+    model_by_origin = _model_rollup_stats(conn, origin) if model_table_present else {}
+    model_counts_by_origin = _model_row_counts(conn, origin) if model_table_present else {}
+    multi_model_by_origin = _multi_model_session_counts(conn, origin) if model_table_present else {}
+    raw_by_origin, raw_samples, raw_caveat = _source_raw_stats(conn, origin, limit)
+    if raw_caveat:
+        caveats.append(raw_caveat)
 
-    if _table_exists(conn, "session_provider_usage_events"):
+    if usage_event_table_present:
         event_by_origin = _provider_event_stats(conn, origin)
         cumulative_by_origin = _provider_cumulative_usage(conn, origin)
         missing_samples = _sample_event_sessions(conn, origin, limit, missing_model=True)
         zero_samples = _sample_event_sessions(conn, origin, limit, zero_token=True)
+        stale_by_origin, stale_samples = (
+            _stale_provider_rollup_stats(conn, origin, limit) if model_table_present else ({}, {})
+        )
     else:
         event_by_origin = {}
         cumulative_by_origin = {}
         missing_samples = {}
         zero_samples = {}
+        stale_by_origin = {}
+        stale_samples = {}
         caveats.append("session_provider_usage_events table is missing; rebuild the index tier with the current schema")
 
-    origins = sorted(set(base_by_origin) | set(event_by_origin) | set(model_by_origin))
+    origins = sorted(set(base_by_origin) | set(event_by_origin) | set(model_by_origin) | set(raw_by_origin))
     reports: list[OriginUsageReport] = []
     for origin_name in origins:
         base = base_by_origin.get(origin_name, {})
+        raw = raw_by_origin.get(origin_name, {})
         events = event_by_origin.get(origin_name, {})
         model_counts = model_counts_by_origin.get(origin_name, {})
         provider_request_usage = events.get("provider_request_usage")
         if not isinstance(provider_request_usage, UsageCounters):
             provider_request_usage = UsageCounters()
+        model_rollup_usage = model_by_origin.get(origin_name, UsageCounters())
+        coverage = _coverage_for_origin(origin_name)
+        session_count = _int(base.get("session_count"))
+        provider_event_session_count = _int(events.get("provider_event_session_count"))
+        acquired_not_materialized_count = _int(raw.get("acquired_not_materialized_count"))
+        stale_rollup_session_count = _int(stale_by_origin.get(origin_name))
+        coverage_state, coverage_basis = _coverage_state(
+            coverage,
+            session_count=session_count,
+            provider_event_session_count=provider_event_session_count,
+            model_rollup_usage=model_rollup_usage,
+            acquired_not_materialized_count=acquired_not_materialized_count,
+            stale_rollup_session_count=stale_rollup_session_count,
+        )
         origin_caveats = _origin_caveats(
-            session_count=_int(base.get("session_count")),
-            provider_event_session_count=_int(events.get("provider_event_session_count")),
+            coverage=coverage,
+            coverage_state=coverage_state,
+            session_count=session_count,
+            provider_event_session_count=provider_event_session_count,
             missing_model_event_count=_int(events.get("missing_model_event_count")),
             zero_token_event_count=_int(events.get("zero_token_event_count")),
             multi_model_session_count=multi_model_by_origin.get(origin_name, 0),
             token_count_event_count=_int(events.get("token_count_event_count")),
             message_usage_event_count=_int(events.get("message_usage_event_count")),
+            raw_parse_error_count=_int(raw.get("raw_parse_error_count")),
+            acquired_not_materialized_count=acquired_not_materialized_count,
+            stale_rollup_session_count=stale_rollup_session_count,
         )
         reports.append(
             OriginUsageReport(
                 origin=origin_name,
-                session_count=_int(base.get("session_count")),
+                provider=coverage.provider,
+                declared_coverage=coverage.status,
+                coverage_state=coverage_state,
+                coverage_basis=coverage_basis,
+                evidence_stream=coverage.evidence_stream,
+                request_semantics=coverage.request_semantics,
+                cumulative_semantics=coverage.cumulative_semantics,
+                cache_semantics=coverage.cache_semantics,
+                rebuild_guidance=coverage.rebuild_guidance,
+                session_count=session_count,
                 message_count=_int(base.get("message_count")),
                 transcript_word_count=_int(base.get("transcript_word_count")),
-                provider_event_session_count=_int(events.get("provider_event_session_count")),
+                raw_session_count=_int(raw.get("raw_session_count")),
+                raw_parse_error_count=_int(raw.get("raw_parse_error_count")),
+                acquired_not_materialized_count=acquired_not_materialized_count,
+                provider_event_session_count=provider_event_session_count,
                 provider_event_count=_int(events.get("provider_event_count")),
                 token_count_event_count=_int(events.get("token_count_event_count")),
                 message_usage_event_count=_int(events.get("message_usage_event_count")),
@@ -233,18 +438,375 @@ def provider_usage_report_from_connection(
                 priced_model_row_count=_int(model_counts.get("priced_model_row_count")),
                 origin_reported_model_row_count=_int(model_counts.get("origin_reported_model_row_count")),
                 estimated_model_row_count=_int(model_counts.get("estimated_model_row_count")),
+                stale_rollup_session_count=stale_rollup_session_count,
                 provider_request_usage=provider_request_usage,
                 provider_cumulative_usage=cumulative_by_origin.get(origin_name, UsageCounters()),
-                model_rollup_usage=model_by_origin.get(origin_name, UsageCounters()),
+                model_rollup_usage=model_rollup_usage,
                 sample_missing_model_sessions=tuple(missing_samples.get(origin_name, ())),
                 sample_zero_token_sessions=tuple(zero_samples.get(origin_name, ())),
+                sample_acquired_not_materialized_raw_ids=tuple(raw_samples.get(origin_name, ())),
+                sample_stale_rollup_sessions=tuple(stale_samples.get(origin_name, ())),
                 caveats=tuple(origin_caveats),
             )
         )
 
     if origin is not None and not reports:
         caveats.append(f"no sessions found for origin {origin!r}")
+        caveats.append(f"no raw rows found for origin {origin!r}")
     return ProviderUsageReport(archive_root=str(archive_root), origins=tuple(reports), caveats=tuple(caveats))
+
+
+def _coverage_for_origin(origin: str) -> ProviderUsageCoverage:
+    return _PROVIDER_USAGE_COVERAGE_BY_ORIGIN.get(
+        origin,
+        ProviderUsageCoverage(
+            origin=origin,
+            provider=Provider.UNKNOWN.value,
+            status="unsupported",
+            evidence_stream="transcript_text_only",
+            request_semantics="No provider usage telemetry parser is declared for this origin.",
+            cumulative_semantics="No cumulative provider usage window is available.",
+            cache_semantics="No cache read/write token lanes are available.",
+        ),
+    )
+
+
+def _coverage_state(
+    coverage: ProviderUsageCoverage,
+    *,
+    session_count: int,
+    provider_event_session_count: int,
+    model_rollup_usage: UsageCounters,
+    acquired_not_materialized_count: int,
+    stale_rollup_session_count: int,
+) -> tuple[str, str]:
+    if acquired_not_materialized_count:
+        return (
+            "acquired_not_materialized",
+            "source.db has raw rows without parse errors that are not represented in index.db sessions",
+        )
+    if stale_rollup_session_count:
+        return (
+            "stale_rollup",
+            "provider usage events exist, but session_model_usage no longer matches the event-derived rollup",
+        )
+    if session_count <= 0:
+        return "no_sessions", "no materialized sessions for this origin"
+    if coverage.status == "exact":
+        if provider_event_session_count <= 0:
+            return (
+                "missing_provider_telemetry",
+                "this origin supports exact provider telemetry, but no provider usage event rows are materialized",
+            )
+        if provider_event_session_count < session_count:
+            return (
+                "partial_provider_telemetry",
+                "some materialized sessions have provider usage event rows and some do not",
+            )
+        return (
+            "exact_provider_telemetry",
+            "all materialized sessions for this origin have provider usage event rows",
+        )
+    if coverage.status == "partial":
+        if model_rollup_usage.is_zero():
+            return (
+                "partial_telemetry_unobserved",
+                "this origin can carry partial message token fields, but none are materialized in model rollups",
+            )
+        return (
+            "partial_provider_telemetry",
+            "message-level token fields are materialized, but exact provider request/cumulative semantics are incomplete",
+        )
+    if coverage.status == "estimate_only":
+        return (
+            "estimate_only",
+            "exact provider token telemetry is unavailable; transcript text counts remain estimate-only evidence",
+        )
+    return (
+        "unsupported",
+        "no reliable provider token telemetry is supported for this origin",
+    )
+
+
+def _source_raw_stats(
+    conn: sqlite3.Connection,
+    origin: str | None,
+    limit: int | None,
+) -> tuple[dict[str, dict[str, int]], dict[str, tuple[str, ...]], str | None]:
+    alias = _source_schema_alias(conn)
+    if alias is None:
+        return {}, {}, "source.db raw_sessions unavailable; acquired-not-materialized coverage cannot be checked"
+    alias_sql = _quote_identifier(alias)
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT r.origin AS origin,
+                   COUNT(*) AS raw_session_count,
+                   COALESCE(SUM(CASE
+                       WHEN r.parse_error IS NOT NULL AND TRIM(r.parse_error) != '' THEN 1 ELSE 0
+                   END), 0) AS raw_parse_error_count,
+                   COALESCE(SUM(CASE
+                       WHEN (r.parse_error IS NULL OR TRIM(r.parse_error) = '')
+                        AND s.session_id IS NULL THEN 1 ELSE 0
+                   END), 0) AS acquired_not_materialized_count
+            FROM {alias_sql}.raw_sessions AS r
+            LEFT JOIN sessions AS s ON s.raw_id = r.raw_id
+            {_where_origin(origin, table_alias="r")}
+            GROUP BY r.origin
+            ORDER BY r.origin
+            """,
+            _origin_args(origin),
+        ).fetchall()
+        stats = {
+            str(row["origin"]): {
+                "raw_session_count": _int(row["raw_session_count"]),
+                "raw_parse_error_count": _int(row["raw_parse_error_count"]),
+                "acquired_not_materialized_count": _int(row["acquired_not_materialized_count"]),
+            }
+            for row in rows
+        }
+        samples = _sample_acquired_not_materialized_raw_ids(conn, alias_sql, origin, limit)
+    except sqlite3.Error as exc:
+        return {}, {}, f"source.db raw_sessions coverage check failed: {exc}"
+    return stats, samples, None
+
+
+def _sample_acquired_not_materialized_raw_ids(
+    conn: sqlite3.Connection,
+    alias_sql: str,
+    origin: str | None,
+    limit: int | None,
+) -> dict[str, tuple[str, ...]]:
+    if limit is not None and limit <= 0:
+        return {}
+    rows = conn.execute(
+        f"""
+        SELECT r.origin AS origin, r.raw_id AS raw_id
+        FROM {alias_sql}.raw_sessions AS r
+        LEFT JOIN sessions AS s ON s.raw_id = r.raw_id
+        {_where_origin(origin, table_alias="r")}
+          {"AND" if origin is not None else "WHERE"} (r.parse_error IS NULL OR TRIM(r.parse_error) = '')
+          AND s.session_id IS NULL
+        ORDER BY r.origin, r.raw_id
+        {"LIMIT ?" if limit is not None else ""}
+        """,
+        (*_origin_args(origin), *(() if limit is None else (limit,))),
+    ).fetchall()
+    by_origin: dict[str, list[str]] = defaultdict(list)
+    for row in rows:
+        by_origin[str(row["origin"])].append(str(row["raw_id"]))
+    return {key: tuple(value) for key, value in by_origin.items()}
+
+
+def _stale_provider_rollup_stats(
+    conn: sqlite3.Connection,
+    origin: str | None,
+    limit: int | None,
+) -> tuple[dict[str, int], dict[str, tuple[str, ...]]]:
+    expected = _expected_provider_model_rollups(conn, origin)
+    if not expected:
+        return {}, {}
+    actual = _actual_model_rollups(conn, origin)
+    origin_by_session = _origin_by_session(conn, origin)
+    stale_by_origin: dict[str, set[str]] = defaultdict(set)
+    for session_id, expected_by_model in expected.items():
+        for model_name, expected_tokens in expected_by_model.items():
+            if actual.get((session_id, model_name)) != expected_tokens:
+                origin_name = origin_by_session.get(session_id)
+                if origin_name:
+                    stale_by_origin[origin_name].add(session_id)
+    counts = {origin_name: len(session_ids) for origin_name, session_ids in stale_by_origin.items()}
+    samples = {
+        origin_name: tuple(sorted(session_ids)[:limit]) if limit is not None else tuple(sorted(session_ids))
+        for origin_name, session_ids in stale_by_origin.items()
+    }
+    return counts, samples
+
+
+def _expected_provider_model_rollups(
+    conn: sqlite3.Connection,
+    origin: str | None,
+) -> dict[str, dict[str, tuple[int, int, int, int]]]:
+    models_by_session = _models_by_session(conn, origin)
+    if not models_by_session:
+        return {}
+    rows = conn.execute(
+        f"""
+        SELECT s.origin AS origin, e.session_id AS session_id, e.model_name AS model_name, e.position AS position,
+               e.last_input_tokens AS last_input_tokens,
+               e.last_output_tokens AS last_output_tokens,
+               e.last_cached_input_tokens AS last_cached_input_tokens,
+               e.last_cache_write_tokens AS last_cache_write_tokens,
+               e.last_reasoning_output_tokens AS last_reasoning_output_tokens,
+               e.last_total_tokens AS last_total_tokens,
+               e.total_input_tokens AS total_input_tokens,
+               e.total_output_tokens AS total_output_tokens,
+               e.total_cached_input_tokens AS total_cached_input_tokens,
+               e.total_cache_write_tokens AS total_cache_write_tokens,
+               e.total_reasoning_output_tokens AS total_reasoning_output_tokens,
+               e.total_tokens AS total_tokens
+        FROM session_provider_usage_events AS e
+        JOIN sessions AS s ON s.session_id = e.session_id
+        {_where_origin(origin, table_alias="s")}
+          {"AND" if origin is not None else "WHERE"} e.provider_event_type = 'token_count'
+        ORDER BY e.session_id, e.position
+        """,
+        _origin_args(origin),
+    ).fetchall()
+    latest_total_by_model: dict[tuple[str, str], tuple[int, int, int, int, int]] = {}
+    summed_last_by_model: dict[tuple[str, str], list[int]] = {}
+    for row in rows:
+        session_id = str(row["session_id"])
+        model_name = str(row["model_name"]).strip() if row["model_name"] else ""
+        existing_models = models_by_session.get(session_id, ())
+        if not model_name and len(existing_models) == 1:
+            model_name = existing_models[0]
+        if not model_name:
+            continue
+        last_values = (
+            _int(row["last_input_tokens"]),
+            _int(row["last_output_tokens"]),
+            _int(row["last_cached_input_tokens"]),
+            _int(row["last_cache_write_tokens"]),
+            _int(row["last_reasoning_output_tokens"]),
+            _int(row["last_total_tokens"]),
+        )
+        total_values = (
+            _int(row["total_input_tokens"]),
+            _int(row["total_output_tokens"]),
+            _int(row["total_cached_input_tokens"]),
+            _int(row["total_cache_write_tokens"]),
+            _int(row["total_reasoning_output_tokens"]),
+            _int(row["total_tokens"]),
+        )
+        key = (session_id, model_name)
+        if any(total_values):
+            latest_total_by_model[key] = total_values[:5]
+            continue
+        if any(last_values):
+            bucket = summed_last_by_model.setdefault(key, [0, 0, 0, 0, 0])
+            bucket[0] += last_values[0]
+            bucket[1] += last_values[1]
+            bucket[2] += last_values[2]
+            bucket[3] += last_values[3]
+            bucket[4] += last_values[4]
+    expected: dict[str, dict[str, tuple[int, int, int, int]]] = defaultdict(dict)
+    for (session_id, model_name), total_tuple in latest_total_by_model.items():
+        expected[session_id][model_name] = (
+            total_tuple[0],
+            total_tuple[1] + total_tuple[4],
+            total_tuple[2],
+            total_tuple[3],
+        )
+    for (session_id, model_name), last_totals in summed_last_by_model.items():
+        if (session_id, model_name) in latest_total_by_model:
+            continue
+        expected[session_id][model_name] = (
+            last_totals[0],
+            last_totals[1] + last_totals[4],
+            last_totals[2],
+            last_totals[3],
+        )
+    return {session_id: dict(rows) for session_id, rows in expected.items()}
+
+
+def _actual_model_rollups(
+    conn: sqlite3.Connection,
+    origin: str | None,
+) -> dict[tuple[str, str], tuple[int, int, int, int]]:
+    rows = conn.execute(
+        f"""
+        SELECT u.session_id AS session_id, u.model_name AS model_name,
+               u.input_tokens AS input_tokens, u.output_tokens AS output_tokens,
+               u.cache_read_tokens AS cache_read_tokens, u.cache_write_tokens AS cache_write_tokens
+        FROM session_model_usage AS u
+        JOIN sessions AS s ON s.session_id = u.session_id
+        {_where_origin(origin, table_alias="s")}
+        """,
+        _origin_args(origin),
+    ).fetchall()
+    return {
+        (str(row["session_id"]), str(row["model_name"])): (
+            _int(row["input_tokens"]),
+            _int(row["output_tokens"]),
+            _int(row["cache_read_tokens"]),
+            _int(row["cache_write_tokens"]),
+        )
+        for row in rows
+    }
+
+
+def _models_by_session(conn: sqlite3.Connection, origin: str | None) -> dict[str, tuple[str, ...]]:
+    rows = conn.execute(
+        f"""
+        SELECT u.session_id AS session_id, u.model_name AS model_name
+        FROM session_model_usage AS u
+        JOIN sessions AS s ON s.session_id = u.session_id
+        {_where_origin(origin, table_alias="s")}
+        ORDER BY u.session_id, u.model_name
+        """,
+        _origin_args(origin),
+    ).fetchall()
+    result: dict[str, list[str]] = defaultdict(list)
+    for row in rows:
+        model_name = str(row["model_name"]).strip() if row["model_name"] else ""
+        if model_name:
+            result[str(row["session_id"])].append(model_name)
+    return {session_id: tuple(models) for session_id, models in result.items()}
+
+
+def _origin_by_session(conn: sqlite3.Connection, origin: str | None) -> dict[str, str]:
+    rows = conn.execute(
+        f"""
+        SELECT session_id, origin
+        FROM sessions
+        {_where_origin(origin)}
+        """,
+        _origin_args(origin),
+    ).fetchall()
+    return {str(row["session_id"]): str(row["origin"]) for row in rows}
+
+
+def _source_schema_alias(conn: sqlite3.Connection) -> str | None:
+    for alias in ("source_tier", "source_debt", "source", "usage_source_tier"):
+        if _table_exists_in_schema(conn, alias, "raw_sessions"):
+            return alias
+    source_db = _sibling_source_db(conn)
+    if source_db is None or not source_db.exists():
+        return None
+    try:
+        conn.execute("ATTACH DATABASE ? AS usage_source_tier", (str(source_db),))
+    except sqlite3.Error:
+        return None
+    return "usage_source_tier" if _table_exists_in_schema(conn, "usage_source_tier", "raw_sessions") else None
+
+
+def _sibling_source_db(conn: sqlite3.Connection) -> Path | None:
+    for row in conn.execute("PRAGMA database_list").fetchall():
+        if str(row[1]) != "main":
+            continue
+        path_text = str(row[2] or "")
+        if not path_text:
+            return None
+        return Path(path_text).with_name("source.db")
+    return None
+
+
+def _quote_identifier(name: str) -> str:
+    if not name.replace("_", "").isalnum():
+        raise ValueError(f"unsafe SQLite identifier: {name!r}")
+    return f'"{name}"'
+
+
+def _table_exists_in_schema(conn: sqlite3.Connection, schema: str, name: str) -> bool:
+    try:
+        row = conn.execute(
+            f"SELECT 1 FROM {_quote_identifier(schema)}.sqlite_master WHERE type = 'table' AND name = ?",
+            (name,),
+        ).fetchone()
+    except sqlite3.Error:
+        return False
+    return row is not None
 
 
 def _base_session_stats(conn: sqlite3.Connection, origin: str | None) -> dict[str, dict[str, int]]:
@@ -497,6 +1059,8 @@ def _counter_columns(columns: set[str], *, prefix: str) -> dict[str, str]:
 
 def _origin_caveats(
     *,
+    coverage: ProviderUsageCoverage,
+    coverage_state: str,
     session_count: int,
     provider_event_session_count: int,
     missing_model_event_count: int,
@@ -504,11 +1068,34 @@ def _origin_caveats(
     multi_model_session_count: int,
     token_count_event_count: int,
     message_usage_event_count: int,
+    raw_parse_error_count: int,
+    acquired_not_materialized_count: int,
+    stale_rollup_session_count: int,
 ) -> list[str]:
     caveats: list[str] = []
-    if session_count and provider_event_session_count < session_count:
+    if coverage.status == "estimate_only":
+        caveats.append("exact provider telemetry unavailable; transcript text counts are estimate-only")
+    elif coverage.status == "unsupported":
+        caveats.append("provider usage telemetry unsupported for this origin")
+    elif coverage.status == "partial":
+        caveats.append("provider usage telemetry is partial; request, cumulative, and cache semantics are incomplete")
+    if coverage_state == "missing_provider_telemetry":
+        caveats.append("exact provider telemetry is supported for this origin but no usage events are materialized")
+    if session_count and provider_event_session_count < session_count and coverage.status == "exact":
         caveats.append(
             "some sessions have no provider usage event rows; transcript words and model rollups cover different evidence"
+        )
+    if acquired_not_materialized_count:
+        caveats.append(
+            "raw rows without parse errors are acquired but not materialized; usage coverage is incomplete until index.db is rebuilt"
+        )
+    if raw_parse_error_count:
+        caveats.append(
+            "some raw rows have parse errors; usage telemetry in those rows is unavailable until parsing succeeds"
+        )
+    if stale_rollup_session_count:
+        caveats.append(
+            "some model rollups are stale relative to provider usage events; rebuild usage materialization from source evidence"
         )
     if missing_model_event_count:
         caveats.append("some provider events have no model; multi-model attribution is intentionally not guessed")
@@ -558,8 +1145,10 @@ def _int(value: object) -> int:
 
 __all__ = [
     "OriginUsageReport",
+    "ProviderUsageCoverage",
     "ProviderUsageReport",
     "UsageCounters",
+    "provider_usage_coverage_matrix",
     "provider_usage_report_for_archive_root",
     "provider_usage_report_from_connection",
 ]

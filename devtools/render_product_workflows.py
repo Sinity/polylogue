@@ -256,7 +256,8 @@ def build_document(
         "message roles and not authoredness; `material_origins` describe human/assistant/runtime provenance; `message_types` "
         "describe normalized content kind; `tags` are user/session labels; `repos` are canonical product repository labels. "
         "Incidental archive paths and noisy repo/path tokens are reported under omitted/noisy counts instead of being presented as "
-        "authoritative repositories.",
+        "authoritative repositories. Terminal facet output shows a bounded top set per family and points users to "
+        "`--format json` for complete buckets and IDF values.",
         "",
         "## Completion Contract",
         "",

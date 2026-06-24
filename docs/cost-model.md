@@ -32,6 +32,56 @@ cost outlook`), MCP tool (`cost_outlook`), and Python API
 (`Polylogue.cost_outlook`) are leaf adapters over the same typed
 `CycleOutlook` envelope.
 
+
+## Provider Usage Accounting Coverage
+
+Provider usage accounting is distinct from cost estimation. The authoritative
+provider evidence, when present, lives in `session_provider_usage_events`;
+`session_model_usage` is a rebuildable rollup/read model; transcript words and
+text length are estimate-only signals. `polylogue diagnostics usage` reports all
+three streams separately so a missing provider counter does not appear as a
+provider-reported zero.
+
+| Origin | Provider | Declared coverage | Event stream | Token semantics |
+| --- | --- | --- | --- | --- |
+| `claude-code-session` | `claude-code` | exact where `message.usage` exists | `message_usage` | per-message/request usage; cache read and cache creation are separate lanes |
+| `codex-session` | `codex` | exact where `token_count` exists | `token_count` | `last_token_usage` is current/request-window telemetry; `total_token_usage` is cumulative and rollups take the latest total per session/model |
+| `chatgpt-export` | `chatgpt` | estimate-only | transcript text | exports do not carry reliable per-request provider token counters |
+| `claude-ai-export` | `claude-ai` | estimate-only | transcript text | exports preserve conversation text, not exact provider usage counters |
+| `aistudio-drive` | `gemini` | partial | message token fields | some records may carry output `tokenCount`; input/cache/cumulative semantics are unavailable |
+| `gemini-cli-session` | `gemini-cli` | partial | message token fields | generic usage dictionaries may be materialized but provider-specific cumulative semantics are not declared |
+| `hermes-session` | `hermes` | partial | message token fields | generic usage dictionaries may be materialized but provider-specific cumulative semantics are not declared |
+| `antigravity-session` | `antigravity` | unsupported | transcript text | no exact provider usage parser is declared |
+| `unknown-export` | `unknown` | unsupported | transcript text | no exact provider usage parser is declared |
+
+The diagnostics payload exposes both the declared coverage and the observed
+state for each origin:
+
+* `exact_provider_telemetry` means every materialized session for an exact
+  origin has provider usage event rows.
+* `partial_provider_telemetry` means only some sessions carry exact event rows,
+  or a partial origin has token fields without exact request/cumulative/cache
+  semantics.
+* `missing_provider_telemetry` means an exact origin has sessions but no
+  provider usage events are materialized.
+* `estimate_only` and `unsupported` are deliberate non-authoritative states;
+  they are not zero-usage states.
+* `acquired_not_materialized` means `source.db` has parseable raw rows that have
+  not been represented in `index.db`.
+* `stale_rollup` means provider usage events exist but `session_model_usage` no
+  longer matches the event-derived rollup.
+
+Cache read/write tokens are never folded into generic input/output tokens. The
+usage counter labels are `input_tokens`, `output_tokens`,
+`cached_input_tokens`, `cache_write_tokens`, and `reasoning_output_tokens`. For
+Codex cumulative events, reasoning output is folded into model rollup output only
+after the provider-event lane has preserved it separately.
+
+Rebuild policy follows the fresh-first archive model. If usage events, source
+raw rows, or rollups disagree, move the stale index tier aside and rebuild
+`index.db` from `source.db`/raw archives. Do not patch a live archive manually to
+make usage totals line up.
+
 ## Basis Taxonomy
 
 A single estimate carries cost on five independent axes
