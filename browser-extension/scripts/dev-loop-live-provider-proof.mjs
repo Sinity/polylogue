@@ -38,7 +38,7 @@ const providerCatalog = {
     host: "claude.ai",
     url: process.env.POLYLOGUE_LIVE_PROOF_CLAUDE_URL || "https://claude.ai/",
     expectedProvider: "claude-ai",
-    expectedAdapters: ["claude-ai-dom-v1"],
+    expectedAdapters: ["claude-ai-native-v1", "claude-ai-dom-v1"],
   },
 };
 
