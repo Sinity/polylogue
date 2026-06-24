@@ -412,10 +412,13 @@ def test_browser_plan_writes_local_extension_launch_artifacts(
     assert Path(plan["screenshot_dir"]).is_dir()
     assert Path(plan["downloads_dir"]).is_dir()
     assert Path(plan["extension_root"]).name == "browser-extension"
-    chrome = plan["commands"]["chrome"]
-    assert chrome[0] == "google-chrome-stable"
-    assert f"--load-extension={plan['extension_root']}" in chrome
-    assert f"--user-data-dir={plan['profile_dir']}" in chrome
+    preferred = plan["commands"]["preferred"]
+    assert preferred[0] == "chromium"
+    assert "--enable-unsafe-extension-debugging" in preferred
+    assert f"--load-extension={plan['extension_root']}" in preferred
+    assert f"--user-data-dir={plan['profile_dir']}" in preferred
+    google_chrome = plan["commands"]["google_chrome"]
+    assert google_chrome[0] == "google-chrome-stable"
     live_proof = plan["live_provider_proof"]
     assert live_proof["providers"] == ["chatgpt", "claude"]
     assert live_proof["suggested_profile_dir"].endswith("-chrome-user-data")

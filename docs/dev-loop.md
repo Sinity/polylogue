@@ -494,8 +494,10 @@ The JSON and Markdown plans include:
 - the unpacked extension path (`browser-extension/`);
 - the branch-local receiver URL and whether a local receiver token is set;
 - the branch-local web-shell URL;
-- a `google-chrome-stable --user-data-dir=... --load-extension=...` command;
-- a `chromium` variant of the same command;
+- a preferred `chromium --user-data-dir=... --load-extension=...` command with
+  `--enable-unsafe-extension-debugging`;
+- a branded `google-chrome-stable` fallback command, for visible/manual use
+  when its unpacked-extension restrictions are acceptable;
 - supported real-page probe URLs for `chatgpt.com` and `claude.ai`;
 - screenshot/download artifact directories for the browser-control layer;
 - an operator-local copied-profile proof checklist and environment template.
