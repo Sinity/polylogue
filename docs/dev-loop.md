@@ -390,12 +390,13 @@ devtools workspace dev-loop --browser-smoke --json
 devtools workspace dev-loop --browser-plan --extension-smoke --browser-smoke --json
 ```
 
-This launches the first available Chrome-family binary from
-`google-chrome-stable`, `google-chrome`, `chromium`, and `chromium-browser` in
-headless mode with `--load-extension=browser-extension`, discovers the
-Polylogue MV3 service worker over Chrome DevTools Protocol, reads the extension
-manifest, starts a temporary branch-local receiver, then sends unauthenticated
-and authenticated receiver requests from the extension service-worker context.
+This launches the first usable Chrome-family binary, preferring
+Chromium/Chrome for Testing and then local Nix-store Chromium before falling
+back to branded Google Chrome, in headless mode with
+`--load-extension=browser-extension`, discovers the Polylogue MV3 service
+worker over Chrome DevTools Protocol, reads the extension manifest, starts a
+temporary branch-local receiver, then sends unauthenticated and authenticated
+receiver requests from the extension service-worker context.
 It writes
 `browser_smoke_requested` / `browser_smoke_finished` rows to
 `dev-loop.events.jsonl` plus:
@@ -436,15 +437,22 @@ artifacts. It appends `browser_provider_smoke_requested` /
 
 The provider smoke deliberately uses deterministic fixture pages and omits raw
 turn text from its summary. It closes the repo-owned real-browser
-content-script loop without using authenticated cookies or copied profiles. When
-manifest content-script delivery is unavailable in the headless fixture browser,
-the smoke uses the same `chrome.scripting.executeScript` retry path as the popup
-and records `injection_mode=scripted_retry`; `injection_mode=manifest` means the
-content script was already listening. Use `--browser-plan` for the
-visible/private browser handoff when screenshots, copied-profile cookies, or
-live provider pages are needed.
-If Chrome creates the fixture page target but the extension worker cannot see
-the tab, the result records both the CDP page target and the worker-visible tab
+content-script loop without using authenticated cookies or copied profiles.
+Automated unpacked-extension proof prefers Chromium or Chrome for Testing,
+including the local Nix-store Chromium when it is not on `PATH`, before falling
+back to branded Google Chrome. This is intentional: branded Chrome 137+ can
+expose a partial service-worker target for `--load-extension` while withholding
+content-script and extension page behavior that the smoke must prove. Set
+`POLYLOGUE_BROWSER_SMOKE_CHROME`, `POLYLOGUE_PROVIDER_SMOKE_CHROME`, or
+`POLYLOGUE_LIVE_PROOF_CHROME` to override the binary. When manifest
+content-script delivery is unavailable in the fixture browser, the smoke uses
+the same `chrome.scripting.executeScript` retry path as the popup and records
+`injection_mode=scripted_retry`; `injection_mode=manifest` means the content
+script was already listening. Use `--browser-plan` for the visible/private
+browser handoff when screenshots, copied-profile cookies, or live provider
+pages are needed.
+If Chrome creates the fixture page target but the extension cannot see the tab,
+the result records both the CDP page target and the extension-visible tab
 inventory so the failure points at browser/headless capability rather than an
 ambiguous content-script miss.
 

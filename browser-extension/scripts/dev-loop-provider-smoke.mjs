@@ -5,7 +5,7 @@
 // cookies or cloud browser state.
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
@@ -105,9 +105,41 @@ function serviceWorkerSuffix(manifest) {
   return `/${worker.replace(/^\/+/, "")}`;
 }
 
+function nixStoreChromiumCandidates() {
+  const storeRoot = "/nix/store";
+  if (!existsSync(storeRoot)) return [];
+  return readdirSync(storeRoot)
+    .map((entry) => {
+      const match = entry.match(/-chromium-(\d+(?:\.\d+)+)$/);
+      if (!match) return null;
+      const binary = path.join(storeRoot, entry, "bin", "chromium");
+      if (!existsSync(binary)) return null;
+      return {
+        binary,
+        version: match[1].split(".").map((part) => Number(part)),
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => {
+      const width = Math.max(left.version.length, right.version.length);
+      for (let index = 0; index < width; index += 1) {
+        const delta = (right.version[index] || 0) - (left.version[index] || 0);
+        if (delta !== 0) return delta;
+      }
+      return left.binary.localeCompare(right.binary);
+    })
+    .map((candidate) => candidate.binary);
+}
+
 function resolveChromeBinary() {
   if (process.env.POLYLOGUE_PROVIDER_SMOKE_CHROME) return process.env.POLYLOGUE_PROVIDER_SMOKE_CHROME;
-  for (const candidate of ["google-chrome-stable", "google-chrome", "chromium", "chromium-browser"]) {
+  const pathCandidates = ["chromium", "chromium-browser", "chrome-for-testing"];
+  for (const candidate of pathCandidates) {
+    const found = spawnSync("sh", ["-c", `command -v ${candidate}`], { encoding: "utf8" });
+    if (found.status === 0 && found.stdout.trim()) return candidate;
+  }
+  for (const candidate of nixStoreChromiumCandidates()) return candidate;
+  for (const candidate of ["google-chrome-stable", "google-chrome"]) {
     const found = spawnSync("sh", ["-c", `command -v ${candidate}`], { encoding: "utf8" });
     if (found.status === 0 && found.stdout.trim()) return candidate;
   }
@@ -299,12 +331,78 @@ async function waitForExtensionWorker(debuggingPort, expectedWorkerSuffix, expec
   );
 }
 
-async function openProviderTargetFromWorker(workerClient, debuggingPort, url) {
-  const createdTab = await evaluateJson(
+async function openExtensionController(workerClient, debuggingPort, extensionId) {
+  const controllerUrl = await evaluateJson(
+    workerClient,
+    `chrome.runtime.getURL("src/popup.html")`,
+  );
+  const created = await evaluateJson(
     workerClient,
     `(async () => {
       if (!globalThis.chrome?.tabs?.create) {
         throw new Error("extension service-worker CDP target does not expose chrome.tabs.create");
+      }
+      let tab;
+      try {
+        tab = await chrome.tabs.create({url: ${JSON.stringify(controllerUrl)}, active: false});
+      } catch (error) {
+        const message = String(error && error.message ? error.message : error);
+        if (!message.includes("No current window") || !globalThis.chrome?.windows?.create) {
+          throw error;
+        }
+        const createdWindow = await chrome.windows.create({url: ${JSON.stringify(controllerUrl)}, focused: false, type: "normal"});
+        tab = Array.isArray(createdWindow.tabs) && createdWindow.tabs.length ? createdWindow.tabs[0] : null;
+      }
+      if (!tab) throw new Error("extension API did not return a controller tab");
+      return {id: tab.id ?? null, url: tab.url ?? null, pendingUrl: tab.pendingUrl ?? null, title: tab.title ?? null};
+    })()`,
+  );
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const targets = await waitJson(`http://127.0.0.1:${debuggingPort}/json/list`, Math.min(2000, timeoutMs));
+    const target = targets.find((candidate) => candidate.url === controllerUrl);
+    if (target?.webSocketDebuggerUrl) {
+      const client = await connectCdp(target.webSocketDebuggerUrl);
+      await client.call("Runtime.enable");
+      await client.call("Page.enable");
+      await waitForReadyPage(client);
+      await waitForExtensionControllerApis(client);
+      return { target, client, tab: created };
+    }
+    await sleep(250);
+  }
+  throw new Error(`Polylogue extension controller page not found for ${controllerUrl}; tab=${JSON.stringify(created)}`);
+}
+
+async function waitForExtensionControllerApis(client) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    last = await evaluateJson(
+      client,
+      `(() => ({
+        href: location.href,
+        readyState: document.readyState,
+        hasChrome: Boolean(globalThis.chrome),
+        hasRuntime: Boolean(globalThis.chrome?.runtime),
+        hasTabsCreate: Boolean(globalThis.chrome?.tabs?.create),
+        hasTabsQuery: Boolean(globalThis.chrome?.tabs?.query),
+        hasStorageLocal: Boolean(globalThis.chrome?.storage?.local),
+        hasScripting: Boolean(globalThis.chrome?.scripting?.executeScript)
+      }))()`,
+    ).catch((error) => ({ error: String(error.message || error) }));
+    if (last?.hasTabsCreate && last?.hasTabsQuery && last?.hasStorageLocal && last?.hasScripting) return last;
+    await sleep(100);
+  }
+  throw new Error(`extension controller missing required APIs: ${JSON.stringify(last)}`);
+}
+
+async function openProviderTargetFromExtension(extensionClient, debuggingPort, url) {
+  const createdTab = await evaluateJson(
+    extensionClient,
+    `(async () => {
+      if (!globalThis.chrome?.tabs?.create) {
+        throw new Error("extension controller CDP target does not expose chrome.tabs.create");
       }
       let tab;
       try {
@@ -361,9 +459,9 @@ async function providerPageDiagnostics(client) {
   );
 }
 
-async function configureExtension(workerClient) {
+async function configureExtension(extensionClient) {
   return evaluateJson(
-    workerClient,
+    extensionClient,
     `(async () => {
       if (!globalThis.chrome?.storage?.local) {
         if (${JSON.stringify(receiverBaseUrl)} === "http://127.0.0.1:8765" && !${JSON.stringify(receiverAuthToken)}) {
@@ -374,7 +472,7 @@ async function configureExtension(workerClient) {
             caveat: "chrome.storage.local unavailable in service-worker CDP context; using extension defaults"
           };
         }
-        throw new Error("extension service-worker CDP target does not expose chrome.storage.local");
+        throw new Error("extension controller CDP target does not expose chrome.storage.local");
       }
       await chrome.storage.local.set({
         receiverBaseUrl: ${JSON.stringify(receiverBaseUrl)},
@@ -385,12 +483,12 @@ async function configureExtension(workerClient) {
   );
 }
 
-async function captureProvider(workerClient, providerConfig) {
+async function captureProvider(extensionClient, providerConfig) {
   return evaluateJson(
-    workerClient,
+    extensionClient,
     `(async () => {
       if (!globalThis.chrome?.tabs?.query) {
-        throw new Error("extension service-worker CDP target does not expose chrome.tabs");
+        throw new Error("extension controller CDP target does not expose chrome.tabs");
       }
       async function sendCapture(tabId) {
         try {
@@ -419,10 +517,11 @@ async function captureProvider(workerClient, providerConfig) {
         const tabs = await chrome.tabs.query({});
         const tabInventory = summarizeTabs(tabs);
         const expectedTabId = ${JSON.stringify(providerConfig.expectedTabId ?? null)};
+        const openedUrl = ${JSON.stringify(providerConfig.openedTab?.url || providerConfig.openedTab?.pendingUrl || null)};
         const tab = tabs.find((candidate) => typeof expectedTabId === "number" && candidate.id === expectedTabId)
           || tabs.find((candidate) => {
             try {
-              return new URL(candidate.url || "about:blank").hostname === ${JSON.stringify(providerConfig.host)};
+              return new URL(candidate.url || candidate.pendingUrl || openedUrl || "about:blank").hostname === ${JSON.stringify(providerConfig.host)};
             } catch (_error) {
               return false;
             }
@@ -517,6 +616,7 @@ async function main() {
     `--remote-debugging-port=${debuggingPort}`,
     "--no-sandbox",
     "--disable-features=ExtensionsMenuAccessControl",
+    "--enable-unsafe-extension-debugging",
     "--ignore-certificate-errors",
     "--allow-insecure-localhost",
     `--proxy-server=http://127.0.0.1:${proxyServer.port}`,
@@ -539,6 +639,7 @@ async function main() {
 
   let workerClient = null;
   let browserClient = null;
+  let extensionControllerClient = null;
   const pageClients = [];
   try {
     const browserVersion = await waitJson(`http://127.0.0.1:${debuggingPort}/json/version`);
@@ -564,10 +665,20 @@ async function main() {
     const { worker, client } = await waitForExtensionWorker(debuggingPort, expectedWorkerSuffix, localManifest.name);
     workerClient = client;
     const extensionId = new URL(worker.url).host;
-    const configuredReceiver = await configureExtension(workerClient);
+    const { target: extensionController, client: controllerClient, tab: extensionControllerTab } = await openExtensionController(
+      workerClient,
+      debuggingPort,
+      extensionId,
+    );
+    extensionControllerClient = controllerClient;
+    const configuredReceiver = await configureExtension(extensionControllerClient);
 
     for (const config of providerConfigs) {
-      const { client, target, tab } = await openProviderTargetFromWorker(workerClient, debuggingPort, config.url);
+      const { client, target, tab } = await openProviderTargetFromExtension(
+        extensionControllerClient,
+        debuggingPort,
+        config.url,
+      );
       config.pageTarget = {
         id: target.id || null,
         type: target.type || null,
@@ -583,7 +694,7 @@ async function main() {
 
     const providers = {};
     for (const config of providerConfigs) {
-      const capturePayload = await captureProvider(workerClient, config);
+      const capturePayload = await captureProvider(extensionControllerClient, config);
       providers[config.key] = safeProviderSummary(config, capturePayload);
     }
 
@@ -615,6 +726,13 @@ async function main() {
       },
       spool_dir: spoolDir || null,
       service_worker_url: worker.url,
+      extension_controller: {
+        id: extensionController.id || null,
+        type: extensionController.type || null,
+        url: extensionController.url || null,
+        title: extensionController.title || null,
+        tab: extensionControllerTab || null,
+      },
       providers,
     };
     if (outputPath) writeFileSync(outputPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
@@ -622,6 +740,7 @@ async function main() {
     if (!summary.ok) process.exitCode = 1;
   } finally {
     for (const client of pageClients) client.close();
+    if (extensionControllerClient) extensionControllerClient.close();
     if (workerClient) workerClient.close();
     if (browserClient) browserClient.close();
     await terminateProcess(chrome);

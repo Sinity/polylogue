@@ -4,7 +4,7 @@
 // service-worker origin. This intentionally has no npm dependencies.
 
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -123,9 +123,40 @@ function serviceWorkerSuffix(manifest) {
   return `/${worker.replace(/^\/+/, "")}`;
 }
 
+function nixStoreChromiumCandidates() {
+  const storeRoot = "/nix/store";
+  if (!existsSync(storeRoot)) return [];
+  return readdirSync(storeRoot)
+    .map((entry) => {
+      const match = entry.match(/-chromium-(\d+(?:\.\d+)+)$/);
+      if (!match) return null;
+      const binary = path.join(storeRoot, entry, "bin", "chromium");
+      if (!existsSync(binary)) return null;
+      return {
+        binary,
+        version: match[1].split(".").map((part) => Number(part)),
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => {
+      const width = Math.max(left.version.length, right.version.length);
+      for (let index = 0; index < width; index += 1) {
+        const delta = (right.version[index] || 0) - (left.version[index] || 0);
+        if (delta !== 0) return delta;
+      }
+      return left.binary.localeCompare(right.binary);
+    })
+    .map((candidate) => candidate.binary);
+}
+
 function resolveChromeBinary() {
   if (process.env.POLYLOGUE_BROWSER_SMOKE_CHROME) return process.env.POLYLOGUE_BROWSER_SMOKE_CHROME;
-  for (const candidate of ["google-chrome-stable", "google-chrome", "chromium", "chromium-browser"]) {
+  for (const candidate of ["chromium", "chromium-browser", "chrome-for-testing"]) {
+    const found = spawnSync("sh", ["-c", `command -v ${candidate}`], { encoding: "utf8" });
+    if (found.status === 0 && found.stdout.trim()) return candidate;
+  }
+  for (const candidate of nixStoreChromiumCandidates()) return candidate;
+  for (const candidate of ["google-chrome-stable", "google-chrome"]) {
     const found = spawnSync("sh", ["-c", `command -v ${candidate}`], { encoding: "utf8" });
     if (found.status === 0 && found.stdout.trim()) return candidate;
   }
@@ -181,6 +212,7 @@ async function main() {
     `--remote-debugging-port=${debuggingPort}`,
     "--headless=new",
     "--no-sandbox",
+    "--enable-unsafe-extension-debugging",
     `--disable-extensions-except=${extensionRoot}`,
     `--load-extension=${extensionRoot}`,
     "about:blank",
