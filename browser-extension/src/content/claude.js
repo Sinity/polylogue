@@ -2,72 +2,26 @@
   const domAdapterName = "claude-ai-dom-v1";
   const nativeAdapterName = "claude-ai-native-v1";
   const nativeCaptureMessage = "polylogue.claude.nativeCapture";
+  const nativeFetchRequestMessage = "polylogue.claude.nativeFetchRequest";
+  const nativeFetchResponseMessage = "polylogue.claude.nativeFetchResponse";
   const nativeCaptures = [];
+  const nativeFetchResponses = new Map();
+  const nativeAttemptDiagnostics = [];
+
+  function rememberNativeAttempt(diagnostic) {
+    nativeAttemptDiagnostics.push({
+      attempted_at: new Date().toISOString(),
+      ...diagnostic
+    });
+    if (nativeAttemptDiagnostics.length > 6) {
+      nativeAttemptDiagnostics.splice(0, nativeAttemptDiagnostics.length - 6);
+    }
+  }
 
   function conversationIdFromUrl(url = window.location.href) {
     const parsed = new URL(url);
     const parts = parsed.pathname.split("/").filter(Boolean);
     return parts[0] === "chat" && parts[1] ? parts[1] : null;
-  }
-
-  function injectNativeCaptureBridge() {
-    const root = document.documentElement || document.head || document.body;
-    if (!root) {
-      window.setTimeout(injectNativeCaptureBridge, 0);
-      return;
-    }
-    const script = document.createElement("script");
-    script.textContent = `(() => {
-      const messageType = ${JSON.stringify(nativeCaptureMessage)};
-      const currentOrigin = window.location.origin;
-      window.__polylogueClaudeCapturedFetches = Array.isArray(window.__polylogueClaudeCapturedFetches)
-        ? window.__polylogueClaudeCapturedFetches
-        : [];
-      function post(capture) {
-        window.postMessage({ type: messageType, capture }, currentOrigin);
-      }
-      function remember(capture) {
-        window.__polylogueClaudeCapturedFetches.push(capture);
-        if (window.__polylogueClaudeCapturedFetches.length > 8) {
-          window.__polylogueClaudeCapturedFetches.splice(0, window.__polylogueClaudeCapturedFetches.length - 8);
-        }
-        post(capture);
-      }
-      const existingCaptures = window.__polylogueClaudeCapturedFetches.slice(-8);
-      window.__polylogueClaudeCapturedFetches = existingCaptures;
-      for (const capture of existingCaptures) post(capture);
-      if (window.__polylogueClaudeFetchHookInstalled) return;
-      window.__polylogueClaudeFetchHookInstalled = true;
-      const originalFetch = window.fetch;
-      window.fetch = async function polylogueClaudeFetch(input) {
-        const response = await originalFetch.apply(this, arguments);
-        try {
-          const url = typeof input === "string" ? input : input && input.url;
-          const absolute = new URL(url, window.location.href);
-          const isConversation = absolute.origin === currentOrigin
-            && /\\/api\\/organizations\\/[^/?#]+\\/chat_conversations\\/[^/?#]+/.test(absolute.pathname);
-          const contentType = response.headers.get("content-type") || "";
-          if (isConversation && contentType.includes("application/json")) {
-            const body = await response.clone().text();
-            if (body.includes('"chat_messages"')) {
-              remember({
-                url: absolute.href,
-                status: response.status,
-                ok: response.ok,
-                contentType,
-                body,
-                capturedAt: new Date().toISOString()
-              });
-            }
-          }
-        } catch (_error) {
-          // Capture must never perturb the Claude.ai page's own request path.
-        }
-        return response;
-      };
-    })();`;
-    root.appendChild(script);
-    script.remove();
   }
 
   window.addEventListener("message", (event) => {
@@ -78,7 +32,15 @@
     if (nativeCaptures.length > 8) nativeCaptures.splice(0, nativeCaptures.length - 8);
   });
 
-  injectNativeCaptureBridge();
+  window.addEventListener("message", (event) => {
+    if (event.source !== window || event.origin !== window.location.origin) return;
+    const data = event.data || {};
+    if (data.type !== nativeFetchResponseMessage || !data.requestId) return;
+    const pending = nativeFetchResponses.get(data.requestId);
+    if (!pending) return;
+    nativeFetchResponses.delete(data.requestId);
+    pending.resolve({ capture: data.capture || null, error: data.error || null });
+  });
 
   function roleFromNode(node, index) {
     const role = node.getAttribute("data-message-author-role") || node.getAttribute("data-testid") || "";
@@ -171,6 +133,49 @@
     return null;
   }
 
+  async function requestNativeCaptureFromPage(conversationId) {
+    const requestId = `polylogue-claude-native-fetch-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const responsePromise = new Promise((resolve) => {
+      const timeout = window.setTimeout(() => {
+        nativeFetchResponses.delete(requestId);
+        resolve({ capture: null, error: "timeout" });
+      }, 10000);
+      nativeFetchResponses.set(requestId, {
+        resolve(value) {
+          window.clearTimeout(timeout);
+          resolve(value);
+        }
+      });
+    });
+    window.postMessage(
+      {
+        type: nativeFetchRequestMessage,
+        requestId,
+        conversationId
+      },
+      window.location.origin
+    );
+    return responsePromise;
+  }
+
+  async function fetchNativePayloadOnDemand() {
+    const conversationId = conversationIdFromUrl();
+    if (!conversationId) return null;
+    const pageResult = await requestNativeCaptureFromPage(conversationId);
+    const pageCapture = pageResult && pageResult.capture;
+    const pagePayload = parseNativeCapture(pageCapture);
+    rememberNativeAttempt({
+      stage: "page_bridge_fetch",
+      ok: pageCapture?.ok ?? null,
+      status: pageCapture?.status ?? null,
+      content_type: pageCapture?.contentType || null,
+      body_bytes: typeof pageCapture?.body === "string" ? pageCapture.body.length : 0,
+      accepted: Boolean(pagePayload),
+      error: pageResult?.error || pageCapture?.error || null
+    });
+    return pagePayload;
+  }
+
   function modelFromNativePayload(payload) {
     const messages = payload && payload.chat_messages;
     if (!Array.isArray(messages)) return null;
@@ -201,7 +206,7 @@
   }
 
   async function capture() {
-    const nativePayload = latestNativePayload();
+    const nativePayload = latestNativePayload() || (await fetchNativePayloadOnDemand());
     const envelope = nativePayload ? buildNativeEnvelope(nativePayload) : null;
     const fallbackEnvelope = () => {
       const turns = collectTurns();
@@ -209,7 +214,10 @@
       return window.polylogueCapture.buildEnvelope({
         provider: "claude-ai",
         adapterName: domAdapterName,
-        turns
+        turns,
+        providerMeta: {
+          native_attempts: nativeAttemptDiagnostics.slice(-6)
+        }
       });
     };
     const finalEnvelope = envelope || fallbackEnvelope();

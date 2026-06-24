@@ -26,6 +26,72 @@ function roleFromNode(node, index) {
   return index % 2 === 0 ? "user" : "assistant";
 }
 
+function fnv1a(text) {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function visibleText(node) {
+  return (node?.innerText || node?.textContent || "").replace(/\s+\n/g, "\n").trim();
+}
+
+function attachmentNameFromNode(node) {
+  const label = node.getAttribute("aria-label") || "";
+  const download = node.getAttribute("download") || "";
+  const alt = node.getAttribute("alt") || "";
+  const text = visibleText(node);
+  const href = node.getAttribute("href") || node.getAttribute("src") || "";
+  const basename = href.split(/[/?#]/).filter(Boolean).at(-1) || "";
+  const candidates = [label, download, alt, text, basename]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  const extensionPattern =
+    "zip|tar|tgz|gz|bz2|xz|7z|rar|md|txt|pdf|doc|docx|json|jsonl|csv|tsv|py|js|ts|tsx|jsx|rs|go|java|c|cc|cpp|h|hpp|png|jpe?g|gif|webp|svg|mp3|mp4|wav|webm";
+  const filePattern = new RegExp(`(?:^|\\s)([^\\s@/]+\\.(?:${extensionPattern}))(?:\\s|$)`, "i");
+  for (const candidate of candidates) {
+    const fileNameMatch = candidate.match(filePattern);
+    if (fileNameMatch) return fileNameMatch[1].trim();
+  }
+  return null;
+}
+
+function collectAttachments(node, turnIndex) {
+  const selector = [
+    '[role="group"][aria-label]',
+    "a[download]",
+    "a[href][aria-label]",
+    "img[alt]",
+    "img[src]",
+  ].join(",");
+  const seen = new Set();
+  const attachments = [];
+  for (const candidate of node.querySelectorAll(selector)) {
+    const name = attachmentNameFromNode(candidate);
+    if (!name) continue;
+    const rawHref = candidate.getAttribute("href") || candidate.getAttribute("src") || null;
+    const url = rawHref && /^https?:\/\//i.test(rawHref) ? rawHref : null;
+    const key = `${name}\n${url || ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    attachments.push({
+      provider_attachment_id: `dom:${fnv1a(`${turnIndex}:${key}`)}`,
+      name,
+      url,
+      provider_meta: {
+        dom_selector_index: turnIndex,
+        dom_label: candidate.getAttribute("aria-label") || null,
+        dom_text: visibleText(candidate) || null,
+        capture_source: "chatgpt_dom_attachment",
+      },
+    });
+  }
+  return attachments;
+}
+
 function conversationIdFromUrl(url) {
   const parsed = new URL(url);
   const parts = parsed.pathname.split("/").filter(Boolean);
@@ -212,6 +278,47 @@ describe("chatgpt conversationIdFromUrl", () => {
 
   it("returns null outside conversation routes", () => {
     expect(conversationIdFromUrl("https://chatgpt.com/g/g-p-abc")).toBe(null);
+  });
+});
+
+describe("chatgpt collectAttachments", () => {
+  it("captures ChatGPT file tiles by aria-label", () => {
+    const dom = new JSDOM(
+      '<!DOCTYPE html><article><div role="group" aria-label="polylogue-all.tar.gz"><span>polylogue-all.tar.gz</span></div></article>',
+    );
+    const article = dom.window.document.querySelector("article");
+
+    expect(collectAttachments(article, 3)).toEqual([
+      {
+        provider_attachment_id: `dom:${fnv1a("3:polylogue-all.tar.gz\n")}`,
+        name: "polylogue-all.tar.gz",
+        url: null,
+        provider_meta: {
+          dom_selector_index: 3,
+          dom_label: "polylogue-all.tar.gz",
+          dom_text: "polylogue-all.tar.gz",
+          capture_source: "chatgpt_dom_attachment",
+        },
+      },
+    ]);
+  });
+
+  it("deduplicates repeated labels within a turn", () => {
+    const dom = new JSDOM(
+      '<!DOCTYPE html><article><div role="group" aria-label="career.md"></div><div role="group" aria-label="career.md"></div></article>',
+    );
+    const article = dom.window.document.querySelector("article");
+
+    expect(collectAttachments(article, 0)).toHaveLength(1);
+  });
+
+  it("does not treat domains, emails, or version prose as file uploads", () => {
+    const dom = new JSDOM(
+      '<!DOCTYPE html><article><a aria-label="dbreunig.com" href="https://dbreunig.com">dbreunig.com</a><a aria-label="recruiting@nousresearch.com" href="mailto:recruiting@nousresearch.com">recruiting@nousresearch.com</a><div role="group" aria-label="After Opus 4.5">After Opus 4.5</div></article>',
+    );
+    const article = dom.window.document.querySelector("article");
+
+    expect(collectAttachments(article, 0)).toEqual([]);
   });
 });
 

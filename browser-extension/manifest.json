@@ -31,6 +31,12 @@
     },
     {
       "matches": ["https://claude.ai/*"],
+      "js": ["src/content/claude_bridge.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://claude.ai/*"],
       "js": ["src/common.js", "src/content/claude.js"],
       "run_at": "document_idle"
     }

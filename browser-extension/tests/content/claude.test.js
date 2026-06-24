@@ -32,6 +32,71 @@ function conversationIdFromUrl(url) {
   return parts[0] === "chat" && parts[1] ? parts[1] : null;
 }
 
+function organizationIdFromStorageKeys(keys) {
+  const uuidPattern =
+    "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+  const patterns = [
+    new RegExp(`^claude-mcp-has-connectors:(${uuidPattern})$`, "i"),
+    new RegExp(`^LSS-model-selector-thinking:(${uuidPattern}):`, "i"),
+  ];
+  for (const key of keys) {
+    for (const pattern of patterns) {
+      const match = key.match(pattern);
+      if (match) return match[1];
+    }
+  }
+  return null;
+}
+
+function conversationApiUrlFromResources(
+  conversationId,
+  urls,
+  origin = "https://claude.ai",
+  storageKeys = [],
+) {
+  const escapedId = String(conversationId);
+  const observed = urls.find((url) => {
+    try {
+      const parsed = new URL(url, origin);
+      return (
+        parsed.origin === origin &&
+        parsed.pathname.includes(`/chat_conversations/${escapedId}`) &&
+        /\/api\/organizations\/[^/]+\/chat_conversations\/[^/]+/.test(
+          parsed.pathname,
+        )
+      );
+    } catch {
+      return false;
+    }
+  });
+  if (observed) return observed;
+
+  for (const url of urls) {
+    try {
+      const parsed = new URL(url, origin);
+      const match = parsed.pathname.match(
+        /\/api\/bootstrap\/([^/]+)\/current_user_access/,
+      );
+      if (parsed.origin === origin && match) {
+        return new URL(
+          `/api/organizations/${encodeURIComponent(match[1])}/chat_conversations/${encodeURIComponent(escapedId)}?tree=True&rendering_mode=messages&render_all_tools=true&consistency=strong`,
+          origin,
+        ).href;
+      }
+    } catch {
+      // Ignore malformed resource entries.
+    }
+  }
+  const localStorageOrgId = organizationIdFromStorageKeys(storageKeys);
+  if (localStorageOrgId) {
+    return new URL(
+      `/api/organizations/${encodeURIComponent(localStorageOrgId)}/chat_conversations/${encodeURIComponent(escapedId)}?tree=True&rendering_mode=messages&render_all_tools=true&consistency=strong`,
+      origin,
+    ).href;
+  }
+  return null;
+}
+
 function textFromMessage(message) {
   if (!message || typeof message !== "object") return "";
   if (typeof message.text === "string" && message.text) return message.text;
@@ -314,5 +379,54 @@ describe("claude native capture helpers", () => {
   it("keeps unknown native roles explicit", () => {
     expect(roleFromNativeMessage({ sender: "system" })).toBe("system");
     expect(roleFromNativeMessage({ sender: "unexpected" })).toBe("unknown");
+  });
+});
+
+describe("claude conversationApiUrlFromResources", () => {
+  it("prefers the observed full chat_conversations resource URL", () => {
+    const observed =
+      "https://claude.ai/api/organizations/org-1/chat_conversations/conv-123?tree=True&rendering_mode=messages";
+    expect(
+      conversationApiUrlFromResources("conv-123", [
+        "https://claude.ai/api/bootstrap/org-2/current_user_access",
+        observed,
+      ]),
+    ).toBe(observed);
+  });
+
+  it("derives the conversation URL from the bootstrap organization when needed", () => {
+    expect(
+      conversationApiUrlFromResources("conv-123", [
+        "https://claude.ai/api/bootstrap/org-1/current_user_access",
+      ]),
+    ).toBe(
+      "https://claude.ai/api/organizations/org-1/chat_conversations/conv-123?tree=True&rendering_mode=messages&render_all_tools=true&consistency=strong",
+    );
+  });
+
+  it("ignores other origins and malformed resource entries", () => {
+    expect(
+      conversationApiUrlFromResources("conv-123", [
+        "not a url at all",
+        "https://example.com/api/bootstrap/org-1/current_user_access",
+        "https://example.com/api/organizations/org-1/chat_conversations/conv-123",
+      ]),
+    ).toBe(null);
+  });
+
+  it("derives the organization from stable Claude localStorage keys", () => {
+    const orgId = "d83be663-5e28-4dfc-8a54-1c34bdbb8c44";
+    expect(
+      conversationApiUrlFromResources("conv-123", [], "https://claude.ai", [
+        `claude-mcp-has-connectors:${orgId}`,
+      ]),
+    ).toBe(
+      `https://claude.ai/api/organizations/${orgId}/chat_conversations/conv-123?tree=True&rendering_mode=messages&render_all_tools=true&consistency=strong`,
+    );
+    expect(
+      organizationIdFromStorageKeys([
+        `LSS-model-selector-thinking:${orgId}:chat:claude-opus-4-8`,
+      ]),
+    ).toBe(orgId);
   });
 });

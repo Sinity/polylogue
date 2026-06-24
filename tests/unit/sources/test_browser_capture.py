@@ -215,6 +215,27 @@ def test_browser_capture_raw_chatgpt_without_id_uses_envelope_session_id() -> No
     assert [message.provider_message_id for message in session.messages] == ["native-u1", "native-a1"]
 
 
+def test_browser_capture_non_native_raw_payload_keeps_envelope_turns() -> None:
+    payload = _capture_payload()
+    session_payload = payload["session"]
+    assert isinstance(session_payload, dict)
+    session_payload["provider_session_id"] = "temporary:abc123"
+    payload["raw_provider_payload"] = {
+        "dom_transcript": {
+            "turn_count": 2,
+            "note": "preservation metadata, not a ChatGPT native mapping payload",
+        }
+    }
+
+    parsed = parse_payload(Provider.CHATGPT, payload, "file-fallback")
+
+    assert len(parsed) == 1
+    session = parsed[0]
+    assert session.provider_session_id == "temporary:abc123"
+    assert [message.provider_message_id for message in session.messages] == ["u1", "a1"]
+    assert [message.text for message in session.messages] == ["Draft the plan", "Here is the plan"]
+
+
 def test_browser_capture_raw_chatgpt_normalizes_legacy_synthetic_fallback_id() -> None:
     payload = _capture_payload()
     session = payload["session"]
