@@ -821,6 +821,13 @@ def delete_verb(ctx: click.Context, dry_run: bool, yes_flag: bool, all_flag: boo
 @click.option("--note", "note_text", default=None, metavar="TEXT", help="Add or update a note annotation")
 @click.option("--all", "apply_all", is_flag=True, help="Apply to all matched sessions (default: singleton only)")
 @click.option("--first", "first_only", is_flag=True, help="Apply to the first matched session only")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["json"]),
+    default=None,
+    help="Output format. JSON emits a MutationResultPayload.",
+)
 @click.pass_context
 def mark_verb(
     ctx: click.Context,
@@ -835,6 +842,7 @@ def mark_verb(
     note_text: str | None,
     apply_all: bool,
     first_only: bool,
+    output_format: str | None,
 ) -> None:
     """Mark query-result sessions with tags, notes, or durable marks.
 
@@ -882,6 +890,7 @@ def mark_verb(
         note=note_text is not None,
         all=apply_all,
         first=first_only,
+        format=output_format or "default",
     ):
         return
 
@@ -941,7 +950,19 @@ def mark_verb(
         ops.append("archive-mark removed")
     if note_text is not None:
         ops.append("noted")
-    if ops:
+    if output_format == "json":
+        from polylogue.surfaces.payloads import MutationResultPayload
+
+        click.echo(
+            MutationResultPayload(
+                status="ok",
+                operation="mutate",
+                session_count=count,
+                affected_count=count if ops else 0,
+                session_ids=tuple(target_ids),
+            ).to_json(exclude_none=True)
+        )
+    elif ops:
         click.echo(f"Marked {count} session(s): {'; '.join(ops)}")
     else:
         click.echo("No mark operations specified.")

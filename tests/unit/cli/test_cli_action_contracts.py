@@ -405,6 +405,40 @@ def test_mark_contract_guard_allows_first_for_multi_match(workspace_env: dict[st
     run_coroutine_sync.assert_called_once()
 
 
+def test_mark_contract_json_payload_matches_mutation_schema(workspace_env: dict[str, Path]) -> None:
+    """The mark action exposes the mutation envelope promised by its contract."""
+    import jsonschema
+
+    mark = ACTION_CONTRACT_BY_PATH[("mark",)]
+    assert "json" in mark.formats
+    assert mark.machine_envelope == "mutation"
+    schema = _load_cli_output_schema("mutation-result")
+
+    def _close_coroutine(coro: object) -> None:
+        close = getattr(coro, "close", None)
+        if callable(close):
+            close()
+
+    runner = CliRunner()
+    with (
+        patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=["session-1"]),
+        patch("polylogue.api.sync.bridge.run_coroutine_sync", side_effect=_close_coroutine),
+    ):
+        result = runner.invoke(
+            cli,
+            ["find", "needle", "then", "mark", "--tag-add", "reviewed", "--format", "json"],
+        )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    jsonschema.validate(instance=payload, schema=schema)
+    assert payload["status"] == "ok"
+    assert payload["operation"] == "mutate"
+    assert payload["session_count"] == 1
+    assert payload["affected_count"] == 1
+    assert payload["session_ids"] == ["session-1"]
+
+
 def test_explicit_mark_candidates_terms_remain_query_text() -> None:
     """`find mark candidates` searches those words instead of dispatching `mark candidates`."""
     click_args, query_terms, has_subcommand, explicit_query = _split_query_mode_args(
