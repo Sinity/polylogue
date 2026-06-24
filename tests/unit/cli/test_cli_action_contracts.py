@@ -190,6 +190,7 @@ def test_action_contracts_emit_shared_affordance_payloads() -> None:
     delete = by_id["delete"]
     assert delete.safety.safety_level == "destructive"
     assert delete.safety.confirmation_command == "polylogue find QUERY then delete --dry-run"
+    assert delete.output.format_support == ("human", "json")
     assert "dry_run_or_yes_required" in delete.execution.guards
 
 

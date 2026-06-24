@@ -376,15 +376,17 @@ Usage: polylogue delete [OPTIONS]
 
   Examples:
       polylogue find id:abc then delete --dry-run
+      polylogue find id:abc then delete --dry-run --format json
       polylogue find id:abc then delete --yes
       polylogue find 'repo:polylogue since:7d' then delete --dry-run --all
       polylogue find 'repo:polylogue since:7d' then delete --yes --all
 
 Options:
-  --dry-run  Preview what would be deleted without deleting
-  --yes      Confirm the deletion (required for actual deletion)
-  --all      Delete all matched sessions (required when multiple match)
-  --help     Show this message and exit.
+  --dry-run        Preview what would be deleted without deleting
+  --yes            Confirm the deletion (required for actual deletion)
+  --all            Delete all matched sessions (required when multiple match)
+  --format [json]  Output format. JSON emits a MutationResultPayload.
+  --help           Show this message and exit.
 ```
 
 ## Mark Verb
@@ -737,7 +739,7 @@ It records the public action floor, not every utility command in the Click tree.
 | `polylogue select` | `read` | `selection` | `query_result_set` | `singleton` | `safe` | `human`, `json` | `terminal`, `stdout`, `api`, `mcp` | - | - | `item` | - | `read`, `continue`, `analyze`, `mark`, `delete` | `session_id` |
 | `polylogue mark` | `write` | `selection` | `query_result_set` | `explicit_multi` | `mutating` | `human`, `json` | `terminal`, `stdout`, `api`, `mcp` | - | `polylogue find QUERY then select` | `mutation` | `single_match_unless_all_or_first` | `read`, `analyze` | `session_id` |
 | `polylogue analyze` | `read` | `selection` | `query_result_set` | `any` | `safe` | `human`, `json`, `ndjson` | `terminal`, `stdout`, `file`, `api`, `mcp` | - | - | `result_set` | - | `select`, `read` | `query_expression` |
-| `polylogue delete` | `destructive` | `selection` | `query_result_set` | `destructive_multi` | `destructive` | `human` | `terminal`, `stdout`, `api`, `mcp` | `polylogue find QUERY then delete --dry-run` | `polylogue find QUERY then select` | `mutation` | `dry_run_or_yes_required`, `single_match_unless_all` | `find` | `session_id` |
+| `polylogue delete` | `destructive` | `selection` | `query_result_set` | `destructive_multi` | `destructive` | `human`, `json` | `terminal`, `stdout`, `api`, `mcp` | `polylogue find QUERY then delete --dry-run` | `polylogue find QUERY then select` | `mutation` | `dry_run_or_yes_required`, `single_match_unless_all` | `find` | `session_id` |
 | `polylogue import` | `import` | `path` | `path` | `singleton` | `mutating` | `human` | `terminal`, `stdout`, `api` | - | - | `mutation` | `path_exists_or_demo`, `daemon_accepts_schedule` | `ops`, `read`, `analyze` | `filesystem_path` |
 | `polylogue config` | `config` | `config` | `config` | `any` | `operational` | `human`, `json` | `terminal`, `stdout` | - | - | `item` | `secret_values_redacted` | `ops` | `config_key` |
 | `polylogue ops` | `ops` | `runtime` | `runtime` | `any` | `operational` | `human` | `terminal`, `stdout`, `api` | - | - | `item` | - | `find`, `read` | - |

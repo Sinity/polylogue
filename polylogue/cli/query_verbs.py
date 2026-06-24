@@ -803,8 +803,21 @@ def continue_verb(
 @click.option("--dry-run", is_flag=True, help="Preview what would be deleted without deleting")
 @click.option("--yes", "yes_flag", is_flag=True, help="Confirm the deletion (required for actual deletion)")
 @click.option("--all", "all_flag", is_flag=True, help="Delete all matched sessions (required when multiple match)")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["json"]),
+    default=None,
+    help="Output format. JSON emits a MutationResultPayload.",
+)
 @click.pass_context
-def delete_verb(ctx: click.Context, dry_run: bool, yes_flag: bool, all_flag: bool) -> None:
+def delete_verb(
+    ctx: click.Context,
+    dry_run: bool,
+    yes_flag: bool,
+    all_flag: bool,
+    output_format: str | None,
+) -> None:
     """Delete matched sessions.
 
     \b
@@ -816,6 +829,7 @@ def delete_verb(ctx: click.Context, dry_run: bool, yes_flag: bool, all_flag: boo
     \b
     Examples:
         polylogue find id:abc then delete --dry-run
+        polylogue find id:abc then delete --dry-run --format json
         polylogue find id:abc then delete --yes
         polylogue find 'repo:polylogue since:7d' then delete --dry-run --all
         polylogue find 'repo:polylogue since:7d' then delete --yes --all
@@ -835,6 +849,7 @@ def delete_verb(ctx: click.Context, dry_run: bool, yes_flag: bool, all_flag: boo
         dry_run=dry_run,
         yes=yes_flag,
         all=all_flag,
+        format=output_format or request.params.get("output_format") or "default",
     ):
         return
 
