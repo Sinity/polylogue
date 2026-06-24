@@ -391,27 +391,45 @@ class TestDeleteVerbCardinality:
         cb = self._delete_callback()
         cb(child, dry_run, yes_flag, all_flag)  # type: ignore[operator]
 
-    def test_dry_run_skips_cardinality_check(self) -> None:
+    def test_dry_run_probes_before_resolving_ids(self) -> None:
         _, child = _context_pair()
         child.obj = SimpleNamespace(config=MagicMock())
 
         with (
             patch(
+                "polylogue.cli.verb_cardinality.probe_session_ids_for_verb",
+                return_value=["id1"],
+            ) as mock_probe,
+            patch(
                 "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
-                return_value=["id1", "id2", "id3"],
+                return_value=["id1"],
             ),
             patch("polylogue.cli.verb_cardinality.check_cardinality") as mock_card,
             patch("polylogue.cli.archive_query.execute_delete_by_session_ids") as mock_exec,
         ):
             self._call_delete(child, dry_run=True)
 
-        # The cardinality guard must NOT run for a dry-run (it is a preview, not a
-        # destructive action), but the preview must still go through the real
-        # full-set delete path.
+        mock_probe.assert_called_once()
+        assert mock_probe.call_args.kwargs == {"limit": 2}
         mock_card.assert_not_called()
         mock_exec.assert_called_once()
 
-    def test_dry_run_previews_full_resolved_set_not_truncated_query(self) -> None:
+    def test_multi_match_dry_run_requires_all_before_resolving_ids(self) -> None:
+        _, child = _context_pair()
+        child.obj = SimpleNamespace(config=MagicMock())
+
+        with (
+            patch("polylogue.cli.verb_cardinality.probe_session_ids_for_verb", return_value=["id1", "id2"]),
+            patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb") as mock_resolve,
+            patch("polylogue.cli.archive_query.execute_delete_by_session_ids") as mock_exec,
+            pytest.raises(click.UsageError, match="Use --all to preview every matched session"),
+        ):
+            self._call_delete(child, dry_run=True)
+
+        mock_resolve.assert_not_called()
+        mock_exec.assert_not_called()
+
+    def test_dry_run_all_previews_full_resolved_set_not_truncated_query(self) -> None:
         """Dry-run previews the full pre-resolved ID set.
 
         Regression for the #1873 truncation: dry-run must NOT re-run the query
@@ -425,6 +443,7 @@ class TestDeleteVerbCardinality:
 
         resolved = [f"id{i}" for i in range(60)]
         with (
+            patch("polylogue.cli.verb_cardinality.probe_session_ids_for_verb", return_value=resolved[:2]),
             patch(
                 "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
                 return_value=resolved,
@@ -432,7 +451,7 @@ class TestDeleteVerbCardinality:
             patch("polylogue.cli.query_verbs._execute_query_verb") as mock_query,
             patch("polylogue.cli.archive_query.execute_delete_by_session_ids") as mock_exec,
         ):
-            self._call_delete(child, dry_run=True)
+            self._call_delete(child, dry_run=True, all_flag=True)
 
         mock_query.assert_not_called()
         args, kwargs = mock_exec.call_args
@@ -833,7 +852,10 @@ class TestDeleteCardinalityLargeNonMocked:
 
         # 2. Dry-run preview set: must equal the guard set (the #1873 bug previewed
         #    only the first page while --yes --all deleted everything).
-        preview = self._invoke_delete(env, dry_run=True, yes_flag=False, all_flag=False)
+        with pytest.raises(click.UsageError, match="Use --all to preview every matched session"):
+            self._invoke_delete(env, dry_run=True, yes_flag=False, all_flag=False)
+
+        preview = self._invoke_delete(env, dry_run=True, yes_flag=False, all_flag=True)
         assert preview["status"] == "preview"
         assert preview["session_count"] == self.COUNT
         assert preview["affected_count"] == 0

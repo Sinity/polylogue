@@ -766,10 +766,15 @@ def delete_verb(ctx: click.Context, dry_run: bool, yes_flag: bool, all_flag: boo
     Examples:
         polylogue find id:abc then delete --dry-run
         polylogue find id:abc then delete --yes
-        polylogue find 'repo:polylogue since:7d' then delete --dry-run
+        polylogue find 'repo:polylogue since:7d' then delete --dry-run --all
         polylogue find 'repo:polylogue since:7d' then delete --yes --all
     """
-    from polylogue.cli.verb_cardinality import CardinalityError, check_cardinality, resolve_session_ids_for_verb
+    from polylogue.cli.verb_cardinality import (
+        CardinalityError,
+        check_cardinality,
+        probe_session_ids_for_verb,
+        resolve_session_ids_for_verb,
+    )
 
     env: AppEnv = ctx.obj
     request = _parent_request(ctx)
@@ -784,12 +789,18 @@ def delete_verb(ctx: click.Context, dry_run: bool, yes_flag: bool, all_flag: boo
 
     from polylogue.cli.archive_query import execute_delete_by_session_ids
 
-    # dry-run: skip the cardinality guard and just show a preview. Resolve the
-    # SAME full ID set the real delete uses (via resolve_session_ids_for_verb)
-    # rather than re-running the query through _execute_query_verb, which caps at
-    # the default limit of 20 and would preview fewer sessions than --yes --all
-    # actually deletes (#1873). The previewed set must equal the deleted set.
+    # dry-run: require explicit multi-target scope before materializing a broad
+    # preview. Once --all is supplied, resolve the SAME full ID set the real
+    # delete uses rather than re-running the query through _execute_query_verb,
+    # which caps at the default limit of 20 and would preview fewer sessions
+    # than --yes --all actually deletes (#1873).
     if dry_run:
+        probe_ids = probe_session_ids_for_verb(env, request, limit=2)
+        if len(probe_ids) > 1 and not all_flag:
+            raise click.UsageError(
+                "'delete dry-run' matched multiple sessions. "
+                "Use --all to preview every matched session, or narrow the query."
+            )
         session_ids = resolve_session_ids_for_verb(env, request)
         execute_delete_by_session_ids(env, session_ids, force=True, dry_run=True)
         return
