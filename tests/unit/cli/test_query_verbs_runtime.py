@@ -971,7 +971,7 @@ def test_delete_verb_updates_confirmation_and_dry_run_flags() -> None:
         patch("polylogue.cli.archive_query.execute_delete_by_session_ids") as execute,
         patch("polylogue.cli.query_verbs._execute_query_verb") as legacy,
     ):
-        wrapped(child, True, False, False)
+        wrapped(child, True, False, False, "json")
 
     legacy.assert_not_called()
     probe_ids.assert_called_once()
@@ -989,7 +989,7 @@ def test_delete_verb_updates_confirmation_and_dry_run_flags() -> None:
         patch("polylogue.cli.verb_cardinality.check_cardinality"),
         patch("polylogue.cli.archive_query.execute_delete_by_session_ids") as execute_confirmed,
     ):
-        wrapped(child, False, True, False)
+        wrapped(child, False, True, False, None)
 
     _, confirmed_kwargs = execute_confirmed.call_args
     assert confirmed_kwargs.get("force") is True

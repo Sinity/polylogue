@@ -387,9 +387,10 @@ class TestDeleteVerbCardinality:
         dry_run: bool = False,
         yes_flag: bool = False,
         all_flag: bool = False,
+        output_format: str | None = None,
     ) -> None:
         cb = self._delete_callback()
-        cb(child, dry_run, yes_flag, all_flag)  # type: ignore[operator]
+        cb(child, dry_run, yes_flag, all_flag, output_format)  # type: ignore[operator]
 
     def test_dry_run_probes_before_resolving_ids(self) -> None:
         _, child = _context_pair()
@@ -731,7 +732,7 @@ class TestDeleteUsesPreResolvedIds:
             ),
         ):
             cb = self._delete_callback()
-            cb(child, False, True, True)  # type: ignore[operator]  # dry_run=F, yes=T, all=T
+            cb(child, False, True, True, None)  # type: ignore[operator]  # dry_run=F, yes=T, all=T
 
         assert captured, "execute_delete_by_session_ids must be called"
         assert len(captured[0]) == 50, (
@@ -753,7 +754,7 @@ class TestDeleteUsesPreResolvedIds:
             patch("polylogue.cli.query_verbs._execute_query_verb") as mock_exec,
         ):
             cb = self._delete_callback()
-            cb(child, False, True, False)  # type: ignore[operator]  # yes=T
+            cb(child, False, True, False, None)  # type: ignore[operator]  # yes=T
 
         mock_exec.assert_not_called()
 
@@ -821,12 +822,20 @@ class TestDeleteCardinalityLargeNonMocked:
         assert callable(cb), "delete_verb.callback must be a context-decorated function"
         return cb
 
-    def _invoke_delete(self, env: object, *, dry_run: bool, yes_flag: bool, all_flag: bool) -> dict[str, object]:
+    def _invoke_delete(
+        self,
+        env: object,
+        *,
+        dry_run: bool,
+        yes_flag: bool,
+        all_flag: bool,
+        output_format: str | None = None,
+    ) -> dict[str, object]:
         import json
 
         _, child = _context_pair(query_terms=(self.TOKEN,))
         child.obj = env
-        self._delete_callback()(child, dry_run, yes_flag, all_flag)  # type: ignore[operator]
+        self._delete_callback()(child, dry_run, yes_flag, all_flag, output_format)  # type: ignore[operator]
         # _emit_delete prints exactly one JSON document to stdout.
         captured = self._capsys.readouterr().out.strip()
         return cast(dict[str, object], json.loads(captured))
