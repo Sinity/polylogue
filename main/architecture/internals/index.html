@@ -559,6 +559,11 @@ No upgrade helpers are added for the bump.</li>
 and <code>session_provider_usage_events.payload_json</code>. Existing index tiers must
 be rebuilt from source evidence so the canonical read model is recreated with
 the stricter JSON contract.</li>
+<li>Provider usage accounting is audited as a source-derived read model: exact
+event rows (<code>session_provider_usage_events</code>), text-only estimates, unsupported
+origins, source rows acquired but not materialized, and stale
+<code>session_model_usage</code> rollups are distinct diagnostic states. Cache read/write
+token lanes remain labelled and are not merged into generic input/output.</li>
 <li>Index schema version 6 added <code>session_provider_usage_events</code> for
 provider-reported token usage events and single-model rollup repair from
 those events. Existing index tiers must be rebuilt from source evidence so

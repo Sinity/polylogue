@@ -450,8 +450,11 @@ Rebuildable, but re-embedding costs Voyage API calls.</p>
 <code>assertions</code>: user marks, annotations, corrections, suppressions, tags,
 metadata, saved views, recall packs, workspaces, blackboard notes, candidate
 claims, and operator judgments are all assertion rows with lifecycle state.
-<code>index.db.session_tags</code> remains a rebuildable auto-tag/read-model projection;
-human-owned tag and metadata writes do not have separate user-tier tables.</p>
+Candidate review uses the closed status vocabulary <code>candidate</code>, <code>accepted</code>,
+<code>rejected</code>, <code>deferred</code>, and <code>superseded</code>; active assertions are separate
+durable claims and are not returned by candidate-review reads. <code>index.db.session_tags</code>
+remains a rebuildable auto-tag/read-model projection; human-owned tag and
+metadata writes do not have separate user-tier tables.</p>
 <h3><code>ops.db</code> — disposable daemon telemetry</h3>
 <p>Ingest cursors (<code>ingest_cursor</code>), ingest attempts (<code>ingest_attempts</code>),
 convergence debt (<code>convergence_debt</code>), cursor-lag samples, daemon stage/event

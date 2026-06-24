@@ -377,11 +377,10 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
       routed your invocation.
 
   Product roles:
-      Query actions:     find QUERY then read|select|mark|analyze|delete|continue
-      Runtime status:    polylogue ops status
+      Search/read/action:   find QUERY then read|select|mark|analyze|delete|continue
       Setup/demo/evidence:  config, init, import, demo, tutorial
-      Reader/TUI:        dashboard --status, dashboard
-      Operations:        ops diagnostics, ops maintenance, ops backup
+      Reader/TUI:           dashboard --status, dashboard
+      Operations:           status (same as polylogue ops status), ops diagnostics, ops maintenance, ops backup
 
   Query mode (default):
       polylogue find &quot;search terms&quot;
@@ -528,19 +527,36 @@ Options:
   --help                          Show this message and exit.
 
 Commands:
-  analyze
-  config     Show resolved Polylogue configuration with precedence sources.
-  continue   Compile a successor-agent continuation report.
-  dashboard  Launch the terminal dashboard TUI.
-  delete     Delete matched sessions.
-  demo       Seed and verify the deterministic demo archive.
-  import     Import sessions from configured sources.
-  init       Detect chat sources and write a starter polylogue.toml.
-  mark
-  ops        Run operational archive and daemon commands.
-  read       Read matched sessions (route to view/destination).
-  select
-  tutorial   Inspect first-run setup state.
+  Search, read, and action workflows:
+    find      Search the archive, then optionally run an...
+    read      Read matched sessions (route to view/destination).
+    select    Select one matched session or print candidate identities.
+    mark      Mark selected sessions; review candidates under mark candidates.
+    analyze   Analyze matched sessions and named facet families.
+    delete    Delete matched sessions.
+    continue  Compile a successor-agent continuation report.
+    Use `find QUERY then ACTION`; root action words act on the query result
+    set.
+
+  Setup, import, and evidence:
+    config    Show resolved Polylogue configuration with...
+    init      Detect chat sources and write a starter polylogue.toml.
+    import    Import sessions from configured sources.
+    demo      Seed and verify the deterministic demo archive.
+    tutorial  Inspect first-run setup state.
+    Use these for first-run setup, source import, demo archives, and
+    onboarding checks.
+
+  Reader and local UI:
+    dashboard  Launch the terminal dashboard TUI.
+    `dashboard` launches the terminal TUI; `dashboard --status` prints launch
+    evidence.
+
+  Operations and maintenance:
+    status  Show daemon and archive status.
+    ops     Run operational archive and daemon commands.
+    `polylogue status` is the root shortcut for `polylogue ops status`; deeper
+    maintenance stays under `ops`.
 </code></pre>
 <h2>Analyze Verb</h2>
 <pre><code class="language-text">Usage: polylogue analyze [OPTIONS] COMMAND [ARGS]...
@@ -759,18 +775,19 @@ Commands:
 
   Review assertion candidates for a selected session or target ref.
 
-  Candidate commands own claim judgment: list, accept, reject, defer, or
-  supersede candidate assertions. They do not apply ordinary session tags,
-  stars, pins, archive marks, or notes.
+  Candidate commands own review state and claim judgment: review, list,
+  accept, reject, defer, or supersede candidate assertions. They do not apply
+  ordinary session tags, stars, pins, archive marks, or notes.
 
 Options:
   --help  Show this message and exit.
 
 Commands:
   accept     Accept a candidate assertion into an active assertion.
-  defer      Record a candidate assertion deferral without changing...
+  defer      Record a durable candidate assertion deferral.
   list       List candidate assertion claims.
   reject     Reject a candidate assertion with a durable reason.
+  review     List candidate assertion review state and disabled actions.
   supersede  Supersede a candidate with an explicit active assertion.
 </code></pre>
 <h2>Continue Verb</h2>

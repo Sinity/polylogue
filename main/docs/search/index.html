@@ -758,9 +758,11 @@ are rejected instead of silently coercing row queries back to session queries.</
 <p>Transform and recovery jobs may emit assertion rows with <code>status:candidate</code>.
 Candidate rows are private, carry <code>context_policy.inject=false</code>, and keep
 <code>promotion_required=true</code> until an operator makes an explicit judgment. They
-can be inspected like any other assertion row:</p>
+can be inspected like any other assertion row, or through the review list that
+keeps pending candidates separate from already judged lifecycle rows:</p>
 <pre><code class="language-bash">polylogue assertions where 'status:candidate AND target:session:codex-session:abc123' --format json
 polylogue mark candidates list --target-ref session:codex-session:abc123 --format json
+polylogue mark candidates review --target-ref session:codex-session:abc123 --format json
 </code></pre>
 <p>The judgment workflow lives under <code>polylogue mark candidates</code> and writes
 back into the same <code>user.db</code> assertion substrate:</p>
@@ -769,11 +771,19 @@ polylogue mark candidates reject assertion:candidate-id --reason &quot;unsupport
 polylogue mark candidates defer assertion:candidate-id --reason &quot;needs another source&quot; --format json
 polylogue mark candidates supersede assertion:candidate-id --kind summary --body &quot;replacement claim&quot; --format json
 </code></pre>
-<p><code>accept</code> and <code>supersede</code> create an active assertion whose evidence includes the
+<p>The closed assertion status vocabulary is <code>active</code>, <code>candidate</code>, <code>accepted</code>,
+<code>rejected</code>, <code>deferred</code>, <code>superseded</code>, <code>deleted</code>, and <code>inactive</code>; unknown values
+fail at the typed boundary instead of being rendered as generic strings.
+<code>accept</code> and <code>supersede</code> create an active assertion whose evidence includes the
 candidate assertion ref and whose <code>supersedes</code> lineage points at the candidate.
-<code>reject</code> and <code>defer</code> preserve a judgment assertion with the reason and leave a
-durable lifecycle record. No candidate assertion is injected into compiled
-context unless a later surface asks for candidates explicitly.</p>
+<code>reject</code> writes <code>status:rejected</code>, and <code>defer</code> writes <code>status:deferred</code>; both
+preserve a judgment assertion with the reason and leave a durable lifecycle
+record. Judged candidates remain in <code>mark candidates review</code> with disabled
+action reasons such as <code>candidate_already_accepted</code>, <code>candidate_already_rejected</code>,
+<code>candidate_deferred</code>, or <code>candidate_superseded</code>, while <code>mark candidates list</code>
+only shows candidates still awaiting judgment. No candidate assertion is
+injected into compiled context unless a later surface asks for candidates
+explicitly.</p>
 <p>Pending candidate judgments also appear in the operator debt cockpit:</p>
 <pre><code class="language-bash">polylogue ops debt list --kind assertion-candidate --only-actionable --format json
 </code></pre>
