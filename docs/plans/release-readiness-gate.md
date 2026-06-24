@@ -96,7 +96,7 @@ Satisfied:
 - #1843 has deterministic demo corpus specs and the `polylogue import --demo`
   scheduling surface plus fixture-world convergence coverage.
 - #1848 static/rendering redundancy pruning is closed.
-- #1849 replaced proof theater with code-coupled tests and generated evidence
+- #1849 replaced decorative verification with code-coupled tests and generated evidence
   surfaces; release notes must still avoid claiming any detached confidence
   layer.
 - #1825 MCP/Python parity is closed for the shared query/read contracts that

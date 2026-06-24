@@ -118,6 +118,7 @@ STORAGE_ROOT_KEEP = frozenset(
         "archive_views.py",
         "source_sessions.py",
         "query_models.py",
+        "usage.py",
         "raw_retention.py",
         "message_type_backfill.py",
     }

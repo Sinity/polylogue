@@ -896,12 +896,17 @@ class TestActionAffordancesTool:
         action_by_id = {str(action["id"]): action for action in action_payloads}
 
         read = action_by_id["read"]
-        assert read["selection_command"] == "polylogue find QUERY then select"
-        assert read["safety_level"] == "safe"
+        read_safety = cast(dict[str, object], read["safety"])
+        assert read_safety["selection_command"] == "polylogue find QUERY then select"
+        assert read_safety["safety_level"] == "safe"
+        assert "selection_command" not in read
+        assert "safety_level" not in read
 
         delete = action_by_id["delete"]
-        assert delete["confirmation_command"] == "polylogue find QUERY then delete --dry-run"
-        assert delete["safety_level"] == "destructive"
+        delete_safety = cast(dict[str, object], delete["safety"])
+        assert delete_safety["confirmation_command"] == "polylogue find QUERY then delete --dry-run"
+        assert delete_safety["safety_level"] == "destructive"
+        assert "confirmation_command" not in delete
 
 
 class TestInsightTools:

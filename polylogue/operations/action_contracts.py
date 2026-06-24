@@ -94,21 +94,6 @@ class CliActionContract:
                 estimated_cost=self.estimated_cost,
                 next_actions=self.next_actions,
             ),
-            input_unit=self.input_unit,
-            cardinality_state=self.cardinality,
-            safety_level=self.safety_level,
-            confirmation_command=self.confirmation_command,
-            selection_command=self.selection_command,
-            destination_support=self.destination_support,
-            format_support=tuple(sorted(self.formats, key=_format_order)),
-            default_format=self.default_format,
-            machine_envelope=self.machine_envelope,
-            disabled_reason=self.disabled_reason,
-            estimated_cost=self.estimated_cost,
-            next_actions=self.next_actions,
-            guards=self.guards,
-            completion_context=self.completion_context,
-            requires_daemon=self.requires_daemon,
         )
 
 

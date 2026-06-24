@@ -14,7 +14,7 @@
         routed your invocation.
   
     Product roles:
-        Setup/demo/proof:  config, init, import, demo, tutorial
+        Setup/demo/evidence:  config, init, import, demo, tutorial
         Reader/TUI:        dashboard
         Operations:        polylogue ops status, ops diagnostics, ops maintenance, ops backup
         Query actions:     find QUERY then read|select|mark|analyze|delete|continue
@@ -25,7 +25,8 @@
         polylogue --latest find 'repo:polylogue' then read --to browser
   
     Verbs (actions on matched sessions):
-        polylogue find id:abc then read
+        polylogue find id:abc then read          # exact ref: one selected session
+        polylogue find id:abc then select --json # expose selected-session identity
         polylogue find id:abc then read --view messages
         polylogue find id:abc then read --to browser
         polylogue find id:abc then analyze --facets

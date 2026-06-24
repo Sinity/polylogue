@@ -70,7 +70,7 @@ class TestRootHelpDocumentsQueryFirst:
         result = runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
         assert "Product roles:" in result.output
-        assert "Setup/demo/proof:" in result.output
+        assert "Setup/demo/evidence:" in result.output
         assert "Reader/TUI:" in result.output
         assert "Operations:" in result.output
         assert "Query actions:" in result.output

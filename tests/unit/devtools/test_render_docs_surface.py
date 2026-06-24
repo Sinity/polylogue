@@ -15,6 +15,8 @@ def test_build_docs_readme_groups_docs_by_reader_task() -> None:
     assert "[Browser Capture](browser-capture.md)" in rendered
     assert "## Verification and Quality" in rendered
     assert "[Developer Tools](devtools.md)" in rendered
+    assert "[Visual Evidence](visual-evidence.md)" in rendered
+    assert "Synthetic reader DOM/media evidence lanes" in rendered
     assert "## Contributor Workflow" in rendered
     assert "[Contributing](../CONTRIBUTING.md)" in rendered
     assert ".cache/README.md" not in rendered

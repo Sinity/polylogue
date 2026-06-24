@@ -121,7 +121,7 @@ def runtime_maintenance_target_names() -> tuple[str, ...]:
 
 @dataclass(frozen=True, kw_only=True)
 class ScenarioMetadata:
-    """Portable scenario metadata shared by exercises, campaigns, and reports."""
+    """Portable scenario metadata shared by checks, campaigns, and reports."""
 
     origin: str = "authored"
     path_targets: tuple[str, ...] = ()

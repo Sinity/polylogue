@@ -51,6 +51,8 @@ return raw message/action/block/assertion/file/observed-event/context-snapshot r
 SQL-backed terminal units also support exact ``group by FIELD | count``
 aggregate pipelines for the closed aggregate fields declared in this module,
 plus aggregate ``sort by count|key [asc|desc]`` before ``limit``/``offset``.
+Any piped unit source is terminal-only; ``compile_expression`` rejects it
+instead of discarding pipeline stages while lowering to a session selector.
 They also support ``time >= VALUE``, ``time <= VALUE``, and
 ``time between A and B`` predicates over the same row timestamp used by
 ``sort by time``.
@@ -765,6 +767,10 @@ class _QueryTransformer(Transformer[Token, _LexToken | str | QueryExpressionAST]
 _QUERY_TRANSFORMER = _QueryTransformer()
 
 
+def _canonical_session_alias(field_name: str) -> str:
+    return "id" if field_name == "session" else field_name
+
+
 def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
     field_name = token.field
     session_field = _scoped_session_field(field_name)
@@ -1067,7 +1073,11 @@ def _field_ref_for_predicate(
 ) -> QueryFieldRef:
     session_field = _scoped_session_field(predicate.field)
     if unit == "session":
-        return QueryFieldRef(scope="session", name=predicate.field, source_name=predicate.field)
+        return QueryFieldRef(
+            scope="session",
+            name=_canonical_session_alias(predicate.field),
+            source_name=predicate.field,
+        )
     if session_field is not None:
         field_info = query_unit_field_info(unit, predicate.field)
         source_name = field_info.name if field_info is not None else predicate.field
@@ -1367,7 +1377,8 @@ def _scope_session_predicate(predicate: QueryPredicate) -> QueryPredicate:
                 f"session pipeline stage cannot scope unsupported field {predicate.field!r}",
                 field=predicate.field,
             )
-        return QueryFieldPredicate(field=f"session.{predicate.field}", values=predicate.values, op=predicate.op)
+        scoped_field = _canonical_session_alias(predicate.field)
+        return QueryFieldPredicate(field=f"session.{scoped_field}", values=predicate.values, op=predicate.op)
     if isinstance(predicate, QueryBoolPredicate):
         return QueryBoolPredicate(predicate.op, tuple(_scope_session_predicate(child) for child in predicate.children))
     if isinstance(predicate, QueryNotPredicate):
@@ -1694,6 +1705,9 @@ def _parse_source_where_predicate(expression: str) -> QueryExistsPredicate | Non
         or source.limit is not None
         or source.offset is not None
         or source.sort is not None
+        or source.group_by is not None
+        or source.aggregate is not None
+        or source.pipeline_stages
     ):
         raise ExpressionCompileError(
             "pipeline unit queries return terminal rows; use query_units / /api/query-units or a CLI terminal-unit query",

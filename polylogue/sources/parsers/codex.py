@@ -77,7 +77,7 @@ def _is_plausibly_codex_record(item: object) -> bool:
 
     record_type = item.get("type")
     payload = item.get("payload")
-    if record_type in {"session_meta", "response_item", "compacted", "turn_context"}:
+    if record_type in {"session_meta", "response_item", "event_msg", "compacted", "turn_context"}:
         return isinstance(payload, dict)
     if isinstance(payload, dict):
         return True
@@ -154,6 +154,8 @@ def _codex_token_usage_payload(record: dict[str, object] | None) -> dict[str, in
     field_aliases = {
         "input_tokens": ("input_tokens", "inputTokenCount"),
         "cached_input_tokens": ("cached_input_tokens", "cache_read_input_tokens", "cached_tokens"),
+        "cache_write_tokens": ("cache_write_tokens", "cache_creation_input_tokens", "cache_write_input_tokens"),
+        "uncached_input_tokens": ("uncached_input_tokens", "uncachedInputTokens"),
         "output_tokens": ("output_tokens", "outputTokenCount"),
         "reasoning_output_tokens": ("reasoning_output_tokens", "reasoning_tokens"),
         "total_tokens": ("total_tokens", "totalTokenCount"),
@@ -235,7 +237,13 @@ def _record_payload(record: dict[str, object]) -> dict[str, object]:
     return {str(key): value for key, value in record.items() if value is not None}
 
 
-def _compact_response_payload(payload: dict[str, object], *, index: int) -> dict[str, object]:
+def _compact_response_payload(
+    payload: dict[str, object],
+    *,
+    index: int,
+    current_model_name: str | None = None,
+    current_model_effort: str | None = None,
+) -> dict[str, object]:
     compact: dict[str, object] = {"source_index": index}
     for key in ("type", "id", "call_id", "name", "status"):
         value = payload.get(key)
@@ -258,6 +266,10 @@ def _compact_response_payload(payload: dict[str, object], *, index: int) -> dict
     if cwd:
         compact["cwd"] = cwd
     if compact.get("type") == "token_count":
+        if current_model_name and not _string_field(compact, "model", "model_name"):
+            compact["model"] = current_model_name
+        if current_model_effort:
+            compact["model_effort"] = current_model_effort
         info = _dict_record(payload.get("info")) or {}
         last_usage = _codex_token_usage_payload(_dict_record(info.get("last_token_usage")))
         total_usage = _codex_token_usage_payload(_dict_record(info.get("total_token_usage")))
@@ -510,13 +522,18 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
             )
             continue
 
-        if _record_type(record) == "response_item":
+        if _record_type(record) in {"response_item", "event_msg"}:
             inner = _payload_record(record)
             if inner is not None and not _is_message(inner):
-                event_payload = _compact_response_payload(inner, index=idx)
+                event_payload = _compact_response_payload(
+                    inner,
+                    index=idx,
+                    current_model_name=current_model_name,
+                    current_model_effort=current_model_effort,
+                )
                 session_events.append(
                     ParsedSessionEvent(
-                        event_type=_record_type(inner) or "response_item",
+                        event_type=_record_type(inner) or _record_type(record) or "response_item",
                         timestamp=_iso_or_none(_record_timestamp(inner) or _record_timestamp(record)),
                         payload=event_payload,
                     )

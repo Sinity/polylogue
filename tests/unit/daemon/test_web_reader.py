@@ -222,7 +222,12 @@ def _seed_assertion_claims(workspace: dict[str, Path]) -> None:
 
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-    from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+    from polylogue.storage.sqlite.archive_tiers.user_write import (
+        AssertionKind,
+        AssertionStatus,
+        AssertionVisibility,
+        upsert_assertion,
+    )
 
     user_db = workspace["archive_root"] / "user.db"
     initialize_archive_database(user_db, ArchiveTier.USER)
@@ -237,8 +242,8 @@ def _seed_assertion_claims(workspace: dict[str, Path]) -> None:
             author_ref="agent:poly-07",
             author_kind="agent",
             evidence_refs=[f"message:{M_C1}"],
-            status="active",
-            visibility="private",
+            status=AssertionStatus.ACTIVE,
+            visibility=AssertionVisibility.PRIVATE,
             context_policy={"inject": True},
             now_ms=1_700_000_000_000,
         )
@@ -252,8 +257,8 @@ def _seed_assertion_claims(workspace: dict[str, Path]) -> None:
             author_ref="agent:poly-07",
             author_kind="agent",
             evidence_refs=[f"message:{M_C1}"],
-            status="candidate",
-            visibility="private",
+            status=AssertionStatus.CANDIDATE,
+            visibility=AssertionVisibility.PRIVATE,
             context_policy={"inject": False},
             now_ms=1_700_000_000_100,
         )
@@ -263,8 +268,8 @@ def _seed_assertion_claims(workspace: dict[str, Path]) -> None:
             target_ref=f"session:{C1}",
             kind=AssertionKind.DECISION,
             body_text="Deleted claim is hidden by default.",
-            status="deleted",
-            visibility="private",
+            status=AssertionStatus.DELETED,
+            visibility=AssertionVisibility.PRIVATE,
             now_ms=1_700_000_000_200,
         )
         conn.commit()
@@ -277,7 +282,11 @@ def _seed_many_assertion_candidates(workspace: dict[str, Path], count: int) -> N
 
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-    from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+    from polylogue.storage.sqlite.archive_tiers.user_write import (
+        AssertionKind,
+        AssertionVisibility,
+        upsert_assertion,
+    )
 
     user_db = workspace["archive_root"] / "user.db"
     initialize_archive_database(user_db, ArchiveTier.USER)
@@ -294,7 +303,7 @@ def _seed_many_assertion_candidates(workspace: dict[str, Path], count: int) -> N
                 author_kind="agent",
                 evidence_refs=[f"message:{M_C1}"],
                 status="candidate",
-                visibility="private",
+                visibility=AssertionVisibility.PRIVATE,
                 context_policy={"inject": False},
                 now_ms=1_700_000_010_000 + idx,
             )
@@ -678,13 +687,16 @@ class TestReaderSearchState:
         assert isinstance(payload, dict)
         assert payload["budget_exceeded"] is True
         assert payload["deferred_families"] == {"repos": "budget_exceeded", "action_types": "budget_exceeded"}
-        assert payload["family_status"]["repos"] == {
-            "state": "deferred",
-            "reason": "budget_exceeded",
-            "error": None,
-            "stale": False,
-            "stale_age_s": None,
-        }
+        repo_status = payload["family_status"]["repos"]
+        assert repo_status["state"] == "deferred"
+        assert repo_status["reason"] == "budget_exceeded"
+        assert repo_status["error"] is None
+        assert repo_status["stale"] is False
+        assert repo_status["stale_age_s"] is None
+        assert repo_status["label"] == "Canonical repositories"
+        assert repo_status["source"] == "session_repos + repos"
+        assert repo_status["canonicalization"]
+        assert repo_status["expensive"] is True
         assert "repos" not in payload["complete_families"]
 
     def test_facets_can_materialize_deferred_families_when_requested(self, workspace_env: dict[str, Path]) -> None:
@@ -1692,11 +1704,24 @@ class TestReaderActionAffordances:
         assert "action.execution && action.execution.cardinality_state" in body
         assert "action.output && action.output.format_support" in body
         assert "action.safety && action.safety.safety_level" in body
+        assert "action.input_unit" not in body
+        assert "action.safety_level" not in body
 
-    def test_action_affordances_endpoint_exposes_shared_payload(self) -> None:
+    def test_action_affordances_endpoint_matches_cli_contract_payload(self) -> None:
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+        from polylogue.operations.action_contracts import action_affordance_list_payload
+
         with _running_server_without_seed() as (_server, base_url):
             payload = _get_json(base_url, "/api/action-affordances")
 
+        cli_result = CliRunner().invoke(cli, ["config", "action-affordances"])
+        assert cli_result.exit_code == 0, cli_result.output
+        cli_payload = json.loads(cli_result.output)
+        contract_payload = action_affordance_list_payload().model_dump(mode="json")
+
+        assert payload == cli_payload == contract_payload
         assert isinstance(payload, dict)
         payload_dict = cast(dict[str, object], payload)
         actions = payload_dict["actions"]
@@ -1706,23 +1731,22 @@ class TestReaderActionAffordances:
 
         read = action_by_id["read"]
         assert read["target"] == "selection"
-        assert read["input_unit"] == "query_result_set"
-        assert cast(dict[str, object], read["input"])["unit"] == read["input_unit"]
-        assert cast(dict[str, object], read["execution"])["cardinality_state"] == read["cardinality_state"]
-        assert cast(dict[str, object], read["safety"])["safety_level"] == read["safety_level"] == "safe"
+        assert "input_unit" not in read
+        assert cast(dict[str, object], read["input"])["unit"] == "query_result_set"
+        assert cast(dict[str, object], read["execution"])["cardinality_state"] == "explicit_multi"
+        assert cast(dict[str, object], read["safety"])["safety_level"] == "safe"
         assert cast(dict[str, object], read["safety"])["selection_command"] == "polylogue find QUERY then select"
-        assert cast(dict[str, object], read["output"])["destination_support"] == read["destination_support"]
-        assert "terminal" in cast(list[object], read["destination_support"])
+        assert "terminal" in cast(list[object], cast(dict[str, object], read["output"])["destination_support"])
 
         delete = action_by_id["delete"]
         assert delete["target"] == "selection"
-        assert cast(dict[str, object], delete["safety"])["safety_level"] == delete["safety_level"] == "destructive"
+        assert "safety_level" not in delete
+        assert cast(dict[str, object], delete["safety"])["safety_level"] == "destructive"
         assert (
             cast(dict[str, object], delete["safety"])["confirmation_command"]
             == "polylogue find QUERY then delete --dry-run"
         )
-        assert cast(dict[str, object], delete["availability"])["next_actions"] == delete["next_actions"]
-        assert "find" in cast(list[object], delete["next_actions"])
+        assert cast(dict[str, object], delete["availability"])["next_actions"] == ["find"]
 
 
 class TestReaderQueryUnits:
@@ -2447,7 +2471,7 @@ class TestSharedQueryPayloads:
         assert d["family_status"]["repos"]["state"] == "deferred"
 
     def test_assertion_claim_payloads_are_shared_surface_dtos(self) -> None:
-        from polylogue.core.enums import AssertionKind
+        from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
         from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
         from polylogue.surfaces.payloads import AssertionClaimListPayload, AssertionClaimPayload
 
@@ -2462,8 +2486,8 @@ class TestSharedQueryPayloads:
             author_ref="agent:test",
             author_kind="agent",
             evidence_refs=["message:m1"],
-            status="active",
-            visibility="private",
+            status=AssertionStatus.ACTIVE,
+            visibility=AssertionVisibility.PRIVATE,
             confidence=0.9,
             staleness=None,
             context_policy={"inject": False},
@@ -2473,7 +2497,7 @@ class TestSharedQueryPayloads:
         )
 
         item = AssertionClaimPayload.from_envelope(envelope)
-        payload = AssertionClaimListPayload(items=(item,), total=1, limit=20, statuses=("active",))
+        payload = AssertionClaimListPayload(items=(item,), total=1, limit=20, statuses=(AssertionStatus.ACTIVE,))
         dump = payload.model_dump(mode="json", exclude_none=True)
 
         assert dump["items"][0]["assertion_id"] == "claim-1"

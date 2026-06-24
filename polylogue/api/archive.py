@@ -23,7 +23,7 @@ from polylogue.archive.query.spec import normalize_action_sequence, normalize_ac
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_models import Session, SessionSummary
-from polylogue.core.enums import MaterialOrigin, Origin, Provider
+from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin, Provider
 from polylogue.core.json import JSONDocument
 from polylogue.core.refs import EvidenceRef, ObjectRef, parse_public_ref
 from polylogue.core.sources import origin_from_provider, provider_from_origin
@@ -81,6 +81,7 @@ if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
     from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
+    from polylogue.storage.usage import ProviderUsageReport
     from polylogue.surfaces.payloads import (
         ArchiveDebtListPayload,
         AssertionClaimPayload,
@@ -110,12 +111,71 @@ _FACET_CORE_FAMILIES = (
 
 _FACET_DEFERRED_FAMILIES = (
     "repos",
+    "role_counts",
+    "material_origins",
     "message_types",
     "action_types",
     "has_flags",
 )
 
 _FACET_COMPLETE_FAMILIES = _FACET_CORE_FAMILIES + _FACET_DEFERRED_FAMILIES
+
+_FACET_FAMILY_METADATA: dict[str, dict[str, object]] = {
+    "total_counts": {
+        "label": "Total counts",
+        "source": "session summaries",
+        "canonicalization": "unique sessions plus stored message counts",
+        "expensive": False,
+    },
+    "origins": {
+        "label": "Provider origins",
+        "source": "session summaries",
+        "canonicalization": "provider/archive origin; not a repo or authoredness signal",
+        "expensive": False,
+    },
+    "tags": {
+        "label": "User tags",
+        "source": "session summaries",
+        "canonicalization": "session tags de-duplicated within each session",
+        "expensive": False,
+    },
+    "repos": {
+        "label": "Canonical repositories",
+        "source": "session_repos + repos",
+        "canonicalization": "prefer repo_name or origin_url; omit archive/path tokens that are not product repo identities",
+        "expensive": True,
+    },
+    "role_counts": {
+        "label": "Provider-role counts",
+        "source": "messages.role",
+        "canonicalization": "provider-reported message role; not authoredness",
+        "expensive": True,
+    },
+    "material_origins": {
+        "label": "Material origins",
+        "source": "messages.material_origin",
+        "canonicalization": "authoredness/protocol provenance; separates human text from runtime or assistant material",
+        "expensive": True,
+    },
+    "message_types": {
+        "label": "Message content types",
+        "source": "messages.message_type",
+        "canonicalization": "normalized message content kind",
+        "expensive": True,
+    },
+    "action_types": {
+        "label": "Action types",
+        "source": "actions.semantic_type",
+        "canonicalization": "normalized semantic action kind",
+        "expensive": True,
+    },
+    "has_flags": {
+        "label": "Content flags",
+        "source": "messages.has_*",
+        "canonicalization": "boolean message feature counters",
+        "expensive": True,
+    },
+}
 
 _NOISY_REPO_LABELS = {
     "",
@@ -375,6 +435,8 @@ def _archive_facet_buckets(
         if include_deferred
         else {
             "repos": {},
+            "role_counts": {},
+            "material_origins": {},
             "message_types": {},
             "action_types": {},
             "has_flags": {},
@@ -385,6 +447,8 @@ def _archive_facet_buckets(
         providers=origins,
         tags=tags,
         repos=sql_buckets["repos"],
+        role_counts=sql_buckets["role_counts"],
+        material_origins=sql_buckets["material_origins"],
         message_types=sql_buckets["message_types"],
         action_types=sql_buckets["action_types"],
         has_flags=sql_buckets["has_flags"],
@@ -401,6 +465,8 @@ def _archive_aggregate_facet_families(
 ) -> dict[str, dict[str, int]]:
     result: dict[str, dict[str, int]] = {
         "repos": {},
+        "role_counts": {},
+        "material_origins": {},
         "message_types": {},
         "action_types": {},
         "has_flags": {},
@@ -421,6 +487,13 @@ def _archive_aggregate_facet_families(
 
     def keyed(rows: list[Any]) -> dict[str, int]:
         return {str(row[0]): int(row[1] or 0) for row in rows if row[0]}
+
+    def table_has_column(table: str, column: str) -> bool:
+        try:
+            rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        except sqlite3.Error:
+            return False
+        return any(str(row[1]) == column for row in rows)
 
     repo_rows = scoped_rows(
         """
@@ -447,6 +520,38 @@ def _archive_aggregate_facet_families(
     result["repos"] = {label: len(sessions) for label, sessions in repo_sessions.items()}
     if omitted_repo_sessions:
         result["omitted"]["repos"] = len(omitted_repo_sessions)
+    if table_has_column("messages", "role"):
+        result["role_counts"] = keyed(
+            scoped_rows(
+                """
+                SELECT COALESCE(NULLIF(role, ''), 'unknown') AS role_key, COUNT(*) AS n
+                FROM messages
+                WHERE session_id IN ({})
+                GROUP BY role_key
+                """,
+                """
+                SELECT COALESCE(NULLIF(role, ''), 'unknown') AS role_key, COUNT(*) AS n
+                FROM messages
+                GROUP BY role_key
+                """,
+            )
+        )
+    if table_has_column("messages", "material_origin"):
+        result["material_origins"] = keyed(
+            scoped_rows(
+                """
+                SELECT COALESCE(NULLIF(material_origin, ''), 'unknown') AS material_key, COUNT(*) AS n
+                FROM messages
+                WHERE session_id IN ({})
+                GROUP BY material_key
+                """,
+                """
+                SELECT COALESCE(NULLIF(material_origin, ''), 'unknown') AS material_key, COUNT(*) AS n
+                FROM messages
+                GROUP BY material_key
+                """,
+            )
+        )
     result["message_types"] = keyed(
         scoped_rows(
             "SELECT message_type, COUNT(*) AS n FROM messages WHERE session_id IN ({}) GROUP BY message_type",
@@ -620,10 +725,10 @@ def _archive_tier_readiness_check(tier: ArchiveTier, path: Any) -> Any:
 def _archive_list_assertion_claims(
     config: Config,
     *,
-    kinds: Sequence[str] | None = None,
+    kinds: Sequence[str | AssertionKind] | None = None,
     target_ref: str | None = None,
     scope_ref: str | None = None,
-    statuses: Sequence[str] | None = ("active", "candidate"),
+    statuses: Sequence[str | AssertionStatus] | None = ("active", "candidate"),
     context_inject: bool | None = None,
     limit: int | None = None,
 ) -> list[Any]:
@@ -1553,10 +1658,10 @@ class PolylogueArchiveMixin:
     async def list_assertion_claims(
         self,
         *,
-        kinds: Sequence[str] | None = None,
+        kinds: Sequence[str | AssertionKind] | None = None,
         target_ref: str | None = None,
         scope_ref: str | None = None,
-        statuses: Sequence[str] | None = ("active", "candidate"),
+        statuses: Sequence[str | AssertionStatus] | None = ("active", "candidate"),
         context_inject: bool | None = None,
         limit: int | None = None,
     ) -> list[ArchiveAssertionEnvelope]:
@@ -1578,10 +1683,10 @@ class PolylogueArchiveMixin:
     async def list_assertion_claim_payloads(
         self,
         *,
-        kinds: Sequence[str] | None = None,
+        kinds: Sequence[str | AssertionKind] | None = None,
         target_ref: str | None = None,
         scope_ref: str | None = None,
-        statuses: Sequence[str] | None = ("active", "candidate"),
+        statuses: Sequence[str | AssertionStatus] | None = ("active", "candidate"),
         context_inject: bool | None = None,
         limit: int | None = None,
     ) -> list[AssertionClaimPayload]:
@@ -1609,7 +1714,7 @@ class PolylogueArchiveMixin:
         self,
         *,
         target_ref: str | None = None,
-        kinds: Sequence[str] | None = None,
+        kinds: Sequence[str | AssertionKind] | None = None,
         limit: int | None = None,
     ) -> list[AssertionClaimPayload]:
         """List candidate assertion claims awaiting explicit judgment."""
@@ -1617,7 +1722,7 @@ class PolylogueArchiveMixin:
         return await self.list_assertion_claim_payloads(
             kinds=kinds,
             target_ref=target_ref,
-            statuses=("candidate",),
+            statuses=(AssertionStatus.CANDIDATE,),
             limit=limit,
         )
 
@@ -2970,6 +3075,17 @@ class PolylogueArchiveMixin:
             vector_provider=vector_provider,
         )
 
+    async def provider_usage_report(
+        self,
+        *,
+        origin: str | None = None,
+        limit: int | None = 25,
+    ) -> ProviderUsageReport:
+        """Return provider usage accounting diagnostics for the active archive."""
+        from polylogue.storage.usage import provider_usage_report_for_archive_root
+
+        return provider_usage_report_for_archive_root(_active_archive_root(self.config), origin=origin, limit=limit)
+
     async def stats(self) -> ArchiveStats:
         from polylogue.operations import ArchiveStats as PublicArchiveStats
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -3023,6 +3139,8 @@ class PolylogueArchiveMixin:
                 origins=dict(b.providers),
                 tags=dict(b.tags),
                 repos=dict(b.repos),
+                role_counts=dict(b.role_counts),
+                material_origins=dict(b.material_origins),
                 message_types=dict(b.message_types),
                 action_types=dict(b.action_types),
                 has_flags=dict(b.has_flags),
@@ -3030,6 +3148,14 @@ class PolylogueArchiveMixin:
                 total_sessions=b.total_sessions,
                 total_messages=b.total_messages,
             )
+
+        def _family_status_payload(family: str, *, state: str, reason: str | None = None) -> dict[str, object]:
+            return {
+                "state": state,
+                "reason": reason,
+                "stale": False,
+                **_FACET_FAMILY_METADATA.get(family, {}),
+            }
 
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -3056,15 +3182,17 @@ class PolylogueArchiveMixin:
                 "deferred_families": deferred_families,
                 "family_errors": {},
                 "family_status": {
-                    **{family: {"state": "complete", "stale": False} for family in complete_families},
+                    **{family: _family_status_payload(family, state="complete") for family in complete_families},
                     **{
-                        family: {"state": "deferred", "reason": reason, "stale": False}
+                        family: _family_status_payload(family, state="deferred", reason=reason)
                         for family, reason in deferred_families.items()
                     },
                 },
                 "origins": dict(active.providers),
                 "tags": dict(active.tags),
                 "repos": dict(active.repos),
+                "role_counts": dict(active.role_counts),
+                "material_origins": dict(active.material_origins),
                 "message_types": dict(active.message_types),
                 "action_types": dict(active.action_types),
                 "has_flags": dict(active.has_flags),

@@ -15,7 +15,7 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.archive.models import Session, SessionSummary
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
-from polylogue.core.enums import AssertionKind, BlockType, Provider
+from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility, BlockType, Provider
 from polylogue.core.refs import EvidenceRef
 from polylogue.insights.transforms import RecoveryWorkPacket, RecoveryWorkPacketEntry
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
@@ -1115,8 +1115,8 @@ class TestArchiveGenericToolSurfaces:
             author_ref="agent:codex",
             author_kind="agent",
             evidence_refs=["session-1::m1"],
-            status="active",
-            visibility="private",
+            status=AssertionStatus.ACTIVE,
+            visibility=AssertionVisibility.PRIVATE,
             confidence=0.8,
             staleness=None,
             context_policy={"inject": True},

@@ -124,7 +124,7 @@ def check_coverage_gaps(plans_dir: Path) -> list[str]:
                 gap_ids.add(gap_id)
                 gap_subject_leaf = _coverage_gap_slug(gap_id)
                 if gap_subject_leaf in gap_subject_leaves:
-                    errors.append(f"{label} duplicate proof subject slug {gap_subject_leaf!r}")
+                    errors.append(f"{label} duplicate coverage subject slug {gap_subject_leaf!r}")
                 else:
                     gap_subject_leaves.add(gap_subject_leaf)
             if not any(isinstance(gap.get(key), str) and gap.get(key, "").strip() for key in _COVERAGE_AXIS_KEYS):

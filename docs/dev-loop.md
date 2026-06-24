@@ -258,6 +258,23 @@ devtools workspace deployment-smoke --browser --browser-executable "$(command -v
 devtools workspace deployment-smoke --browser --browser-executable /etc/profiles/per-user/$USER/bin/google-chrome
 ```
 
+The proof ladder is intentionally split so cloud agents and local operators do
+not blur authority:
+
+| Mode | Runs in CI/cloud? | Browser/profile authority | What it proves |
+| --- | --- | --- | --- |
+| `--receiver-smoke` | yes | no browser | Receiver auth and deterministic capture write. |
+| `--extension-smoke` | yes | mocked Chrome extension APIs | Background-worker receiver configuration and POST path. |
+| `--browser-smoke` | local/CI when Chrome is available | fresh headless profile | Unpacked extension service worker can reach the receiver. |
+| `--browser-provider-smoke` | local/CI when Chrome is available | fresh headless profile + fixture provider pages | Content scripts on deterministic ChatGPT/Claude origins, no cookies. |
+| `--browser-plan` | yes | none; writes a handoff | Exact local commands, artifact dirs, and copied-profile checklist. |
+| `--browser-live-proof` | no | operator-approved copied profile | Authenticated provider-page evidence with redacted summaries. |
+| `deployment-smoke --browser` | local host only | fresh headless profile | Deployed/source web-root first paint and resolved executable. |
+
+Only the last two rows can carry high-authority workstation evidence. A cloud
+checkout may record that those modes remain residual local work, but it should
+not mark them verified from synthetic fixture runs.
+
 ## Browser-Capture Extension Development
 
 Load `browser-extension/` unpacked into a development Chrome profile and point

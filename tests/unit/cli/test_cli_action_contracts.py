@@ -179,18 +179,18 @@ def test_action_contracts_emit_shared_affordance_payloads() -> None:
 
     read = by_id["read"]
     assert read.target == "selection"
-    assert read.input_unit == "query_result_set"
-    assert read.cardinality_state == "explicit_multi"
-    assert read.safety_level == "safe"
-    assert read.selection_command == "polylogue find QUERY then select"
-    assert "browser" in read.destination_support
-    assert read.format_support == ("human", "json", "ndjson")
-    assert "continue" in read.next_actions
+    assert read.input.unit == "query_result_set"
+    assert read.execution.cardinality_state == "explicit_multi"
+    assert read.safety.safety_level == "safe"
+    assert read.safety.selection_command == "polylogue find QUERY then select"
+    assert "browser" in read.output.destination_support
+    assert read.output.format_support == ("human", "json", "ndjson")
+    assert "continue" in read.availability.next_actions
 
     delete = by_id["delete"]
-    assert delete.safety_level == "destructive"
-    assert delete.confirmation_command == "polylogue find QUERY then delete --dry-run"
-    assert "dry_run_or_yes_required" in delete.guards
+    assert delete.safety.safety_level == "destructive"
+    assert delete.safety.confirmation_command == "polylogue find QUERY then delete --dry-run"
+    assert "dry_run_or_yes_required" in delete.execution.guards
 
 
 def test_query_result_actions_declare_selection_or_confirmation_affordance() -> None:

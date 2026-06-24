@@ -5022,7 +5022,7 @@ def _field_predicate_clause(
     field = predicate.bound_field_name(context="lowering session Boolean predicates")
     values = predicate.values
     kwargs: dict[str, Any] = {}
-    if field == "id":
+    if field in {"id", "session"}:
         if not values:
             return "", []
         return f"{table_alias}.session_id = ?", [values[-1]]

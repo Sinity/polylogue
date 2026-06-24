@@ -241,6 +241,15 @@ archive passes the same semantic demo checks used by `polylogue demo verify`;
 `--with-overlays` then attaches the deterministic user-tier overlays for the
 `pytest-triage` tag, mark, note, saved query, and typed assertions.
 
+For source-only or CI/cloud verification without a daemon, use the direct demo
+fixture commands:
+
+```bash
+polylogue demo seed --root "$POLYLOGUE_ARCHIVE_ROOT" --force --with-overlays --format json
+polylogue demo verify --root "$POLYLOGUE_ARCHIVE_ROOT" --require-overlays --format json
+polylogue demo script --shell bash
+```
+
 ## Developer tools
 
 Repository maintenance, generated-surface rendering, validation lanes, and
@@ -276,7 +285,7 @@ Start with the generated command and architecture references; use [docs/README.m
 | Document | Description |
 |----------|-------------|
 | [Architecture](docs/architecture.md) | System rings, ownership boundaries, and data flow. |
-| [Installation](docs/installation.md) | Linux, Nix/NixOS, Homebrew, and container install/run paths. |
+| [Installation](docs/installation.md) | Source checkout, Nix flake, and managed NixOS/Home Manager install paths. |
 | [Architecture Spine](docs/architecture-spine.md) | Target shape, guardrails, and major decisions with rejected alternatives. |
 | [Execution Plan](docs/execution-plan.md) | Current issue-driven sequencing plan for the remaining backlog. |
 | [Design Direction](docs/design/README.md) | Historical design inputs and current guidance for using them without treating them as parallel roadmaps. |
@@ -292,6 +301,7 @@ Start with the generated command and architecture references; use [docs/README.m
 | [Archive Backup](docs/archive-backup.md) | Archive-tier backup profiles, restore boundaries, and blob-GC safety rules. |
 | [Developer Tools](docs/devtools.md) | `devtools` guide for generated surfaces, validation, and repo hygiene. |
 | [Branch-Local Development Loop](docs/dev-loop.md) | Branch-local daemon, web-shell, browser-capture, and extension debugging workflow. |
+| [Visual Evidence](docs/visual-evidence.md) | Synthetic reader DOM/media evidence lanes and local screenshot boundaries. |
 | [Providers](docs/providers/README.md) | Provider-specific parsing and export-format notes. |
 
 <!-- END GENERATED: docs-surface -->

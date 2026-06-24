@@ -182,6 +182,50 @@ def test_query_field_completion_per_shell(
 
 
 @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+def test_query_field_completion_excludes_session_boolean_only_fields_per_shell(
+    shell: str,
+    comp_cls: type[ShellComplete],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Root completion does not advertise fields that only parse in ``sessions where``."""
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    values = {value for value, _ in _run_completion_for_partial(shell, comp_cls, ["find"], "user")}
+
+    assert "user_messages " not in values
+    assert "user_words " not in values
+
+
+@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+def test_query_session_boolean_field_completion_per_shell(
+    shell: str,
+    comp_cls: type[ShellComplete],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After ``sessions where``, completion switches to Boolean-session fields."""
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    session_values = {
+        value for value, _ in _run_completion_for_partial(shell, comp_cls, ["find", "sessions", "where"], "sess")
+    }
+    count_values = {
+        value for value, _ in _run_completion_for_partial(shell, comp_cls, ["find", "sessions", "where"], "user")
+    }
+
+    assert "session:" in session_values
+    assert "user_messages " in count_values
+    assert "user_words " in count_values
+
+
+@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
 def test_query_field_value_completion_per_shell(
     shell: str,
     comp_cls: type[ShellComplete],
@@ -403,7 +447,7 @@ def test_query_numeric_operator_completion_per_shell(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
 
-    items = _run_completion_for_partial(shell, comp_cls, ["duration_ms"], "b")
+    items = _run_completion_for_partial(shell, comp_cls, ["find", "sessions", "where", "duration_ms"], "b")
     item_map = dict(items)
     assert item_map == {"between ": item_map["between "]}
     assert "duration_ms >= 60000" in (item_map["between "] or "")
@@ -422,7 +466,7 @@ def test_query_numeric_operator_empty_completion_per_shell(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
 
-    items = _run_completion(shell, comp_cls, ["duration_ms"])
+    items = _run_completion(shell, comp_cls, ["find", "sessions", "where", "duration_ms"])
     values = {value for value, _ in items}
     assert {">=", "<=", "=", ">", "<", "between "}.issubset(values)
 
@@ -484,6 +528,45 @@ def test_query_then_action_completion_per_shell(
     assert item_map["select"] is not None and "input=query_result_set" in item_map["select"]
     assert set(item_map) >= {"select"}
     assert all(description is None or "input=query_result_set" in description for description in item_map.values())
+
+
+@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+def test_query_then_action_empty_completion_per_shell(
+    shell: str,
+    comp_cls: type[ShellComplete],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At an empty cursor after ``then``, completion lists query-result actions only."""
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    item_map = dict(_run_completion(shell, comp_cls, ["find", "id:abc", "then"]))
+
+    assert {"read", "select", "mark", "analyze", "delete", "continue"}.issubset(item_map)
+    assert {"then", "find", "config", "ops", "import"}.isdisjoint(item_map)
+    assert all(description is None or "input=query_result_set" in description for description in item_map.values())
+
+
+@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+def test_quoted_query_then_action_empty_completion_per_shell(
+    shell: str,
+    comp_cls: type[ShellComplete],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Quoted query exact refs also complete only query-result actions after ``then``."""
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    item_map = dict(_run_completion(shell, comp_cls, ["find", "'session:abc'", "then"]))
+
+    assert {"read", "select", "mark", "analyze", "delete", "continue"}.issubset(item_map)
+    assert {"then", "find", "config", "ops", "import"}.isdisjoint(item_map)
 
 
 @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
@@ -638,6 +721,31 @@ def test_query_action_continue_candidates_completion_per_shell(
     )
 
     assert {"--repo", "--cwd", "--recent", "--limit", "--format"}.issubset(items)
+
+
+@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+def test_query_action_read_material_origin_completion_normalizes_hyphen_prefix_per_shell(
+    shell: str,
+    comp_cls: type[ShellComplete],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--material-origin`` accepts a shell-friendly hyphen prefix and inserts enum values."""
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    items = dict(
+        _run_completion_for_partial(
+            shell,
+            comp_cls,
+            ["find", "id:abc", "then", "read", "--material-origin"],
+            "human-",
+        )
+    )
+
+    assert "human_authored" in items
 
 
 @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])

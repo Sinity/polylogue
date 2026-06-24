@@ -1,6 +1,6 @@
 # Oracle-quality taxonomy.
 #
-# Transitional proof-era taxonomy. #1065/#594 should replace user-facing
+# Transitional artifact taxonomy. #1065/#594 should replace user-facing
 # report language with standard artifact sources: pytest, coverage,
 # benchmark, CI, static checks, fuzz/property campaigns, and runtime evidence.
 # This file is not a source of verification authority.
@@ -8,11 +8,11 @@
 # Updated 2026-04-29 from realized codebase state.
 
 description: >
-  Transitional taxonomy for old oracle classifications. Retained only
+  Transitional taxonomy for artifact-source classifications. Retained only
   while #1065/#594 move reports to standard artifact language.
 
 oracles:
-  proof:
+  behavior_test:
     counts_as: regression-catching
     independence: independent_observation
     example: pytest assert on real behavior
@@ -54,7 +54,7 @@ oracles:
     typical_use: >
       Lightweight checks that the system starts, responds, and
       exits cleanly under normal conditions. Used in CLI-surface
-      exercises (tier 0), pipeline probes, and post-install
+      smoke checks (tier 0), pipeline probes, and post-install
       verification. Fast feedback for build and packaging
       correctness.
 

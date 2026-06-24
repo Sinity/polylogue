@@ -740,6 +740,61 @@ class TestEdgeCases:
         assert result.messages[0].blocks[0].tool_input == {"cmd": "git status"}
         assert result.messages[1].blocks[0].type == "tool_result"
 
+    def test_event_msg_token_count_preserves_current_model_and_usage_extras(self) -> None:
+        payload = [
+            {
+                "type": "turn_context",
+                "payload": {"cwd": "/repo/polylogue", "model": "gpt-5-codex", "effort": "high"},
+            },
+            {
+                "type": "event_msg",
+                "timestamp": "2026-01-01T00:00:02Z",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "last_token_usage": {
+                            "input_tokens": 10,
+                            "cached_input_tokens": 2,
+                            "cache_creation_input_tokens": 3,
+                            "uncached_input_tokens": 8,
+                            "output_tokens": 4,
+                        },
+                        "total_token_usage": {
+                            "input_tokens": 100,
+                            "cached_input_tokens": 20,
+                            "cache_creation_input_tokens": 30,
+                            "uncached_input_tokens": 80,
+                            "output_tokens": 40,
+                        },
+                        "model_context_window": 200000,
+                    },
+                },
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        assert [event.event_type for event in result.session_events] == ["turn_context", "token_count"]
+        usage_event = result.session_events[1]
+        assert usage_event.timestamp == "2026-01-01T00:00:02Z"
+        assert usage_event.payload["model"] == "gpt-5-codex"
+        assert usage_event.payload["model_effort"] == "high"
+        assert usage_event.payload["last_token_usage"] == {
+            "input_tokens": 10,
+            "cached_input_tokens": 2,
+            "cache_write_tokens": 3,
+            "uncached_input_tokens": 8,
+            "output_tokens": 4,
+        }
+        assert usage_event.payload["total_token_usage"] == {
+            "input_tokens": 100,
+            "cached_input_tokens": 20,
+            "cache_write_tokens": 30,
+            "uncached_input_tokens": 80,
+            "output_tokens": 40,
+        }
+        assert usage_event.payload["model_context_window"] == 200000
+
     def test_token_count_event_preserves_nested_usage_counters(self) -> None:
         payload = [
             {

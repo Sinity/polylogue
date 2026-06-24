@@ -22,7 +22,7 @@ over the `CREATE TABLE` statement.
 | Tier file | Tier | Version constant |
 |-----------|------|------------------|
 | `source.py` | `source.db` | `SOURCE_SCHEMA_VERSION = 1` |
-| `index.py` | `index.db` | `INDEX_SCHEMA_VERSION = 6` |
+| `index.py` | `index.db` | `INDEX_SCHEMA_VERSION = 7` |
 | `embeddings.py` | `embeddings.db` | `EMBEDDINGS_SCHEMA_VERSION = 1` |
 | `user.py` | `user.db` | `USER_SCHEMA_VERSION = 3` |
 | `ops.py` | `ops.db` | `OPS_SCHEMA_VERSION = 1` |
@@ -89,6 +89,37 @@ convergence debt (`convergence_debt`), cursor-lag samples, daemon stage/event
 logs, embedding catch-up runs, and OTLP spans/telemetry. Safe to discard; the
 daemon repopulates it.
 
+## Schema/data-model ownership matrix (#2246)
+
+This matrix records the current owner for the evidence-cockpit concepts that
+were ambiguous during #2246. It is intentionally source-grounded: canonical DDL
+stays in `polylogue/storage/sqlite/archive_tiers/`, and this prose names the
+storage owner rather than duplicating full table definitions.
+
+| Concept | Current owner | Contract | Status / residual |
+|---------|---------------|----------|-------------------|
+| Raw import explanation | `source.db` raw acquisition rows plus `index.db` produced sessions/messages/blocks/actions | ImportExplain remains a read payload over raw sessions, artifacts, hook events, sidecars, blobs, parse/validation state, and produced index rows. | No parallel ImportExplain table. Add one only as a cache/index for the landed payload after a measured read gap. |
+| Actions/tool results | `index.db.blocks` plus the `actions` view | Tool-use/result pairing is session-scoped: `tool_id` and `session_id` must both match. | Covered by DDL and regression tests with duplicate provider-local tool ids. |
+| Provider session lifecycle events | `index.db.session_events` | Narrow provider-native lifecycle markers. The current closed event type is `compaction`. | The name does not claim ownership of all observed events. |
+| Observed events and context snapshots | Derived query/read surfaces for now | Durable tables are deferred until ref resolution, OTel projection, or query surfaces need stable row identity or indexing. | No speculative `observed_events` or `context_snapshots` table. |
+| User overlays | `user.db.assertions` | Human marks, annotations, corrections, suppressions, tags, metadata, saved views, recall packs, workspaces, blackboard notes, candidates, and judgments are assertion rows. | Deleted specific overlay tables are not current storage. `index.db.session_tags` is only a rebuildable/search/read projection. |
+| Refs | Resolver/read boundary first | Refs may live inside payload JSON, evidence refs, target refs, and work/context refs. | No global refs table until resolver usage proves unresolved-ref auditing or performance needs persistence. |
+| Archive debt and readiness | `ops.db` for disposable operator state; `source.db`/`index.db` for durable evidence read by diagnostics | Raw-materialization debt, FTS trust, and provider-usage gaps are diagnostics over tier state, not a new durable domain. | Debt rows in `ops.db` are disposable. Durable facts remain in source/index tables. |
+| OTel spans | `source.db.otlp_spans` and `ops.db.otlp_spans` with distinct meanings | Source-tier spans are raw/source-correlated evidence tied to origin/native session ids; ops-tier spans are daemon/runtime telemetry. | Read paths should choose the tier by durability, not by table name alone. |
+| Embeddings | `embeddings.db` | One active 1024-dimensional `message_embeddings` vec table plus metadata/status. | Multiple providers/dimensions require a deliberate schema design before another embedding family is added. |
+
+## JSON payload contracts
+
+SQLite `STRICT` mode does not make a `TEXT` column JSON-shaped. New executable
+JSON checks should use the shared helpers in `archive_tiers/common.py` so the
+contract is visible in canonical DDL instead of hand-written per table. Index
+schema version 7 enforces object JSON for `blocks.tool_input` and
+`session_provider_usage_events.payload_json`, two hot read-path columns with
+current typed writers. Broader payload columns such as insight evidence,
+inference, enrichment, work-event arrays, source hook payloads, and user
+assertion JSON should be constrained only after their historical write shapes
+are audited and the required tier-version/rebuild consequence is documented.
+
 ## Identifiers
 
 Primary keys in `index.db` are **generated** from natural components rather than
@@ -126,8 +157,9 @@ keyed `(message_id, position)`, with a `block_type` constrained to the
 extracted from `tool_input` JSON.
 
 `actions` is a **view**, not a table: it left-joins `tool_use` blocks to their
-matching `tool_result` block (by `tool_id`) so tool executions read as paired
-records without a separate materialization.
+matching `tool_result` block by **both** `tool_id` and `session_id`. Provider
+`tool_id` values are treated as session-local evidence, so the view must not
+pair a use block with a same-id result block from another session.
 
 ## Full-text search
 

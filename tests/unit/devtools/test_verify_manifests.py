@@ -13,9 +13,9 @@ def test_coverage_gap_manifest_records_require_closure_path(tmp_path: Path) -> N
     plans = tmp_path
     (plans / "example-coverage.yaml").write_text(
         """coverage_gaps:
-  - id: docs-media.generated-proof
+  - id: docs-media.generated-evidence
     domain: docs_media
-    gap: Missing generated media proof
+    gap: Missing generated media evidence
     owner: docs-media
     severity: major
     declared_at: "2026-05-02"
@@ -34,7 +34,7 @@ def test_coverage_gap_manifest_rejects_gap_without_closure_path(tmp_path: Path) 
     (plans / "example-coverage.yaml").write_text(
         """coverage_gaps:
   - domain: docs_media
-    gap: Missing generated media proof
+    gap: Missing generated media evidence
 """,
         encoding="utf-8",
     )
@@ -56,15 +56,15 @@ def test_coverage_gap_manifest_rejects_non_command_next_evidence(tmp_path: Path)
     plans = tmp_path
     (plans / "example-coverage.yaml").write_text(
         """coverage_gaps:
-  - id: docs-media.generated-proof
+  - id: docs-media.generated-evidence
     domain: docs_media
-    gap: Missing generated media proof
+    gap: Missing generated media evidence
     owner: docs-media
     severity: major
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
     issue: "#590"
-    next_evidence: Add generated media proof gate
+    next_evidence: Add generated media evidence gate
 """,
         encoding="utf-8",
     )
@@ -72,7 +72,7 @@ def test_coverage_gap_manifest_rejects_non_command_next_evidence(tmp_path: Path)
     errors = verify_manifests.check_coverage_gaps(plans)
 
     assert errors == [
-        f"{plans / 'example-coverage.yaml'}: coverage_gaps[0] 'docs-media.generated-proof' "
+        f"{plans / 'example-coverage.yaml'}: coverage_gaps[0] 'docs-media.generated-evidence' "
         "next_evidence does not resolve to a known command"
     ]
 
@@ -81,9 +81,9 @@ def test_coverage_gap_manifest_allows_pytest_filter_next_evidence(tmp_path: Path
     plans = tmp_path
     (plans / "example-coverage.yaml").write_text(
         """coverage_gaps:
-  - id: docs-media.generated-proof
+  - id: docs-media.generated-evidence
     domain: docs_media
-    gap: Missing generated media proof
+    gap: Missing generated media evidence
     owner: docs-media
     severity: major
     declared_at: "2026-05-02"
@@ -97,22 +97,22 @@ def test_coverage_gap_manifest_allows_pytest_filter_next_evidence(tmp_path: Path
     assert verify_manifests.check_coverage_gaps(plans) == []
 
 
-def test_coverage_gap_manifest_rejects_proof_subject_slug_collision(tmp_path: Path) -> None:
+def test_coverage_gap_manifest_rejects_coverage_subject_slug_collision(tmp_path: Path) -> None:
     plans = tmp_path
     (plans / "example-coverage.yaml").write_text(
         """coverage_gaps:
-  - id: docs_media.generated_proof
+  - id: docs_media.generated_evidence
     domain: docs_media
-    gap: Missing generated media proof
+    gap: Missing generated media evidence
     owner: docs-media
     severity: major
     declared_at: "2026-05-02"
     review_after: "2026-08-01"
     issue: "#590"
     next_evidence: devtools render docs-surface --check
-  - id: docs-media.generated-proof
+  - id: docs-media.generated-evidence
     domain: docs_media
-    gap: Missing generated media proof
+    gap: Missing generated media evidence
     owner: docs-media
     severity: major
     declared_at: "2026-05-02"
@@ -126,8 +126,8 @@ def test_coverage_gap_manifest_rejects_proof_subject_slug_collision(tmp_path: Pa
     errors = verify_manifests.check_coverage_gaps(plans)
 
     assert errors == [
-        f"{plans / 'example-coverage.yaml'}: coverage_gaps[1] 'docs-media.generated-proof' "
-        "duplicate proof subject slug 'docs-media-generated-proof'"
+        f"{plans / 'example-coverage.yaml'}: coverage_gaps[1] 'docs-media.generated-evidence' "
+        "duplicate coverage subject slug 'docs-media-generated-evidence'"
     ]
 
 

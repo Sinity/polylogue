@@ -106,7 +106,11 @@ schema shape:
 - Schema bumps are deletes-then-defines, never deltas. A schema change
   edits the owning tier DDL/version and documents the re-ingest expectation.
   No upgrade helpers are added for the bump.
-- Index schema version 6 adds `session_provider_usage_events` for
+- Index schema version 7 adds JSON-object checks for `blocks.tool_input`
+  and `session_provider_usage_events.payload_json`. Existing index tiers must
+  be rebuilt from source evidence so the canonical read model is recreated with
+  the stricter JSON contract.
+- Index schema version 6 added `session_provider_usage_events` for
   provider-reported token usage events and single-model rollup repair from
   those events. Existing index tiers must be rebuilt from source evidence so
   Codex `token_count` records materialize into durable provider usage rows
@@ -126,6 +130,13 @@ states, no `_apply_version_upgrade_plan` rollback windows). If the configured
 archive path is not the current schema, the operator moves it aside and
 re-ingests from source. Files that are not configured archive paths are not
 classified or handled by the archive runtime.
+
+The only compatibility carve-out is `ops.db`: `archive_tiers/bootstrap.py` may
+use narrowly scoped `ALTER TABLE ... ADD COLUMN` helpers for disposable daemon
+telemetry, such as ingest-cursor runtime fields and cursor-lag rollups. That
+exception is not a migration pattern for `source.db`, `index.db`,
+`embeddings.db`, or `user.db`; durable tier changes still require a version
+bump and rebuild/reset path.
 
 ## Archive Activation
 

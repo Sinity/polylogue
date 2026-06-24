@@ -113,13 +113,13 @@ def _render_action_matrix(
 
 def _render_action_unit_table(rows: tuple[ActionUnitEvidence, ...]) -> list[str]:
     lines = [
-        "| Action unit | Evidence unit | Proof surface | Negative guard |",
+        "| Action unit | Evidence unit | Evidence surface | Negative guard |",
         "| --- | --- | --- | --- |",
     ]
     for row in rows:
         lines.append(
             f"| `{row.action_id}` | {_escape_table(row.evidence_unit)} | "
-            f"{_escape_table(row.proof_surface)} | {_escape_table(row.negative_guard)} |"
+            f"{_escape_table(row.evidence_surface)} | {_escape_table(row.negative_guard)} |"
         )
     return lines
 
@@ -152,10 +152,11 @@ def _render_affordance_fields() -> list[str]:
         "",
         _code_list(fields),
         "",
-        "Load-bearing fields for workflow execution are `target`, `input_unit`, `execution`-adjacent metadata "
-        "(`cardinality_state`, `safety_level`, `guards`, `requires_daemon`), output metadata "
-        "(`destination_support`, `format_support`, `default_format`, `machine_envelope`), and safety/availability "
-        "metadata (`confirmation_command`, `selection_command`, `disabled_reason`, `estimated_cost`, `next_actions`).",
+        "Load-bearing fields for workflow execution are `target`, `input.unit`, `execution.cardinality_state`, "
+        "`execution.guards`, `execution.requires_daemon`, output metadata (`output.destination_support`, "
+        "`output.format_support`, `output.default_format`, `output.machine_envelope`), and safety/availability "
+        "metadata (`safety.safety_level`, `safety.confirmation_command`, `safety.selection_command`, "
+        "`availability.disabled_reason`, `availability.estimated_cost`, `availability.next_actions`).",
         "",
     ]
 
@@ -167,13 +168,16 @@ def _render_repeatable_template() -> list[str]:
         "1. **Select intentionally.** Start with `polylogue find QUERY`. `find` declares query intent; command words after "
         "`then` are actions. A bare `read` at the start remains a read command, not hidden query text.",
         "2. **Preserve exact refs.** `id:...`, `session:...`, message refs, assertion refs, and operation refs are identity "
-        "filters. If an exact ref misses, the workflow returns no target or an unresolved ref instead of falling back to FTS.",
+        "filters. If an exact ref misses, the workflow returns no target or an unresolved ref instead of falling back to FTS; "
+        "an exact ref plus extra text remains a scoped search within that target.",
         "3. **Apply cardinality before execution.** Singleton actions select one target; explicit multi actions need `--all`, "
-        "`--first`, a bounded export mode, or an action-specific multi contract. Multi-match `then read` must be explicit.",
+        "`--first`, a bounded export mode, or an action-specific multi contract. Multi-match `then read` must be explicit, "
+        "while aggregate actions such as `analyze --facets` accept zero, one, or many sessions without selecting a target.",
         "4. **Expose the output contract.** Human output is default where available; JSON/NDJSON only exist when the action/read-view "
         "declares that format. Unsupported syntax or formats fail loudly.",
-        "5. **Surface safety and availability.** Mutating/destructive actions carry `safety_level`, guards, and a "
-        "`confirmation_command` or `selection_command`. Disabled or daemon-required actions report that posture in the affordance.",
+        "5. **Surface safety and availability.** Mutating/destructive actions carry `safety.safety_level`, "
+        "`execution.guards`, and a `safety.confirmation_command` or `safety.selection_command`. Disabled or "
+        "daemon-required actions report that posture in `availability`/`execution`.",
         "6. **Return next action affordances.** A workflow result should tell the operator what can happen next, rather than requiring "
         "the UI to invent a second truth ledger.",
         "",
@@ -222,7 +226,7 @@ def build_document(
         "",
         "## Action-Unit Evidence",
         "",
-        "Action units are the proof grain for query-action execution. They define the target evidence, proof surface, and negative "
+        "Action units are the evidence grain for query-action execution. They define the target evidence, proof surface, and negative "
         "guard that keeps a workflow honest.",
         "",
         *_render_action_unit_table(ACTION_UNIT_EVIDENCE),
@@ -236,6 +240,23 @@ def build_document(
         "spec and must not broaden to FTS when absent. Text query matches are candidate result sets; downstream actions then apply "
         "the action cardinality. In particular, `find QUERY then read` reads one selected session unless the operator chooses "
         "`--all` or an explicit bounded export/read mode.",
+        "",
+        "Cardinality semantics are explicit: zero matches return no selected target or empty scoped buckets; one exact match is "
+        "the selected session/read payload; many ranked matches remain candidate rows for singleton actions and aggregate buckets "
+        "for `analyze --facets`.",
+        "",
+        "## Facet Family Contract",
+        "",
+        "`analyze --facets` names families rather than leaking raw bucket internals. Cheap default families are `total_counts`, "
+        "`origins`, and `tags`. Deferred detail families are `repos`, `role_counts`, `material_origins`, `message_types`, "
+        "`action_types`, and `has_flags`; JSON reports each family in `family_status` with `label`, `source`, "
+        "`canonicalization`, `expensive`, freshness/degraded fields, and `deferred_families` when omitted by default.",
+        "",
+        "The family meanings stay separate: provider `origins` describe archive/source provider; `role_counts` are provider-reported "
+        "message roles and not authoredness; `material_origins` describe human/assistant/runtime provenance; `message_types` "
+        "describe normalized content kind; `tags` are user/session labels; `repos` are canonical product repository labels. "
+        "Incidental archive paths and noisy repo/path tokens are reported under omitted/noisy counts instead of being presented as "
+        "authoritative repositories.",
         "",
         "## Completion Contract",
         "",

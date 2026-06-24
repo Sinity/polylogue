@@ -19,7 +19,7 @@ class CommandPath:
         return " ".join(self.path)
 
     @property
-    def help_exercise_name(self) -> str:
+    def help_inventory_id(self) -> str:
         return "help-" + "-".join(self.path)
 
 

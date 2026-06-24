@@ -51,6 +51,8 @@ def test_archive_facet_aggregation_counts_omitted_repo_noise() -> None:
         );
         CREATE TABLE messages (
             session_id TEXT,
+            role TEXT,
+            material_origin TEXT,
             message_type TEXT,
             has_tool_use INTEGER,
             has_thinking INTEGER,
@@ -76,11 +78,28 @@ def test_archive_facet_aggregation_counts_omitted_repo_noise() -> None:
             ("s2", "repo-noise"),
         ],
     )
+    conn.executemany(
+        """
+        INSERT INTO messages(session_id, role, material_origin, message_type, has_tool_use, has_thinking, has_paste)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("s1", "user", "human_authored", "message", 0, 0, 0),
+            ("s1", "assistant", "assistant_authored", "message", 1, 0, 0),
+            ("s2", "user", "runtime_protocol", "tool_result", 0, 0, 0),
+        ],
+    )
 
     buckets = _archive_aggregate_facet_families(conn, session_ids=None)
 
     assert buckets["repos"] == {"polylogue": 1}
     assert buckets["omitted"] == {"repos": 1}
+    assert buckets["role_counts"] == {"user": 2, "assistant": 1}
+    assert buckets["material_origins"] == {
+        "human_authored": 1,
+        "assistant_authored": 1,
+        "runtime_protocol": 1,
+    }
 
 
 def test_archive_facet_aggregation_deduplicates_after_canonicalization() -> None:
@@ -99,6 +118,8 @@ def test_archive_facet_aggregation_deduplicates_after_canonicalization() -> None
         );
         CREATE TABLE messages (
             session_id TEXT,
+            role TEXT,
+            material_origin TEXT,
             message_type TEXT,
             has_tool_use INTEGER,
             has_thinking INTEGER,

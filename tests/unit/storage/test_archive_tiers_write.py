@@ -852,6 +852,7 @@ def test_archive_tiers_writer_materializes_provider_usage_events(tmp_path: Path)
                     "last_token_usage": {
                         "input_tokens": 11,
                         "cached_input_tokens": 2,
+                        "cache_write_tokens": 1,
                         "output_tokens": 3,
                         "reasoning_output_tokens": 4,
                         "total_tokens": 20,
@@ -859,6 +860,7 @@ def test_archive_tiers_writer_materializes_provider_usage_events(tmp_path: Path)
                     "total_token_usage": {
                         "input_tokens": 100,
                         "cached_input_tokens": 20,
+                        "cache_write_tokens": 10,
                         "output_tokens": 30,
                         "reasoning_output_tokens": 40,
                         "total_tokens": 190,
@@ -875,9 +877,9 @@ def test_archive_tiers_writer_materializes_provider_usage_events(tmp_path: Path)
         """
         SELECT usage_event_id, source_message_id, position, provider_event_type,
                last_input_tokens, last_output_tokens, last_cached_input_tokens,
-               last_reasoning_output_tokens, last_total_tokens,
+               last_cache_write_tokens, last_reasoning_output_tokens, last_total_tokens,
                total_input_tokens, total_output_tokens, total_cached_input_tokens,
-               total_reasoning_output_tokens, total_tokens, model_context_window,
+               total_cache_write_tokens, total_reasoning_output_tokens, total_tokens, model_context_window,
                occurred_at_ms
         FROM session_provider_usage_events
         WHERE session_id = ?
@@ -892,11 +894,13 @@ def test_archive_tiers_writer_materializes_provider_usage_events(tmp_path: Path)
         "last_input_tokens": 11,
         "last_output_tokens": 3,
         "last_cached_input_tokens": 2,
+        "last_cache_write_tokens": 1,
         "last_reasoning_output_tokens": 4,
         "last_total_tokens": 20,
         "total_input_tokens": 100,
         "total_output_tokens": 30,
         "total_cached_input_tokens": 20,
+        "total_cache_write_tokens": 10,
         "total_reasoning_output_tokens": 40,
         "total_tokens": 190,
         "model_context_window": 200000,
@@ -951,6 +955,185 @@ def test_provider_usage_events_repair_single_model_usage_rollup(tmp_path: Path) 
         "cache_read_tokens": 20,
         "cache_write_tokens": 0,
         "cost_provenance": "origin_reported",
+    }
+
+
+def test_provider_usage_events_roll_up_simple_last_usage_when_no_cumulative_total(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-usage-last-only",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                model_name="gpt-5-codex",
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="first")],
+            )
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "last_token_usage": {
+                        "input_tokens": 10,
+                        "cached_input_tokens": 2,
+                        "cache_write_tokens": 3,
+                        "output_tokens": 5,
+                        "reasoning_output_tokens": 7,
+                    },
+                },
+            ),
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "last_token_usage": {"input_tokens": 20, "output_tokens": 6},
+                },
+            ),
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, session)
+
+    usage = conn.execute(
+        """
+        SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_provenance
+        FROM session_model_usage
+        WHERE session_id = ? AND model_name = 'gpt-5-codex'
+        """,
+        (session_id,),
+    ).fetchone()
+    assert dict(usage) == {
+        "input_tokens": 30,
+        "output_tokens": 18,
+        "cache_read_tokens": 2,
+        "cache_write_tokens": 3,
+        "cost_provenance": "origin_reported",
+    }
+
+
+def test_provider_usage_events_roll_up_multiple_named_models_without_guessing(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-usage-multi-model",
+        models_used=["gpt-5-codex", "o4-mini"],
+        messages=[],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-5-codex",
+                    "total_token_usage": {"input_tokens": 100, "output_tokens": 20},
+                },
+            ),
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "model": "o4-mini",
+                    "total_token_usage": {"input_tokens": 50, "output_tokens": 10},
+                },
+            ),
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "total_token_usage": {"input_tokens": 999, "output_tokens": 999},
+                },
+            ),
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, session)
+
+    rows = conn.execute(
+        """
+        SELECT model_name, input_tokens, output_tokens
+        FROM session_model_usage
+        WHERE session_id = ?
+        ORDER BY model_name
+        """,
+        (session_id,),
+    ).fetchall()
+    assert [dict(row) for row in rows] == [
+        {"model_name": "gpt-5-codex", "input_tokens": 100, "output_tokens": 20},
+        {"model_name": "o4-mini", "input_tokens": 50, "output_tokens": 10},
+    ]
+
+
+def test_writer_materializes_claude_message_usage_events_without_overriding_priced_rollup(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="claude-usage-ledger",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                model_name="claude-sonnet-4-20250514",
+                input_tokens=10,
+                output_tokens=5,
+                cache_read_tokens=2,
+                cache_write_tokens=1,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="answer")],
+            )
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="message_usage",
+                source_message_provider_id="m1",
+                payload={
+                    "type": "message_usage",
+                    "model": "claude-sonnet-4-20250514",
+                    "last_token_usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 5,
+                        "cached_input_tokens": 2,
+                        "cache_write_tokens": 1,
+                    },
+                },
+            )
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, session)
+
+    event = conn.execute(
+        """
+        SELECT provider_event_type, model_name, last_input_tokens, last_output_tokens,
+               last_cached_input_tokens, last_cache_write_tokens
+        FROM session_provider_usage_events
+        WHERE session_id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+    assert dict(event) == {
+        "provider_event_type": "message_usage",
+        "model_name": "claude-sonnet-4-20250514",
+        "last_input_tokens": 10,
+        "last_output_tokens": 5,
+        "last_cached_input_tokens": 2,
+        "last_cache_write_tokens": 1,
+    }
+
+    rollup = conn.execute(
+        """
+        SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_provenance
+        FROM session_model_usage
+        WHERE session_id = ? AND model_name = 'claude-sonnet-4-20250514'
+        """,
+        (session_id,),
+    ).fetchone()
+    assert dict(rollup) == {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "cache_read_tokens": 2,
+        "cache_write_tokens": 1,
+        "cost_provenance": "priced",
     }
 
 

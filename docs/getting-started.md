@@ -4,10 +4,12 @@
 
 A 5-minute quickstart for Polylogue.
 
-## Install
+## Enter the source checkout
 
 ```bash
-pip install polylogue
+git clone https://github.com/Sinity/polylogue.git
+cd polylogue
+nix develop
 ```
 
 Verify:
@@ -17,8 +19,9 @@ polylogue --version
 # polylogue X.Y.Z (commit 0000000)
 ```
 
-No configuration file needed. Polylogue follows XDG conventions and works out of
-the box.
+No packaged PyPI/Homebrew/container install path is documented as current until
+release artifacts exist and have been smoke-tested. From the dev shell,
+Polylogue follows XDG conventions and works without a mandatory config file.
 
 ## First search
 

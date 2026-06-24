@@ -1780,7 +1780,7 @@ def _write_session_events(
                 ),
             )
             position += 1
-        elif event.event_type == "token_count":
+        elif event.event_type in {"token_count", "message_usage"}:
             _write_provider_usage_event(
                 conn,
                 session_id,
@@ -1805,25 +1805,28 @@ def _write_provider_usage_event(
         INSERT OR REPLACE INTO session_provider_usage_events (
             session_id, source_message_id, position, provider_event_type, model_name,
             last_input_tokens, last_output_tokens, last_cached_input_tokens,
-            last_reasoning_output_tokens, last_total_tokens,
+            last_cache_write_tokens, last_reasoning_output_tokens, last_total_tokens,
             total_input_tokens, total_output_tokens, total_cached_input_tokens,
-            total_reasoning_output_tokens, total_tokens, model_context_window,
+            total_cache_write_tokens, total_reasoning_output_tokens, total_tokens, model_context_window,
             payload_json, occurred_at_ms
-        ) VALUES (?, ?, ?, 'token_count', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             session_id,
             source_message_id,
             position,
+            _sqlite_text(event.event_type),
             _sqlite_text(_payload_string(event.payload, "model", "model_name")),
             _payload_int(last_usage, "input_tokens"),
             _payload_int(last_usage, "output_tokens"),
             _payload_int(last_usage, "cached_input_tokens"),
+            _payload_int(last_usage, "cache_write_tokens"),
             _payload_int(last_usage, "reasoning_output_tokens"),
             _payload_int(last_usage, "total_tokens"),
             _payload_int(total_usage, "input_tokens"),
             _payload_int(total_usage, "output_tokens"),
             _payload_int(total_usage, "cached_input_tokens"),
+            _payload_int(total_usage, "cache_write_tokens"),
             _payload_int(total_usage, "reasoning_output_tokens"),
             _payload_int(total_usage, "total_tokens"),
             _payload_optional_int(event.payload, "model_context_window"),
@@ -1834,47 +1837,126 @@ def _write_provider_usage_event(
 
 
 def _aggregate_provider_usage_into_model_usage(conn: sqlite3.Connection, session_id: str) -> None:
-    """Fold provider-reported total usage into model usage for single-model sessions."""
+    """Fold provider-reported token-count totals into model usage rows.
 
-    usage_row = conn.execute(
+    Codex ``token_count`` rows may carry cumulative ``total_token_usage``. For
+    those rows we take the latest total per model instead of summing the whole
+    event stream. Older/simple token-count rows only expose request-scoped
+    ``last_token_usage``; those are summed per model. Unknown-model events only
+    fall back to a session model when exactly one model row exists, keeping
+    multi-model sessions auditable rather than guessed.
+    """
+
+    rows = conn.execute(
         """
-        SELECT model_name, total_input_tokens, total_output_tokens,
-               total_cached_input_tokens, total_reasoning_output_tokens
+        SELECT provider_event_type, model_name, position,
+               last_input_tokens, last_output_tokens, last_cached_input_tokens,
+               last_cache_write_tokens, last_reasoning_output_tokens, last_total_tokens,
+               total_input_tokens, total_output_tokens, total_cached_input_tokens,
+               total_cache_write_tokens, total_reasoning_output_tokens, total_tokens
         FROM session_provider_usage_events
         WHERE session_id = ?
           AND provider_event_type = 'token_count'
-          AND (
-            total_input_tokens > 0 OR total_output_tokens > 0 OR
-            total_cached_input_tokens > 0 OR total_reasoning_output_tokens > 0 OR
-            total_tokens > 0
-          )
-        ORDER BY position DESC
-        LIMIT 1
+        ORDER BY position
         """,
         (session_id,),
-    ).fetchone()
-    if usage_row is None:
+    ).fetchall()
+    if not rows:
         return
 
-    model_name = str(usage_row[0]).strip() if usage_row[0] else ""
-    if not model_name:
-        model_rows = conn.execute(
+    existing_models = [
+        str(row[0]).strip()
+        for row in conn.execute(
             "SELECT model_name FROM session_model_usage WHERE session_id = ? ORDER BY model_name",
             (session_id,),
         ).fetchall()
-        if len(model_rows) != 1:
-            return
-        model_name = str(model_rows[0][0]).strip()
-    if not model_name:
-        return
+        if row[0] and str(row[0]).strip()
+    ]
 
+    latest_total_by_model: dict[str, tuple[int, int, int, int, int, int]] = {}
+    summed_last_by_model: dict[str, list[int]] = {}
+
+    for row in rows:
+        model_name = str(row[1]).strip() if row[1] else ""
+        if not model_name:
+            model_name = existing_models[0] if len(existing_models) == 1 else ""
+        if not model_name:
+            continue
+
+        last_input = int(row[3] or 0)
+        last_output = int(row[4] or 0)
+        last_cache_read = int(row[5] or 0)
+        last_cache_write = int(row[6] or 0)
+        last_reasoning = int(row[7] or 0)
+        last_total = int(row[8] or 0)
+        total_input = int(row[9] or 0)
+        total_output = int(row[10] or 0)
+        total_cache_read = int(row[11] or 0)
+        total_cache_write = int(row[12] or 0)
+        total_reasoning = int(row[13] or 0)
+        total_tokens = int(row[14] or 0)
+
+        if total_input or total_output or total_cache_read or total_cache_write or total_reasoning or total_tokens:
+            latest_total_by_model[model_name] = (
+                total_input,
+                total_output,
+                total_cache_read,
+                total_cache_write,
+                total_reasoning,
+                total_tokens,
+            )
+            continue
+
+        if last_input or last_output or last_cache_read or last_cache_write or last_reasoning or last_total:
+            bucket = summed_last_by_model.setdefault(model_name, [0, 0, 0, 0, 0])
+            bucket[0] += last_input
+            bucket[1] += last_output
+            bucket[2] += last_cache_read
+            bucket[3] += last_cache_write
+            bucket[4] += last_reasoning
+
+    for model_name, totals in latest_total_by_model.items():
+        _upsert_provider_usage_model_rollup(
+            conn,
+            session_id,
+            model_name,
+            input_tokens=totals[0],
+            output_tokens=totals[1] + totals[4],
+            cache_read_tokens=totals[2],
+            cache_write_tokens=totals[3],
+        )
+
+    for model_name, summed_totals in summed_last_by_model.items():
+        if model_name in latest_total_by_model:
+            continue
+        _upsert_provider_usage_model_rollup(
+            conn,
+            session_id,
+            model_name,
+            input_tokens=summed_totals[0],
+            output_tokens=summed_totals[1] + summed_totals[4],
+            cache_read_tokens=summed_totals[2],
+            cache_write_tokens=summed_totals[3],
+        )
+
+
+def _upsert_provider_usage_model_rollup(
+    conn: sqlite3.Connection,
+    session_id: str,
+    model_name: str,
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int,
+    cache_write_tokens: int,
+) -> None:
     conn.execute(
         """
         INSERT INTO session_model_usage (
             session_id, model_name,
             input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
             cost_provenance
-        ) VALUES (?, ?, ?, ?, ?, 0, 'origin_reported')
+        ) VALUES (?, ?, ?, ?, ?, ?, 'origin_reported')
         ON CONFLICT(session_id, model_name) DO UPDATE SET
             input_tokens       = excluded.input_tokens,
             output_tokens      = excluded.output_tokens,
@@ -1888,9 +1970,10 @@ def _aggregate_provider_usage_into_model_usage(conn: sqlite3.Connection, session
         (
             session_id,
             model_name,
-            int(usage_row[1] or 0),
-            int(usage_row[2] or 0) + int(usage_row[4] or 0),
-            int(usage_row[3] or 0),
+            max(int(input_tokens), 0),
+            max(int(output_tokens), 0),
+            max(int(cache_read_tokens), 0),
+            max(int(cache_write_tokens), 0),
         ),
     )
 

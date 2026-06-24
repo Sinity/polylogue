@@ -13,6 +13,10 @@ from typing import Protocol, TextIO
 
 from devtools import repo_root as _get_root
 from devtools.cli_boundary import invoke_polylogue_cli
+from devtools.visual_artifacts import (
+    READER_VISUAL_SMOKE_PYTEST_COMMAND,
+    reader_visual_artifact_payloads,
+)
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.scenarios import AssertionSpec, ExecutionSpec, polylogue_execution
 
@@ -151,7 +155,8 @@ def list_scenarios(*, as_json: bool) -> int:
         {
             "name": "reader-visual-smoke",
             "kind": "reader-visual",
-            "command": f"{sys.executable} -m pytest -q tests/visual",
+            "command": " ".join((sys.executable, *READER_VISUAL_SMOKE_PYTEST_COMMAND[1:])),
+            "artifact_count": len(reader_visual_artifact_payloads()),
         },
     ]
     payload = {"scenarios": scenarios}
@@ -169,7 +174,7 @@ def list_scenarios(*, as_json: bool) -> int:
 
 def run_reader_visual_smoke(*, report_dir: Path | None, as_json: bool) -> int:
     """Run the daemon reader visual/DOM smoke lane."""
-    command = [sys.executable, "-m", "pytest", "-q", "tests/visual"]
+    command = [sys.executable, *READER_VISUAL_SMOKE_PYTEST_COMMAND[1:]]
     result = subprocess.run(
         command,
         cwd=_get_root(),
@@ -177,16 +182,19 @@ def run_reader_visual_smoke(*, report_dir: Path | None, as_json: bool) -> int:
         capture_output=True,
         check=False,
     )
+    artifact_report = report_dir / "reader-visual-smoke.json" if report_dir is not None else None
     payload: dict[str, object] = {
         "scenario": "reader-visual-smoke",
         "command": command,
         "exit_code": result.returncode,
         "stdout": result.stdout,
         "stderr": result.stderr,
+        "artifact_inventory": reader_visual_artifact_payloads(),
+        "artifact_report": str(artifact_report) if artifact_report is not None else None,
     }
-    if report_dir is not None:
+    if report_dir is not None and artifact_report is not None:
         report_dir.mkdir(parents=True, exist_ok=True)
-        (report_dir / "reader-visual-smoke.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        artifact_report.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     if as_json:
         print(json.dumps(payload, indent=2))
     else:

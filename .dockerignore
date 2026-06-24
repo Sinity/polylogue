@@ -36,7 +36,6 @@ result-*
 
 # Repo-level docs and ops that are not needed at build time
 docs
-showcase
 qa
 qa_outputs
 benchmarks

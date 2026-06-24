@@ -9,36 +9,45 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Final
 
-from polylogue.core.enums import AssertionKind
-from polylogue.core.json import JSONValue, require_json_value
+from polylogue.core.assertions import (
+    AssertionContextPolicy,
+    AssertionStaleness,
+    AssertionValue,
+)
+from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
+from polylogue.core.json import JSONValue
 from polylogue.core.refs import ObjectRef, normalize_object_ref_text, normalize_public_ref_text
 
 if TYPE_CHECKING:
     from polylogue.insights.transforms import DecisionCandidate, RecoveryDigest, TransformRawRef
 
 
-ASSERTION_DEFAULT_STATUS: Final = "active"
-ASSERTION_DEFAULT_VISIBILITY: Final = "private"
+ASSERTION_DEFAULT_STATUS: Final[AssertionStatus] = AssertionStatus.ACTIVE
+ASSERTION_DEFAULT_VISIBILITY: Final[AssertionVisibility] = AssertionVisibility.PRIVATE
 ASSERTION_DEFAULT_AUTHOR_KIND: Final = "user"
 ASSERTION_DEFAULT_AUTHOR_REF: Final = "user:local"
-ASSERTION_DEFAULT_CONTEXT_POLICY: Final[dict[str, JSONValue]] = {"inject": False}
+ASSERTION_DEFAULT_CONTEXT_POLICY: Final[dict[str, JSONValue]] = AssertionContextPolicy.default().as_json_document()
 
 
 def _default_context_policy() -> dict[str, JSONValue]:
     return dict(ASSERTION_DEFAULT_CONTEXT_POLICY)
 
 
-def _normalize_assertion_status(status: str | None) -> str:
-    return status if status is not None else ASSERTION_DEFAULT_STATUS
+def _normalize_assertion_kind(kind: str | AssertionKind) -> AssertionKind:
+    return AssertionKind.from_string(kind)
 
 
-def _normalize_assertion_visibility(visibility: str | None) -> str:
-    return visibility if visibility is not None else ASSERTION_DEFAULT_VISIBILITY
+def _normalize_assertion_status(status: str | AssertionStatus | None) -> AssertionStatus:
+    return AssertionStatus.from_string(status) if status is not None else ASSERTION_DEFAULT_STATUS
+
+
+def _normalize_assertion_visibility(visibility: str | AssertionVisibility | None) -> AssertionVisibility:
+    return AssertionVisibility.from_string(visibility) if visibility is not None else ASSERTION_DEFAULT_VISIBILITY
 
 
 def _normalize_assertion_author_kind(author_kind: str | None) -> str:
@@ -49,7 +58,17 @@ def _normalize_assertion_author_ref(author_ref: str | None) -> str:
     return author_ref if author_ref is not None else ASSERTION_DEFAULT_AUTHOR_REF
 
 
-def _normalize_assertion_context_policy(context_policy: dict[str, object] | None) -> dict[str, JSONValue]:
+def _normalize_assertion_value(value: object | None) -> AssertionValue:
+    return AssertionValue.from_raw(value)
+
+
+def _normalize_assertion_staleness(staleness: Mapping[str, object] | None) -> AssertionStaleness | None:
+    return AssertionStaleness.from_raw(staleness)
+
+
+def _normalize_assertion_context_policy(
+    context_policy: Mapping[str, object] | AssertionContextPolicy | None,
+) -> AssertionContextPolicy:
     """Return the stored assertion context policy.
 
     Assertions are durable user-tier state first. They must not flow into future
@@ -59,14 +78,9 @@ def _normalize_assertion_context_policy(context_policy: dict[str, object] | None
     policy such as ``promotion_required``.
     """
 
-    if context_policy is None:
-        return _default_context_policy()
-    normalized = {
-        key: require_json_value(value, context=f"assertion context_policy.{key}")
-        for key, value in context_policy.items()
-    }
-    normalized.setdefault("inject", False)
-    return normalized
+    if isinstance(context_policy, AssertionContextPolicy):
+        return context_policy
+    return AssertionContextPolicy.from_raw(context_policy)
 
 
 def _now_ms() -> int:
@@ -121,6 +135,13 @@ def _loads_dict_optional(value: object | None) -> dict[str, object] | None:
     if isinstance(parsed, dict):
         return dict(parsed)
     return None
+
+
+def _assertion_value_document(value: JSONValue | None) -> dict[str, object]:
+    payload: dict[str, object] = {}
+    if isinstance(value, dict):
+        payload.update(value)
+    return payload
 
 
 def _deterministic_id(prefix: str, *parts: str) -> str:
@@ -319,17 +340,17 @@ class ArchiveAssertionEnvelope:
     scope_ref: str | None
     target_ref: str
     key: str | None
-    kind: str
-    value: object | None
+    kind: AssertionKind
+    value: JSONValue | None
     body_text: str | None
     author_ref: str | None
     author_kind: str | None
     evidence_refs: list[str]
-    status: str | None
-    visibility: str | None
+    status: AssertionStatus
+    visibility: AssertionVisibility
     confidence: float | None
-    staleness: dict[str, object] | None
-    context_policy: dict[str, JSONValue] | None
+    staleness: dict[str, JSONValue] | None
+    context_policy: dict[str, JSONValue]
     supersedes: list[str]
     created_at_ms: int
     updated_at_ms: int
@@ -594,8 +615,8 @@ def upsert_blackboard_note(
     author_ref: str | None = None,
     author_kind: str = "user",
     evidence_refs: Sequence[str] | None = None,
-    staleness: dict[str, object] | None = None,
-    context_policy: dict[str, object] | None = None,
+    staleness: Mapping[str, object] | None = None,
+    context_policy: Mapping[str, object] | AssertionContextPolicy | None = None,
     now_ms: int | None = None,
 ) -> ArchiveBlackboardNoteEnvelope:
     """Insert-or-update one blackboard note assertion."""
@@ -620,9 +641,9 @@ def upsert_blackboard_note(
 
 def read_archive_suppression_envelope(conn: sqlite3.Connection, session_id: str) -> ArchiveSuppressionEnvelope:
     assertion = read_assertion_envelope(conn, assertion_id_for_suppression(session_id))
-    if assertion is None or assertion.status == "deleted":
+    if assertion is None or assertion.status == AssertionStatus.DELETED:
         raise KeyError(session_id)
-    assertion_value = assertion.value if isinstance(assertion.value, dict) else {}
+    assertion_value = _assertion_value_document(assertion.value)
     return ArchiveSuppressionEnvelope(
         session_id=session_id,
         reason=assertion.body_text,
@@ -634,10 +655,10 @@ def read_archive_suppression_envelope(conn: sqlite3.Connection, session_id: str)
 
 def read_archive_mark_envelope(conn: sqlite3.Connection, mark_id: str) -> ArchiveMarkEnvelope:
     assertion = read_assertion_envelope(conn, _deterministic_id(f"assertion-{AssertionKind.MARK}", mark_id))
-    if assertion is None or assertion.status == "deleted":
+    if assertion is None or assertion.status == AssertionStatus.DELETED:
         raise KeyError(mark_id)
     target_type, target_id = _split_target_ref(assertion.target_ref)
-    assertion_value = assertion.value if isinstance(assertion.value, dict) else {}
+    assertion_value = _assertion_value_document(assertion.value)
     return ArchiveMarkEnvelope(
         mark_id=mark_id,
         target_type=target_type,
@@ -652,7 +673,7 @@ def read_archive_mark_envelope(conn: sqlite3.Connection, mark_id: str) -> Archiv
 
 def read_archive_annotation_envelope(conn: sqlite3.Connection, annotation_id: str) -> ArchiveAnnotationEnvelope:
     assertion = read_assertion_envelope(conn, assertion_id_for_annotation(annotation_id))
-    if assertion is None or assertion.status == "deleted":
+    if assertion is None or assertion.status == AssertionStatus.DELETED:
         raise KeyError(annotation_id)
     target_type, target_id = _split_target_ref(assertion.target_ref)
     return ArchiveAnnotationEnvelope(
@@ -670,10 +691,10 @@ def read_archive_correction_envelope(
     correction_id: str,
 ) -> ArchiveCorrectionEnvelope:
     assertion = read_assertion_envelope(conn, assertion_id_for_correction(correction_id))
-    if assertion is None or assertion.status == "deleted":
+    if assertion is None or assertion.status == AssertionStatus.DELETED:
         raise KeyError(correction_id)
     target_type, target_id = _split_target_ref(assertion.target_ref)
-    assertion_value = assertion.value if isinstance(assertion.value, dict) else {}
+    assertion_value = _assertion_value_document(assertion.value)
     return ArchiveCorrectionEnvelope(
         correction_id=correction_id,
         target_type=target_type,
@@ -689,7 +710,7 @@ def read_archive_saved_view_envelope(conn: sqlite3.Connection, name: str) -> Arc
     assertion = _read_assertion_by_kind_key(conn, AssertionKind.SAVED_QUERY, name)
     if assertion is None:
         raise KeyError(name)
-    assertion_value = assertion.value if isinstance(assertion.value, dict) else {}
+    assertion_value = _assertion_value_document(assertion.value)
     return ArchiveSavedViewEnvelope(
         view_id=_id_from_prefixed_target(assertion.target_ref, "saved_view:"),
         name=str(assertion.key or name),
@@ -701,9 +722,9 @@ def read_archive_saved_view_envelope(conn: sqlite3.Connection, name: str) -> Arc
 
 def read_archive_recall_pack_envelope(conn: sqlite3.Connection, recall_pack_id: str) -> ArchiveRecallPackEnvelope:
     assertion = read_assertion_envelope(conn, assertion_id_for_recall_pack(recall_pack_id))
-    if assertion is None or assertion.status == "deleted":
+    if assertion is None or assertion.status == AssertionStatus.DELETED:
         raise KeyError(recall_pack_id)
-    assertion_value = assertion.value if isinstance(assertion.value, dict) else {}
+    assertion_value = _assertion_value_document(assertion.value)
     return ArchiveRecallPackEnvelope(
         recall_pack_id=recall_pack_id,
         name=str(assertion.key or ""),
@@ -717,7 +738,7 @@ def read_archive_workspace_envelope(conn: sqlite3.Connection, name: str) -> Arch
     assertion = _read_assertion_by_kind_key(conn, AssertionKind.WORKSPACE_NOTE, name)
     if assertion is None:
         raise KeyError(name)
-    assertion_value = assertion.value if isinstance(assertion.value, dict) else {}
+    assertion_value = _assertion_value_document(assertion.value)
     return ArchiveWorkspaceEnvelope(
         workspace_id=_id_from_prefixed_target(assertion.target_ref, "workspace:"),
         name=str(assertion.key or name),
@@ -757,37 +778,42 @@ def _id_from_prefixed_target(target_ref: str, prefix: str) -> str:
 
 
 def _is_active_assertion(envelope: ArchiveAssertionEnvelope) -> bool:
-    return envelope.status != "deleted"
+    return envelope.status != AssertionStatus.DELETED
 
 
-def list_assertions_by_kind(conn: sqlite3.Connection, kind: str) -> list[ArchiveAssertionEnvelope]:
+def list_assertions_by_kind(
+    conn: sqlite3.Connection,
+    kind: str | AssertionKind,
+) -> list[ArchiveAssertionEnvelope]:
     """List active assertions of one kind, newest first."""
     if not _table_exists(conn, "assertions"):
         return []
+    normalized_kind = _normalize_assertion_kind(kind)
     rows = conn.execute(
         f"SELECT {_ASSERTION_COLUMNS} FROM assertions WHERE kind = ? ORDER BY updated_at_ms DESC, assertion_id",
-        (kind,),
+        (normalized_kind.value,),
     ).fetchall()
     return [envelope for row in rows if _is_active_assertion(envelope := _assertion_row_to_envelope(row))]
 
 
 def _read_assertion_by_kind_key(
     conn: sqlite3.Connection,
-    kind: str,
+    kind: str | AssertionKind,
     key: str,
 ) -> ArchiveAssertionEnvelope | None:
     if not _table_exists(conn, "assertions"):
         return None
+    normalized_kind = _normalize_assertion_kind(kind)
     row = conn.execute(
         f"""
         SELECT {_ASSERTION_COLUMNS}
         FROM assertions
         WHERE kind = ?
           AND key = ?
-          AND COALESCE(status, '') != 'deleted'
+          AND COALESCE(status, ?) != ?
         ORDER BY updated_at_ms DESC, assertion_id
         """,
-        (kind, key),
+        (normalized_kind.value, key, ASSERTION_DEFAULT_STATUS.value, AssertionStatus.DELETED.value),
     ).fetchone()
     if row is None:
         return None
@@ -819,7 +845,7 @@ def _blackboard_envelope_from_assertion(assertion: ArchiveAssertionEnvelope) -> 
 
 def read_archive_blackboard_note_envelope(conn: sqlite3.Connection, note_id: str) -> ArchiveBlackboardNoteEnvelope:
     assertion = read_assertion_envelope(conn, assertion_id_for_blackboard_note(note_id))
-    if assertion is None or assertion.status == "deleted":
+    if assertion is None or assertion.status == AssertionStatus.DELETED:
         raise KeyError(note_id)
     return _blackboard_envelope_from_assertion(assertion)
 
@@ -844,7 +870,7 @@ def upsert_assertion(
     *,
     assertion_id: str,
     target_ref: str,
-    kind: str,
+    kind: str | AssertionKind,
     scope_ref: str | None = None,
     key: str | None = None,
     value: object | None = None,
@@ -852,11 +878,11 @@ def upsert_assertion(
     author_ref: str | None = None,
     author_kind: str | None = None,
     evidence_refs: Sequence[str] | None = None,
-    status: str | None = None,
-    visibility: str | None = None,
+    status: str | AssertionStatus | None = None,
+    visibility: str | AssertionVisibility | None = None,
     confidence: float | None = None,
-    staleness: dict[str, object] | None = None,
-    context_policy: dict[str, object] | None = None,
+    staleness: Mapping[str, object] | None = None,
+    context_policy: Mapping[str, object] | AssertionContextPolicy | None = None,
     supersedes: Sequence[str] | None = None,
     now_ms: int | None = None,
 ) -> ArchiveAssertionEnvelope:
@@ -876,6 +902,9 @@ def upsert_assertion(
         if author_ref is not None
         else ASSERTION_DEFAULT_AUTHOR_REF
     )
+    resolved_kind = _normalize_assertion_kind(kind)
+    resolved_value = _normalize_assertion_value(value)
+    resolved_staleness = _normalize_assertion_staleness(staleness)
     normalized_evidence_refs = [normalize_public_ref_text(ref) for ref in evidence_refs or ()]
     resolved_status = _normalize_assertion_status(status)
     resolved_visibility = _normalize_assertion_visibility(visibility)
@@ -914,17 +943,19 @@ def upsert_assertion(
             normalized_scope_ref,
             normalized_target_ref,
             key,
-            kind,
-            _dumps_optional(value),
+            resolved_kind.value,
+            _dumps_optional(resolved_value.as_json_value()),
             body_text,
             normalized_author_ref,
             resolved_author_kind,
             evidence_refs_json,
-            resolved_status,
-            resolved_visibility,
+            resolved_status.value,
+            resolved_visibility.value,
             confidence,
-            _dumps_optional(staleness),
-            _dumps_optional(resolved_context_policy),
+            _dumps_optional(
+                None if resolved_staleness is None else resolved_staleness.as_json_document(),
+            ),
+            _dumps_optional(resolved_context_policy.as_json_document()),
             supersedes_json,
             created_at_ms,
             timestamp,
@@ -960,7 +991,7 @@ def upsert_transform_candidate_assertions(
             evidence_refs=evidence_refs,
         )
         existing = read_assertion_envelope(conn, assertion_id)
-        if existing is not None and existing.status != "candidate":
+        if existing is not None and existing.status != AssertionStatus.CANDIDATE:
             envelopes.append(existing)
             continue
         envelopes.append(
@@ -983,8 +1014,8 @@ def upsert_transform_candidate_assertions(
                 author_ref=scope_ref,
                 author_kind="transform",
                 evidence_refs=evidence_refs,
-                status="candidate",
-                visibility="private",
+                status=AssertionStatus.CANDIDATE,
+                visibility=AssertionVisibility.PRIVATE,
                 context_policy={"inject": False, "promotion_required": True},
                 now_ms=timestamp,
             )
@@ -1004,20 +1035,27 @@ def _format_transform_raw_ref(ref: TransformRawRef) -> str:
 def mark_assertion_status(
     conn: sqlite3.Connection,
     assertion_id: str,
-    status: str,
+    status: str | AssertionStatus,
     *,
     now_ms: int | None = None,
 ) -> bool:
     """Update one assertion status without deleting its evidence row."""
     timestamp = now_ms if now_ms is not None else _now_ms()
+    resolved_status = _normalize_assertion_status(status)
     cursor = conn.execute(
         """
         UPDATE assertions
         SET status = ?, updated_at_ms = ?
         WHERE assertion_id = ?
-          AND COALESCE(status, '') != ?
+          AND COALESCE(status, ?) != ?
         """,
-        (status, timestamp, assertion_id, status),
+        (
+            resolved_status.value,
+            timestamp,
+            assertion_id,
+            ASSERTION_DEFAULT_STATUS.value,
+            resolved_status.value,
+        ),
     )
     return int(cursor.rowcount) > 0
 
@@ -1035,7 +1073,7 @@ def list_assertion_candidates(
         conn,
         kinds=ASSERTION_CLAIM_KINDS if kinds is None else kinds,
         target_ref=target_ref,
-        statuses=("candidate",),
+        statuses=(AssertionStatus.CANDIDATE,),
         limit=limit,
     )
 
@@ -1047,7 +1085,7 @@ def judge_assertion_candidate(
     decision: str,
     reason: str | None = None,
     actor_ref: str = ASSERTION_DEFAULT_AUTHOR_REF,
-    replacement_kind: str | None = None,
+    replacement_kind: str | AssertionKind | None = None,
     replacement_body_text: str | None = None,
     replacement_value: object | None = None,
     now_ms: int | None = None,
@@ -1061,16 +1099,16 @@ def judge_assertion_candidate(
     candidate = read_assertion_envelope(conn, candidate_id)
     if candidate is None:
         raise ValueError(f"candidate assertion not found: {candidate_ref}")
-    if candidate.status != "candidate":
+    if candidate.status != AssertionStatus.CANDIDATE:
         raise ValueError(f"candidate assertion is not awaiting judgment: {candidate_ref}")
 
     timestamp = now_ms if now_ms is not None else _now_ms()
     resulting_assertion: ArchiveAssertionEnvelope | None = None
     candidate_status = {
-        "accept": "accepted",
-        "reject": "rejected",
-        "defer": "candidate",
-        "supersede": "superseded",
+        "accept": AssertionStatus.ACCEPTED,
+        "reject": AssertionStatus.REJECTED,
+        "defer": AssertionStatus.CANDIDATE,
+        "supersede": AssertionStatus.SUPERSEDED,
     }[normalized_decision]
 
     if normalized_decision in {"accept", "supersede"}:
@@ -1084,7 +1122,7 @@ def judge_assertion_candidate(
             now_ms=timestamp,
         )
 
-    if candidate_status != "candidate":
+    if candidate_status != AssertionStatus.CANDIDATE:
         mark_assertion_status(conn, candidate_id, candidate_status, now_ms=timestamp)
         refreshed = read_assertion_envelope(conn, candidate_id)
         if refreshed is not None:
@@ -1112,8 +1150,8 @@ def judge_assertion_candidate(
         author_ref=actor_ref,
         author_kind="user",
         evidence_refs=evidence_refs,
-        status="active",
-        visibility="private",
+        status=AssertionStatus.ACTIVE,
+        visibility=AssertionVisibility.PRIVATE,
         context_policy={"inject": False},
         supersedes=(f"assertion:{candidate_id}",),
         now_ms=timestamp,
@@ -1139,12 +1177,12 @@ def _promote_candidate_assertion(
     candidate: ArchiveAssertionEnvelope,
     *,
     actor_ref: str,
-    replacement_kind: str | None,
+    replacement_kind: str | AssertionKind | None,
     replacement_body_text: str | None,
     replacement_value: object | None,
     now_ms: int,
 ) -> ArchiveAssertionEnvelope:
-    context_policy: dict[str, object] = dict(candidate.context_policy or ASSERTION_DEFAULT_CONTEXT_POLICY)
+    context_policy: dict[str, JSONValue] = dict(candidate.context_policy)
     context_policy["inject"] = bool(context_policy.get("inject", False))
     context_policy.pop("promotion_required", None)
     return upsert_assertion(
@@ -1159,7 +1197,7 @@ def _promote_candidate_assertion(
         author_ref=actor_ref,
         author_kind="user",
         evidence_refs=(*candidate.evidence_refs, f"assertion:{candidate.assertion_id}"),
-        status="active",
+        status=AssertionStatus.ACTIVE,
         visibility=candidate.visibility,
         confidence=candidate.confidence,
         staleness=candidate.staleness,
@@ -1169,22 +1207,25 @@ def _promote_candidate_assertion(
     )
 
 
-def _candidate_active_kind(candidate: ArchiveAssertionEnvelope) -> str:
+def _candidate_active_kind(candidate: ArchiveAssertionEnvelope) -> AssertionKind:
     if candidate.kind == AssertionKind.TRANSFORM_CANDIDATE and isinstance(candidate.value, dict):
         candidate_kind = candidate.value.get("candidate_kind")
         if isinstance(candidate_kind, str) and candidate_kind:
-            return candidate_kind
+            return _normalize_assertion_kind(candidate_kind)
     return candidate.kind
 
 
 def _assertion_row_to_envelope(row: sqlite3.Row) -> ArchiveAssertionEnvelope:
+    value = _normalize_assertion_value(_loads_optional(row[5])).as_json_value()
+    staleness = _normalize_assertion_staleness(_loads_dict_optional(row[13]))
+    context_policy = _normalize_assertion_context_policy(_loads_dict_optional(row[14]))
     return ArchiveAssertionEnvelope(
         assertion_id=str(row[0]),
         scope_ref=str(row[1]) if row[1] is not None else None,
         target_ref=str(row[2]),
         key=str(row[3]) if row[3] is not None else None,
-        kind=str(row[4]),
-        value=_loads_optional(row[5]),
+        kind=_normalize_assertion_kind(str(row[4])),
+        value=value,
         body_text=str(row[6]) if row[6] is not None else None,
         author_ref=_normalize_assertion_author_ref(str(row[7]) if row[7] is not None else None),
         author_kind=_normalize_assertion_author_kind(str(row[8]) if row[8] is not None else None),
@@ -1192,8 +1233,8 @@ def _assertion_row_to_envelope(row: sqlite3.Row) -> ArchiveAssertionEnvelope:
         status=_normalize_assertion_status(str(row[10]) if row[10] is not None else None),
         visibility=_normalize_assertion_visibility(str(row[11]) if row[11] is not None else None),
         confidence=float(row[12]) if row[12] is not None else None,
-        staleness=_loads_dict_optional(row[13]),
-        context_policy=_normalize_assertion_context_policy(_loads_dict_optional(row[14])),
+        staleness=None if staleness is None else staleness.as_json_document(),
+        context_policy=context_policy.as_json_document(),
         supersedes=_loads_str_list(row[15]),
         created_at_ms=int(row[16]),
         updated_at_ms=int(row[17]),
@@ -1222,7 +1263,7 @@ def list_assertions_for_target(
     conn: sqlite3.Connection,
     target_ref: str,
     *,
-    kind: str | None = None,
+    kind: str | AssertionKind | None = None,
 ) -> list[ArchiveAssertionEnvelope]:
     """List assertions for one ``target_ref``, optionally filtered by ``kind``."""
     if kind is None:
@@ -1234,7 +1275,7 @@ def list_assertions_for_target(
         rows = conn.execute(
             f"SELECT {_ASSERTION_COLUMNS} FROM assertions "
             "WHERE target_ref = ? AND kind = ? ORDER BY created_at_ms, assertion_id",
-            (target_ref, kind),
+            (target_ref, _normalize_assertion_kind(kind).value),
         ).fetchall()
     return [_assertion_row_to_envelope(row) for row in rows]
 
@@ -1247,14 +1288,14 @@ def assertion_envelope_to_payload(envelope: ArchiveAssertionEnvelope) -> dict[st
         "scope_ref": envelope.scope_ref,
         "target_ref": envelope.target_ref,
         "key": envelope.key,
-        "kind": envelope.kind,
+        "kind": envelope.kind.value,
         "value": envelope.value,
         "body_text": envelope.body_text,
         "author_ref": envelope.author_ref,
         "author_kind": envelope.author_kind,
         "evidence_refs": list(envelope.evidence_refs),
-        "status": envelope.status,
-        "visibility": envelope.visibility,
+        "status": envelope.status.value,
+        "visibility": envelope.visibility.value,
         "confidence": envelope.confidence,
         "staleness": envelope.staleness,
         "context_policy": envelope.context_policy,
@@ -1268,7 +1309,7 @@ def list_assertions_for_export(
     conn: sqlite3.Connection,
     *,
     kinds: Sequence[str | AssertionKind] | None = None,
-    statuses: Sequence[str] | None = None,
+    statuses: Sequence[str | AssertionStatus] | None = None,
     limit: int | None = None,
 ) -> list[ArchiveAssertionEnvelope]:
     """List assertion rows for durable user-tier export.
@@ -1285,7 +1326,7 @@ def list_assertions_for_export(
     params: list[object] = []
 
     if kinds is not None:
-        normalized_kinds = tuple(str(kind) for kind in kinds)
+        normalized_kinds = tuple(_normalize_assertion_kind(kind).value for kind in kinds)
         if not normalized_kinds:
             return []
         placeholders = ", ".join("?" for _ in normalized_kinds)
@@ -1293,12 +1334,12 @@ def list_assertions_for_export(
         params.extend(normalized_kinds)
 
     if statuses is not None:
-        normalized_statuses = tuple(str(status) for status in statuses)
+        normalized_statuses = tuple(_normalize_assertion_status(status).value for status in statuses)
         if not normalized_statuses:
             return []
         placeholders = ", ".join("?" for _ in normalized_statuses)
         where.append(f"COALESCE(status, ?) IN ({placeholders})")
-        params.append(ASSERTION_DEFAULT_STATUS)
+        params.append(ASSERTION_DEFAULT_STATUS.value)
         params.extend(normalized_statuses)
 
     sql = f"SELECT {_ASSERTION_COLUMNS} FROM assertions"
@@ -1329,7 +1370,7 @@ def list_assertion_claims(
     kinds: Sequence[str | AssertionKind] = ASSERTION_CLAIM_KINDS,
     target_ref: str | None = None,
     scope_ref: str | None = None,
-    statuses: Sequence[str] | None = ("active", "candidate"),
+    statuses: Sequence[str | AssertionStatus] | None = (AssertionStatus.ACTIVE, AssertionStatus.CANDIDATE),
     context_inject: bool | None = None,
     limit: int | None = None,
 ) -> list[ArchiveAssertionEnvelope]:
@@ -1346,7 +1387,7 @@ def list_assertion_claims(
     where: list[str] = []
     params: list[object] = []
 
-    normalized_kinds = tuple(str(kind) for kind in kinds)
+    normalized_kinds = tuple(_normalize_assertion_kind(kind).value for kind in kinds)
     if normalized_kinds:
         placeholders = ", ".join("?" for _ in normalized_kinds)
         where.append(f"kind IN ({placeholders})")
@@ -1363,10 +1404,11 @@ def list_assertion_claims(
     if statuses is not None:
         if not statuses:
             return []
-        placeholders = ", ".join("?" for _ in statuses)
+        normalized_statuses = tuple(_normalize_assertion_status(status).value for status in statuses)
+        placeholders = ", ".join("?" for _ in normalized_statuses)
         where.append(f"COALESCE(status, ?) IN ({placeholders})")
-        params.append(ASSERTION_DEFAULT_STATUS)
-        params.extend(str(status) for status in statuses)
+        params.append(ASSERTION_DEFAULT_STATUS.value)
+        params.extend(normalized_statuses)
 
     sql = f"SELECT {_ASSERTION_COLUMNS} FROM assertions"
     if where:
@@ -1376,11 +1418,7 @@ def list_assertion_claims(
     rows = conn.execute(sql, tuple(params)).fetchall()
     claims = [_assertion_row_to_envelope(row) for row in rows]
     if context_inject is not None:
-        claims = [
-            claim
-            for claim in claims
-            if bool((claim.context_policy or ASSERTION_DEFAULT_CONTEXT_POLICY).get("inject")) is context_inject
-        ]
+        claims = [claim for claim in claims if bool(claim.context_policy.get("inject")) is context_inject]
     if limit is not None and limit >= 0:
         return claims[:limit]
     return claims
@@ -1404,6 +1442,8 @@ __all__ = [
     "ArchiveSavedViewEnvelope",
     "ArchiveWorkspaceEnvelope",
     "AssertionKind",
+    "AssertionStatus",
+    "AssertionVisibility",
     "assertion_envelope_to_payload",
     "assertion_id_for_annotation",
     "assertion_id_for_blackboard_note",

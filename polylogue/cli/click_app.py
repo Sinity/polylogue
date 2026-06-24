@@ -74,9 +74,9 @@ class QueryFirstGroup(QueryFirstGroupBase):
                 for candidate in query_numeric_operator_candidates(numeric_field, incomplete)
             ]
         if _is_after_then_completion():
-            from polylogue.cli.shell_completion_values import complete_query_actions
+            from polylogue.cli.shell_completion_values import complete_query_result_actions
 
-            return complete_query_actions(ctx, None, incomplete)
+            return complete_query_result_actions(ctx, None, incomplete)
         if _should_complete_then_connector(incomplete):
             return [CompletionItem("then", help="Connect query results to a verb/action.")]
         return super().shell_complete(ctx, incomplete)
@@ -88,36 +88,50 @@ def _completion_words() -> tuple[str, ...]:
 
 def _is_after_then_completion() -> bool:
     words = _completion_words()
-    return len(words) >= 2 and words[-2] == "then"
+    raw_words = os.environ.get("COMP_WORDS", "")
+    if raw_words.endswith(" ") and words:
+        return words[-1].lower() == "then"
+    return len(words) >= 2 and words[-2].lower() == "then"
+
+
+def _is_sessions_where_context(words: tuple[str, ...]) -> bool:
+    if words and words[0].lower() == "find":
+        words = words[1:]
+    lowered = tuple(word.lower() for word in words)
+    if any(word.startswith("sessions where") for word in lowered):
+        return True
+    return any(word == "sessions" and lowered[index + 1] == "where" for index, word in enumerate(lowered[:-1]))
+
+
+def _field_from_operator_completion_words(words: tuple[str, ...]) -> str | None:
+    raw_words = os.environ.get("COMP_WORDS", "")
+    if raw_words.endswith(" ") and words:
+        return words[-1].lower()
+    if len(words) < 2:
+        return None
+    if len(words) >= 3 and words[-3].lower() == "between":
+        return None
+    return words[-2].lower()
 
 
 def _count_operator_completion_field() -> str | None:
+    from polylogue.archive.query.metadata import count_query_fields
+
     words = _completion_words()
-    raw_words = os.environ.get("COMP_WORDS", "")
-    if raw_words.endswith(" ") and words:
-        previous = words[-1].lower()
-        return previous if previous in {"messages", "words"} else None
-    if len(words) < 2:
+    previous = _field_from_operator_completion_words(words)
+    if previous is None or previous not in set(count_query_fields()):
         return None
-    previous = words[-2].lower()
-    if previous not in {"messages", "words"}:
-        return None
-    if len(words) >= 3 and words[-3].lower() == "between":
-        return None
-    return previous
+    if previous in {"messages", "words"} or _is_sessions_where_context(words):
+        return previous
+    return None
 
 
 def _date_operator_completion_field() -> str | None:
+    from polylogue.archive.query.metadata import date_query_fields
+
     words = _completion_words()
-    raw_words = os.environ.get("COMP_WORDS", "")
-    if raw_words.endswith(" ") and words:
-        return "date" if words[-1].lower() == "date" else None
-    if len(words) < 2:
-        return None
-    previous = words[-2].lower()
-    if previous != "date":
-        return None
-    if len(words) >= 3 and words[-3].lower() == "between":
+    previous = _field_from_operator_completion_words(words)
+    if previous is None or previous not in set(date_query_fields()):
         return None
     return previous
 
@@ -125,20 +139,13 @@ def _date_operator_completion_field() -> str | None:
 def _numeric_operator_completion_field() -> str | None:
     from polylogue.archive.query.metadata import numeric_query_fields
 
-    numeric_fields = set(numeric_query_fields())
     words = _completion_words()
-    raw_words = os.environ.get("COMP_WORDS", "")
-    if raw_words.endswith(" ") and words:
-        previous = words[-1].lower()
-        return previous if previous in numeric_fields else None
-    if len(words) < 2:
+    previous = _field_from_operator_completion_words(words)
+    if previous is None or previous not in set(numeric_query_fields()):
         return None
-    previous = words[-2].lower()
-    if previous not in numeric_fields:
-        return None
-    if len(words) >= 3 and words[-3].lower() == "between":
-        return None
-    return previous
+    if _is_sessions_where_context(words):
+        return previous
+    return None
 
 
 def _should_complete_then_connector(incomplete: str) -> bool:
@@ -150,7 +157,9 @@ def _should_complete_then_connector(incomplete: str) -> bool:
         return False
     if prior[0] in QUERY_VERB_NAMES:
         return False
-    return prior[0] == "find" or any(":" in word for word in prior)
+    if prior[0] == "find":
+        return len(prior) > 1
+    return any(":" in word for word in prior)
 
 
 def _handle_query_mode(ctx: click.Context) -> None:
@@ -286,10 +295,11 @@ def cli(
 
     \b
     Product roles:
-        Setup/demo/proof:  config, init, import, demo, tutorial
-        Reader/TUI:        dashboard
-        Operations:        polylogue ops status, ops diagnostics, ops maintenance, ops backup
         Query actions:     find QUERY then read|select|mark|analyze|delete|continue
+        Runtime status:    polylogue ops status
+        Setup/demo/evidence:  config, init, import, demo, tutorial
+        Reader/TUI:        dashboard --status, dashboard
+        Operations:        ops diagnostics, ops maintenance, ops backup
 
     \b
     Query mode (default):
@@ -299,7 +309,8 @@ def cli(
 
     \b
     Verbs (actions on matched sessions):
-        polylogue find id:abc then read
+        polylogue find id:abc then read          # exact ref: one selected session
+        polylogue find id:abc then select --json # expose selected-session identity
         polylogue find id:abc then read --view messages
         polylogue find id:abc then read --to browser
         polylogue find id:abc then analyze --facets
@@ -368,6 +379,15 @@ def find_help() -> None:
         `find` is the explicit query marker, not a normal subcommand.
         Put root filters before `find`, and verb-specific options after ACTION:
         `polylogue --origin chatgpt-export find "sqlite" then read --all`.
+
+        Exact refs (`id:...`, `session:...`) are identity filters. A miss
+        returns no target instead of broadening to text search. Text queries can
+        return many ranked sessions; singleton actions require an exact ref, an
+        explicit selection, `--first`, or an action-specific multi flag.
+
+        Action ownership: `mark` changes selected session overlays;
+        `mark candidates` reviews assertion candidates; `analyze --facets`
+        reports named aggregate families and marks deferred families honestly.
     """
 
 

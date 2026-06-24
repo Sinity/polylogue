@@ -214,6 +214,85 @@ async def _turns(env: AppEnv, session_id: str, limit: int) -> None:
         )
 
 
+@click.command("usage")
+@click.option("--origin", help="Filter to one archive origin, such as codex-session or claude-code-session.")
+@click.option(
+    "--limit", "sample_limit", type=int, default=25, help="Max diagnostic session IDs to include per sample family."
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format.",
+)
+@click.pass_context
+def usage_command(ctx: click.Context, origin: str | None, sample_limit: int, output_format: str) -> None:
+    """Audit provider usage accounting without turning it into a cost report.
+
+    Provider event rows, provider cumulative counters, transcript words, and
+    model rollups are printed as separate evidence streams so cached tokens,
+    reasoning tokens, zero-token events, missing models, and multi-model
+    sessions stay visible.
+    """
+    import json
+
+    env: AppEnv = ctx.obj
+    report = run_coroutine_sync(env.polylogue.provider_usage_report(origin=origin, limit=sample_limit))
+    if output_format == "json":
+        click.echo(json.dumps(report.to_dict(), indent=2))
+        return
+    _render_usage_report(env, report)
+
+
+def _render_usage_report(env: AppEnv, report: object) -> None:
+    origins = tuple(getattr(report, "origins", ()))
+    env.ui.console.print(f"[bold]Provider usage accounting[/bold] ({getattr(report, 'archive_root', '')})")
+    for caveat in getattr(report, "caveats", ()):
+        env.ui.console.print(f"  [yellow]note[/yellow] {caveat}")
+    if not origins:
+        env.ui.console.print("  No sessions matched.")
+        return
+    for row in origins:
+        env.ui.console.print(f"\n[bold]{row.origin}[/bold]")
+        env.ui.console.print(
+            "  sessions: "
+            f"{row.session_count}  messages: {row.message_count}  transcript_words: {row.transcript_word_count}"
+        )
+        env.ui.console.print(
+            "  provider events: "
+            f"{row.provider_event_count} across {row.provider_event_session_count} sessions  "
+            f"token_count={row.token_count_event_count}  message_usage={row.message_usage_event_count}  "
+            f"zero_token={row.zero_token_event_count}  missing_model={row.missing_model_event_count}"
+        )
+        env.ui.console.print(
+            "  model rollup rows: "
+            f"priced={row.priced_model_row_count}  origin_reported={row.origin_reported_model_row_count}  "
+            f"estimated={row.estimated_model_row_count}  multi_model_sessions={row.multi_model_session_count}"
+        )
+        env.ui.console.print(f"  provider request usage:    {_usage_counter_line(row.provider_request_usage)}")
+        env.ui.console.print(f"  provider cumulative usage: {_usage_counter_line(row.provider_cumulative_usage)}")
+        env.ui.console.print(f"  model rollup usage:        {_usage_counter_line(row.model_rollup_usage)}")
+        for caveat in row.caveats:
+            env.ui.console.print(f"    [yellow]caveat[/yellow] {caveat}")
+        if row.sample_missing_model_sessions:
+            env.ui.console.print("    missing-model samples: " + ", ".join(row.sample_missing_model_sessions))
+        if row.sample_zero_token_sessions:
+            env.ui.console.print("    zero-token samples: " + ", ".join(row.sample_zero_token_sessions))
+
+
+def _usage_counter_line(counters: object) -> str:
+    values = counters.to_dict() if hasattr(counters, "to_dict") else {}
+    return (
+        f"input={int(values.get('input_tokens', 0))} "
+        f"output={int(values.get('output_tokens', 0))} "
+        f"cached_input={int(values.get('cached_input_tokens', 0))} "
+        f"cache_write={int(values.get('cache_write_tokens', 0))} "
+        f"reasoning_output={int(values.get('reasoning_output_tokens', 0))} "
+        f"total={int(values.get('total_tokens', 0))}"
+    )
+
+
 @click.command("tools")
 @click.option("--origin", help="Filter by origin")
 @click.option("--limit", "-l", "-n", type=int, default=20, help="Max tools to show")

@@ -6,7 +6,6 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as importlib_metadata_version
 from pathlib import Path
 from types import ModuleType
-from typing import cast
 
 import pytest
 
@@ -46,8 +45,9 @@ def test_lazy_import_unknown_raises_root() -> None:
 def test_lazy_import_demo_module_root() -> None:
     import polylogue
 
-    demo_module = cast(ModuleType, polylogue.demo)
+    demo_module = polylogue.demo
 
+    assert isinstance(demo_module, ModuleType)
     assert demo_module.__name__ == "polylogue.demo"
 
 
