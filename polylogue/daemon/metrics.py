@@ -540,6 +540,12 @@ def _normalise_storage_route(value: object) -> str:
     return value if value in _KNOWN_STORAGE_ROUTES else "other"
 
 
+def _empty_storage_route_counts() -> dict[str, int]:
+    counts = dict.fromkeys(sorted(_KNOWN_STORAGE_ROUTES), 0)
+    counts["other"] = 0
+    return counts
+
+
 def _storage_route_counts(
     conn: sqlite3.Connection,
     *,
@@ -551,8 +557,7 @@ def _storage_route_counts(
         if ops_counts is not None:
             return ops_counts
 
-    counts = dict.fromkeys(sorted(_KNOWN_STORAGE_ROUTES), 0)
-    counts["other"] = 0
+    counts = _empty_storage_route_counts()
     if not _table_exists(conn, "live_ingest_attempt"):
         return counts
     columns = _columns(conn, "live_ingest_attempt")
@@ -576,32 +581,44 @@ def _ops_storage_route_counts(ops_db: Path) -> dict[str, int] | None:
         try:
             if not _table_exists(conn, "ingest_attempts"):
                 return None
-            attempt_rows = conn.execute("SELECT attempt_id FROM ingest_attempts").fetchall()
-            attempt_ids = [str(row[0]) for row in attempt_rows]
-            if not attempt_ids:
-                return None
-            counts = dict.fromkeys(sorted(_KNOWN_STORAGE_ROUTES), 0)
-            counts["other"] = 0
-            route_by_attempt: dict[str, str] = {}
-            if _table_exists(conn, "daemon_stage_events"):
-                placeholders = ",".join("?" for _ in attempt_ids)
+            counts = _empty_storage_route_counts()
+            attempt_columns = _columns(conn, "ingest_attempts")
+            if "storage_route" in attempt_columns:
                 rows = conn.execute(
-                    f"""
-                    SELECT attempt_id, payload_json
-                    FROM daemon_stage_events
-                    WHERE attempt_id IN ({placeholders})
-                    ORDER BY observed_at_ms DESC, rowid DESC
-                    """,
-                    tuple(attempt_ids),
+                    "SELECT storage_route, COUNT(*) FROM ingest_attempts GROUP BY storage_route"
                 ).fetchall()
                 for row in rows:
-                    attempt_id = str(row[0])
-                    if attempt_id in route_by_attempt:
-                        continue
-                    route_by_attempt[attempt_id] = _normalise_storage_route(_json_payload(row[1]).get("storage_route"))
-            for attempt_id in attempt_ids:
-                route = route_by_attempt.get(attempt_id, "unknown")
-                counts[route] = counts.get(route, 0) + 1
+                    route = _normalise_storage_route(row[0])
+                    counts[route] = counts.get(route, 0) + int(row[1] or 0)
+                return counts
+
+            total_attempts = _scalar_int(conn, "SELECT COUNT(*) FROM ingest_attempts")
+            if not _table_exists(conn, "daemon_stage_events"):
+                counts["unknown"] = total_attempts
+                return counts
+            index_names = {str(row[1]) for row in conn.execute("PRAGMA index_list('daemon_stage_events')")}
+            if "idx_daemon_stage_events_attempt_observed" not in index_names:
+                counts["unknown"] = total_attempts
+                return counts
+
+            rows = conn.execute(
+                """
+                SELECT (
+                    SELECT payload_json
+                    FROM daemon_stage_events AS e
+                    WHERE e.attempt_id = a.attempt_id
+                      AND e.payload_json LIKE '%"storage_route"%'
+                    ORDER BY e.observed_at_ms DESC, e.rowid DESC
+                    LIMIT 1
+                ) AS payload_json,
+                COUNT(*)
+                FROM ingest_attempts AS a
+                GROUP BY payload_json
+                """
+            ).fetchall()
+            for row in rows:
+                route = _normalise_storage_route(_json_payload(row[0]).get("storage_route"))
+                counts[route] = counts.get(route, 0) + int(row[1] or 0)
             return counts
         finally:
             conn.close()

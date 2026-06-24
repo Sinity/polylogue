@@ -184,19 +184,30 @@ def record_ingest_attempt(
     materialized_count: int = 0,
     error_message: str | None = None,
     source_paths_json: str = "[]",
+    storage_route: str | None = None,
     attempt_id: str | None = None,
 ) -> str:
     """Create or replace one ``ingest_attempts`` row and return its ``attempt_id``."""
     if attempt_id is None:
         attempt_id = str(uuid.uuid4())
+    has_storage_route = _table_has_column(conn, "ingest_attempts", "storage_route")
+    route_column = "storage_route,\n            " if has_storage_route else ""
+    route_value = "?, " if has_storage_route else ""
+    route_update = (
+        "storage_route = COALESCE(excluded.storage_route, ingest_attempts.storage_route),\n            "
+        if has_storage_route
+        else ""
+    )
+    route_params: tuple[object, ...] = (storage_route,) if has_storage_route else ()
     conn.execute(
-        """
+        f"""
         INSERT INTO ingest_attempts (
             attempt_id,
             source_path,
             origin,
             status,
             phase,
+            {route_column}
             started_at_ms,
             heartbeat_at_ms,
             finished_at_ms,
@@ -205,12 +216,13 @@ def record_ingest_attempt(
             error_message,
             source_paths_json
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, {route_value}?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (attempt_id) DO UPDATE SET
             source_path = excluded.source_path,
             origin = excluded.origin,
             status = excluded.status,
             phase = excluded.phase,
+            {route_update}
             started_at_ms = excluded.started_at_ms,
             heartbeat_at_ms = excluded.heartbeat_at_ms,
             finished_at_ms = excluded.finished_at_ms,
@@ -225,6 +237,7 @@ def record_ingest_attempt(
             _origin_value(origin),
             status,
             phase,
+            *route_params,
             started_at_ms,
             heartbeat_at_ms,
             finished_at_ms,
@@ -712,6 +725,10 @@ def _origin_value(origin: Origin | str | None) -> str | None:
     if isinstance(origin, Origin):
         return origin.value
     return origin
+
+
+def _table_has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    return any(str(row[1]) == column for row in conn.execute(f"PRAGMA table_info({table})"))
 
 
 def _stage_event_from_row(row: sqlite3.Row | tuple[object, ...]) -> ArchiveDaemonStageEvent:

@@ -84,15 +84,21 @@ def test_record_ingest_attempt_records_one_row(tmp_path: Path) -> None:
         parsed_raw_count=7,
         materialized_count=3,
         source_paths_json='["/tmp/source-a.jsonl"]',
+        storage_route="archive_append",
     )
 
     row = conn.execute(
-        "SELECT status, phase, parsed_raw_count, source_paths_json FROM ingest_attempts WHERE attempt_id = ?",
+        """
+        SELECT status, phase, parsed_raw_count, source_paths_json, storage_route
+        FROM ingest_attempts
+        WHERE attempt_id = ?
+        """,
         (attempt_id,),
     ).fetchone()
     assert row is not None
     assert row[0] == "running"
     assert row[1] == "planning"
+    assert row[4] == "archive_append"
     assert row[2] == 7
     assert row[3] == '["/tmp/source-a.jsonl"]'
     assert conn.execute("SELECT COUNT(*) FROM ingest_attempts").fetchone()[0] == 1
