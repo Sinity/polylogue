@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS ingest_attempts (
     origin                 TEXT CHECK ({check("origin", Origin)} OR origin IS NULL),
     status                 TEXT NOT NULL CHECK(status IN ('running', 'completed', 'failed', 'interrupted')),
     phase                  TEXT,
+    storage_route          TEXT,
     started_at_ms          INTEGER NOT NULL,
     heartbeat_at_ms        INTEGER,
     finished_at_ms         INTEGER,
@@ -48,6 +49,9 @@ CREATE TABLE IF NOT EXISTS ingest_attempts (
 
 CREATE INDEX IF NOT EXISTS idx_ingest_attempts_status
 ON ingest_attempts(status, heartbeat_at_ms);
+
+CREATE INDEX IF NOT EXISTS idx_ingest_attempts_storage_route
+ON ingest_attempts(storage_route);
 
 CREATE TABLE IF NOT EXISTS convergence_debt (
     debt_id        TEXT PRIMARY KEY,
@@ -91,6 +95,9 @@ CREATE TABLE IF NOT EXISTS daemon_stage_events (
     observed_at_ms INTEGER NOT NULL,
     payload_json   TEXT NOT NULL DEFAULT '{{}}'
 ) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_daemon_stage_events_attempt_observed
+ON daemon_stage_events(attempt_id, observed_at_ms DESC);
 
 CREATE TABLE IF NOT EXISTS daemon_events (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,

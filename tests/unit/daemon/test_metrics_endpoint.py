@@ -432,6 +432,7 @@ class TestFormatMetricsReadsArchiveState:
                 status="running",
                 started_at_ms=1_770_000_000_000,
                 heartbeat_at_ms=1_770_000_001_000,
+                storage_route="archive_full",
             )
             record_ingest_attempt(
                 conn,

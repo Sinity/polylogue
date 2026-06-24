@@ -175,6 +175,17 @@ def _archive_attempt_status(status: str) -> str:
     return "failed"
 
 
+def _storage_route_from_payload(payload: dict[str, object] | None) -> str | None:
+    if not payload:
+        return None
+    route = payload.get("storage_route")
+    return route if isinstance(route, str) and route else None
+
+
+def _table_has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    return any(str(row[1]) == column for row in conn.execute(f"PRAGMA table_info({table})"))
+
+
 def _convergence_debt_status(*, stage: str, error: str | None) -> str:
     if stage == "insights" and error == _INSIGHT_DEFERRED_UNTIL_QUIET:
         return "deferred"
@@ -504,34 +515,64 @@ class CursorStore:
         parsed_raw_count = succeeded_file_count if succeeded_file_count is not None else None
         if parsed_raw_count is None and failed_file_count is not None:
             parsed_raw_count = failed_file_count
+        storage_route = _storage_route_from_payload(stage_payload)
 
         def write() -> None:
             with self._connect_ops() as conn:
-                conn.execute(
-                    """
-                    UPDATE ingest_attempts
-                    SET heartbeat_at_ms = ?,
-                        status = ?,
-                        phase = ?,
-                        source_path = COALESCE(?, source_path),
-                        origin = COALESCE(?, origin),
-                        parsed_raw_count = COALESCE(?, parsed_raw_count),
-                        materialized_count = COALESCE(?, materialized_count),
-                        error_message = COALESCE(?, error_message)
-                    WHERE attempt_id = ?
-                    """,
-                    (
-                        now_ms,
-                        _archive_attempt_status(status),
-                        phase,
-                        str(current_path) if current_path is not None else None,
-                        _origin_value_for_source_name(current_source),
-                        parsed_raw_count,
-                        succeeded_file_count,
-                        error,
-                        attempt_id,
-                    ),
-                )
+                if _table_has_column(conn, "ingest_attempts", "storage_route"):
+                    conn.execute(
+                        """
+                        UPDATE ingest_attempts
+                        SET heartbeat_at_ms = ?,
+                            status = ?,
+                            phase = ?,
+                            storage_route = COALESCE(?, storage_route),
+                            source_path = COALESCE(?, source_path),
+                            origin = COALESCE(?, origin),
+                            parsed_raw_count = COALESCE(?, parsed_raw_count),
+                            materialized_count = COALESCE(?, materialized_count),
+                            error_message = COALESCE(?, error_message)
+                        WHERE attempt_id = ?
+                        """,
+                        (
+                            now_ms,
+                            _archive_attempt_status(status),
+                            phase,
+                            storage_route,
+                            str(current_path) if current_path is not None else None,
+                            _origin_value_for_source_name(current_source),
+                            parsed_raw_count,
+                            succeeded_file_count,
+                            error,
+                            attempt_id,
+                        ),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        UPDATE ingest_attempts
+                        SET heartbeat_at_ms = ?,
+                            status = ?,
+                            phase = ?,
+                            source_path = COALESCE(?, source_path),
+                            origin = COALESCE(?, origin),
+                            parsed_raw_count = COALESCE(?, parsed_raw_count),
+                            materialized_count = COALESCE(?, materialized_count),
+                            error_message = COALESCE(?, error_message)
+                        WHERE attempt_id = ?
+                        """,
+                        (
+                            now_ms,
+                            _archive_attempt_status(status),
+                            phase,
+                            str(current_path) if current_path is not None else None,
+                            _origin_value_for_source_name(current_source),
+                            parsed_raw_count,
+                            succeeded_file_count,
+                            error,
+                            attempt_id,
+                        ),
+                    )
                 payload: dict[str, object] = {
                     key: value
                     for key, value in {
