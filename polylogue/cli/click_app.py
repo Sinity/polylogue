@@ -335,7 +335,7 @@ def cli(
 
     \b
     Product roles:
-        Search/read/action:   find QUERY then read|select|mark|analyze|delete|continue
+        Search/read/action:   find QUERY then read|select|mark|analyze|delete|continue; facets
         Setup/demo/evidence:  config, init, import, demo, tutorial
         Reader/TUI:           dashboard --status, dashboard
         Operations:           status (same as polylogue ops status), ops diagnostics, ops maintenance, ops backup
@@ -353,6 +353,7 @@ def cli(
         polylogue find id:abc then read --view messages
         polylogue find id:abc then read --to browser
         polylogue find id:abc then analyze --facets
+        polylogue facets --query "vector store" --format json
         polylogue find "urgent" then delete --dry-run
         polylogue find 'repo:polylogue' then read --all --format ndjson
 

@@ -190,6 +190,50 @@ def test_analyze_facets_no_idf_omits_idf(runner: CliRunner, seeded_db_env: Path)
     assert not payload.get("idf")  # no IDF weights when --no-idf is set
 
 
+def test_facets_command_json_matches_analyze_facets(
+    runner: CliRunner,
+    seeded_db_env: Path,
+) -> None:
+    """`polylogue facets` is the direct command for the shared facets envelope."""
+    import json as _json
+
+    direct = _json.loads(_invoke_json(runner, ["facets", "--no-idf", "--format", "json"]))
+    via_analyze = _json.loads(_invoke_json(runner, ["analyze", "--facets", "--no-idf", "--format", "json"]))
+
+    assert direct == via_analyze
+    assert direct["family_status"]["repos"]["state"] == "deferred"
+    assert "not authoredness" in direct["family_status"]["role_counts"]["canonicalization"]
+
+
+def test_facets_command_can_scope_query_and_origin(
+    runner: CliRunner,
+    seeded_db_env: Path,
+) -> None:
+    """Top-level facets supports the documented scoped forms."""
+    import json as _json
+
+    payload = _json.loads(
+        _invoke_json(
+            runner,
+            ["facets", "--query", "synthetic", "--origin", "chatgpt-export", "--no-idf", "--format", "json"],
+        )
+    )
+
+    assert payload["scoped_to_query"] is True
+    assert payload["scoped"]["total_sessions"] == 0
+    assert payload["scoped"]["origins"] == {}
+
+    origin_only = _json.loads(
+        _invoke_json(
+            runner,
+            ["facets", "--origin", "chatgpt-export", "--no-idf", "--format", "json"],
+        )
+    )
+    assert origin_only["scoped_to_query"] is True
+    assert origin_only["scoped"]["total_sessions"] > 0
+    assert origin_only["scoped"]["origins"] == {"chatgpt-export": origin_only["scoped"]["total_sessions"]}
+
+
 def test_analyze_facets_include_deferred_materializes_expensive_families(
     runner: CliRunner,
     seeded_db_env: Path,
