@@ -135,6 +135,50 @@ def test_post_verb_json_alias_normalizes_to_verb_format() -> None:
     assert not explicit_query
 
 
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (
+            ["find", "needle", "then", "read", "--json"],
+            ["read", "--format", "json"],
+        ),
+        (
+            ["find", "needle", "then", "continue", "--json"],
+            ["continue", "--format", "json"],
+        ),
+        (
+            ["find", "needle", "then", "delete", "--dry-run", "--json"],
+            ["delete", "--dry-run", "--format", "json"],
+        ),
+        (
+            ["find", "needle", "then", "mark", "--tag-add", "reviewed", "--json"],
+            ["mark", "--tag-add", "reviewed", "--format", "json"],
+        ),
+        (
+            ["find", "needle", "then", "mark", "candidates", "list", "--json"],
+            ["mark", "candidates", "list", "--format", "json"],
+        ),
+        (
+            ["analyze", "usage", "--json"],
+            ["analyze", "usage", "--format", "json"],
+        ),
+        (
+            ["analyze", "insights", "profiles", "--json"],
+            ["analyze", "insights", "profiles", "--format", "json"],
+        ),
+    ],
+)
+def test_post_verb_json_alias_normalizes_for_all_format_actions(
+    argv: list[str],
+    expected: list[str],
+) -> None:
+    """Post-verb ``--json`` is a grammar alias for every action with ``--format json``."""
+    click_args, _, has_subcommand, _ = _split_query_mode_args(cli, argv)
+
+    assert click_args == expected
+    assert has_subcommand
+
+
 def test_post_verb_root_filters_remain_rejected() -> None:
     """Output shorthands can be local aliases; source/query filters still precede the verb."""
     with pytest.raises(click.UsageError, match="Move --origin before `read`"):
