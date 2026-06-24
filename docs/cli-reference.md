@@ -242,6 +242,7 @@ Options:
   --include-deferred              With --facets, compute deferred detail
                                   families: repos, roles, material origins,
                                   message types, actions, flags.
+  --json                          Shortcut for --format json.
   -f, --format [markdown|json|ndjson|html|obsidian|org|yaml|plaintext|csv]
                                   Output format (ndjson = one JSON document
                                   per row, streaming-friendly)
@@ -295,6 +296,7 @@ Options:
                                   [default: summary]
   --to [terminal|stdout|browser|clipboard|file]
                                   Output destination.  [default: terminal]
+  --json                          Shortcut for --format json.
   -f, --format [csv|html|json|markdown|ndjson|obsidian|org|plaintext|text|yaml]
                                   Output format (where applicable).
   --out PATH                      File path for --to file.
@@ -387,6 +389,7 @@ Options:
   --dry-run        Preview what would be deleted without deleting
   --yes            Confirm the deletion (required for actual deletion)
   --all            Delete all matched sessions (required when multiple match)
+  --json           Shortcut for --format json.
   --format [json]  Output format. JSON emits a MutationResultPayload.
   --help           Show this message and exit.
 ```
@@ -428,6 +431,7 @@ Options:
   --note TEXT       Add or update a note annotation
   --all             Apply to all matched sessions (default: singleton only)
   --first           Apply to the first matched session only
+  --json            Shortcut for --format json.
   --format [json]   Output format. JSON emits a MutationResultPayload.
   --help            Show this message and exit.
 
@@ -486,6 +490,7 @@ Options:
                                   Repeatable.
   --limit INTEGER                 Maximum continuation candidates to return.
                                   [default: 10]
+  --json                          Shortcut for --format json.
   -f, --format [json]             Output format. JSON emits the shared
                                   ContextImage payload.
   --help                          Show this message and exit.

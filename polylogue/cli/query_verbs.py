@@ -419,6 +419,13 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: b
     help="Output destination.",
 )
 @click.option(
+    "--json",
+    "output_format",
+    flag_value="json",
+    default=None,
+    help="Shortcut for --format json.",
+)
+@click.option(
     "--format",
     "-f",
     "output_format",
@@ -737,6 +744,13 @@ def read_verb(
     help="Maximum continuation candidates to return.",
 )
 @click.option(
+    "--json",
+    "output_format",
+    flag_value="json",
+    default=None,
+    help="Shortcut for --format json.",
+)
+@click.option(
     "--format",
     "-f",
     "output_format",
@@ -846,6 +860,13 @@ def continue_verb(
 @click.option("--yes", "yes_flag", is_flag=True, help="Confirm the deletion (required for actual deletion)")
 @click.option("--all", "all_flag", is_flag=True, help="Delete all matched sessions (required when multiple match)")
 @click.option(
+    "--json",
+    "output_format",
+    flag_value="json",
+    default=None,
+    help="Shortcut for --format json.",
+)
+@click.option(
     "--format",
     "output_format",
     type=click.Choice(["json"]),
@@ -940,6 +961,13 @@ def delete_verb(
 @click.option("--note", "note_text", default=None, metavar="TEXT", help="Add or update a note annotation")
 @click.option("--all", "apply_all", is_flag=True, help="Apply to all matched sessions (default: singleton only)")
 @click.option("--first", "first_only", is_flag=True, help="Apply to the first matched session only")
+@click.option(
+    "--json",
+    "output_format",
+    flag_value="json",
+    default=None,
+    help="Shortcut for --format json.",
+)
 @click.option(
     "--format",
     "output_format",
@@ -1100,6 +1128,7 @@ def mark_candidates_group() -> None:
 @mark_candidates_group.command("list")
 @click.option("--target-ref", default=None, help="Limit candidates to one target object ref.")
 @click.option("--limit", "-l", type=int, default=50, show_default=True)
+@click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
 @click.pass_obj
 def list_mark_candidates_command(env: AppEnv, target_ref: str | None, limit: int, output_format: str | None) -> None:
@@ -1122,6 +1151,7 @@ def list_mark_candidates_command(env: AppEnv, target_ref: str | None, limit: int
 @mark_candidates_group.command("review")
 @click.option("--target-ref", default=None, help="Limit candidate review rows to one target object ref.")
 @click.option("--limit", "-l", type=int, default=50, show_default=True)
+@click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
 @click.pass_obj
 def review_mark_candidates_command(env: AppEnv, target_ref: str | None, limit: int, output_format: str | None) -> None:
@@ -1161,6 +1191,7 @@ def review_mark_candidates_command(env: AppEnv, target_ref: str | None, limit: i
 @click.argument("candidate_ref")
 @click.option("--reason", default=None)
 @click.option("--actor-ref", default="user:local", show_default=True)
+@click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
 @click.pass_obj
 def accept_mark_candidate_command(
@@ -1185,6 +1216,7 @@ def accept_mark_candidate_command(
 @click.argument("candidate_ref")
 @click.option("--reason", required=True)
 @click.option("--actor-ref", default="user:local", show_default=True)
+@click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
 @click.pass_obj
 def reject_mark_candidate_command(
@@ -1209,6 +1241,7 @@ def reject_mark_candidate_command(
 @click.argument("candidate_ref")
 @click.option("--reason", default=None)
 @click.option("--actor-ref", default="user:local", show_default=True)
+@click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
 @click.pass_obj
 def defer_mark_candidate_command(
@@ -1235,6 +1268,7 @@ def defer_mark_candidate_command(
 @click.option("--body", "replacement_body_text", required=True, help="Body text for the replacement assertion.")
 @click.option("--reason", default=None)
 @click.option("--actor-ref", default="user:local", show_default=True)
+@click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
 @click.pass_obj
 def supersede_mark_candidate_command(
@@ -1326,6 +1360,13 @@ def _emit_candidate_judgment(
     is_flag=True,
     default=False,
     help="With --facets, compute deferred detail families: repos, roles, material origins, message types, actions, flags.",
+)
+@click.option(
+    "--json",
+    "output_format",
+    flag_value="json",
+    default=None,
+    help="Shortcut for --format json.",
 )
 @click.option(
     "--format",

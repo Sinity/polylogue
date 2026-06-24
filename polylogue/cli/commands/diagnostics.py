@@ -225,6 +225,13 @@ async def _turns(env: AppEnv, session_id: str, limit: int) -> None:
     help="Max diagnostic session IDs to include per sample family.",
 )
 @click.option(
+    "--json",
+    "output_format",
+    flag_value="json",
+    default=None,
+    help="Shortcut for --format json.",
+)
+@click.option(
     "--format",
     "-f",
     "output_format",
