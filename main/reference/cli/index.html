@@ -676,6 +676,7 @@ Options:
   --prose-only                    Show only prose text (--view messages).
   --fields TEXT                   Fields for JSON/YAML outputs (--all).
   --views                         List executable read-view profiles and exit.
+  --first                         Read the first matched session only.
   --help                          Show this message and exit.
 </code></pre>
 <h2>Select Verb</h2>
@@ -1059,7 +1060,7 @@ It records the public action floor, not every utility command in the Click tree.
 <td>-</td>
 <td><code>polylogue find QUERY then select</code></td>
 <td><code>item</code></td>
-<td><code>single_match_unless_all</code>, <code>file_destination_requires_out</code></td>
+<td><code>single_match_unless_all_or_first</code>, <code>file_destination_requires_out</code></td>
 <td><code>continue</code>, <code>mark</code>, <code>delete</code></td>
 <td><code>session_id</code></td>
 </tr>
