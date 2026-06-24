@@ -129,8 +129,10 @@ def choose_select_row(env: AppEnv, rows: list[SelectSessionRow]) -> SelectSessio
     """Choose one row, using fzf/prompt only when the terminal can support it."""
     if not rows:
         return None
-    if env.ui.plain or not sys.stdin.isatty() or not sys.stdout.isatty():
+    if len(rows) == 1:
         return rows[0]
+    if env.ui.plain or not sys.stdin.isatty() or not sys.stdout.isatty():
+        return None
 
     fzf_row = _choose_with_fzf(rows)
     if fzf_row is not None:
@@ -203,7 +205,10 @@ async def async_run_select(
     selected = choose_select_row(env, rows)
     if selected is None:
         if rows:
-            click.echo("Selection cancelled.", err=True)
+            click.echo(
+                "Selection required for multiple sessions; narrow the query or run in an interactive terminal.",
+                err=True,
+            )
             raise SystemExit(1)
         click.echo("No sessions matched.", err=True)
         raise SystemExit(2)

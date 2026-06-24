@@ -77,7 +77,7 @@ def test_render_select_row_outputs_requested_field() -> None:
         (True, True, True),
     ],
 )
-def test_choose_select_row_returns_first_when_not_interactive(
+def test_choose_select_row_rejects_ambiguous_non_interactive(
     plain: bool,
     stdin_tty: bool,
     stdout_tty: bool,
@@ -90,8 +90,17 @@ def test_choose_select_row_returns_first_when_not_interactive(
         patch("sys.stdin.isatty", return_value=stdin_tty),
         patch("sys.stdout.isatty", return_value=stdout_tty),
     ):
-        assert choose_select_row(env, [_row(1), _row(2)]) == _row(1)
+        assert choose_select_row(env, [_row(1), _row(2)]) is None
         ui.choose.assert_not_called()
+
+
+def test_choose_select_row_returns_singleton_when_not_interactive() -> None:
+    ui = MagicMock()
+    ui.plain = True
+    env = cast(AppEnv, SimpleNamespace(ui=ui))
+
+    assert choose_select_row(env, [_row(1)]) == _row(1)
+    ui.choose.assert_not_called()
 
 
 def test_choose_select_row_prefers_fzf_then_falls_back_to_ui() -> None:
@@ -184,7 +193,7 @@ async def test_async_run_select_distinguishes_empty_results_from_cancel(capsys: 
         with pytest.raises(SystemExit) as exc_info:
             await async_run_select(env, request, limit=10, print_field="id")
     assert exc_info.value.code == 1
-    assert "Selection cancelled." in capsys.readouterr().err
+    assert "Selection required for multiple sessions" in capsys.readouterr().err
 
     with patch("polylogue.cli.select.select_session_rows", AsyncMock(return_value=[])):
         with pytest.raises(SystemExit) as exc_info:

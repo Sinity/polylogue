@@ -359,6 +359,7 @@ def _read_verb_kwargs(**overrides: object) -> dict[str, object]:
         "no_file_reads": False,
         "prose_only": False,
         "fields": None,
+        "first_only": False,
         "show_views": False,
     }
     defaults.update(overrides)
