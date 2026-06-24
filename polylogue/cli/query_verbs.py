@@ -551,7 +551,7 @@ def read_verb(
         )
         return
 
-    session_id = _resolve_read_session_id(env, request, first_only=first_only)
+    session_id = _resolve_query_action_session_id(env, request, operation="read", first_only=first_only)
     effective_format = _effective_read_output_format(request, view=view, output_format=output_format)
     explicit_options = _explicit_read_view_options(ctx)
     if destination == "browser":
@@ -702,7 +702,7 @@ def continue_verb(
         raise click.UsageError("--repo, --cwd, and --recent are only valid with continue --candidates.")
     if candidate_limit != _CONTINUE_CANDIDATE_DEFAULT_LIMIT:
         raise click.UsageError("--limit is only valid with continue --candidates.")
-    session_id = _resolve_target_session_id(request)
+    session_id = _resolve_query_action_session_id(env, request, operation="continue")
     if session_id is None:
         raise click.UsageError("continue requires one matched session (use --id, --latest, or a narrowing query).")
     root_format = request.params.get("output_format")
@@ -1467,8 +1467,14 @@ def _resolve_target_session_id(request: RootModeRequest) -> str | None:
     return resolve_session_id_from_root_params(dict(request.params))
 
 
-def _resolve_read_session_id(env: AppEnv, request: RootModeRequest, *, first_only: bool) -> str | None:
-    """Resolve the singleton session for ``read`` with explicit cardinality."""
+def _resolve_query_action_session_id(
+    env: AppEnv,
+    request: RootModeRequest,
+    *,
+    operation: str,
+    first_only: bool = False,
+) -> str | None:
+    """Resolve one query-action session with explicit ranked-result cardinality."""
     if request.query_terms:
         from dataclasses import replace
 
@@ -1483,16 +1489,31 @@ def _resolve_read_session_id(env: AppEnv, request: RootModeRequest, *, first_onl
         if not spec.latest and not spec.has_filters():
             return None
 
-        read_limit = 1 if first_only else 2
-        bounded_spec = replace(spec, limit=read_limit)
+        resolve_limit = 1 if first_only else 2
+        bounded_spec = replace(spec, limit=resolve_limit)
 
         async def _resolve() -> list[str]:
             summaries = await bounded_spec.list_summaries(env.config)
             return [str(summary.id) for summary in summaries]
 
         session_ids = run_coroutine_sync(_resolve())
+        multi_match_hint = "Narrow the query to one session or run select first." if operation == "continue" else None
         try:
-            check_cardinality(len(session_ids), allow_all=False, first_only=first_only, operation="read")
+            if multi_match_hint is not None:
+                check_cardinality(
+                    len(session_ids),
+                    allow_all=False,
+                    first_only=first_only,
+                    operation=operation,
+                    multi_match_hint=multi_match_hint,
+                )
+            else:
+                check_cardinality(
+                    len(session_ids),
+                    allow_all=False,
+                    first_only=first_only,
+                    operation=operation,
+                )
         except CardinalityError as exc:
             raise click.UsageError(str(exc)) from exc
         return session_ids[0] if session_ids else None

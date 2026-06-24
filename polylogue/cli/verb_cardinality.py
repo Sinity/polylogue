@@ -37,6 +37,7 @@ def check_cardinality(
     allow_all: bool,
     first_only: bool,
     operation: str = "operate on sessions",
+    multi_match_hint: str | None = None,
 ) -> None:
     """Enforce the singleton / ``--all`` / ``--first`` cardinality contract.
 
@@ -53,6 +54,8 @@ def check_cardinality(
         allow_all: ``True`` when ``--all`` was supplied by the user.
         first_only: ``True`` when ``--first`` was supplied by the user.
         operation: human-readable verb label used in the error message.
+        multi_match_hint: optional guidance for verbs that do not expose both
+            ``--first`` and ``--all``.
 
     Raises:
         CardinalityError: when the cardinality constraint is not satisfied.
@@ -63,9 +66,8 @@ def check_cardinality(
         return
     if allow_all or first_only:
         return
-    raise CardinalityError(
-        f"'{operation}' matched {count} sessions. Use --first to act on the first match only, or --all to act on all."
-    )
+    hint = multi_match_hint or "Use --first to act on the first match only, or --all to act on all."
+    raise CardinalityError(f"'{operation}' matched {count} sessions. {hint}")
 
 
 def resolve_session_ids_for_verb(env: AppEnv, request: RootModeRequest) -> list[str]:
