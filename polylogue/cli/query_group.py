@@ -77,12 +77,13 @@ def _split_query_mode_args(group: click.Group, args: list[str]) -> tuple[list[st
                 query_terms.append(arg)
                 index += 1
                 continue
-            misplaced = _find_root_option_after_verb(group, arg, list(args[index + 1 :]))
+            remaining = _normalize_post_verb_output_aliases(group.commands.get(arg), list(args[index + 1 :]))
+            misplaced = _find_root_option_after_verb(group, arg, remaining)
             if misplaced is not None:
                 raise click.UsageError(
                     f"Query filters and root output flags must appear before the verb. Move {misplaced} before `{arg}`."
                 )
-            verb_args = option_args + [arg] + list(args[index + 1 :])
+            verb_args = option_args + [arg] + remaining
             return verb_args, tuple(query_terms), True, explicit_query
         query_terms.append(arg)
         index += 1
@@ -204,6 +205,23 @@ def _command_options_for_remaining(command: click.Command, remaining: list[str])
         current = current.get_command(ctx, next_token)
         index += 1
     return opts
+
+
+def _normalize_post_verb_output_aliases(command: click.Command | None, remaining: list[str]) -> list[str]:
+    """Normalize root output shorthands that users naturally place after a verb."""
+
+    if command is None or "--json" not in remaining:
+        return remaining
+    command_opts = _command_options_for_remaining(command, remaining)
+    if "--format" not in command_opts or "--json" in command_opts:
+        return remaining
+    normalized: list[str] = []
+    for arg in remaining:
+        if arg == "--json":
+            normalized.extend(["--format", "json"])
+        else:
+            normalized.append(arg)
+    return normalized
 
 
 def _detect_subcommand_and_verb(group: click.Group, args: list[str]) -> tuple[str | None, str | None]:

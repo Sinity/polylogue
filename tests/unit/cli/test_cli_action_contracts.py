@@ -9,6 +9,7 @@ from typing import cast
 from unittest.mock import patch
 
 import click
+import pytest
 from click.testing import CliRunner
 from rich.console import Console
 
@@ -119,6 +120,25 @@ def test_virtual_find_counterpart_is_query_parser_keyword() -> None:
     assert query_terms == ("needle",)
     assert not has_subcommand
     assert explicit_query
+
+
+def test_post_verb_json_alias_normalizes_to_verb_format() -> None:
+    """`read REF --json` is accepted as the natural spelling of `read REF --format json`."""
+    click_args, query_terms, has_subcommand, explicit_query = _split_query_mode_args(
+        cli,
+        ["read", "chatgpt-export:conv-123", "--json"],
+    )
+
+    assert click_args == ["read", "chatgpt-export:conv-123", "--format", "json"]
+    assert query_terms == ()
+    assert has_subcommand
+    assert not explicit_query
+
+
+def test_post_verb_root_filters_remain_rejected() -> None:
+    """Output shorthands can be local aliases; source/query filters still precede the verb."""
+    with pytest.raises(click.UsageError, match="Move --origin before `read`"):
+        _split_query_mode_args(cli, ["read", "chatgpt-export:conv-123", "--origin", "chatgpt-export"])
 
 
 def test_every_declared_guard_has_behavior_coverage() -> None:
