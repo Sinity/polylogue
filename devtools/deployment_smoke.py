@@ -838,6 +838,11 @@ def _probe_browser_render(
             dom_bytes = len(stdout.encode())
             screenshot_bytes = screenshot_path.stat().st_size if screenshot_path.exists() else None
             if dom_bytes > 0 and screenshot_bytes:
+                # Chrome can leave background services alive after the
+                # one-shot --dump-dom/--screenshot artifacts are complete
+                # (observed with Chrome 149 and GCM registration retries).
+                # The smoke contract is first-paint evidence, not browser
+                # process lifetime, so artifact completion is a clean pass.
                 return BrowserRenderProbe(
                     url=url,
                     executable=resolved,
@@ -846,7 +851,6 @@ def _probe_browser_render(
                     dom_bytes=dom_bytes,
                     screenshot_bytes=screenshot_bytes,
                     stderr_tail=stderr[-2000:],
-                    caveats=("browser_timeout_after_capture",),
                 )
             return BrowserRenderProbe(
                 url=url,

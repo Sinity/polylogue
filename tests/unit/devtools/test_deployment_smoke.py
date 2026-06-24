@@ -587,7 +587,7 @@ def test_deployment_smoke_browser_render_probe_reports_timeout(monkeypatch: pyte
     assert "still loading" in probe.stderr_tail
 
 
-def test_deployment_smoke_browser_render_accepts_timeout_after_capture(
+def test_deployment_smoke_browser_render_accepts_completed_artifacts_after_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -625,7 +625,7 @@ def test_deployment_smoke_browser_render_accepts_timeout_after_capture(
     assert probe.dom_bytes == len("<html>Polylogue</html>")
     assert probe.screenshot_bytes == 3
     assert probe.error is None
-    assert probe.caveats == ("browser_timeout_after_capture",)
+    assert probe.caveats == ()
 
 
 def test_deployment_smoke_report_includes_browser_render_failure(
