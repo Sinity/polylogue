@@ -1177,7 +1177,8 @@ def main(argv: list[str] | None = None) -> int:
         "--lab",
         action="store_true",
         help=(
-            "Run the default pytest-testmon baseline plus lab scenario and verify-slos checks; does not imply --all."
+            "Run the default pytest-testmon baseline plus verification-lab "
+            "scenario and verify-slos checks; does not imply --all."
         ),
     )
     parser.add_argument("--history", action="store_true", help="Print last 10 verify runs and exit.")
