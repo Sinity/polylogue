@@ -14,7 +14,7 @@ from polylogue.context.compiler import (
     context_image_from_recovery,
     context_snapshot_record_from_image,
 )
-from polylogue.core.enums import AssertionKind, Origin
+from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility, Origin
 from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.insights.transforms import RecoveryWorkPacketEntry, compile_recovery_digest
 from polylogue.types import SessionId
@@ -232,7 +232,7 @@ def test_instruction_dumps_are_rejected_without_hiding_real_product_decisions() 
         "assertion_candidate.supersede",
     }
     supersede = next(action for action in review_entries[0].action_affordances if action.id.endswith("supersede"))
-    assert supersede.disabled_reason == "replacement_assertion_required"
+    assert supersede.availability.disabled_reason == "replacement_assertion_required"
     assert {window.kind for window in packet.evidence_windows} >= {"accepted_candidate", "rejected_candidate"}
 
     markdown = packet.render_markdown()
@@ -261,8 +261,8 @@ def test_context_image_from_recovery_preserves_assertion_refs() -> None:
         kind=AssertionKind.DECISION,
         body_text="Keep context compilation evidence-backed.",
         evidence_refs=("codex-session:compiler",),
-        status="active",
-        visibility="private",
+        status=AssertionStatus.ACTIVE,
+        visibility=AssertionVisibility.PRIVATE,
         context_policy={"inject": True},
         created_at_ms=1,
         updated_at_ms=1,

@@ -319,7 +319,7 @@ class StaleThreshold(BaseModel):
     """Staleness thresholds per oracle type."""
 
     model_config = ConfigDict(extra="forbid")
-    proof_evidence_days: int = 14
+    behavior_evidence_days: int = 14
     smoke_evidence_days: int = 30
     manual_review_evidence_days: int = 90
 

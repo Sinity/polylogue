@@ -121,8 +121,8 @@ of dropping content silently.
 ## Branch-local extension proof modes
 
 Use `devtools workspace dev-loop` when changing the receiver, extension, or
-provider adapters from a branch. The branch-local loop owns three browser proof
-levels:
+provider adapters from a branch. The branch-local loop owns distinct proof
+levels, from cloud-safe synthetic checks to local workstation evidence:
 
 - `--extension-smoke` imports the real background worker with a Chrome API mock
   and proves receiver auth rejection, receiver status, and accepted capture
@@ -136,6 +136,17 @@ levels:
   operator-approved copied user-data-dir, live ChatGPT/Claude conversation
   URLs, and the unpacked extension; it writes a redacted proof summary and keeps
   any raw captured content inside ignored local receiver spool artifacts.
+
+For a non-authenticated Chrome-family binary check, `--browser-smoke` sits
+between those two layers: it loads the unpacked extension into a fresh headless
+profile and proves that the MV3 service worker can talk to the branch-local
+receiver. It still does not exercise provider cookies or live pages.
+
+Use [`docs/visual-evidence.md`](visual-evidence.md) for the repo-owned reader
+DOM evidence lane and [`docs/dev-loop.md`](dev-loop.md) for the full
+branch-local browser proof ladder. Design screenshots or store media are not
+accepted as browser-capture verification unless they are tied to one of those
+commands and a run-local artifact.
 
 Generate the copied-profile checklist first:
 

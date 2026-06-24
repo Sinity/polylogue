@@ -18,7 +18,7 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     DocsEntry(
         "Installation",
         "docs/installation.md",
-        "Linux, Nix/NixOS, Homebrew, and container install/run paths.",
+        "Source checkout, Nix flake, and managed NixOS/Home Manager install paths.",
     ),
     DocsEntry("CLI Reference", "docs/cli-reference.md", "Generated command reference from live help output."),
     DocsEntry(
@@ -109,6 +109,11 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "docs/plans/release-readiness-gate.md",
         "Externally-presentable release gate, required checks, and release PR evidence contract.",
     ),
+    DocsEntry(
+        "Visual Evidence",
+        "docs/visual-evidence.md",
+        "Synthetic reader DOM/media evidence lanes and local screenshot boundaries.",
+    ),
     DocsEntry("Release Checklist", "docs/release.md", "Cut-time packaging, installed-artifact, and publish checks."),
 )
 
@@ -136,6 +141,7 @@ README_DOC_TITLES: tuple[str, ...] = (
     "Archive Backup",
     "Developer Tools",
     "Branch-Local Development Loop",
+    "Visual Evidence",
     "Providers",
 )
 

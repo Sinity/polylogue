@@ -62,6 +62,8 @@
     ],
     "deferred_families": {
       "repos": "deferred_by_default",
+      "role_counts": "deferred_by_default",
+      "material_origins": "deferred_by_default",
       "message_types": "deferred_by_default",
       "action_types": "deferred_by_default",
       "has_flags": "deferred_by_default"
@@ -73,49 +75,99 @@
         "reason": null,
         "error": null,
         "stale": false,
-        "stale_age_s": null
+        "stale_age_s": null,
+        "label": "Total counts",
+        "source": "session summaries",
+        "canonicalization": "unique sessions plus stored message counts",
+        "expensive": false
       },
       "origins": {
         "state": "complete",
         "reason": null,
         "error": null,
         "stale": false,
-        "stale_age_s": null
+        "stale_age_s": null,
+        "label": "Provider origins",
+        "source": "session summaries",
+        "canonicalization": "provider/archive origin; not a repo or authoredness signal",
+        "expensive": false
       },
       "tags": {
         "state": "complete",
         "reason": null,
         "error": null,
         "stale": false,
-        "stale_age_s": null
+        "stale_age_s": null,
+        "label": "User tags",
+        "source": "session summaries",
+        "canonicalization": "session tags de-duplicated within each session",
+        "expensive": false
       },
       "repos": {
         "state": "deferred",
         "reason": "deferred_by_default",
         "error": null,
         "stale": false,
-        "stale_age_s": null
+        "stale_age_s": null,
+        "label": "Canonical repositories",
+        "source": "session_repos + repos",
+        "canonicalization": "prefer repo_name or origin_url; omit archive/path tokens that are not product repo identities",
+        "expensive": true
+      },
+      "role_counts": {
+        "state": "deferred",
+        "reason": "deferred_by_default",
+        "error": null,
+        "stale": false,
+        "stale_age_s": null,
+        "label": "Provider-role counts",
+        "source": "messages.role",
+        "canonicalization": "provider-reported message role; not authoredness",
+        "expensive": true
+      },
+      "material_origins": {
+        "state": "deferred",
+        "reason": "deferred_by_default",
+        "error": null,
+        "stale": false,
+        "stale_age_s": null,
+        "label": "Material origins",
+        "source": "messages.material_origin",
+        "canonicalization": "authoredness/protocol provenance; separates human text from runtime or assistant material",
+        "expensive": true
       },
       "message_types": {
         "state": "deferred",
         "reason": "deferred_by_default",
         "error": null,
         "stale": false,
-        "stale_age_s": null
+        "stale_age_s": null,
+        "label": "Message content types",
+        "source": "messages.message_type",
+        "canonicalization": "normalized message content kind",
+        "expensive": true
       },
       "action_types": {
         "state": "deferred",
         "reason": "deferred_by_default",
         "error": null,
         "stale": false,
-        "stale_age_s": null
+        "stale_age_s": null,
+        "label": "Action types",
+        "source": "actions.semantic_type",
+        "canonicalization": "normalized semantic action kind",
+        "expensive": true
       },
       "has_flags": {
         "state": "deferred",
         "reason": "deferred_by_default",
         "error": null,
         "stale": false,
-        "stale_age_s": null
+        "stale_age_s": null,
+        "label": "Content flags",
+        "source": "messages.has_*",
+        "canonicalization": "boolean message feature counters",
+        "expensive": true
       }
     },
     "origins": {
@@ -281,8 +333,8 @@
         "path": "<PATH>",
         "exists": true,
         "size_bytes": 552960,
-        "expected_user_version": 6,
-        "user_version": 6,
+        "expected_user_version": 7,
+        "user_version": 7,
         "version_status": "ok",
         "table_counts": {
           "sessions": 2,

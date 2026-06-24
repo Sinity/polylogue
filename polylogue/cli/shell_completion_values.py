@@ -24,6 +24,7 @@ from polylogue.archive.query.completions import (
     query_field_candidates,
     query_numeric_operator_candidates,
     query_pipeline_stage_candidates,
+    query_session_field_candidates,
     query_structural_field_candidates,
     query_structural_unit_candidates,
     query_terminal_field_candidates,
@@ -39,6 +40,7 @@ from polylogue.archive.query.spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LAN
 from polylogue.cli.shell_words import completion_words
 from polylogue.core.enums import MaterialOrigin
 from polylogue.paths import active_index_db_path
+from polylogue.surfaces.action_affordances import InputUnit
 
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -141,9 +143,10 @@ def _static_completion_items(
     incomplete: str,
     *,
     csv: bool = False,
+    hyphen_aliases: bool = False,
 ) -> list[CompletionItem]:
     prefix, current = _split_csv_incomplete(incomplete) if csv else ("", incomplete.strip())
-    current_lower = current.lower()
+    current_lower = current.lower().replace("-", "_") if hyphen_aliases else current.lower()
     items = [CompletionItem(value) for value in values if not current_lower or value.lower().startswith(current_lower)]
     return _with_csv_prefix(items, prefix) if csv else items
 
@@ -307,6 +310,38 @@ def _complete_pipeline_query_context(incomplete: str) -> list[CompletionItem] | 
     ]
 
 
+def _session_boolean_completion_prefix(incomplete: str) -> str | None:
+    stripped = incomplete.strip()
+    lower = stripped.lower()
+    prefix = "sessions where "
+    if lower.startswith(prefix):
+        return stripped[len(prefix) :].rsplit(" ", 1)[-1]
+    if lower == "sessions where":
+        return ""
+
+    words = _completion_words()
+    if words and words[0] == "find":
+        words = words[1:]
+    lowered_words = tuple(word.lower() for word in words)
+    for index, word in enumerate(lowered_words[:-1]):
+        if word == "sessions" and lowered_words[index + 1] == "where":
+            return stripped
+    return None
+
+
+def _complete_session_boolean_query_context(
+    ctx: click.Context,
+    param: click.Parameter | None,
+    incomplete: str,
+) -> list[CompletionItem] | None:
+    prefix = _session_boolean_completion_prefix(incomplete)
+    if prefix is None:
+        return None
+    if ":" in prefix:
+        return _complete_query_expression_values(ctx, param, prefix)
+    return [query_completion_candidate_to_click_item(candidate) for candidate in query_session_field_candidates(prefix)]
+
+
 def complete_query_expression_context_fields(
     ctx: click.Context,
     param: click.Parameter | None,
@@ -325,6 +360,9 @@ def complete_query_expression_context_fields(
     structural_items = _complete_structural_query_context(incomplete)
     if structural_items is not None:
         return structural_items
+    session_boolean_items = _complete_session_boolean_query_context(ctx, param, incomplete)
+    if session_boolean_items is not None:
+        return session_boolean_items
     if ":" in incomplete:
         return _complete_query_expression_values(ctx, param, incomplete)
     return None
@@ -352,13 +390,28 @@ def complete_query_actions(
     ctx: click.Context,
     param: click.Parameter | None,
     incomplete: str,
+    *,
+    input_unit: InputUnit | None = None,
 ) -> list[CompletionItem]:
-    """Complete root query actions from public action contracts."""
+    """Complete query actions from public action contracts."""
 
     del ctx, param
     if _terminal_completion_context(incomplete) is not None or _structural_completion_context(incomplete) is not None:
         return []
-    return [query_completion_candidate_to_click_item(candidate) for candidate in query_action_candidates(incomplete)]
+    return [
+        query_completion_candidate_to_click_item(candidate)
+        for candidate in query_action_candidates(incomplete, input_unit=input_unit)
+    ]
+
+
+def complete_query_result_actions(
+    ctx: click.Context,
+    param: click.Parameter | None,
+    incomplete: str,
+) -> list[CompletionItem]:
+    """Complete actions that accept the current query result set after ``then``."""
+
+    return complete_query_actions(ctx, param, incomplete, input_unit="query_result_set")
 
 
 def complete_origin_values(
@@ -410,7 +463,12 @@ def complete_material_origin_values(
     incomplete: str,
 ) -> list[CompletionItem]:
     del ctx, param
-    return _static_completion_items(tuple(origin.value for origin in MaterialOrigin), incomplete, csv=True)
+    return _static_completion_items(
+        tuple(origin.value for origin in MaterialOrigin),
+        incomplete,
+        csv=True,
+        hyphen_aliases=True,
+    )
 
 
 def complete_retrieval_lane_values(
@@ -554,6 +612,7 @@ __all__ = [
     "complete_query_actions",
     "complete_query_expression_context_fields",
     "complete_query_expression_fields",
+    "complete_query_result_actions",
     "complete_session_ids",
     "complete_cwd_prefix_values",
     "complete_material_origin_values",
@@ -571,6 +630,7 @@ __all__ = [
     "query_field_candidates",
     "query_completion_candidate_to_click_item",
     "query_pipeline_stage_candidates",
+    "query_session_field_candidates",
     "query_structural_field_candidates",
     "query_structural_unit_candidates",
     "query_terminal_field_candidates",

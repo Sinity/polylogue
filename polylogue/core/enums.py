@@ -396,8 +396,42 @@ class AssertionKind(PolylogueStrEnum):
         return cls(str(value).strip().lower())
 
 
+class AssertionStatus(PolylogueStrEnum):
+    """Closed lifecycle state vocabulary for assertion rows."""
+
+    ACTIVE = "active"
+    CANDIDATE = "candidate"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    SUPERSEDED = "superseded"
+    DELETED = "deleted"
+    INACTIVE = "inactive"
+
+    @classmethod
+    def from_string(cls, value: str | AssertionStatus) -> AssertionStatus:
+        if isinstance(value, cls):
+            return value
+        return cls(str(value).strip().lower())
+
+
+class AssertionVisibility(PolylogueStrEnum):
+    """Closed visibility vocabulary for assertion rows."""
+
+    PRIVATE = "private"
+    TEAM = "team"
+    PUBLIC = "public"
+
+    @classmethod
+    def from_string(cls, value: str | AssertionVisibility) -> AssertionVisibility:
+        if isinstance(value, cls):
+            return value
+        return cls(str(value).strip().lower())
+
+
 __all__ = [
     "AssertionKind",
+    "AssertionStatus",
+    "AssertionVisibility",
     "ArtifactSupportStatus",
     "BlockType",
     "BranchType",

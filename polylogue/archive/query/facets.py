@@ -33,15 +33,16 @@ class FacetBuckets:
     the bucket. ``total_sessions``/``total_messages`` describe the
     input set itself.
 
-    The per-message families (``message_types``, ``action_types``,
-    ``has_flags``) and ``repos`` are populated by SQL-backed aggregators
-    because they require scanning tables beyond the session summary
-    surface.
+    The provider-role, material-origin, per-message, action, flag, and
+    canonical repo families are populated by SQL-backed aggregators because
+    they require scanning tables beyond the session summary surface.
     """
 
     providers: dict[str, int] = field(default_factory=dict)
     tags: dict[str, int] = field(default_factory=dict)
     repos: dict[str, int] = field(default_factory=dict)
+    role_counts: dict[str, int] = field(default_factory=dict)
+    material_origins: dict[str, int] = field(default_factory=dict)
     message_types: dict[str, int] = field(default_factory=dict)
     action_types: dict[str, int] = field(default_factory=dict)
     has_flags: dict[str, int] = field(default_factory=dict)
@@ -123,6 +124,8 @@ def compute_idf(buckets: FacetBuckets) -> dict[str, dict[str, float]]:
         ("origins", buckets.providers),
         ("tags", buckets.tags),
         ("repos", buckets.repos),
+        ("role_counts", buckets.role_counts),
+        ("material_origins", buckets.material_origins),
         ("message_types", buckets.message_types),
         ("action_types", buckets.action_types),
         ("has_flags", buckets.has_flags),

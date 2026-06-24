@@ -63,11 +63,11 @@ class ExecutableWorkflowGoldenPath:
 
 @dataclass(frozen=True, slots=True)
 class ActionUnitEvidence:
-    """Evidence unit proving that an action is grounded in a concrete target."""
+    """Evidence unit showing that an action is grounded in a concrete target."""
 
     action_id: str
     evidence_unit: str
-    proof_surface: str
+    evidence_surface: str
     negative_guard: str
 
 
@@ -91,6 +91,8 @@ REQUIRED_WORKFLOW_IDS: frozenset[str] = frozenset(
         "find-then-recovery",
         "find-then-context-pack",
         "find-then-continue",
+        "find-then-mark-session",
+        "find-then-analyze-facets",
         "candidate-assertion-review",
         "resolve-ref-drilldown",
         "browser-capture-status",
@@ -107,8 +109,8 @@ QUERY_ACTION_WORKFLOWS: tuple[QueryActionWorkflow, ...] = (
         action_sequence="find → read(messages)",
         action_paths=(("find",), ("read",)),
         read_views=("messages",),
-        selector_policy="Text queries may match many sessions; exact refs use id: or session: and must not broaden to FTS.",
-        cardinality_policy="read requires a single target unless --all or a bulk read/export mode is chosen.",
+        selector_policy="Text queries may match many sessions; exact refs use id: or session: and must not broaden to FTS on miss.",
+        cardinality_policy="Zero matches produce no read target; one exact match is selected; many ranked matches require --all, --first, or an explicit bounded export/read mode.",
         safety_policy="safe read-only action; no confirmation command.",
         output_policy="Human text by default; JSON and NDJSON expose the archive_messages_payload contract.",
         evidence_policy="Message rows carry target_ref, anchor, copy/open actions, timestamps, roles, and content-block evidence.",
@@ -164,6 +166,38 @@ QUERY_ACTION_WORKFLOWS: tuple[QueryActionWorkflow, ...] = (
         cli_example="polylogue find id:claude-code-session:... then continue --format json",
     ),
     QueryActionWorkflow(
+        id="find-then-mark-session",
+        title="Find then mark selected sessions",
+        intent="Apply user-owned overlays to query-result sessions without confusing them with assertion-candidate judgments.",
+        query_shape="find QUERY then mark --tag-add TAG|--star|--pin|--archive|--note TEXT [--all|--first]",
+        action_sequence="find → mark(session overlay)",
+        action_paths=(("find",), ("mark",)),
+        read_views=(),
+        selector_policy="`mark` owns selected session overlays: tags, star, pin, archive marks, and notes. It does not own candidate assertions or future target-ref/web annotations.",
+        cardinality_policy="Zero matches mutate nothing; one exact match is safe; many ranked matches require --all or --first before mutation.",
+        safety_policy="mutating but non-destructive user overlay; every operation names the selected session ids before persistence.",
+        output_policy="Human receipt names the affected session count and operations; automation should use action-affordance guards for explicit multi selection.",
+        evidence_policy="Mutation receipt is backed by selected session refs, overlay operation names, and idempotent tag/mark outcomes.",
+        surfaces=("cli", "daemon", "mcp", "completion", "docs"),
+        cli_example="polylogue find id:claude-code-session:... then mark --tag-add reviewed",
+    ),
+    QueryActionWorkflow(
+        id="find-then-analyze-facets",
+        title="Find then analyze named facet families",
+        intent="Expose aggregate buckets over the matched result set with clear cheap/deferred family metadata.",
+        query_shape="find QUERY then analyze --facets [--include-deferred] [--no-idf] [--format json]",
+        action_sequence="find → analyze(facets)",
+        action_paths=(("find",), ("analyze",)),
+        read_views=(),
+        selector_policy="The query result set is the aggregate scope; exact refs scope to one selected session, while text queries keep the ranked multi-session set.",
+        cardinality_policy="Facets accept zero, one, or many sessions: zero returns empty scoped buckets; one exact match returns singleton buckets; many returns aggregate buckets without selecting a target.",
+        safety_policy="safe read-only aggregate; deferred families are opt-in and reported as unavailable rather than silently empty.",
+        output_policy="Terminal labels and JSON family_status name provider origins, user tags, canonical repos, provider-role counts, material origins, message types, action types, content flags, omitted/noisy tokens, freshness, and deferred state.",
+        evidence_policy="Facet JSON distinguishes role_counts from material_origins and reports repo canonicalization/omitted counts so path tokens are not presented as authoritative repos.",
+        surfaces=("cli", "daemon", "mcp", "web", "completion", "docs"),
+        cli_example="polylogue find 'repo:polylogue pytest' then analyze --facets --include-deferred --format json",
+    ),
+    QueryActionWorkflow(
         id="candidate-assertion-review",
         title="Review candidate assertions",
         intent="List, accept, reject, defer, or supersede model-produced assertion candidates through explicit judgment commands.",
@@ -171,8 +205,8 @@ QUERY_ACTION_WORKFLOWS: tuple[QueryActionWorkflow, ...] = (
         action_sequence="find → mark candidates",
         action_paths=(("find",), ("mark",)),
         read_views=("recovery",),
-        selector_policy="Candidates are scoped to a selected session or target ref; confidence alone never admits an assertion.",
-        cardinality_policy="Each candidate mutation names one candidate id and one target/session scope.",
+        selector_policy="`mark candidates` owns assertion-candidate review for a selected session or target ref; ordinary `mark` owns session overlays.",
+        cardinality_policy="Candidate list may be scoped to a selected target; each accept/reject/defer/supersede mutation names one candidate id and one target/session scope.",
         safety_policy="mutating; changes are explicit user overlay operations with accept/reject/defer/supersede verbs.",
         output_policy="Human summaries and JSON candidate lists/operation receipts.",
         evidence_policy="Candidate rows include target refs, evidence refs, claim class, status, and judgment operation trace.",
@@ -187,11 +221,11 @@ QUERY_ACTION_WORKFLOWS: tuple[QueryActionWorkflow, ...] = (
         action_sequence="resolve_ref → select/read",
         action_paths=(("read",), ("select",)),
         read_views=("summary", "messages", "raw", "recovery"),
-        selector_policy="Exact refs are identity filters; unmatched refs return no target instead of falling back to broad FTS.",
-        cardinality_policy="An exact ref resolves to one object shape: session, message, block, assertion, or operation.",
+        selector_policy="Exact refs are identity filters; unmatched refs return no target instead of falling back to broad FTS; exact ref plus extra text remains a scoped search-within-session query.",
+        cardinality_policy="Zero exact refs resolve to an unresolved/no-results shape; one exact match resolves to one session/message/block/assertion/operation shape; many ranked text matches remain candidate rows until selected.",
         safety_policy="safe read-only drilldown; raw view remains explicit because it may expose source payloads.",
-        output_policy="Direct ref reads are JSON; query-selected drilldowns follow the selected read view format contract.",
-        evidence_policy="Resolved payload includes target_ref/identity_key or an explicit unresolved state.",
+        output_policy="Direct exact-ref reads are JSON or selected-session read-view payloads; query-selected drilldowns follow the selected read view format contract.",
+        evidence_policy="Resolved payload includes target_ref/identity_key, selected session payload, or an explicit unresolved state.",
         surfaces=("cli", "daemon", "mcp", "completion", "docs"),
         cli_example="polylogue read session:claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6",
     ),
@@ -220,12 +254,12 @@ QUERY_ACTION_WORKFLOW_BY_ID: dict[str, QueryActionWorkflow] = {entry.id: entry f
 PRODUCT_VERB_MATRIX_EXTRA_ROWS: tuple[ProductVerbMatrixRow, ...] = (
     ProductVerbMatrixRow(
         action_id="mark candidates",
-        target_input="selection / candidate assertion",
-        cardinality="singleton candidate judgment",
+        target_input="selected session target_ref / candidate assertion id",
+        cardinality="list scoped candidates or singleton candidate judgment",
         safety="mutating",
         formats=("human", "json"),
         destinations=("terminal", "stdout", "api", "mcp"),
-        selection_confirmation="polylogue mark candidates list --target-ref REF",
+        selection_confirmation="polylogue find EXACT_REF then mark candidates list --target-ref REF",
         next_actions=("read", "mark candidates list"),
     ),
 )
@@ -235,49 +269,49 @@ ACTION_UNIT_EVIDENCE: tuple[ActionUnitEvidence, ...] = (
     ActionUnitEvidence(
         action_id="select",
         evidence_unit="session target_ref / identity_key",
-        proof_surface="select --json emits id, origin, title, and date for the chosen row.",
+        evidence_surface="select --json emits id, origin, title, and date for the chosen row.",
         negative_guard="Zero matches produce no selected target; multi-match selection remains explicit.",
     ),
     ActionUnitEvidence(
         action_id="read",
         evidence_unit="session/message/block target_ref plus read-view payload",
-        proof_surface="read --view messages/recovery/raw/context uses shared CLI and HTTP read-view profiles.",
-        negative_guard="Unsupported formats/views raise usage errors rather than widening to another surface.",
+        evidence_surface="read --view messages/recovery/raw/context uses shared CLI and HTTP read-view profiles; exact refs read the selected session payload.",
+        negative_guard="Zero matches return no target; many matches require --all/--first/bounded export; unsupported formats/views fail instead of widening.",
     ),
     ActionUnitEvidence(
         action_id="continue",
         evidence_unit="ContextImage seed_refs and read_views",
-        proof_surface="continue --format json records seed_refs, redaction policy, assertions, candidates, and context segments.",
+        evidence_surface="continue --format json records seed_refs, redaction policy, assertions, candidates, and context segments.",
         negative_guard="Ambiguous query results require selection before continuation.",
     ),
     ActionUnitEvidence(
         action_id="analyze",
         evidence_unit="query-scoped stats/facet rows",
-        proof_surface="analyze --facets --format json exposes scoped and global buckets.",
-        negative_guard="Unsupported grouping/format combinations fail loudly.",
+        evidence_surface="analyze --facets --format json exposes scoped/global buckets plus family_status labels, deferred state, and omitted/noisy counts.",
+        negative_guard="Unsupported grouping/format combinations fail loudly; deferred facet families are marked deferred rather than displayed as authoritative empties.",
     ),
     ActionUnitEvidence(
         action_id="mark",
         evidence_unit="user overlay operation over selected session refs",
-        proof_surface="mark commands emit operation receipts and persist user marks/annotations.",
-        negative_guard="Multi-match mutations require --all or --first.",
+        evidence_surface="mark commands emit operation receipts and persist session tags, stars, pins, archive marks, and notes.",
+        negative_guard="Multi-match mutations require --all or --first; assertion candidates stay under mark candidates.",
     ),
     ActionUnitEvidence(
         action_id="mark candidates",
         evidence_unit="candidate assertion id plus judgment operation",
-        proof_surface="mark candidates list/accept/reject/defer/supersede routes through candidate assertion review.",
+        evidence_surface="mark candidates list/accept/reject/defer/supersede routes through candidate assertion review.",
         negative_guard="Candidate confidence is never admission authority; human judgment command is required.",
     ),
     ActionUnitEvidence(
         action_id="delete",
         evidence_unit="session ids and dry-run mutation preview",
-        proof_surface="delete --dry-run returns affected session ids/counts before any destructive operation.",
+        evidence_surface="delete --dry-run returns affected session ids/counts before any destructive operation.",
         negative_guard="Actual deletion requires --yes and explicit multi-match scope.",
     ),
     ActionUnitEvidence(
         action_id="browser capture status",
         evidence_unit="daemon/browser-capture readiness state",
-        proof_surface="web status strip and daemon JSON surface capture freshness, receiver availability, and next action.",
+        evidence_surface="web status strip and daemon JSON surface capture freshness, receiver availability, and next action.",
         negative_guard="Capture status does not silently import or redact; mutations remain operator-triggered.",
     ),
 )
@@ -394,8 +428,8 @@ EXECUTABLE_WORKFLOW_GOLDEN_PATHS: tuple[ExecutableWorkflowGoldenPath, ...] = (
     ),
     ExecutableWorkflowGoldenPath(
         id="analyze-facets-json",
-        workflow_id="find-then-read-messages",
-        description="Query-selected analysis exposes scoped and global JSON facet buckets.",
+        workflow_id="find-then-analyze-facets",
+        description="Query-selected analysis exposes scoped/global JSON facet buckets and honest family metadata.",
         command=("find", "pytest", "then", "analyze", "--facets", "--format", "json"),
         action_path=("analyze",),
         output_kind="json_object",
@@ -404,6 +438,8 @@ EXECUTABLE_WORKFLOW_GOLDEN_PATHS: tuple[ExecutableWorkflowGoldenPath, ...] = (
             JsonExpectation(("scoped",), "object"),
             JsonExpectation(("global",), "object"),
             JsonExpectation(("scoped", "origins"), "object"),
+            JsonExpectation(("family_status",), "object"),
+            JsonExpectation(("deferred_families",), "object"),
         ),
         stdout_contains=('"claude-code-session"', '"codex-session"'),
         required_affordance_ids=("analyze",),

@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing_extensions import TypedDict
 
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
-from polylogue.core.enums import AssertionKind
+from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document
 from polylogue.core.refs import normalize_object_ref_text, normalize_public_ref_text
 from polylogue.surfaces.action_affordances import ActionAffordancePayload
@@ -1233,8 +1233,8 @@ class AssertionQueryRowPayload(SurfacePayloadModel):
     value: object
     author_ref: str
     author_kind: str
-    status: str
-    visibility: str
+    status: AssertionStatus
+    visibility: AssertionVisibility
     evidence_refs: tuple[str, ...]
     staleness: object
     context_policy: object
@@ -1268,8 +1268,8 @@ class AssertionQueryRowPayload(SurfacePayloadModel):
             value=row.value,
             author_ref=row.author_ref,
             author_kind=row.author_kind,
-            status=row.status,
-            visibility=row.visibility,
+            status=AssertionStatus.from_string(row.status),
+            visibility=AssertionVisibility.from_string(row.visibility),
             evidence_refs=row.evidence_refs,
             staleness=row.staleness,
             context_policy=row.context_policy,
@@ -1291,8 +1291,8 @@ class AssertionClaimPayload(SurfacePayloadModel):
     author_ref: str | None = None
     author_kind: str | None = None
     evidence_refs: tuple[str, ...] = ()
-    status: str | None = None
-    visibility: str | None = None
+    status: AssertionStatus | None = None
+    visibility: AssertionVisibility | None = None
     confidence: float | None = None
     staleness: dict[str, Any] | None = None
     context_policy: dict[str, Any] | None = None
@@ -1328,8 +1328,8 @@ class AssertionClaimPayload(SurfacePayloadModel):
             author_ref=envelope.author_ref,
             author_kind=envelope.author_kind,
             evidence_refs=tuple(envelope.evidence_refs),
-            status=envelope.status,
-            visibility=envelope.visibility,
+            status=AssertionStatus.from_string(envelope.status),
+            visibility=AssertionVisibility.from_string(envelope.visibility),
             confidence=envelope.confidence,
             staleness=envelope.staleness,
             context_policy=envelope.context_policy,
@@ -1345,8 +1345,8 @@ class AssertionClaimListPayload(SurfacePayloadModel):
     items: tuple[AssertionClaimPayload, ...]
     total: int
     limit: int
-    statuses: tuple[str, ...] | None = None
-    kinds: tuple[str, ...] | None = None
+    statuses: tuple[AssertionStatus, ...] | None = None
+    kinds: tuple[AssertionKind, ...] | None = None
 
     @classmethod
     def from_envelopes(
@@ -1354,16 +1354,16 @@ class AssertionClaimListPayload(SurfacePayloadModel):
         envelopes: Sequence[ArchiveAssertionEnvelope],
         *,
         limit: int,
-        statuses: Sequence[str] | None = None,
-        kinds: Sequence[str] | None = None,
+        statuses: Sequence[str | AssertionStatus] | None = None,
+        kinds: Sequence[str | AssertionKind] | None = None,
     ) -> AssertionClaimListPayload:
         items = tuple(AssertionClaimPayload.from_envelope(envelope) for envelope in envelopes)
         return cls(
             items=items,
             total=len(items),
             limit=limit,
-            statuses=None if statuses is None else tuple(statuses),
-            kinds=None if kinds is None else tuple(kinds),
+            statuses=None if statuses is None else tuple(AssertionStatus.from_string(status) for status in statuses),
+            kinds=None if kinds is None else tuple(AssertionKind.from_string(kind) for kind in kinds),
         )
 
 
@@ -2233,6 +2233,10 @@ class FacetFamilyStatusPayload(SurfacePayloadModel):
     error: str | None = None
     stale: bool = False
     stale_age_s: float | None = None
+    label: str | None = None
+    source: str | None = None
+    canonicalization: str | None = None
+    expensive: bool = False
 
 
 class FacetsResponse(SurfacePayloadModel):

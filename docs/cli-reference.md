@@ -22,10 +22,11 @@ Usage: polylogue [OPTIONS] COMMAND [ARGS]...
       routed your invocation.
 
   Product roles:
-      Setup/demo/proof:  config, init, import, demo, tutorial
-      Reader/TUI:        dashboard
-      Operations:        polylogue ops status, ops diagnostics, ops maintenance, ops backup
       Query actions:     find QUERY then read|select|mark|analyze|delete|continue
+      Runtime status:    polylogue ops status
+      Setup/demo/evidence:  config, init, import, demo, tutorial
+      Reader/TUI:        dashboard --status, dashboard
+      Operations:        ops diagnostics, ops maintenance, ops backup
 
   Query mode (default):
       polylogue find "search terms"
@@ -33,7 +34,8 @@ Usage: polylogue [OPTIONS] COMMAND [ARGS]...
       polylogue --latest find 'repo:polylogue' then read --to browser
 
   Verbs (actions on matched sessions):
-      polylogue find id:abc then read
+      polylogue find id:abc then read          # exact ref: one selected session
+      polylogue find id:abc then select --json # expose selected-session identity
       polylogue find id:abc then read --view messages
       polylogue find id:abc then read --to browser
       polylogue find id:abc then analyze --facets
@@ -204,13 +206,14 @@ Usage: polylogue analyze [OPTIONS] COMMAND [ARGS]...
       polylogue find 'repo:polylogue' then analyze --facets
       polylogue find 'repo:polylogue' then analyze --by day --format json
       polylogue analyze --cost-outlook --plan claude-pro --format json
+      polylogue analyze usage --format json
 
 Options:
   --count                         Print only the matched-session count.
   --by [origin|month|year|day|action|tool|repo|work-kind]
                                   Group statistics by dimension
-  --facets                        Show facet aggregates for the matched result
-                                  set
+  --facets                        Show named facet families for the matched
+                                  result set; cheap families are default.
   --cost-outlook                  Project the current billing cycle for a
                                   configured subscription plan.
   --plan TEXT                     Subscription plan name for --cost-outlook.
@@ -218,8 +221,9 @@ Options:
                                   Projection method for --cost-outlook.
   --no-idf                        With --facets, skip inverse-document-
                                   frequency weighting
-  --include-deferred              With --facets, compute expensive families
-                                  that are deferred by default.
+  --include-deferred              With --facets, compute deferred detail
+                                  families: repos, roles, material origins,
+                                  message types, actions, flags.
   -f, --format [markdown|json|ndjson|html|obsidian|org|yaml|plaintext|csv]
                                   Output format (ndjson = one JSON document
                                   per row, streaming-friendly)
@@ -231,6 +235,7 @@ Commands:
   pace      Show inter-turn gap analysis for one or more sessions.
   tools     Show top tools by invocation count across filtered sessions.
   turns     Show per-turn cost and duration for one session.
+  usage     Audit provider usage accounting without turning it into a...
 ```
 
 ## Read Verb
@@ -370,7 +375,11 @@ Options:
 ```text
 Usage: polylogue mark [OPTIONS] COMMAND [ARGS]...
 
-  Mark matched sessions with tags, notes, or durable marks.
+  Mark query-result sessions with tags, notes, or durable marks.
+
+  This owns session overlays only. Use `mark candidates` for assertion-
+  candidate review; target-ref/web annotations are separate surfaces, not
+  hidden here.
 
   Requires exactly one matched session unless --all is present.
   Use --first to act on the first match when the query is non-specific.
@@ -401,7 +410,7 @@ Options:
   --help            Show this message and exit.
 
 Commands:
-  candidates  Review candidate assertions awaiting judgment.
+  candidates  Review assertion candidates for a selected session or...
 ```
 
 ## Mark Candidate Assertions
@@ -409,7 +418,11 @@ Commands:
 ```text
 Usage: polylogue mark candidates [OPTIONS] COMMAND [ARGS]...
 
-  Review candidate assertions awaiting judgment.
+  Review assertion candidates for a selected session or target ref.
+
+  Candidate commands own claim judgment: list, accept, reject, defer, or
+  supersede candidate assertions. They do not apply ordinary session tags,
+  stars, pins, archive marks, or notes.
 
 Options:
   --help  Show this message and exit.

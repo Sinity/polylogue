@@ -1,6 +1,6 @@
 # Evidence-freshness manifest.
 #
-# Transitional proof-era freshness manifest. Freshness should be derived from
+# Transitional freshness manifest. Freshness should be derived from
 # pytest/JUnit/json-report, coverage, benchmark, CI, and runtime evidence
 # artifact timestamps/git SHAs under #594/#1065, not from hand-maintained claim
 # rows in this file.
@@ -29,6 +29,6 @@ freshness_policies:
     applies_to: [error.machine_user_context, trace.operation.surface_equivalence, diagnostic.observable_trace_mapping]
 
 stale_threshold:
-  proof_evidence_days: 14
+  behavior_evidence_days: 14
   smoke_evidence_days: 30
   manual_review_evidence_days: 90

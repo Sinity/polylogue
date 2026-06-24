@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
-from polylogue.core.enums import Origin
+from polylogue.core.enums import AssertionKind, AssertionStatus, Origin
 from polylogue.core.sources import provider_from_origin
 from polylogue.mcp.archive_support import (
     active_archive_root,
@@ -651,6 +651,21 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     )
     mcp.tool()(_facets)
 
+    @mcp.tool()
+    async def provider_usage(origin: str | None = None, limit: int = 25) -> str:
+        """Return provider usage accounting diagnostics without estimating billing cost."""
+
+        async def run() -> str:
+            report = await hooks.get_polylogue().provider_usage_report(
+                origin=origin,
+                limit=hooks.clamp_limit(limit),
+            )
+            return hooks.json_payload(
+                MCPRootPayload(root=cast(dict[str, object], {"provider_usage": report.to_dict()}))
+            )
+
+        return await hooks.async_safe_call("provider_usage", run)
+
 
 def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
@@ -693,8 +708,13 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         async def run() -> str:
             poly = hooks.get_polylogue()
             clamped_limit = hooks.clamp_limit(limit)
-            kind_filter = _split_archive_csv(kinds) or None
-            status_filter = None if statuses is None else _split_archive_csv(statuses)
+            raw_kinds = _split_archive_csv(kinds)
+            kind_filter = tuple(AssertionKind.from_string(kind) for kind in raw_kinds) or None
+            status_filter = (
+                None
+                if statuses is None
+                else tuple(AssertionStatus.from_string(status) for status in _split_archive_csv(statuses))
+            )
             items = await poly.list_assertion_claim_payloads(
                 kinds=kind_filter,
                 target_ref=target_ref,

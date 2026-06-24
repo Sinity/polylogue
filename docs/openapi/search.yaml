@@ -532,121 +532,6 @@ components:
           $ref: '#/components/schemas/ActionSafetyPayload'
         availability:
           $ref: '#/components/schemas/ActionAvailabilityPayload'
-        input_unit:
-          enum:
-          - none
-          - query_result_set
-          - session
-          - path
-          - config
-          - runtime
-          - assertion_candidate
-          title: Input Unit
-          type: string
-        cardinality_state:
-          enum:
-          - any
-          - singleton
-          - explicit_multi
-          - destructive_multi
-          title: Cardinality State
-          type: string
-        safety_level:
-          enum:
-          - safe
-          - mutating
-          - destructive
-          - operational
-          title: Safety Level
-          type: string
-        confirmation_command:
-          anyOf:
-          - type: string
-          - type: 'null'
-          default: null
-          title: Confirmation Command
-        selection_command:
-          anyOf:
-          - type: string
-          - type: 'null'
-          default: null
-          title: Selection Command
-        destination_support:
-          items:
-            enum:
-            - terminal
-            - stdout
-            - browser
-            - clipboard
-            - file
-            - api
-            - mcp
-            type: string
-          title: Destination Support
-          type: array
-        format_support:
-          items:
-            enum:
-            - human
-            - json
-            - ndjson
-            type: string
-          title: Format Support
-          type: array
-        default_format:
-          enum:
-          - human
-          - json
-          - ndjson
-          title: Default Format
-          type: string
-        machine_envelope:
-          enum:
-          - result_set
-          - item
-          - mutation
-          - error
-          - stream_item
-          title: Machine Envelope
-          type: string
-        disabled_reason:
-          anyOf:
-          - type: string
-          - type: 'null'
-          default: null
-          title: Disabled Reason
-        estimated_cost:
-          anyOf:
-          - type: string
-          - type: 'null'
-          default: null
-          title: Estimated Cost
-        next_actions:
-          default: []
-          items:
-            type: string
-          title: Next Actions
-          type: array
-        guards:
-          default: []
-          items:
-            type: string
-          title: Guards
-          type: array
-        completion_context:
-          anyOf:
-          - enum:
-            - config_key
-            - filesystem_path
-            - query_expression
-            - session_id
-            type: string
-          - type: 'null'
-          default: null
-          title: Completion Context
-        requires_daemon:
-          title: Requires Daemon
-          type: boolean
       required:
       - id
       - path
@@ -657,14 +542,6 @@ components:
       - output
       - safety
       - availability
-      - input_unit
-      - cardinality_state
-      - safety_level
-      - destination_support
-      - format_support
-      - default_format
-      - machine_envelope
-      - requires_daemon
       title: ActionAffordancePayload
       type: object
     ActionAvailabilityPayload:
@@ -1388,11 +1265,9 @@ components:
           title: Author Kind
           type: string
         status:
-          title: Status
-          type: string
+          $ref: '#/components/schemas/AssertionStatus'
         visibility:
-          title: Visibility
-          type: string
+          $ref: '#/components/schemas/AssertionVisibility'
         evidence_refs:
           items:
             type: string
@@ -1424,6 +1299,26 @@ components:
       - updated_at_ms
       title: AssertionQueryRowPayload
       type: object
+    AssertionStatus:
+      description: Closed lifecycle state vocabulary for assertion rows.
+      enum:
+      - active
+      - candidate
+      - accepted
+      - rejected
+      - superseded
+      - deleted
+      - inactive
+      title: AssertionStatus
+      type: string
+    AssertionVisibility:
+      description: Closed visibility vocabulary for assertion rows.
+      enum:
+      - private
+      - team
+      - public
+      title: AssertionVisibility
+      type: string
     BlockQueryRowPayload:
       additionalProperties: false
       description: Shared terminal-query row for archive content blocks.
@@ -2235,16 +2130,14 @@ components:
           type: array
         status:
           anyOf:
-          - type: string
+          - $ref: '#/components/schemas/AssertionStatus'
           - type: 'null'
           default: null
-          title: Status
         visibility:
           anyOf:
-          - type: string
+          - $ref: '#/components/schemas/AssertionVisibility'
           - type: 'null'
           default: null
-          title: Visibility
         confidence:
           anyOf:
           - type: number
@@ -2303,7 +2196,7 @@ components:
         statuses:
           anyOf:
           - items:
-              type: string
+              $ref: '#/components/schemas/AssertionStatus'
             type: array
           - type: 'null'
           default: null
@@ -2311,7 +2204,7 @@ components:
         kinds:
           anyOf:
           - items:
-              type: string
+              $ref: '#/components/schemas/AssertionKind'
             type: array
           - type: 'null'
           default: null
@@ -2559,6 +2452,13 @@ x-polylogue-route-contracts:
   stability: stable
   auth_policy: bearer_if_configured
   response_contract: QueryUnitResultEnvelope
+- method: GET
+  pattern: /api/provider-usage
+  kind: operational
+  stability: stable
+  auth_policy: bearer_if_configured
+  response_contract: ProviderUsageReport
+  notes: Usage-accounting diagnostics; separates provider events, cumulative counters, transcript words, and model rollups.
 - method: GET
   pattern: /api/archive-debt
   kind: operational

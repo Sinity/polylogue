@@ -66,9 +66,6 @@ DEFAULT_IGNORE_PATTERNS = shutil.ignore_patterns(
     "mutants",
     "__pycache__",
     ".claude",
-    "qa_archive",
-    "qa_outputs",
-    "qa_2026-03-10",
 )
 CAMPAIGNS = get_authored_scenario_catalog().mutation_campaign_index()
 

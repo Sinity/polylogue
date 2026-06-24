@@ -87,21 +87,6 @@ class ActionAffordancePayload(BaseModel):
     output: ActionOutputPayload
     safety: ActionSafetyPayload
     availability: ActionAvailabilityPayload
-    input_unit: InputUnit
-    cardinality_state: ActionCardinality
-    safety_level: ActionSafetyLevel
-    confirmation_command: str | None = None
-    selection_command: str | None = None
-    destination_support: tuple[ActionDestination, ...]
-    format_support: tuple[ActionFormat, ...]
-    default_format: ActionFormat
-    machine_envelope: MachineEnvelope
-    disabled_reason: str | None = None
-    estimated_cost: str | None = None
-    next_actions: tuple[str, ...] = ()
-    guards: tuple[str, ...] = ()
-    completion_context: CompletionContext | None = None
-    requires_daemon: bool
 
 
 class ActionAffordanceListPayload(BaseModel):
@@ -161,17 +146,6 @@ def assertion_candidate_review_affordances(
                     disabled_reason=disabled_reason,
                     next_actions=("read", "context-pack"),
                 ),
-                input_unit="assertion_candidate",
-                cardinality_state="singleton",
-                safety_level="mutating",
-                destination_support=("terminal", "api", "mcp"),
-                format_support=("json",),
-                default_format="json",
-                machine_envelope="mutation",
-                disabled_reason=disabled_reason,
-                next_actions=("read", "context-pack"),
-                guards=("candidate_ref_required",),
-                requires_daemon=False,
             )
         )
     return tuple(payloads)

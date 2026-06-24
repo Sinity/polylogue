@@ -12,9 +12,14 @@ from polylogue.core.enums import (
     PasteBoundary,
     Role,
 )
-from polylogue.storage.sqlite.archive_tiers.common import CONTENT_HASH_CHECK, check, nullable_check
+from polylogue.storage.sqlite.archive_tiers.common import (
+    CONTENT_HASH_CHECK,
+    check,
+    json_object_check,
+    nullable_check,
+)
 
-INDEX_SCHEMA_VERSION = 6
+INDEX_SCHEMA_VERSION = 7
 
 INDEX_DDL = f"""
 CREATE TABLE IF NOT EXISTS sessions (
@@ -131,7 +136,7 @@ CREATE TABLE IF NOT EXISTS blocks (
     text            TEXT,
     tool_name       TEXT,
     tool_id         TEXT,
-    tool_input      TEXT,
+    tool_input      TEXT CHECK ({json_object_check("tool_input", nullable=True)}),
     semantic_type   TEXT,
     media_type      TEXT,
     language        TEXT,
@@ -481,20 +486,22 @@ CREATE TABLE IF NOT EXISTS session_provider_usage_events (
     session_id                     TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     source_message_id              TEXT REFERENCES messages(message_id) ON DELETE SET NULL,
     position                       INTEGER NOT NULL CHECK(position >= 0),
-    provider_event_type            TEXT NOT NULL CHECK(provider_event_type IN ('token_count')),
+    provider_event_type            TEXT NOT NULL CHECK(provider_event_type IN ('token_count', 'message_usage')),
     model_name                     TEXT,
     last_input_tokens              INTEGER NOT NULL DEFAULT 0 CHECK(last_input_tokens >= 0),
     last_output_tokens             INTEGER NOT NULL DEFAULT 0 CHECK(last_output_tokens >= 0),
     last_cached_input_tokens       INTEGER NOT NULL DEFAULT 0 CHECK(last_cached_input_tokens >= 0),
+    last_cache_write_tokens        INTEGER NOT NULL DEFAULT 0 CHECK(last_cache_write_tokens >= 0),
     last_reasoning_output_tokens   INTEGER NOT NULL DEFAULT 0 CHECK(last_reasoning_output_tokens >= 0),
     last_total_tokens              INTEGER NOT NULL DEFAULT 0 CHECK(last_total_tokens >= 0),
     total_input_tokens             INTEGER NOT NULL DEFAULT 0 CHECK(total_input_tokens >= 0),
     total_output_tokens            INTEGER NOT NULL DEFAULT 0 CHECK(total_output_tokens >= 0),
     total_cached_input_tokens      INTEGER NOT NULL DEFAULT 0 CHECK(total_cached_input_tokens >= 0),
+    total_cache_write_tokens       INTEGER NOT NULL DEFAULT 0 CHECK(total_cache_write_tokens >= 0),
     total_reasoning_output_tokens  INTEGER NOT NULL DEFAULT 0 CHECK(total_reasoning_output_tokens >= 0),
     total_tokens                   INTEGER NOT NULL DEFAULT 0 CHECK(total_tokens >= 0),
     model_context_window           INTEGER CHECK(model_context_window IS NULL OR model_context_window >= 0),
-    payload_json                   TEXT NOT NULL DEFAULT '{{}}',
+    payload_json                   TEXT NOT NULL DEFAULT '{{}}' CHECK ({json_object_check("payload_json")}),
     occurred_at_ms                 INTEGER,
     PRIMARY KEY(session_id, position)
 ) STRICT;

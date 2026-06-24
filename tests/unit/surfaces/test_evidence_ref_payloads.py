@@ -7,7 +7,7 @@ from typing import Any, cast
 import pytest
 from pydantic import ValidationError
 
-from polylogue.core.enums import AssertionKind
+from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
 from polylogue.surfaces.payloads import (
     AssertionClaimPayload,
     AssertionQueryRowPayload,
@@ -25,8 +25,8 @@ def test_assertion_query_payload_rejects_unparseable_target_ref() -> None:
             value={"ok": True},
             author_ref="user:local",
             author_kind="user",
-            status="active",
-            visibility="private",
+            status=AssertionStatus.ACTIVE,
+            visibility=AssertionVisibility.PRIVATE,
             evidence_refs=("session:codex-session:s1::m1",),
             staleness={},
             context_policy={"inject": False},
@@ -44,8 +44,44 @@ def test_assertion_query_payload_rejects_unknown_kind() -> None:
             value={"ok": True},
             author_ref="user:local",
             author_kind="user",
-            status="active",
-            visibility="private",
+            status=AssertionStatus.ACTIVE,
+            visibility=AssertionVisibility.PRIVATE,
+            evidence_refs=(),
+            staleness={},
+            context_policy={"inject": False},
+            created_at_ms=1,
+            updated_at_ms=1,
+        )
+
+
+def test_assertion_query_payload_rejects_unknown_status_and_visibility() -> None:
+    with pytest.raises(ValidationError, match="Input should be"):
+        AssertionQueryRowPayload(
+            assertion_id="a1",
+            target_ref="session:codex-session:s1",
+            kind=AssertionKind.NOTE,
+            value={"ok": True},
+            author_ref="user:local",
+            author_kind="user",
+            status=cast(Any, "draft"),
+            visibility=AssertionVisibility.PRIVATE,
+            evidence_refs=(),
+            staleness={},
+            context_policy={"inject": False},
+            created_at_ms=1,
+            updated_at_ms=1,
+        )
+
+    with pytest.raises(ValidationError, match="Input should be"):
+        AssertionQueryRowPayload(
+            assertion_id="a1",
+            target_ref="session:codex-session:s1",
+            kind=AssertionKind.NOTE,
+            value={"ok": True},
+            author_ref="user:local",
+            author_kind="user",
+            status=AssertionStatus.ACTIVE,
+            visibility=cast(Any, "workspace"),
             evidence_refs=(),
             staleness={},
             context_policy={"inject": False},
@@ -73,6 +109,8 @@ def test_assertion_claim_payload_accepts_object_and_evidence_refs() -> None:
     assert payload.scope_ref == "workspace:polylogue"
     assert payload.target_ref == "message:codex-session:s1:m1"
     assert payload.kind is AssertionKind.NOTE
+    assert payload.status is None
+    assert payload.visibility is None
     assert payload.evidence_refs == (
         "session:codex-session:s1",
         "codex-session:s1::m1",
@@ -86,6 +124,41 @@ def test_assertion_claim_payload_rejects_unknown_kind() -> None:
             target_ref="message:codex-session:s1:m1",
             kind=cast(Any, "review"),
             body_text="needs review",
+            created_at_ms=1,
+            updated_at_ms=1,
+        )
+
+
+def test_assertion_claim_payload_validates_lifecycle_enums() -> None:
+    payload = AssertionClaimPayload(
+        assertion_id="a1",
+        target_ref="message:codex-session:s1:m1",
+        kind=AssertionKind.NOTE,
+        body_text="needs review",
+        status=AssertionStatus.CANDIDATE,
+        visibility=AssertionVisibility.PRIVATE,
+        created_at_ms=1,
+        updated_at_ms=1,
+    )
+
+    assert payload.status is AssertionStatus.CANDIDATE
+    assert payload.visibility is AssertionVisibility.PRIVATE
+
+    with pytest.raises(ValidationError, match="Input should be"):
+        AssertionClaimPayload(
+            assertion_id="a1",
+            target_ref="message:codex-session:s1:m1",
+            kind=AssertionKind.NOTE,
+            status=cast(Any, "draft"),
+            created_at_ms=1,
+            updated_at_ms=1,
+        )
+    with pytest.raises(ValidationError, match="Input should be"):
+        AssertionClaimPayload(
+            assertion_id="a1",
+            target_ref="message:codex-session:s1:m1",
+            kind=AssertionKind.NOTE,
+            visibility=cast(Any, "workspace"),
             created_at_ms=1,
             updated_at_ms=1,
         )

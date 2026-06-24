@@ -77,7 +77,7 @@ families:
     location: polylogue/scenarios/projections.py
     notes: >
       ScenarioProjectionSource maps scenarios to verification
-      projections. Supports scenario-aware proof catalog
+      projections. Supports scenario-aware evidence reference
       rendering.
 
   - name: runtime_scenarios

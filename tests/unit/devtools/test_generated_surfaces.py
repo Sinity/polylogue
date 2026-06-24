@@ -46,6 +46,7 @@ def test_generated_surface_cache_inputs_include_contract_owners() -> None:
         "polylogue/archive/viewport/",
         "polylogue/archive/viewport/profiles.py",
         "polylogue/operations/action_contracts.py",
+        "polylogue/surfaces/action_affordances.py",
         "polylogue/surfaces/payloads.py",
     }.issubset(_surface_inputs("cli-reference"))
 
@@ -55,6 +56,7 @@ def test_generated_surface_cache_inputs_include_contract_owners() -> None:
         "polylogue/archive/query/unit_results.py",
         "polylogue/context/compiler.py",
         "polylogue/insights/transforms.py",
+        "polylogue/surfaces/action_affordances.py",
         "polylogue/surfaces/payloads.py",
     }.issubset(_surface_inputs("cli-output-schemas"))
 
@@ -71,6 +73,7 @@ def test_generated_surface_cache_inputs_include_contract_owners() -> None:
         "polylogue/daemon/route_contracts.py",
         "polylogue/context/compiler.py",
         "polylogue/insights/transforms.py",
+        "polylogue/surfaces/action_affordances.py",
         "polylogue/surfaces/payloads.py",
     }.issubset(_surface_inputs("openapi"))
 

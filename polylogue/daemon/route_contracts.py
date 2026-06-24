@@ -168,6 +168,15 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
     RouteContract("GET", "/api/query-units", "read_query", "stable", "bearer_if_configured", "QueryUnitResultEnvelope"),
     RouteContract(
         "GET",
+        "/api/provider-usage",
+        "operational",
+        "stable",
+        "bearer_if_configured",
+        "ProviderUsageReport",
+        "Usage-accounting diagnostics; separates provider events, cumulative counters, transcript words, and model rollups.",
+    ),
+    RouteContract(
+        "GET",
         "/api/archive-debt",
         "operational",
         "stable",

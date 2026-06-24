@@ -7,11 +7,11 @@ from unittest.mock import AsyncMock
 from click.testing import CliRunner
 
 from polylogue.cli.query_verbs import mark_candidates_group
-from polylogue.core.enums import AssertionKind
+from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
 from polylogue.surfaces.payloads import AssertionClaimPayload, AssertionJudgmentPayload, AssertionJudgmentResultPayload
 
 
-def _claim(status: str = "candidate") -> AssertionClaimPayload:
+def _claim(status: AssertionStatus = AssertionStatus.CANDIDATE) -> AssertionClaimPayload:
     return AssertionClaimPayload(
         assertion_id="candidate-cli-1",
         target_ref="session:cli",
@@ -20,7 +20,7 @@ def _claim(status: str = "candidate") -> AssertionClaimPayload:
         body_text="Keep candidate review explicit.",
         evidence_refs=("session:cli",),
         status=status,
-        visibility="private",
+        visibility=AssertionVisibility.PRIVATE,
         context_policy={"inject": False, "promotion_required": True},
         created_at_ms=1,
         updated_at_ms=1,
@@ -52,9 +52,9 @@ def test_candidates_accept_emits_judgment_result_payload() -> None:
         evidence_refs=("session:cli", "assertion:candidate-cli-1"),
     )
     payload = AssertionJudgmentResultPayload(
-        candidate=_claim(status="accepted"),
+        candidate=_claim(status=AssertionStatus.ACCEPTED),
         judgment=judgment,
-        resulting_assertion=_claim(status="active").model_copy(
+        resulting_assertion=_claim(status=AssertionStatus.ACTIVE).model_copy(
             update={
                 "assertion_id": "active-cli-1",
                 "kind": AssertionKind.DECISION,

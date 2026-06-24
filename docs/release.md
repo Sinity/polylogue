@@ -6,7 +6,10 @@ single open "release PR" that bumps `pyproject.toml`, rolls the `Unreleased`
 heading in `CHANGELOG.md` to `[X.Y.Z] — YYYY-MM-DD`, and updates
 `.release-please-manifest.json`. Merging that PR pushes a signed `vX.Y.Z` tag,
 which triggers [`release.yml`](../.github/workflows/release.yml) to build and
-publish to PyPI (Trusted Publishing / OIDC) and `ghcr.io/sinity/polylogue`.
+publish the Python distributions to PyPI (Trusted Publishing / OIDC). The same
+tag also triggers [`container.yml`](../.github/workflows/container.yml), which
+builds and publishes the slim and distroless OCI images to
+`ghcr.io/sinity/polylogue`.
 
 This file is the operator-facing cut-time checklist. The manual procedure
 (see "Manual Fallback" below) is retained only for cases where release-please
@@ -40,6 +43,12 @@ anything different; release-please consumes the existing history.
 - [ ] `devtools render all --check` clean.
 - [ ] `devtools release verify-distribution` passes locally when packaging or
       runtime dependencies changed.
+- [ ] `devtools release build-package` passes when Nix packaging or dependency
+      closure changed.
+- [ ] `devtools workspace deployment-smoke --json` captures installed command
+      versions, daemon URL, browser-capture receiver URL, archive root, and
+      resource signals on the deployment host when this release claims deployed
+      package readiness.
 - [ ] CI green on `master`.
 - [ ] `CHANGELOG.md` diff in the release PR looks right — entries grouped under
       the configured sections, no stray Unreleased content left over.
@@ -49,6 +58,14 @@ anything different; release-please consumes the existing history.
       release without a resolution PR.
 - [ ] `pip-audit` green (covered by CI; re-run locally if anything changed
       since the last run).
+
+These pre-flight checks are source-safe: they build from the checkout, install
+or inspect the produced artifact, and run against an empty or explicit archive
+root. Browser first-paint proof is opt-in and local-host only:
+`devtools workspace deployment-smoke --browser --browser-executable ...` records
+the resolved Chrome/Chromium path, DOM bytes, and screenshot bytes for the web
+root, but it is not a claim about MCP DevTools navigation, copied profiles,
+authenticated provider pages, or production archive timings.
 
 ## Cut (the normal path)
 
@@ -78,15 +95,28 @@ anything different; release-please consumes the existing history.
      (`sigstore/gh-action-sigstore-python`), publishes to PyPI via
      Trusted Publishing (no API token), and retains the `.sigstore` bundles
      as the `signing-artifacts-publish-pypi` workflow artifact.
-   - `publish-container` — builds + pushes the OCI image to
-     `ghcr.io/sinity/polylogue`.
+   - `publish-pypi-mcp` / `publish-pypi-hooks` — sign and publish the wrapper
+     distributions for the MCP console script and Claude Code hook sidecar after
+     their installed-smoke jobs pass.
+   - [`container.yml`](../.github/workflows/container.yml) — runs on the same
+     tag, builds the runtime and distroless images, emits push-path provenance
+     and SBOM attestations through Docker Buildx, and pushes the `:X.Y.Z`,
+     `:X.Y`, and `:latest` tag family to `ghcr.io/sinity/polylogue`.
    - [`homebrew-bump.yml`](../.github/workflows/homebrew-bump.yml) — runs in
-     parallel on the same tag, polls PyPI for the freshly-published sdist,
+     parallel on the same tag, polls PyPI for the freshly published sdist,
      rewrites `url` / `sha256` / `version` in the formula at
      [`nix/homebrew-tap-template/Formula/polylogue.rb`](../nix/homebrew-tap-template/Formula/polylogue.rb),
      regenerates resource blocks via `brew update-python-resources`, runs
      `brew audit --strict --online`, and opens / refreshes a PR against
      [`Sinity/homebrew-tap`](https://github.com/Sinity/homebrew-tap).
+
+The generated artifacts from this release graph are: top-level wheel + sdist,
+wrapper wheel + sdist for `polylogue-mcp`, wrapper wheel + sdist for
+`polylogue-hooks`, Sigstore bundles for every Python artifact, CycloneDX SBOM
+JSON/XML for the top-level wheel dependency closure, packed browser-extension
+artifacts from [`extension-release.yml`](../.github/workflows/extension-release.yml),
+container images and push-path attestations from `container.yml`, and the
+Homebrew tap PR produced after PyPI has the sdist.
 
 The Homebrew bump workflow needs a `HOMEBREW_TAP_TOKEN` secret in this repo
 — a fine-grained GitHub PAT with `contents: write` + `pull-requests: write`

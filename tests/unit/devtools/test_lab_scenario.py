@@ -45,6 +45,7 @@ def test_list_scenarios_reports_live_paths_without_baseline_counts(capsys: pytes
     }
     assert archive["tier_0_check_count"] > 0
     assert visual["command"]
+    assert visual["artifact_count"] > 0
 
 
 def test_main_prints_direct_stage_summary(capsys: pytest.CaptureFixture[str]) -> None:
@@ -125,6 +126,30 @@ def test_main_writes_direct_archive_smoke_report(tmp_path: Path, capsys: pytest.
         "completions-bash",
     ]
     assert all(check["passed"] is True for check in report_payload["checks"])
+
+
+def test_reader_visual_smoke_json_reports_artifact_inventory(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from devtools.lab_scenario import main
+
+    report_dir = tmp_path / "reports"
+    completed = SimpleNamespace(returncode=0, stdout="1 passed\n", stderr="")
+    with patch("devtools.lab_scenario.subprocess.run", return_value=completed) as run:
+        assert main(["run", "reader-visual-smoke", "--json", "--report-dir", str(report_dir)]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    report_payload = json.loads((report_dir / "reader-visual-smoke.json").read_text(encoding="utf-8"))
+    assert payload == report_payload
+    assert payload["scenario"] == "reader-visual-smoke"
+    assert payload["exit_code"] == 0
+    assert payload["artifact_report"] == str(report_dir / "reader-visual-smoke.json")
+    assert {artifact["artifact_id"] for artifact in payload["artifact_inventory"]} >= {
+        "polylogue.local_reader.search",
+        "polylogue.local_reader.session",
+        "polylogue.local_reader.workspace.stack",
+    }
+    assert run.call_args.kwargs["capture_output"] is True
 
 
 def test_main_reports_unsupported_archive_smoke_tier(capsys: pytest.CaptureFixture[str]) -> None:

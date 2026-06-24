@@ -72,6 +72,7 @@ Compact queries select sessions:
 ```bash
 polylogue repo:polylogue tag:active -"stale plan" "query envelope"
 polylogue origin:(codex-session|claude-code-session) messages:>=10 words:<=2000
+polylogue session:codex-session:abc123
 polylogue near:id:codex-session:abc123
 ```
 
@@ -79,6 +80,7 @@ Explicit Boolean session queries also select sessions:
 
 ```bash
 polylogue sessions where '(repo:polylogue OR repo:sinex) AND NOT tag:stale'
+polylogue sessions where 'session:codex-session:abc123'
 polylogue sessions where 'exists message(role:assistant AND text:timeout)'
 polylogue sessions where 'seq(action:file_edit -> action:shell)'
 polylogue sessions where 'seq(action:file_edit -> action:shell AND output:failed -> action:file_edit)'
@@ -144,6 +146,9 @@ caller/API caps, and query-string offsets are added to the caller offset.
 Runtime-transform terminal rows (`runs`, `observed-events`, `context-snapshots`)
 reject sort/aggregate stages until they have streaming or aggregate lowerers;
 they must not collect every projected row in memory merely to sort a page.
+Pipeline syntax is terminal-row syntax: session-selector surfaces reject piped
+queries, including aggregate stages like `group by role | count`, instead of
+dropping those stages and widening the query to `exists message(...)`.
 
 `--explain --format json` reports terminal pipelines as a `unit_source` AST with
 ordered `pipeline_stages`. Session-scoped pipelines include a `session_scope`
@@ -170,6 +175,7 @@ text terms.
 | `action` | Semantic action category | `action:file_edit` |
 | `has` | Content presence (`paste`, `tools`, `thinking`, or stored type) | `has:paste` |
 | `id` | Session id or prefix | `id:codex-session:abc` |
+| `session` | Exact session ref alias for `id` | `session:codex-session:abc` |
 | `title` | Session title substring | `title:refactor` |
 | `since` / `until` | Session time bounds, ISO or relative | `since:7d` |
 | `contains` | Exact content substring filter | `contains:sqlite` |

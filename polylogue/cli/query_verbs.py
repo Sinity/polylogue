@@ -33,6 +33,7 @@ from polylogue.cli.read_view_handlers import (
 )
 from polylogue.cli.shared.types import AppEnv
 from polylogue.cli.verb_names import VERB_NAMES
+from polylogue.core.enums import AssertionStatus
 from polylogue.surfaces.payloads import (
     AssertionClaimListPayload,
     serialize_surface_payload,
@@ -826,7 +827,10 @@ def mark_verb(
     apply_all: bool,
     first_only: bool,
 ) -> None:
-    """Mark matched sessions with tags, notes, or durable marks.
+    """Mark query-result sessions with tags, notes, or durable marks.
+
+    This owns session overlays only. Use `mark candidates` for assertion-candidate review;
+    target-ref/web annotations are separate surfaces, not hidden here.
 
     \b
     Requires exactly one matched session unless --all is present.
@@ -936,7 +940,12 @@ def mark_verb(
 
 @mark_verb.group("candidates")
 def mark_candidates_group() -> None:
-    """Review candidate assertions awaiting judgment."""
+    """Review assertion candidates for a selected session or target ref.
+
+    Candidate commands own claim judgment: list, accept, reject, defer, or
+    supersede candidate assertions. They do not apply ordinary session tags,
+    stars, pins, archive marks, or notes.
+    """
 
 
 @mark_candidates_group.command("list")
@@ -948,7 +957,9 @@ def list_mark_candidates_command(env: AppEnv, target_ref: str | None, limit: int
     """List candidate assertion claims."""
     items = run_coroutine_sync(env.polylogue.list_assertion_candidates(target_ref=target_ref, limit=limit))
     if output_format == "json":
-        payload = AssertionClaimListPayload(items=tuple(items), total=len(items), limit=limit, statuses=("candidate",))
+        payload = AssertionClaimListPayload(
+            items=tuple(items), total=len(items), limit=limit, statuses=(AssertionStatus.CANDIDATE,)
+        )
         click.echo(serialize_surface_payload(payload, exclude_none=True))
         return
     if not items:
@@ -1098,7 +1109,12 @@ def _emit_candidate_judgment(
     default=None,
     help="Group statistics by dimension",
 )
-@click.option("--facets", "show_facets", is_flag=True, help="Show facet aggregates for the matched result set")
+@click.option(
+    "--facets",
+    "show_facets",
+    is_flag=True,
+    help="Show named facet families for the matched result set; cheap families are default.",
+)
 @click.option(
     "--cost-outlook",
     is_flag=True,
@@ -1122,7 +1138,7 @@ def _emit_candidate_judgment(
     "--include-deferred",
     is_flag=True,
     default=False,
-    help="With --facets, compute expensive families that are deferred by default.",
+    help="With --facets, compute deferred detail families: repos, roles, material origins, message types, actions, flags.",
 )
 @click.option(
     "--format",
@@ -1162,6 +1178,7 @@ def analyze_verb(
         polylogue find 'repo:polylogue' then analyze --facets
         polylogue find 'repo:polylogue' then analyze --by day --format json
         polylogue analyze --cost-outlook --plan claude-pro --format json
+        polylogue analyze usage --format json
     """
     if ctx.invoked_subcommand is not None:
         if any(
@@ -1241,26 +1258,51 @@ def analyze_verb(
             click.echo(_json.dumps(response.model_dump(mode="json", by_alias=True), indent=2))
             return
         scope_label = "scoped" if response.scoped_to_query else "global"
+
+        def _status_label(family: str) -> str:
+            status = response.family_status.get(family)
+            return status.label if status is not None and status.label else family.replace("_", " ").title()
+
+        def _emit_bucket(family: str, values: dict[str, int]) -> None:
+            visible_values = {key: count for key, count in values.items() if count}
+            if not visible_values:
+                return
+            click.echo(f"  {_status_label(family)}:")
+            for value, cnt in sorted(visible_values.items(), key=lambda kv: (-kv[1], kv[0])):
+                click.echo(f"    {value}: {cnt}")
+
         click.echo(f"Facets ({scope_label}) — matched result set:")
         click.echo(f"  sessions: {response.scoped.total_sessions}  messages: {response.scoped.total_messages}")
-        if response.scoped.origins:
-            click.echo("  Origins:")
-            for origin, cnt in sorted(response.scoped.origins.items(), key=lambda kv: -kv[1]):
-                click.echo(f"    {origin}: {cnt}")
-        if response.scoped.tags:
-            click.echo("  Tags:")
-            for tag, cnt in sorted(response.scoped.tags.items(), key=lambda kv: -kv[1]):
-                click.echo(f"    {tag}: {cnt}")
+        click.echo("  Family states:")
+        ordered_families = [
+            *response.complete_families,
+            *(family for family in response.deferred_families if family not in response.complete_families),
+        ]
+        for family in ordered_families:
+            status = response.family_status.get(family)
+            if status is None:
+                continue
+            detail = f" — {status.state}"
+            if status.reason:
+                detail += f" ({status.reason}; use --include-deferred)"
+            if status.canonicalization and family in {"repos", "role_counts", "material_origins"}:
+                detail += f"; {status.canonicalization}"
+            click.echo(f"    {family}: {_status_label(family)}{detail}")
+        _emit_bucket("origins", response.scoped.origins)
+        _emit_bucket("tags", response.scoped.tags)
+        _emit_bucket("repos", response.scoped.repos)
+        _emit_bucket("role_counts", response.scoped.role_counts)
+        _emit_bucket("material_origins", response.scoped.material_origins)
+        _emit_bucket("message_types", response.scoped.message_types)
+        _emit_bucket("action_types", response.scoped.action_types)
+        _emit_bucket("has_flags", response.scoped.has_flags)
+        _emit_bucket("omitted", response.scoped.omitted)
         if response.idf:
             click.echo("  IDF (higher = rarer, partitions more strongly):")
             for family, values in response.idf.items():
                 click.echo(f"    [{family}]")
-                for value, weight in sorted(values.items(), key=lambda kv: -kv[1]):
+                for value, weight in sorted(values.items(), key=lambda kv: (-kv[1], kv[0])):
                     click.echo(f"      {value}: {weight:.3f}")
-        if response.deferred_families:
-            click.echo("  Deferred families:")
-            for family, reason in sorted(response.deferred_families.items()):
-                click.echo(f"    {family}: {reason} (use --include-deferred)")
         return
 
     if cost_outlook:
@@ -1310,13 +1352,14 @@ def analyze_verb(
 
 
 def _attach_analyze_subcommands() -> None:
-    from polylogue.cli.commands.diagnostics import pace_command, tools_command, turns_command
+    from polylogue.cli.commands.diagnostics import pace_command, tools_command, turns_command, usage_command
     from polylogue.cli.commands.insights import analyze_insights_command
 
     analyze_verb.add_command(analyze_insights_command)
     analyze_verb.add_command(pace_command)
     analyze_verb.add_command(tools_command)
     analyze_verb.add_command(turns_command)
+    analyze_verb.add_command(usage_command)
 
 
 _attach_analyze_subcommands()

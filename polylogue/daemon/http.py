@@ -20,6 +20,7 @@ from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 from urllib.parse import parse_qs, urlparse
 
+from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.core.json import JSONDocument
 from polylogue.core.loopback import is_loopback_host, is_loopback_origin
 from polylogue.core.sources import source_name_to_origin
@@ -303,6 +304,7 @@ def _static_get_routes() -> tuple[_StaticGetRoute, ...]:
         _static_get_route("/api/events", "_handle_events", passes_params=True),
         _static_get_route("/api/sessions", "_handle_list_sessions", passes_params=True),
         _static_get_route("/api/facets", "_handle_facets", passes_params=True),
+        _static_get_route("/api/provider-usage", "_handle_provider_usage", passes_params=True),
         _static_get_route("/api/query-units", "_handle_query_units", passes_params=True),
         _static_get_route("/api/archive-debt", "_handle_archive_debt", passes_params=True),
         _static_get_route("/api/import/explain", "_handle_import_explain", passes_params=True),
@@ -480,13 +482,18 @@ def _facet_family_status_map(
     deferred_families: Mapping[str, str],
     family_errors: Mapping[str, str],
 ) -> dict[str, dict[str, object]]:
+    from polylogue.api.archive import _FACET_FAMILY_METADATA
+
+    def _status(family: str, **values: object) -> dict[str, object]:
+        return {**values, **_FACET_FAMILY_METADATA.get(family, {})}
+
     statuses: dict[str, dict[str, object]] = {}
     for family in complete_families:
-        statuses[family] = {"state": "complete", "stale": False}
+        statuses[family] = _status(family, state="complete", stale=False)
     for family, reason in deferred_families.items():
-        statuses[family] = {"state": "deferred", "reason": reason, "stale": False}
+        statuses[family] = _status(family, state="deferred", reason=reason, stale=False)
     for family, error in family_errors.items():
-        statuses[family] = {"state": "error", "error": error, "stale": False}
+        statuses[family] = _status(family, state="error", error=error, stale=False)
     return statuses
 
 
@@ -2894,7 +2901,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         from polylogue.archive.query.spec import clamp_query_limit
 
-        kinds = _csv_values(params, "kind") + _csv_values(params, "kinds")
+        raw_kinds = _csv_values(params, "kind") + _csv_values(params, "kinds")
+        kinds = tuple(AssertionKind.from_string(kind) for kind in dict.fromkeys(raw_kinds))
         statuses = self._assertion_status_filter(params)
         context_inject = None
         if "context_inject" in params:
@@ -2903,7 +2911,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         async def _get(poly: Polylogue) -> object:
             items = await poly.list_assertion_claim_payloads(
-                kinds=tuple(dict.fromkeys(kinds)) or None,
+                kinds=kinds or None,
                 target_ref=self._get_param(params, "target_ref"),
                 scope_ref=self._get_param(params, "scope_ref"),
                 statuses=statuses,
@@ -2915,12 +2923,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 total=len(items),
                 limit=limit,
                 statuses=statuses,
-                kinds=tuple(dict.fromkeys(kinds)) or None,
+                kinds=kinds or None,
             ).model_dump(mode="json", exclude_none=True)
 
         self._send_json(HTTPStatus.OK, self._sync_run(_get))
 
-    def _assertion_status_filter(self, params: dict[str, list[str]]) -> tuple[str, ...] | None:
+    def _assertion_status_filter(self, params: dict[str, list[str]]) -> tuple[AssertionStatus, ...] | None:
         """Return status filters for ``GET /api/assertions``.
 
         The default mirrors ``Polylogue.list_assertion_claims``
@@ -2931,11 +2939,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         raw_statuses = _csv_values(params, "status") + _csv_values(params, "statuses")
         if not raw_statuses:
-            return ("active", "candidate")
+            return (AssertionStatus.ACTIVE, AssertionStatus.CANDIDATE)
         normalized = tuple(dict.fromkeys(token.lower() for token in raw_statuses if token.strip()))
         if any(token in {"all", "*"} for token in normalized):
             return None
-        return normalized
+        return tuple(AssertionStatus.from_string(token) for token in normalized)
 
     # ------------------------------------------------------------------
     # Handlers: recovery/work-packet read surface (#1846/#1838/#1845)

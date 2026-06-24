@@ -1,52 +1,48 @@
 # Installation
 
-Polylogue ships through several distribution channels. Pick the one that
-matches how you run other tools on the host.
+Polylogue is currently installed from the source checkout or the Nix flake.
+PyPI, Homebrew, container images, and browser-store extension packages are
+release-channel targets; do not treat them as available user install paths
+until the release workflow has published and smoke-tested those artifacts.
 
 | Channel | Audience | Reference |
 | --- | --- | --- |
-| `pip install polylogue` | Python users on any OS | [PyPI](https://pypi.org/project/polylogue/) |
-| `brew install sinity/tap/polylogue` | macOS / Linuxbrew users | see below |
+| `nix develop` | Local development, source checkout, verification | [Contributing](../CONTRIBUTING.md) |
 | `nix run github:Sinity/polylogue` | NixOS / nix-darwin users | [`flake.nix`](../flake.nix) |
-| `ghcr.io/sinity/polylogue` | Container / Kubernetes / Compose | see below |
+| NixOS / Home Manager module | Managed local daemon deployment | see below |
 
-The sections below cover ordinary Linux/Python installs, Nix/NixOS, containers,
-and Homebrew. The same three console scripts are exposed by every channel:
-`polylogue`, `polylogued`, and `polylogue-mcp`.
+The source and Nix paths expose the same three console scripts: `polylogue`,
+`polylogued`, and `polylogue-mcp`.
 
-## Ordinary Linux / Python
+## Source checkout
 
-Use `pipx` when you want Polylogue as a user-level tool without mixing it into
-an application virtualenv:
+Clone the repository and enter the dev shell:
 
 ```bash
-python -m pip install --user pipx
-python -m pipx ensurepath
-pipx install polylogue
+git clone https://github.com/Sinity/polylogue.git
+cd polylogue
+nix develop
+```
+
+From inside the dev shell:
+
+```bash
 polylogue --help
-polylogue init
+polylogue ops status
 polylogued run
-polylogued browser-capture status
+polylogue-mcp --help
 ```
 
-A plain virtualenv works the same way and keeps the installed scripts under one
-explicit directory:
-
-```bash
-python -m venv ~/.local/share/polylogue-venv
-~/.local/share/polylogue-venv/bin/pip install --upgrade pip polylogue
-~/.local/share/polylogue-venv/bin/polylogue init
-~/.local/share/polylogue-venv/bin/polylogued run
-```
-
-For a system service, point the unit at the venv or package-managed
-`polylogued` executable and set `POLYLOGUE_ARCHIVE_ROOT` only when the default
-XDG archive location is not desired.
+Use this route for local work, operator dogfooding, browser-capture debugging,
+and repository verification. The dev shell also provides `devtools`, which owns
+generated docs, verification, deployment smoke probes, and release checks.
 
 ## Nix / NixOS quick start
 
-The flake exposes app outputs for the CLI, daemon, and MCP server. One-shot
-commands are enough for smoke testing a host:
+The flake exposes app outputs for the CLI, daemon, and MCP server. Use
+`github:Sinity/polylogue` for a one-shot smoke of the current published flake,
+or `nix develop` inside a checkout when you need the repo-local `devtools`
+surface. One-shot commands are enough for smoke testing a host:
 
 ```bash
 nix run github:Sinity/polylogue -- --help
@@ -64,6 +60,19 @@ nix develop -c polylogued run
 nix develop -c devtools workspace deployment-smoke --browser --browser-executable "$(command -v google-chrome)"
 ```
 
+On NixOS hosts where Chrome lives in the per-user profile rather than under a
+distribution path, pass that path explicitly for browser first-paint diagnostics:
+
+```bash
+nix develop -c devtools workspace deployment-smoke --browser \
+  --browser-executable /etc/profiles/per-user/$USER/bin/google-chrome
+```
+
+That smoke launches a fresh headless profile against Polylogue's web root. It
+does not claim MCP DevTools control, copied-profile cookies, or live provider
+pages; those are local operator proof modes covered by
+[`docs/dev-loop.md`](dev-loop.md).
+
 On NixOS, import the flake module shown in the Nix section below. It creates a
 managed `polylogued.service`; check that deployed surface with:
 
@@ -72,162 +81,19 @@ systemctl status polylogued.service
 polylogue ops status
 ```
 
-## Container image
+## Container image and Homebrew status
 
-The image is published to
-[GitHub Container Registry](https://github.com/Sinity/polylogue/pkgs/container/polylogue)
-by [`.github/workflows/container.yml`](../.github/workflows/container.yml).
-Two variants ship from the same [`packaging/Containerfile`](../packaging/Containerfile):
-
-| Tag pattern | Stage | Base | Notes |
-| --- | --- | --- | --- |
-| `:latest`, `:vX.Y.Z`, `:vX.Y`, `:master-<sha>` | `runtime` | `python:3.13-slim-bookworm` | Includes `curl` + `tini`. Default. `docker exec` debug supported. |
-| `:latest-distroless`, `:vX.Y.Z-distroless`, … | `distroless` | `gcr.io/distroless/python3-debian12:nonroot` | No shell, no package manager. Smaller and tighter attack surface. |
-
-Both variants are built for `linux/amd64` and `linux/arm64`.
-
-### Volume contract
-
-The image declares two volumes; mount these to host paths or named volumes:
-
-| Mount point | Environment variable | Purpose |
-| --- | --- | --- |
-| `/data/archive` | `POLYLOGUE_ARCHIVE_ROOT` | SQLite database, FTS indexes, blob store. |
-| `/etc/polylogue` | `POLYLOGUE_CONFIG_DIR` (`XDG_CONFIG_HOME`) | `polylogue.toml`, credentials, OAuth tokens. |
-
-The runtime variant also exposes `8766/tcp` (daemon HTTP API).
-
-Run as the built-in non-root user `polylogue` (UID/GID `10001`). When using
-host bind-mounts, chown the target directories first:
-
-```bash
-mkdir -p /srv/polylogue/{archive,config}
-sudo chown -R 10001:10001 /srv/polylogue
-```
-
-### Quick start
-
-Foreground, daemon HTTP API on the host:
-
-```bash
-docker run --rm \
-  -p 8766:8766 \
-  -v polylogue-archive:/data/archive \
-  -v polylogue-config:/etc/polylogue \
-  ghcr.io/sinity/polylogue:latest
-```
-
-Check the health endpoint:
-
-```bash
-curl http://127.0.0.1:8766/api/health
-```
-
-Run the CLI inside the same image (the runtime variant ships `polylogue` and
-`polylogue-mcp` on `PATH`):
-
-```bash
-docker run --rm \
-  -v polylogue-archive:/data/archive \
-  -v polylogue-config:/etc/polylogue \
-  --entrypoint polylogue \
-  ghcr.io/sinity/polylogue:latest --version
-```
-
-### docker compose
-
-A complete sample lives at [`docs/docker-compose.yaml`](docker-compose.yaml).
-It configures the volume contract, healthcheck, non-root UID, read-only root
-filesystem, and `cap_drop: [ALL]`. Bring it up with:
-
-```bash
-docker compose -f docs/docker-compose.yaml up -d
-docker compose -f docs/docker-compose.yaml ps
-```
-
-### Distroless variant
-
-For deployments that prefer a smaller attack surface and don't need shell
-access for debugging:
-
-```bash
-docker pull ghcr.io/sinity/polylogue:latest-distroless
-docker run --rm -p 8766:8766 \
-  -v polylogue-archive:/data/archive \
-  ghcr.io/sinity/polylogue:latest-distroless
-```
-
-The distroless image omits `HEALTHCHECK` (no `curl` available); configure
-liveness/readiness probes at the orchestrator (compose, Kubernetes) against
-the same `GET /api/health` endpoint.
-
-### Building locally
+Container and Homebrew packaging files live in the repository, but those
+channels are not documented as current install routes until release artifacts
+exist and the release checklist verifies them. For local container experiments,
+build from the checkout:
 
 ```bash
 docker buildx build -f packaging/Containerfile --target runtime    -t polylogue:slim       .
 docker buildx build -f packaging/Containerfile --target distroless -t polylogue:distroless .
 ```
 
-For multi-arch local builds, set `--platform linux/amd64,linux/arm64` and
-arrange a registry to push to (buildx cannot `load` a multi-platform image
-into the local daemon).
-
-### Backup
-
-The archive lives entirely under `POLYLOGUE_ARCHIVE_ROOT`. Backups are file-
-level snapshots of the named volume / bind-mount target. Stop the daemon (or
-use the SQLite `.backup` command from inside the running container) before
-copying to avoid catching mid-checkpoint state.
-
-## Homebrew
-
-Polylogue ships through a dedicated tap at
-[`Sinity/homebrew-tap`](https://github.com/Sinity/homebrew-tap). The tap is
-auto-bumped from PyPI by
-[`.github/workflows/homebrew-bump.yml`](../.github/workflows/homebrew-bump.yml)
-on every `vX.Y.Z` tag push, so `brew upgrade polylogue` tracks the most
-recent release without manual formula edits. The formula shape itself is
-templated in [`nix/homebrew-tap-template/`](../nix/homebrew-tap-template/)
-so future edits flow through this repo.
-
-The formula installs into a private virtualenv under
-`$(brew --prefix)/Cellar/polylogue/X.Y.Z`, depending on `python@3.13`,
-and exposes three binaries on `PATH`:
-
-| Binary | Role |
-| --- | --- |
-| `polylogue` | Query CLI for the archive. |
-| `polylogued` | Local convergence + HTTP daemon. |
-| `polylogue-mcp` | MCP server for AI coding agents. |
-
-### One-shot install
-
-```bash
-brew tap sinity/tap
-brew install polylogue
-polylogue --version
-```
-
-### Daemon service (opt-in)
-
-The formula declares a `service` block, but Polylogue does not install a
-system service by default. Start the daemon explicitly:
-
-```bash
-brew services start polylogued
-brew services info polylogued
-```
-
-This wires a LaunchAgent on macOS and a systemd-user unit on Linuxbrew.
-First-run creates the XDG archive under
-`~/Library/Application Support/polylogue/` (macOS) or
-`${XDG_DATA_HOME:-~/.local/share}/polylogue/` (Linux). Override with
-`POLYLOGUE_ARCHIVE_ROOT` to relocate the database, FTS indexes, and blob
-store.
-
-### Local iteration on the formula
-
-When changing the template, verify the candidate before publishing:
+For formula work, build the in-repo template explicitly:
 
 ```bash
 brew install --build-from-source nix/homebrew-tap-template/Formula/polylogue.rb
@@ -235,21 +101,12 @@ brew test polylogue
 brew audit --strict --online polylogue
 ```
 
-The bump workflow runs `brew update-python-resources` followed by the
-same `brew audit --strict --online` gate before opening the PR against
-the tap.
-
 ## Nix flake
 
-Polylogue ships as a flake. The flake exposes three apps, a default package,
-a NixOS module, and a Home Manager module. Build artifacts for `x86_64-linux`
-are mirrored to the [`polylogue` cachix
-cache](https://polylogue.cachix.org); enable it on a fresh host to avoid
-rebuilding the dependency closure.
-
-The flake is also published to [FlakeHub](https://flakehub.com/flake/Sinity/polylogue)
-for discoverability — either input URL form (`github:` or `https://flakehub.com/f/...`)
-resolves to the same flake.
+The flake exposes three apps, a default package, a NixOS module, and a Home
+Manager module. Build artifacts for `x86_64-linux` are mirrored to the
+[`sinity` cachix cache](https://sinity.cachix.org); enable it on a fresh host
+to avoid rebuilding the dependency closure.
 
 ### One-shot invocation
 
@@ -263,7 +120,7 @@ Enable the binary cache for hit-on-first-pull:
 
 ```bash
 nix-env -iA cachix -f https://cachix.org/api/v1/install   # if cachix is not on PATH
-cachix use polylogue
+cachix use sinity
 ```
 
 ### External flake input

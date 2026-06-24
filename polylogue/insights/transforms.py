@@ -952,7 +952,8 @@ def _evidence_refs_text(refs: Sequence[EvidenceRef]) -> str:
 def _action_affordances_text(actions: Sequence[ActionAffordancePayload]) -> str:
     parts: list[str] = []
     for action in actions:
-        disabled = f" disabled={action.disabled_reason}" if action.disabled_reason else ""
+        disabled_reason = action.availability.disabled_reason
+        disabled = f" disabled={disabled_reason}" if disabled_reason else ""
         parts.append(f"{action.id}{disabled}")
     return ", ".join(parts)
 

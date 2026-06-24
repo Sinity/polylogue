@@ -260,6 +260,7 @@ _BOOLEAN_SUPPORTED_FIELDS = {
     "action",
     "has",
     "id",
+    "session",
     "title",
     "date",
     "since",
@@ -1232,6 +1233,12 @@ def count_query_fields() -> tuple[str, ...]:
     return tuple(sorted(COUNT_QUERY_FIELD_REGISTRY))
 
 
+def boolean_query_fields() -> tuple[str, ...]:
+    """Return session Boolean fields accepted after ``sessions where``."""
+
+    return tuple(sorted(_BOOLEAN_SUPPORTED_FIELDS))
+
+
 def count_query_operators(field: str) -> tuple[str, ...]:
     """Return readable comparison/range operators accepted for a count field."""
 
@@ -1297,6 +1304,7 @@ __all__ = [
     "_RUN_STRUCTURAL_FIELDS",
     "_SOURCE_WHERE_SOURCES",
     "_STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS",
+    "boolean_query_fields",
     "count_query_fields",
     "count_query_operators",
     "date_query_fields",

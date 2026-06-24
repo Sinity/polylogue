@@ -22,6 +22,7 @@ from polylogue.product.workflows import (
     ExecutableWorkflowGoldenPath,
     JsonExpectation,
 )
+from polylogue.surfaces.action_affordances import ActionAffordancePayload
 
 
 def _demo_env(root: Path) -> dict[str, str]:
@@ -96,23 +97,45 @@ def test_workflows_reference_executable_action_contracts() -> None:
             assert action_path in ACTION_CONTRACT_BY_PATH or action_path in virtual_paths, workflow.id
 
 
-def test_shared_action_affordance_payload_has_grouped_and_flat_contract_fields() -> None:
+def test_action_affordance_payload_has_no_flat_compatibility_aliases() -> None:
+    stale_aliases = {
+        "input_unit",
+        "cardinality_state",
+        "safety_level",
+        "confirmation_command",
+        "selection_command",
+        "destination_support",
+        "format_support",
+        "default_format",
+        "machine_envelope",
+        "disabled_reason",
+        "estimated_cost",
+        "next_actions",
+        "guards",
+        "completion_context",
+        "requires_daemon",
+    }
+
+    assert stale_aliases.isdisjoint(ActionAffordancePayload.model_fields)
+
+
+def test_shared_action_affordance_payload_uses_grouped_contract_fields() -> None:
     payload_by_id = {payload.id: payload for payload in action_affordance_payloads()}
     read = payload_by_id["read"]
 
     assert read.target == "selection"
-    assert read.input.unit == read.input_unit == "query_result_set"
-    assert read.execution.cardinality_state == read.cardinality_state == "explicit_multi"
-    assert read.execution.guards == read.guards
-    assert read.output.destination_support == read.destination_support
-    assert read.output.format_support == read.format_support
-    assert read.safety.safety_level == read.safety_level == "safe"
-    assert read.safety.selection_command == read.selection_command == "polylogue find QUERY then select"
-    assert read.availability.next_actions == read.next_actions
+    assert read.input.unit == "query_result_set"
+    assert read.execution.cardinality_state == "explicit_multi"
+    assert read.execution.guards == ("single_match_unless_all", "file_destination_requires_out")
+    assert "browser" in read.output.destination_support
+    assert read.output.format_support == ("human", "json", "ndjson")
+    assert read.safety.safety_level == "safe"
+    assert read.safety.selection_command == "polylogue find QUERY then select"
+    assert "continue" in read.availability.next_actions
 
     delete = payload_by_id["delete"]
-    assert delete.safety.safety_level == delete.safety_level == "destructive"
-    assert delete.safety.confirmation_command == delete.confirmation_command
+    assert delete.safety.safety_level == "destructive"
+    assert delete.safety.confirmation_command == "polylogue find QUERY then delete --dry-run"
     assert delete.availability.next_actions == ("find",)
 
 
@@ -131,6 +154,30 @@ def test_product_workflow_doc_is_registry_backed() -> None:
         assert golden.command_text in document
     for field in ("target", "input", "execution", "output", "safety", "availability"):
         assert f"`{field}`" in document
+
+
+def test_issue_2317_registry_spells_out_exact_refs_facets_and_mark_ownership() -> None:
+    read = QUERY_ACTION_WORKFLOW_BY_ID["find-then-read-messages"]
+    resolve = QUERY_ACTION_WORKFLOW_BY_ID["resolve-ref-drilldown"]
+    facets = QUERY_ACTION_WORKFLOW_BY_ID["find-then-analyze-facets"]
+    mark = QUERY_ACTION_WORKFLOW_BY_ID["find-then-mark-session"]
+    candidates = QUERY_ACTION_WORKFLOW_BY_ID["candidate-assertion-review"]
+    document = build_document()
+
+    assert "Zero matches" in read.cardinality_policy
+    assert "one exact match" in read.cardinality_policy
+    assert "many ranked matches" in read.cardinality_policy
+    assert "exact ref plus extra text" in resolve.selector_policy
+    assert "role_counts" in facets.evidence_policy
+    assert "material_origins" in facets.evidence_policy
+    assert "omitted counts" in facets.evidence_policy
+    assert "session overlays" in mark.selector_policy
+    assert "candidate assertions" in mark.selector_policy
+    assert "ordinary `mark` owns session overlays" in candidates.selector_policy
+    assert "Facet Family Contract" in document
+    assert "role_counts" in document
+    assert "material_origins" in document
+    assert "Incidental archive paths" in document
 
 
 @pytest.mark.parametrize("golden", EXECUTABLE_WORKFLOW_GOLDEN_PATHS, ids=lambda entry: entry.id)

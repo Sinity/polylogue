@@ -1125,18 +1125,18 @@ function renderActionAffordanceRail(c) {
   if (!actions.length) return '';
   var html = '<div class="action-rail" aria-label="Query action affordances">';
   actions.forEach(function(action) {
-    var safety = (action.safety && action.safety.safety_level) || action.safety_level || 'safe';
-    var inputUnit = (action.input && action.input.unit) || action.input_unit || 'unknown';
-    var cardinality = (action.execution && action.execution.cardinality_state) || action.cardinality_state || 'any';
-    var formats = (action.output && action.output.format_support) || action.format_support || [];
-    var disabledReason = (action.availability && action.availability.disabled_reason) || action.disabled_reason || '';
+    var safety = (action.safety && action.safety.safety_level) || 'safe';
+    var inputUnit = (action.input && action.input.unit) || 'unknown';
+    var cardinality = (action.execution && action.execution.cardinality_state) || 'any';
+    var formats = (action.output && action.output.format_support) || [];
+    var disabledReason = (action.availability && action.availability.disabled_reason) || '';
     var title = 'target=' + (action.target || 'selection')
       + ' input=' + inputUnit
       + ' cardinality=' + cardinality
       + ' safety=' + safety
       + ' formats=' + formats.join(',');
-    if (action.selection_command) title += ' select=' + action.selection_command;
-    if (action.confirmation_command) title += ' confirm=' + action.confirmation_command;
+    if (action.safety && action.safety.selection_command) title += ' select=' + action.safety.selection_command;
+    if (action.safety && action.safety.confirmation_command) title += ' confirm=' + action.safety.confirmation_command;
     if (disabledReason) title += ' disabled=' + disabledReason;
     var disabled = disabledReason ? ' disabled' : '';
     html += '<button type="button" class="action-btn q-action-' + escAttr(safety) + '" data-action="'

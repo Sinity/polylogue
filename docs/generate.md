@@ -31,6 +31,11 @@ polylogue find "pytest" then read --all --limit 5
 polylogue find "pytest" then read --view messages
 polylogue find "pytest" then analyze --facets
 
+# Source-only / CI-cloud verification without a daemon
+polylogue demo seed --root "$POLYLOGUE_ARCHIVE_ROOT" --force --with-overlays --format json
+polylogue demo verify --root "$POLYLOGUE_ARCHIVE_ROOT" --require-overlays --format json
+polylogue demo script --shell bash
+
 # Repository verification-lab smokes
 devtools lab smoke run archive-smoke --tier 0
 devtools test tests/unit/cli/test_demo_command.py tests/unit/demo/test_demo_seed_verify.py tests/visual

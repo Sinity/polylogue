@@ -39,4 +39,6 @@ def test_demo_script_prints_copy_pastable_commands(tmp_path: Path) -> None:
     assert "POLYLOGUE_ARCHIVE_ROOT" in result.output
     assert "polylogue demo seed" in result.output
     assert "polylogue demo verify" in result.output
+    assert "--with-overlays --format json" in result.output
+    assert "--require-overlays --format json" in result.output
     assert str(tmp_path / "archive") in result.output

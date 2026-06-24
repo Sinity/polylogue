@@ -636,6 +636,47 @@ class TestBooleanQueryExpression:
         assert predicate.field_ref.source_name == "repo"
         assert predicate.field_ref.unit is None
 
+    def test_boolean_session_alias_carries_exact_id_field_ref(self) -> None:
+        ast = parse_expression_ast("sessions where session:claude-code-session:abc123def456")
+
+        predicate = cast(QueryFieldPredicate, ast.boolean_predicate)
+
+        assert predicate.field == "session"
+        assert predicate.values == ("claude-code-session:abc123def456",)
+        assert predicate.field_ref is not None
+        assert predicate.field_ref.scope == "session"
+        assert predicate.field_ref.name == "id"
+        assert predicate.field_ref.source_name == "session"
+        assert predicate.field_ref.unit is None
+
+        spec = compile_expression("session:claude-code-session:abc123def456 OR repo:polylogue")
+        boolean = cast(QueryBoolPredicate, spec.boolean_predicate)
+        alias = cast(QueryFieldPredicate, boolean.children[0])
+        assert alias.field == "session"
+        assert alias.field_ref is not None
+        assert alias.field_ref.scope == "session"
+        assert alias.field_ref.name == "id"
+        assert alias.field_ref.source_name == "session"
+
+    def test_pipeline_session_source_scopes_session_alias_as_exact_id(self) -> None:
+        source = parse_unit_source_expression(
+            "sessions where session:claude-code-session:abc123def456 | messages where role:user"
+        )
+
+        assert source is not None
+        session_predicate = cast(QueryFieldPredicate, source.session_predicate)
+        assert session_predicate.field_ref is not None
+        assert session_predicate.field_ref.name == "id"
+
+        combined = cast(QueryBoolPredicate, source.predicate)
+        scoped_alias = cast(QueryFieldPredicate, combined.children[0])
+        assert scoped_alias.field == "session.id"
+        assert scoped_alias.field_ref is not None
+        assert scoped_alias.field_ref.scope == "session"
+        assert scoped_alias.field_ref.name == "id"
+        assert scoped_alias.field_ref.source_name == "session.id"
+        assert scoped_alias.field_ref.unit == "message"
+
     def test_runtime_terminal_unit_accepts_descriptor_backed_session_scope(self) -> None:
         source = parse_unit_source_expression(
             "context-snapshots where session.repo:polylogue AND boundary:session_start"
@@ -927,6 +968,12 @@ class TestBooleanQueryExpression:
     def test_compile_expression_rejects_terminal_pipelines_as_session_selector(self) -> None:
         with pytest.raises(ExpressionCompileError, match="pipeline unit queries return terminal rows"):
             compile_expression("messages where role:assistant | limit 10")
+
+        with pytest.raises(ExpressionCompileError, match="pipeline unit queries return terminal rows"):
+            compile_expression("messages where role:assistant | group by role | count")
+
+        with pytest.raises(ExpressionCompileError, match="pipeline unit queries return terminal rows"):
+            parse_expression_ast("messages where role:assistant | group by role | count")
 
         with pytest.raises(ExpressionCompileError, match="pipeline unit queries return terminal rows"):
             compile_expression("sessions where repo:polylogue | messages where role:assistant")
@@ -1429,6 +1476,33 @@ class TestBooleanQueryExpression:
         )
 
         spec = compile_expression("exists message(time >= 2026-01-02T00:00:00+00:00)")
+        assert spec.boolean_predicate is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
+
+        assert [row.session_id for row in rows] == ["chatgpt-export:ext-hit"]
+
+    def test_boolean_session_alias_executes_as_exact_id(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("chatgpt")
+            .title("exact alias hit")
+            .add_message("m-hit", role="user", text="target body")
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "miss")
+            .provider("chatgpt")
+            .title("exact alias miss")
+            .add_message("m-miss", role="user", text="target body")
+            .save()
+        )
+
+        spec = compile_expression("sessions where session:chatgpt-export:ext-hit")
         assert spec.boolean_predicate is not None
         with ArchiveStore.open_existing(index_db.parent) as archive:
             rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
@@ -4138,6 +4212,11 @@ class TestLowererFieldMapping:
         session_id = "claude-code-session:abc123def456"
         spec = compile_expression(f"session:{session_id}")
         assert spec.session_id == session_id
+
+    def test_session_alias_inside_boolean_predicate(self) -> None:
+        session_id = "claude-code-session:abc123def456"
+        spec = compile_expression(f"sessions where session:{session_id}")
+        assert spec.boolean_predicate == QueryFieldPredicate(field="session", values=(session_id,))
 
     def test_title(self) -> None:
         spec = compile_expression("title:refactor")

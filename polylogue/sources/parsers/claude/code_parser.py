@@ -113,6 +113,33 @@ def _message_type_from_code_record(item: dict[str, object], text: str | None) ->
     return MessageType.MESSAGE
 
 
+def _message_usage_event_payload(
+    usage: dict[object, object],
+    *,
+    model_name: str | None,
+    model_effort: str | None,
+) -> dict[str, object]:
+    last_usage: dict[str, int] = {
+        "input_tokens": _safe_int(usage.get("input_tokens")),
+        "output_tokens": _safe_int(usage.get("output_tokens")),
+        "cached_input_tokens": _safe_int(usage.get("cache_read_input_tokens")),
+        "cache_write_tokens": _safe_int(usage.get("cache_creation_input_tokens")),
+    }
+    total_tokens = _safe_int(usage.get("total_tokens"))
+    if total_tokens:
+        last_usage["total_tokens"] = total_tokens
+    payload: dict[str, object] = {
+        "type": "message_usage",
+        "semantics": "per_message",
+        "last_token_usage": last_usage,
+    }
+    if model_name:
+        payload["model"] = model_name
+    if model_effort:
+        payload["model_effort"] = model_effort
+    return payload
+
+
 def _record_role(item: dict[str, object], message: object) -> Role:
     if isinstance(message, dict):
         message_role = message.get("role")
@@ -260,9 +287,10 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
         # Paste markers only appear in user prompts; restricting detection to the
         # user role avoids false positives from assistant text that quotes a marker.
         paste_spans = _detect_paste_spans(text) if resolved_role == Role.USER else []
+        provider_message_id = str(record_uuid or f"msg-{index}")
         messages.append(
             ParsedMessage(
-                provider_message_id=str(record_uuid or f"msg-{index}"),
+                provider_message_id=provider_message_id,
                 role=resolved_role,
                 text=text or "",
                 timestamp=timestamp,
@@ -283,6 +311,19 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
                 paste_spans=paste_spans,
             )
         )
+        if isinstance(message, dict) and isinstance(message.get("usage"), dict):
+            session_events.append(
+                ParsedSessionEvent(
+                    event_type="message_usage",
+                    timestamp=timestamp,
+                    source_message_provider_id=provider_message_id,
+                    payload=_message_usage_event_payload(
+                        msg_usage,
+                        model_name=msg_model,
+                        model_effort=msg_effort,
+                    ),
+                )
+            )
         message_position += 1
 
         if "costUSD" in item:

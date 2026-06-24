@@ -204,9 +204,43 @@ def test_analyze_facets_include_deferred_materializes_expensive_families(
     payload = _json.loads(result.output)
 
     assert payload["deferred_families"] == {}
-    assert {"repos", "message_types", "action_types", "has_flags"}.issubset(set(payload["complete_families"]))
+    assert {
+        "repos",
+        "role_counts",
+        "material_origins",
+        "message_types",
+        "action_types",
+        "has_flags",
+    }.issubset(set(payload["complete_families"]))
     assert payload["family_status"]["message_types"]["state"] == "complete"
+    assert (
+        payload["family_status"]["role_counts"]["canonicalization"]
+        == "provider-reported message role; not authoredness"
+    )
+    assert payload["family_status"]["repos"]["canonicalization"].startswith("prefer repo_name")
+    assert payload["role_counts"]
+    assert payload["material_origins"]
     assert payload["message_types"] == {"message": 10}
+
+
+def test_analyze_facets_default_marks_detail_families_deferred_not_authoritative(
+    runner: CliRunner,
+    seeded_db_env: Path,
+) -> None:
+    """Default facets expose deferred metadata instead of pretending expensive empty buckets are authoritative."""
+    import json as _json
+
+    payload = _json.loads(_invoke_json(runner, ["analyze", "--facets", "--format", "json"]))
+
+    for family in ("repos", "role_counts", "material_origins", "message_types", "action_types", "has_flags"):
+        assert payload["deferred_families"][family] == "deferred_by_default"
+        assert payload["family_status"][family]["state"] == "deferred"
+        assert payload["family_status"][family]["expensive"] is True
+    assert payload["repos"] == {}
+    assert payload["role_counts"] == {}
+    assert payload["material_origins"] == {}
+    assert "not authoredness" in payload["family_status"]["role_counts"]["canonicalization"]
+    assert "omit archive/path tokens" in payload["family_status"]["repos"]["canonicalization"]
 
 
 def test_json_status_snapshot(

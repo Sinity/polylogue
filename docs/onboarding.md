@@ -2,15 +2,17 @@
 
 # Onboarding
 
-A fresh install to a usable archive in three commands.
+A source checkout to a usable archive in three steps.
 
-## 1. Install
+## 1. Enter the dev shell
 
 ```bash
-pip install polylogue
+git clone https://github.com/Sinity/polylogue.git
+cd polylogue
+nix develop
 ```
 
-Polylogue installs three executables:
+The dev shell exposes three executables:
 
 | Executable | Purpose |
 |------------|---------|

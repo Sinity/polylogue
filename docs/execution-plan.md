@@ -108,7 +108,7 @@ workflow/hook points at a removed command.
 
 7. **Keep repo/package/dev-loop polish tied to shipped workflows (#2307/#2248).**
    - Docs, theming, release proof, and private-browser/dev-loop probes should
-     make real workflows easier to run and verify; avoid proof theater and
+     make real workflows easier to run and verify; avoid decorative evidence layers and
      absence memorials.
    - Evidence: README/install commands match shipped behavior; package checks
      prove runtime dependency closure; rendering respects plain/no-color modes;

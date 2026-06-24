@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal
 
 from polylogue.archive.query.metadata import (
     COUNT_QUERY_FIELD_REGISTRY,
     DATE_QUERY_FIELD_REGISTRY,
     EXPRESSION_FIELD_REGISTRY,
     NUMERIC_QUERY_FIELD_REGISTRY,
+    boolean_query_fields,
     count_query_fields,
     count_query_operators,
     date_query_fields,
@@ -27,9 +29,11 @@ from polylogue.archive.query.metadata import (
     terminal_query_unit,
 )
 from polylogue.operations.action_contracts import ACTION_CONTRACTS, CliActionContract
+from polylogue.surfaces.action_affordances import InputUnit
 
 CompletionKind = str
 CandidateProvider = Callable[[], list["QueryCompletionCandidate"]]
+QueryFieldCompletionSyntax = Literal["compact", "session-boolean"]
 
 QUERY_COMPLETION_KINDS: tuple[str, ...] = (
     "field",
@@ -91,7 +95,31 @@ class QueryCompletionCandidate:
         }
 
 
-def query_field_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
+def _field_supported_for_completion_syntax(
+    field_name: str,
+    info: dict[str, str],
+    *,
+    syntax: QueryFieldCompletionSyntax,
+) -> bool:
+    if syntax == "session-boolean":
+        return field_name in boolean_query_fields()
+
+    count_info = COUNT_QUERY_FIELD_REGISTRY.get(field_name)
+    numeric_info = NUMERIC_QUERY_FIELD_REGISTRY.get(field_name)
+    if field_name == "lineage":
+        return True
+    if count_info is not None and field_name not in {"messages", "words"}:
+        return False
+    if numeric_info is not None:
+        return False
+    return info.get("spec_field") != "boolean_predicate"
+
+
+def query_field_candidates(
+    incomplete: str,
+    *,
+    syntax: QueryFieldCompletionSyntax = "compact",
+) -> list[QueryCompletionCandidate]:
     """Return DSL field candidates from the shared expression registry."""
 
     current = incomplete.strip().lstrip("-").lower()
@@ -100,16 +128,16 @@ def query_field_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
     candidates: list[QueryCompletionCandidate] = []
     emitted: set[str] = set()
     for field_name, info in sorted(EXPRESSION_FIELD_REGISTRY.items()):
+        if not _field_supported_for_completion_syntax(field_name, info, syntax=syntax):
+            continue
         if current and not field_name.startswith(current):
             continue
         count_info = COUNT_QUERY_FIELD_REGISTRY.get(field_name)
         numeric_info = NUMERIC_QUERY_FIELD_REGISTRY.get(field_name)
-        # Top-level compatibility lowering exists only for messages/words.
-        # Other numeric fields complete with an operator-ready space, e.g.
-        # "tool_use_messages >= 1" or "duration_ms >= 60000".
         insert = (
             f"{field_name} "
-            if (count_info is not None or numeric_info is not None) and field_name not in {"messages", "words"}
+            if (count_info is not None or numeric_info is not None)
+            and (syntax == "session-boolean" or field_name not in {"messages", "words"})
             else f"{field_name}:"
         )
         description = info.get("description", "")
@@ -139,7 +167,7 @@ def query_field_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
                 insert=insert,
                 display=insert,
                 kind="query-field",
-                group="query fields",
+                group="query fields" if syntax == "compact" else "session Boolean fields",
                 description=description,
                 source=source,
             )
@@ -147,6 +175,8 @@ def query_field_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
         emitted.add(field_name)
     for field_name, date_info in sorted(DATE_QUERY_FIELD_REGISTRY.items()):
         if field_name in emitted:
+            continue
+        if syntax == "session-boolean" and field_name not in boolean_query_fields():
             continue
         if current and not field_name.startswith(current):
             continue
@@ -158,12 +188,18 @@ def query_field_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
                 insert=f"{field_name} ",
                 display=f"{field_name} ",
                 kind="query-date-field",
-                group="query readable fields",
+                group="query readable fields" if syntax == "compact" else "session Boolean fields",
                 description=description,
                 source="DATE_QUERY_FIELD_REGISTRY",
             )
         )
     return candidates
+
+
+def query_session_field_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
+    """Return fields accepted after ``sessions where``."""
+
+    return query_field_candidates(incomplete, syntax="session-boolean")
 
 
 def query_structural_unit_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
@@ -412,13 +448,19 @@ def _action_description(contract: CliActionContract) -> str:
     return "; ".join(pieces)
 
 
-def query_action_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
-    """Return root query/action candidates from public action contracts."""
+def query_action_candidates(
+    incomplete: str,
+    *,
+    input_unit: InputUnit | None = None,
+) -> list[QueryCompletionCandidate]:
+    """Return query/action candidates from public action contracts."""
 
     current = incomplete.strip().lower()
     candidates: list[QueryCompletionCandidate] = []
     for contract in ACTION_CONTRACTS:
         if len(contract.path) != 1:
+            continue
+        if input_unit is not None and contract.input_unit != input_unit:
             continue
         name = contract.path[0]
         if current and not name.startswith(current):
@@ -513,6 +555,7 @@ __all__ = [
     "query_field_candidates",
     "query_numeric_operator_candidates",
     "query_pipeline_stage_candidates",
+    "query_session_field_candidates",
     "query_structural_field_candidates",
     "query_structural_unit_candidates",
     "query_terminal_field_candidates",

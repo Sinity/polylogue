@@ -37,7 +37,6 @@ def __getattr__(name: str) -> object:
         "mcp",
         "operations",
         "pipeline",
-        "proof",
         "rendering",
         "scenarios",
         "services",

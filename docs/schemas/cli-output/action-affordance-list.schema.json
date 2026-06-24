@@ -7,83 +7,6 @@
         "availability": {
           "$ref": "#/$defs/ActionAvailabilityPayload"
         },
-        "cardinality_state": {
-          "enum": [
-            "any",
-            "singleton",
-            "explicit_multi",
-            "destructive_multi"
-          ],
-          "title": "Cardinality State",
-          "type": "string"
-        },
-        "completion_context": {
-          "anyOf": [
-            {
-              "enum": [
-                "config_key",
-                "filesystem_path",
-                "query_expression",
-                "session_id"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Completion Context"
-        },
-        "confirmation_command": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Confirmation Command"
-        },
-        "default_format": {
-          "enum": [
-            "human",
-            "json",
-            "ndjson"
-          ],
-          "title": "Default Format",
-          "type": "string"
-        },
-        "destination_support": {
-          "items": {
-            "enum": [
-              "terminal",
-              "stdout",
-              "browser",
-              "clipboard",
-              "file",
-              "api",
-              "mcp"
-            ],
-            "type": "string"
-          },
-          "title": "Destination Support",
-          "type": "array"
-        },
-        "disabled_reason": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Disabled Reason"
-        },
         "effect": {
           "enum": [
             "read",
@@ -97,40 +20,8 @@
           "title": "Effect",
           "type": "string"
         },
-        "estimated_cost": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Estimated Cost"
-        },
         "execution": {
           "$ref": "#/$defs/ActionExecutionPayload"
-        },
-        "format_support": {
-          "items": {
-            "enum": [
-              "human",
-              "json",
-              "ndjson"
-            ],
-            "type": "string"
-          },
-          "title": "Format Support",
-          "type": "array"
-        },
-        "guards": {
-          "default": [],
-          "items": {
-            "type": "string"
-          },
-          "title": "Guards",
-          "type": "array"
         },
         "id": {
           "title": "Id",
@@ -138,38 +29,6 @@
         },
         "input": {
           "$ref": "#/$defs/ActionInputPayload"
-        },
-        "input_unit": {
-          "enum": [
-            "none",
-            "query_result_set",
-            "session",
-            "path",
-            "config",
-            "runtime",
-            "assertion_candidate"
-          ],
-          "title": "Input Unit",
-          "type": "string"
-        },
-        "machine_envelope": {
-          "enum": [
-            "result_set",
-            "item",
-            "mutation",
-            "error",
-            "stream_item"
-          ],
-          "title": "Machine Envelope",
-          "type": "string"
-        },
-        "next_actions": {
-          "default": [],
-          "items": {
-            "type": "string"
-          },
-          "title": "Next Actions",
-          "type": "array"
         },
         "output": {
           "$ref": "#/$defs/ActionOutputPayload"
@@ -181,34 +40,8 @@
           "title": "Path",
           "type": "array"
         },
-        "requires_daemon": {
-          "title": "Requires Daemon",
-          "type": "boolean"
-        },
         "safety": {
           "$ref": "#/$defs/ActionSafetyPayload"
-        },
-        "safety_level": {
-          "enum": [
-            "safe",
-            "mutating",
-            "destructive",
-            "operational"
-          ],
-          "title": "Safety Level",
-          "type": "string"
-        },
-        "selection_command": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Selection Command"
         },
         "target": {
           "enum": [
@@ -233,15 +66,7 @@
         "execution",
         "output",
         "safety",
-        "availability",
-        "input_unit",
-        "cardinality_state",
-        "safety_level",
-        "destination_support",
-        "format_support",
-        "default_format",
-        "machine_envelope",
-        "requires_daemon"
+        "availability"
       ],
       "title": "ActionAffordancePayload",
       "type": "object"

@@ -93,7 +93,7 @@ def write_evidence_manifest(
     payload: dict[str, object] = {
         "schema_version": 1,
         "artifact_id": artifact_id,
-        "command": "pytest -q tests/visual",
+        "command": "uv run devtools test tests/visual",
         "fixture_id": fixture_id,
         "route": route,
         "evidence_kind": "browserless-dom",

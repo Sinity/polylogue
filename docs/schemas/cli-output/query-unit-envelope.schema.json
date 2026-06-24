@@ -220,8 +220,7 @@
           "title": "Staleness"
         },
         "status": {
-          "title": "Status",
-          "type": "string"
+          "$ref": "#/$defs/AssertionStatus"
         },
         "target_ref": {
           "title": "Target Ref",
@@ -241,8 +240,7 @@
           "title": "Value"
         },
         "visibility": {
-          "title": "Visibility",
-          "type": "string"
+          "$ref": "#/$defs/AssertionVisibility"
         }
       },
       "required": [
@@ -262,6 +260,30 @@
       ],
       "title": "AssertionQueryRowPayload",
       "type": "object"
+    },
+    "AssertionStatus": {
+      "description": "Closed lifecycle state vocabulary for assertion rows.",
+      "enum": [
+        "active",
+        "candidate",
+        "accepted",
+        "rejected",
+        "superseded",
+        "deleted",
+        "inactive"
+      ],
+      "title": "AssertionStatus",
+      "type": "string"
+    },
+    "AssertionVisibility": {
+      "description": "Closed visibility vocabulary for assertion rows.",
+      "enum": [
+        "private",
+        "team",
+        "public"
+      ],
+      "title": "AssertionVisibility",
+      "type": "string"
     },
     "BlockQueryRowPayload": {
       "additionalProperties": false,

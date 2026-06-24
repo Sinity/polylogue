@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
 from polylogue.insights.transforms import compile_recovery_digest
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.user_write import (
@@ -22,6 +24,8 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     ASSERTION_DEFAULT_STATUS,
     ASSERTION_DEFAULT_VISIBILITY,
     AssertionKind,
+    AssertionStatus,
+    AssertionVisibility,
     assertion_envelope_to_payload,
     assertion_id_for_candidate_judgment,
     assertion_id_for_promoted_candidate,
@@ -44,6 +48,43 @@ def _connect(path: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     initialize_archive_tier(conn, ArchiveTier.USER)
     return conn
+
+
+def _connect_index(path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    initialize_archive_tier(conn, ArchiveTier.INDEX)
+    return conn
+
+
+def _sqlite_objects(conn: sqlite3.Connection, object_type: str) -> set[str]:
+    return {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = ?",
+            (object_type,),
+        )
+    }
+
+
+def _insert_index_session(conn: sqlite3.Connection, native_id: str) -> str:
+    conn.execute(
+        "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, ?)",
+        (native_id, Origin.UNKNOWN_EXPORT.value, bytes(32)),
+    )
+    return f"{Origin.UNKNOWN_EXPORT.value}:{native_id}"
+
+
+def _insert_index_message(conn: sqlite3.Connection, session_id: str, native_id: str, position: int) -> str:
+    conn.execute(
+        """
+        INSERT INTO messages (
+            session_id, native_id, position, role, message_type, content_hash
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (session_id, native_id, position, Role.ASSISTANT.value, "message", bytes(32)),
+    )
+    return f"{session_id}:{native_id}"
 
 
 def _recovery_candidate_session() -> Session:
@@ -83,6 +124,178 @@ def test_fresh_user_tier_creates_assertions_table(tmp_path: Path) -> None:
     try:
         assert _table_exists(conn, "assertions")
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == USER_SCHEMA_VERSION
+    finally:
+        conn.close()
+
+
+def test_fresh_user_tier_has_no_legacy_overlay_tables(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "user.db")
+    try:
+        tables = _sqlite_objects(conn, "table")
+        obsolete_overlay_tables = {
+            "session_tags",
+            "session_metadata",
+            "marks",
+            "annotations",
+            "saved_views",
+            "recall_packs",
+            "workspaces",
+            "blackboard_notes",
+            "corrections",
+            "suppressions",
+        }
+        assert tables == {"assertions"}
+        assert tables.isdisjoint(obsolete_overlay_tables)
+    finally:
+        conn.close()
+
+
+def test_assertions_have_read_path_indexes_for_overlay_and_candidate_flows(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "user.db")
+    try:
+        index_columns = {
+            name: [str(row[2]) for row in conn.execute(f"PRAGMA index_info({name})")]
+            for name in _sqlite_objects(conn, "index")
+        }
+        assert index_columns["idx_assertions_target_kind"] == ["target_ref", "kind"]
+        assert index_columns["idx_assertions_kind_status_updated"] == ["kind", "status", "updated_at_ms"]
+        assert index_columns["idx_assertions_target_kind_status_visibility"] == [
+            "target_ref",
+            "kind",
+            "status",
+            "visibility",
+        ]
+    finally:
+        conn.close()
+
+
+def test_actions_view_keeps_duplicate_tool_ids_session_scoped(tmp_path: Path) -> None:
+    conn = _connect_index(tmp_path / "index.db")
+    try:
+        session_a = _insert_index_session(conn, "session-a")
+        message_a = _insert_index_message(conn, session_a, "message-a", 0)
+        session_b = _insert_index_session(conn, "session-b")
+        message_b = _insert_index_message(conn, session_b, "message-b", 0)
+
+        conn.execute(
+            """
+            INSERT INTO blocks (
+                message_id, session_id, position, block_type, tool_name, tool_id, tool_input, semantic_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                message_a,
+                session_a,
+                0,
+                "tool_use",
+                "Bash",
+                "provider-local-tool-id",
+                json.dumps({"command": "pytest -q"}),
+                "shell",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO blocks (
+                message_id, session_id, position, block_type, text, tool_id
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                message_b,
+                session_b,
+                0,
+                "tool_result",
+                "wrong-session-result",
+                "provider-local-tool-id",
+            ),
+        )
+
+        action = conn.execute(
+            """
+            SELECT output_text, tool_result_block_id
+            FROM actions
+            WHERE session_id = ?
+            """,
+            (session_a,),
+        ).fetchone()
+        assert action is not None
+        assert action["output_text"] is None
+        assert action["tool_result_block_id"] is None
+
+        conn.execute(
+            """
+            INSERT INTO blocks (
+                message_id, session_id, position, block_type, text, tool_id
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                message_a,
+                session_a,
+                1,
+                "tool_result",
+                "same-session-result",
+                "provider-local-tool-id",
+            ),
+        )
+        action = conn.execute(
+            """
+            SELECT output_text, tool_result_block_id
+            FROM actions
+            WHERE session_id = ?
+            """,
+            (session_a,),
+        ).fetchone()
+        assert action is not None
+        assert action["output_text"] == "same-session-result"
+        assert action["tool_result_block_id"] == f"{message_a}:1"
+    finally:
+        conn.close()
+
+
+def test_index_json_contracts_reject_non_object_payloads(tmp_path: Path) -> None:
+    conn = _connect_index(tmp_path / "index.db")
+    try:
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == INDEX_SCHEMA_VERSION
+        session_id = _insert_index_session(conn, "json-contract")
+        message_id = _insert_index_message(conn, session_id, "message-json", 0)
+
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """
+                INSERT INTO blocks (
+                    message_id, session_id, position, block_type, tool_name, tool_id, tool_input
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (message_id, session_id, 0, "tool_use", "Bash", "tool-json", "[]"),
+            )
+
+        conn.execute(
+            """
+            INSERT INTO blocks (
+                message_id, session_id, position, block_type, tool_name, tool_id, tool_input
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (message_id, session_id, 0, "tool_use", "Bash", "tool-json", json.dumps({"command": "true"})),
+        )
+
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """
+                INSERT INTO session_provider_usage_events (
+                    session_id, source_message_id, position, provider_event_type, payload_json
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (session_id, message_id, 0, "token_count", "[]"),
+            )
+
+        conn.execute(
+            """
+            INSERT INTO session_provider_usage_events (
+                session_id, source_message_id, position, provider_event_type, payload_json
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (session_id, message_id, 0, "token_count", json.dumps({"total_tokens": 3})),
+        )
     finally:
         conn.close()
 
@@ -253,6 +466,92 @@ def test_assertion_write_rejects_unparseable_public_refs(tmp_path: Path) -> None
         conn.close()
 
 
+def test_assertion_write_rejects_unknown_lifecycle_values(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "user.db")
+    try:
+        with pytest.raises(ValueError):
+            upsert_assertion(
+                conn,
+                assertion_id="bad-kind",
+                target_ref="session:session-1",
+                kind="review",
+                now_ms=1_700_000_000_000,
+            )
+        with pytest.raises(ValueError):
+            upsert_assertion(
+                conn,
+                assertion_id="bad-status",
+                target_ref="session:session-1",
+                kind=AssertionKind.DECISION,
+                status="draft",
+                now_ms=1_700_000_000_000,
+            )
+        with pytest.raises(ValueError):
+            upsert_assertion(
+                conn,
+                assertion_id="bad-visibility",
+                target_ref="session:session-1",
+                kind=AssertionKind.DECISION,
+                visibility="workspace",
+                now_ms=1_700_000_000_000,
+            )
+    finally:
+        conn.close()
+
+
+def test_assertion_write_normalizes_json_values_at_internal_boundary(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "user.db")
+    try:
+        with pytest.raises(TypeError, match="assertion value is not JSON-compatible"):
+            upsert_assertion(
+                conn,
+                assertion_id="bad-value",
+                target_ref="session:session-1",
+                kind=AssertionKind.DECISION,
+                value={"bad": object()},
+                now_ms=1_700_000_000_000,
+            )
+        with pytest.raises(TypeError, match="assertion staleness is not a JSON object"):
+            upsert_assertion(
+                conn,
+                assertion_id="bad-staleness",
+                target_ref="session:session-1",
+                kind=AssertionKind.DECISION,
+                staleness={"bad": object()},
+                now_ms=1_700_000_000_000,
+            )
+        with pytest.raises(TypeError, match="assertion context_policy is not a JSON object"):
+            upsert_assertion(
+                conn,
+                assertion_id="bad-context",
+                target_ref="session:session-1",
+                kind=AssertionKind.DECISION,
+                context_policy={"inject": object()},
+                now_ms=1_700_000_000_000,
+            )
+
+        stored = upsert_assertion(
+            conn,
+            assertion_id="typed-values",
+            target_ref="session:session-1",
+            kind=AssertionKind.DECISION,
+            status=AssertionStatus.ACTIVE,
+            visibility=AssertionVisibility.PRIVATE,
+            value={"ok": [1, True, None]},
+            staleness={"ttl_days": 3},
+            context_policy={"reason": "operator"},
+            now_ms=1_700_000_000_000,
+        )
+
+        assert stored.value == {"ok": [1, True, None]}
+        assert stored.status is AssertionStatus.ACTIVE
+        assert stored.visibility is AssertionVisibility.PRIVATE
+        assert stored.staleness == {"ttl_days": 3}
+        assert stored.context_policy == {"inject": False, "reason": "operator"}
+    finally:
+        conn.close()
+
+
 def test_assertion_upsert_preserves_created_at_and_updates_fields(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "user.db")
     try:
@@ -262,7 +561,7 @@ def test_assertion_upsert_preserves_created_at_and_updates_fields(tmp_path: Path
             target_ref="message:m-1",
             kind=AssertionKind.ANNOTATION,
             body_text="initial",
-            status="draft",
+            status=AssertionStatus.CANDIDATE,
             now_ms=1_700_000_000_000,
         )
         second = upsert_assertion(
@@ -636,7 +935,7 @@ def test_recovery_digest_candidates_write_transform_candidate_assertions(tmp_pat
             now_ms=1_700_000_007_000,
         )
         accepted_after_remirror = next(item for item in after_accept if item.assertion_id == accepted_id)
-        assert accepted_after_remirror.status == "accepted"
+        assert accepted_after_remirror.status is AssertionStatus.ACCEPTED
         assert accepted_after_remirror.updated_at_ms == 1_700_000_006_000
 
         duplicate_digest = digest.model_copy(
@@ -669,12 +968,12 @@ def test_candidate_assertion_acceptance_creates_active_assertion_with_lineage(tm
         )
 
         assert result.candidate.assertion_id == candidate.assertion_id
-        assert result.candidate.status == "accepted"
+        assert result.candidate.status is AssertionStatus.ACCEPTED
         assert result.resulting_assertion is not None
         assert result.resulting_assertion.assertion_id == assertion_id_for_promoted_candidate(candidate.assertion_id)
         assert isinstance(candidate.value, dict)
         assert result.resulting_assertion.kind == candidate.value["candidate_kind"]
-        assert result.resulting_assertion.status == "active"
+        assert result.resulting_assertion.status is AssertionStatus.ACTIVE
         assert result.resulting_assertion.supersedes == [f"assertion:{candidate.assertion_id}"]
         assert result.resulting_assertion.context_policy == {"inject": False}
         assert result.judgment.assertion_id == assertion_id_for_candidate_judgment(candidate.assertion_id, "accept")
@@ -706,7 +1005,7 @@ def test_candidate_assertion_rejection_preserves_reason_and_filtering(tmp_path: 
         )
 
         assert result.resulting_assertion is None
-        assert result.candidate.status == "rejected"
+        assert result.candidate.status is AssertionStatus.REJECTED
         assert result.judgment.value == {
             "decision": "reject",
             "candidate_ref": f"assertion:{candidate.assertion_id}",
@@ -764,19 +1063,19 @@ def test_candidate_assertion_supersede_records_replacement_and_lineage(tmp_path:
             decision="supersede",
             reason="replacement is more precise",
             actor_ref="user:local",
-            replacement_kind="summary",
-            replacement_body_text="Accepted replacement summary",
+            replacement_kind=AssertionKind.DECISION,
+            replacement_body_text="Accepted replacement decision",
             replacement_value={"source": "operator"},
             now_ms=1_700_000_010_000,
         )
 
-        assert result.candidate.status == "superseded"
+        assert result.candidate.status is AssertionStatus.SUPERSEDED
         assert result.resulting_assertion is not None
         assert result.resulting_assertion.assertion_id == assertion_id_for_promoted_candidate(candidate.assertion_id)
-        assert result.resulting_assertion.kind == "summary"
-        assert result.resulting_assertion.body_text == "Accepted replacement summary"
+        assert result.resulting_assertion.kind is AssertionKind.DECISION
+        assert result.resulting_assertion.body_text == "Accepted replacement decision"
         assert result.resulting_assertion.value == {"source": "operator"}
-        assert result.resulting_assertion.status == "active"
+        assert result.resulting_assertion.status is AssertionStatus.ACTIVE
         assert result.resulting_assertion.supersedes == [f"assertion:{candidate.assertion_id}"]
         assert result.judgment.value == {
             "decision": "supersede",
