@@ -471,6 +471,8 @@ class LiveWatcher:
             # catch-up skip path. Device/inode churn across bind mounts,
             # restored homes, or filesystem rebuilds must not force a full
             # content rehash of every historical session file.
+            if _cursor_stat_matches(cursor, stat):
+                return False
             if cursor.tail_hash is None:
                 return False
             try:
@@ -730,6 +732,12 @@ def _parse_retry_at(next_retry_at: str | None) -> datetime | None:
     if retry_at.tzinfo is None:
         retry_at = retry_at.replace(tzinfo=UTC)
     return retry_at
+
+
+def _cursor_stat_matches(cursor: CursorRecord, stat: os.stat_result) -> bool:
+    """Return True when the cursor was written for this exact file state."""
+
+    return cursor.st_dev == stat.st_dev and cursor.st_ino == stat.st_ino and cursor.mtime_ns == stat.st_mtime_ns
 
 
 __all__ = ["LiveWatcher", "WatchSource", "default_sources"]
