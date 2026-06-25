@@ -686,6 +686,7 @@ async def run_daemon_services(
     sources: tuple[WatchSource, ...],
     debounce_s: float,
     enable_watch: bool,
+    enable_source_catchup: bool = True,
     enable_browser_capture: bool,
     browser_capture_host: str,
     browser_capture_port: int,
@@ -797,6 +798,7 @@ async def run_daemon_services(
                 "browser_capture_host": browser_capture_host,
                 "browser_capture_port": browser_capture_port,
                 "watch_enabled": enable_watch,
+                "source_catchup_enabled": enable_source_catchup,
                 "source_roots": [str(src.root) for src in sources],
             },
         )
@@ -891,22 +893,24 @@ async def run_daemon_services(
             # not trigger a merge of the full (hundreds-of-MB) existing
             # segments (#1851).  A periodic merge pass amortises the cost.
             await _configure_fts_automerge()
-            changed_drive_sessions = await _run_drive_source_catchup_safely()
-            if changed_drive_sessions:
-                logger.info("daemon: startup Drive catch-up refreshed %d session(s)", changed_drive_sessions)
-            maintenance_tasks.extend(
-                asyncio.create_task(loop)
-                for loop in (
-                    _periodic_wal_checkpoint(),
-                    _periodic_fts_merge(),
-                    _periodic_heartbeat(),
-                    periodic_embedding_backlog_check(),
-                    _periodic_drive_source_catchup(),
-                    _periodic_health_check(),
-                    _periodic_db_optimize(),
-                    _periodic_status_snapshot_refresh(),
-                )
-            )
+            if enable_source_catchup:
+                changed_drive_sessions = await _run_drive_source_catchup_safely()
+                if changed_drive_sessions:
+                    logger.info("daemon: startup Drive catch-up refreshed %d session(s)", changed_drive_sessions)
+            else:
+                logger.info("daemon: configured source catch-up disabled for this run")
+            periodic_loops = [
+                _periodic_wal_checkpoint(),
+                _periodic_fts_merge(),
+                _periodic_heartbeat(),
+                periodic_embedding_backlog_check(),
+                _periodic_health_check(),
+                _periodic_db_optimize(),
+                _periodic_status_snapshot_refresh(),
+            ]
+            if enable_source_catchup:
+                periodic_loops.append(_periodic_drive_source_catchup())
+            maintenance_tasks.extend(asyncio.create_task(loop) for loop in periodic_loops)
             if not enable_watch:
                 maintenance_tasks.append(asyncio.create_task(_periodic_convergence_check(sources)))
             # Reclaim blob leases leaked by a previously SIGKILLed writer so a
@@ -1296,6 +1300,11 @@ def health_command(
     help="Do not run the live source watcher.",
 )
 @click.option(
+    "--no-source-catchup",
+    is_flag=True,
+    help="Do not run configured non-watch source catch-up during this daemon run.",
+)
+@click.option(
     "--no-browser-capture",
     is_flag=True,
     help="Do not run the browser-capture receiver.",
@@ -1351,6 +1360,7 @@ def run_command(
     port: int,
     spool_path: Path | None,
     no_watch: bool,
+    no_source_catchup: bool,
     no_browser_capture: bool,
     insecure_allow_remote: bool,
     browser_capture_auth_token: str | None,
@@ -1410,6 +1420,7 @@ def run_command(
         api_auth_token = cfg.api_auth_token
 
     enable_watch = not no_watch
+    enable_source_catchup = not no_source_catchup
     enable_browser_capture = not no_browser_capture
     enable_api = not no_api
     if not enable_watch and not enable_browser_capture and not enable_api:
@@ -1436,6 +1447,7 @@ def run_command(
                 sources=sources,
                 debounce_s=debounce_s,
                 enable_watch=enable_watch,
+                enable_source_catchup=enable_source_catchup,
                 enable_browser_capture=enable_browser_capture,
                 browser_capture_host=host,
                 browser_capture_port=port,
