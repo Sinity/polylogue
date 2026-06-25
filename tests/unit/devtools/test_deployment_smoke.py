@@ -413,7 +413,7 @@ def test_deployment_smoke_reports_missing_completion_candidate(
     assert report.completions[0].missing == ["then"]
 
 
-def test_deployment_smoke_keeps_facets_timeout_optional(
+def test_deployment_smoke_reports_facets_timeout_as_route_failure(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -442,8 +442,10 @@ def test_deployment_smoke_keeps_facets_timeout_optional(
         ),
     )
 
+    observed_timeouts: dict[str, float] = {}
+
     def fake_open_url(url: str, *, timeout_s: float) -> _FakeResponse:
-        del timeout_s
+        observed_timeouts[url] = timeout_s
         if url.endswith("/api/facets"):
             raise TimeoutError("facets exceeded budget")
         return _FakeResponse(200, {"ok": True, "url": url})
@@ -458,10 +460,11 @@ def test_deployment_smoke_keeps_facets_timeout_optional(
         timeout_s=1,
     )
 
-    assert report.ok is True
-    assert not any(failure.startswith("route:http://daemon/api/facets:") for failure in report.failures)
-    assert "optional web-shell facets route exceeds the deployed smoke timeout" in report.diagnostics["likely_causes"]
-    assert any("deferred /api/facets" in action for action in report.diagnostics["next_actions"])
+    assert report.ok is False
+    assert "route:http://daemon/api/facets:TimeoutError: facets exceeded budget" in report.failures
+    assert observed_timeouts["http://daemon/api/facets"] == 15.0
+    assert "web-shell facets route exceeds the deployed smoke timeout" in report.diagnostics["likely_causes"]
+    assert any("profile /api/facets" in action for action in report.diagnostics["next_actions"])
 
 
 def test_deployment_smoke_accepts_html_root_document(monkeypatch: pytest.MonkeyPatch) -> None:
