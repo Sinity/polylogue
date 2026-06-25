@@ -1907,6 +1907,38 @@ def test_debounce_coalesces_rapid_changes(tmp_path: Path) -> None:
     assert parse_sources.await_count == 1
 
 
+def test_debounce_waits_for_same_path_quiet_window(tmp_path: Path) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    f = root / "session.jsonl"
+    f.write_text('{"a":1}\n')
+    watcher, _parse_sources = _make_watcher(tmp_path, root, debounce_s=0.05)
+    producer_done = asyncio.Event()
+    batches: list[bool] = []
+
+    async def fake_ingest(
+        paths: list[Path],
+        *,
+        queued_file_count: int | None = None,
+        skipped_file_count: int = 0,
+    ) -> None:
+        del paths, queued_file_count, skipped_file_count
+        batches.append(producer_done.is_set())
+
+    async def _drive() -> None:
+        watcher._ingest_files = fake_ingest  # type: ignore[assignment,method-assign]
+        for _ in range(4):
+            watcher._enqueue(f)
+            await asyncio.sleep(0.03)
+        producer_done.set()
+        while watcher._pending_scheduled or watcher._pending_paths:
+            await asyncio.sleep(0.01)
+
+    asyncio.run(_drive())
+
+    assert batches == [True]
+
+
 # --- WatchSource ---------------------------------------------------------------
 
 
