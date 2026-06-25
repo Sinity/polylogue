@@ -249,6 +249,7 @@ def write_parsed_session_to_archive(
         bytes.fromhex(content_hash) if content_hash is not None else _hash_bytes("session", origin.value, native_id)
     )
     add_timing("index.prepare", t0)
+    session_counts = _session_count_values(messages)
 
     with conn:
         t0 = time.perf_counter()
@@ -292,23 +293,19 @@ def write_parsed_session_to_archive(
                 _sqlite_text(session.git_commit_hash),
                 _sqlite_text(session.instructions_text),
                 session.reported_duration_ms,
-                len(messages),
-                sum(_word_count(message.text) for message in messages),
-                sum(_has_block(message, BlockType.TOOL_USE) for message in messages),
-                sum(_has_block(message, BlockType.THINKING) for message in messages),
-                sum(_has_paste(message) for message in messages),
-                sum(1 for message in messages if _enum_value(message.role) == "user"),
-                sum(1 for message in messages if _enum_value(message.material_origin) == "human_authored"),
-                sum(1 for message in messages if _enum_value(message.role) == "assistant"),
-                sum(1 for message in messages if _enum_value(message.role) == "system"),
-                sum(1 for message in messages if _enum_value(message.role) == "tool"),
-                sum(_word_count(message.text) for message in messages if _enum_value(message.role) == "user"),
-                sum(
-                    _word_count(message.text)
-                    for message in messages
-                    if _enum_value(message.material_origin) == "human_authored"
-                ),
-                sum(_word_count(message.text) for message in messages if _enum_value(message.role) == "assistant"),
+                session_counts["message_count"],
+                session_counts["word_count"],
+                session_counts["tool_use_count"],
+                session_counts["thinking_count"],
+                session_counts["paste_count"],
+                session_counts["user_message_count"],
+                session_counts["authored_user_message_count"],
+                session_counts["assistant_message_count"],
+                session_counts["system_message_count"],
+                session_counts["tool_message_count"],
+                session_counts["user_word_count"],
+                session_counts["authored_user_word_count"],
+                session_counts["assistant_word_count"],
                 session_content_hash,
                 _timestamp_ms(session.created_at),
                 _timestamp_ms(session.updated_at),
@@ -433,7 +430,10 @@ def write_parsed_session_to_archive(
             _aggregate_provider_usage_into_model_usage(conn, session_id)
             add_timing("index.provider_usage_rollup", t0)
         t0 = time.perf_counter()
-        _refresh_session_counts(conn, session_id)
+        if merge_append:
+            _increment_session_counts_for_append(conn, session_id, session_counts)
+        else:
+            _refresh_session_counts(conn, session_id)
         add_timing("index.session_counts", t0)
         t0 = time.perf_counter()
         _resolve_session_graph(conn, session_id, native_id, origin.value)
@@ -1528,6 +1528,89 @@ def _refresh_session_counts(conn: sqlite3.Connection, session_id: str) -> None:
         WHERE session_id = ?
         """,
         (session_id,),
+    )
+
+
+def _session_count_values(messages: list[ParsedMessage]) -> dict[str, int]:
+    counts = {
+        "message_count": 0,
+        "word_count": 0,
+        "tool_use_count": 0,
+        "thinking_count": 0,
+        "paste_count": 0,
+        "user_message_count": 0,
+        "authored_user_message_count": 0,
+        "assistant_message_count": 0,
+        "system_message_count": 0,
+        "tool_message_count": 0,
+        "user_word_count": 0,
+        "authored_user_word_count": 0,
+        "assistant_word_count": 0,
+    }
+    for message in messages:
+        role = _enum_value(message.role)
+        material_origin = _enum_value(message.material_origin)
+        word_count = _word_count(message.text)
+        counts["message_count"] += 1
+        counts["word_count"] += word_count
+        counts["tool_use_count"] += _has_block(message, BlockType.TOOL_USE)
+        counts["thinking_count"] += _has_block(message, BlockType.THINKING)
+        counts["paste_count"] += _has_paste(message)
+        if role == "user":
+            counts["user_message_count"] += 1
+            counts["user_word_count"] += word_count
+        elif role == "assistant":
+            counts["assistant_message_count"] += 1
+            counts["assistant_word_count"] += word_count
+        elif role == "system":
+            counts["system_message_count"] += 1
+        elif role == "tool":
+            counts["tool_message_count"] += 1
+        if material_origin == "human_authored":
+            counts["authored_user_message_count"] += 1
+            counts["authored_user_word_count"] += word_count
+    return counts
+
+
+def _increment_session_counts_for_append(
+    conn: sqlite3.Connection,
+    session_id: str,
+    counts: dict[str, int],
+) -> None:
+    conn.execute(
+        """
+        UPDATE sessions
+        SET message_count = COALESCE(message_count, 0) + ?,
+            word_count = COALESCE(word_count, 0) + ?,
+            tool_use_count = COALESCE(tool_use_count, 0) + ?,
+            thinking_count = COALESCE(thinking_count, 0) + ?,
+            paste_count = COALESCE(paste_count, 0) + ?,
+            user_message_count = COALESCE(user_message_count, 0) + ?,
+            authored_user_message_count = COALESCE(authored_user_message_count, 0) + ?,
+            assistant_message_count = COALESCE(assistant_message_count, 0) + ?,
+            system_message_count = COALESCE(system_message_count, 0) + ?,
+            tool_message_count = COALESCE(tool_message_count, 0) + ?,
+            user_word_count = COALESCE(user_word_count, 0) + ?,
+            authored_user_word_count = COALESCE(authored_user_word_count, 0) + ?,
+            assistant_word_count = COALESCE(assistant_word_count, 0) + ?
+        WHERE session_id = ?
+        """,
+        (
+            counts["message_count"],
+            counts["word_count"],
+            counts["tool_use_count"],
+            counts["thinking_count"],
+            counts["paste_count"],
+            counts["user_message_count"],
+            counts["authored_user_message_count"],
+            counts["assistant_message_count"],
+            counts["system_message_count"],
+            counts["tool_message_count"],
+            counts["user_word_count"],
+            counts["authored_user_word_count"],
+            counts["assistant_word_count"],
+            session_id,
+        ),
     )
 
 
