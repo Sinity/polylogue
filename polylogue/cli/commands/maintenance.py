@@ -973,7 +973,7 @@ def run_command(
 
 @maintenance_group.command("missing-raw-blob-cursors")
 @click.option("--apply", "apply_changes", is_flag=True, help="Delete matching rebuildable live cursor rows.")
-@click.option("--limit", type=int, default=None, help="Limit the number of candidate source paths.")
+@click.option("--limit", "-l", type=int, default=None, help="Limit the number of candidate source paths.")
 @click.option(
     "--output-format",
     "output_format",

@@ -204,6 +204,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         "message_type_backfill",
         "orphaned_attachments",
         "orphaned_messages",
+        "raw_materialization",
         "superseded_raw_snapshots",
         "wal_checkpoint",
     ]
