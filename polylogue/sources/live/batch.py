@@ -53,6 +53,7 @@ from polylogue.sources.live.batch_support import (
     _append_plan_group_ready,
     _AppendPlan,
     _AppendResult,
+    _archive_blob_exists,
     _blob_copy_heartbeat,
     _DeferredAppend,
     _detect_provider_from_path_sample,
@@ -785,7 +786,7 @@ class LiveBatchProcessor:
             try:
                 row = conn.execute(
                     """
-                    SELECT raw_id
+                    SELECT raw_id, blob_hash
                     FROM raw_sessions
                     WHERE source_path = ?
                       AND COALESCE(source_index, 0) >= 0
@@ -800,7 +801,15 @@ class LiveBatchProcessor:
             return None
         if row is None:
             return None
-        raw_id = row[0]
+        raw_id, blob_hash = row
+        if isinstance(blob_hash, bytes):
+            blob_hash_hex = blob_hash.hex()
+        elif isinstance(blob_hash, str):
+            blob_hash_hex = blob_hash.lower()
+        else:
+            return None
+        if not _archive_blob_exists(source_db.parent, blob_hash_hex):
+            return None
         return raw_id if isinstance(raw_id, str) and raw_id else None
 
     def _current_parser_fingerprint(self) -> str:

@@ -33,6 +33,14 @@ _BROWSER_CAPTURE_PREFIX_PROBE_BYTES = 1 * 1024 * 1024
 _BROWSER_CAPTURE_PROVIDER_RE = re.compile(rb'"provider"\s*:\s*"([^"\\]{1,80})"')
 
 
+def _archive_blob_exists(archive_root: Path, blob_hash_hex: str) -> bool:
+    """Return whether a content-addressed archive blob is present on disk."""
+    normalized = blob_hash_hex.lower()
+    if len(normalized) != 64 or any(char not in "0123456789abcdef" for char in normalized):
+        return False
+    return (archive_root / "blob" / normalized[:2] / normalized[2:]).is_file()
+
+
 class _FullIngestHeartbeat(Protocol):
     def __call__(
         self,

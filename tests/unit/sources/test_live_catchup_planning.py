@@ -18,6 +18,13 @@ from polylogue.sources.live.cursor import CursorStore
 from tests.infra.frozen_clock import FrozenClock
 
 
+def _write_archive_blob(archive_root: Path, blob_hash: bytes | str, payload: bytes) -> None:
+    blob_hash_hex = blob_hash.hex() if isinstance(blob_hash, bytes) else blob_hash.lower()
+    blob_path = archive_root / "blob" / blob_hash_hex[:2] / blob_hash_hex[2:]
+    blob_path.parent.mkdir(parents=True, exist_ok=True)
+    blob_path.write_bytes(payload)
+
+
 def test_catch_up_plan_carries_statted_candidates_without_payload_reads(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -72,6 +79,45 @@ def test_catch_up_repairs_missing_cursor_from_archive_source_row(tmp_path: Path)
     source_db = tmp_path / "source.db"
     initialize_archive_database(source_db, ArchiveTier.SOURCE)
     with sqlite3.connect(source_db) as conn:
+        blob_hash = b"a" * 32
+        write_source_raw_session_blob_ref(
+            conn,
+            origin="codex-session",
+            source_path=str(archived),
+            source_index=0,
+            blob_hash=blob_hash,
+            blob_size=archived.stat().st_size,
+            acquired_at_ms=1,
+            native_id="archived",
+        )
+    _write_archive_blob(tmp_path, blob_hash, archived.read_bytes())
+    watcher = LiveWatcher(cast(Any, polylogue), (WatchSource(name="codex", root=root),), cursor=cursor)
+
+    plan = watcher._plan_catch_up(watcher._scan_catch_up_candidates([root]))
+    record = cursor.get_record(archived)
+
+    assert plan.needed == ()
+    assert plan.skipped_file_count == 1
+    assert record is not None
+    assert record.byte_size == archived.stat().st_size
+    assert record.content_fingerprint == ("61" * 32)
+    assert record.parser_fingerprint == live_watcher._PARSER_FINGERPRINT
+
+
+def test_catch_up_does_not_repair_cursor_from_archive_row_with_missing_blob(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session_blob_ref
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    root = tmp_path / "src"
+    root.mkdir()
+    archived = root / "archived.jsonl"
+    archived.write_text('{"type":"session_meta","payload":{"id":"archived"}}\n', encoding="utf-8")
+    polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    cursor = CursorStore(tmp_path / "ops.db")
+    source_db = tmp_path / "source.db"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    with sqlite3.connect(source_db) as conn:
         write_source_raw_session_blob_ref(
             conn,
             origin="codex-session",
@@ -85,14 +131,10 @@ def test_catch_up_repairs_missing_cursor_from_archive_source_row(tmp_path: Path)
     watcher = LiveWatcher(cast(Any, polylogue), (WatchSource(name="codex", root=root),), cursor=cursor)
 
     plan = watcher._plan_catch_up(watcher._scan_catch_up_candidates([root]))
-    record = cursor.get_record(archived)
 
-    assert plan.needed == ()
-    assert plan.skipped_file_count == 1
-    assert record is not None
-    assert record.byte_size == archived.stat().st_size
-    assert record.content_fingerprint == ("61" * 32)
-    assert record.parser_fingerprint == live_watcher._PARSER_FINGERPRINT
+    assert plan.needed == (archived,)
+    assert plan.skipped_file_count == 0
+    assert cursor.get_record(archived) is None
 
 
 def test_catch_up_reconciles_browser_capture_cursor_from_archive_origin(tmp_path: Path) -> None:
@@ -109,16 +151,18 @@ def test_catch_up_reconciles_browser_capture_cursor_from_archive_origin(tmp_path
     source_db = tmp_path / "source.db"
     initialize_archive_database(source_db, ArchiveTier.SOURCE)
     with sqlite3.connect(source_db) as conn:
+        blob_hash = b"b" * 32
         write_source_raw_session_blob_ref(
             conn,
             origin="chatgpt-export",
             source_path=str(archived),
             source_index=0,
-            blob_hash=b"b" * 32,
+            blob_hash=blob_hash,
             blob_size=archived.stat().st_size,
             acquired_at_ms=1,
             native_id="capture",
         )
+    _write_archive_blob(tmp_path, blob_hash, archived.read_bytes())
     watcher = LiveWatcher(
         cast(Any, polylogue),
         (WatchSource(name="browser-capture", root=root, suffixes=(".json",)),),
