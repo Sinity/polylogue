@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 import time
 from collections import defaultdict
-from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
 import aiosqlite
@@ -525,32 +525,62 @@ def build_session_insight_records(
     *,
     compaction_count: int | None = None,
     logical_session_id: str | None = None,
+    stage_timing_add: Callable[[str, float], None] | None = None,
 ) -> SessionInsightRecordBundle:
     from polylogue.storage.insights.session.repo_observations import attribution_to_observations
 
-    analysis = build_session_analysis(session)
-    profile = build_session_profile(session, analysis=analysis, compaction_count=compaction_count)
+    def add_timing(name: str, started_at: float) -> None:
+        if stage_timing_add is not None:
+            stage_timing_add(name, started_at)
+
+    t0 = time.perf_counter()
+    analysis = build_session_analysis(session, stage_timing_add=stage_timing_add)
+    add_timing("build_records.analysis", t0)
+    t0 = time.perf_counter()
+    profile = build_session_profile(
+        session,
+        analysis=analysis,
+        compaction_count=compaction_count,
+        stage_timing_add=stage_timing_add,
+    )
+    add_timing("build_records.profile", t0)
+    t0 = time.perf_counter()
     materialized_at = now_iso()
     repo_observations = attribution_to_observations(
         analysis.attribution,
         git_repository_url=session.git_repository_url,
     )
+    add_timing("build_records.repo_observations", t0)
+    t0 = time.perf_counter()
     latency_facts = build_latency_profile_facts(session, profile)
+    add_timing("build_records.latency_facts", t0)
+    t0 = time.perf_counter()
+    profile_record = build_session_profile_record(
+        profile,
+        analysis=analysis,
+        logical_session_id=logical_session_id,
+        materialized_at=materialized_at,
+    )
+    add_timing("build_records.profile_record", t0)
+    t0 = time.perf_counter()
+    latency_profile_record = build_session_latency_profile_record(
+        session,
+        profile,
+        latency_facts,
+        materialized_at=materialized_at,
+    )
+    add_timing("build_records.latency_profile_record", t0)
+    t0 = time.perf_counter()
+    work_event_records = build_session_work_event_records(profile, materialized_at=materialized_at)
+    add_timing("build_records.work_event_records", t0)
+    t0 = time.perf_counter()
+    phase_records = build_session_phase_records(profile, materialized_at=materialized_at)
+    add_timing("build_records.phase_records", t0)
     return SessionInsightRecordBundle(
-        profile_record=build_session_profile_record(
-            profile,
-            analysis=analysis,
-            logical_session_id=logical_session_id,
-            materialized_at=materialized_at,
-        ),
-        latency_profile_record=build_session_latency_profile_record(
-            session,
-            profile,
-            latency_facts,
-            materialized_at=materialized_at,
-        ),
-        work_event_records=build_session_work_event_records(profile, materialized_at=materialized_at),
-        phase_records=build_session_phase_records(profile, materialized_at=materialized_at),
+        profile_record=profile_record,
+        latency_profile_record=latency_profile_record,
+        work_event_records=work_event_records,
+        phase_records=phase_records,
         repo_observations=repo_observations,
     )
 
@@ -560,6 +590,7 @@ def build_session_insight_record_bundles(
     *,
     compaction_counts_by_session: dict[str, int] | None = None,
     logical_session_ids_by_session: dict[str, str] | None = None,
+    stage_timing_add: Callable[[str, float], None] | None = None,
 ) -> list[SessionInsightRecordBundle]:
     compaction_counts = compaction_counts_by_session or {}
     logical_ids = logical_session_ids_by_session or {}
@@ -568,6 +599,7 @@ def build_session_insight_record_bundles(
             session,
             compaction_count=compaction_counts.get(str(session.id)),
             logical_session_id=logical_ids.get(str(session.id)),
+            stage_timing_add=stage_timing_add,
         )
         for session in sessions
     ]
@@ -857,6 +889,7 @@ def rebuild_session_insights_sync(
             hydrated_sessions,
             compaction_counts_by_session=batch.compaction_counts_by_session,
             logical_session_ids_by_session=root_ids_by_session,
+            stage_timing_add=add_timing,
         )
         add_timing("build_records", t0)
         t0 = time.perf_counter()

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json as _json
+import time
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -231,13 +233,28 @@ def build_session_analysis(
     session: Session,
     *,
     facts: SessionSemanticFacts | None = None,
+    stage_timing_add: Callable[[str, float], None] | None = None,
 ) -> SessionAnalysis:
+    def add_timing(name: str, started_at: float) -> None:
+        if stage_timing_add is not None:
+            stage_timing_add(name, started_at)
+
+    t0 = time.perf_counter()
     semantic_facts = facts or build_session_semantic_facts(session)
+    add_timing("analysis.facts", t0)
+    t0 = time.perf_counter()
     phases = tuple(extract_phases(session, facts=semantic_facts))
+    add_timing("analysis.phases", t0)
+    t0 = time.perf_counter()
+    attribution = extract_attribution(session, facts=semantic_facts)
+    add_timing("analysis.attribution", t0)
+    t0 = time.perf_counter()
+    work_events = tuple(extract_work_events(session, facts=semantic_facts, phases=phases))
+    add_timing("analysis.work_events", t0)
     return SessionAnalysis(
         facts=semantic_facts,
-        attribution=extract_attribution(session, facts=semantic_facts),
-        work_events=tuple(extract_work_events(session, facts=semantic_facts, phases=phases)),
+        attribution=attribution,
+        work_events=work_events,
         phases=phases,
     )
 
@@ -262,45 +279,73 @@ def build_session_profile(
     *,
     analysis: SessionAnalysis | None = None,
     compaction_count: int | None = None,
+    stage_timing_add: Callable[[str, float], None] | None = None,
 ) -> SessionProfile:
     from polylogue.archive.semantic.cost_compute import compute_session_cost
-    from polylogue.archive.semantic.pricing import harmonize_session_cost
+    from polylogue.archive.semantic.pricing import estimate_session_cost
 
-    session_analysis = analysis or build_session_analysis(session)
+    def add_timing(name: str, started_at: float) -> None:
+        if stage_timing_add is not None:
+            stage_timing_add(name, started_at)
+
+    t0 = time.perf_counter()
+    session_analysis = analysis or build_session_analysis(session, stage_timing_add=stage_timing_add)
+    add_timing("profile.ensure_analysis", t0)
     facts = session_analysis.facts
     attribution = session_analysis.attribution
-    cost_usd, cost_is_estimated = harmonize_session_cost(session)
-    cost_summary = compute_session_cost(session)
+    t0 = time.perf_counter()
+    cost_estimate = estimate_session_cost(session)
+    add_timing("profile.cost_estimate", t0)
+    cost_usd = cost_estimate.total_usd
+    cost_is_estimated = cost_estimate.status != "exact"
+    t0 = time.perf_counter()
+    cost_summary = compute_session_cost(session, session_estimate=cost_estimate)
+    add_timing("profile.cost_summary", t0)
+    t0 = time.perf_counter()
     resolved_compaction_count = (
         compaction_count
         if compaction_count is not None
         else sum(1 for event in session.session_events if event.event_type == "compaction")
     )
+    add_timing("profile.compactions", t0)
+    t0 = time.perf_counter()
     engaged_duration_ms = sum(int(phase.duration_ms or 0) for phase in session_analysis.phases)
     if engaged_duration_ms <= 0:
         engaged_duration_ms = max(int(session.total_duration_ms or 0), 0)
     tool_active_duration_ms = compute_tool_active_duration_ms(session.session_events)
+    add_timing("profile.durations", t0)
+    t0 = time.perf_counter()
     workflow_shape, workflow_shape_confidence, workflow_shape_features = _workflow_shape(
         session_analysis,
         compaction_count=resolved_compaction_count,
         tool_active_duration_ms=tool_active_duration_ms,
     )
+    add_timing("profile.workflow_shape", t0)
+    t0 = time.perf_counter()
     terminal_state, terminal_state_confidence, terminal_state_evidence = _terminal_state(
         session,
         session_analysis,
     )
+    add_timing("profile.terminal_state", t0)
+    t0 = time.perf_counter()
     first_message_at, last_message_at, timestamp_source = _profile_timestamp_bounds(session, facts)
     canonical_session_at = first_message_at or last_message_at
+    add_timing("profile.timestamp_bounds", t0)
+    t0 = time.perf_counter()
     timing = compute_session_timing(
         list(session.messages),
         tool_use_count=facts.tool_messages,
         wall_duration_ms=facts.wall_duration_ms,
     )
+    add_timing("profile.session_timing", t0)
+    t0 = time.perf_counter()
     inferred_topic, inferred_topic_source = _infer_topic(
         session,
         session_analysis,
         repo_names=attribution.repo_names,
     )
+    add_timing("profile.infer_topic", t0)
+    t0 = time.perf_counter()
     partial = SessionProfile(
         session_id=str(session.id),
         origin=str(session.origin),
@@ -364,7 +409,11 @@ def build_session_profile(
         tool_calls_per_minute=timing.tool_calls_per_minute,
         timing_provenance=timing.timing_provenance,
     )
-    return replace(partial, auto_tags=infer_auto_tags(partial))
+    add_timing("profile.construct", t0)
+    t0 = time.perf_counter()
+    result = replace(partial, auto_tags=infer_auto_tags(partial))
+    add_timing("profile.auto_tags", t0)
+    return result
 
 
 __all__ = ["build_session_analysis", "build_session_profile", "infer_auto_tags"]

@@ -11,23 +11,28 @@ from polylogue.archive.semantic.tokenizer import TOKENIZER_VERSION, estimate_tok
 
 if TYPE_CHECKING:
     from polylogue.archive.models import Session
+    from polylogue.archive.semantic.pricing import CostEstimatePayload
 
 _PRICE_SNAPSHOT_VERSION = "polylogue-curated-litellm-shaped-seed"
 
 
-def compute_session_cost(session: Session) -> SessionCostSummary:
+def compute_session_cost(
+    session: Session,
+    *,
+    session_estimate: CostEstimatePayload | None = None,
+) -> SessionCostSummary:
     """Compute per-model cost breakdown and aggregate cost summary."""
-    session_estimate = estimate_session_cost(session)
-    if session_estimate.status == "exact":
+    estimate = session_estimate or estimate_session_cost(session)
+    if estimate.status == "exact":
         return SessionCostSummary(
-            total_input_tokens=session_estimate.usage.input_tokens,
-            total_output_tokens=session_estimate.usage.output_tokens,
-            total_cache_read_tokens=session_estimate.usage.cache_read_tokens,
-            total_cache_write_tokens=session_estimate.usage.cache_write_tokens,
-            total_api_cost_usd=round(session_estimate.total_usd, 6),
+            total_input_tokens=estimate.usage.input_tokens,
+            total_output_tokens=estimate.usage.output_tokens,
+            total_cache_read_tokens=estimate.usage.cache_read_tokens,
+            total_cache_write_tokens=estimate.usage.cache_write_tokens,
+            total_api_cost_usd=round(estimate.total_usd, 6),
             total_credit_cost=0.0,
             total_subscription_equivalent_usd=round(
-                session_estimate.basis.subscription_equivalent_usd,
+                estimate.basis.subscription_equivalent_usd,
                 6,
             ),
             cost_provenance="provider_reported",
@@ -36,16 +41,16 @@ def compute_session_cost(session: Session) -> SessionCostSummary:
             price_snapshot_version=_PRICE_SNAPSHOT_VERSION,
             per_model=(
                 SessionCostBreakdown(
-                    normalized_model=session_estimate.normalized_model,
-                    provider_model_name=session_estimate.model_name,
-                    input_tokens=session_estimate.usage.input_tokens,
-                    output_tokens=session_estimate.usage.output_tokens,
-                    cache_read_tokens=session_estimate.usage.cache_read_tokens,
-                    cache_write_tokens=session_estimate.usage.cache_write_tokens,
-                    total_tokens=session_estimate.usage.total_tokens,
-                    api_cost_usd=round(session_estimate.total_usd, 6),
+                    normalized_model=estimate.normalized_model,
+                    provider_model_name=estimate.model_name,
+                    input_tokens=estimate.usage.input_tokens,
+                    output_tokens=estimate.usage.output_tokens,
+                    cache_read_tokens=estimate.usage.cache_read_tokens,
+                    cache_write_tokens=estimate.usage.cache_write_tokens,
+                    total_tokens=estimate.usage.total_tokens,
+                    api_cost_usd=round(estimate.total_usd, 6),
                     subscription_equivalent_usd=round(
-                        session_estimate.basis.subscription_equivalent_usd,
+                        estimate.basis.subscription_equivalent_usd,
                         6,
                     ),
                     confidence="reported",
