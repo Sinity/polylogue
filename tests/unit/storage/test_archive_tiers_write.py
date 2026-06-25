@@ -1534,6 +1534,19 @@ def test_archive_tiers_writer_resolves_parent_link_when_parent_already_exists(tm
         {"thread_id": parent_id, "session_id": child_id, "position": 1},
     ]
     assert conn.execute("SELECT session_count FROM threads WHERE thread_id = ?", (parent_id,)).fetchone()[0] == 2
+    plan_rows = conn.execute(
+        """
+        EXPLAIN QUERY PLAN
+        SELECT session_id
+        FROM sessions
+        WHERE root_session_id = ? OR session_id = ?
+        ORDER BY sort_key_ms IS NULL, sort_key_ms, session_id
+        """,
+        (parent_id, parent_id),
+    ).fetchall()
+    plan = "\n".join(str(row[3]) for row in plan_rows)
+    assert "idx_sessions_root" in plan
+    assert "SCAN sessions" not in plan
 
 
 def test_archive_tiers_writer_resolves_existing_child_link_when_parent_arrives_later(tmp_path: Path) -> None:

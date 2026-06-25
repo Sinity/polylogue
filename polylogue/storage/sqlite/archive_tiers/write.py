@@ -1904,10 +1904,10 @@ def _refresh_thread(conn: sqlite3.Connection, root_session_id: str) -> None:
         """
         SELECT session_id
         FROM sessions
-        WHERE COALESCE(root_session_id, session_id) = ?
+        WHERE root_session_id = ? OR session_id = ?
         ORDER BY sort_key_ms IS NULL, sort_key_ms, session_id
         """,
-        (root_session_id,),
+        (root_session_id, root_session_id),
     ).fetchall()
     for position, row in enumerate(session_rows):
         conn.execute(
