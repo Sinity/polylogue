@@ -40,6 +40,17 @@ def test_active_archive_root_facade_writes_reads_and_searches_archive_db(tmp_pat
     assert matching_blocks == ["codex-session:codex-archive-1:m1:0"]
 
 
+def test_open_existing_read_timeout_updates_busy_timeout(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        assert facade.index_db_path.exists()
+
+    with ArchiveStore.open_existing(root, read_timeout=0.25) as facade:
+        busy_timeout_ms = facade._conn.execute("PRAGMA busy_timeout").fetchone()[0]
+
+    assert busy_timeout_ms == 250
+
+
 def test_archive_tiers_archive_facade_sorts_search_matches(tmp_path: Path) -> None:
     short = ParsedSession(
         source_name=Provider.CODEX,

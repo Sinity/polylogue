@@ -79,6 +79,8 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+_ARCHIVE_READER_BUSY_TIMEOUT_S = 0.25
+
 RouteMethod = Literal["GET", "POST", "DELETE"]
 _FacetQueryResult = TypeVar("_FacetQueryResult")
 
@@ -931,6 +933,22 @@ def daemon_safe_handler(fn: Callable[..., Any]) -> Callable[..., Any]:
                     field=field,
                 ).model_dump(mode="json"),
             )
+        except sqlite3.OperationalError as exc:
+            if _is_sqlite_busy_error(exc):
+                self._send_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    QueryErrorPayload(
+                        error="archive_busy",
+                        detail="Archive read route is temporarily unavailable while the daemon is writing catch-up data.",
+                    ).model_dump(mode="json"),
+                    extra_headers={"Retry-After": "1"},
+                )
+                return
+            logger.exception("sqlite error in %s", fn.__name__)
+            self._send_json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                QueryErrorPayload(error="sqlite_error").model_dump(mode="json"),
+            )
         except _CLIENT_DISCONNECT_ERRORS:
             logger.debug("daemon http client disconnected in %s", fn.__name__)
         except Exception:
@@ -941,6 +959,11 @@ def daemon_safe_handler(fn: Callable[..., Any]) -> Callable[..., Any]:
             )
 
     return wrapper
+
+
+def _is_sqlite_busy_error(exc: sqlite3.OperationalError) -> bool:
+    detail = str(exc).lower()
+    return "database is locked" in detail or "database is busy" in detail or "database table is locked" in detail
 
 
 def _build_query_spec_params(
@@ -2010,7 +2033,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             or has_thinking
         )
 
-        with ArchiveStore.open_existing(archive_root) as archive:
+        with ArchiveStore.open_existing(archive_root, read_timeout=_ARCHIVE_READER_BUSY_TIMEOUT_S) as archive:
             # Resolve an ``id:`` clause once, up front, so both branches share one
             # miss/ambiguous policy. list_summaries/search_summaries resolve the
             # token internally and raise KeyError (miss) / ValueError (ambiguous);
@@ -2318,7 +2341,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _do_archive_get_session(self, archive_root: Path, conv_id: str) -> object | None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        with ArchiveStore.open_existing(archive_root) as archive:
+        with ArchiveStore.open_existing(archive_root, read_timeout=_ARCHIVE_READER_BUSY_TIMEOUT_S) as archive:
             try:
                 session_id = archive.resolve_session_id(conv_id)
                 envelope = archive.read_session(session_id)
@@ -2842,7 +2865,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "archive_unavailable")
             return
 
-        with ArchiveStore.open_existing(archive_root) as archive:
+        with ArchiveStore.open_existing(archive_root, read_timeout=_ARCHIVE_READER_BUSY_TIMEOUT_S) as archive:
             payload = query_unit_envelope(archive, request)
 
         self._send_json(HTTPStatus.OK, payload.model_dump(mode="json"))
@@ -3334,7 +3357,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     ) -> object:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        with ArchiveStore.open_existing(archive_root) as archive:
+        with ArchiveStore.open_existing(archive_root, read_timeout=_ARCHIVE_READER_BUSY_TIMEOUT_S) as archive:
             try:
                 session_id = archive.resolve_session_id(conv_id)
                 envelope = archive.read_session(session_id)
@@ -3484,7 +3507,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         default_deferred = {
             family: _FACET_DEFERRED_REASON for family in _FACET_EXPENSIVE_FAMILIES if family not in requested_optional
         }
-        with ArchiveStore.open_existing(archive_root) as archive:
+        with ArchiveStore.open_existing(archive_root, read_timeout=_ARCHIVE_READER_BUSY_TIMEOUT_S) as archive:
             global_result = self._archive_facet_bucket(
                 archive,
                 optional_families=requested_optional,

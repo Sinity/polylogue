@@ -368,7 +368,14 @@ def _query_unit_group_expression(unit: str, row_alias: str, group_by: str | None
 class ArchiveStore:
     """Minimal archive-root façade for archive source/index/user tiers."""
 
-    def __init__(self, archive_root: Path, *, initialize: bool = True, read_only: bool = False) -> None:
+    def __init__(
+        self,
+        archive_root: Path,
+        *,
+        initialize: bool = True,
+        read_only: bool = False,
+        read_timeout: float = 5.0,
+    ) -> None:
         self.archive_root = archive_root
         self.source_db_path = archive_root / "source.db"
         self.index_db_path = archive_root / "index.db"
@@ -381,31 +388,29 @@ class ArchiveStore:
         if read_only:
             self._ensure_read_runtime_indexes()
         if read_only:
-            self._conn = sqlite3.connect(f"file:{self.index_db_path}?mode=ro", uri=True)
+            self._conn = sqlite3.connect(f"file:{self.index_db_path}?mode=ro", uri=True, timeout=read_timeout)
             pragma_statements = READ_CONNECTION_PRAGMA_STATEMENTS
         else:
             self._conn = sqlite3.connect(self.index_db_path)
             pragma_statements = WRITE_CONNECTION_PRAGMA_STATEMENTS
         self._conn.row_factory = sqlite3.Row
-        # Apply the canonical connection profile rather than a bare connection.
-        # A bare sqlite3.connect defaults to a 5s busy_timeout with no WAL
-        # tuning; under daemon write contention (live ingest and convergence
-        # stages both writing index.db) that window is exceeded and ingest
-        # writes fail with "database is locked", marking files failed and
-        # collapsing throughput. The write profile raises busy_timeout to 30s so
-        # writers queue instead of failing (docs/internals.md: SQLite tuning is
-        # profile-driven, not backend-local).
+        # Apply the canonical connection profile rather than relying on sqlite3
+        # defaults. Daemon read routes may opt into a shorter busy timeout so
+        # write-heavy catch-up surfaces as a typed degraded response instead of
+        # a client-side route timeout.
         for statement in pragma_statements:
             self._conn.execute(statement)
+        if read_only:
+            self._conn.execute(f"PRAGMA busy_timeout = {max(0, int(read_timeout * 1000))}")
         self._user_tier_attached = False
         self._tags_relation = "session_tags"
         self._attach_user_tier_if_present()
 
     @classmethod
-    def open_existing(cls, archive_root: Path, *, read_only: bool = True) -> ArchiveStore:
+    def open_existing(cls, archive_root: Path, *, read_only: bool = True, read_timeout: float = 5.0) -> ArchiveStore:
         """Open archive tier files, bootstrapping the five-tier root for writes."""
         initialize = not read_only or cls._needs_tier_bootstrap(archive_root)
-        return cls(archive_root, initialize=initialize, read_only=read_only)
+        return cls(archive_root, initialize=initialize, read_only=read_only, read_timeout=read_timeout)
 
     @staticmethod
     def _needs_tier_bootstrap(archive_root: Path) -> bool:
