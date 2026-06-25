@@ -46,11 +46,15 @@ _INCOMPLETE_APPEND_PROBE_BYTES = 64 * 1024 * 1024
 INBOX_SOURCE_SUFFIXES = (".jsonl", ".zip", ".json", ".ndjson")
 
 
-def _stage_timing_summary(stage_timings_s: dict[str, float], *, limit: int = 4) -> str:
+def _stage_timing_summary(stage_timings_s: dict[str, float], *, limit: int = 8) -> str:
     if not stage_timings_s:
         return "none"
     ordered = sorted(stage_timings_s.items(), key=lambda item: item[1], reverse=True)
-    return ",".join(f"{name}:{elapsed:.3f}" for name, elapsed in ordered[:limit])
+    shown = ",".join(f"{name}:{elapsed:.3f}" for name, elapsed in ordered[:limit])
+    omitted = len(ordered) - limit
+    if omitted <= 0:
+        return shown
+    return f"{shown},+{omitted} more"
 
 
 def _log_ingest_metrics(prefix: str, metrics: LiveBatchMetrics) -> None:

@@ -146,7 +146,7 @@ def test_live_ingest_stage_timing_summary_is_bounded_and_sorted() -> None:
             },
             limit=3,
         )
-        == "parse:1.250,checkpoint:0.800,insights:0.400"
+        == "parse:1.250,checkpoint:0.800,insights:0.400,+2 more"
     )
 
 

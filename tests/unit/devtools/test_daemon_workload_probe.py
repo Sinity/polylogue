@@ -205,6 +205,13 @@ def test_daemon_workload_probe_reports_ops_tier_from_db_anchor(tmp_path: Path) -
                 "cursor_fingerprint_read_bytes": 25,
                 "parse_time_s": 1.5,
                 "convergence_time_s": 2.5,
+                "stage_timings_json": json.dumps(
+                    {
+                        "full.index.full_replace.blocks": 2.0,
+                        "full.index.full_replace.fts_insert": 4.25,
+                    },
+                    sort_keys=True,
+                ),
                 "rss_current_mb": 42.0,
             },
         )
@@ -235,7 +242,12 @@ def test_daemon_workload_probe_reports_ops_tier_from_db_anchor(tmp_path: Path) -
     assert payload["recent_attempts"][0]["read_amplification"] == 1.5
     assert payload["recent_attempts"][0]["storage_route"] == "archive_full"
     assert payload["recent_attempts"][0]["source_paths"] == ["/tmp/a.jsonl"]
+    assert payload["recent_attempts"][0]["stage_timings_s"] == {
+        "full.index.full_replace.blocks": 2.0,
+        "full.index.full_replace.fts_insert": 4.25,
+    }
     assert payload["convergence_stage_timings"]["sample_size"] == 1
+    assert payload["convergence_stage_timings"]["per_stage_s"]["full.index.full_replace.fts_insert"]["mean"] == 4.25
     assert payload["daemon_resource_signal"] == {"available": True, "rss_current_mb": 42.0}
     assert payload["convergence_debt"]["failed_count"] == 1
     assert payload["cursor_lag_baselines"]["total_sample_count"] == 1
