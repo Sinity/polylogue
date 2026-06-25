@@ -333,8 +333,8 @@
         "path": "<PATH>",
         "exists": true,
         "size_bytes": <SIZE_BYTES>,
-        "expected_user_version": 7,
-        "user_version": 7,
+        "expected_user_version": 8,
+        "user_version": 8,
         "version_status": "ok",
         "table_counts": {
           "sessions": 2,

@@ -1748,7 +1748,7 @@ def test_ingest_files_emits_observable_batch_metrics(tmp_path: Path) -> None:
     assert payload["wal_checkpoint_errors"] == []
     assert payload["parse_time_s"] >= 0
     assert payload["total_time_s"] >= 0
-    assert payload["stage_timings_s"] == {}
+    assert payload["stage_timings_s"] == {"full.index_parsed_write": 0.02, "full.provider_parse": 0.01}
     assert payload["failed_paths"] == []
     with sqlite3.connect(tmp_path / "ops.db") as conn:
         events = conn.execute(
