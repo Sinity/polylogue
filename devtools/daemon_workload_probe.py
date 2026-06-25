@@ -312,6 +312,7 @@ def _ops_recent_attempts(ops_db: Path | None, *, limit: int) -> list[dict[str, A
                 "read_amplification": round(total_read_bytes / input_bytes, 3) if input_bytes > 0 else 0.0,
                 "parse_time_s": _payload_float(payload, "parse_time_s"),
                 "convergence_time_s": _payload_float(payload, "convergence_time_s"),
+                "stage_timings_s": _stage_timings_from_json(payload.get("stage_timings_json")),
                 "stale_cursor_write_count": _payload_int(payload, "stale_cursor_write_count"),
                 "storage_route": _normalise_storage_route(payload.get("storage_route")),
                 "source_paths": source_paths,
@@ -359,6 +360,23 @@ def _payload_float(payload: dict[str, Any], key: str) -> float:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return 0.0
     return float(value)
+
+
+def _stage_timings_from_json(value: Any) -> dict[str, float]:
+    if not isinstance(value, str) or not value:
+        return {}
+    try:
+        decoded = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(decoded, dict):
+        return {}
+    timings: dict[str, float] = {}
+    for stage_name, elapsed in decoded.items():
+        if isinstance(elapsed, bool) or not isinstance(elapsed, int | float):
+            continue
+        timings[str(stage_name)] = float(elapsed)
+    return timings
 
 
 def _payload_str(payload: dict[str, Any], key: str, *, default: str = "") -> str:
@@ -1705,62 +1723,95 @@ def _convergence_stage_timings(
     parse_times = [float(a.get("parse_time_s") or 0.0) for a in completed]
     convergence_times = [float(a.get("convergence_time_s") or 0.0) for a in completed]
     amps = [float(a.get("read_amplification") or 0.0) for a in completed]
+    per_stage = _per_stage_timings_from_attempts(completed)
+    if not per_stage:
+        per_stage = _per_stage_timings(
+            [str(a.get("attempt_id")) for a in completed if a.get("attempt_id")],
+            conn,
+        )
     return {
         "sample_size": len(completed),
         "parse_time_s": _summary_stat(parse_times),
         "convergence_time_s": _summary_stat(convergence_times),
         "read_amplification": _summary_stat(amps),
-        "per_stage_s": _per_stage_timings(
-            [str(a.get("attempt_id")) for a in completed if a.get("attempt_id")],
-            conn,
-        ),
+        "per_stage_s": per_stage,
     }
+
+
+def _per_stage_timings_from_attempts(attempts: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
+    per_stage: dict[str, list[float]] = {}
+    for attempt in attempts:
+        timings = attempt.get("stage_timings_s")
+        if not isinstance(timings, dict):
+            continue
+        for stage_name, value in timings.items():
+            if isinstance(value, bool) or not isinstance(value, int | float):
+                continue
+            per_stage.setdefault(str(stage_name), []).append(float(value))
+    return {stage: _summary_stat(values) for stage, values in sorted(per_stage.items())}
 
 
 def _per_stage_timings(
     attempt_ids: list[str],
     conn: sqlite3.Connection | None,
 ) -> dict[str, dict[str, float]]:
-    """Aggregate per-stage timings from ``live_ingest_stage_event``.
+    """Aggregate per-stage timings from the durable ops stage-event surface.
 
     Returns ``{stage_name: summary_stat}`` over the latest ``stage_timings_json``
-    payload for each attempt.  Returns ``{}`` when the table does not exist or
-    no completed attempts carry timings.
+    payload for each attempt. Returns ``{}`` when no completed attempts carry
+    timings.
     """
     if conn is None or not attempt_ids:
         return {}
-    if not _table_exists(conn, "live_ingest_stage_event"):
-        return {}
     placeholders = ",".join("?" for _ in attempt_ids)
-    rows = conn.execute(
-        f"""
-        SELECT attempt_id, stage_timings_json
-        FROM live_ingest_stage_event
-        WHERE attempt_id IN ({placeholders})
-          AND stage_timings_json IS NOT NULL
-        ORDER BY attempt_id, sequence DESC
-        """,
-        tuple(attempt_ids),
-    ).fetchall()
-    latest_by_attempt: dict[str, str] = {}
-    for row in rows:
-        attempt_id = str(row[0])
-        if attempt_id in latest_by_attempt:
-            continue
-        if isinstance(row[1], str) and row[1]:
-            latest_by_attempt[attempt_id] = row[1]
-    per_stage: dict[str, list[float]] = {}
-    for payload in latest_by_attempt.values():
-        try:
-            decoded = json.loads(payload)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(decoded, dict):
-            continue
-        for stage_name, value in decoded.items():
-            if isinstance(value, bool) or not isinstance(value, int | float):
+    latest_by_attempt: dict[str, dict[str, float]] = {}
+    if _table_exists(conn, "daemon_stage_events"):
+        rows = conn.execute(
+            f"""
+            SELECT attempt_id, payload_json
+            FROM daemon_stage_events
+            WHERE attempt_id IN ({placeholders})
+            ORDER BY observed_at_ms DESC, rowid DESC
+            """,
+            tuple(attempt_ids),
+        ).fetchall()
+        for row in rows:
+            attempt_id = str(row[0])
+            if attempt_id in latest_by_attempt:
                 continue
-            per_stage.setdefault(str(stage_name), []).append(float(value))
+            try:
+                decoded = json.loads(str(row[1] or "{}"))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(decoded, dict):
+                continue
+            timings = _stage_timings_from_json(decoded.get("stage_timings_json"))
+            if timings:
+                latest_by_attempt[attempt_id] = timings
+    elif _table_exists(conn, "live_ingest_stage_event"):
+        rows = conn.execute(
+            f"""
+            SELECT attempt_id, stage_timings_json
+            FROM live_ingest_stage_event
+            WHERE attempt_id IN ({placeholders})
+              AND stage_timings_json IS NOT NULL
+            ORDER BY attempt_id, sequence DESC
+            """,
+            tuple(attempt_ids),
+        ).fetchall()
+        for row in rows:
+            attempt_id = str(row[0])
+            if attempt_id in latest_by_attempt:
+                continue
+            timings = _stage_timings_from_json(row[1])
+            if timings:
+                latest_by_attempt[attempt_id] = timings
+    else:
+        return {}
+    per_stage: dict[str, list[float]] = {}
+    for timings in latest_by_attempt.values():
+        for stage_name, value in timings.items():
+            per_stage.setdefault(stage_name, []).append(value)
     return {stage: _summary_stat(values) for stage, values in sorted(per_stage.items())}
 
 
