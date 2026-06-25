@@ -16,6 +16,7 @@ import asyncio
 import os
 import sqlite3
 import stat as stat_module
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -152,6 +153,7 @@ class LiveWatcher:
         self._drain_task: asyncio.Task[None] | None = None
         self._failed_retry_task: asyncio.Task[None] | None = None
         self._failed_retry_deadline: float | None = None
+        self._last_enqueue_at = 0.0
         self._last_batch_at: float = 0.0
         self._batch_lock = asyncio.Lock()
         self._ingest_lock = asyncio.Lock()
@@ -329,6 +331,7 @@ class LiveWatcher:
     def _enqueue(self, path: Path) -> None:
         """Enqueue a path for batched ingestion after debounce."""
         self._pending_paths.add(path)
+        self._last_enqueue_at = time.monotonic()
         self._ensure_pending_scheduled()
 
     def _ensure_pending_scheduled(self) -> None:
@@ -400,13 +403,7 @@ class LiveWatcher:
             await asyncio.sleep(self._debounce_s)
 
             while not self._stop.is_set():
-                # Re-check: collect any new arrivals during the quiet window.
-                while True:
-                    before = len(self._pending_paths)
-                    await asyncio.sleep(0.5)
-                    after = len(self._pending_paths)
-                    if after == before:
-                        break
+                await self._wait_for_pending_quiet()
 
                 flushed = await self._flush_pending()
                 if not flushed:
@@ -417,6 +414,18 @@ class LiveWatcher:
             else:
                 self._pending_scheduled = False
                 self._drain_task = None
+
+    async def _wait_for_pending_quiet(self) -> None:
+        """Wait until no enqueue event lands during the quiet window."""
+        quiet_s = self._debounce_s
+        while self._pending_paths and not self._stop.is_set():
+            last_enqueue_at = self._last_enqueue_at
+            elapsed_s = time.monotonic() - last_enqueue_at
+            if elapsed_s >= quiet_s:
+                return
+            await asyncio.sleep(max(quiet_s - elapsed_s, 0.01))
+            if self._last_enqueue_at == last_enqueue_at:
+                return
 
     async def _flush_pending(self) -> bool:
         """Flush one pending path snapshot and report whether work ran."""
