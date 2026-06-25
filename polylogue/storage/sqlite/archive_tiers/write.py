@@ -377,6 +377,7 @@ def write_parsed_session_to_archive(
             session.attachments,
             position_offset=position_offset,
             duplicate_native_ids=duplicate_message_native_ids,
+            refresh_all_ref_counts=not merge_append,
         )
         add_timing("append.index.attachments", t0)
         t0 = time.perf_counter()
@@ -1486,6 +1487,7 @@ def _write_attachments(
     *,
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
+    refresh_all_ref_counts: bool = True,
 ) -> None:
     by_native_message_id = {
         message.provider_message_id: _message_id(
@@ -1498,6 +1500,7 @@ def _write_attachments(
         for fallback_position, message in enumerate(messages)
         if message.provider_message_id and message.provider_message_id not in duplicate_native_ids
     }
+    touched_attachment_ids: set[str] = set()
     for attachment in attachments:
         attachment_id = _attachment_id(session_id, attachment)
         message_id = (
@@ -1505,6 +1508,7 @@ def _write_attachments(
         )
         if message_id is None:
             continue
+        touched_attachment_ids.add(attachment_id)
         conn.execute(
             """
             INSERT INTO attachments (
@@ -1543,13 +1547,28 @@ def _write_attachments(
         )
         ref_id = f"{message_id}:attachment:{ref_position}"
         _write_attachment_native_ids(conn, ref_id, attachment)
+    if refresh_all_ref_counts:
+        conn.execute(
+            """
+            UPDATE attachments
+            SET ref_count = (
+                SELECT COUNT(*) FROM attachment_refs WHERE attachment_refs.attachment_id = attachments.attachment_id
+            )
+            """
+        )
+        return
+    if not touched_attachment_ids:
+        return
+    placeholders = ",".join("?" for _ in touched_attachment_ids)
     conn.execute(
-        """
+        f"""
         UPDATE attachments
         SET ref_count = (
             SELECT COUNT(*) FROM attachment_refs WHERE attachment_refs.attachment_id = attachments.attachment_id
         )
-        """
+        WHERE attachment_id IN ({placeholders})
+        """,
+        tuple(sorted(touched_attachment_ids)),
     )
 
 
