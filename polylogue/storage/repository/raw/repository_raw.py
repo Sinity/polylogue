@@ -48,12 +48,14 @@ class RepositoryRawMixin:
         state: RawSessionStateUpdate,
     ) -> None:
         """Apply a typed raw-state mutation."""
-        async with self._backend.connection() as conn:
+        source_backend = getattr(self, "_source_backend", None)
+        backend = source_backend if source_backend is not None else self._backend
+        async with backend.connection() as conn:
             await raw_queries.apply_raw_state_update(
                 conn,
                 raw_id,
                 state=state,
-                transaction_depth=self._backend.transaction_depth,
+                transaction_depth=backend.transaction_depth,
             )
 
     async def mark_raw_parsed(

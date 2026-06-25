@@ -193,6 +193,17 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         doctor_repair_operation="backfill-message-type",
     ),
     MaintenanceTargetSpec(
+        name="raw_materialization",
+        mode=MaintenanceTargetMode.REPAIR,
+        category=MaintenanceCategory.DERIVED_REPAIR,
+        destructive=False,
+        description="Replay acquired raw evidence into the index tier when source.db is ahead of index.db.",
+        include_preview_when_ready=True,
+        doctor_readiness_operation="raw-materialization-readiness",
+        doctor_repair_operation="materialize-raw-evidence",
+        invalidation_keys=("raw_sessions", "sessions", "messages", "messages_fts"),
+    ),
+    MaintenanceTargetSpec(
         name="message_embeddings",
         mode=MaintenanceTargetMode.REPAIR,
         category=MaintenanceCategory.DERIVED_REPAIR,

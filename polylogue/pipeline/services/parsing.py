@@ -115,6 +115,7 @@ class ParsingService:
         provider: str | None = None,
         progress_callback: ProgressCallback | None = None,
         force_write: bool = False,
+        repair_message_fts: bool = True,
     ) -> ParseResult:
         return await parse_from_raw(
             self,
@@ -122,6 +123,7 @@ class ParsingService:
             provider=provider,
             progress_callback=progress_callback,
             force_write=force_write,
+            repair_message_fts=repair_message_fts,
         )
 
 

@@ -508,6 +508,33 @@ class TestParsingServiceStreaming:
         assert mock_process.await_args_list[0].args[2] == ["raw-1"]
         assert mock_process.await_args_list[1].args[2] == ["raw-2", "raw-3"]
 
+    async def test_parse_from_raw_closes_header_stream_before_writing_batches(self, tmp_path: Path) -> None:
+        backend = MagicMock()
+        events: list[str] = []
+
+        async def raw_headers() -> AsyncGenerator[tuple[str, int], None]:
+            events.append("headers-open")
+            yield ("raw-1", 1)
+            yield ("raw-2", 1)
+            events.append("headers-closed")
+
+        repository = MagicMock()
+        repository.backend = backend
+        repository.iter_raw_headers = MagicMock(return_value=raw_headers())
+        config = Config(archive_root=tmp_path / "archive", render_root=tmp_path / "render", sources=[])
+        service = ParsingService(repository=repository, archive_root=config.archive_root, config=config)
+
+        async def _process(*_args: object, **_kwargs: object) -> None:
+            events.append("batch-write")
+
+        with patch(
+            "polylogue.pipeline.services.ingest_batch.process_ingest_batch",
+            new=AsyncMock(side_effect=_process),
+        ):
+            await service.parse_from_raw(provider="chatgpt")
+
+        assert events == ["headers-open", "headers-closed", "batch-write"]
+
 
 # =====================================================================
 # Merged from test_planning_service.py (service tests)

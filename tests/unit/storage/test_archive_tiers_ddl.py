@@ -345,3 +345,39 @@ def test_archive_tiers_database_bootstrap_creates_parent_directory(tmp_path: Pat
 
     conn = _connect(path)
     assert conn.execute("PRAGMA user_version").fetchone()[0] == ARCHIVE_TIER_SPECS[ArchiveTier.USER].version
+
+
+def test_archive_tiers_database_bootstrap_leaves_current_tier_unchanged(tmp_path: Path) -> None:
+    path = tmp_path / "user.db"
+    initialize_archive_database(path, ArchiveTier.USER)
+    conn = _connect(path)
+    conn.execute(
+        """
+        INSERT INTO assertions (
+            assertion_id, target_ref, kind, value_json, created_at_ms, updated_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "assertion:test",
+            "session:test",
+            "tag",
+            '{"tag":"kept"}',
+            1_767_225_600_000,
+            1_767_225_600_000,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    initialize_archive_database(path, ArchiveTier.USER)
+
+    conn = _connect(path)
+    rows = conn.execute("SELECT assertion_id, target_ref, kind, value_json FROM assertions").fetchall()
+    assert [dict(row) for row in rows] == [
+        {
+            "assertion_id": "assertion:test",
+            "target_ref": "session:test",
+            "kind": "tag",
+            "value_json": '{"tag":"kept"}',
+        }
+    ]

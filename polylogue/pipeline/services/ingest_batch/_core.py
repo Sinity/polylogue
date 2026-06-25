@@ -17,6 +17,7 @@ import sqlite3
 import time
 from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, wait
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -268,7 +269,7 @@ def _write_session(
         and existing_raw_id
         and payload.raw_id
         and existing_raw_id != payload.raw_id
-        and payload.message_count < _stored_message_count(conn, payload.session_id)
+        and payload.message_count <= _stored_message_count(conn, payload.session_id)
     ):
         counts["skipped_sessions"] = 1
         counts["skipped_messages"] = payload.message_count
@@ -458,14 +459,17 @@ def _drain_ready_session_entries(
     summary: _IngestBatchSummary,
     materialized_ids: set[str],
     force_write: bool = False,
-) -> None:
+) -> int:
     _delete_stale_sessions_for_raw_entries(conn, ready_entries)
+    written_count = 0
     for raw_id, cdata in _topo_sort_session_entries(ready_entries):
         wrote = _write_session_entry(conn, raw_id, cdata, summary=summary, force_write=force_write)
         discard_session_data_payload(cdata)
         if not wrote:
             continue
+        written_count += 1
         materialized_ids.add(cdata.session_id)
+    return written_count
 
 
 def _run_ingest_record(
@@ -672,13 +676,15 @@ def _drain_ingest_result(
         return
 
     drain_started = time.perf_counter()
-    _drain_ready_session_entries(
+    written_count = _drain_ready_session_entries(
         conn,
         [(ir.raw_id, cdata) for cdata in ir.sessions],
         summary=summary,
         materialized_ids=materialized_ids,
         force_write=force_write,
     )
+    if written_count == 0:
+        summary.skipped_raw_ids.add(ir.raw_id)
     summary.drain_elapsed_s += time.perf_counter() - drain_started
     _observe_current_rss(summary)
 
@@ -695,6 +701,7 @@ def _consume_ingest_results(
     progress: _WorkerProgress | None = None,
     ingest_result_chunk_size: int = 0,
     suspend_fts_triggers: bool = False,
+    mark_fts_stale_on_suspend: bool = False,
     force_process_pool: bool = False,
 ) -> bool:
     result_iterator = iter(
@@ -726,7 +733,7 @@ def _consume_ingest_results(
                 if suspend_fts_triggers:
                     from polylogue.storage.fts.fts_lifecycle import suspend_fts_triggers_sync
 
-                    suspend_fts_triggers_sync(conn, mark_stale=False)
+                    suspend_fts_triggers_sync(conn, mark_stale=mark_fts_stale_on_suspend)
                 transaction_started = True
             _drain_ingest_result(
                 conn,
@@ -826,6 +833,7 @@ def _process_ingest_batch_sync(
             progress=progress,
             ingest_result_chunk_size=ingest_result_chunk_size,
             suspend_fts_triggers=suspend_fts_triggers,
+            mark_fts_stale_on_suspend=suspend_fts_triggers and not repair_message_fts,
             force_process_pool=force_process_pool,
         )
         _flush_ingest_results(
@@ -849,7 +857,7 @@ def _process_ingest_batch_sync(
                 conn,
                 db_path=db_path,
                 changed_session_ids=tuple(fts_repair_ids),
-                repair_message_fts=repair_message_fts or suspend_fts_triggers,
+                repair_message_fts=repair_message_fts,
             )
             summary.commit_elapsed_s = time.perf_counter() - commit_started
             from polylogue.storage.sqlite.wal_checkpoint import maybe_checkpoint_wal
@@ -915,6 +923,7 @@ async def process_ingest_batch(
     progress_callback: ProgressCallback | None,
     *,
     force_write: bool = False,
+    repair_message_fts: bool = True,
     ingest_result_chunk_size: int = 0,
     suspend_fts_triggers: bool = False,
 ) -> ParseBatchObservation | None:
@@ -953,6 +962,7 @@ async def process_ingest_batch(
         ingest_workers=service.ingest_workers,
         measure_ingest_result_size=service.measure_ingest_result_size,
         force_write=force_write,
+        repair_message_fts=repair_message_fts,
         ingest_result_chunk_size=ingest_result_chunk_size,
         suspend_fts_triggers=suspend_fts_triggers,
     )
@@ -1047,6 +1057,22 @@ def _successful_raw_state_update(
     )
 
 
+def _skipped_raw_state_update(
+    *,
+    outcome: _RawIngestOutcome | None,
+    parsed_at: str,
+    validation_mode: str,
+) -> RawSessionStateUpdate:
+    return RawSessionStateUpdate(
+        parsed_at=parsed_at,
+        parse_error=None,
+        payload_provider=outcome.payload_provider if outcome is not None else None,
+        validation_status="skipped",
+        validation_error="parsed raw payload produced no new materialized sessions",
+        validation_mode=validation_mode,
+    )
+
+
 def _failed_raw_state_update(
     *,
     outcome: _RawIngestOutcome | None,
@@ -1080,8 +1106,13 @@ async def _persist_batch_raw_state_updates(
 ) -> float:
     now_iso = datetime.now(timezone.utc).isoformat()
     raw_state_update_started = time.perf_counter()
-    async with backend.bulk_connection():
+    source_backend = getattr(service.repository, "_source_backend", None)
+    async with AsyncExitStack() as stack:
+        raw_state_backend = source_backend if source_backend is not None else backend
+        await stack.enter_async_context(raw_state_backend.bulk_connection())
         for rid in succeeded_raw_ids:
+            if rid in skipped_raw_ids:
+                continue
             await service.repository.update_raw_state(
                 rid,
                 state=_successful_raw_state_update(
@@ -1091,11 +1122,11 @@ async def _persist_batch_raw_state_updates(
                 ),
             )
         for rid in skipped_raw_ids:
-            if rid in failed_raw_ids or rid in succeeded_raw_ids:
+            if rid in failed_raw_ids:
                 continue
             await service.repository.update_raw_state(
                 rid,
-                state=_successful_raw_state_update(
+                state=_skipped_raw_state_update(
                     outcome=outcomes.get(rid),
                     parsed_at=now_iso,
                     validation_mode=validation_mode,

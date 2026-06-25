@@ -70,6 +70,7 @@ from polylogue.storage.repair import (
     repair_orphaned_attachments,
     repair_orphaned_blobs,
     repair_orphaned_messages,
+    repair_raw_materialization,
     repair_session_insights,
     repair_wal_checkpoint,
 )
@@ -115,6 +116,7 @@ _REPLAY_DISPATCH: Final[dict[str, _RepairFn]] = {
     "session_insights": repair_session_insights,
     "dangling_fts": repair_dangling_fts,
     "message_type_backfill": repair_message_type_backfill,
+    "raw_materialization": repair_raw_materialization,
     "wal_checkpoint": repair_wal_checkpoint,
     "orphaned_messages": repair_orphaned_messages,
     "empty_sessions": repair_empty_sessions,

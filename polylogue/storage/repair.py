@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import re
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -20,6 +22,7 @@ from polylogue.maintenance.targets import (
 )
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.blob_repair import count_orphaned_blobs_sync, repair_orphaned_blobs_data
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.insights.session.repair_assessment import (
     assess_session_insight_repairs,
 )
@@ -39,6 +42,93 @@ _SESSION_INSIGHT_MATERIALIZATION_TYPES = (
     "phases",
     "thread",
 )
+
+
+def _raw_materialization_candidate_ids(config: Config) -> tuple[list[str], int]:
+    """Return replayable raw ids plus missing-blob debt count.
+
+    Raw evidence is the durable source of truth, but a raw row whose
+    content-addressed blob is absent cannot be reparsed without outside
+    evidence. Keep those rows as debt instead of mutating or deleting them.
+    """
+    source_db = config.archive_root / "source.db"
+    index_db = config.archive_root / "index.db"
+    if not source_db.exists() or not index_db.exists():
+        return [], 0
+    blob_store = BlobStore(config.archive_root / "blob")
+    raw_ids: list[str] = []
+    missing_blobs = 0
+    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
+        rows = conn.execute(
+            """
+            SELECT r.raw_id, r.origin, r.native_id, r.source_path, r.blob_hash
+            FROM raw_sessions AS r
+            LEFT JOIN index_tier.sessions AS s_by_raw ON s_by_raw.raw_id = r.raw_id
+            LEFT JOIN index_tier.sessions AS s_by_native
+              ON r.native_id IS NOT NULL
+             AND s_by_native.origin = r.origin
+             AND s_by_native.native_id = r.native_id
+            WHERE s_by_raw.session_id IS NULL
+              AND s_by_native.session_id IS NULL
+              AND r.parse_error IS NULL
+              AND NOT (
+                r.validation_status = 'skipped'
+                AND r.parsed_at_ms IS NOT NULL
+                AND r.parse_error IS NULL
+              )
+            ORDER BY r.acquired_at_ms DESC, r.raw_id ASC
+            """
+        ).fetchall()
+        for row in rows:
+            if _raw_materialized_by_source_path_native(conn, row):
+                continue
+            blob_hash = row["blob_hash"].hex() if isinstance(row["blob_hash"], bytes) else str(row["blob_hash"])
+            if blob_store.exists(blob_hash):
+                raw_ids.append(str(row["raw_id"]))
+            else:
+                missing_blobs += 1
+    return raw_ids, missing_blobs
+
+
+def _raw_materialized_by_source_path_native(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
+    origin = str(row["origin"] or "")
+    if not origin:
+        return False
+    for native_id in _source_path_native_id_candidates(str(row["source_path"] or "")):
+        existing = conn.execute(
+            """
+            SELECT 1
+            FROM index_tier.sessions
+            WHERE origin = ?
+              AND native_id = ?
+            LIMIT 1
+            """,
+            (origin, native_id),
+        ).fetchone()
+        if existing is not None:
+            return True
+    return False
+
+
+def _source_path_native_id_candidates(source_path: str) -> tuple[str, ...]:
+    if not source_path:
+        return ()
+    name = Path(source_path).name
+    candidates: list[str] = []
+    current = name
+    for _ in range(4):
+        stem = Path(current).stem
+        if stem == current:
+            break
+        current = stem
+        if current and current not in candidates:
+            candidates.append(current)
+        unsplit = re.sub(r"_\d+$", "", current)
+        if unsplit and unsplit != current and unsplit not in candidates:
+            candidates.append(unsplit)
+    return tuple(candidates)
 
 
 def _open_archive_index_connection() -> sqlite3.Connection:
@@ -1032,6 +1122,65 @@ def preview_dangling_fts(*, count: int) -> RepairResult:
     )
 
 
+def repair_raw_materialization(config: Config, dry_run: bool = False) -> RepairResult:
+    """Materialize replayable raw evidence into the index tier."""
+    raw_ids, missing_blobs = _raw_materialization_candidate_ids(config)
+    if dry_run:
+        detail = f"Would: replay {len(raw_ids):,} raw rows into index.db"
+        if missing_blobs:
+            detail += f"; {missing_blobs:,} raw rows blocked by missing blobs"
+        return _repair_result(
+            "raw_materialization",
+            repaired_count=len(raw_ids),
+            success=True,
+            detail=detail,
+        )
+    if not raw_ids:
+        detail = "Raw materialization ready"
+        if missing_blobs:
+            detail += f"; {missing_blobs:,} raw rows remain blocked by missing blobs"
+        return _repair_result(
+            "raw_materialization",
+            repaired_count=0,
+            success=missing_blobs == 0,
+            detail=detail,
+        )
+
+    async def _run() -> int:
+        from polylogue.pipeline.services.parsing import ParsingService
+        from polylogue.storage.repository import SessionRepository
+        from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+
+        backend = SQLiteBackend(db_path=config.archive_root / "index.db")
+        repository = SessionRepository(backend=backend, archive_root=config.archive_root)
+        try:
+            service = ParsingService(repository=repository, archive_root=config.archive_root, config=config)
+            result = await service.parse_from_raw(raw_ids=raw_ids, force_write=False, repair_message_fts=False)
+            return len(result.processed_ids)
+        finally:
+            await repository.close()
+
+    try:
+        processed = asyncio.run(_run())
+    except Exception as exc:
+        return _repair_result(
+            "raw_materialization",
+            repaired_count=0,
+            success=False,
+            detail=f"Failed to materialize raw evidence: {exc}",
+        )
+    fts_result = repair_dangling_fts(config, dry_run=False)
+    detail = f"Replayed {len(raw_ids):,} raw rows; {processed:,} sessions changed; {fts_result.detail}"
+    if missing_blobs:
+        detail += f"; {missing_blobs:,} raw rows remain blocked by missing blobs"
+    return _repair_result(
+        "raw_materialization",
+        repaired_count=processed,
+        success=missing_blobs == 0 and fts_result.success,
+        detail=detail,
+    )
+
+
 def repair_wal_checkpoint(config: Config, dry_run: bool = False) -> RepairResult:
     from polylogue.paths import active_index_db_path
 
@@ -1285,6 +1434,7 @@ __all__ = [
     "repair_message_type_backfill",
     "repair_orphaned_attachments",
     "repair_orphaned_blobs",
+    "repair_raw_materialization",
     "repair_superseded_raw_snapshots",
     "repair_orphaned_messages",
     "repair_session_insights",

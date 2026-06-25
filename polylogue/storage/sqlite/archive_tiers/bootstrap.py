@@ -139,7 +139,9 @@ def initialize_archive_database(path: Path, tier: ArchiveTier) -> None:
     try:
         current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
         expected_version = archive_tier_spec(tier).version
-        if current_version not in (0, expected_version):
+        if current_version == expected_version:
+            return
+        if current_version != 0:
             raise RuntimeError(
                 f"{path.name} schema version {current_version} is not the current {tier.value} tier version "
                 f"{expected_version}; move it aside and rebuild the archive root"
