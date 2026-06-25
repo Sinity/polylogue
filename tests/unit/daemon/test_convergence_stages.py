@@ -290,7 +290,10 @@ def test_insights_stage_materializes_archive_profiles_from_archive_tiers(tmp_pat
     assert stage.check_sessions is not None
     assert stage.execute_sessions is not None
     assert stage.check_sessions([session_id]) == {session_id}
-    assert stage.execute_sessions([session_id]) is True
+    result = stage.execute_sessions([session_id])
+    assert result
+    assert isinstance(result, StageExecutionResult)
+    assert "insights.analysis.facts" in result.stage_timings_s
     assert stage.check_sessions([session_id]) == set()
     with sqlite3.connect(archive_db) as conn:
         profile = conn.execute("SELECT session_id, substantive_count FROM session_profiles").fetchone()
@@ -797,6 +800,10 @@ def test_insights_stage_rebuilds_large_session_after_quiet_window(
     assert result
     assert isinstance(result, StageExecutionResult)
     assert "insights.load_batch" in result.stage_timings_s
+    assert "insights.build_records.analysis" in result.stage_timings_s
+    assert "insights.build_records.profile" in result.stage_timings_s
+    assert "insights.analysis.facts" in result.stage_timings_s
+    assert "insights.profile.cost_estimate" in result.stage_timings_s
     with sqlite3.connect(db_path) as conn:
         assert (
             conn.execute("SELECT COUNT(*) FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[0] == 1
@@ -822,6 +829,10 @@ def test_insights_stage_rebuilds_small_active_session(
     assert result
     assert isinstance(result, StageExecutionResult)
     assert "insights.load_batch" in result.stage_timings_s
+    assert "insights.build_records.analysis" in result.stage_timings_s
+    assert "insights.build_records.profile" in result.stage_timings_s
+    assert "insights.analysis.facts" in result.stage_timings_s
+    assert "insights.profile.cost_estimate" in result.stage_timings_s
     with sqlite3.connect(db_path) as conn:
         assert (
             conn.execute("SELECT COUNT(*) FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[0] == 1
