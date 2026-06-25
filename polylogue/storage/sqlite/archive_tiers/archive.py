@@ -446,16 +446,18 @@ class ArchiveStore:
         acquired_at_ms: int,
         source_index: int = 0,
         stage_timings_s: dict[str, float] | None = None,
+        stage_timing_prefix: str = "append",
     ) -> tuple[str, str]:
         """Write raw acquisition bytes and the parsed session they produced."""
 
         def add_timing(name: str, started_at: float) -> None:
             if stage_timings_s is not None:
-                stage_timings_s[name] = stage_timings_s.get(name, 0.0) + (time.perf_counter() - started_at)
+                key = f"{stage_timing_prefix}.{name}"
+                stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - started_at)
 
         t0 = time.perf_counter()
         source_conn = sqlite3.connect(self.source_db_path)
-        add_timing("append.source_connect", t0)
+        add_timing("source_connect", t0)
         try:
             t0 = time.perf_counter()
             source_conn.execute("PRAGMA foreign_keys = ON")
@@ -468,11 +470,11 @@ class ArchiveStore:
                 payload=payload,
                 acquired_at_ms=acquired_at_ms,
             )
-            add_timing("append.source_raw_write", t0)
+            add_timing("source_raw_write", t0)
         finally:
             t0 = time.perf_counter()
             source_conn.close()
-            add_timing("append.source_close", t0)
+            add_timing("source_close", t0)
         t0 = time.perf_counter()
         session_id = write_parsed_session_to_archive(
             self._conn,
@@ -480,8 +482,9 @@ class ArchiveStore:
             raw_id=raw_id,
             merge_append=source_index < 0,
             stage_timings_s=stage_timings_s,
+            stage_timing_prefix=stage_timing_prefix,
         )
-        add_timing("append.index_parsed_write", t0)
+        add_timing("index_parsed_write", t0)
         return raw_id, session_id
 
     def write_raw_blob_and_parsed(
@@ -493,10 +496,21 @@ class ArchiveStore:
         source_path: str,
         acquired_at_ms: int,
         source_index: int = 0,
+        stage_timings_s: dict[str, float] | None = None,
+        stage_timing_prefix: str = "full",
     ) -> tuple[str, str]:
         """Write parsed session metadata for an already-materialized raw blob."""
+
+        def add_timing(name: str, started_at: float) -> None:
+            if stage_timings_s is not None:
+                key = f"{stage_timing_prefix}.{name}"
+                stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - started_at)
+
+        t0 = time.perf_counter()
         source_conn = sqlite3.connect(self.source_db_path)
+        add_timing("source_connect", t0)
         try:
+            t0 = time.perf_counter()
             source_conn.execute("PRAGMA foreign_keys = ON")
             raw_id = write_source_raw_session_blob_ref(
                 source_conn,
@@ -508,14 +522,21 @@ class ArchiveStore:
                 blob_size=blob_size,
                 acquired_at_ms=acquired_at_ms,
             )
+            add_timing("source_raw_blob_ref_write", t0)
         finally:
+            t0 = time.perf_counter()
             source_conn.close()
+            add_timing("source_close", t0)
+        t0 = time.perf_counter()
         session_id = write_parsed_session_to_archive(
             self._conn,
             session,
             raw_id=raw_id,
             merge_append=source_index < 0,
+            stage_timings_s=stage_timings_s,
+            stage_timing_prefix=stage_timing_prefix,
         )
+        add_timing("index_parsed_write", t0)
         return raw_id, session_id
 
     def read_session(self, session_id: str) -> ArchiveSessionEnvelope:

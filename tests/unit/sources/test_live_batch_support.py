@@ -187,6 +187,13 @@ def test_full_ingest_writes_archive_with_route_observability(
     assert result.ingested_message_count == 1
     assert result.changed_session_count == 1
     assert result.raw_fingerprints[source]
+    assert {
+        "full.provider_parse",
+        "full.source_raw_write",
+        "full.index_parsed_write",
+        "full.index.session_upsert",
+        "full.index.full_replace",
+    }.issubset(result.stage_timings_s)
     with sqlite3.connect(source_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 1
     with sqlite3.connect(index_db) as conn:

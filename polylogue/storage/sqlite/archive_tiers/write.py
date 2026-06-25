@@ -220,13 +220,15 @@ def write_parsed_session_to_archive(
     raw_id: str | None = None,
     merge_append: bool = False,
     stage_timings_s: dict[str, float] | None = None,
+    stage_timing_prefix: str = "append",
 ) -> str:
     """Write one parsed session into an initialized archive index DB."""
     t0 = time.perf_counter()
 
     def add_timing(name: str, started_at: float) -> None:
         if stage_timings_s is not None:
-            stage_timings_s[name] = stage_timings_s.get(name, 0.0) + (time.perf_counter() - started_at)
+            key = f"{stage_timing_prefix}.{name}"
+            stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - started_at)
 
     conn.execute("PRAGMA foreign_keys = ON")
     origin = origin_from_provider(session.source_name)
@@ -243,7 +245,7 @@ def write_parsed_session_to_archive(
     session_content_hash = (
         bytes.fromhex(content_hash) if content_hash is not None else _hash_bytes("session", origin.value, native_id)
     )
-    add_timing("append.index.prepare", t0)
+    add_timing("index.prepare", t0)
 
     with conn:
         t0 = time.perf_counter()
@@ -309,7 +311,7 @@ def write_parsed_session_to_archive(
                 _timestamp_ms(session.updated_at),
             ),
         )
-        add_timing("append.index.session_upsert", t0)
+        add_timing("index.session_upsert", t0)
         position_offset = 0
         t0 = time.perf_counter()
         if merge_append:
@@ -333,14 +335,14 @@ def write_parsed_session_to_archive(
                 "UPDATE sessions SET active_leaf_message_id = ? WHERE session_id = ?",
                 (active_leaf_message_id, session_id),
             )
-            add_timing("append.index.merge_prepare", t0)
+            add_timing("index.merge_prepare", t0)
         else:
             _replace_full_session_messages_and_blocks(
                 conn,
                 session,
                 duplicate_native_ids=duplicate_message_native_ids,
             )
-            add_timing("append.index.full_replace", t0)
+            add_timing("index.full_replace", t0)
         if merge_append:
             t0 = time.perf_counter()
             _write_messages(
@@ -350,7 +352,7 @@ def write_parsed_session_to_archive(
                 position_offset=position_offset,
                 duplicate_native_ids=duplicate_message_native_ids,
             )
-            add_timing("append.index.messages", t0)
+            add_timing("index.messages", t0)
             t0 = time.perf_counter()
             _write_blocks(
                 conn,
@@ -359,7 +361,7 @@ def write_parsed_session_to_archive(
                 position_offset=position_offset,
                 duplicate_native_ids=duplicate_message_native_ids,
             )
-            add_timing("append.index.blocks", t0)
+            add_timing("index.blocks", t0)
             t0 = time.perf_counter()
             _write_web_constructs(
                 conn,
@@ -368,7 +370,7 @@ def write_parsed_session_to_archive(
                 duplicate_native_ids=duplicate_message_native_ids,
                 replace_session=False,
             )
-            add_timing("append.index.web_constructs", t0)
+            add_timing("index.web_constructs", t0)
         t0 = time.perf_counter()
         _write_attachments(
             conn,
@@ -379,7 +381,7 @@ def write_parsed_session_to_archive(
             duplicate_native_ids=duplicate_message_native_ids,
             refresh_all_ref_counts=not merge_append,
         )
-        add_timing("append.index.attachments", t0)
+        add_timing("index.attachments", t0)
         t0 = time.perf_counter()
         _write_paste_spans(
             conn,
@@ -388,7 +390,7 @@ def write_parsed_session_to_archive(
             position_offset=position_offset,
             duplicate_native_ids=duplicate_message_native_ids,
         )
-        add_timing("append.index.paste_spans", t0)
+        add_timing("index.paste_spans", t0)
         t0 = time.perf_counter()
         _write_parent_links(
             conn,
@@ -397,10 +399,10 @@ def write_parsed_session_to_archive(
             position_offset=position_offset,
             duplicate_native_ids=duplicate_message_native_ids,
         )
-        add_timing("append.index.parent_links", t0)
+        add_timing("index.parent_links", t0)
         t0 = time.perf_counter()
         _write_session_link(conn, session_id, session)
-        add_timing("append.index.session_link", t0)
+        add_timing("index.session_link", t0)
         t0 = time.perf_counter()
         _write_session_events(
             conn,
@@ -411,29 +413,29 @@ def write_parsed_session_to_archive(
             event_position_offset=_next_session_event_position(conn, session_id),
             duplicate_native_ids=duplicate_message_native_ids,
         )
-        add_timing("append.index.session_events", t0)
+        add_timing("index.session_events", t0)
         t0 = time.perf_counter()
         _write_working_dirs(conn, session_id, session.working_directories)
-        add_timing("append.index.working_dirs", t0)
+        add_timing("index.working_dirs", t0)
         t0 = time.perf_counter()
         _write_repo_edges(conn, session_id, session)
-        add_timing("append.index.repo_edges", t0)
+        add_timing("index.repo_edges", t0)
         t0 = time.perf_counter()
         _write_reported_costs(conn, session_id, session)
-        add_timing("append.index.reported_costs", t0)
+        add_timing("index.reported_costs", t0)
         t0 = time.perf_counter()
         _aggregate_provider_usage_into_model_usage(conn, session_id)
-        add_timing("append.index.provider_usage_rollup", t0)
+        add_timing("index.provider_usage_rollup", t0)
         t0 = time.perf_counter()
         _refresh_session_counts(conn, session_id)
-        add_timing("append.index.session_counts", t0)
+        add_timing("index.session_counts", t0)
         t0 = time.perf_counter()
         _resolve_session_graph(conn, session_id, native_id, origin.value)
-        add_timing("append.index.graph_resolve", t0)
+        add_timing("index.graph_resolve", t0)
         if session.ingest_flags:
             t0 = time.perf_counter()
             _write_ingest_flag_tags(conn, session_id, session.ingest_flags)
-            add_timing("append.index.ingest_flags", t0)
+            add_timing("index.ingest_flags", t0)
     return session_id
 
 

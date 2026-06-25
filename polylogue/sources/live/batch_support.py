@@ -114,6 +114,7 @@ class _FullIngestResult:
     wal_checkpoint_elapsed_s: float = 0.0
     wal_checkpoint_mode: str = "none"
     wal_checkpoint_error: str | None = None
+    stage_timings_s: dict[str, float] = field(default_factory=dict)
 
 
 def _full_ingest_result_from_summary(
@@ -149,6 +150,7 @@ def _full_ingest_result_from_summary(
         else 0.0,
         wal_checkpoint_mode=str(getattr(summary, "wal_checkpoint_mode", "none")) if summary is not None else "none",
         wal_checkpoint_error=str(error) if error is not None else None,
+        stage_timings_s=dict(getattr(summary, "stage_timings_s", {})) if summary is not None else {},
     )
 
 
