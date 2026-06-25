@@ -152,27 +152,11 @@ def test_query_field_candidates_include_readable_operator_fields() -> None:
     assert message_candidate.source == "EXPRESSION_FIELD_REGISTRY/COUNT_QUERY_FIELD_REGISTRY"
     assert "messages between 5 and 20" in message_candidate.description
 
-    role_count_candidates = shell_completion_values.query_field_candidates("user_m")
-    user_messages_candidate = next(
-        candidate for candidate in role_count_candidates if candidate.value == "user_messages"
-    )
-    assert user_messages_candidate.insert == "user_messages "
-    assert user_messages_candidate.source == "EXPRESSION_FIELD_REGISTRY/COUNT_QUERY_FIELD_REGISTRY"
-    assert "sessions where user_messages >= 2" in user_messages_candidate.description
-
-    authored_candidates = shell_completion_values.query_field_candidates("authored_user")
-    authored_messages_candidate = next(
-        candidate for candidate in authored_candidates if candidate.value == "authored_user_messages"
-    )
-    assert authored_messages_candidate.insert == "authored_user_messages "
-    assert authored_messages_candidate.source == "EXPRESSION_FIELD_REGISTRY/COUNT_QUERY_FIELD_REGISTRY"
-    assert "sessions where authored_user_messages >= 2" in authored_messages_candidate.description
-
-    duration_candidates = shell_completion_values.query_field_candidates("dur")
-    duration_candidate = next(candidate for candidate in duration_candidates if candidate.value == "duration_ms")
-    assert duration_candidate.insert == "duration_ms "
-    assert duration_candidate.source == "EXPRESSION_FIELD_REGISTRY/NUMERIC_QUERY_FIELD_REGISTRY"
-    assert "duration_ms >= 60000" in duration_candidate.description
+    word_candidates = shell_completion_values.query_field_candidates("wor")
+    word_candidate = next(candidate for candidate in word_candidates if candidate.value == "words")
+    assert word_candidate.insert == "words:"
+    assert word_candidate.source == "EXPRESSION_FIELD_REGISTRY/COUNT_QUERY_FIELD_REGISTRY"
+    assert "words between 100 and 500" in word_candidate.description
 
 
 def test_query_field_candidates_disappear_with_registry_entry(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -69,6 +69,7 @@ class _FullIngestMock:
             wal_busy_pages=2,
             wal_checkpoint_elapsed_s=0.125,
             wal_checkpoint_mode="truncate",
+            stage_timings_s={"full.provider_parse": 0.01, "full.index_parsed_write": 0.02},
         )
 
 
@@ -1064,6 +1065,11 @@ async def test_live_batch_processor_records_durable_attempt(tmp_path: Path) -> N
     assert attempts[0].needed_file_count == 1
     assert attempts[0].succeeded_file_count == 1
     assert attempts[0].source_payload_read_bytes == source_path.stat().st_size
+    assert {
+        "full.provider_parse",
+        "full.source_raw_write",
+        "full.index_parsed_write",
+    }.issubset(metrics.stage_timings_s)
 
 
 @pytest.mark.asyncio
@@ -1742,7 +1748,7 @@ def test_ingest_files_emits_observable_batch_metrics(tmp_path: Path) -> None:
     assert payload["wal_checkpoint_errors"] == []
     assert payload["parse_time_s"] >= 0
     assert payload["total_time_s"] >= 0
-    assert payload["stage_timings_s"] == {}
+    assert payload["stage_timings_s"] == {"full.index_parsed_write": 0.02, "full.provider_parse": 0.01}
     assert payload["failed_paths"] == []
     with sqlite3.connect(tmp_path / "ops.db") as conn:
         events = conn.execute(

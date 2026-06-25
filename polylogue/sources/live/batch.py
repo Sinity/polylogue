@@ -139,6 +139,7 @@ class _ArchiveFullWriteResult:
     session_ids: list[str] = field(default_factory=list)
     session_count: int = 0
     message_count: int = 0
+    stage_timings_s: dict[str, float] = field(default_factory=dict)
 
 
 class LiveBatchProcessor:
@@ -429,6 +430,7 @@ class LiveBatchProcessor:
                 parse_elapsed = time.perf_counter() - t0
                 parse_time_s += parse_elapsed
                 source_payload_read_bytes += full_result.source_payload_read_bytes
+                _accumulate_stage_timings(stage_timings, full_result.stage_timings_s)
                 release_process_memory()
                 self._record_attempt_progress(
                     attempt_id,
@@ -1107,6 +1109,7 @@ class LiveBatchProcessor:
                 total_convos=archive_write.session_count,
                 total_msgs=archive_write.message_count,
                 changed_session_ids=archive_write.session_ids,
+                stage_timings_s=archive_write.stage_timings_s,
             )
 
         failed_set = set(failed)
@@ -1174,6 +1177,8 @@ class LiveBatchProcessor:
         with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
             for record in records:
                 try:
+                    record_timings: dict[str, float] = {}
+                    t0 = time.perf_counter()
                     provider = record.payload_provider or Provider.from_string(record.source_name)
                     payload = raw_payloads.get(record.raw_id)
                     source_name = Path(record.source_path).name
@@ -1204,6 +1209,9 @@ class LiveBatchProcessor:
                             fallback_id,
                             source_path=record.source_path,
                         )
+                    record_timings["full.provider_parse"] = record_timings.get("full.provider_parse", 0.0) + (
+                        time.perf_counter() - t0
+                    )
                     if not sessions:
                         continue
                     acquired_at_ms = _iso_to_epoch_ms(record.acquired_at)
@@ -1216,6 +1224,8 @@ class LiveBatchProcessor:
                                 source_path=record.source_path,
                                 source_index=record.source_index or 0,
                                 acquired_at_ms=acquired_at_ms,
+                                stage_timings_s=record_timings,
+                                stage_timing_prefix="full",
                             )
                         else:
                             raw_id, session_id = archive.write_raw_and_parsed(
@@ -1224,11 +1234,14 @@ class LiveBatchProcessor:
                                 source_path=record.source_path,
                                 source_index=record.source_index or 0,
                                 acquired_at_ms=acquired_at_ms,
+                                stage_timings_s=record_timings,
+                                stage_timing_prefix="full",
                             )
                         result.raw_ids[record.raw_id] = raw_id
                         result.session_ids.append(session_id)
                         result.session_count += 1
                         result.message_count += len(session.messages)
+                    _accumulate_stage_timings(result.stage_timings_s, record_timings)
                 except Exception as exc:
                     if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
                         logger.debug(

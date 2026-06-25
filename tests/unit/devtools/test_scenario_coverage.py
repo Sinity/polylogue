@@ -87,6 +87,7 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
         "message_type_backfill",
         "orphaned_attachments",
         "orphaned_messages",
+        "raw_materialization",
         "superseded_raw_snapshots",
         "wal_checkpoint",
     )

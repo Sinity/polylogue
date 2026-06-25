@@ -103,6 +103,7 @@ class _IngestBatchSummary:
     worker_progress_in_flight: int = 0
     worker_progress_completed: int = 0
     worker_progress_total: int = 0
+    stage_timings_s: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
