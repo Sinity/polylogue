@@ -88,6 +88,21 @@ def build_action(
     *,
     sequence_index: int,
 ) -> Action:
+    return _build_action_from_message_fields(
+        message_id=str(message.id),
+        timestamp=message.timestamp,
+        call=call,
+        sequence_index=sequence_index,
+    )
+
+
+def _build_action_from_message_fields(
+    *,
+    message_id: str,
+    timestamp: datetime | None,
+    call: ToolCall,
+    sequence_index: int,
+) -> Action:
     command = extract_command(call)
     affected_paths = tuple(call.affected_paths)
     cwd_path = extract_cwd_path(call)
@@ -96,9 +111,9 @@ def build_action(
     url = extract_url(call)
     output_text = normalize_output_text(call)
     return Action(
-        action_id=make_action_id(str(message.id), sequence_index, call.id, call.name),
-        message_id=str(message.id),
-        timestamp=message.timestamp,
+        action_id=make_action_id(message_id, sequence_index, call.id, call.name),
+        message_id=message_id,
+        timestamp=timestamp,
         sequence_index=sequence_index,
         kind=call.category,
         tool_name=call.name,
@@ -130,7 +145,19 @@ def build_actions(
     message: ActionMessageLike,
     calls: tuple[ToolCall, ...],
 ) -> tuple[Action, ...]:
-    return tuple(build_action(message, call, sequence_index=index) for index, call in enumerate(calls))
+    if not calls:
+        return ()
+    message_id = str(message.id)
+    timestamp = message.timestamp
+    return tuple(
+        _build_action_from_message_fields(
+            message_id=message_id,
+            timestamp=timestamp,
+            call=call,
+            sequence_index=index,
+        )
+        for index, call in enumerate(calls)
+    )
 
 
 __all__ = [

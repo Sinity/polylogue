@@ -282,7 +282,6 @@ def build_session_profile(
     stage_timing_add: Callable[[str, float], None] | None = None,
 ) -> SessionProfile:
     from polylogue.archive.semantic.cost_compute import compute_session_cost
-    from polylogue.archive.semantic.pricing import estimate_session_cost
 
     def add_timing(name: str, started_at: float) -> None:
         if stage_timing_add is not None:
@@ -294,13 +293,10 @@ def build_session_profile(
     facts = session_analysis.facts
     attribution = session_analysis.attribution
     t0 = time.perf_counter()
-    cost_estimate = estimate_session_cost(session)
-    add_timing("profile.cost_estimate", t0)
-    cost_usd = cost_estimate.total_usd
-    cost_is_estimated = cost_estimate.status != "exact"
-    t0 = time.perf_counter()
-    cost_summary = compute_session_cost(session, session_estimate=cost_estimate)
+    cost_summary = compute_session_cost(session, estimate_if_missing=False)
     add_timing("profile.cost_summary", t0)
+    cost_usd = cost_summary.total_api_cost_usd
+    cost_is_estimated = cost_summary.cost_confidence != "reported"
     t0 = time.perf_counter()
     resolved_compaction_count = (
         compaction_count

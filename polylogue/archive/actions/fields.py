@@ -71,11 +71,29 @@ def extract_branch_names(call: ToolCall, command: str | None) -> tuple[str, ...]
     return tuple(dict.fromkeys(branches))
 
 
+def _collapsed_text_prefix(value: str, *, limit: int) -> str | None:
+    parts: list[str] = []
+    pending_space = False
+    for char in value:
+        if char.isspace():
+            pending_space = bool(parts)
+            continue
+        if pending_space:
+            parts.append(" ")
+            if len(parts) == limit:
+                break
+            pending_space = False
+        parts.append(char)
+        if len(parts) == limit:
+            break
+    return "".join(parts) if parts else None
+
+
 def normalize_output_text(call: ToolCall) -> str | None:
-    output = _clean_str(call.output)
-    if output is None:
+    output = call.output
+    if not isinstance(output, str):
         return None
-    return " ".join(output.split())[:240]
+    return _collapsed_text_prefix(output, limit=240)
 
 
 def build_search_text(
