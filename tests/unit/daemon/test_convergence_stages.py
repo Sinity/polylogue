@@ -809,7 +809,7 @@ def test_insights_stage_rebuilds_large_session_after_quiet_window(
     assert "insights.facts.message_flags" in result.stage_timings_s
     assert "insights.facts.message_facts" in result.stage_timings_s
     assert "insights.facts.aggregate_messages" in result.stage_timings_s
-    assert "insights.profile.cost_estimate" in result.stage_timings_s
+    assert "insights.profile.cost_summary" in result.stage_timings_s
     with sqlite3.connect(db_path) as conn:
         assert (
             conn.execute("SELECT COUNT(*) FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[0] == 1
@@ -841,7 +841,7 @@ def test_insights_stage_rebuilds_small_active_session(
     assert "insights.facts.message_flags" in result.stage_timings_s
     assert "insights.facts.message_facts" in result.stage_timings_s
     assert "insights.facts.aggregate_messages" in result.stage_timings_s
-    assert "insights.profile.cost_estimate" in result.stage_timings_s
+    assert "insights.profile.cost_summary" in result.stage_timings_s
     with sqlite3.connect(db_path) as conn:
         assert (
             conn.execute("SELECT COUNT(*) FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[0] == 1

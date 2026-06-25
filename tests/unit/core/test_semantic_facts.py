@@ -893,6 +893,82 @@ def test_build_session_semantic_facts_preserves_tool_results_before_tool_use() -
     assert facts.message_facts[0].tool_calls[0].output == "README contents"
 
 
+def test_action_output_text_uses_bounded_normalized_prefix() -> None:
+    raw_output = " \n\t" + ("alpha\t beta\n" * 5000) + "tail"
+    expected_output = " ".join(raw_output.split())[:240]
+    session = make_conv(
+        id="conv-large-tool-result-prefix",
+        origin="claude-code",
+        messages=MessageCollection(
+            messages=[
+                make_msg(
+                    id="a1",
+                    role="assistant",
+                    origin="claude-code",
+                    text="I ran the command.",
+                    blocks=[
+                        {
+                            "type": "tool_use",
+                            "tool_name": "Bash",
+                            "tool_id": "tool-1",
+                            "tool_input": {"command": "pytest -q"},
+                            "semantic_type": "shell",
+                        },
+                        {
+                            "type": "tool_result",
+                            "tool_id": "tool-1",
+                            "text": raw_output,
+                        },
+                    ],
+                ),
+            ]
+        ),
+    )
+
+    facts = build_session_semantic_facts(session)
+
+    action = facts.actions[0]
+    assert facts.message_facts[0].tool_calls[0].output == raw_output
+    assert action.output_text == expected_output
+    assert len(action.output_text or "") == 240
+    assert expected_output in action.search_text
+
+
+def test_action_output_text_drops_trailing_whitespace_only_suffix() -> None:
+    session = make_conv(
+        id="conv-tool-result-trailing-space",
+        origin="claude-code",
+        messages=MessageCollection(
+            messages=[
+                make_msg(
+                    id="a1",
+                    role="assistant",
+                    origin="claude-code",
+                    text="I ran the command.",
+                    blocks=[
+                        {
+                            "type": "tool_use",
+                            "tool_name": "Bash",
+                            "tool_id": "tool-1",
+                            "tool_input": {"command": "pytest -q"},
+                            "semantic_type": "shell",
+                        },
+                        {
+                            "type": "tool_result",
+                            "tool_id": "tool-1",
+                            "text": "passed   \n\t  ",
+                        },
+                    ],
+                ),
+            ]
+        ),
+    )
+
+    facts = build_session_semantic_facts(session)
+
+    assert facts.actions[0].output_text == "passed"
+
+
 def test_build_session_semantic_facts_upgrades_stale_other_semantic_type() -> None:
     session = make_conv(
         id="conv-db-upgrade-other",

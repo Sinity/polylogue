@@ -20,10 +20,11 @@ def compute_session_cost(
     session: Session,
     *,
     session_estimate: CostEstimatePayload | None = None,
+    estimate_if_missing: bool = True,
 ) -> SessionCostSummary:
     """Compute per-model cost breakdown and aggregate cost summary."""
-    estimate = session_estimate or estimate_session_cost(session)
-    if estimate.status == "exact":
+    estimate = session_estimate or (estimate_session_cost(session) if estimate_if_missing else None)
+    if estimate is not None and estimate.status == "exact":
         return SessionCostSummary(
             total_input_tokens=estimate.usage.input_tokens,
             total_output_tokens=estimate.usage.output_tokens,
