@@ -40,6 +40,24 @@ _CANONICAL_TOOL_NAMES = {
     "update_plan": "todo",
 }
 
+_PATH_EXTRACTING_CATEGORIES = frozenset(
+    {
+        ToolCategory.FILE_READ,
+        ToolCategory.FILE_WRITE,
+        ToolCategory.FILE_EDIT,
+        ToolCategory.SHELL,
+        ToolCategory.GIT,
+        ToolCategory.SEARCH,
+        ToolCategory.WEB,
+        ToolCategory.OTHER,
+    }
+)
+_COMMAND_EXTRACTING_CATEGORIES = frozenset({ToolCategory.SHELL, ToolCategory.GIT, ToolCategory.OTHER})
+_CWD_EXTRACTING_CATEGORIES = frozenset({ToolCategory.SHELL, ToolCategory.GIT, ToolCategory.OTHER})
+_BRANCH_EXTRACTING_CATEGORIES = frozenset({ToolCategory.SHELL, ToolCategory.GIT, ToolCategory.OTHER})
+_QUERY_EXTRACTING_CATEGORIES = frozenset({ToolCategory.SEARCH, ToolCategory.OTHER})
+_URL_EXTRACTING_CATEGORIES = frozenset({ToolCategory.WEB, ToolCategory.OTHER})
+
 
 def canonical_tool_name(name: str) -> str:
     """Return the cross-provider canonical tool name used for statistics."""
@@ -103,19 +121,20 @@ def _build_action_from_message_fields(
     call: ToolCall,
     sequence_index: int,
 ) -> Action:
-    command = extract_command(call)
-    affected_paths = tuple(call.affected_paths)
-    cwd_path = extract_cwd_path(call)
-    branch_names = extract_branch_names(call, command)
-    query = extract_search_query(call)
-    url = extract_url(call)
+    category = call.category
+    command = extract_command(call) if category in _COMMAND_EXTRACTING_CATEGORIES else None
+    affected_paths = tuple(call.affected_paths) if category in _PATH_EXTRACTING_CATEGORIES else ()
+    cwd_path = extract_cwd_path(call) if category in _CWD_EXTRACTING_CATEGORIES else None
+    branch_names = extract_branch_names(call, command) if category in _BRANCH_EXTRACTING_CATEGORIES else ()
+    query = extract_search_query(call) if category in _QUERY_EXTRACTING_CATEGORIES else None
+    url = extract_url(call) if category in _URL_EXTRACTING_CATEGORIES else None
     output_text = normalize_output_text(call)
     return Action(
         action_id=make_action_id(message_id, sequence_index, call.id, call.name),
         message_id=message_id,
         timestamp=timestamp,
         sequence_index=sequence_index,
-        kind=call.category,
+        kind=category,
         tool_name=call.name,
         tool_id=call.id,
         provider=call.provider,
@@ -127,7 +146,7 @@ def _build_action_from_message_fields(
         url=url,
         output_text=output_text,
         search_text=build_search_text(
-            kind=call.category,
+            kind=category,
             tool_name=call.name,
             affected_paths=affected_paths,
             cwd_path=cwd_path,
