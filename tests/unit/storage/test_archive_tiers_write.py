@@ -1525,6 +1525,68 @@ def test_provider_usage_append_last_usage_does_not_override_cumulative(tmp_path:
     }
 
 
+def test_reported_costs_skip_message_token_aggregate_on_plain_append(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = _connect(tmp_path / "index.db")
+    aggregate_calls: list[str] = []
+    original_aggregate = archive_tier_write._aggregate_message_tokens_into_model_usage
+
+    def _record_aggregate(conn_arg: sqlite3.Connection, session_id_arg: str) -> None:
+        aggregate_calls.append(session_id_arg)
+        original_aggregate(conn_arg, session_id_arg)
+
+    monkeypatch.setattr(archive_tier_write, "_aggregate_message_tokens_into_model_usage", _record_aggregate)
+    first = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-cost-append-skip",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                model_name="gpt-5-codex",
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="first")],
+            )
+        ],
+    )
+    plain_append = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-cost-append-skip",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m2",
+                role=Role.ASSISTANT,
+                model_name="gpt-5-codex",
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="plain append")],
+            )
+        ],
+    )
+    token_append = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-cost-append-skip",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m3",
+                role=Role.ASSISTANT,
+                model_name="gpt-5-codex",
+                input_tokens=2,
+                output_tokens=3,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="token append")],
+            )
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, first)
+    assert aggregate_calls == [session_id]
+
+    write_parsed_session_to_archive(conn, plain_append, merge_append=True)
+    assert aggregate_calls == [session_id]
+
+    write_parsed_session_to_archive(conn, token_append, merge_append=True)
+    assert aggregate_calls == [session_id, session_id]
+
+
 def test_merge_append_clears_only_existing_active_leaf(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     clear_plan = conn.execute(
