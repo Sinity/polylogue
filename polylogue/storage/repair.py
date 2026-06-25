@@ -70,8 +70,8 @@ def _raw_materialization_candidate_ids(config: Config) -> tuple[list[str], int]:
               ON r.native_id IS NOT NULL
              AND s_by_native.origin = r.origin
              AND s_by_native.native_id = r.native_id
-            WHERE s_by_raw.session_id IS NULL
-              AND s_by_native.session_id IS NULL
+            WHERE s_by_raw.raw_id IS NULL
+              AND s_by_native.native_id IS NULL
               AND r.parse_error IS NULL
               AND NOT (
                 r.validation_status = 'skipped'
