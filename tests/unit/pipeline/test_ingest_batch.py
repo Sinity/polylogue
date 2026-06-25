@@ -86,6 +86,18 @@ def test_parse_batch_observation_reports_unsupported_write_mode() -> None:
     assert "archive_sync_elapsed_ms" not in observation
 
 
+def test_sync_index_connection_ensures_runtime_indexes(tmp_path: Path) -> None:
+    conn = ingest_batch_core._open_sync_connection(tmp_path / "archive" / "index.db")
+    try:
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_messages_active_leaf'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row is not None
+
+
 class _FakeConnectionBackend:
     def __init__(self, connection: Callable[[], AbstractAsyncContextManager[aiosqlite.Connection]]) -> None:
         self._connection = connection

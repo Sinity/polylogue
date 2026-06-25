@@ -52,6 +52,7 @@ from polylogue.storage.sqlite.connection_profile import (
     DB_TIMEOUT,
     WRITE_CONNECTION_PRAGMA_STATEMENTS,
 )
+from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 
 if TYPE_CHECKING:
     from polylogue.pipeline.services.parsing import ParsingService
@@ -117,6 +118,8 @@ def _open_sync_connection(db_path: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     for statement in WRITE_CONNECTION_PRAGMA_STATEMENTS:
         conn.execute(statement)
+    if db_path.name == "index.db":
+        ensure_runtime_indexes_sync(conn)
     _load_sqlite_vec(conn)
     return conn
 
