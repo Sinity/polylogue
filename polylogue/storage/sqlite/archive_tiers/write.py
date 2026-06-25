@@ -321,7 +321,13 @@ def write_parsed_session_to_archive(
             ).fetchone()
             position_offset = int(row[0] or 0) if row is not None else 0
             conn.execute(
-                "UPDATE messages SET is_active_leaf = 0 WHERE session_id = ? AND is_active_leaf != 0",
+                """
+                UPDATE messages
+                SET is_active_leaf = 0
+                WHERE session_id = ?
+                  AND is_active_path = 1
+                  AND is_active_leaf != 0
+                """,
                 (session_id,),
             )
             active_leaf_message_id = _active_leaf_message_id(

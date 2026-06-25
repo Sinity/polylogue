@@ -1371,6 +1371,18 @@ def test_provider_usage_rollup_skips_append_without_usage_events(
 
 def test_merge_append_clears_only_existing_active_leaf(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
+    clear_plan = conn.execute(
+        """
+        EXPLAIN QUERY PLAN
+        UPDATE messages
+        SET is_active_leaf = 0
+        WHERE session_id = ?
+          AND is_active_path = 1
+          AND is_active_leaf != 0
+        """,
+        ("plan-check",),
+    ).fetchall()
+    assert any("idx_messages_active_path" in row["detail"] for row in clear_plan)
     message_count = 200
     first = ParsedSession(
         source_name=Provider.CODEX,
