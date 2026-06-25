@@ -67,6 +67,7 @@
     turns,
     model = null,
     providerSessionId = null,
+    sessionKind = null,
     title = null,
     createdAt = null,
     updatedAt = null,
@@ -92,6 +93,12 @@
     if (urlSessionId === "__polylogue_temporary_chat__" || stableProviderSessionId.startsWith("temporary:")) {
       sessionProviderMeta.session_kind = "temporary";
     }
+    const stableSessionKind =
+      sessionKind === "temporary" ||
+      sessionProviderMeta.session_kind === "temporary" ||
+      stableProviderSessionId.startsWith("temporary:")
+        ? "temporary"
+        : "standard";
     const now = new Date().toISOString();
     const envelope = {
       polylogue_capture_kind: CAPTURE_KIND,
@@ -110,6 +117,7 @@
       session: {
         provider,
         provider_session_id: stableProviderSessionId,
+        session_kind: stableSessionKind,
         title: title || document.title || stableProviderSessionId,
         created_at: createdAt,
         updated_at: updatedAt || now,

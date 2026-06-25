@@ -16,6 +16,7 @@ BROWSER_CAPTURE_TRANSPORT_SOURCE: Literal["browser-extension"] = "browser-extens
 BROWSER_CAPTURE_RECEIVER: Literal["polylogue-browser-capture"] = "polylogue-browser-capture"
 BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD: Literal["chrome-extension://*"] = "chrome-extension://*"
 BrowserCaptureArchiveLifecycle = Literal["missing", "spooled_only", "ingest_pending", "archived", "failed"]
+BrowserCaptureSessionKind = Literal["standard", "temporary"]
 
 
 class BrowserCaptureAttachment(BaseModel):
@@ -90,6 +91,7 @@ class BrowserCaptureSession(BaseModel):
 
     provider: Provider
     provider_session_id: str
+    session_kind: BrowserCaptureSessionKind = "standard"
     title: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -109,6 +111,13 @@ class BrowserCaptureSession(BaseModel):
         if isinstance(value, Provider):
             return value
         return Provider.from_string(str(value) if value is not None else None)
+
+    @field_validator("session_kind", mode="before")
+    @classmethod
+    def coerce_session_kind(cls, value: object) -> BrowserCaptureSessionKind:
+        if value in ("temporary", True):
+            return "temporary"
+        return "standard"
 
     @model_validator(mode="after")
     def require_turns(self) -> BrowserCaptureSession:
@@ -245,6 +254,7 @@ __all__ = [
     "BrowserCaptureProvenance",
     "BrowserCaptureReceiverStatusPayload",
     "BrowserCaptureSession",
+    "BrowserCaptureSessionKind",
     "BrowserCaptureTurn",
     "looks_like_browser_capture",
 ]

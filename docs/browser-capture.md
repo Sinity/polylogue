@@ -136,6 +136,14 @@ updates the same archive session instead of creating a second visible session.
 Fallback DOM captures are therefore acceptable as temporary live evidence, but
 not as a reason to prefer DOM over a clean provider payload.
 
+Temporary chats are a typed browser-capture session property, not only a
+provider metadata convention. The extension writes
+`session.session_kind = "temporary"` when the page URL or provider-native
+payload identifies a temporary conversation, and the parser persists the
+existing `capture:temporary-chat` ingest flag from that typed field. Legacy
+captures that only carry `provider_meta.session_kind = "temporary"` remain
+accepted for already-spooled artifacts.
+
 The Claude.ai content script also hooks same-origin conversation fetches and
 uses native payloads when the response is the current
 `/chat_conversations/<id>` JSON shape with `chat_messages`. DOM extraction

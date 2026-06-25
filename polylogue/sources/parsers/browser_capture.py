@@ -31,8 +31,11 @@ def _has_claude_ai_native_payload(payload: object) -> TypeGuard[Mapping[str, obj
 
 
 def _ingest_flags_for_browser_capture(envelope: BrowserCaptureEnvelope, provider_session_id: str) -> list[str]:
-    session_kind = envelope.session.provider_meta.get("session_kind")
+    session_kind = envelope.session.session_kind
+    legacy_session_kind = envelope.session.provider_meta.get("session_kind")
     if session_kind == "temporary" or provider_session_id.startswith("temporary:"):
+        return [TEMPORARY_CHAT_INGEST_FLAG]
+    if legacy_session_kind == "temporary":
         return [TEMPORARY_CHAT_INGEST_FLAG]
     return []
 
