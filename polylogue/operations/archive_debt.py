@@ -238,8 +238,8 @@ def _raw_materialization_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]
                   ON r.native_id IS NOT NULL
                  AND s_by_native.origin = r.origin
                  AND s_by_native.native_id = r.native_id
-                WHERE s_by_raw.session_id IS NULL
-                  AND s_by_native.session_id IS NULL
+                WHERE s_by_raw.raw_id IS NULL
+                  AND s_by_native.native_id IS NULL
                   AND NOT (
                     r.validation_status = 'skipped'
                     AND r.parsed_at_ms IS NOT NULL
@@ -249,12 +249,7 @@ def _raw_materialization_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]
                 """
             )
         )
-        missing_rows = [
-            row
-            for row in candidate_rows
-            if _raw_materialization_category(row, archive_root) != "parsed-without-session"
-            or not _raw_materialized_by_source_path_native(conn, row)
-        ]
+        missing_rows = [row for row in candidate_rows if not _raw_materialized_by_source_path_native(conn, row)]
     except sqlite3.Error:
         return []
     finally:
