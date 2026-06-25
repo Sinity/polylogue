@@ -240,7 +240,7 @@ def build_session_analysis(
             stage_timing_add(name, started_at)
 
     t0 = time.perf_counter()
-    semantic_facts = facts or build_session_semantic_facts(session)
+    semantic_facts = facts or build_session_semantic_facts(session, stage_timing_add=stage_timing_add)
     add_timing("analysis.facts", t0)
     t0 = time.perf_counter()
     phases = tuple(extract_phases(session, facts=semantic_facts))
