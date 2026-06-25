@@ -715,6 +715,27 @@ class TestReaderSearchState:
         assert repo_status["expensive"] is True
         assert "repos" not in payload["complete_families"]
 
+    @pytest.mark.parametrize("path", ["/api/sessions", "/api/facets"])
+    def test_archive_busy_routes_return_typed_503(
+        self,
+        workspace_env: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+        path: str,
+    ) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        def _raise_locked(*args: object, **kwargs: object) -> ArchiveStore:
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(ArchiveStore, "open_existing", _raise_locked)
+
+        with _running_server(workspace_env) as (_, base_url):
+            status, payload = _get_json_ex(base_url, path)
+
+        assert status == 503
+        assert payload["error"] == "archive_busy"
+        assert "temporarily unavailable" in cast(str, payload["detail"])
+
     def test_facets_can_materialize_deferred_families_when_requested(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
             payload = _get_json(base_url, "/api/facets?families=repos,action_types&budget_ms=5000")
