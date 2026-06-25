@@ -258,6 +258,13 @@ class LiveBatchProcessor:
                 append_result = _AppendResult(succeeded=[], failed=[], worker_count=0)
             ingest_worker_count_max = max(ingest_worker_count_max, append_result.worker_count)
             parse_time_s += time.perf_counter() - t0
+            _accumulate_stage_timings(stage_timings, append_result.stage_timings_s)
+            append_stage_payload: dict[str, object] = {
+                "storage_route": "archive_append",
+                "append_stage_timings_s": {
+                    name: round(elapsed, 6) for name, elapsed in append_result.stage_timings_s.items()
+                },
+            }
             release_process_memory()
             self._record_attempt_progress(
                 attempt_id,
@@ -270,7 +277,7 @@ class LiveBatchProcessor:
                 convergence_time_s=convergence_time_s,
                 current_source=plans[0].source_name,
                 current_path=plans[0].path,
-                stage_payload={"storage_route": "archive_append"},
+                stage_payload=append_stage_payload,
             )
             _converged_paths, elapsed, timings, convergence_debt = await asyncio.to_thread(
                 self._converge_paths,
