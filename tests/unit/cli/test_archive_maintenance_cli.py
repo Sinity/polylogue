@@ -11,6 +11,7 @@ from click.testing import CliRunner
 from polylogue.cli.click_app import cli
 from polylogue.cli.commands import maintenance
 from polylogue.core.enums import Provider
+from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_gc import read_gc_history
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
 from polylogue.storage.sqlite.archive_tiers.archive_init import (
@@ -19,6 +20,7 @@ from polylogue.storage.sqlite.archive_tiers.archive_init import (
 )
 from polylogue.storage.sqlite.archive_tiers.archive_plan import ArchiveInitAction, ArchiveInitPlan
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session_blob_ref
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 
@@ -80,6 +82,36 @@ def _seed_assertion_export_rows(archive_root: Path) -> None:
             visibility="private",
             now_ms=1_700_000_002_000,
         )
+
+
+def _seed_missing_blob_cursor(archive_root: Path, source: Path) -> None:
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text('{"type":"session_meta","payload":{"id":"missing-blob"}}\n', encoding="utf-8")
+    blob_hash = b"a" * 32
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        write_source_raw_session_blob_ref(
+            conn,
+            origin="codex-session",
+            source_path=str(source),
+            source_index=0,
+            blob_hash=blob_hash,
+            blob_size=source.stat().st_size,
+            acquired_at_ms=1,
+            native_id="missing-blob",
+        )
+    stat = source.stat()
+    CursorStore(archive_root / "ops.db").set(
+        source,
+        stat.st_size,
+        byte_offset=stat.st_size,
+        last_complete_newline=stat.st_size,
+        parser_fingerprint="live-batched-v2",
+        content_fingerprint=blob_hash.hex(),
+        source_name="codex",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
 
 
 def test_archive_plan_cli_reports_tier_targets(cli_workspace: dict[str, Path], cli_runner: CliRunner) -> None:
@@ -419,6 +451,68 @@ def test_archive_maintenance_help_omits_copy_activation_surface(cli_runner: CliR
         "archive-activate",
     ):
         assert removed not in result.output
+
+
+def test_missing_raw_blob_cursor_repair_dry_run_keeps_cursor(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    source = cli_workspace["archive_root"] / "watch" / "missing-blob.jsonl"
+    _seed_missing_blob_cursor(cli_workspace["archive_root"], source)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "missing-raw-blob-cursors",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["mode"] == "dry-run"
+    assert payload["candidate_count"] == 1
+    assert payload["deleted_cursor_count"] == 0
+    assert payload["candidates"][0]["source_path"] == str(source)
+    with sqlite3.connect(cli_workspace["archive_root"] / "ops.db") as conn:
+        assert conn.execute("SELECT 1 FROM ingest_cursor WHERE source_path = ?", (str(source),)).fetchone() == (1,)
+
+
+def test_missing_raw_blob_cursor_repair_apply_deletes_only_cursor(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    source = cli_workspace["archive_root"] / "watch" / "missing-blob.jsonl"
+    _seed_missing_blob_cursor(cli_workspace["archive_root"], source)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "missing-raw-blob-cursors",
+            "--apply",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["mode"] == "apply"
+    assert payload["candidate_count"] == 1
+    assert payload["deleted_cursor_count"] == 1
+    with sqlite3.connect(cli_workspace["archive_root"] / "ops.db") as conn:
+        assert conn.execute("SELECT 1 FROM ingest_cursor WHERE source_path = ?", (str(source),)).fetchone() is None
+    with sqlite3.connect(cli_workspace["archive_root"] / "source.db") as conn:
+        assert conn.execute("SELECT 1 FROM raw_sessions WHERE source_path = ?", (str(source),)).fetchone() == (1,)
 
 
 def test_archive_read_cli_lists_archive_sessions(
