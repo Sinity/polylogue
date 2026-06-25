@@ -1086,6 +1086,27 @@ def test_fts_readiness_exact_detects_missing_docsize_row(tmp_path: Path) -> None
     assert messages["ready"] is False
 
 
+def test_fts_readiness_exact_uses_snapshot_transaction(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from polylogue.daemon import fts_status
+
+    db_path = tmp_path / "index.db"
+    initialize_archive_database(db_path, ArchiveTier.INDEX)
+    traced: list[str] = []
+
+    def _open_traced_connection(path: Path) -> sqlite3.Connection:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        conn.set_trace_callback(traced.append)
+        return conn
+
+    monkeypatch.setattr(fts_status, "open_readonly_connection", _open_traced_connection)
+
+    readiness = fts_status.fts_readiness_info(db_path, exact=True)
+
+    assert readiness["coverage_exact"] is True
+    assert any(statement == "BEGIN" for statement in traced)
+    assert any(statement == "ROLLBACK" for statement in traced)
+
+
 def test_fts_readiness_exact_detects_archive_missing_messages_fts_row(tmp_path: Path) -> None:
     from polylogue.daemon.fts_status import fts_readiness_info
 

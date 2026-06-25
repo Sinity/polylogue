@@ -398,6 +398,8 @@ def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
     try:
         conn = open_readonly_connection(dbf)
         try:
+            if exact:
+                conn.execute("BEGIN")
             archive_info = _archive_readiness_payload(conn, exact=exact)
             if archive_info is not None:
                 return archive_info
@@ -458,6 +460,8 @@ def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
                     "freshness_detail": None if freshness is None else freshness.get("detail"),
                 }
         finally:
+            if exact:
+                conn.rollback()
             conn.close()
     except sqlite3.Error:
         return {
