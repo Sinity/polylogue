@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -444,10 +445,19 @@ class ArchiveStore:
         source_path: str,
         acquired_at_ms: int,
         source_index: int = 0,
+        stage_timings_s: dict[str, float] | None = None,
     ) -> tuple[str, str]:
         """Write raw acquisition bytes and the parsed session they produced."""
+
+        def add_timing(name: str, started_at: float) -> None:
+            if stage_timings_s is not None:
+                stage_timings_s[name] = stage_timings_s.get(name, 0.0) + (time.perf_counter() - started_at)
+
+        t0 = time.perf_counter()
         source_conn = sqlite3.connect(self.source_db_path)
+        add_timing("append.source_connect", t0)
         try:
+            t0 = time.perf_counter()
             source_conn.execute("PRAGMA foreign_keys = ON")
             raw_id = write_source_raw_session(
                 source_conn,
@@ -458,14 +468,19 @@ class ArchiveStore:
                 payload=payload,
                 acquired_at_ms=acquired_at_ms,
             )
+            add_timing("append.source_raw_write", t0)
         finally:
+            t0 = time.perf_counter()
             source_conn.close()
+            add_timing("append.source_close", t0)
+        t0 = time.perf_counter()
         session_id = write_parsed_session_to_archive(
             self._conn,
             session,
             raw_id=raw_id,
             merge_append=source_index < 0,
         )
+        add_timing("append.index_parsed_write", t0)
         return raw_id, session_id
 
     def write_raw_blob_and_parsed(
