@@ -26,7 +26,11 @@ from polylogue.core.enums import Origin
 from polylogue.core.sources import provider_from_origin
 from polylogue.logging import get_logger
 from polylogue.sources.live.batch import LiveBatchEventEmitter, LiveBatchProcessor, fingerprint_file
-from polylogue.sources.live.batch_support import tail_hash_and_last_complete_newline_from_path, tail_hash_from_path
+from polylogue.sources.live.batch_support import (
+    _archive_blob_exists,
+    tail_hash_and_last_complete_newline_from_path,
+    tail_hash_from_path,
+)
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics
@@ -572,6 +576,8 @@ class LiveWatcher:
         elif isinstance(blob_hash, str):
             content_fingerprint = blob_hash.lower()
         else:
+            return False
+        if not _archive_blob_exists(archive_root, content_fingerprint):
             return False
         try:
             if archived_size == current_size:

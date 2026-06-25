@@ -23,6 +23,7 @@ from polylogue.maintenance.registry import MaintenanceOperationRegistry, Operati
 from polylogue.maintenance.replay import ReplayProgress, execute_replay
 from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.maintenance.targets import MAINTENANCE_TARGET_NAMES, build_maintenance_target_catalog
+from polylogue.operations.archive_debt import _source_path_native_id_candidates
 from polylogue.paths import archive_file_set_root_for_paths, archive_root, blob_store_root, db_path, render_root
 from polylogue.storage.blob_gc import read_gc_history, run_blob_gc_report
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -192,6 +193,113 @@ def _apply_scope_filter_options(fn: Callable[..., Any]) -> Callable[..., Any]:
 
 
 _MAINTENANCE_TARGET_HELP = build_maintenance_target_catalog().help_text()
+
+
+def _raw_blob_path_for_hash(root: Path, blob_hash: bytes | str) -> Path | None:
+    hex_hash = blob_hash.hex() if isinstance(blob_hash, bytes) else str(blob_hash).lower()
+    if len(hex_hash) != 64 or any(char not in "0123456789abcdef" for char in hex_hash):
+        return None
+    return root / "blob" / hex_hash[:2] / hex_hash[2:]
+
+
+def _missing_raw_blob_cursor_candidates(root: Path, *, limit: int | None = None) -> list[dict[str, object]]:
+    source_db = root / "source.db"
+    index_db = root / "index.db"
+    ops_db = root / "ops.db"
+    if not source_db.exists() or not index_db.exists() or not ops_db.exists():
+        return []
+    conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    ops_conn = sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True)
+    ops_conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
+        rows = conn.execute(
+            """
+            SELECT
+                r.raw_id,
+                r.origin,
+                r.native_id,
+                r.source_path,
+                r.blob_hash,
+                r.blob_size,
+                r.validation_status,
+                r.parse_error
+            FROM raw_sessions AS r
+            LEFT JOIN index_tier.sessions AS s_by_raw ON s_by_raw.raw_id = r.raw_id
+            LEFT JOIN index_tier.sessions AS s_by_native
+              ON r.native_id IS NOT NULL
+             AND s_by_native.origin = r.origin
+             AND s_by_native.native_id = r.native_id
+            WHERE r.blob_hash IS NOT NULL
+              AND r.source_path IS NOT NULL
+              AND s_by_raw.raw_id IS NULL
+              AND s_by_native.native_id IS NULL
+              AND NOT (
+                r.validation_status = 'skipped'
+                AND r.parsed_at_ms IS NOT NULL
+                AND r.parse_error IS NULL
+              )
+            ORDER BY r.origin, r.blob_size DESC, r.raw_id
+            """
+        ).fetchall()
+        candidates: list[dict[str, object]] = []
+        seen_paths: set[str] = set()
+        for row in rows:
+            source_path = str(row["source_path"] or "")
+            if not source_path or source_path in seen_paths:
+                continue
+            blob_path = _raw_blob_path_for_hash(root, row["blob_hash"])
+            if blob_path is None or blob_path.exists() or not Path(source_path).exists():
+                continue
+            if _raw_materialized_by_source_path_candidate(conn, row):
+                continue
+            cursor = ops_conn.execute(
+                "SELECT stat_size, byte_offset, updated_at_ms FROM ingest_cursor WHERE source_path = ?",
+                (source_path,),
+            ).fetchone()
+            if cursor is None:
+                continue
+            candidates.append(
+                {
+                    "source_path": source_path,
+                    "raw_id": str(row["raw_id"]),
+                    "origin": str(row["origin"] or ""),
+                    "native_id": str(row["native_id"] or ""),
+                    "blob_path": str(blob_path),
+                    "blob_size": int(row["blob_size"] or 0),
+                    "cursor_stat_size": int(cursor["stat_size"] or 0),
+                    "cursor_byte_offset": int(cursor["byte_offset"] or 0),
+                    "cursor_updated_at_ms": int(cursor["updated_at_ms"] or 0),
+                }
+            )
+            seen_paths.add(source_path)
+            if limit is not None and len(candidates) >= limit:
+                break
+        return candidates
+    finally:
+        ops_conn.close()
+        conn.close()
+
+
+def _raw_materialized_by_source_path_candidate(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
+    origin = str(row["origin"] or "")
+    if not origin:
+        return False
+    for native_id in _source_path_native_id_candidates(str(row["source_path"] or "")):
+        existing = conn.execute(
+            """
+            SELECT 1
+            FROM index_tier.sessions
+            WHERE origin = ?
+              AND native_id = ?
+            LIMIT 1
+            """,
+            (origin, native_id),
+        ).fetchone()
+        if existing is not None:
+            return True
+    return False
 
 
 @click.group("maintenance")
@@ -861,6 +969,70 @@ def run_command(
             completed = datetime.fromisoformat(result.completed_at)
             elapsed = (completed - started).total_seconds()
             click.echo(f"\nElapsed: {elapsed:.1f}s")
+
+
+@maintenance_group.command("missing-raw-blob-cursors")
+@click.option("--apply", "apply_changes", is_flag=True, help="Delete matching rebuildable live cursor rows.")
+@click.option("--limit", type=int, default=None, help="Limit the number of candidate source paths.")
+@click.option(
+    "--output-format",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+    help="Output format.",
+)
+@click.pass_obj
+def missing_raw_blob_cursors_command(
+    env: AppEnv,
+    apply_changes: bool,
+    limit: int | None,
+    output_format: str,
+) -> None:
+    """Invalidate cursors hiding missing raw-blob re-acquisition debt.
+
+    This command only touches ``ops.db.ingest_cursor`` rows. It leaves
+    source-tier raw rows, source files, blobs, index rows, and user state
+    intact so the next daemon catch-up can re-acquire through the normal
+    ingestion path.
+    """
+    del env
+    root = archive_root()
+    candidates = _missing_raw_blob_cursor_candidates(root, limit=limit)
+    deleted = 0
+    if apply_changes and candidates:
+        ops_db = root / "ops.db"
+        with sqlite3.connect(ops_db) as conn:
+            for candidate in candidates:
+                deleted += conn.execute(
+                    "DELETE FROM ingest_cursor WHERE source_path = ?",
+                    (str(candidate["source_path"]),),
+                ).rowcount
+            conn.commit()
+
+    payload = {
+        "archive_root": str(root),
+        "mode": "apply" if apply_changes else "dry-run",
+        "candidate_count": len(candidates),
+        "deleted_cursor_count": deleted,
+        "candidates": candidates,
+        "next_action": "restart or run polylogued catch-up" if apply_changes and deleted else None,
+    }
+    if output_format == "json":
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    action = "Deleted" if apply_changes else "Would delete"
+    click.echo(f"{action} {deleted if apply_changes else len(candidates)} live cursor row(s)")
+    for candidate in candidates[:10]:
+        click.echo(
+            f"  {candidate['origin']} {candidate['source_path']} "
+            f"raw={candidate['raw_id']} blob_size={candidate['blob_size']}"
+        )
+    if len(candidates) > 10:
+        click.echo(f"  ... {len(candidates) - 10} more")
+    if apply_changes and deleted:
+        click.echo("Next: restart or run polylogued catch-up.")
 
 
 @maintenance_group.command("preview")

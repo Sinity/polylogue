@@ -25,6 +25,13 @@ from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 
 
+def _write_archive_blob(archive_root: Path, blob_hash: bytes | str, payload: bytes) -> None:
+    blob_hash_hex = blob_hash.hex() if isinstance(blob_hash, bytes) else blob_hash.lower()
+    blob_path = archive_root / "blob" / blob_hash_hex[:2] / blob_hash_hex[2:]
+    blob_path.parent.mkdir(parents=True, exist_ok=True)
+    blob_path.write_bytes(payload)
+
+
 def test_full_ingest_heartbeats_small_file_groups_with_current_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -845,6 +852,8 @@ def test_codex_append_plan_uses_append_only_session_identity(tmp_path: Path) -> 
             payload=original,
             acquired_at_ms=1_770_000_000_000,
         )
+        blob_hash = conn.execute("SELECT blob_hash FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0]
+    _write_archive_blob(tmp_path, cast(bytes, blob_hash), original)
     with sqlite3.connect(index_db) as conn:
         conn.execute(
             """
@@ -916,6 +925,8 @@ def test_codex_append_plan_reads_archive_file_set_session_identity(tmp_path: Pat
             payload=original,
             acquired_at_ms=1_770_000_000_000,
         )
+        blob_hash = conn.execute("SELECT blob_hash FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0]
+    _write_archive_blob(tmp_path, cast(bytes, blob_hash), original)
     with sqlite3.connect(index_db) as conn:
         conn.execute(
             """
@@ -963,6 +974,46 @@ def test_codex_append_plan_reads_archive_file_set_session_identity(tmp_path: Pat
     assert processor._latest_raw_fingerprint(path) == raw_id
     with cursor._connect() as conn:
         assert conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_sessions'").fetchone() is None
+
+
+def test_latest_raw_fingerprint_ignores_archive_source_row_with_missing_blob(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "missing-blob.jsonl"
+    payload = b'{"type":"session_meta","payload":{"id":"missing-blob"}}\n'
+    path.write_bytes(payload)
+    index_db = tmp_path / "index.db"
+    source_db = tmp_path / "source.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    blob_hash = b"a" * 32
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index,
+                blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("raw-missing-blob", "codex-session", "missing-blob", str(path), 0, blob_hash, len(payload), 1),
+        )
+        conn.commit()
+    cursor = CursorStore(index_db)
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+
+    assert processor._latest_raw_fingerprint(path) is None
+
+    _write_archive_blob(tmp_path, blob_hash, payload)
+
+    assert processor._latest_raw_fingerprint(path) == "raw-missing-blob"
 
 
 def test_append_ingest_preserves_successes_when_other_plan_fails(
