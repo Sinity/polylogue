@@ -16,7 +16,7 @@ from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
 from polylogue.archive.models import Message
 from polylogue.archive.raw_payload import build_raw_payload_envelope
-from polylogue.archive.viewport.viewports import ToolCall, classify_tool
+from polylogue.archive.viewport.viewports import ToolCall, ToolCategory, classify_tool
 from polylogue.core.enums import Origin, Provider, SemanticBlockType
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.core.provider_identity import (
@@ -88,6 +88,20 @@ def _json_input(payload: dict[str, JSONValue]) -> JSONDocument:
 
 
 class TestToolCallProperties:
+    @pytest.mark.parametrize(
+        ("tool_name", "expected"),
+        [
+            ("write_stdin", ToolCategory.AGENT),
+            ("initial_instructions", ToolCategory.AGENT),
+            ("activate_project", ToolCategory.AGENT),
+            ("find_symbol", ToolCategory.SEARCH),
+            ("find_referencing_symbols", ToolCategory.SEARCH),
+            ("search_for_pattern", ToolCategory.SEARCH),
+        ],
+    )
+    def test_classifies_agent_control_and_symbol_tools(self, tool_name: str, expected: ToolCategory) -> None:
+        assert classify_tool(tool_name, {}) is expected
+
     @pytest.mark.parametrize(("tool_name", "expected"), TOOL_FILE_OPS)
     def test_is_file_operation(self, tool_name: str, expected: bool) -> None:
         assert _make_tool(tool_name).is_file_operation is expected

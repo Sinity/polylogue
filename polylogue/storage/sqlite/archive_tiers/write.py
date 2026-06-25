@@ -8,7 +8,7 @@ import re
 import sqlite3
 import time
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -1370,7 +1370,8 @@ def _write_web_constructs(
         blocks = _message_blocks(message)
         for block_position, block in enumerate(blocks):
             block_id = f"{message_id}:{block_position}"
-            block_ids.append(block_id)
+            if not replace_session:
+                block_ids.append(block_id)
             for construct_position, construct in enumerate(block.web_constructs):
                 rows.append(
                     (
@@ -2438,12 +2439,12 @@ def _normalized_messages(messages: list[ParsedMessage]) -> list[ParsedMessage]:
     ]
 
 
-def _message_blocks(message: ParsedMessage) -> list[ParsedContentBlock]:
+def _message_blocks(message: ParsedMessage) -> Sequence[ParsedContentBlock]:
     if message.blocks:
-        return list(message.blocks)
+        return message.blocks
     if message.text:
-        return [ParsedContentBlock(type=BlockType.TEXT, text=message.text)]
-    return []
+        return (ParsedContentBlock(type=BlockType.TEXT, text=message.text),)
+    return ()
 
 
 def _active_leaf_message_id(

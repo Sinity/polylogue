@@ -45,7 +45,21 @@ def classify_tool(name: str, input_data: Mapping[str, JSONValue]) -> ToolCategor
         or "__create_or_update_file" in name_lower
     ):
         return ToolCategory.FILE_EDIT
-    if name_lower in ("glob", "grep", "search", "find", "file_search", "ls", "toolsearch") or any(
+    if name_lower in (
+        "glob",
+        "grep",
+        "search",
+        "find",
+        "file_search",
+        "ls",
+        "toolsearch",
+        "find_symbol",
+        "find_referencing_symbols",
+        "search_for_pattern",
+        "get_symbols_overview",
+        "query_docs",
+        "resolve_library_id",
+    ) or any(
         marker in name_lower
         for marker in (
             "__query-docs",
@@ -85,6 +99,15 @@ def classify_tool(name: str, input_data: Mapping[str, JSONValue]) -> ToolCategor
             "skill",
             "batch",
             "update_plan",
+            "write_stdin",
+            "send_input",
+            "wait_agent",
+            "close_agent",
+            "initial_instructions",
+            "activate_project",
+            "get_current_config",
+            "get_goal",
+            "update_goal",
             "mcp__sequential-thinking__sequentialthinking",
             "mcp__cclsp__restart_server",
         )

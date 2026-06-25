@@ -26,6 +26,7 @@ from polylogue.archive.session import runtime as session_profile_runtime
 from polylogue.archive.session.attribution import extract_attribution
 from polylogue.archive.session.events import SessionEvent
 from polylogue.archive.session.session_profile import build_session_profile
+from polylogue.archive.viewport.viewports import ToolCategory
 from polylogue.core.enums import MaterialOrigin, Origin, Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.storage.archive_views import SessionRenderProjection
@@ -1068,6 +1069,55 @@ def test_actions_capture_normalized_command_query_branch_and_cwd() -> None:
 
     profile = build_session_profile(session)
     assert profile.repo_names == (EXPECTED_REPO_NAME,)
+
+
+def test_agent_control_actions_skip_path_and_query_extractors() -> None:
+    session = make_conv(
+        id="conv-agent-control-action",
+        origin="codex",
+        messages=MessageCollection(
+            messages=[
+                make_msg(
+                    id="a1",
+                    role="assistant",
+                    origin="codex",
+                    text="Polling the running command.",
+                    blocks=[
+                        {
+                            "type": "tool_use",
+                            "tool_name": "write_stdin",
+                            "tool_id": "tool-1",
+                            "tool_input": {
+                                "session_id": 123,
+                                "chars": "",
+                                "cwd": str(REPO_ROOT),
+                                "query": "not a search query",
+                                "url": "https://example.invalid/not-web-navigation",
+                            },
+                        },
+                        {
+                            "type": "tool_result",
+                            "tool_id": "tool-1",
+                            "text": "still running",
+                        },
+                    ],
+                ),
+            ]
+        ),
+    )
+
+    facts = build_session_semantic_facts(session)
+
+    action = facts.actions[0]
+    assert action.kind is ToolCategory.AGENT
+    assert action.command is None
+    assert action.affected_paths == ()
+    assert action.cwd_path is None
+    assert action.branch_names == ()
+    assert action.query is None
+    assert action.url is None
+    assert action.output_text == "still running"
+    assert "still running" in action.search_text
 
 
 def test_actions_do_not_treat_checkout_pathspec_as_branch_or_commit_message_words_as_paths() -> None:
