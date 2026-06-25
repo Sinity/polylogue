@@ -226,9 +226,12 @@ def write_parsed_session_to_archive(
     t0 = time.perf_counter()
 
     def add_timing(name: str, started_at: float) -> None:
-        if stage_timings_s is not None:
-            key = f"{stage_timing_prefix}.{name}"
-            stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - started_at)
+        _add_stage_timing(
+            stage_timings_s,
+            stage_timing_prefix=stage_timing_prefix,
+            name=name,
+            started_at=started_at,
+        )
 
     conn.execute("PRAGMA foreign_keys = ON")
     origin = origin_from_provider(session.source_name)
@@ -341,6 +344,8 @@ def write_parsed_session_to_archive(
                 conn,
                 session,
                 duplicate_native_ids=duplicate_message_native_ids,
+                stage_timings_s=stage_timings_s,
+                stage_timing_prefix=stage_timing_prefix,
             )
             add_timing("index.full_replace", t0)
         if merge_append:
@@ -437,6 +442,19 @@ def write_parsed_session_to_archive(
             _write_ingest_flag_tags(conn, session_id, session.ingest_flags)
             add_timing("index.ingest_flags", t0)
     return session_id
+
+
+def _add_stage_timing(
+    stage_timings_s: dict[str, float] | None,
+    *,
+    stage_timing_prefix: str,
+    name: str,
+    started_at: float,
+) -> None:
+    if stage_timings_s is None:
+        return
+    key = f"{stage_timing_prefix}.{name}"
+    stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - started_at)
 
 
 def _write_ingest_flag_tags(conn: sqlite3.Connection, session_id: str, flags: list[str]) -> None:
@@ -1406,38 +1424,68 @@ def _replace_full_session_messages_and_blocks(
     session: ParsedSession,
     *,
     duplicate_native_ids: frozenset[str],
+    stage_timings_s: dict[str, float] | None = None,
+    stage_timing_prefix: str = "append",
 ) -> None:
+    def add_timing(name: str, started_at: float) -> None:
+        _add_stage_timing(
+            stage_timings_s,
+            stage_timing_prefix=stage_timing_prefix,
+            name=f"index.full_replace.{name}",
+            started_at=started_at,
+        )
+
     origin = origin_from_provider(session.source_name)
     session_id = archive_session_id(origin.value, session.provider_session_id)
+    t0 = time.perf_counter()
     use_scoped_fts_rebuild = message_fts_triggers_present_sync(conn)
+    add_timing("fts_probe", t0)
     if use_scoped_fts_rebuild:
+        t0 = time.perf_counter()
         conn.execute(delete_session_rows_sql(1), (session_id,))
+        add_timing("fts_delete", t0)
+        t0 = time.perf_counter()
         suspend_message_fts_triggers_sync(conn)
+        add_timing("fts_suspend", t0)
     try:
+        t0 = time.perf_counter()
         _clear_session_projection_rows(conn, session_id)
+        add_timing("clear_projection_rows", t0)
+        t0 = time.perf_counter()
         conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+        add_timing("delete_messages", t0)
+        t0 = time.perf_counter()
         _write_messages(
             conn,
             session_id,
             session.messages,
             duplicate_native_ids=duplicate_native_ids,
         )
+        add_timing("messages", t0)
+        t0 = time.perf_counter()
         _write_blocks(
             conn,
             session_id,
             session.messages,
             duplicate_native_ids=duplicate_native_ids,
         )
+        add_timing("blocks", t0)
+        t0 = time.perf_counter()
         _write_web_constructs(
             conn,
             session,
             duplicate_native_ids=duplicate_native_ids,
         )
+        add_timing("web_constructs", t0)
         if use_scoped_fts_rebuild:
+            t0 = time.perf_counter()
             conn.execute(insert_session_rows_sql(1), (session_id,))
+            add_timing("fts_insert", t0)
     finally:
         if use_scoped_fts_rebuild:
+            t0 = time.perf_counter()
             restore_message_fts_triggers_sync(conn)
+            add_timing("fts_restore", t0)
 
 
 def _refresh_session_counts(conn: sqlite3.Connection, session_id: str) -> None:
