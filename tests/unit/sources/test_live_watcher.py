@@ -1528,6 +1528,13 @@ async def test_codex_append_uses_existing_session_identity_when_tail_lacks_sessi
         fallback = await archive.get_session("codex:codex-session")
         assert append_metrics.append_file_count == 1
         assert append_metrics.full_file_count == 0
+        assert {
+            "append.archive_open",
+            "append.blob_write",
+            "append.json_stream",
+            "append.provider_parse",
+            "append.raw_and_index_write",
+        }.issubset(append_metrics.stage_timings_s)
         assert existing is not None
         assert [message.text for message in existing.messages] == ["codex first", "codex appended"]
         assert fallback is None
