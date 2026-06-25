@@ -440,6 +440,7 @@ def write_parsed_session_to_archive(
             session_id,
             session,
             replace_existing_model_rows=not merge_append,
+            aggregate_message_tokens=not merge_append or _messages_have_token_counts(messages),
         )
         add_timing("index.reported_costs", t0)
         if merge_append and session_event_result.wrote_provider_usage_events:
@@ -1597,6 +1598,13 @@ def _session_count_values(messages: list[ParsedMessage]) -> dict[str, int]:
     return counts
 
 
+def _messages_have_token_counts(messages: Sequence[ParsedMessage]) -> bool:
+    return any(
+        message.input_tokens or message.output_tokens or message.cache_read_tokens or message.cache_write_tokens
+        for message in messages
+    )
+
+
 def _increment_session_counts_for_append(
     conn: sqlite3.Connection,
     session_id: str,
@@ -2518,6 +2526,7 @@ def _write_reported_costs(
     session: ParsedSession,
     *,
     replace_existing_model_rows: bool = True,
+    aggregate_message_tokens: bool = True,
 ) -> None:
     observed_at_ms = _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at)
     if session.reported_cost_usd is not None:
@@ -2547,7 +2556,8 @@ def _write_reported_costs(
     )
     for model_name in sorted(model_names):
         conn.execute(model_usage_sql, (session_id, _sqlite_text(model_name)))
-    _aggregate_message_tokens_into_model_usage(conn, session_id)
+    if aggregate_message_tokens:
+        _aggregate_message_tokens_into_model_usage(conn, session_id)
 
 
 def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session_id: str) -> None:
