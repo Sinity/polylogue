@@ -1417,6 +1417,84 @@ def test_merge_append_clears_only_existing_active_leaf(tmp_path: Path) -> None:
     assert append_changes < 80
 
 
+def test_merge_append_increments_session_counts_without_full_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = _connect(tmp_path / "index.db")
+    first = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-append-counts",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                text="typed prompt",
+                material_origin=MaterialOrigin.HUMAN_AUTHORED,
+            ),
+            ParsedMessage(
+                provider_message_id="m2",
+                role=Role.ASSISTANT,
+                text="first answer",
+            ),
+        ],
+    )
+    second = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-append-counts",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m3",
+                role=Role.USER,
+                text="generated context pack",
+                material_origin=MaterialOrigin.GENERATED_CONTEXT_PACK,
+            ),
+            ParsedMessage(
+                provider_message_id="m4",
+                role=Role.ASSISTANT,
+                text="second answer",
+                blocks=[ParsedContentBlock(type=BlockType.TOOL_USE, text="call")],
+            ),
+            ParsedMessage(
+                provider_message_id="m5",
+                role=Role.TOOL,
+                text="tool output",
+            ),
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, first)
+
+    def _fail_full_refresh(_conn: sqlite3.Connection, _session_id: str) -> None:
+        raise AssertionError("merge_append should increment counts instead of rescanning messages")
+
+    monkeypatch.setattr(archive_tier_write, "_refresh_session_counts", _fail_full_refresh)
+    write_parsed_session_to_archive(conn, second, merge_append=True)
+
+    row = conn.execute(
+        """
+        SELECT message_count, word_count, tool_use_count, user_message_count,
+               authored_user_message_count, assistant_message_count, tool_message_count,
+               user_word_count, authored_user_word_count, assistant_word_count
+        FROM sessions
+        WHERE session_id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+    assert dict(row) == {
+        "message_count": 5,
+        "word_count": 11,
+        "tool_use_count": 1,
+        "user_message_count": 2,
+        "authored_user_message_count": 1,
+        "assistant_message_count": 2,
+        "tool_message_count": 1,
+        "user_word_count": 5,
+        "authored_user_word_count": 2,
+        "assistant_word_count": 4,
+    }
+
+
 def test_merge_append_without_attachments_does_not_refresh_all_attachment_counts(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     unrelated_attachment_count = 120
