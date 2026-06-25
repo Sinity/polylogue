@@ -46,14 +46,24 @@ _INCOMPLETE_APPEND_PROBE_BYTES = 64 * 1024 * 1024
 INBOX_SOURCE_SUFFIXES = (".jsonl", ".zip", ".json", ".ndjson")
 
 
+def _stage_timing_summary(stage_timings_s: dict[str, float], *, limit: int = 4) -> str:
+    if not stage_timings_s:
+        return "none"
+    ordered = sorted(stage_timings_s.items(), key=lambda item: item[1], reverse=True)
+    return ",".join(f"{name}:{elapsed:.3f}" for name, elapsed in ordered[:limit])
+
+
 def _log_ingest_metrics(prefix: str, metrics: LiveBatchMetrics) -> None:
     """Log actual live-ingest read work separately from candidate file size."""
     input_bytes = getattr(metrics, "input_bytes", 0)
     source_payload_read_bytes = getattr(metrics, "source_payload_read_bytes", 0)
     read_amp = source_payload_read_bytes / input_bytes if input_bytes > 0 else 0.0
+    stage_timings_s = getattr(metrics, "stage_timings_s", {})
+    stage_summary = _stage_timing_summary(stage_timings_s if isinstance(stage_timings_s, dict) else {})
     logger.info(
         "%s complete: read=%.1f MB input=%.1f MB read_amp=%.6fx append_files=%d full_files=%d "
-        "succeeded=%d failed=%d parse_s=%.3f convergence_s=%.3f",
+        "succeeded=%d failed=%d parse_s=%.3f convergence_s=%.3f stages=%s "
+        "wal_before_checkpoint=%.1f MB wal_after_checkpoint=%.1f MB wal_busy_pages=%d",
         prefix,
         source_payload_read_bytes / 1e6,
         input_bytes / 1e6,
@@ -64,6 +74,10 @@ def _log_ingest_metrics(prefix: str, metrics: LiveBatchMetrics) -> None:
         getattr(metrics, "failed_file_count", 0),
         getattr(metrics, "parse_time_s", 0.0),
         getattr(metrics, "convergence_time_s", 0.0),
+        stage_summary,
+        getattr(metrics, "wal_bytes_before_checkpoint_max", 0) / 1e6,
+        getattr(metrics, "wal_bytes_after_checkpoint_max", 0) / 1e6,
+        getattr(metrics, "wal_busy_pages_total", 0),
     )
 
 

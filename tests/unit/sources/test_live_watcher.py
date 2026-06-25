@@ -109,12 +109,18 @@ def test_live_ingest_metrics_log_separates_read_bytes_from_candidate_size(
         parse_time_s=0.5,
         convergence_time_s=0.25,
         total_time_s=1.0,
+        wal_bytes_before_checkpoint_max=8_000_000,
+        wal_bytes_after_checkpoint_max=1_000_000,
+        wal_busy_pages_total=3,
+        stage_timings_s={"full_parse": 0.45, "fts": 0.05, "insights": 0.2},
     )
 
     live_watcher._log_ingest_metrics("live.watcher: changed-file batch", metrics)
 
     message, *args = logger.info.call_args.args
     assert "read=%.1f MB input=%.1f MB read_amp=%.6fx" in message
+    assert "stages=%s" in message
+    assert "wal_before_checkpoint=%.1f MB" in message
     assert args[:6] == [
         "live.watcher: changed-file batch",
         0.04,
@@ -123,6 +129,24 @@ def test_live_ingest_metrics_log_separates_read_bytes_from_candidate_size(
         2,
         0,
     ]
+    assert args[10:] == ["full_parse:0.450,insights:0.200,fts:0.050", 8.0, 1.0, 3]
+
+
+def test_live_ingest_stage_timing_summary_is_bounded_and_sorted() -> None:
+    assert live_watcher._stage_timing_summary({}) == "none"
+    assert (
+        live_watcher._stage_timing_summary(
+            {
+                "parse": 1.25,
+                "fts": 0.01,
+                "insights": 0.4,
+                "usage": 0.2,
+                "checkpoint": 0.8,
+            },
+            limit=3,
+        )
+        == "parse:1.250,checkpoint:0.800,insights:0.400"
+    )
 
 
 # --- CursorStore ---------------------------------------------------------------
