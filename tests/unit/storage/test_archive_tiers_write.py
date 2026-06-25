@@ -4,6 +4,8 @@ import hashlib
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, Provider, TitleSource, WebConstructType
@@ -16,6 +18,7 @@ from polylogue.sources.parsers.base import (
     ParsedSessionEvent,
     ParsedWebConstruct,
 )
+from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
@@ -1270,6 +1273,100 @@ def test_provider_usage_events_append_preserves_prior_history(tmp_path: Path) ->
             "total_output_tokens": 15,
         },
     ]
+
+
+def test_provider_usage_rollup_skips_append_without_usage_events(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = _connect(tmp_path / "index.db")
+    rollup_calls: list[str] = []
+    original_rollup = archive_tier_write._aggregate_provider_usage_into_model_usage
+
+    def _record_rollup(conn_arg: sqlite3.Connection, session_id_arg: str) -> None:
+        rollup_calls.append(session_id_arg)
+        original_rollup(conn_arg, session_id_arg)
+
+    monkeypatch.setattr(archive_tier_write, "_aggregate_provider_usage_into_model_usage", _record_rollup)
+    first = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-usage-append-skip",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                model_name="gpt-5-codex",
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="first answer")],
+            )
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                source_message_provider_id="m1",
+                payload={
+                    "type": "token_count",
+                    "total_token_usage": {"input_tokens": 10, "output_tokens": 5},
+                },
+            )
+        ],
+    )
+    no_usage_append = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-usage-append-skip",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m2",
+                role=Role.ASSISTANT,
+                model_name="gpt-5-codex",
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="plain append")],
+            )
+        ],
+    )
+    usage_append = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-usage-append-skip",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m3",
+                role=Role.ASSISTANT,
+                model_name="gpt-5-codex",
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="usage append")],
+            )
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                source_message_provider_id="m3",
+                payload={
+                    "type": "token_count",
+                    "total_token_usage": {"input_tokens": 30, "output_tokens": 15},
+                },
+            )
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, first)
+    assert rollup_calls == [session_id]
+
+    write_parsed_session_to_archive(conn, no_usage_append, merge_append=True)
+    assert rollup_calls == [session_id]
+
+    write_parsed_session_to_archive(conn, usage_append, merge_append=True)
+    assert rollup_calls == [session_id, session_id]
+
+    row = conn.execute(
+        """
+        SELECT input_tokens, output_tokens, cost_provenance
+        FROM session_model_usage
+        WHERE session_id = ? AND model_name = 'gpt-5-codex'
+        """,
+        (session_id,),
+    ).fetchone()
+    assert dict(row) == {
+        "input_tokens": 30,
+        "output_tokens": 15,
+        "cost_provenance": "origin_reported",
+    }
 
 
 def test_merge_append_clears_only_existing_active_leaf(tmp_path: Path) -> None:

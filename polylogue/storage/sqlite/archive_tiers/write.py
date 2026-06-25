@@ -409,7 +409,7 @@ def write_parsed_session_to_archive(
         _write_session_link(conn, session_id, session)
         add_timing("index.session_link", t0)
         t0 = time.perf_counter()
-        _write_session_events(
+        wrote_provider_usage_events = _write_session_events(
             conn,
             session_id,
             messages,
@@ -428,9 +428,10 @@ def write_parsed_session_to_archive(
         t0 = time.perf_counter()
         _write_reported_costs(conn, session_id, session)
         add_timing("index.reported_costs", t0)
-        t0 = time.perf_counter()
-        _aggregate_provider_usage_into_model_usage(conn, session_id)
-        add_timing("index.provider_usage_rollup", t0)
+        if not merge_append or wrote_provider_usage_events:
+            t0 = time.perf_counter()
+            _aggregate_provider_usage_into_model_usage(conn, session_id)
+            add_timing("index.provider_usage_rollup", t0)
         t0 = time.perf_counter()
         _refresh_session_counts(conn, session_id)
         add_timing("index.session_counts", t0)
@@ -1970,7 +1971,7 @@ def _write_session_events(
     position_offset: int = 0,
     event_position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
-) -> None:
+) -> bool:
     by_native_id = {
         message.provider_message_id: _message_id(
             session_id,
@@ -1982,6 +1983,7 @@ def _write_session_events(
         for fallback_position, message in enumerate(messages)
         if message.provider_message_id and message.provider_message_id not in duplicate_native_ids
     }
+    wrote_provider_usage_events = False
     position = event_position_offset
     for event in events:
         if event.event_type == "compaction":
@@ -2028,7 +2030,9 @@ def _write_session_events(
                 position,
                 event,
             )
+            wrote_provider_usage_events = True
             position += 1
+    return wrote_provider_usage_events
 
 
 def _write_provider_usage_event(
