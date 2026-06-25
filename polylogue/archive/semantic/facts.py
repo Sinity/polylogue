@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import time
 from collections import Counter
-from collections.abc import Collection, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterator, Sequence
 from datetime import datetime
 from typing import Protocol
 
@@ -208,11 +209,33 @@ def build_projection_semantic_facts(projection: ProjectionLike) -> ProjectionSem
     )
 
 
-def build_message_semantic_facts(message: SemanticSessionMessageLike) -> MessageSemanticFacts:
-    tool_calls = message_tool_calls(message)
+def build_message_semantic_facts(
+    message: SemanticSessionMessageLike,
+    *,
+    stage_timing_add: Callable[[str, float], None] | None = None,
+) -> MessageSemanticFacts:
+    def add_timing(name: str, started_at: float) -> None:
+        if stage_timing_add is not None:
+            stage_timing_add(name, started_at)
+
+    t0 = time.perf_counter()
+    is_tool_use = message.is_tool_use
+    is_thinking = message.is_thinking
+    add_timing("facts.message_flags", t0)
+    t0 = time.perf_counter()
+    tool_calls = message_tool_calls(message) if is_tool_use else ()
+    add_timing("facts.message_tool_calls", t0)
+    t0 = time.perf_counter()
     actions = build_actions(message, tool_calls)
+    add_timing("facts.message_actions", t0)
+    t0 = time.perf_counter()
     tool_category_counts = Counter(action.kind.value for action in actions)
-    return MessageSemanticFacts(
+    add_timing("facts.message_tool_category_counts", t0)
+    t0 = time.perf_counter()
+    reasoning_traces = message_reasoning_traces(message) if is_thinking else ()
+    add_timing("facts.message_reasoning_traces", t0)
+    t0 = time.perf_counter()
+    facts = MessageSemanticFacts(
         message_id=str(message.id),
         role=normalized_role_label(message.role),
         text=message.text or "",
@@ -227,33 +250,35 @@ def build_message_semantic_facts(message: SemanticSessionMessageLike) -> Message
         is_context_dump=message.is_context_dump,
         is_protocol_artifact=message.is_protocol_artifact,
         is_noise=message.is_noise,
-        is_thinking=message.is_thinking,
-        is_tool_use=message.is_tool_use,
+        is_thinking=is_thinking,
+        is_tool_use=is_tool_use,
         is_substantive=message.is_substantive,
         tool_calls=tool_calls,
         actions=actions,
         tool_category_counts=sorted_counts(dict(tool_category_counts)),
-        reasoning_traces=message_reasoning_traces(message),
+        reasoning_traces=reasoning_traces,
     )
+    add_timing("facts.message_construct", t0)
+    return facts
 
 
-# ---------------------------------------------------------------------------
-# Session / detail builders
-# ---------------------------------------------------------------------------
+def build_session_semantic_facts(
+    session: SemanticSessionLike,
+    *,
+    stage_timing_add: Callable[[str, float], None] | None = None,
+) -> SessionSemanticFacts:
+    def add_timing(name: str, started_at: float) -> None:
+        if stage_timing_add is not None:
+            stage_timing_add(name, started_at)
 
-
-def _timestamp_coverage(*, total_messages: int, timestamped_messages: int) -> str:
-    if total_messages <= 0 or timestamped_messages <= 0:
-        return "none"
-    if timestamped_messages >= total_messages:
-        return "complete"
-    return "partial"
-
-
-def build_session_semantic_facts(session: SemanticSessionLike) -> SessionSemanticFacts:
     role_counts: Counter[str] = Counter()
     tool_categories: Counter[str] = Counter()
-    message_facts = tuple(build_message_semantic_facts(message) for message in session.messages)
+    t0 = time.perf_counter()
+    message_facts = tuple(
+        build_message_semantic_facts(message, stage_timing_add=stage_timing_add) for message in session.messages
+    )
+    add_timing("facts.message_facts", t0)
+    t0 = time.perf_counter()
     message_ids: list[str] = []
     text_message_ids: list[str] = []
     timestamped_text_messages = 0
@@ -290,15 +315,19 @@ def build_session_semantic_facts(session: SemanticSessionLike) -> SessionSemanti
                 timestamped_text_messages += 1
         for category, count in message_fact.tool_category_counts.items():
             tool_categories[category] += count
+    add_timing("facts.aggregate_messages", t0)
 
+    t0 = time.perf_counter()
     first_message_at = min(timestamps) if timestamps else None
     last_message_at = max(timestamps) if timestamps else None
     wall_duration_ms = 0
     if first_message_at and last_message_at:
         wall_duration_ms = max(int((last_message_at - first_message_at).total_seconds() * 1000), 0)
     untimestamped_messages = max(len(message_facts) - timestamped_messages, 0)
+    add_timing("facts.timestamp_bounds", t0)
 
-    return SessionSemanticFacts(
+    t0 = time.perf_counter()
+    facts = SessionSemanticFacts(
         session_id=str(session.id),
         origin=str(session.origin),
         title=session.display_title,
@@ -328,6 +357,21 @@ def build_session_semantic_facts(session: SemanticSessionLike) -> SessionSemanti
         wall_duration_ms=wall_duration_ms,
         message_facts=message_facts,
     )
+    add_timing("facts.construct", t0)
+    return facts
+
+
+# ---------------------------------------------------------------------------
+# Session / detail builders
+# ---------------------------------------------------------------------------
+
+
+def _timestamp_coverage(*, total_messages: int, timestamped_messages: int) -> str:
+    if total_messages <= 0 or timestamped_messages <= 0:
+        return "none"
+    if timestamped_messages >= total_messages:
+        return "complete"
+    return "partial"
 
 
 def build_mcp_detail_semantic_facts(session: SemanticSessionLike) -> MCPDetailSemanticFacts:

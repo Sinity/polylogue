@@ -294,6 +294,9 @@ def test_insights_stage_materializes_archive_profiles_from_archive_tiers(tmp_pat
     assert result
     assert isinstance(result, StageExecutionResult)
     assert "insights.analysis.facts" in result.stage_timings_s
+    assert "insights.facts.message_flags" in result.stage_timings_s
+    assert "insights.facts.message_facts" in result.stage_timings_s
+    assert "insights.facts.aggregate_messages" in result.stage_timings_s
     assert stage.check_sessions([session_id]) == set()
     with sqlite3.connect(archive_db) as conn:
         profile = conn.execute("SELECT session_id, substantive_count FROM session_profiles").fetchone()
@@ -803,6 +806,9 @@ def test_insights_stage_rebuilds_large_session_after_quiet_window(
     assert "insights.build_records.analysis" in result.stage_timings_s
     assert "insights.build_records.profile" in result.stage_timings_s
     assert "insights.analysis.facts" in result.stage_timings_s
+    assert "insights.facts.message_flags" in result.stage_timings_s
+    assert "insights.facts.message_facts" in result.stage_timings_s
+    assert "insights.facts.aggregate_messages" in result.stage_timings_s
     assert "insights.profile.cost_estimate" in result.stage_timings_s
     with sqlite3.connect(db_path) as conn:
         assert (
@@ -832,6 +838,9 @@ def test_insights_stage_rebuilds_small_active_session(
     assert "insights.build_records.analysis" in result.stage_timings_s
     assert "insights.build_records.profile" in result.stage_timings_s
     assert "insights.analysis.facts" in result.stage_timings_s
+    assert "insights.facts.message_flags" in result.stage_timings_s
+    assert "insights.facts.message_facts" in result.stage_timings_s
+    assert "insights.facts.aggregate_messages" in result.stage_timings_s
     assert "insights.profile.cost_estimate" in result.stage_timings_s
     with sqlite3.connect(db_path) as conn:
         assert (
