@@ -15,6 +15,7 @@ import pytest
 import polylogue.daemon.convergence_stages as stages
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
+from polylogue.daemon.convergence import StageExecutionResult
 from polylogue.daemon.convergence_stages import (
     make_default_convergence_stages,
     make_embed_stage,
@@ -347,12 +348,16 @@ def test_insights_stage_rebuilds_sync_against_configured_db(
         *,
         session_ids: list[str],
         page_size: int,
+        stage_timings_s: dict[str, float] | None = None,
+        stage_timing_prefix: str = "insights",
     ) -> SessionInsightCounts:
         nonlocal rebuilt
-        del conn
+        del conn, stage_timing_prefix
         rebuilt = True
         assert session_ids == ["conv-1"]
         assert page_size == 10
+        if stage_timings_s is not None:
+            stage_timings_s["insights.fake"] = 0.125
         return SessionInsightCounts(
             profiles=1,
             work_events=2,
@@ -595,8 +600,10 @@ def test_insights_stage_batches_sync_rebuild_chunks(
         *,
         session_ids: list[str],
         page_size: int,
+        stage_timings_s: dict[str, float] | None = None,
+        stage_timing_prefix: str = "insights",
     ) -> SessionInsightCounts:
-        del conn
+        del conn, stage_timings_s, stage_timing_prefix
         rebuild_calls.append((session_ids, page_size))
         return SessionInsightCounts(profiles=2, work_events=0, phases=0, threads=0, tag_rollups=0)
 
@@ -755,8 +762,10 @@ def test_insights_session_rebuild_returns_false_when_still_stale(
         *,
         session_ids: list[str],
         page_size: int,
+        stage_timings_s: dict[str, float] | None = None,
+        stage_timing_prefix: str = "insights",
     ) -> SessionInsightCounts:
-        del conn, session_ids, page_size
+        del conn, session_ids, page_size, stage_timings_s, stage_timing_prefix
         return SessionInsightCounts(profiles=0, work_events=0, phases=0, threads=0, tag_rollups=0)
 
     monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", no_op_rebuild)
@@ -784,7 +793,10 @@ def test_insights_stage_rebuilds_large_session_after_quiet_window(
 
     stage = make_insights_stage(db_path)
     assert stage.execute_sessions is not None
-    assert stage.execute_sessions([session_id]) is True
+    result = stage.execute_sessions([session_id])
+    assert result
+    assert isinstance(result, StageExecutionResult)
+    assert "insights.load_batch" in result.stage_timings_s
     with sqlite3.connect(db_path) as conn:
         assert (
             conn.execute("SELECT COUNT(*) FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[0] == 1
@@ -806,7 +818,10 @@ def test_insights_stage_rebuilds_small_active_session(
 
     stage = make_insights_stage(db_path)
     assert stage.execute_sessions is not None
-    assert stage.execute_sessions([session_id]) is True
+    result = stage.execute_sessions([session_id])
+    assert result
+    assert isinstance(result, StageExecutionResult)
+    assert "insights.load_batch" in result.stage_timings_s
     with sqlite3.connect(db_path) as conn:
         assert (
             conn.execute("SELECT COUNT(*) FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[0] == 1
@@ -889,9 +904,18 @@ def test_archive_insights_execute_ids_deduplicates_session_ids(tmp_path: Path, m
 
     seen_session_ids: list[list[str]] = []
 
-    def fake_rebuild(conn: sqlite3.Connection, *, session_ids: list[str], page_size: int) -> SimpleNamespace:
-        del conn, page_size
+    def fake_rebuild(
+        conn: sqlite3.Connection,
+        *,
+        session_ids: list[str],
+        page_size: int,
+        stage_timings_s: dict[str, float] | None = None,
+        stage_timing_prefix: str = "insights",
+    ) -> SimpleNamespace:
+        del conn, page_size, stage_timing_prefix
         seen_session_ids.append(session_ids)
+        if stage_timings_s is not None:
+            stage_timings_s["insights.fake"] = 0.25
         return SimpleNamespace(profiles=1, work_events=0, phases=0, threads=0)
 
     monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
@@ -899,7 +923,7 @@ def test_archive_insights_execute_ids_deduplicates_session_ids(tmp_path: Path, m
     monkeypatch.setattr(stages, "_archive_stale_session_profile_ids", lambda _conn, _ids: [])
 
     with sqlite3.connect(db_path) as conn:
-        assert stages._archive_insights_execute_ids(
+        result = stages._archive_insights_execute_ids(
             conn,
             [
                 "codex-session:conv-dupe",
@@ -907,6 +931,9 @@ def test_archive_insights_execute_ids_deduplicates_session_ids(tmp_path: Path, m
                 "codex-session:conv-dupe",
             ],
         )
+        assert result
+        assert isinstance(result, StageExecutionResult)
+        assert result.stage_timings_s == {"insights.fake": 0.25}
 
     assert seen_session_ids == [["codex-session:conv-dupe"]]
 
