@@ -89,6 +89,25 @@ class Provider(PolylogueStrEnum):
             return cls.UNKNOWN
 
 
+class SessionKind(PolylogueStrEnum):
+    """Closed session lifecycle/type vocabulary."""
+
+    STANDARD = "standard"
+    TEMPORARY = "temporary"
+
+    @classmethod
+    def normalize(cls, value: object) -> SessionKind:
+        """Normalize a session-kind token, defaulting to standard."""
+        if isinstance(value, SessionKind):
+            return value
+        if value is None:
+            return cls.STANDARD
+        try:
+            return cls(str(value).strip().lower())
+        except ValueError:
+            return cls.STANDARD
+
+
 class Role(PolylogueStrEnum):
     """Canonical session roles."""
 

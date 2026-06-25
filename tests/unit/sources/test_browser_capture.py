@@ -247,6 +247,7 @@ def test_browser_capture_session_kind_marks_temporary_chat() -> None:
     parsed = parse_payload(Provider.CHATGPT, payload, "file-fallback")
 
     assert parsed[0].provider_session_id == "conv-123"
+    assert parsed[0].session_kind == "temporary"
     assert parsed[0].ingest_flags == [TEMPORARY_CHAT_INGEST_FLAG]
 
 
@@ -261,6 +262,7 @@ def test_browser_capture_typed_session_kind_marks_temporary_chat() -> None:
 
     assert envelope.session.session_kind == "temporary"
     assert parsed[0].provider_session_id == "conv-123"
+    assert parsed[0].session_kind == "temporary"
     assert parsed[0].ingest_flags == [TEMPORARY_CHAT_INGEST_FLAG]
 
 

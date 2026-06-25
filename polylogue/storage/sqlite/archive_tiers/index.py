@@ -11,6 +11,7 @@ from polylogue.core.enums import (
     Origin,
     PasteBoundary,
     Role,
+    SessionKind,
     WebConstructType,
 )
 from polylogue.storage.sqlite.archive_tiers.common import (
@@ -20,7 +21,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 8
+INDEX_SCHEMA_VERSION = 9
 
 INDEX_DDL = f"""
 CREATE TABLE IF NOT EXISTS sessions (
@@ -33,6 +34,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     branch_type             TEXT CHECK ({nullable_check("branch_type", BranchType)}),
     active_leaf_message_id  TEXT,
     title                   TEXT,
+    session_kind            TEXT NOT NULL DEFAULT 'standard' CHECK ({check("session_kind", SessionKind)}),
     title_source            TEXT CHECK(title_source IN ('origin', 'path', 'heuristic', 'user', 'unknown') OR title_source IS NULL),
     git_branch              TEXT,
     git_repository_url      TEXT,

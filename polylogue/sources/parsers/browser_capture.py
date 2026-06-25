@@ -7,7 +7,7 @@ from typing import TypeGuard
 
 from polylogue.browser_capture.identity import legacy_browser_capture_native_id
 from polylogue.browser_capture.models import BrowserCaptureEnvelope, looks_like_browser_capture
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Provider, SessionKind
 from polylogue.sources.parsers.base_models import ParsedAttachment, ParsedMessage, ParsedSession
 
 TEMPORARY_CHAT_INGEST_FLAG = "capture:temporary-chat"
@@ -40,6 +40,29 @@ def _ingest_flags_for_browser_capture(envelope: BrowserCaptureEnvelope, provider
     return []
 
 
+def _session_kind_for_browser_capture(envelope: BrowserCaptureEnvelope, provider_session_id: str) -> SessionKind:
+    legacy_session_kind = envelope.session.provider_meta.get("session_kind")
+    if (
+        envelope.session.session_kind == "temporary"
+        or provider_session_id.startswith("temporary:")
+        or legacy_session_kind == "temporary"
+    ):
+        return SessionKind.TEMPORARY
+    return SessionKind.STANDARD
+
+
+def _apply_browser_capture_session_kind(
+    session: ParsedSession,
+    envelope: BrowserCaptureEnvelope,
+    provider_session_id: str,
+) -> ParsedSession:
+    session_kind = _session_kind_for_browser_capture(envelope, provider_session_id)
+    ingest_flags = list(
+        dict.fromkeys([*session.ingest_flags, *_ingest_flags_for_browser_capture(envelope, provider_session_id)])
+    )
+    return session.model_copy(update={"session_kind": session_kind, "ingest_flags": ingest_flags})
+
+
 def parse(payload: object, fallback_id: str) -> ParsedSession:
     """Parse a browser-capture envelope into the canonical parser contract."""
     envelope = BrowserCaptureEnvelope.model_validate(payload)
@@ -49,11 +72,15 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
     if envelope.session.provider is Provider.CHATGPT and _has_chatgpt_native_payload(raw_provider_payload):
         from polylogue.sources.parsers.chatgpt import parse as parse_chatgpt
 
-        return parse_chatgpt(raw_provider_payload, provider_session_id)
+        return _apply_browser_capture_session_kind(
+            parse_chatgpt(raw_provider_payload, provider_session_id), envelope, provider_session_id
+        )
     if envelope.session.provider is Provider.CLAUDE_AI and _has_claude_ai_native_payload(raw_provider_payload):
         from polylogue.sources.parsers.claude.ai_parser import parse_ai as parse_claude_ai
 
-        return parse_claude_ai(raw_provider_payload, provider_session_id)
+        return _apply_browser_capture_session_kind(
+            parse_claude_ai(raw_provider_payload, provider_session_id), envelope, provider_session_id
+        )
 
     seen_turns: set[str] = set()
     messages: list[ParsedMessage] = []
@@ -118,6 +145,7 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
         source_name=provider,
         provider_session_id=provider_session_id,
         title=envelope.session.title or envelope.provenance.page_title or provider_session_id,
+        session_kind=_session_kind_for_browser_capture(envelope, provider_session_id),
         created_at=envelope.session.created_at,
         updated_at=envelope.session.updated_at or envelope.provenance.captured_at,
         messages=messages,

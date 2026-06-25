@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, Provider, WebConstructType
+from polylogue.core.enums import BlockType, Provider, SessionKind, WebConstructType
 from polylogue.core.timestamps import parse_timestamp
 
 from .base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession, ParsedWebConstruct
@@ -506,11 +506,13 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
         ingest_flags.append(SHARED_CONVERSATION_INDEX_INGEST_FLAG)
     if payload.get("is_temporary") is True:
         ingest_flags.append("capture:temporary-chat")
+    session_kind = SessionKind.TEMPORARY if payload.get("is_temporary") is True else SessionKind.STANDARD
 
     return ParsedSession(
         source_name=Provider.CHATGPT,
         provider_session_id=str(conv_id or fallback_id),
         title=str(title),
+        session_kind=session_kind,
         created_at=str(payload.get("create_time")) if payload.get("create_time") is not None else None,
         updated_at=str(payload.get("update_time")) if payload.get("update_time") is not None else None,
         messages=messages,

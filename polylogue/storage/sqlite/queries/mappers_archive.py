@@ -14,6 +14,7 @@ from polylogue.core.enums import (
     MaterialOrigin,
     Origin,
     SemanticBlockType,
+    SessionKind,
     ValidationMode,
     ValidationStatus,
 )
@@ -44,6 +45,7 @@ def _row_to_session(row: sqlite3.Row) -> SessionRecord:
         native_id=row["native_id"],
         origin=row["origin"],
         title=row["title"],
+        session_kind=SessionKind.normalize(_row_text(row, "session_kind")),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         sort_key=_row_float(row, "sort_key"),

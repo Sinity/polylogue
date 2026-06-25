@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, MaterialOrigin, Origin, SemanticBlockType
+from polylogue.core.enums import BlockType, MaterialOrigin, Origin, SemanticBlockType, SessionKind
 from polylogue.core.hashing import hash_text
 from polylogue.core.json import json_document
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
@@ -36,6 +36,7 @@ class SessionRecord(BaseModel):
     native_id: str
     origin: Origin
     title: str | None = None
+    session_kind: SessionKind = SessionKind.STANDARD
     created_at: str | None = None
     updated_at: str | None = None
     sort_key: float | None = None
@@ -55,6 +56,11 @@ class SessionRecord(BaseModel):
         if isinstance(value, Origin):
             return value
         return Origin.from_string(str(value))
+
+    @field_validator("session_kind", mode="before")
+    @classmethod
+    def coerce_session_kind(cls, value: object) -> SessionKind:
+        return SessionKind.normalize(value)
 
     @field_validator("session_id", "native_id", "content_hash")
     @classmethod

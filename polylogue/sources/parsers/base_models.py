@@ -9,7 +9,7 @@ from pydantic import AliasChoices, BaseModel, Field, field_validator, model_vali
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, MaterialOrigin, Provider, TitleSource, WebConstructType
+from polylogue.core.enums import BlockType, MaterialOrigin, Provider, SessionKind, TitleSource, WebConstructType
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
 from polylogue.core.timestamps import parse_timestamp
 
@@ -233,6 +233,7 @@ class ParsedSession(BaseModel):
     source_name: Provider
     provider_session_id: str
     title: str | None = None
+    session_kind: SessionKind = SessionKind.STANDARD
     created_at: str | None = None
     updated_at: str | None = None
     messages: list[ParsedMessage]
@@ -269,6 +270,11 @@ class ParsedSession(BaseModel):
         if isinstance(v, Provider):
             return v
         return Provider.from_string(str(v) if v is not None else "unknown")
+
+    @field_validator("session_kind", mode="before")
+    @classmethod
+    def coerce_session_kind(cls, v: object) -> SessionKind:
+        return SessionKind.normalize(v)
 
     @field_validator("reported_cost_usd")
     @classmethod

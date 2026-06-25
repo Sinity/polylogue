@@ -8,7 +8,15 @@ import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, Provider, TitleSource, WebConstructType
+from polylogue.core.enums import (
+    BlockType,
+    MaterialOrigin,
+    MessageType,
+    Provider,
+    SessionKind,
+    TitleSource,
+    WebConstructType,
+)
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
@@ -247,6 +255,10 @@ def test_archive_store_connection_applies_canonical_profile(tmp_path: Path) -> N
         assert str(archive._conn.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal"
 
     with ArchiveStore(tmp_path, initialize=False, read_only=True) as archive:
+        assert int(archive._conn.execute("PRAGMA busy_timeout").fetchone()[0]) == 5_000
+        assert int(archive._conn.execute("PRAGMA query_only").fetchone()[0]) == 1
+
+    with ArchiveStore(tmp_path, initialize=False, read_only=True, read_timeout=1.0) as archive:
         assert int(archive._conn.execute("PRAGMA busy_timeout").fetchone()[0]) == 1_000
         assert int(archive._conn.execute("PRAGMA query_only").fetchone()[0]) == 1
 
@@ -2513,6 +2525,33 @@ def test_ingest_flags_written_as_auto_tags(tmp_path: Path) -> None:
     assert isinstance(tag, ArchiveSessionTag)
     assert tag.tag_source == "auto"
     assert tag.method == "parser"
+
+
+def test_session_kind_is_persisted_and_read_back(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="temporary-session",
+        title="Temporary session",
+        session_kind=SessionKind.TEMPORARY,
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                text="temporary text",
+                position=0,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="temporary text")],
+            )
+        ],
+        ingest_flags=["capture:temporary-chat"],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, session)
+
+    row = conn.execute("SELECT session_kind FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    assert row["session_kind"] == "temporary"
+    envelope = read_archive_session_envelope(conn, session_id)
+    assert envelope.session_kind == SessionKind.TEMPORARY.value
 
 
 def test_ingest_flags_empty_writes_no_auto_tags(tmp_path: Path) -> None:
