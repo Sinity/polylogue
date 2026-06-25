@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.config import load_polylogue_config
-from polylogue.daemon.convergence import ConvergenceStage
+from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn, StageExecutionResult
 from polylogue.logging import get_logger
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.source_sessions import (
@@ -104,7 +104,7 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
         except Exception:
             return False
 
-    def execute(path: Path) -> bool:
+    def execute(path: Path) -> StageExecuteReturn:
         archive_db = _active_archive_index_path(db_path)
         if archive_db is not None:
             return _archive_fts_execute(archive_db, path)
@@ -160,7 +160,7 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
         except Exception:
             return set()
 
-    def execute_many(paths: Sequence[Path]) -> bool:
+    def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
         if not paths:
             return False
         archive_db = _active_archive_index_path(db_path)
@@ -210,7 +210,7 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
         except Exception:
             return set()
 
-    def execute_sessions(session_ids: Sequence[str]) -> bool:
+    def execute_sessions(session_ids: Sequence[str]) -> StageExecuteReturn:
         if not session_ids:
             return True
         archive_db = _active_archive_index_path(db_path)
@@ -265,7 +265,7 @@ def make_embed_stage(db_path: Path) -> ConvergenceStage:
         archive_db = _active_archive_index_path(db_path)
         return _archive_embed_check(archive_db, path) if archive_db is not None else False
 
-    def execute(path: Path) -> bool:
+    def execute(path: Path) -> StageExecuteReturn:
         if not _embedding_config_enabled():
             return True
         archive_db = _active_archive_index_path(db_path)
@@ -277,7 +277,7 @@ def make_embed_stage(db_path: Path) -> ConvergenceStage:
         archive_db = _active_archive_index_path(db_path)
         return _archive_embed_check_many(archive_db, paths) if archive_db is not None else set()
 
-    def execute_many(paths: Sequence[Path]) -> bool:
+    def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
         if not paths or not _embedding_config_enabled():
             return True
         archive_db = _active_archive_index_path(db_path)
@@ -289,7 +289,7 @@ def make_embed_stage(db_path: Path) -> ConvergenceStage:
         archive_db = _active_archive_index_path(db_path)
         return _archive_embed_check_sessions(archive_db, session_ids) if archive_db is not None else set()
 
-    def execute_sessions(session_ids: Sequence[str]) -> bool:
+    def execute_sessions(session_ids: Sequence[str]) -> StageExecuteReturn:
         if not session_ids or not _embedding_config_enabled():
             return True
         archive_db = _active_archive_index_path(db_path)
@@ -341,7 +341,7 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
         except Exception:
             return False
 
-    def execute(path: Path) -> bool:
+    def execute(path: Path) -> StageExecuteReturn:
         archive_db = _active_archive_index_path(db_path)
         if archive_db is not None:
             return _archive_insights_execute(archive_db, path)
@@ -407,7 +407,7 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
         except Exception:
             return set()
 
-    def execute_many(paths: Sequence[Path]) -> bool:
+    def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
         archive_db = _active_archive_index_path(db_path)
         if archive_db is not None:
             return _archive_insights_execute_many(archive_db, paths)
@@ -469,7 +469,7 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
         except Exception:
             return set()
 
-    def execute_sessions(session_ids: Sequence[str]) -> bool:
+    def execute_sessions(session_ids: Sequence[str]) -> StageExecuteReturn:
         archive_db = _active_archive_index_path(db_path)
         if archive_db is not None:
             return _archive_insights_execute_sessions(archive_db, session_ids)
@@ -1351,7 +1351,7 @@ def _archive_insights_check(db_path: Path, path: Path) -> bool:
         return False
 
 
-def _archive_insights_execute(db_path: Path, path: Path) -> bool:
+def _archive_insights_execute(db_path: Path, path: Path) -> StageExecuteReturn:
     try:
         conn = _open_archive_insight_write_connection(db_path)
         try:
@@ -1390,7 +1390,7 @@ def _archive_insights_check_many(db_path: Path, paths: Sequence[Path]) -> set[Pa
         return set()
 
 
-def _archive_insights_execute_many(db_path: Path, paths: Sequence[Path]) -> bool:
+def _archive_insights_execute_many(db_path: Path, paths: Sequence[Path]) -> StageExecuteReturn:
     try:
         conn = _open_archive_insight_write_connection(db_path)
         try:
@@ -1421,7 +1421,7 @@ def _archive_insights_check_sessions(db_path: Path, session_ids: Sequence[str]) 
         return set()
 
 
-def _archive_insights_execute_sessions(db_path: Path, session_ids: Sequence[str]) -> bool:
+def _archive_insights_execute_sessions(db_path: Path, session_ids: Sequence[str]) -> StageExecuteReturn:
     try:
         conn = _open_archive_insight_write_connection(db_path)
         try:
@@ -1437,7 +1437,7 @@ def _archive_insights_execute_sessions(db_path: Path, session_ids: Sequence[str]
         return False
 
 
-def _archive_insights_execute_ids(conn: sqlite3.Connection, session_ids: Sequence[str]) -> bool:
+def _archive_insights_execute_ids(conn: sqlite3.Connection, session_ids: Sequence[str]) -> StageExecuteReturn:
     from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 
     session_ids = list(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
@@ -1455,10 +1455,13 @@ def _archive_insights_execute_ids(conn: sqlite3.Connection, session_ids: Sequenc
     # connection (name-based column reads throughout). The archive callers
     # use plain sqlite3.connect() without row_factory, so set it here.
     conn.row_factory = sqlite3.Row
+    stage_timings_s: dict[str, float] = {}
     counts = rebuild_session_insights_sync(
         conn,
         session_ids=list(session_ids),
         page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
+        stage_timings_s=stage_timings_s,
+        stage_timing_prefix="insights",
     )
     # rebuild_session_insights_sync commits internally when session_ids is
     # not None; no explicit conn.commit() needed here.
@@ -1472,7 +1475,7 @@ def _archive_insights_execute_ids(conn: sqlite3.Connection, session_ids: Sequenc
         counts.threads,
         len(remaining),
     )
-    return not remaining
+    return StageExecutionResult(success=not remaining, stage_timings_s=stage_timings_s)
 
 
 __all__ = [

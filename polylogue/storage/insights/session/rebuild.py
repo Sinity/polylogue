@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from collections import defaultdict
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -767,7 +768,15 @@ def rebuild_session_insights_sync(
     page_size: int = _SESSION_INSIGHT_REBUILD_PAGE_SIZE,
     progress_callback: ProgressCallback | None = None,
     progress_total: int | None = None,
+    stage_timings_s: dict[str, float] | None = None,
+    stage_timing_prefix: str = "insights",
 ) -> SessionInsightCounts:
+    def add_timing(name: str, started_at: float) -> None:
+        if stage_timings_s is None:
+            return
+        key = f"{stage_timing_prefix}.{name}"
+        stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - started_at)
+
     session_chunks: Iterable[Sequence[str]]
     previous_profile_groups: set[tuple[str, str]] = set()
     thread_materialized_at_ms = _epoch_ms_or_none(now_iso()) or 0
@@ -802,12 +811,17 @@ def rebuild_session_insights_sync(
         session_chunks = iter_session_id_pages_sync(conn, page_size=page_size)
     else:
         session_ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids))
+        t0 = time.perf_counter()
         previous_profile_groups = {
             group
             for record in _session_profile_records_for_session_ids_sync(conn, session_ids)
             if (group := profile_provider_day(record)) is not None
         }
+        add_timing("existing_profile_groups", t0)
+        t0 = time.perf_counter()
         message_counts = _load_message_counts_sync(conn, session_ids)
+        add_timing("message_counts", t0)
+        t0 = time.perf_counter()
         session_chunks = (
             chunk.session_ids
             for chunk in _chunk_session_ids_by_message_budget_sync(
@@ -817,6 +831,7 @@ def rebuild_session_insights_sync(
                 message_budget=_SESSION_INSIGHT_REBUILD_MESSAGE_BUDGET,
             )
         )
+        add_timing("chunk_plan", t0)
     if session_ids is not None and not session_ids:
         conn.commit()
         return _empty_rebuild_counts()
@@ -828,32 +843,53 @@ def rebuild_session_insights_sync(
     saw_session_ids = False
     for chunk in session_chunks:
         saw_session_ids = True
+        t0 = time.perf_counter()
         batch = load_sync_batch(conn, chunk)
+        add_timing("load_batch", t0)
+        t0 = time.perf_counter()
         root_ids_by_session = thread_root_ids_sync(conn, chunk)
+        add_timing("thread_root_lookup", t0)
+        t0 = time.perf_counter()
+        hydrated_sessions = hydrate_sessions(batch)
+        add_timing("hydrate", t0)
+        t0 = time.perf_counter()
         record_bundles = build_session_insight_record_bundles(
-            hydrate_sessions(batch),
+            hydrated_sessions,
             compaction_counts_by_session=batch.compaction_counts_by_session,
             logical_session_ids_by_session=root_ids_by_session,
         )
+        add_timing("build_records", t0)
+        t0 = time.perf_counter()
         chunk_profiles, chunk_work_events, chunk_phases = _count_record_bundles(record_bundles)
+        add_timing("count_records", t0)
+        t0 = time.perf_counter()
         replace_session_profiles_bulk_sync(conn, [bundle.profile_record for bundle in record_bundles])
+        add_timing("write_profiles", t0)
+        t0 = time.perf_counter()
         replace_session_latency_profiles_bulk_sync(
             conn,
             [bundle.latency_profile_record for bundle in record_bundles],
         )
+        add_timing("write_latency_profiles", t0)
+        t0 = time.perf_counter()
         replace_session_work_events_bulk_sync(
             conn,
             {bundle.session_id: bundle.work_event_records for bundle in record_bundles},
         )
+        add_timing("write_work_events", t0)
+        t0 = time.perf_counter()
         replace_session_phases_bulk_sync(
             conn,
             {bundle.session_id: bundle.phase_records for bundle in record_bundles},
         )
+        add_timing("write_phases", t0)
+        t0 = time.perf_counter()
         for bundle in record_bundles:
             _stamp_bundle_materialization(conn, bundle)
             group = profile_provider_day(bundle.profile_record)
             if group is not None:
                 refreshed_profile_groups.add(group)
+        add_timing("stamp_materialization", t0)
         profile_count += chunk_profiles
         work_event_count += chunk_work_events
         phase_count += chunk_phases
@@ -879,18 +915,28 @@ def rebuild_session_insights_sync(
         return _empty_rebuild_counts()
 
     if session_ids is not None:
+        t0 = time.perf_counter()
         affected_roots = tuple(thread_root_ids_sync(conn, session_ids).values())
+        add_timing("affected_thread_roots", t0)
+        t0 = time.perf_counter()
         thread_count = _refresh_thread_roots_sync(
             conn,
             affected_roots,
             materialized_at_ms=thread_materialized_at_ms,
         )
+        add_timing("refresh_threads", t0)
+        t0 = time.perf_counter()
         refresh_sync_provider_day_aggregates(
             conn,
             previous_profile_groups | refreshed_profile_groups,
         )
+        add_timing("provider_day_aggregates", t0)
+        t0 = time.perf_counter()
         tag_rollup_count = conn.execute("SELECT COUNT(*) FROM session_tag_rollups").fetchone()[0]
+        add_timing("tag_rollup_count", t0)
+        t0 = time.perf_counter()
         conn.commit()
+        add_timing("commit", t0)
         return _finalize_rebuild_counts(
             profiles=profile_count,
             work_events=work_event_count,

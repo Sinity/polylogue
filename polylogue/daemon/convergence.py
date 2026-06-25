@@ -45,6 +45,20 @@ class StageState(Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class StageExecutionResult:
+    """Optional rich result for convergence stages that report sub-timings."""
+
+    success: bool
+    stage_timings_s: dict[str, float] = field(default_factory=dict)
+
+    def __bool__(self) -> bool:
+        return self.success
+
+
+StageExecuteReturn = bool | StageExecutionResult
+
+
+@dataclass(frozen=True, slots=True)
 class ConvergenceStage:
     """A named pipeline stage with a check function and an execute function."""
 
@@ -53,15 +67,15 @@ class ConvergenceStage:
     # Check returns True if this stage needs work for the given file.
     check: Callable[[Path], bool]
     # Execute performs the work. Returns True on success.
-    execute: Callable[[Path], bool]
+    execute: Callable[[Path], StageExecuteReturn]
     # Optional batch check/execute pair for stages that can collapse many
     # changed source paths into one repair transaction.
     check_many: Callable[[Sequence[Path]], set[Path]] | None = None
-    execute_many: Callable[[Sequence[Path]], bool] | None = None
+    execute_many: Callable[[Sequence[Path]], StageExecuteReturn] | None = None
     # Optional session-scoped pair for durable convergence debt retries.
     # These avoid resolving a failed derived subject back to source files.
     check_sessions: Callable[[Sequence[str]], set[str]] | None = None
-    execute_sessions: Callable[[Sequence[str]], bool] | None = None
+    execute_sessions: Callable[[Sequence[str]], StageExecuteReturn] | None = None
     # Can run in a worker process (CPU-bound, no SQLite write).
     cpu_bound: bool = False
     # Some stages intentionally return False after doing bounded successful
@@ -122,6 +136,23 @@ def _record_execute_result(
         return
     state.stages[stage_name] = StageState.FAILED
     state.error_count += 1
+
+
+def _coerce_execute_result(result: StageExecuteReturn) -> tuple[bool, dict[str, float]]:
+    if isinstance(result, StageExecutionResult):
+        return result.success, dict(result.stage_timings_s)
+    return bool(result), {}
+
+
+def _record_stage_times(
+    batch_stage_times: dict[str, float],
+    stage_name: str,
+    elapsed: float,
+    extra_stage_timings_s: dict[str, float],
+) -> None:
+    batch_stage_times[stage_name] = batch_stage_times.get(stage_name, 0.0) + elapsed
+    for name, value in extra_stage_timings_s.items():
+        batch_stage_times[name] = batch_stage_times.get(name, 0.0) + float(value)
 
 
 class DaemonConverger:
@@ -211,9 +242,9 @@ class DaemonConverger:
             try:
                 if stage.cpu_bound and self._executor is not None:
                     future = self._executor.submit(stage.execute, path)
-                    success = future.result()
+                    execute_result = future.result()
                 else:
-                    success = stage.execute(path)
+                    execute_result = stage.execute(path)
             except Exception as exc:
                 logger.warning(
                     "converger: execute failed for %s stage=%s: %s",
@@ -227,8 +258,12 @@ class DaemonConverger:
                 continue
 
             elapsed = time.perf_counter() - t_stage
+            success, extra_stage_timings_s = _coerce_execute_result(execute_result)
             state.stage_times[stage_name] = elapsed
             state.last_stage_times[stage_name] = elapsed
+            for name, value in extra_stage_timings_s.items():
+                state.stage_times[name] = value
+                state.last_stage_times[name] = value
             _record_execute_result(
                 state,
                 stage_name=stage_name,
@@ -297,7 +332,7 @@ class DaemonConverger:
                     state.stages[stage_name] = StageState.IN_PROGRESS
                     t_stage = time.perf_counter()
                     try:
-                        success = stage.execute(path)
+                        execute_result = stage.execute(path)
                     except Exception as exc:
                         logger.warning(
                             "converger: execute failed for %s stage=%s: %s",
@@ -311,9 +346,13 @@ class DaemonConverger:
                         continue
 
                     elapsed = time.perf_counter() - t_stage
-                    batch_stage_times[stage_name] = batch_stage_times.get(stage_name, 0.0) + elapsed
+                    success, extra_stage_timings_s = _coerce_execute_result(execute_result)
+                    _record_stage_times(batch_stage_times, stage_name, elapsed, extra_stage_timings_s)
                     state.stage_times[stage_name] = elapsed
                     state.last_stage_times[stage_name] = elapsed
+                    for name, value in extra_stage_timings_s.items():
+                        state.stage_times[name] = value
+                        state.last_stage_times[name] = value
                     _record_execute_result(
                         state,
                         stage_name=stage_name,
@@ -345,17 +384,21 @@ class DaemonConverger:
 
             t_stage = time.perf_counter()
             try:
-                success = stage.execute_many(tuple(batch_needs_work))
+                execute_result = stage.execute_many(tuple(batch_needs_work))
             except Exception as exc:
                 logger.warning("converger: batch execute failed stage=%s: %s", stage_name, exc)
-                success = False
+                execute_result = False
 
             elapsed = time.perf_counter() - t_stage
-            batch_stage_times[stage_name] = elapsed
+            success, extra_stage_timings_s = _coerce_execute_result(execute_result)
+            _record_stage_times(batch_stage_times, stage_name, elapsed, extra_stage_timings_s)
             for path in batch_needs_work:
                 state = self._file_states[path]
                 state.stage_times[stage_name] = elapsed
                 state.last_stage_times[stage_name] = elapsed
+                for name, value in extra_stage_timings_s.items():
+                    state.stage_times[name] = value
+                    state.last_stage_times[name] = value
                 _record_execute_result(
                     state,
                     stage_name=stage_name,
@@ -414,17 +457,21 @@ class DaemonConverger:
 
             t_stage = time.perf_counter()
             try:
-                success = stage.execute_sessions(tuple(batch_needs_work))
+                execute_result = stage.execute_sessions(tuple(batch_needs_work))
             except Exception as exc:
                 logger.warning("converger: session batch execute failed stage=%s: %s", stage_name, exc)
-                success = False
+                execute_result = False
 
             elapsed = time.perf_counter() - t_stage
-            batch_stage_times[stage_name] = elapsed
+            success, extra_stage_timings_s = _coerce_execute_result(execute_result)
+            _record_stage_times(batch_stage_times, stage_name, elapsed, extra_stage_timings_s)
             for session_id in batch_needs_work:
                 state = self._session_states[session_id]
                 state.stage_times[stage_name] = elapsed
                 state.last_stage_times[stage_name] = elapsed
+                for name, value in extra_stage_timings_s.items():
+                    state.stage_times[name] = value
+                    state.last_stage_times[name] = value
                 _record_execute_result(
                     state,
                     stage_name=stage_name,
