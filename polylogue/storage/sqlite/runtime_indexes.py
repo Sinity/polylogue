@@ -30,6 +30,11 @@ _RUNTIME_INDEX_SQL: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS idx_messages_material_origin
     ON messages(material_origin)
     """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_messages_active_leaf
+    ON messages(session_id, is_active_leaf)
+    WHERE is_active_leaf = 1
+    """,
 )
 
 

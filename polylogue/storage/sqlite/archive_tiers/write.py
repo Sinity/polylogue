@@ -331,7 +331,7 @@ def write_parsed_session_to_archive(
                 SET is_active_leaf = 0
                 WHERE session_id = ?
                   AND is_active_path = 1
-                  AND is_active_leaf != 0
+                  AND is_active_leaf = 1
                 """,
                 (session_id,),
             )
