@@ -1272,6 +1272,54 @@ def test_provider_usage_events_append_preserves_prior_history(tmp_path: Path) ->
     ]
 
 
+def test_merge_append_clears_only_existing_active_leaf(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    message_count = 200
+    first = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-large-append",
+        messages=[
+            ParsedMessage(
+                provider_message_id=f"m{i}",
+                role=Role.USER if i % 2 == 0 else Role.ASSISTANT,
+                text=f"large append baseline {i}",
+                is_active_leaf=i == message_count - 1,
+            )
+            for i in range(message_count)
+        ],
+    )
+    second = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-large-append",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m200",
+                role=Role.ASSISTANT,
+                text="large append tail",
+                is_active_leaf=True,
+            )
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, first)
+    before_changes = conn.total_changes
+    write_parsed_session_to_archive(conn, second, merge_append=True)
+    append_changes = conn.total_changes - before_changes
+
+    rows = conn.execute(
+        """
+        SELECT native_id, position, is_active_leaf
+        FROM messages
+        WHERE session_id = ? AND is_active_leaf = 1
+        ORDER BY position
+        """,
+        (session_id,),
+    ).fetchall()
+    assert [dict(row) for row in rows] == [{"native_id": "m200", "position": 200, "is_active_leaf": 1}]
+    assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0] == 201
+    assert append_changes < 80
+
+
 def test_provider_usage_rollup_clears_stale_message_pricing(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     session = ParsedSession(
