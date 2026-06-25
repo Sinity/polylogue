@@ -479,6 +479,7 @@ class ArchiveStore:
             session,
             raw_id=raw_id,
             merge_append=source_index < 0,
+            stage_timings_s=stage_timings_s,
         )
         add_timing("append.index_parsed_write", t0)
         return raw_id, session_id

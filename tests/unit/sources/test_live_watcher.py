@@ -1531,7 +1531,12 @@ async def test_codex_append_uses_existing_session_identity_when_tail_lacks_sessi
         assert {
             "append.archive_open",
             "append.blob_write",
+            "append.index.blocks",
             "append.index_parsed_write",
+            "append.index.messages",
+            "append.index.provider_usage_rollup",
+            "append.index.session_events",
+            "append.index.session_upsert",
             "append.json_stream",
             "append.provider_parse",
             "append.raw_and_index_write",
