@@ -235,6 +235,11 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "insight_rigor_audit": ("archive_routed", "index", "reads insight rigor from index.db"),
     "list_annotations": ("archive_routed", "user", "reads annotations through user.db"),
     "list_assertion_candidates": ("archive_routed", "user", "reads candidate assertion claims through user.db"),
+    "list_assertion_candidate_reviews": (
+        "archive_routed",
+        "user",
+        "reads candidate assertion review rows through user.db",
+    ),
     "list_assertion_claims": ("archive_routed", "user", "reads assertion claims through user.db"),
     "list_assertion_claim_payloads": ("archive_routed", "user", "reads assertion claim payload DTOs through user.db"),
     "list_blackboard_notes": ("archive_routed", "user", "reads blackboard notes through user.db"),

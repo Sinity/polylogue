@@ -151,7 +151,7 @@ def test_build_click_params_and_insight_command_cover_dynamic_registration() -> 
     params = insights_module._build_click_params(insight_type)
     command = insights_module._build_insight_command(insight_type)
 
-    assert [param.name for param in params] == ["provider", "limit", "offset", "output_format"]
+    assert [param.name for param in params] == ["provider", "limit", "offset", "output_format", "output_format"]
     assert command.name == "test-insight"
     assert command.help == "List test insights."
 

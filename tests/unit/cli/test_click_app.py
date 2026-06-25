@@ -341,6 +341,7 @@ def test_query_action_read_explain_json_outputs_terminal_action(cli_runner: CliR
         "action": "read",
         "all": False,
         "destination": "terminal",
+        "first": False,
         "format": "default",
         "view": "messages",
     }
@@ -408,7 +409,7 @@ def test_query_action_read_explain_uses_local_read_format(cli_runner: CliRunner)
         ),
         (
             ["delete", "--dry-run"],
-            {"action": "delete", "all": False, "dry_run": True, "yes": False},
+            {"action": "delete", "all": False, "dry_run": True, "format": "json", "yes": False},
         ),
         (
             ["mark", "--tag-add", "reviewed"],
@@ -417,6 +418,7 @@ def test_query_action_read_explain_uses_local_read_format(cli_runner: CliRunner)
                 "all": False,
                 "archive": False,
                 "first": False,
+                "format": "default",
                 "note": False,
                 "pin": False,
                 "star": False,
@@ -436,6 +438,7 @@ def test_query_action_read_explain_uses_local_read_format(cli_runner: CliRunner)
                 "count": True,
                 "facets": False,
                 "format": "json",
+                "include_deferred": False,
                 "limit": None,
             },
         ),
