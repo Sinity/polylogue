@@ -1281,13 +1281,24 @@ def test_provider_usage_rollup_skips_append_without_usage_events(
 ) -> None:
     conn = _connect(tmp_path / "index.db")
     rollup_calls: list[str] = []
+    append_rollup_calls: list[tuple[str, int]] = []
     original_rollup = archive_tier_write._aggregate_provider_usage_into_model_usage
+    original_append_rollup = archive_tier_write._aggregate_appended_provider_usage_into_model_usage
 
     def _record_rollup(conn_arg: sqlite3.Connection, session_id_arg: str) -> None:
         rollup_calls.append(session_id_arg)
         original_rollup(conn_arg, session_id_arg)
 
+    def _record_append_rollup(conn_arg: sqlite3.Connection, session_id_arg: str, *, start_position: int) -> None:
+        append_rollup_calls.append((session_id_arg, start_position))
+        original_append_rollup(conn_arg, session_id_arg, start_position=start_position)
+
     monkeypatch.setattr(archive_tier_write, "_aggregate_provider_usage_into_model_usage", _record_rollup)
+    monkeypatch.setattr(
+        archive_tier_write,
+        "_aggregate_appended_provider_usage_into_model_usage",
+        _record_append_rollup,
+    )
     first = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="codex-usage-append-skip",
@@ -1347,12 +1358,15 @@ def test_provider_usage_rollup_skips_append_without_usage_events(
 
     session_id = write_parsed_session_to_archive(conn, first)
     assert rollup_calls == [session_id]
+    assert append_rollup_calls == []
 
     write_parsed_session_to_archive(conn, no_usage_append, merge_append=True)
     assert rollup_calls == [session_id]
+    assert append_rollup_calls == []
 
     write_parsed_session_to_archive(conn, usage_append, merge_append=True)
-    assert rollup_calls == [session_id, session_id]
+    assert rollup_calls == [session_id]
+    assert append_rollup_calls == [(session_id, 1)]
 
     row = conn.execute(
         """
@@ -1365,6 +1379,148 @@ def test_provider_usage_rollup_skips_append_without_usage_events(
     assert dict(row) == {
         "input_tokens": 30,
         "output_tokens": 15,
+        "cost_provenance": "origin_reported",
+    }
+
+
+def test_provider_usage_append_incremental_rolls_up_last_usage(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    first = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-usage-append-last-only",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                model_name="gpt-5-codex",
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="first")],
+            )
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                source_message_provider_id="m1",
+                payload={
+                    "type": "token_count",
+                    "last_token_usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 5,
+                        "reasoning_output_tokens": 2,
+                    },
+                },
+            )
+        ],
+    )
+    second = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-usage-append-last-only",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m2",
+                role=Role.ASSISTANT,
+                model_name="gpt-5-codex",
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="second")],
+            )
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                source_message_provider_id="m2",
+                payload={
+                    "type": "token_count",
+                    "last_token_usage": {
+                        "input_tokens": 3,
+                        "output_tokens": 4,
+                        "reasoning_output_tokens": 1,
+                    },
+                },
+            )
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, first)
+    write_parsed_session_to_archive(conn, second, merge_append=True)
+
+    row = conn.execute(
+        """
+        SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_provenance
+        FROM session_model_usage
+        WHERE session_id = ? AND model_name = 'gpt-5-codex'
+        """,
+        (session_id,),
+    ).fetchone()
+    assert dict(row) == {
+        "input_tokens": 13,
+        "output_tokens": 12,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_provenance": "origin_reported",
+    }
+
+
+def test_provider_usage_append_last_usage_does_not_override_cumulative(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    first = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-usage-append-cumulative-first",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                model_name="gpt-5-codex",
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="first")],
+            )
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                source_message_provider_id="m1",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-5-codex",
+                    "total_token_usage": {"input_tokens": 100, "output_tokens": 40},
+                },
+            )
+        ],
+    )
+    second = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-usage-append-cumulative-first",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m2",
+                role=Role.ASSISTANT,
+                model_name="gpt-5-codex",
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="second")],
+            )
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                source_message_provider_id="m2",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-5-codex",
+                    "last_token_usage": {"input_tokens": 3, "output_tokens": 4},
+                },
+            )
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, first)
+    write_parsed_session_to_archive(conn, second, merge_append=True)
+
+    row = conn.execute(
+        """
+        SELECT input_tokens, output_tokens, cost_provenance
+        FROM session_model_usage
+        WHERE session_id = ? AND model_name = 'gpt-5-codex'
+        """,
+        (session_id,),
+    ).fetchone()
+    assert dict(row) == {
+        "input_tokens": 100,
+        "output_tokens": 40,
         "cost_provenance": "origin_reported",
     }
 
