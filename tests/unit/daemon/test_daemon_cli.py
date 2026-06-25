@@ -385,6 +385,33 @@ def test_polylogued_run_uses_default_sources() -> None:
     assert "Starting polylogued (watch=1 source(s)). Ctrl-C to stop." in result.stderr
 
 
+def test_polylogued_run_can_skip_configured_source_catchup() -> None:
+    recorded: dict[str, object] = {}
+
+    async def fake_run_daemon_services(**kwargs: object) -> None:
+        recorded.update(kwargs)
+
+    with patch("polylogue.daemon.cli.run_daemon_services", side_effect=fake_run_daemon_services):
+        result = CliRunner().invoke(
+            main,
+            [
+                "run",
+                "--root",
+                "/tmp/codex",
+                "--no-source-catchup",
+                "--no-browser-capture",
+                "--no-api",
+            ],
+        )
+
+    assert result.exit_code == 0, (result.output, result.exception)
+    assert recorded["enable_watch"] is True
+    assert recorded["enable_source_catchup"] is False
+    recorded_sources = recorded["sources"]
+    assert isinstance(recorded_sources, tuple)
+    assert tuple(source.root for source in recorded_sources) == (Path("/tmp/codex"),)
+
+
 def test_polylogued_run_rejects_empty_component_set() -> None:
     # All three components default to ON; only when every one is explicitly
     # disabled should `run` refuse to start.
