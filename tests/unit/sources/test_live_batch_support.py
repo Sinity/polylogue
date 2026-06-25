@@ -193,6 +193,10 @@ def test_full_ingest_writes_archive_with_route_observability(
         "full.index_parsed_write",
         "full.index.session_upsert",
         "full.index.full_replace",
+        "full.index.full_replace.clear_projection_rows",
+        "full.index.full_replace.messages",
+        "full.index.full_replace.blocks",
+        "full.index.full_replace.fts_insert",
     }.issubset(result.stage_timings_s)
     with sqlite3.connect(source_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 1
