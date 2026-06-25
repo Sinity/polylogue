@@ -94,6 +94,7 @@ def _ingest_append_plans_archive(
                             source_path=str(plan.path),
                             source_index=-1,
                             acquired_at_ms=acquired_at_ms,
+                            stage_timings_s=timings,
                         )
                         _add_timing(timings, "append.raw_and_index_write", t0)
                     succeeded.append(plan)
