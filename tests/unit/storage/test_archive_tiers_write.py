@@ -1320,6 +1320,68 @@ def test_merge_append_clears_only_existing_active_leaf(tmp_path: Path) -> None:
     assert append_changes < 80
 
 
+def test_merge_append_without_attachments_does_not_refresh_all_attachment_counts(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    unrelated_attachment_count = 120
+    for i in range(unrelated_attachment_count):
+        write_parsed_session_to_archive(
+            conn,
+            ParsedSession(
+                source_name=Provider.CHATGPT,
+                provider_session_id=f"attachment-neighbor-{i}",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=f"neighbor attachment {i}")],
+                    )
+                ],
+                attachments=[
+                    ParsedAttachment(
+                        provider_attachment_id=f"att-{i}",
+                        message_provider_id="m1",
+                        name=f"neighbor-{i}.txt",
+                        mime_type="text/plain",
+                        path=f"neighbor-{i}.txt",
+                    )
+                ],
+            ),
+        )
+    first = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-append-no-attachments",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                text="append baseline without attachments",
+                is_active_leaf=True,
+            )
+        ],
+    )
+    second = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-append-no-attachments",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m2",
+                role=Role.ASSISTANT,
+                text="append tail without attachments",
+                is_active_leaf=True,
+            )
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, first)
+    before_changes = conn.total_changes
+    write_parsed_session_to_archive(conn, second, merge_append=True)
+    append_changes = conn.total_changes - before_changes
+
+    assert conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0] == unrelated_attachment_count
+    assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0] == 2
+    assert append_changes < 80
+
+
 def test_provider_usage_rollup_clears_stale_message_pricing(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     session = ParsedSession(
