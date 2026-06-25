@@ -212,6 +212,11 @@ class ArchiveSessionPhase:
     input_high_water_mark_source: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class SessionEventWriteResult:
+    wrote_provider_usage_events: bool = False
+
+
 def write_parsed_session_to_archive(
     conn: sqlite3.Connection,
     session: ParsedSession,
@@ -412,13 +417,14 @@ def write_parsed_session_to_archive(
         _write_session_link(conn, session_id, session)
         add_timing("index.session_link", t0)
         t0 = time.perf_counter()
-        wrote_provider_usage_events = _write_session_events(
+        event_position_offset = _next_session_event_position(conn, session_id)
+        session_event_result = _write_session_events(
             conn,
             session_id,
             messages,
             session.session_events,
             position_offset=position_offset,
-            event_position_offset=_next_session_event_position(conn, session_id),
+            event_position_offset=event_position_offset,
             duplicate_native_ids=duplicate_message_native_ids,
         )
         add_timing("index.session_events", t0)
@@ -429,9 +435,22 @@ def write_parsed_session_to_archive(
         _write_repo_edges(conn, session_id, session)
         add_timing("index.repo_edges", t0)
         t0 = time.perf_counter()
-        _write_reported_costs(conn, session_id, session)
+        _write_reported_costs(
+            conn,
+            session_id,
+            session,
+            replace_existing_model_rows=not merge_append,
+        )
         add_timing("index.reported_costs", t0)
-        if not merge_append or wrote_provider_usage_events:
+        if merge_append and session_event_result.wrote_provider_usage_events:
+            t0 = time.perf_counter()
+            _aggregate_appended_provider_usage_into_model_usage(
+                conn,
+                session_id,
+                start_position=event_position_offset,
+            )
+            add_timing("index.provider_usage_rollup", t0)
+        elif not merge_append:
             t0 = time.perf_counter()
             _aggregate_provider_usage_into_model_usage(conn, session_id)
             add_timing("index.provider_usage_rollup", t0)
@@ -2060,7 +2079,7 @@ def _write_session_events(
     position_offset: int = 0,
     event_position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
-) -> bool:
+) -> SessionEventWriteResult:
     by_native_id = {
         message.provider_message_id: _message_id(
             session_id,
@@ -2121,7 +2140,7 @@ def _write_session_events(
             )
             wrote_provider_usage_events = True
             position += 1
-    return wrote_provider_usage_events
+    return SessionEventWriteResult(wrote_provider_usage_events=wrote_provider_usage_events)
 
 
 def _write_provider_usage_event(
@@ -2273,6 +2292,139 @@ def _aggregate_provider_usage_into_model_usage(conn: sqlite3.Connection, session
         )
 
 
+def _aggregate_appended_provider_usage_into_model_usage(
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    start_position: int,
+) -> None:
+    """Fold only newly appended provider usage events into model usage rows."""
+
+    rows = conn.execute(
+        """
+        SELECT model_name, position,
+               last_input_tokens, last_output_tokens, last_cached_input_tokens,
+               last_cache_write_tokens, last_reasoning_output_tokens, last_total_tokens,
+               total_input_tokens, total_output_tokens, total_cached_input_tokens,
+               total_cache_write_tokens, total_reasoning_output_tokens, total_tokens
+        FROM session_provider_usage_events
+        WHERE session_id = ?
+          AND provider_event_type = 'token_count'
+          AND position >= ?
+        ORDER BY position
+        """,
+        (session_id, start_position),
+    ).fetchall()
+    if not rows:
+        return
+
+    existing_models = _provider_usage_existing_models(conn, session_id)
+    latest_total_by_model: dict[str, tuple[int, int, int, int, int, int]] = {}
+    summed_last_by_model: dict[str, list[int]] = {}
+
+    for row in rows:
+        model_name = _provider_usage_model_name(row[0], existing_models)
+        if not model_name:
+            continue
+
+        last_input = int(row[2] or 0)
+        last_output = int(row[3] or 0)
+        last_cache_read = int(row[4] or 0)
+        last_cache_write = int(row[5] or 0)
+        last_reasoning = int(row[6] or 0)
+        last_total = int(row[7] or 0)
+        total_input = int(row[8] or 0)
+        total_output = int(row[9] or 0)
+        total_cache_read = int(row[10] or 0)
+        total_cache_write = int(row[11] or 0)
+        total_reasoning = int(row[12] or 0)
+        total_tokens = int(row[13] or 0)
+
+        if total_input or total_output or total_cache_read or total_cache_write or total_reasoning or total_tokens:
+            latest_total_by_model[model_name] = (
+                total_input,
+                total_output,
+                total_cache_read,
+                total_cache_write,
+                total_reasoning,
+                total_tokens,
+            )
+            continue
+
+        if last_input or last_output or last_cache_read or last_cache_write or last_reasoning or last_total:
+            bucket = summed_last_by_model.setdefault(model_name, [0, 0, 0, 0, 0])
+            bucket[0] += last_input
+            bucket[1] += last_output
+            bucket[2] += last_cache_read
+            bucket[3] += last_cache_write
+            bucket[4] += last_reasoning
+
+    for model_name, totals in latest_total_by_model.items():
+        _upsert_provider_usage_model_rollup(
+            conn,
+            session_id,
+            model_name,
+            input_tokens=totals[0],
+            output_tokens=totals[1] + totals[4],
+            cache_read_tokens=totals[2],
+            cache_write_tokens=totals[3],
+        )
+
+    for model_name, summed_totals in summed_last_by_model.items():
+        if model_name in latest_total_by_model or _provider_usage_has_cumulative_total(conn, session_id, model_name):
+            continue
+        _increment_provider_usage_model_rollup(
+            conn,
+            session_id,
+            model_name,
+            input_tokens=summed_totals[0],
+            output_tokens=summed_totals[1] + summed_totals[4],
+            cache_read_tokens=summed_totals[2],
+            cache_write_tokens=summed_totals[3],
+        )
+
+
+def _provider_usage_existing_models(conn: sqlite3.Connection, session_id: str) -> list[str]:
+    return [
+        str(row[0]).strip()
+        for row in conn.execute(
+            "SELECT model_name FROM session_model_usage WHERE session_id = ? ORDER BY model_name",
+            (session_id,),
+        ).fetchall()
+        if row[0] and str(row[0]).strip()
+    ]
+
+
+def _provider_usage_model_name(model_name: object, existing_models: Sequence[str]) -> str:
+    resolved = str(model_name).strip() if model_name else ""
+    if resolved:
+        return resolved
+    return existing_models[0] if len(existing_models) == 1 else ""
+
+
+def _provider_usage_has_cumulative_total(conn: sqlite3.Connection, session_id: str, model_name: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM session_provider_usage_events
+        WHERE session_id = ?
+          AND provider_event_type = 'token_count'
+          AND model_name = ?
+          AND (
+            total_input_tokens != 0
+            OR total_output_tokens != 0
+            OR total_cached_input_tokens != 0
+            OR total_cache_write_tokens != 0
+            OR total_reasoning_output_tokens != 0
+            OR total_tokens != 0
+          )
+        LIMIT 1
+        """,
+        (session_id, model_name),
+    ).fetchone()
+    return row is not None
+
+
 def _upsert_provider_usage_model_rollup(
     conn: sqlite3.Connection,
     session_id: str,
@@ -2311,6 +2463,44 @@ def _upsert_provider_usage_model_rollup(
     )
 
 
+def _increment_provider_usage_model_rollup(
+    conn: sqlite3.Connection,
+    session_id: str,
+    model_name: str,
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int,
+    cache_write_tokens: int,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO session_model_usage (
+            session_id, model_name,
+            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+            cost_provenance
+        ) VALUES (?, ?, ?, ?, ?, ?, 'origin_reported')
+        ON CONFLICT(session_id, model_name) DO UPDATE SET
+            input_tokens       = COALESCE(session_model_usage.input_tokens, 0) + excluded.input_tokens,
+            output_tokens      = COALESCE(session_model_usage.output_tokens, 0) + excluded.output_tokens,
+            cache_read_tokens  = COALESCE(session_model_usage.cache_read_tokens, 0) + excluded.cache_read_tokens,
+            cache_write_tokens = COALESCE(session_model_usage.cache_write_tokens, 0) + excluded.cache_write_tokens,
+            cost_provenance    = excluded.cost_provenance,
+            cost_usd           = NULL,
+            priced_with        = NULL,
+            priced_at_ms       = NULL
+        """,
+        (
+            session_id,
+            model_name,
+            max(int(input_tokens), 0),
+            max(int(output_tokens), 0),
+            max(int(cache_read_tokens), 0),
+            max(int(cache_write_tokens), 0),
+        ),
+    )
+
+
 def _write_working_dirs(conn: sqlite3.Connection, session_id: str, working_directories: Iterable[str]) -> None:
     for position, path in enumerate(working_directories):
         conn.execute(
@@ -2322,7 +2512,13 @@ def _write_working_dirs(conn: sqlite3.Connection, session_id: str, working_direc
         )
 
 
-def _write_reported_costs(conn: sqlite3.Connection, session_id: str, session: ParsedSession) -> None:
+def _write_reported_costs(
+    conn: sqlite3.Connection,
+    session_id: str,
+    session: ParsedSession,
+    *,
+    replace_existing_model_rows: bool = True,
+) -> None:
     observed_at_ms = _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at)
     if session.reported_cost_usd is not None:
         conn.execute(
@@ -2335,15 +2531,22 @@ def _write_reported_costs(conn: sqlite3.Connection, session_id: str, session: Pa
         )
     model_names = {model_name.strip() for model_name in session.models_used if model_name.strip()}
     model_names.update(message.model_name.strip() for message in session.messages if message.model_name)
+    model_usage_sql = (
+        """
+        INSERT OR REPLACE INTO session_model_usage (
+            session_id, model_name, cost_provenance
+        ) VALUES (?, ?, 'origin_reported')
+        """
+        if replace_existing_model_rows
+        else """
+        INSERT INTO session_model_usage (
+            session_id, model_name, cost_provenance
+        ) VALUES (?, ?, 'origin_reported')
+        ON CONFLICT(session_id, model_name) DO NOTHING
+        """
+    )
     for model_name in sorted(model_names):
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO session_model_usage (
-                session_id, model_name, cost_provenance
-            ) VALUES (?, ?, 'origin_reported')
-            """,
-            (session_id, _sqlite_text(model_name)),
-        )
+        conn.execute(model_usage_sql, (session_id, _sqlite_text(model_name)))
     _aggregate_message_tokens_into_model_usage(conn, session_id)
 
 
@@ -2438,6 +2641,15 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
                 priced_at_ms       = excluded.priced_at_ms,
                 cost_usd           = excluded.cost_usd,
                 cost_provenance    = excluded.cost_provenance
+            WHERE NOT (
+                session_model_usage.cost_provenance = 'origin_reported'
+                AND (
+                    COALESCE(session_model_usage.input_tokens, 0) != 0
+                    OR COALESCE(session_model_usage.output_tokens, 0) != 0
+                    OR COALESCE(session_model_usage.cache_read_tokens, 0) != 0
+                    OR COALESCE(session_model_usage.cache_write_tokens, 0) != 0
+                )
+            )
             """,
             (
                 session_id,
