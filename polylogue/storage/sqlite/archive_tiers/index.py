@@ -133,6 +133,10 @@ CREATE INDEX IF NOT EXISTS idx_messages_active_path
 ON messages(session_id, is_active_path, position)
 WHERE is_active_path = 1;
 
+CREATE INDEX IF NOT EXISTS idx_messages_active_leaf
+ON messages(session_id, is_active_leaf)
+WHERE is_active_leaf = 1;
+
 CREATE TABLE IF NOT EXISTS blocks (
     block_id        TEXT GENERATED ALWAYS AS (message_id || ':' || position) STORED UNIQUE,
     message_id      TEXT NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE,
