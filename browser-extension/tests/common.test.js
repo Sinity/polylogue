@@ -63,6 +63,7 @@ function buildEnvelope({
   turns,
   model = null,
   providerSessionId = null,
+  sessionKind = null,
   title = null,
   createdAt = null,
   updatedAt = null,
@@ -90,6 +91,12 @@ function buildEnvelope({
   ) {
     sessionProviderMeta.session_kind = "temporary";
   }
+  const stableSessionKind =
+    sessionKind === "temporary" ||
+    sessionProviderMeta.session_kind === "temporary" ||
+    resolvedProviderSessionId.startsWith("temporary:")
+      ? "temporary"
+      : "standard";
   const now = new Date().toISOString();
   const envelope = {
     polylogue_capture_kind: "browser_llm_session",
@@ -108,6 +115,7 @@ function buildEnvelope({
     session: {
       provider,
       provider_session_id: resolvedProviderSessionId,
+      session_kind: stableSessionKind,
       title: title || "Test Page",
       created_at: createdAt,
       updated_at: updatedAt || now,
@@ -209,6 +217,30 @@ describe("sessionIdFromUrl", () => {
       "https://chatgpt.com/?temporary-chat=true",
     );
     expect(id).toBe("__polylogue_temporary_chat__");
+  });
+
+  it("marks temporary-chat envelopes with typed session_kind", () => {
+    const envelope = buildEnvelope({
+      provider: "chatgpt",
+      adapterName: "chatgpt-dom-v1",
+      sourceUrl: "https://chatgpt.com/?temporary-chat=true",
+      turns: [{ role: "user", text: "Preserve this" }],
+    });
+    expect(envelope.session.provider_session_id).toMatch(/^temporary:/);
+    expect(envelope.session.session_kind).toBe("temporary");
+    expect(envelope.session.provider_meta.session_kind).toBe("temporary");
+  });
+
+  it("honors explicit temporary sessionKind from native adapters", () => {
+    const envelope = buildEnvelope({
+      provider: "chatgpt",
+      adapterName: "chatgpt-native-v1",
+      providerSessionId: "native-temporary",
+      sessionKind: "temporary",
+      turns: [{ role: "user", text: "Native temporary" }],
+    });
+    expect(envelope.session.provider_session_id).toBe("native-temporary");
+    expect(envelope.session.session_kind).toBe("temporary");
   });
 
   it("does not invent Claude ids for non-conversation routes", () => {

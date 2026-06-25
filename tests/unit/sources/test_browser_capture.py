@@ -250,6 +250,26 @@ def test_browser_capture_session_kind_marks_temporary_chat() -> None:
     assert parsed[0].ingest_flags == [TEMPORARY_CHAT_INGEST_FLAG]
 
 
+def test_browser_capture_typed_session_kind_marks_temporary_chat() -> None:
+    payload = _capture_payload()
+    session_payload = payload["session"]
+    assert isinstance(session_payload, dict)
+    session_payload["session_kind"] = "temporary"
+
+    envelope = BrowserCaptureEnvelope.model_validate(payload)
+    parsed = parse_payload(Provider.CHATGPT, payload, "file-fallback")
+
+    assert envelope.session.session_kind == "temporary"
+    assert parsed[0].provider_session_id == "conv-123"
+    assert parsed[0].ingest_flags == [TEMPORARY_CHAT_INGEST_FLAG]
+
+
+def test_browser_capture_session_kind_defaults_to_standard() -> None:
+    envelope = BrowserCaptureEnvelope.model_validate(_capture_payload())
+
+    assert envelope.session.session_kind == "standard"
+
+
 def test_browser_capture_raw_chatgpt_normalizes_legacy_synthetic_fallback_id() -> None:
     payload = _capture_payload()
     session = payload["session"]

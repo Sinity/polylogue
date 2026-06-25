@@ -196,6 +196,7 @@
       adapterName: nativeAdapterName,
       turns,
       providerSessionId: String(payload.uuid || conversationIdFromUrl()),
+      sessionKind: payload.is_temporary === true ? "temporary" : null,
       title: typeof payload.name === "string" && payload.name ? payload.name : null,
       createdAt: payload.created_at || null,
       updatedAt: payload.updated_at || null,
