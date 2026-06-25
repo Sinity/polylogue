@@ -9,7 +9,7 @@ already decoded for parsing anyway).
 from __future__ import annotations
 
 import time
-from collections.abc import AsyncIterator, Iterable, Iterator
+from collections.abc import Iterable, Iterator
 from typing import TYPE_CHECKING
 
 from polylogue.logging import get_logger
@@ -57,34 +57,6 @@ def _iter_raw_id_batches(
 
 def _raw_batch_bytes(headers_by_raw_id: dict[str, int], batch_ids: Iterable[str]) -> int:
     return sum(max(int(headers_by_raw_id.get(raw_id, 0)), 0) for raw_id in batch_ids)
-
-
-async def _iter_raw_id_batches_async(
-    headers: AsyncIterator[tuple[str, int]],
-    *,
-    max_records: int,
-    max_blob_bytes: int,
-) -> AsyncIterator[list[str]]:
-    batch_ids: list[str] = []
-    batch_blob_bytes = 0
-
-    async for raw_id, blob_size in headers:
-        record_blob_bytes = max(int(blob_size), 0)
-        if batch_ids and (len(batch_ids) >= max_records or batch_blob_bytes + record_blob_bytes > max_blob_bytes):
-            yield batch_ids
-            batch_ids = []
-            batch_blob_bytes = 0
-
-        batch_ids.append(raw_id)
-        batch_blob_bytes += record_blob_bytes
-
-        if len(batch_ids) >= max_records or batch_blob_bytes >= max_blob_bytes:
-            yield batch_ids
-            batch_ids = []
-            batch_blob_bytes = 0
-
-    if batch_ids:
-        yield batch_ids
 
 
 def _append_unique_raw_ids(
@@ -297,6 +269,7 @@ async def parse_from_raw(
     provider: str | None = None,
     progress_callback: ProgressCallback | None = None,
     force_write: bool = False,
+    repair_message_fts: bool = True,
 ) -> ParseResult:
     """Parse raw_sessions from DB into sessions.
 
@@ -331,6 +304,7 @@ async def parse_from_raw(
                 result,
                 progress_callback,
                 force_write=force_write,
+                repair_message_fts=repair_message_fts,
                 suspend_fts_triggers=_raw_batch_bytes(raw_blob_sizes, batch_ids) >= _BULK_FTS_RAW_BATCH_BYTES,
             )
             batches_processed += 1
@@ -356,12 +330,16 @@ async def parse_from_raw(
     else:
         if progress_callback is not None:
             progress_callback(0, desc="Ingesting")
-        total_raw = 0
-        async for batch_ids in _iter_raw_id_batches_async(
-            service.repository.iter_raw_headers(source_name=provider),
+        raw_headers = [header async for header in service.repository.iter_raw_headers(source_name=provider)]
+        raw_blob_sizes = dict(raw_headers)
+        total = len(raw_headers)
+        processed_so_far = 0
+        for batch_ids in _iter_raw_id_batches(
+            raw_headers,
             max_records=service.raw_batch_size,
             max_blob_bytes=service.raw_batch_blob_limit_bytes,
         ):
+            t_batch = time.perf_counter()
             batch_observation = await process_ingest_batch(
                 service,
                 backend,
@@ -369,19 +347,29 @@ async def parse_from_raw(
                 result,
                 progress_callback,
                 force_write=force_write,
+                repair_message_fts=repair_message_fts,
+                suspend_fts_triggers=_raw_batch_bytes(raw_blob_sizes, batch_ids) >= _BULK_FTS_RAW_BATCH_BYTES,
             )
             batches_processed += 1
-            total_raw += len(batch_ids)
+            processed_so_far += len(batch_ids)
             if batch_observation is not None:
                 batch_observation["batch"] = batches_processed
-                batch_observation["processed_raw"] = total_raw
+                batch_observation["processed_raw"] = processed_so_far
                 result.batch_observations.append(batch_observation)
             if progress_callback is not None:
                 progress_callback(
                     0,
-                    desc=f"Ingesting ({total_raw:,} raw, batch {batches_processed})",
+                    desc=f"Ingesting ({processed_so_far:,}/{total:,} raw, batch {batches_processed})",
                 )
-        total = total_raw
+            batch_elapsed = time.perf_counter() - t_batch
+            if batch_elapsed > 2.0:
+                logger.info(
+                    "slow_batch",
+                    batch=batches_processed,
+                    size=len(batch_ids),
+                    elapsed_s=round(batch_elapsed, 2),
+                    rate=round(len(batch_ids) / batch_elapsed, 1) if batch_elapsed > 0 else 0,
+                )
 
     elapsed = time.perf_counter() - t_start
     logger.info(

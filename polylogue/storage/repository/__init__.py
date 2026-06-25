@@ -83,6 +83,9 @@ class SessionRepository(
         active_backend = backend if backend is not None else SQLiteBackend(db_path=db_path)
         self._backend: SQLiteBackend = active_backend
         self._archive_root: Path | None = archive_root
+        self._source_backend: SQLiteBackend | None = (
+            SQLiteBackend(db_path=archive_root / "source.db") if archive_root is not None else None
+        )
         self.queries = active_backend.queries
 
     async def __aenter__(self) -> SessionRepository:
@@ -101,6 +104,8 @@ class SessionRepository(
     async def close(self) -> None:
         """Close database connections and release resources."""
         await self._backend.close()
+        if self._source_backend is not None:
+            await self._source_backend.close()
 
 
 __all__ = ["SessionRepository"]

@@ -702,6 +702,82 @@ def test_write_session_skips_shorter_duplicate_raw_source(tmp_path: Path) -> Non
         assert raw_id == "raw-full"
 
 
+def test_write_session_skips_equal_count_duplicate_raw_source(tmp_path: Path) -> None:
+    with open_connection(tmp_path / "index.db") as conn:
+        existing = _session_data(
+            "codex-session:duplicate-equal",
+            content_hash="hash-existing",
+            raw_id="raw-existing",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex-session:duplicate-equal",
+                    role="user",
+                    text="first",
+                    content_hash="msg-1",
+                    sort_key=1.0,
+                ),
+                _message_tuple(
+                    "msg-2",
+                    "codex-session:duplicate-equal",
+                    role="assistant",
+                    text="second",
+                    content_hash="msg-2",
+                    sort_key=2.0,
+                ),
+            ],
+        )
+        duplicate = _session_data(
+            "codex-session:duplicate-equal",
+            content_hash="hash-duplicate-title-or-raw",
+            raw_id="raw-duplicate",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex-session:duplicate-equal",
+                    role="user",
+                    text="first duplicate",
+                    content_hash="msg-1-duplicate",
+                    sort_key=1.0,
+                ),
+                _message_tuple(
+                    "msg-2",
+                    "codex-session:duplicate-equal",
+                    role="assistant",
+                    text="second duplicate",
+                    content_hash="msg-2-duplicate",
+                    sort_key=2.0,
+                ),
+            ],
+        )
+
+        changed_existing, _counts_existing = _write_session(conn, existing)
+        changed_duplicate, counts_duplicate = _write_session(conn, duplicate)
+        conn.commit()
+
+        messages = conn.execute(
+            """
+            SELECT b.text
+            FROM messages m
+            JOIN blocks b ON b.message_id = m.message_id
+            WHERE m.session_id = ? AND b.block_type = 'text'
+            ORDER BY m.position, b.position
+            """,
+            ("codex-session:duplicate-equal",),
+        ).fetchall()
+        raw_id = conn.execute(
+            "SELECT raw_id FROM sessions WHERE session_id = ?",
+            ("codex-session:duplicate-equal",),
+        ).fetchone()["raw_id"]
+
+        assert changed_existing is True
+        assert changed_duplicate is False
+        assert counts_duplicate["skipped_sessions"] == 1
+        assert counts_duplicate["skipped_messages"] == 2
+        assert [row["text"] for row in messages] == ["first", "second"]
+        assert raw_id == "raw-existing"
+
+
 def test_write_session_skips_new_with_zero_messages(tmp_path: Path) -> None:
     """A new session with zero messages is skipped, not left as a manifest-only row."""
     with open_connection(tmp_path / "index.db") as conn:
@@ -1541,6 +1617,50 @@ async def test_persist_batch_raw_state_updates_uses_one_typed_update_per_raw() -
     assert failed_call.args == ("raw-failed",)
     assert failed_call.kwargs["state"].parse_error == "parse failed"
     assert failed_call.kwargs["state"].validation_error == "bad schema"
+
+
+@pytest.mark.asyncio
+async def test_persist_batch_raw_state_updates_marks_skipped_raw_before_success() -> None:
+    update_raw_state = AsyncMock()
+    service = _FakeParsingService(update_raw_state)
+
+    @asynccontextmanager
+    async def _bulk_connection() -> AsyncIterator[None]:
+        yield
+
+    backend = _FakeBulkBackend(_bulk_connection)
+    outcomes = {
+        "raw-duplicate": _RawIngestOutcome(
+            raw_id="raw-duplicate",
+            payload_provider="chatgpt",
+            validation_status="passed",
+            validation_error=None,
+            parse_error=None,
+            error=None,
+            had_sessions=True,
+        ),
+    }
+
+    elapsed_s = await _persist_batch_raw_state_updates(
+        service,
+        backend,
+        outcomes=outcomes,
+        succeeded_raw_ids={"raw-duplicate"},
+        skipped_raw_ids={"raw-duplicate"},
+        failed_raw_ids={},
+        validation_mode="advisory",
+    )
+
+    assert elapsed_s >= 0.0
+    update_raw_state.assert_awaited_once()
+    call = update_raw_state.await_args
+    assert call is not None
+    assert call.args == ("raw-duplicate",)
+    state = call.kwargs["state"]
+    assert state.validation_status == "skipped"
+    assert state.validation_error == "parsed raw payload produced no new materialized sessions"
+    assert state.parse_error is None
+    assert state.parsed_at is not None
 
 
 @pytest.mark.asyncio

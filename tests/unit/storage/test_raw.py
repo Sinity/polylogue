@@ -14,7 +14,11 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.storage.raw.models import RawSessionStateUpdate
+from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import RawSessionRecord
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from tests.infra.storage_records import make_raw_session, make_session, save_session_to_archive
 
@@ -47,6 +51,52 @@ class TestRawSessionStorage:
         result = await backend.save_raw_session(record)
 
         assert result is True
+
+    async def test_repository_update_raw_state_uses_source_tier(self, tmp_path: Path) -> None:
+        initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+        initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+        source_backend = SQLiteBackend(db_path=tmp_path / "source.db")
+        try:
+            await source_backend.save_raw_session(
+                make_raw_session(
+                    raw_id="raw-split",
+                    source_name="chatgpt-export",
+                    source_path="/tmp/export.json",
+                    source_index=0,
+                    blob_size=2,
+                    acquired_at="2026-02-02T12:00:00+00:00",
+                )
+            )
+        finally:
+            await source_backend.close()
+
+        repo = SessionRepository(
+            backend=SQLiteBackend(db_path=tmp_path / "index.db"),
+            archive_root=tmp_path,
+        )
+        try:
+            await repo.update_raw_state(
+                "raw-split",
+                state=RawSessionStateUpdate(
+                    parsed_at="2026-02-03T12:00:00+00:00",
+                    parse_error=None,
+                    validation_status="skipped",
+                    validation_error="duplicate materialization",
+                    validation_mode="advisory",
+                ),
+            )
+        finally:
+            await repo.close()
+
+        verifier = SQLiteBackend(db_path=tmp_path / "source.db")
+        try:
+            record = await verifier.get_raw_session("raw-split")
+        finally:
+            await verifier.close()
+
+        assert record is not None
+        assert record.validation_status == "skipped"
+        assert record.validation_error == "duplicate materialization"
 
     async def test_save_raw_session_duplicate(self, backend: SQLiteBackend) -> None:
         """Saving a duplicate raw_id returns False (INSERT OR IGNORE)."""

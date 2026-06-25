@@ -220,6 +220,7 @@ def test_supported_targets_cover_ac_required_set() -> None:
     supported = set(supported_replay_targets())
     required = {
         "session_insights",
+        "raw_materialization",
         "message_type_backfill",
         "dangling_fts",
         "orphaned_blobs",
