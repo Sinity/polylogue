@@ -332,23 +332,46 @@ def test_backup_missing_blob_warnings_are_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     hashes = tuple(f"{idx:064x}" for idx in range(25))
-    monkeypatch.setattr(backup_mod, "_source_blob_hashes", lambda _source_db: hashes)
+    source_db = tmp_path / "source.db"
+    with sqlite3.connect(source_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE blob_refs (
+                blob_hash BLOB NOT NULL,
+                raw_id TEXT NOT NULL,
+                ref_type TEXT NOT NULL,
+                PRIMARY KEY(blob_hash, raw_id, ref_type)
+            );
+            """
+        )
+        for idx, blob_hash in enumerate(hashes):
+            conn.execute(
+                "INSERT INTO blob_refs (blob_hash, raw_id, ref_type) VALUES (?, ?, ?)",
+                (bytes.fromhex(blob_hash), f"raw-{idx}", "attachment"),
+            )
     monkeypatch.setattr(backup_mod, "blob_store_root", lambda: tmp_path / "blob-store")
 
     warnings: list[str] = []
-    count, size = backup_mod._copy_referenced_blobs(
-        source_db=tmp_path / "source.db",
+    backup_root = tmp_path / "backup"
+    backup_root.mkdir()
+    count, size, debt = backup_mod._copy_referenced_blobs(
+        source_db=source_db,
         backup_root=tmp_path / "backup",
         warnings=warnings,
     )
 
     assert count == 0
     assert size == 0
+    assert debt.missing_referenced_blobs == 25
     assert len(warnings) == 1
     assert "25 total" in warnings[0]
+    assert "blob-reference-debt.json" in warnings[0]
     assert hashes[0] in warnings[0]
     assert hashes[9] in warnings[0]
     assert hashes[10] not in warnings[0]
+    debt_payload = json.loads((backup_root / "blob-reference-debt.json").read_text())
+    assert debt_payload["missing_referenced_blobs"] == 25
+    assert debt_payload["sample"] == list(hashes[:10])
 
 
 def test_backup_archive_requires_precious_tiers(workspace_env: dict[str, Path], tmp_path: Path) -> None:

@@ -25,6 +25,7 @@ from pydantic import BaseModel
 
 from polylogue.logging import get_logger
 from polylogue.paths import archive_root, blob_store_root
+from polylogue.storage.blob_integrity import BlobReferenceDebtReport, referenced_blob_hashes, scan_blob_reference_debt
 from polylogue.storage.blob_store import BlobStore
 
 logger = get_logger(__name__)
@@ -209,43 +210,53 @@ def _backup_sqlite(src: Path, dst: Path) -> int:
 
 
 def _source_blob_hashes(source_db: Path) -> set[str]:
-    conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
-    try:
-        rows = conn.execute("SELECT DISTINCT hex(blob_hash) FROM blob_refs").fetchall()
-    finally:
-        conn.close()
-    return {str(row[0]).lower() for row in rows if row and row[0]}
+    return set(referenced_blob_hashes(source_db))
 
 
-def _copy_referenced_blobs(*, source_db: Path, backup_root: Path, warnings: list[str]) -> tuple[int, int]:
+def _write_blob_reference_debt_report(backup_root: Path, report: BlobReferenceDebtReport) -> Path:
+    path = backup_root / "blob-reference-debt.json"
+    path.write_text(json.dumps(report.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
+    return path
+
+
+def _copy_referenced_blobs(
+    *,
+    source_db: Path,
+    backup_root: Path,
+    warnings: list[str],
+) -> tuple[int, int, BlobReferenceDebtReport]:
     hashes = _source_blob_hashes(source_db)
-    if not hashes:
-        return 0, 0
-
     store = BlobStore(blob_store_root())
+    debt_report = scan_blob_reference_debt(
+        source_db,
+        store=store,
+        sample_size=_MISSING_BLOB_WARNING_SAMPLE_LIMIT,
+    )
+    if not hashes:
+        return 0, 0, debt_report
+
     blob_dst_root = backup_root / "blob"
     count = 0
     size = 0
-    missing_count = 0
-    missing_samples: list[str] = []
     for hash_hex in sorted(hashes):
         src = store.blob_path(hash_hex)
         if not src.exists():
-            missing_count += 1
-            if len(missing_samples) < _MISSING_BLOB_WARNING_SAMPLE_LIMIT:
-                missing_samples.append(hash_hex)
             continue
         dst = blob_dst_root / hash_hex[:2] / hash_hex[2:]
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
         count += 1
         size += dst.stat().st_size
-    if missing_count:
+    if debt_report.missing_referenced_blobs:
+        _write_blob_reference_debt_report(backup_root, debt_report)
+        sample = ", ".join(debt_report.sample)
         warnings.append(
             "referenced blobs missing: "
-            f"{missing_count} total" + (f" (sample: {', '.join(missing_samples)})" if missing_samples else "")
+            f"{debt_report.missing_referenced_blobs} total"
+            + (f" (sample: {sample})" if sample else "")
+            + "; details: blob-reference-debt.json"
         )
-    return count, size
+    return count, size, debt_report
 
 
 def _write_manifest(
@@ -259,6 +270,7 @@ def _write_manifest(
     blob_count: int,
     blob_size: int,
     warnings: list[str],
+    blob_reference_debt: BlobReferenceDebtReport | None = None,
 ) -> None:
     manifest = {
         "format": "polylogue-backup-v1",
@@ -272,6 +284,8 @@ def _write_manifest(
         "blob_size_bytes": blob_size,
         "warnings": warnings,
     }
+    if blob_reference_debt is not None:
+        manifest["blob_reference_debt"] = blob_reference_debt.to_dict()
     (backup_root / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
 
 
@@ -351,8 +365,9 @@ def _backup_archive(*, output_dir: Path, started: float, profile: BackupProfile)
         db_size += _backup_sqlite(src, dst)
         backed_up_files.append(str(dst))
 
+    blob_reference_debt: BlobReferenceDebtReport | None = None
     if "source" in included_tiers:
-        blob_count, blob_size = _copy_referenced_blobs(
+        blob_count, blob_size, blob_reference_debt = _copy_referenced_blobs(
             source_db=included_tiers["source"],
             backup_root=backup_root,
             warnings=warnings,
@@ -374,8 +389,11 @@ def _backup_archive(*, output_dir: Path, started: float, profile: BackupProfile)
         blob_count=blob_count,
         blob_size=blob_size,
         warnings=warnings,
+        blob_reference_debt=blob_reference_debt,
     )
     backed_up_files.append(str(backup_root / "manifest.json"))
+    if blob_reference_debt is not None and blob_reference_debt.missing_referenced_blobs:
+        backed_up_files.append(str(backup_root / "blob-reference-debt.json"))
 
     return BackupResult(
         ok=True,

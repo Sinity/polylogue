@@ -5,8 +5,10 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from polylogue.storage.blob_integrity import scan_blob_integrity
+from polylogue.storage.blob_integrity import referenced_blob_hashes, scan_blob_integrity, scan_blob_reference_debt
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 def _make_db(path: Path) -> sqlite3.Connection:
@@ -146,6 +148,77 @@ def test_scan_blob_integrity_reads_source_tier_blob_refs(tmp_path: Path) -> None
     assert by_kind["orphan_blobs"].sample == (orphan_hash,)
     assert raw_hash not in by_kind["orphan_blobs"].sample
     assert attachment_hash not in by_kind["orphan_blobs"].sample
+
+
+def test_scan_blob_reference_debt_counts_all_missing_refs_with_bounded_sample(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.db"
+    store = BlobStore(tmp_path / "blob")
+    present_hash, present_size = store.write_from_bytes(b"present")
+    missing_hashes = [f"{idx:064x}" for idx in range(5)]
+    with sqlite3.connect(source_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE raw_sessions (
+                raw_id TEXT PRIMARY KEY,
+                blob_hash BLOB NOT NULL,
+                blob_size INTEGER NOT NULL
+            );
+            CREATE TABLE blob_refs (
+                blob_hash BLOB NOT NULL,
+                raw_id TEXT NOT NULL,
+                ref_type TEXT NOT NULL,
+                PRIMARY KEY(blob_hash, raw_id, ref_type)
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size) VALUES (?, ?, ?)",
+            ("raw-present", bytes.fromhex(present_hash), present_size),
+        )
+        for idx, blob_hash in enumerate(missing_hashes):
+            conn.execute(
+                "INSERT INTO blob_refs (blob_hash, raw_id, ref_type) VALUES (?, ?, ?)",
+                (bytes.fromhex(blob_hash), f"raw-{idx}", "attachment"),
+            )
+
+    report = scan_blob_reference_debt(source_db, store=store, sample_size=2)
+
+    assert report.ok is False
+    assert report.total_references_seen == 6
+    assert report.missing_referenced_blobs == 5
+    assert report.sample == tuple(missing_hashes[:2])
+    assert report.reference_sources == {"raw_sessions": 1, "blob_refs": 5}
+    assert referenced_blob_hashes(source_db) == sorted([present_hash, *missing_hashes])
+
+
+def test_scan_blob_reference_debt_reads_initialized_source_tier(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.db"
+    store = BlobStore(tmp_path / "blob")
+    present_hash, present_size = store.write_from_bytes(b"present")
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "raw-present",
+                "codex-session",
+                "native-1",
+                "/tmp/session.jsonl",
+                bytes.fromhex(present_hash),
+                present_size,
+                1,
+            ),
+        )
+
+    report = scan_blob_reference_debt(source_db, store=store)
+
+    assert report.ok is True
+    assert report.total_references_seen == 1
+    assert report.reference_sources == {"raw_sessions": 1}
 
 
 def test_scan_blob_integrity_uses_sibling_archive_source_from_index_db(tmp_path: Path) -> None:
