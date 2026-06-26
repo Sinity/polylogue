@@ -715,6 +715,41 @@ class TestReaderSearchState:
         assert repo_status["expensive"] is True
         assert "repos" not in payload["complete_families"]
 
+    def test_session_list_stays_visible_while_facets_budget_exceeded(self, workspace_env: dict[str, Path]) -> None:
+        """A populated session list coexists with budget-exceeded facets (#2304).
+
+        The workbench must not let a slow/expensive facet family empty or block
+        the cheap first-paint surfaces. With the optional facet budget forced to
+        zero, the expensive families degrade truthfully (``budget_exceeded``)
+        while ``/api/sessions`` still returns rows and the cheap facet families
+        (``total_counts``/``origins``) stay complete — the contract that
+        forbids "populated data coexisting with empty counters."
+        """
+        with _running_server(workspace_env) as (_, base_url):
+            sessions = cast(dict[str, object], _get_json(base_url, "/api/sessions"))
+            facets = cast(
+                dict[str, object],
+                _get_json(base_url, "/api/facets?include_deferred=1&budget_ms=0"),
+            )
+
+        # The list itself is independent of the expensive facet path: it stays
+        # populated even when the facet budget is exhausted.
+        assert sessions["total"] == 3
+        assert len(cast(list[object], sessions["items"])) == 3
+        assert cast(dict[str, object], sessions["route_state"])["state"] == "ready"
+
+        # Only the expensive families degrade; the cheap first-paint families
+        # remain complete, so the counters never lie about an empty archive.
+        assert facets["budget_exceeded"] is True
+        assert facets["deferred_families"] == {
+            "repos": "budget_exceeded",
+            "action_types": "budget_exceeded",
+        }
+        assert {"total_counts", "origins"} <= set(cast(list[str], facets["complete_families"]))
+        # A cheap family still carries real data — the counters are not zeroed by
+        # the expensive-family timeout.
+        assert cast(list[object], facets["origins"])
+
     @pytest.mark.parametrize("path", ["/api/sessions", "/api/facets"])
     def test_archive_busy_routes_return_typed_503(
         self,
