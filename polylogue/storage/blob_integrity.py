@@ -9,6 +9,7 @@ integrity classes with bounded default cost.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sqlite3
 import tempfile
@@ -261,6 +262,63 @@ class BlobReferenceDebtRestoreReport:
         }
 
 
+@dataclass(frozen=True)
+class BlobReferenceOrphanPruneSample:
+    blob_hash: str
+    ref_id: str | None
+    ref_type: str | None
+    source_path: str | None
+    action: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "blob_hash": self.blob_hash,
+            "ref_id": self.ref_id,
+            "ref_type": self.ref_type,
+            "source_path": self.source_path,
+            "action": self.action,
+        }
+
+
+@dataclass(frozen=True)
+class BlobReferenceOrphanPruneReport:
+    """Dry-run/apply report for quarantine-backed orphan blob-ref pruning."""
+
+    source_db: str
+    blob_root: str
+    dry_run: bool
+    quarantine_path: str | None
+    scanned_blob_refs: int
+    missing_orphan_refs: int
+    missing_orphan_distinct_blobs: int
+    pruned_refs: int
+    pruned_distinct_blobs: int
+    skipped_existing_blob: int
+    skipped_raw_session_present: int
+    samples: tuple[BlobReferenceOrphanPruneSample, ...]
+
+    @property
+    def ok(self) -> bool:
+        return self.missing_orphan_refs == 0 or (not self.dry_run and self.pruned_refs == self.missing_orphan_refs)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "ok": self.ok,
+            "source_db": self.source_db,
+            "blob_root": self.blob_root,
+            "dry_run": self.dry_run,
+            "quarantine_path": self.quarantine_path,
+            "scanned_blob_refs": self.scanned_blob_refs,
+            "missing_orphan_refs": self.missing_orphan_refs,
+            "missing_orphan_distinct_blobs": self.missing_orphan_distinct_blobs,
+            "pruned_refs": self.pruned_refs,
+            "pruned_distinct_blobs": self.pruned_distinct_blobs,
+            "skipped_existing_blob": self.skipped_existing_blob,
+            "skipped_raw_session_present": self.skipped_raw_session_present,
+            "samples": [sample.to_dict() for sample in self.samples],
+        }
+
+
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM sqlite_schema WHERE type='table' AND name = ? LIMIT 1",
@@ -412,6 +470,14 @@ def _blob_ref_id_column(conn: sqlite3.Connection) -> str:
         return "ref_id"
     if _column_exists(conn, "blob_refs", "raw_id"):
         return "raw_id"
+    return "NULL"
+
+
+def _blob_ref_acquired_at_column(conn: sqlite3.Connection) -> str:
+    if _column_exists(conn, "blob_refs", "acquired_at_ms"):
+        return "acquired_at_ms"
+    if _column_exists(conn, "blob_refs", "acquired_at"):
+        return "acquired_at"
     return "NULL"
 
 
@@ -677,6 +743,163 @@ def _restore_expected_hash_from_path(blob_store: BlobStore, expected_hash: str, 
             os.close(fd)
         if tmp_path is not None and os.path.exists(tmp_path):
             os.unlink(tmp_path)
+
+
+def _blob_ref_rows_for_orphan_prune(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    if not _table_exists(conn, "blob_refs"):
+        return []
+    conn.row_factory = sqlite3.Row
+    ref_id_column = _blob_ref_id_column(conn)
+    source_path_column = _blob_ref_source_path_column(conn)
+    size_column = _blob_ref_size_column(conn)
+    acquired_at_column = _blob_ref_acquired_at_column(conn)
+    raw_join = (
+        f"EXISTS (SELECT 1 FROM raw_sessions r WHERE r.raw_id = {ref_id_column})"
+        if _table_exists(conn, "raw_sessions") and ref_id_column != "NULL"
+        else "0"
+    )
+    rows = conn.execute(
+        f"""
+        SELECT lower(hex(blob_hash)) AS blob_hash,
+               ref_type,
+               {ref_id_column} AS ref_id,
+               {source_path_column} AS source_path,
+               {size_column} AS size_bytes,
+               {acquired_at_column} AS acquired_at,
+               {raw_join} AS raw_session_present
+        FROM blob_refs
+        WHERE blob_hash IS NOT NULL
+        ORDER BY source_path, ref_id, ref_type, blob_hash
+        """
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _default_blob_ref_quarantine_path(source_db: Path) -> Path:
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    return source_db.parent / ".maintenance-state" / "blob-ref-quarantine" / f"orphan-blob-refs-{stamp}.jsonl"
+
+
+def _write_blob_ref_quarantine(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd: int | None = None
+    tmp_path: str | None = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", text=True)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = None
+            for row in rows:
+                handle.write(json.dumps(row, sort_keys=True, separators=(",", ":")))
+                handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+        tmp_path = None
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if tmp_path is not None and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
+def _delete_blob_ref_rows(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> int:
+    ref_id_column = _blob_ref_id_column(conn)
+    if ref_id_column == "NULL":
+        return 0
+    deleted = 0
+    for row in rows:
+        blob_hash = str(row["blob_hash"])
+        ref_id = row.get("ref_id")
+        ref_type = row.get("ref_type")
+        before = conn.total_changes
+        conn.execute(
+            f"""
+            DELETE FROM blob_refs
+            WHERE blob_hash = ?
+              AND {ref_id_column} IS ?
+              AND ref_type IS ?
+            """,
+            (bytes.fromhex(blob_hash), ref_id, ref_type),
+        )
+        deleted += conn.total_changes - before
+    return deleted
+
+
+def prune_orphan_blob_reference_debt(
+    db_path: str | Path,
+    *,
+    store: BlobStore | None = None,
+    dry_run: bool = True,
+    quarantine_path: str | Path | None = None,
+    max_count: int | None = None,
+    sample_size: int = 30,
+) -> BlobReferenceOrphanPruneReport:
+    """Prune stale missing ``blob_refs`` only after writing quarantine JSONL.
+
+    This intentionally does not touch refs whose ``ref_id`` still has a
+    ``raw_sessions`` row, because those rows may still be reconstructable from
+    source exports or browser-capture files.
+    """
+
+    blob_store = store if store is not None else get_blob_store()
+    source_db = _source_db_for_blob_reference_report(db_path)
+    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as read_conn:
+        rows = _blob_ref_rows_for_orphan_prune(read_conn)
+
+    skipped_existing_blob = 0
+    skipped_raw_session_present = 0
+    candidates: list[dict[str, Any]] = []
+    for row in rows:
+        blob_hash = str(row.get("blob_hash") or "")
+        if not blob_hash or blob_store.exists(blob_hash):
+            skipped_existing_blob += 1
+            continue
+        if bool(row.get("raw_session_present")):
+            skipped_raw_session_present += 1
+            continue
+        candidates.append(row)
+
+    limited_candidates = candidates if max_count is None else candidates[: max(0, max_count)]
+    samples = tuple(
+        BlobReferenceOrphanPruneSample(
+            blob_hash=str(row.get("blob_hash") or ""),
+            ref_id=_optional_str(row.get("ref_id")),
+            ref_type=_optional_str(row.get("ref_type")),
+            source_path=_optional_str(row.get("source_path")),
+            action="would_prune" if dry_run else "pruned",
+        )
+        for row in limited_candidates[: max(0, sample_size)]
+    )
+
+    resolved_quarantine_path: Path | None = None
+    pruned_refs = 0
+    pruned_distinct_blobs = 0
+    if not dry_run and limited_candidates:
+        resolved_quarantine_path = (
+            Path(quarantine_path) if quarantine_path is not None else _default_blob_ref_quarantine_path(source_db)
+        )
+        _write_blob_ref_quarantine(resolved_quarantine_path, limited_candidates)
+        with sqlite3.connect(source_db) as write_conn:
+            pruned_refs = _delete_blob_ref_rows(write_conn, limited_candidates)
+            write_conn.commit()
+        pruned_distinct_blobs = len({str(row["blob_hash"]) for row in limited_candidates})
+    elif quarantine_path is not None:
+        resolved_quarantine_path = Path(quarantine_path)
+
+    return BlobReferenceOrphanPruneReport(
+        source_db=str(source_db),
+        blob_root=str(blob_store.root),
+        dry_run=dry_run,
+        quarantine_path=str(resolved_quarantine_path) if resolved_quarantine_path is not None else None,
+        scanned_blob_refs=len(rows),
+        missing_orphan_refs=len(candidates),
+        missing_orphan_distinct_blobs=len({str(row["blob_hash"]) for row in candidates}),
+        pruned_refs=pruned_refs,
+        pruned_distinct_blobs=pruned_distinct_blobs,
+        skipped_existing_blob=skipped_existing_blob,
+        skipped_raw_session_present=skipped_raw_session_present,
+        samples=samples,
+    )
 
 
 def restore_direct_blob_reference_debt(
@@ -978,11 +1201,14 @@ __all__ = [
     "BlobIntegrityKind",
     "BlobIntegrityReport",
     "BlobReferenceDebtClassificationReport",
+    "BlobReferenceOrphanPruneSample",
+    "BlobReferenceOrphanPruneReport",
     "BlobReferenceDebtReport",
     "BlobReferenceDebtRestoreReport",
     "BlobReferenceDebtRestoreSample",
     "BlobReferenceDebtSample",
     "classify_blob_reference_debt",
+    "prune_orphan_blob_reference_debt",
     "referenced_blob_hashes",
     "restore_direct_blob_reference_debt",
     "scan_blob_reference_debt",

@@ -29,7 +29,9 @@ from polylogue.storage.blob_gc import read_gc_history, run_blob_gc_report
 from polylogue.storage.blob_integrity import (
     BlobReferenceDebtClassificationReport,
     BlobReferenceDebtRestoreReport,
+    BlobReferenceOrphanPruneReport,
     classify_blob_reference_debt,
+    prune_orphan_blob_reference_debt,
     restore_direct_blob_reference_debt,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -1352,6 +1354,98 @@ def _render_blob_reference_restore_plain(report: BlobReferenceDebtRestoreReport)
             click.echo(f"  {sample.action} {sample.blob_hash}{detail} {source}")
 
 
+@maintenance_group.command("blob-reference-prune-orphans")
+@click.option(
+    "--max-count",
+    type=int,
+    default=None,
+    help="Maximum number of orphan blob-reference rows to prune or preview.",
+)
+@click.option(
+    "--sample-limit",
+    type=int,
+    default=30,
+    show_default=True,
+    help="Maximum number of representative samples to include.",
+)
+@click.option(
+    "--quarantine-file",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help=(
+        "JSONL destination for rows removed by --yes. Defaults to "
+        "<archive-root>/.maintenance-state/blob-ref-quarantine/<timestamp>.jsonl."
+    ),
+)
+@click.option(
+    "--yes",
+    is_flag=True,
+    help="Delete orphan blob_refs after writing them to the quarantine JSONL.",
+)
+@click.option(
+    "--output-format",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+    help="Output format.",
+)
+def blob_reference_prune_orphans_command(
+    max_count: int | None,
+    sample_limit: int,
+    quarantine_file: Path | None,
+    yes: bool,
+    output_format: str,
+) -> None:
+    """Quarantine and prune missing blob_refs that no longer have raw rows."""
+    report = prune_orphan_blob_reference_debt(
+        archive_root() / "source.db",
+        dry_run=not yes,
+        quarantine_path=quarantine_file,
+        max_count=max_count,
+        sample_size=sample_limit,
+    )
+    payload = {
+        "mode": "blob_reference_prune_orphans",
+        "mutates": bool(yes),
+        **report.to_dict(),
+    }
+
+    if output_format == "json":
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    _render_blob_reference_prune_orphans_plain(report)
+
+
+def _render_blob_reference_prune_orphans_plain(report: BlobReferenceOrphanPruneReport) -> None:
+    click.echo("Blob reference orphan prune")
+    click.echo(f"Source DB:    {report.source_db}")
+    click.echo(f"Blob root:    {report.blob_root}")
+    click.echo(f"Mode:         {'dry-run' if report.dry_run else 'apply'}")
+    click.echo(f"Blob refs:    {report.scanned_blob_refs:,} scanned")
+    click.echo(
+        f"Orphans:      {report.missing_orphan_refs:,} row(s), "
+        f"{report.missing_orphan_distinct_blobs:,} distinct blob(s)"
+    )
+    action = "would prune" if report.dry_run else "pruned"
+    click.echo(
+        f"Result:       {action} {report.missing_orphan_refs if report.dry_run else report.pruned_refs:,} row(s)"
+    )
+    click.echo(
+        "Skipped:      "
+        f"existing_blob={report.skipped_existing_blob:,} "
+        f"raw_session_present={report.skipped_raw_session_present:,}"
+    )
+    if report.quarantine_path:
+        click.echo(f"Quarantine:   {report.quarantine_path}")
+    if report.samples:
+        click.echo("Samples:")
+        for sample in report.samples[:5]:
+            source = sample.source_path or "(none)"
+            click.echo(f"  {sample.action} {sample.blob_hash} ref_id={sample.ref_id} {source}")
+
+
 @maintenance_group.command("gc-history")
 @click.option(
     "--limit",
@@ -1561,6 +1655,7 @@ def _render_record_plain(record: OperationRecord) -> None:
 __all__ = [
     "assertion_export_command",
     "blob_reference_debt_command",
+    "blob_reference_prune_orphans_command",
     "blob_reference_restore_direct_command",
     "gc_history_command",
     "maintenance_group",

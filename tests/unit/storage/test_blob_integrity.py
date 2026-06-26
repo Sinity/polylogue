@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
 from polylogue.storage.blob_integrity import (
     classify_blob_reference_debt,
+    prune_orphan_blob_reference_debt,
     referenced_blob_hashes,
     restore_direct_blob_reference_debt,
     scan_blob_integrity,
@@ -413,6 +415,93 @@ def test_restore_direct_blob_reference_debt_rejects_hash_mismatch(tmp_path: Path
     assert report.skipped_hash_mismatch == 1
     assert not store.exists(expected_hash)
     assert [path for path in store.root.rglob("*") if path.is_file()] == []
+
+
+def test_prune_orphan_blob_reference_debt_quarantines_before_delete(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.db"
+    store = BlobStore(tmp_path / "blob")
+    present_hash, _present_size = store.write_from_bytes(b"present blob")
+    orphan_hash = "6" * 64
+    raw_backed_hash = "7" * 64
+    quarantine_path = tmp_path / "quarantine" / "orphan-refs.jsonl"
+    with sqlite3.connect(source_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE raw_sessions (
+                raw_id TEXT PRIMARY KEY,
+                blob_hash BLOB,
+                blob_size INTEGER NOT NULL,
+                source_path TEXT
+            );
+            CREATE TABLE blob_refs (
+                blob_hash BLOB NOT NULL,
+                ref_id TEXT NOT NULL,
+                ref_type TEXT NOT NULL,
+                source_path TEXT,
+                size_bytes INTEGER NOT NULL,
+                acquired_at_ms INTEGER NOT NULL,
+                PRIMARY KEY(blob_hash, ref_type, ref_id)
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size, source_path) VALUES (?, ?, ?, ?)",
+            ("raw-present", bytes.fromhex(raw_backed_hash), 10, "recoverable.json"),
+        )
+        conn.execute(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (bytes.fromhex(orphan_hash), "raw-gone", "raw_payload", "old.json", 12, 1),
+        )
+        conn.execute(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (bytes.fromhex(raw_backed_hash), "raw-present", "raw_payload", "recoverable.json", 10, 1),
+        )
+        conn.execute(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (bytes.fromhex(present_hash), "raw-gone-present", "raw_payload", "present.json", 12, 1),
+        )
+
+    dry_run = prune_orphan_blob_reference_debt(source_db, store=store, quarantine_path=quarantine_path)
+
+    assert dry_run.dry_run is True
+    assert dry_run.missing_orphan_refs == 1
+    assert dry_run.pruned_refs == 0
+    assert not quarantine_path.exists()
+
+    applied = prune_orphan_blob_reference_debt(
+        source_db,
+        store=store,
+        dry_run=False,
+        quarantine_path=quarantine_path,
+    )
+
+    assert applied.dry_run is False
+    assert applied.pruned_refs == 1
+    assert applied.pruned_distinct_blobs == 1
+    exported = [json.loads(line) for line in quarantine_path.read_text(encoding="utf-8").splitlines()]
+    assert exported == [
+        {
+            "acquired_at": 1,
+            "blob_hash": orphan_hash,
+            "raw_session_present": 0,
+            "ref_id": "raw-gone",
+            "ref_type": "raw_payload",
+            "size_bytes": 12,
+            "source_path": "old.json",
+        }
+    ]
+    with sqlite3.connect(source_db) as conn:
+        remaining_refs = conn.execute("SELECT ref_id FROM blob_refs ORDER BY ref_id").fetchall()
+    assert remaining_refs == [("raw-gone-present",), ("raw-present",)]
 
 
 def test_scan_blob_integrity_uses_sibling_archive_source_from_index_db(tmp_path: Path) -> None:
