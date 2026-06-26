@@ -104,3 +104,25 @@ async def test_seed_injects_demo_cost_for_postmortem(tmp_path: Path) -> None:
     assert total_cost_usd > 0
     assert total_input_tokens > 0
     assert total_output_tokens > 0
+
+
+@pytest.mark.asyncio
+async def test_seed_gives_demo_session_canonical_repo(tmp_path: Path) -> None:
+    """The demo claude-code session must carry a canonical repo so the
+    postmortem `repos_touched` metric renders a project, not an empty list."""
+
+    import json as _json
+
+    from polylogue.scenarios import DEMO_CLAUDE_CODE_SESSION_ID
+
+    archive_root = tmp_path / "archive"
+    await seed_demo_archive(archive_root, force=True, with_overlays=True)
+
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        row = conn.execute(
+            "SELECT repo_names_json FROM session_profiles WHERE session_id = ?",
+            (DEMO_CLAUDE_CODE_SESSION_ID,),
+        ).fetchone()
+
+    assert row is not None
+    assert "polylogue" in _json.loads(row[0])

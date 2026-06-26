@@ -115,6 +115,29 @@ def _inject_demo_session_usage(archive_root: Path) -> None:
         conn.close()
 
 
+# Canonical repo identity for the demo claude-code session so the postmortem
+# `repos_touched` metric renders a believable project instead of an empty list.
+# The synthetic demo corpus emits no cwd/repo attribution, so profile
+# materialization derives no repo names; this is set *after* materialization
+# (which would otherwise overwrite it with the empty attribution result) and is
+# scoped to the one demo session.
+_DEMO_REPO_NAMES = '["polylogue"]'
+
+
+def _inject_demo_session_repos(archive_root: Path) -> None:
+    """Set a canonical repo name on the demo claude-code session profile."""
+
+    conn = sqlite3.connect(archive_root / "index.db")
+    try:
+        conn.execute(
+            "UPDATE session_profiles SET repo_names_json = ? WHERE session_id = ?",
+            (_DEMO_REPO_NAMES, DEMO_CLAUDE_CODE_SESSION_ID),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def demo_source_specs(source_root: Path) -> list[Source]:
     """Return relative source specs for the materialized demo world."""
 
@@ -140,6 +163,7 @@ async def seed_demo_archive(
     session_ids = sorted(result.processed_ids)
     _inject_demo_session_usage(archive_root)
     _materialize_session_insights(archive_root, session_ids)
+    _inject_demo_session_repos(archive_root)
 
     overlay = seed_demo_user_overlays(archive_root) if with_overlays else None
     return DemoSeedResult(
