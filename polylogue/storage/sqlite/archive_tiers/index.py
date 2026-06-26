@@ -21,7 +21,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 9
+INDEX_SCHEMA_VERSION = 10
 
 INDEX_DDL = f"""
 CREATE TABLE IF NOT EXISTS sessions (
@@ -121,6 +121,9 @@ WHERE parent_message_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_messages_session_role
 ON messages(session_id, role);
+
+CREATE INDEX IF NOT EXISTS idx_messages_role
+ON messages(role);
 
 CREATE INDEX IF NOT EXISTS idx_messages_session_material_origin
 ON messages(session_id, material_origin);

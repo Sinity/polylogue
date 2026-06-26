@@ -133,8 +133,10 @@ _FACET_COMPLETE_ARCHIVE_FAMILIES = (
     "total_counts",
     "origins",
     "tags",
+    "role_counts",
     "repos",
     "message_types",
+    "material_origins",
     "action_types",
     "has_flags",
 )

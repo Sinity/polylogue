@@ -106,6 +106,12 @@ schema shape:
 - Schema bumps are deletes-then-defines, never deltas. A schema change
   edits the owning tier DDL/version and documents the re-ingest expectation.
   No upgrade helpers are added for the bump.
+- Index schema version 10 adds a role-leading `idx_messages_role` index so
+  daemon `/api/facets` can compute global role counts without scanning the
+  session-role compound index and spilling to a temp B-tree. Existing index
+  tiers must be rebuilt from source evidence or explicitly operator-patched by
+  adding the index to a backed-up archive before moving that archive to version
+  10 with the matching deployed package.
 - Index schema version 9 adds typed `sessions.session_kind` for standard vs
   temporary sessions. Existing index tiers must be rebuilt from source evidence
   or explicitly operator-patched so temporary ChatGPT/Claude/browser-capture

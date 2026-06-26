@@ -313,6 +313,17 @@ def test_archive_tiers_cost_price_basis_has_typed_tables(tmp_path: Path) -> None
     } <= tables
 
 
+def test_archive_tiers_messages_have_role_leading_facet_index(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    _apply_tier(conn, ArchiveTier.INDEX)
+
+    indexes = {row["name"] for row in conn.execute("PRAGMA index_list('messages')").fetchall()}
+    assert "idx_messages_role" in indexes
+
+    columns = [row["name"] for row in conn.execute("PRAGMA index_info('idx_messages_role')").fetchall()]
+    assert columns == ["role"]
+
+
 def test_archive_tier_specs_capture_file_and_backup_policy() -> None:
     assert {tier: spec.filename for tier, spec in ARCHIVE_TIER_SPECS.items()} == {
         ArchiveTier.SOURCE: "source.db",
