@@ -83,6 +83,32 @@ artifact directory, and writes the preflight payload to:
 These paths are local development state. Do not commit archive data, logs,
 browser profiles, cookies, screenshots, or receiver payloads from them.
 
+## Choosing a smoke mode
+
+The dev-loop helper exposes several smoke modes. Pick by what you are trying to
+prove and whether the lane may touch a real browser (the cloud lane only runs
+`cloud_safe` modes — see [cloud-agents.md](cloud-agents.md)):
+
+| Mode flag | Proves | Touches a real browser? | Cloud-safe |
+| --- | --- | --- | --- |
+| `--receiver-smoke` | The branch-local browser-capture receiver ingests a synthetic payload into the dev archive. | no | yes |
+| `--extension-smoke` | The unpacked extension's bundled deterministic fixture posts through the receiver end to end. | no | yes |
+| `--browser-smoke` | The extension loads in a real local Chrome and posts its deterministic fixture. | yes | no |
+| `--browser-provider-smoke` | A real local Chrome renders a deterministic provider-page fixture the extension captures. | yes | no |
+| `--browser-plan` | Writes a copy-pastable handoff plan for manual browser steps; runs nothing itself. | no (plan only) | yes |
+| `--browser-live-proof` | Operator-only: a copied real profile captures a live ChatGPT/Claude.ai conversation. Needs `--browser-live-profile-dir` + the live URLs. | yes (authenticated) | no |
+
+Separately, `devtools workspace deployment-smoke` probes the **deployed**
+`polylogued`/web routes and installed binaries — it is not branch-local and does
+not use the dev archive. Reach for it when verifying the live system generation,
+not a branch.
+
+Rule of thumb: start with the two `cloud_safe` synthetic smokes
+(`--receiver-smoke`, `--extension-smoke`) to prove the wiring without a browser;
+escalate to `--browser-smoke`/`--browser-provider-smoke` only when the failure is
+in the real-Chrome/extension layer; use `--browser-live-proof` only as explicit
+local operator evidence against authenticated pages.
+
 ## Service Separation
 
 The simplest safe posture is to stop the deployed user service while running a
@@ -560,6 +586,47 @@ artifact index grouped by surface. Use it as the first stop when a
 daemon/web/extension loop looks stuck: it tells you which surface failed, which
 command or smoke was slow, and which stdout/stderr/log artifact to open next
 instead of making you scan the whole run directory.
+
+## Operator runbook: dogfood a branch against a production-archive backup
+
+When a daemon/web/extension fix needs to be verified against production-shaped
+data (not the synthetic dev archive), run the source daemon against a *copy* of
+the production archive while the deployed service is stopped, then hand the host
+back to Sinnix. Never point a branch daemon at the live archive directory.
+
+1. Stop the deployed service so the branch daemon owns the ports and no writer
+   races the archive copy:
+
+   ```bash
+   systemctl --user stop polylogued.service
+   ```
+
+2. Make a working copy of the production archive and point the branch daemon at
+   the copy (so a branch bug can never corrupt the real archive):
+
+   ```bash
+   polylogue ops backup --output-dir .local/dev-archive-backups --profile full_evidence --verify
+   ```
+
+   Use the verified backup directory as the dev archive root for the run.
+
+3. Launch the branch-local daemon against that copy on isolated ports and run
+   the smokes you need (see "Choosing a smoke mode"):
+
+   ```bash
+   devtools workspace dev-loop --isolated-ports --archive-root .local/dev-archive-backups/<backup-dir> --launch-daemon
+   ```
+
+4. When finished, stop the branch daemon process group (its `polylogued.pid`
+   lives in the run directory), then return the host to the deployed service by
+   letting Sinnix restart it:
+
+   ```bash
+   systemctl --user start polylogued.service
+   ```
+
+   The branch run never touches the live archive or the deployed unit beyond
+   the explicit stop/start above — both remain operator actions.
 
 ## Current Boundary
 
