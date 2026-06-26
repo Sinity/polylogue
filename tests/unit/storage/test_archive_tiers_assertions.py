@@ -28,6 +28,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     AssertionVisibility,
     assertion_envelope_to_payload,
     assertion_id_for_candidate_judgment,
+    assertion_id_for_pathology_finding,
     assertion_id_for_promoted_candidate,
     assertion_id_for_transform_candidate,
     judge_assertion_candidate,
@@ -39,6 +40,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     mark_assertion_status,
     read_assertion_envelope,
     upsert_assertion,
+    upsert_pathology_findings_as_assertions,
     upsert_transform_candidate_assertions,
 )
 from polylogue.types import SessionId
@@ -673,6 +675,7 @@ def test_list_assertion_claims_filters_lifecycle_assertions(tmp_path: Path) -> N
             AssertionKind.LESSON,
             AssertionKind.RUN_STATE,
             AssertionKind.TRANSFORM_CANDIDATE,
+            AssertionKind.PATHOLOGY,
         }
 
         rows: list[tuple[str, str, AssertionKind, str, str, dict[str, object] | None, int]] = [
@@ -1175,3 +1178,85 @@ def test_candidate_reviews_survive_remirror_without_becoming_authoritative(tmp_p
         assert all(row.latest_judgment is not None for row in reviews)
     finally:
         conn.close()
+
+
+def test_upsert_pathology_findings_emits_queryable_candidates(tmp_path: Path) -> None:
+    """Pathology findings become PATHOLOGY candidate claims with evidence (#2383)."""
+    from polylogue.core.refs import EvidenceRef
+    from polylogue.insights.pathology import PathologyFinding
+
+    conn = _connect(tmp_path / "user.db")
+    try:
+        session_id = "codex-session:pathology-demo"
+        findings = [
+            PathologyFinding(
+                kind="wasted_loop",
+                session_id=session_id,
+                severity="medium",
+                detail="5 failed test/check turns without a clean pass between them",
+                occurrence_count=5,
+                evidence_refs=(EvidenceRef(session_id=session_id, message_id="m7"),),
+            ),
+            PathologyFinding(
+                kind="stale_context",
+                session_id=session_id,
+                severity="medium",
+                detail="1 resume boundary(ies) re-inherited context in lossy mode(s): summary",
+                occurrence_count=1,
+                evidence_refs=(EvidenceRef(session_id=session_id, message_id="m1"),),
+            ),
+        ]
+
+        envelopes = upsert_pathology_findings_as_assertions(conn, session_id, findings)
+        conn.commit()
+        assert len(envelopes) == 2
+        for envelope in envelopes:
+            assert envelope.kind == AssertionKind.PATHOLOGY
+            assert envelope.status == AssertionStatus.CANDIDATE
+            assert envelope.visibility == AssertionVisibility.PRIVATE
+            assert envelope.context_policy.get("inject") is False
+            assert envelope.evidence_refs  # drillable
+
+        # Queryable via the standard assertion-claims surface (#2006).
+        claims = list_assertion_claims(
+            conn,
+            kinds=(AssertionKind.PATHOLOGY,),
+            statuses=(AssertionStatus.CANDIDATE,),
+        )
+        claim_kinds = {claim.value["pathology_kind"] for claim in claims if isinstance(claim.value, dict)}
+        assert claim_kinds == {"wasted_loop", "stale_context"}
+
+        # Deterministic id: re-emitting identical findings is idempotent.
+        again = upsert_pathology_findings_as_assertions(conn, session_id, findings)
+        conn.commit()
+        assert {e.assertion_id for e in again} == {e.assertion_id for e in envelopes}
+        recount = list_assertion_claims(conn, kinds=(AssertionKind.PATHOLOGY,))
+        assert len(recount) == 2
+
+        # An operator-promoted candidate is never downgraded back to candidate.
+        promoted_id = envelopes[0].assertion_id
+        mark_assertion_status(conn, promoted_id, AssertionStatus.ACCEPTED)
+        conn.commit()
+        preserved = upsert_pathology_findings_as_assertions(conn, session_id, findings)
+        conn.commit()
+        promoted = read_assertion_envelope(conn, promoted_id)
+        assert promoted is not None
+        assert promoted.status == AssertionStatus.ACCEPTED
+        assert any(e.assertion_id == promoted_id for e in preserved)
+    finally:
+        conn.close()
+
+
+def test_assertion_id_for_pathology_finding_is_stable() -> None:
+    """The deterministic id changes only when finding identity changes (#2383)."""
+    base = {
+        "session_id": "codex-session:x",
+        "finding_kind": "wasted_loop",
+        "detector_version": 1,
+        "finding_detail": "3 failed test/check turns",
+        "evidence_refs": ["codex-session:x::m1"],
+    }
+    first = assertion_id_for_pathology_finding(**base)  # type: ignore[arg-type]
+    assert first == assertion_id_for_pathology_finding(**base)  # type: ignore[arg-type]
+    changed = assertion_id_for_pathology_finding(**{**base, "finding_kind": "stale_context"})  # type: ignore[arg-type]
+    assert changed != first

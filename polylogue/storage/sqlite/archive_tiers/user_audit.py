@@ -29,6 +29,7 @@ _ASSERTION_BACKED_SURFACES: dict[str, AssertionKind] = {
     "run_state": AssertionKind.RUN_STATE,
     "prompt_evals": AssertionKind.PROMPT_EVAL,
     "transform_candidates": AssertionKind.TRANSFORM_CANDIDATE,
+    "pathologies": AssertionKind.PATHOLOGY,
 }
 
 

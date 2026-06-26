@@ -24,6 +24,7 @@ from polylogue.core.json import JSONValue
 from polylogue.core.refs import ObjectRef, normalize_object_ref_text, normalize_public_ref_text
 
 if TYPE_CHECKING:
+    from polylogue.insights.pathology import PathologyFinding
     from polylogue.insights.transforms import DecisionCandidate, RecoveryDigest, TransformRawRef
 
 
@@ -231,6 +232,26 @@ def assertion_id_for_transform_candidate(
         str(candidate_index),
         candidate_kind,
         candidate_text,
+        *evidence_refs,
+    )
+
+
+def assertion_id_for_pathology_finding(
+    *,
+    session_id: str,
+    finding_kind: str,
+    detector_version: int,
+    finding_detail: str,
+    evidence_refs: Sequence[str],
+) -> str:
+    """Return the assertion id for one deterministic pathology finding."""
+
+    return _deterministic_id(
+        f"assertion-{AssertionKind.PATHOLOGY}",
+        session_id,
+        finding_kind,
+        str(detector_version),
+        finding_detail,
         *evidence_refs,
     )
 
@@ -1030,6 +1051,68 @@ def upsert_transform_candidate_assertions(
     return envelopes
 
 
+def upsert_pathology_findings_as_assertions(
+    conn: sqlite3.Connection,
+    session_id: str,
+    findings: Sequence[PathologyFinding],
+    *,
+    now_ms: int | None = None,
+) -> list[ArchiveAssertionEnvelope]:
+    """Mirror deterministic pathology detector findings as candidate assertions (#2383).
+
+    Each finding becomes a private, non-injected ``AssertionKind.PATHOLOGY``
+    candidate awaiting explicit promotion (Ref #2182), keyed by a deterministic
+    id so a rebuild over identical evidence is idempotent. An operator-promoted
+    finding (status != CANDIDATE) is never silently downgraded back to candidate.
+    """
+
+    timestamp = now_ms if now_ms is not None else _now_ms()
+    target_ref = f"session:{session_id}"
+    envelopes: list[ArchiveAssertionEnvelope] = []
+
+    for finding in findings:
+        evidence_refs = [ref.format() for ref in finding.evidence_refs]
+        scope_ref = f"insight:pathology-detector@v{finding.detector_version}"
+        assertion_id = assertion_id_for_pathology_finding(
+            session_id=session_id,
+            finding_kind=finding.kind,
+            detector_version=finding.detector_version,
+            finding_detail=finding.detail,
+            evidence_refs=evidence_refs,
+        )
+        existing = read_assertion_envelope(conn, assertion_id)
+        if existing is not None and existing.status != AssertionStatus.CANDIDATE:
+            envelopes.append(existing)
+            continue
+        envelopes.append(
+            upsert_assertion(
+                conn,
+                assertion_id=assertion_id,
+                scope_ref=scope_ref,
+                target_ref=target_ref,
+                key=finding.kind,
+                kind=AssertionKind.PATHOLOGY,
+                value={
+                    "pathology_kind": finding.kind,
+                    "severity": finding.severity,
+                    "occurrence_count": finding.occurrence_count,
+                    "detector_version": finding.detector_version,
+                    "session_id": session_id,
+                },
+                body_text=finding.detail,
+                author_ref=scope_ref,
+                author_kind="detector",
+                evidence_refs=evidence_refs,
+                status=AssertionStatus.CANDIDATE,
+                visibility=AssertionVisibility.PRIVATE,
+                context_policy={"inject": False, "promotion_required": True},
+                now_ms=timestamp,
+            )
+        )
+
+    return envelopes
+
+
 def _transform_candidate_evidence_refs(candidate: DecisionCandidate) -> list[str]:
     return [_format_transform_raw_ref(ref) for ref in candidate.raw_refs]
 
@@ -1435,6 +1518,7 @@ ASSERTION_CLAIM_KINDS: tuple[AssertionKind, ...] = (
     AssertionKind.LESSON,
     AssertionKind.RUN_STATE,
     AssertionKind.TRANSFORM_CANDIDATE,
+    AssertionKind.PATHOLOGY,
 )
 
 
@@ -1532,6 +1616,7 @@ __all__ = [
     "assertion_id_for_saved_view",
     "assertion_id_for_session_tag",
     "assertion_id_for_suppression",
+    "assertion_id_for_pathology_finding",
     "assertion_id_for_transform_candidate",
     "assertion_id_for_workspace",
     "correction_id_for",
@@ -1563,6 +1648,7 @@ __all__ = [
     "upsert_session_metadata_assertion",
     "upsert_session_tag_assertion",
     "upsert_suppression",
+    "upsert_pathology_findings_as_assertions",
     "upsert_transform_candidate_assertions",
     "upsert_workspace",
 ]

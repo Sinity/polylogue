@@ -425,6 +425,7 @@ class AssertionKind(PolylogueStrEnum):
     RUN_STATE = "run_state"
     PROMPT_EVAL = "prompt_eval"
     TRANSFORM_CANDIDATE = "transform_candidate"
+    PATHOLOGY = "pathology"
 
     @classmethod
     def from_string(cls, value: str | AssertionKind) -> AssertionKind:
