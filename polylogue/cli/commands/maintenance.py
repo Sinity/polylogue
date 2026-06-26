@@ -30,7 +30,9 @@ from polylogue.storage.blob_integrity import (
     BlobReferenceDebtClassificationReport,
     BlobReferenceDebtRestoreReport,
     BlobReferenceOrphanPruneReport,
+    BlobReferenceRecoveryPlanReport,
     classify_blob_reference_debt,
+    plan_raw_backed_blob_reference_recovery,
     prune_orphan_blob_reference_debt,
     restore_direct_blob_reference_debt,
 )
@@ -1354,6 +1356,84 @@ def _render_blob_reference_restore_plain(report: BlobReferenceDebtRestoreReport)
             click.echo(f"  {sample.action} {sample.blob_hash}{detail} {source}")
 
 
+@maintenance_group.command("blob-reference-recovery-plan")
+@click.option(
+    "--sample-limit",
+    type=int,
+    default=30,
+    show_default=True,
+    help="Maximum number of representative raw-backed missing blob rows to include.",
+)
+@click.option(
+    "--manifest-file",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Optional JSONL destination for the complete raw-backed missing blob recovery manifest.",
+)
+@click.option(
+    "--include-rows",
+    is_flag=True,
+    help="Include every plan row in JSON output. By default JSON output includes samples plus aggregate counts.",
+)
+@click.option(
+    "--output-format",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+    help="Output format.",
+)
+def blob_reference_recovery_plan_command(
+    sample_limit: int,
+    manifest_file: Path | None,
+    include_rows: bool,
+    output_format: str,
+) -> None:
+    """Plan recovery for raw-backed missing blobs without mutating archive state."""
+    report = plan_raw_backed_blob_reference_recovery(
+        archive_root() / "source.db",
+        manifest_path=manifest_file,
+        sample_size=sample_limit,
+        include_rows=include_rows,
+    )
+    payload = {
+        "mode": "blob_reference_recovery_plan",
+        "mutates": False,
+        "writes_manifest": manifest_file is not None,
+        **report.to_dict(),
+    }
+
+    if output_format == "json":
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    _render_blob_reference_recovery_plan_plain(report)
+
+
+def _render_blob_reference_recovery_plan_plain(report: BlobReferenceRecoveryPlanReport) -> None:
+    click.echo("Blob reference raw-backed recovery plan")
+    click.echo(f"Source DB:    {report.source_db}")
+    click.echo(f"Blob root:    {report.blob_root}")
+    click.echo(f"Missing:      {report.missing_raw_backed_blobs:,} raw-backed blob(s)")
+
+    def _render_counts(label: str, counts: dict[str, int]) -> None:
+        if not counts:
+            return
+        rendered = ", ".join(f"{key}={value:,}" for key, value in sorted(counts.items()))
+        click.echo(f"{label}: {rendered}")
+
+    _render_counts("By action   ", report.by_action)
+    _render_counts("By origin   ", report.by_origin)
+    _render_counts("By shape    ", report.by_source_shape)
+    if report.manifest_path:
+        click.echo(f"Manifest:    {report.manifest_path}")
+    if report.samples:
+        click.echo("Samples:")
+        for sample in report.samples[:5]:
+            source = sample.source_path or "(none)"
+            click.echo(f"  {sample.action} {sample.blob_hash} origin={sample.origin} {source}")
+
+
 @maintenance_group.command("blob-reference-prune-orphans")
 @click.option(
     "--max-count",
@@ -1656,6 +1736,7 @@ __all__ = [
     "assertion_export_command",
     "blob_reference_debt_command",
     "blob_reference_prune_orphans_command",
+    "blob_reference_recovery_plan_command",
     "blob_reference_restore_direct_command",
     "gc_history_command",
     "maintenance_group",

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from polylogue.storage.blob_integrity import (
     classify_blob_reference_debt,
+    plan_raw_backed_blob_reference_recovery,
     prune_orphan_blob_reference_debt,
     referenced_blob_hashes,
     restore_direct_blob_reference_debt,
@@ -502,6 +503,118 @@ def test_prune_orphan_blob_reference_debt_quarantines_before_delete(tmp_path: Pa
     with sqlite3.connect(source_db) as conn:
         remaining_refs = conn.execute("SELECT ref_id FROM blob_refs ORDER BY ref_id").fetchall()
     assert remaining_refs == [("raw-gone-present",), ("raw-present",)]
+
+
+def test_plan_raw_backed_blob_reference_recovery_writes_manifest(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.db"
+    store = BlobStore(tmp_path / "blob")
+    exact_source = tmp_path / "exact.json"
+    exact_source.write_bytes(b"exact payload")
+    exact_hash = "0cfefcacfe03534dd908444efd6e4d0d1075fd8cf59ac79bf956312385679cfe"
+    changed_source = tmp_path / "changed.json"
+    changed_source.write_bytes(b"changed payload")
+    container_outer = tmp_path / "export.zip"
+    container_outer.write_bytes(b"zip bytes are not inspected by the planner")
+    manifest_path = tmp_path / "manifest" / "raw-backed.jsonl"
+    present_hash, present_size = store.write_from_bytes(b"present raw")
+    with sqlite3.connect(source_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE raw_sessions (
+                raw_id TEXT PRIMARY KEY,
+                origin TEXT,
+                native_id TEXT,
+                source_path TEXT,
+                source_index INTEGER,
+                blob_hash BLOB,
+                blob_size INTEGER NOT NULL
+            );
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "raw-present",
+                    "chatgpt-export",
+                    "native-present",
+                    str(tmp_path / "present.json"),
+                    0,
+                    bytes.fromhex(present_hash),
+                    present_size,
+                ),
+                (
+                    "raw-exact",
+                    "chatgpt-export",
+                    "native-exact",
+                    str(exact_source),
+                    0,
+                    bytes.fromhex(exact_hash),
+                    exact_source.stat().st_size,
+                ),
+                (
+                    "raw-container",
+                    "chatgpt-export",
+                    "native-container",
+                    f"{container_outer}:conversations.json",
+                    2,
+                    bytes.fromhex("8" * 64),
+                    123,
+                ),
+                (
+                    "raw-size-mismatch",
+                    "claude-ai-export",
+                    "native-size",
+                    str(changed_source),
+                    0,
+                    bytes.fromhex("9" * 64),
+                    changed_source.stat().st_size + 10,
+                ),
+                (
+                    "raw-missing",
+                    "claude-ai-export",
+                    "native-missing",
+                    str(tmp_path / "missing.json"),
+                    0,
+                    bytes.fromhex("a" * 64),
+                    456,
+                ),
+            ],
+        )
+
+    report = plan_raw_backed_blob_reference_recovery(
+        source_db,
+        store=store,
+        manifest_path=manifest_path,
+        include_rows=True,
+    )
+
+    assert report.missing_raw_backed_blobs == 4
+    assert report.by_action == {
+        "container_member_reacquire_required": 1,
+        "direct_exact_restore_candidate": 1,
+        "direct_source_size_mismatch": 1,
+        "source_missing": 1,
+    }
+    assert report.by_origin == {"chatgpt-export": 2, "claude-ai-export": 2}
+    assert report.by_source_shape == {"container_member": 1, "direct_file": 3}
+    assert {row.raw_id for row in report.rows} == {
+        "raw-exact",
+        "raw-container",
+        "raw-size-mismatch",
+        "raw-missing",
+    }
+    manifest_rows = [json.loads(line) for line in manifest_path.read_text(encoding="utf-8").splitlines()]
+    assert {row["raw_id"] for row in manifest_rows} == {
+        "raw-exact",
+        "raw-container",
+        "raw-size-mismatch",
+        "raw-missing",
+    }
 
 
 def test_scan_blob_integrity_uses_sibling_archive_source_from_index_db(tmp_path: Path) -> None:
