@@ -707,7 +707,7 @@ def test_deployment_smoke_reports_spooled_browser_capture_without_raw_rows(tmp_p
     assert probe.error == "spooled_without_raw_rows"
 
 
-def test_deployment_smoke_reports_spooled_browser_capture_newer_than_raw_row(tmp_path: Path) -> None:
+def test_deployment_smoke_prioritizes_missing_index_over_stale_raw_mtime(tmp_path: Path) -> None:
     capture = _write_spooled_capture(tmp_path)
     _create_browser_source_db(
         tmp_path,
@@ -723,7 +723,27 @@ def test_deployment_smoke_reports_spooled_browser_capture_newer_than_raw_row(tmp
     assert probe.latest_spooled_mtime_ms is not None
     assert probe.latest_raw_file_mtime_ms is not None
     assert probe.latest_spooled_mtime_ms > probe.latest_raw_file_mtime_ms
-    assert probe.error == "spooled_newer_than_raw_rows"
+    assert probe.error == "index_db_missing"
+
+
+def test_deployment_smoke_accepts_indexed_capture_with_stale_raw_mtime(tmp_path: Path) -> None:
+    capture = _write_spooled_capture(tmp_path)
+    _create_browser_source_db(
+        tmp_path,
+        file_mtime_ms=int(capture.stat().st_mtime * 1000) - 1000,
+        capture_path=capture,
+    )
+    _create_browser_index_db(tmp_path)
+
+    probe = deployment_smoke._probe_browser_capture_archive(archive_root=tmp_path)
+
+    assert probe.ok is True
+    assert probe.error is None
+    assert probe.latest_spooled_mtime_ms is not None
+    assert probe.latest_raw_file_mtime_ms is not None
+    assert probe.latest_spooled_mtime_ms > probe.latest_raw_file_mtime_ms
+    assert probe.latest_indexed_session_id == "chatgpt-export:capture"
+    assert probe.latest_indexed_message_count == 1
 
 
 def test_deployment_smoke_reports_latest_browser_capture_missing_index_row(tmp_path: Path) -> None:
