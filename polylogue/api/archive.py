@@ -1675,11 +1675,11 @@ class PolylogueArchiveMixin:
         analyzed_ids = session_ids[:cap]
         if truncated:
             logger.warning(
-                "postmortem_bundle truncated: matched=%d cap=%d dropped=%d dropped_session_ids=%s",
+                "postmortem_bundle truncated: matched=%d cap=%d dropped=%d dropped_preview=%s",
                 matched,
                 cap,
                 dropped,
-                session_ids[cap:],
+                session_ids[cap : cap + 5],
             )
 
         profiles_map = await self.repository.get_session_profiles_batch(analyzed_ids)

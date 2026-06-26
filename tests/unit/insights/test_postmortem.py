@@ -302,3 +302,16 @@ def test_postmortem_bundle_json_envelope_has_stable_headline_keys() -> None:
         "cache_read_tokens",
         "cache_write_tokens",
     }
+    # The CLI ships JSON through model_json_document(..., exclude_none=True), not
+    # raw model_dump — assert the contract on that exact path. Degraded fields
+    # keep their explicit status + reason and never carry a fabricated value.
+    from polylogue.surfaces.payloads import model_json_document
+
+    shipped = model_json_document(bundle, exclude_none=True)
+    assert expected_keys <= set(shipped)
+    for field in ("longest_tool_gap", "wasted_loop", "failure_mode"):
+        degraded = shipped[field]
+        assert isinstance(degraded, dict)
+        assert degraded["status"] in {"no_signal", "unavailable"}
+        assert degraded["reason"]
+        assert degraded.get("value") is None

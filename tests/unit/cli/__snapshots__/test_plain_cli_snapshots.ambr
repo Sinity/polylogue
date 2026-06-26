@@ -1540,6 +1540,45 @@
   
   '''
 # ---
+# name: test_markdown_analyze_postmortem_snapshot
+  '''
+  # Postmortem Bundle
+  
+  ## Scope
+  - Matched sessions: 4
+  - Analyzed sessions: 4
+  - Since: (unbounded)
+  - Until: (unbounded)
+  - Query: (none)
+  
+  ## Headline
+  
+  | Field | Value |
+  | --- | --- |
+  | session_count | 4 |
+  | wallclock_span | span_ms=80251994107, summed_wall_ms=<HASH> |
+  | estimated_cost_usd | $0.000000 (estimated) |
+  | token_lanes | input=0, output=0, cache_read=0, cache_write=0 |
+  | top_expensive_session | no_signal: no session in scope carries a positive cost figure |
+  | repos_touched | (none) |
+  | subagent_branch_count | 0 |
+  | longest_tool_gap | unavailable (per-tool-call timestamps are not present in the session profile or recovery digest; longest_tool_gap is not cheaply derivable in v0) |
+  | wasted_loop | no_signal (pathology detector (#2383) not implemented; no signal computed in v0) |
+  | failure_mode | no_signal (pathology detector (#2383) not implemented; no signal computed in v0) |
+  
+  ## Evidence
+  
+  | Field | Evidence refs |
+  | --- | --- |
+  | session_count | claude-code-session:e6b3c944-cb32-4e35-b922-<HASH>, claude-code-session:3eb13b90-4668-4257-bdd6-<HASH>, chatgpt-export:402913ec-9ef2-493e-b0ac-<HASH>, chatgpt-export:8a476a87-e49d-481d-91d8-<HASH> |
+  | wallclock_span | chatgpt-export:402913ec-9ef2-493e-b0ac-<HASH> |
+  | estimated_cost | claude-code-session:e6b3c944-cb32-4e35-b922-<HASH> |
+  | top_expensive_session | claude-code-session:e6b3c944-cb32-4e35-b922-<HASH> |
+  | subagent_branch_count | claude-code-session:e6b3c944-cb32-4e35-b922-<HASH> |
+  
+  
+  '''
+# ---
 # name: test_plain_analyze_count_snapshot
   '''
   2
@@ -1560,6 +1599,12 @@
     longest_tool_gap: unavailable (per-tool-call timestamps are not present in the session profile or recovery digest; longest_tool_gap is not cheaply derivable in v0)
     wasted_loop: no_signal (pathology detector (#2383) not implemented; no signal computed in v0)
     failure_mode: no_signal (pathology detector (#2383) not implemented; no signal computed in v0)
+    evidence:
+      session_count: claude-code-session:e6b3c944-cb32-4e35-b922-<HASH>, claude-code-session:3eb13b90-4668-4257-bdd6-<HASH>, chatgpt-export:402913ec-9ef2-493e-b0ac-<HASH>, chatgpt-export:8a476a87-e49d-481d-91d8-<HASH>
+      wallclock_span: chatgpt-export:402913ec-9ef2-493e-b0ac-<HASH>
+      estimated_cost: claude-code-session:e6b3c944-cb32-4e35-b922-<HASH>
+      top_expensive_session: claude-code-session:e6b3c944-cb32-4e35-b922-<HASH>
+      subagent_branch_count: claude-code-session:e6b3c944-cb32-4e35-b922-<HASH>
   
   '''
 # ---

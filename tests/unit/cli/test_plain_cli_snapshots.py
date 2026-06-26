@@ -231,6 +231,16 @@ def test_json_analyze_postmortem_snapshot(
     assert output == snapshot
 
 
+def test_markdown_analyze_postmortem_snapshot(
+    runner: CliRunner,
+    postmortem_seeded_env: Path,
+    snapshot: object,
+) -> None:
+    """``polylogue --plain analyze --postmortem --format markdown`` pins the Markdown render (#2380)."""
+    output = _invoke(runner, ["--plain", "analyze", "--postmortem", "--format", "markdown"])
+    assert output == snapshot
+
+
 def test_analyze_postmortem_json_has_stable_headline_keys(
     runner: CliRunner,
     postmortem_seeded_env: Path,

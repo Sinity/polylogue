@@ -1482,7 +1482,7 @@ def analyze_verb(
         return
 
     if show_postmortem:
-        if output_format not in (None, "json", "markdown"):
+        if output_format not in (None, "json", "markdown", "plaintext"):
             raise click.UsageError("`analyze --postmortem` only supports terminal text, --format json, or markdown")
         from polylogue.cli.shared.machine_errors import success
         from polylogue.insights.postmortem import render_postmortem_markdown, render_postmortem_plain

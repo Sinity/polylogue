@@ -209,7 +209,9 @@ def compile_postmortem_bundle(
         latest_last_message_at=_iso(latest_last),
         span_ms=span_ms,
         summed_wall_duration_ms=summed_wall_ms,
-        evidence_refs=tuple(span_refs),
+        # Fall back to a session ref so a non-zero summed_wall_duration_ms stays
+        # drillable even when no boundary timestamp was available.
+        evidence_refs=tuple(span_refs) if span_refs else session_refs[:1],
     )
 
     # --- estimated_cost + token lanes ---------------------------------------
@@ -307,6 +309,28 @@ def _fmt_degraded(field: DegradedField) -> str:
     return f"{field.status} ({field.reason})"
 
 
+def _format_ref(ref: EvidenceRef) -> str:
+    parts = [ref.session_id]
+    if ref.message_id is not None:
+        parts.append(ref.message_id)
+        if ref.block_index is not None:
+            parts.append(str(ref.block_index))
+    return "::".join(parts)
+
+
+def _evidence_index(bundle: PostmortemBundle) -> list[tuple[str, tuple[EvidenceRef, ...]]]:
+    """Collect (field, refs) pairs so the shared artifacts stay drillable."""
+    pairs: list[tuple[str, tuple[EvidenceRef, ...]]] = [
+        ("session_count", bundle.session_count.evidence_refs),
+        ("wallclock_span", bundle.wallclock_span.evidence_refs),
+        ("estimated_cost", bundle.estimated_cost.evidence_refs),
+        ("top_expensive_session", bundle.top_expensive_session.evidence_refs),
+        ("subagent_branch_count", bundle.subagent_branch_count.evidence_refs),
+        *((f"repos_touched[{repo.repo}]", repo.evidence_refs) for repo in bundle.repos_touched),
+    ]
+    return [(name, refs) for name, refs in pairs if refs]
+
+
 def render_postmortem_plain(bundle: PostmortemBundle) -> str:
     """Render the bundle as a compact plain-text artifact.
 
@@ -356,6 +380,11 @@ def render_postmortem_plain(bundle: PostmortemBundle) -> str:
     lines.append(f"  longest_tool_gap: {_fmt_degraded(bundle.longest_tool_gap)}")
     lines.append(f"  wasted_loop: {_fmt_degraded(bundle.wasted_loop)}")
     lines.append(f"  failure_mode: {_fmt_degraded(bundle.failure_mode)}")
+    evidence = _evidence_index(bundle)
+    if evidence:
+        lines.append("  evidence:")
+        for name, refs in evidence:
+            lines.append(f"    {name}: {', '.join(_format_ref(r) for r in refs)}")
     return "\n".join(lines)
 
 
@@ -401,6 +430,15 @@ def render_postmortem_markdown(bundle: PostmortemBundle) -> str:
     lines.append(f"| wasted_loop | {_fmt_degraded(bundle.wasted_loop)} |")
     lines.append(f"| failure_mode | {_fmt_degraded(bundle.failure_mode)} |")
     lines.append("")
+    evidence = _evidence_index(bundle)
+    if evidence:
+        lines.append("## Evidence")
+        lines.append("")
+        lines.append("| Field | Evidence refs |")
+        lines.append("| --- | --- |")
+        for name, refs in evidence:
+            lines.append(f"| {name} | {', '.join(_format_ref(r) for r in refs)} |")
+        lines.append("")
     return "\n".join(lines)
 
 
