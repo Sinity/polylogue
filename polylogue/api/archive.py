@@ -1769,7 +1769,16 @@ class PolylogueArchiveMixin:
             seen.add(summary.session_id)
             session_ids.append(summary.session_id)
 
+        matched = len(session_ids)
         analyzed_ids = session_ids[:cap]
+        if matched > cap:
+            logger.warning(
+                "pathology_report truncated: matched=%d cap=%d dropped=%d dropped_preview=%s",
+                matched,
+                cap,
+                matched - cap,
+                session_ids[cap : cap + 5],
+            )
         projections = []
         for sid in analyzed_ids:
             digest = await self.recovery_digest(sid)
