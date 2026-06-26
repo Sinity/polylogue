@@ -122,3 +122,37 @@ def test_full_export_with_postmortem_payload_is_gated(tmp_path: Path) -> None:
     pm_text = result.postmortem_path.read_text(encoding="utf-8")
     assert PLANTED_REPO_PATH not in pm_text
     assert PLANTED_SECRET not in pm_text
+
+
+def test_full_export_with_spans_payload_is_redacted_and_gated(tmp_path: Path) -> None:
+    out_dir = tmp_path / "shareable-spans"
+    request = SanitizedExportRequest(output_path=out_dir, with_spans=True)
+    # OTel-style spans whose attributes carry a leaked absolute path + secret.
+    spans: list[dict[str, object]] = [
+        {
+            "name": "run",
+            "span_id": "abc123",
+            "attributes": {
+                "polylogue.cwd": PLANTED_REPO_PATH,
+                "note": f"token {PLANTED_SECRET}",
+            },
+        },
+        {
+            "name": "action",
+            "span_id": "def456",
+            "attributes": {"detail": f"opened {PLANTED_ABS_PATH}"},
+        },
+    ]
+    result = produce_sanitized_export(
+        rows=_rows(),
+        scope={},
+        request=request,
+        spans=spans,
+        home=PLANTED_HOME,
+    )
+    assert result.verify_ok is True
+    assert result.spans_path is not None
+    assert result.span_count == 2
+    spans_text = result.spans_path.read_text(encoding="utf-8")
+    for planted in (PLANTED_ABS_PATH, PLANTED_REPO_PATH, PLANTED_HOME, PLANTED_SECRET):
+        assert planted not in spans_text, f"{planted!r} leaked into spans.jsonl"

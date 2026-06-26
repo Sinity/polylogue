@@ -2030,7 +2030,50 @@ class PolylogueArchiveMixin:
             bundle = await self.postmortem_bundle(spec, limit=limit)
             postmortem = model_json_document(bundle, exclude_none=True)
 
-        return produce_sanitized_export(rows=rows, scope=scope, request=request, postmortem=postmortem)
+        spans: list[dict[str, object]] | None = None
+        if request.with_spans:
+            scope_origins = tuple(dict.fromkeys(profile.origin for profile in profiles if profile.origin))
+            spans = await self._sanitized_export_spans(spec, scope_origins, cap)
+
+        return produce_sanitized_export(rows=rows, scope=scope, request=request, postmortem=postmortem, spans=spans)
+
+    async def _sanitized_export_spans(
+        self,
+        spec: SessionQuerySpec | None,
+        origins: Sequence[str],
+        cap: int,
+    ) -> list[dict[str, object]]:
+        """Project scope-bounded run/action evidence into OTel-style span dicts.
+
+        Used only by the opt-in ``--with-spans`` export leg (#2434). The spans
+        are sanitized + leak-gated by the same fail-closed contract as the rest
+        of the bundle; this method only fetches and shapes them.
+
+        Query-unit expressions require an explicit predicate, so spans are scoped
+        by the origins present in the exported session set (one
+        ``<unit> where session.origin:<origin>`` query per origin), additionally
+        bounded by the export's ``since``/``until`` window. This covers the same
+        sessions the dataset rows describe without a query-unit "select all" form.
+        """
+        from polylogue.surfaces.payloads import model_json_document
+        from polylogue.telemetry.otel_projection import project_query_unit_rows_to_otel
+
+        since = spec.since if spec is not None else None
+        until = spec.until if spec is not None else None
+
+        rows: list[Any] = []
+        for origin in origins:
+            for unit in ("runs", "actions"):
+                envelope = await self.query_units(
+                    f"{unit} where session.origin:{origin}",
+                    limit=cap,
+                    since=since,
+                    until=until,
+                )
+                rows.extend(envelope.items)
+
+        projection = project_query_unit_rows_to_otel("export:sanitized-spans", rows)
+        return [cast("dict[str, object]", model_json_document(span)) for span in projection.spans]
 
     async def recovery_report(self, session_id: str, preset: RecoveryReportPreset) -> str | None:
         """Render one deterministic recovery report preset for a session."""

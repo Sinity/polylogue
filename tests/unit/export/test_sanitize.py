@@ -249,3 +249,16 @@ def test_gate_independently_catches_raw_email(tmp_path: Path) -> None:
     verdict = verify_sanitized_export(tmp_path, home="/nonexistent-home")
     assert verdict.ok is False
     assert verdict.secret_leaks
+
+
+def test_gate_scans_spans_file_for_raw_leak(tmp_path: Path) -> None:
+    """The fail-closed gate must also scan spans.jsonl, not just dataset.jsonl (#2434)."""
+    (tmp_path / "spans.jsonl").write_text(
+        json.dumps({"name": "run", "attributes": {"cwd": "/home/me/secret/private-repo"}}) + "\n",
+        encoding="utf-8",
+    )
+    verdict = verify_sanitized_export(tmp_path, home="/home/me")
+    assert verdict.ok is False
+    assert verdict.absolute_path_leaks
+    assert any("spans.jsonl" in leak for leak in verdict.absolute_path_leaks)
+    assert "spans.jsonl" in verdict.files_scanned
