@@ -31,9 +31,11 @@ from polylogue.storage.blob_integrity import (
     BlobReferenceDebtRestoreReport,
     BlobReferenceOrphanPruneReport,
     BlobReferenceRecoveryPlanReport,
+    BlobReferenceSourceReplaceReport,
     classify_blob_reference_debt,
     plan_raw_backed_blob_reference_recovery,
     prune_orphan_blob_reference_debt,
+    replace_raw_backed_blob_reference_debt_from_source,
     restore_direct_blob_reference_debt,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -1434,6 +1436,96 @@ def _render_blob_reference_recovery_plan_plain(report: BlobReferenceRecoveryPlan
             click.echo(f"  {sample.action} {sample.blob_hash} origin={sample.origin} {source}")
 
 
+@maintenance_group.command("blob-reference-replace-from-source")
+@click.option(
+    "--yes",
+    "apply",
+    is_flag=True,
+    help="Apply the replacement. Without this flag the command is a dry run.",
+)
+@click.option(
+    "--manifest-file",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="JSONL destination for before/after replacement rows. Required with --yes.",
+)
+@click.option("--max-count", type=int, default=None, help="Maximum number of candidate rows to process.")
+@click.option(
+    "--sample-limit",
+    type=int,
+    default=30,
+    show_default=True,
+    help="Maximum number of representative replacement rows to include.",
+)
+@click.option(
+    "--output-format",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+    help="Output format.",
+)
+def blob_reference_replace_from_source_command(
+    apply: bool,
+    manifest_file: Path | None,
+    max_count: int | None,
+    sample_limit: int,
+    output_format: str,
+) -> None:
+    """Replace raw-backed missing blob refs with current source-derived bytes."""
+    if apply and manifest_file is None:
+        raise click.UsageError("--manifest-file is required with --yes")
+    report = replace_raw_backed_blob_reference_debt_from_source(
+        archive_root() / "source.db",
+        dry_run=not apply,
+        manifest_path=manifest_file,
+        max_count=max_count,
+        sample_size=sample_limit,
+    )
+    payload = {
+        "mode": "blob_reference_replace_from_source",
+        "mutates": apply,
+        "writes_manifest": manifest_file is not None,
+        **report.to_dict(),
+    }
+
+    if output_format == "json":
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    _render_blob_reference_replace_from_source_plain(report)
+
+
+def _render_blob_reference_replace_from_source_plain(report: BlobReferenceSourceReplaceReport) -> None:
+    click.echo("Blob reference current-source replacement")
+    click.echo(f"Source DB:    {report.source_db}")
+    click.echo(f"Blob root:    {report.blob_root}")
+    click.echo(f"Mode:         {'dry-run' if report.dry_run else 'apply'}")
+    click.echo(f"Scanned:      {report.scanned_rows:,} raw-backed row(s)")
+    click.echo(f"Candidates:   {report.candidate_rows:,}")
+    click.echo(f"Replaced:     {report.replaced_rows:,}")
+    click.echo(f"Written:      {report.written_blobs:,} blob(s), {report.written_bytes:,} byte(s)")
+    click.echo(
+        "Skipped:      "
+        f"existing={report.skipped_existing_blob:,} "
+        f"no_source={report.skipped_no_source_path:,} "
+        f"source_missing={report.skipped_source_missing:,} "
+        f"source_index={report.skipped_source_index:,} "
+        f"unsupported={report.skipped_unsupported_source:,} "
+        f"error={report.skipped_error:,}"
+    )
+    if report.manifest_path:
+        click.echo(f"Manifest:    {report.manifest_path}")
+    if report.samples:
+        click.echo("Samples:")
+        for sample in report.samples[:5]:
+            detail = f" reason={sample.reason}" if sample.reason else ""
+            click.echo(
+                f"  {sample.action} raw_id={sample.raw_id} old={sample.old_blob_hash} "
+                f"new={sample.new_blob_hash}{detail}"
+            )
+
+
 @maintenance_group.command("blob-reference-prune-orphans")
 @click.option(
     "--max-count",
@@ -1737,6 +1829,7 @@ __all__ = [
     "blob_reference_debt_command",
     "blob_reference_prune_orphans_command",
     "blob_reference_recovery_plan_command",
+    "blob_reference_replace_from_source_command",
     "blob_reference_restore_direct_command",
     "gc_history_command",
     "maintenance_group",
