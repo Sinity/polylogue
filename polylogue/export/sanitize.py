@@ -554,9 +554,13 @@ def assert_text_sanitized(text: str, *, home: str | None = None) -> None:
 
     abs_leaks, home_leaks, secret_leaks = _scan_text(text, home=_home_dir(home))
     if abs_leaks or home_leaks or secret_leaks:
+        # Report counts by class only — never the leaked values themselves. The
+        # CLI echoes this message, so embedding the surviving paths/secrets would
+        # re-leak the exact private data the gate exists to suppress.
         raise SanitizedExportError(
             "rendered report failed the sanitizer leak gate: "
-            f"absolute_paths={abs_leaks} home_paths={home_leaks} secrets={secret_leaks}"
+            f"absolute_paths={len(abs_leaks)} home_paths={len(home_leaks)} secrets={len(secret_leaks)} "
+            "(values withheld)"
         )
 
 

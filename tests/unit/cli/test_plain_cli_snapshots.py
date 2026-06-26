@@ -358,8 +358,15 @@ def test_analyze_portfolio_is_fail_closed_on_leak(monkeypatch: pytest.MonkeyPatc
     # The fail-closed gate must reject any rendered text that still carries an
     # absolute path / secret. The CLI maps this to a non-zero exit and emits
     # nothing — proven here at the gate the CLI calls.
-    with pytest.raises(SanitizedExportError):
-        assert_text_sanitized("repos_touched:\n  - /home/secret/private-repo/notes.md\n")
+    leaked = "/home/secret/private-repo/notes.md"
+    with pytest.raises(SanitizedExportError) as excinfo:
+        assert_text_sanitized(f"repos_touched:\n  - {leaked}\n")
+    # The error message is echoed by the CLI, so it must report counts/classes
+    # only — never the surviving private value itself (would re-leak it).
+    message = str(excinfo.value)
+    assert leaked not in message
+    assert "/home/secret" not in message
+    assert "absolute_paths=1" in message
     # A clean report passes the same gate (no exception).
     assert_text_sanitized("repos_touched:\n  - polylogue: 3\n")
 
