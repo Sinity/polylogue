@@ -142,7 +142,8 @@
         "judgment",
         "run_state",
         "prompt_eval",
-        "transform_candidate"
+        "transform_candidate",
+        "pathology"
       ],
       "title": "AssertionKind",
       "type": "string"

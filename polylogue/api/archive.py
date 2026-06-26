@@ -7,7 +7,7 @@ import json
 import logging
 import sqlite3
 import uuid
-from collections.abc import AsyncIterator, Iterable, Sequence
+from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -851,6 +851,44 @@ def _archive_judge_assertion_candidate(
         raise RuntimeError(f"failed to judge assertion candidate: {exc}") from exc
 
 
+def _archive_emit_pathology_assertions(
+    config: Config,
+    findings_by_session: Mapping[str, Sequence[Any]],
+) -> int:
+    """Upsert pathology findings as candidate assertions in ``user.db`` (#2383).
+
+    Returns the number of candidate assertion rows written. Idempotent: the
+    deterministic assertion id means re-emitting identical findings updates the
+    same candidate rows rather than duplicating them.
+    """
+
+    from polylogue.storage.sqlite.archive_tiers.user_write import (
+        upsert_pathology_findings_as_assertions,
+    )
+
+    if not findings_by_session:
+        return 0
+    user_db = _active_archive_root(config) / "user.db"
+    if not user_db.exists():
+        raise ValueError("assertion user tier is not initialized")
+    emitted = 0
+    try:
+        conn = sqlite3.connect(user_db)
+        conn.row_factory = sqlite3.Row
+        try:
+            for session_id, findings in findings_by_session.items():
+                if not findings:
+                    continue
+                envelopes = upsert_pathology_findings_as_assertions(conn, session_id, list(findings))
+                emitted += len(envelopes)
+            conn.commit()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"failed to emit pathology assertions: {exc}") from exc
+    return emitted
+
+
 def _archive_assertion_work_packet_entries(claims: Sequence[Any], session_id: str) -> tuple[Any, ...]:
     """Return assertion-backed work-packet rows for one target session."""
 
@@ -884,7 +922,7 @@ def _archive_assertion_work_packet_entries(claims: Sequence[Any], session_id: st
 def _archive_assertion_support(kind: str) -> WorkPacketSupport:
     if kind in {"blocker", "caveat"}:
         return "caveat"
-    if kind == "transform_candidate":
+    if kind in {"transform_candidate", "pathology"}:
         return "inference"
     return "assertion"
 
@@ -1785,6 +1823,63 @@ class PolylogueArchiveMixin:
             if digest is not None:
                 projections.append(digest.run_projection)
         return compile_pathology_report(projections)
+
+    async def materialize_pathology_assertions(
+        self,
+        spec: SessionQuerySpec | None = None,
+        *,
+        limit: int | None = None,
+    ) -> int:
+        """Emit pathology findings as candidate assertions queryable via #2006 (#2383).
+
+        Runs the deterministic detectors over a matched session scope (the same
+        path :meth:`pathology_report` uses) and upserts each finding as a private,
+        non-injected ``AssertionKind.PATHOLOGY`` candidate in ``user.db``. The
+        candidates are then queryable through the standard assertion-claims surface
+        (``list_assertion_claims(kinds="pathology")``) and promotable through the
+        existing accept/reject/defer lifecycle (Ref #2182) — nothing is
+        auto-injected into agent context. Returns the number of candidate rows
+        written. Idempotent by deterministic assertion id. The analysis cap
+        defaults to 200 sessions.
+        """
+        from polylogue.insights.pathology import detect_session_pathologies
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        cap = limit if limit is not None and limit > 0 else 200
+
+        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
+            if spec is not None and spec.has_filters():
+                summaries = _archive_list_summaries_for_spec(archive, spec, default_limit=1_000_000)
+            else:
+                summaries = archive.list_summaries(limit=1_000_000)
+
+        session_ids: list[str] = []
+        seen: set[str] = set()
+        for summary in summaries:
+            if summary.session_id in seen:
+                continue
+            seen.add(summary.session_id)
+            session_ids.append(summary.session_id)
+
+        matched = len(session_ids)
+        analyzed_ids = session_ids[:cap]
+        if matched > cap:
+            logger.warning(
+                "materialize_pathology_assertions truncated: matched=%d cap=%d dropped=%d dropped_preview=%s",
+                matched,
+                cap,
+                matched - cap,
+                session_ids[cap : cap + 5],
+            )
+        findings_by_session: dict[str, list[Any]] = {}
+        for sid in analyzed_ids:
+            digest = await self.recovery_digest(sid)
+            if digest is None:
+                continue
+            findings = detect_session_pathologies(digest.run_projection)
+            if findings:
+                findings_by_session[sid] = findings
+        return _archive_emit_pathology_assertions(self.config, findings_by_session)
 
     async def sanitized_export(
         self,
