@@ -85,25 +85,26 @@ browser profiles, cookies, screenshots, or receiver payloads from them.
 
 ## Choosing a smoke mode
 
-The dev-loop helper exposes several smoke modes. Pick by what you are trying to
-prove and whether the lane may touch a real browser (the cloud lane only runs
-`cloud_safe` modes — see [cloud-agents.md](cloud-agents.md)):
+The Preflight "Authority summary" table above is the source of truth for each
+mode's authority label, cloud-safety, and profile/cookie state (the cloud lane
+only runs cloud-safe modes — see [cloud-agents.md](cloud-agents.md)). This
+section is the decision guide — what each mode *proves* and when to reach for it:
 
-| Mode flag | Proves | Touches a real browser? | Cloud-safe |
-| --- | --- | --- | --- |
-| `--receiver-smoke` | The branch-local browser-capture receiver ingests a synthetic payload into the dev archive. | no | yes |
-| `--extension-smoke` | The unpacked extension's bundled deterministic fixture posts through the receiver end to end. | no | yes |
-| `--browser-smoke` | The extension loads in a real local Chrome and posts its deterministic fixture. | yes | no |
-| `--browser-provider-smoke` | A real local Chrome renders a deterministic provider-page fixture the extension captures. | yes | no |
-| `--browser-plan` | Writes a copy-pastable handoff plan for manual browser steps; runs nothing itself. | no (plan only) | yes |
-| `--browser-live-proof` | Operator-only: a copied real profile captures a live ChatGPT/Claude.ai conversation. Needs `--browser-live-profile-dir` + the live URLs. | yes (authenticated) | no |
+| Mode flag | Proves |
+| --- | --- |
+| `--receiver-smoke` | The branch-local browser-capture receiver ingests a synthetic payload into the dev archive. |
+| `--extension-smoke` | The unpacked extension's bundled deterministic fixture posts through the receiver end to end. |
+| `--browser-smoke` | The extension loads in a real local Chrome and posts its deterministic fixture. |
+| `--browser-provider-smoke` | A real local Chrome renders a deterministic provider-page fixture the extension captures. |
+| `--browser-plan` | Writes a copy-pastable handoff plan for manual browser steps; runs nothing itself. |
+| `--browser-live-proof` | A copied real profile captures a live ChatGPT/Claude.ai conversation (operator-only; needs `--browser-live-profile-dir` + the live URLs). |
 
 Separately, `devtools workspace deployment-smoke` probes the **deployed**
 `polylogued`/web routes and installed binaries — it is not branch-local and does
 not use the dev archive. Reach for it when verifying the live system generation,
 not a branch.
 
-Rule of thumb: start with the two `cloud_safe` synthetic smokes
+Rule of thumb: start with the two cloud-safe synthetic smokes
 (`--receiver-smoke`, `--extension-smoke`) to prove the wiring without a browser;
 escalate to `--browser-smoke`/`--browser-provider-smoke` only when the failure is
 in the real-Chrome/extension layer; use `--browser-live-proof` only as explicit
