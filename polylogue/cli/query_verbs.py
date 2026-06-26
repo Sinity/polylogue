@@ -1347,6 +1347,12 @@ def _emit_candidate_judgment(
     is_flag=True,
     help="Distilled postmortem bundle over the matched session scope (#2380).",
 )
+@click.option(
+    "--portfolio",
+    "show_portfolio",
+    is_flag=True,
+    help="Corpus-wide sanitized portfolio report over the matched scope (#2437).",
+)
 @click.option("--plan", "plan_name", default=None, help="Subscription plan name for --cost-outlook.")
 @click.option(
     "--method",
@@ -1397,6 +1403,7 @@ def analyze_verb(
     output_format: str | None = None,
     limit: int | None = None,
     show_postmortem: bool = False,
+    show_portfolio: bool = False,
 ) -> None:
     """Analyze matched sessions: statistics, facets, and aggregates.
 
@@ -1423,6 +1430,7 @@ def analyze_verb(
                 show_facets,
                 cost_outlook,
                 show_postmortem,
+                show_portfolio,
                 plan_name is not None,
                 method != "linear",
                 no_idf,
@@ -1461,11 +1469,13 @@ def analyze_verb(
         return
 
     selected_modes = sum(
-        bool(flag) for flag in (count_only, show_facets, cost_outlook, show_postmortem, stats_by is not None)
+        bool(flag)
+        for flag in (count_only, show_facets, cost_outlook, show_postmortem, show_portfolio, stats_by is not None)
     )
     if selected_modes > 1:
         raise click.UsageError(
-            "Choose only one analyze mode: --count, --facets, --cost-outlook, --postmortem, --by, or default stats."
+            "Choose only one analyze mode: --count, --facets, --cost-outlook, "
+            "--postmortem, --portfolio, --by, or default stats."
         )
     if not cost_outlook and plan_name is not None:
         raise click.UsageError("`analyze --plan` requires --cost-outlook.")
@@ -1496,6 +1506,36 @@ def analyze_verb(
             click.echo(render_postmortem_markdown(bundle))
         else:
             click.echo(render_postmortem_plain(bundle))
+        return
+
+    if show_portfolio:
+        if output_format not in (None, "json", "markdown", "plaintext"):
+            raise click.UsageError("`analyze --portfolio` only supports terminal text, --format json, or markdown")
+        from polylogue.cli.shared.machine_errors import success
+        from polylogue.export.sanitize import SanitizedExportError, assert_text_sanitized
+        from polylogue.insights.portfolio import render_portfolio_markdown, render_portfolio_plain
+        from polylogue.surfaces.payloads import model_json_document
+
+        spec = request.query_spec()
+        portfolio = run_coroutine_sync(env.polylogue.portfolio_bundle(spec, limit=limit))
+        if output_format == "json":
+            payload = model_json_document(portfolio, exclude_none=True)
+            rendered_json = success({"portfolio": payload}).to_json()
+            # Fail-closed: refuse to emit if any private data survived redaction.
+            try:
+                assert_text_sanitized(rendered_json)
+            except SanitizedExportError as exc:
+                raise click.ClickException(str(exc)) from exc
+            click.echo(rendered_json)
+            return
+        rendered = (
+            render_portfolio_markdown(portfolio) if output_format == "markdown" else render_portfolio_plain(portfolio)
+        )
+        try:
+            assert_text_sanitized(rendered)
+        except SanitizedExportError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(rendered)
         return
 
     if limit is not None:

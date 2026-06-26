@@ -68,6 +68,7 @@ if TYPE_CHECKING:
     from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport
     from polylogue.insights.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
     from polylogue.insights.pathology import PathologyReport
+    from polylogue.insights.portfolio import PortfolioBundle
     from polylogue.insights.postmortem import PostmortemBundle
     from polylogue.insights.readiness import InsightReadinessQuery, InsightReadinessReport
     from polylogue.insights.resume import ResumeBrief, ResumeCandidate
@@ -1880,6 +1881,90 @@ class PolylogueArchiveMixin:
             if findings:
                 findings_by_session[sid] = findings
         return _archive_emit_pathology_assertions(self.config, findings_by_session)
+
+    async def portfolio_bundle(
+        self,
+        spec: SessionQuerySpec | None = None,
+        *,
+        limit: int | None = None,
+        top_n: int = 10,
+    ) -> PortfolioBundle:
+        """Compile a corpus-wide, sanitized portfolio report (#2437).
+
+        Resolves the matched session set (the same summary path
+        ``postmortem_bundle`` uses), batch-fetches profiles + recovery digests,
+        and delegates aggregation to the pure :func:`compile_portfolio_bundle`
+        (session/repo/origin counts, cost + wall-clock distributions, pathology
+        and context-loss distribution). The compiled bundle is then routed
+        through the #2381 sanitizer (`sanitize_rows`) so path/secret fields are
+        redacted before it leaves the API; the CLI applies the fail-closed leak
+        gate over the rendered text. The analysis cap defaults to 200 sessions.
+        """
+        from polylogue.export.sanitize import sanitize_rows
+        from polylogue.insights.portfolio import (
+            PortfolioBundle as _PortfolioBundle,
+        )
+        from polylogue.insights.portfolio import (
+            compile_portfolio_bundle,
+        )
+        from polylogue.insights.postmortem import PostmortemScope
+        from polylogue.schemas.privacy_config import PrivacyConfig
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        cap = limit if limit is not None and limit > 0 else 200
+
+        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
+            if spec is not None and spec.has_filters():
+                summaries = _archive_list_summaries_for_spec(archive, spec, default_limit=1_000_000)
+            else:
+                summaries = archive.list_summaries(limit=1_000_000)
+
+        session_ids: list[str] = []
+        seen: set[str] = set()
+        for summary in summaries:
+            if summary.session_id in seen:
+                continue
+            seen.add(summary.session_id)
+            session_ids.append(summary.session_id)
+
+        matched = len(session_ids)
+        truncated = matched > cap
+        dropped = matched - cap if truncated else 0
+        analyzed_ids = session_ids[:cap]
+        if truncated:
+            logger.warning(
+                "portfolio_bundle truncated: matched=%d cap=%d dropped=%d dropped_preview=%s",
+                matched,
+                cap,
+                dropped,
+                session_ids[cap : cap + 5],
+            )
+
+        profiles_map = await self.repository.get_session_profiles_batch(analyzed_ids)
+        profiles = [profiles_map[sid] for sid in analyzed_ids if sid in profiles_map]
+
+        digests: dict[str, RecoveryDigest] = {}
+        for sid in analyzed_ids:
+            digest = await self.recovery_digest(sid)
+            if digest is not None:
+                digests[sid] = digest
+
+        scope = PostmortemScope(
+            since=spec.since if spec is not None else None,
+            until=spec.until if spec is not None else None,
+            query=_archive_text_query(spec) if spec is not None else None,
+            matched_session_count=matched,
+            analyzed_session_count=len(profiles),
+            truncated=truncated,
+            dropped_session_count=dropped,
+        )
+        bundle = compile_portfolio_bundle(profiles, digests, scope=scope, top_n=top_n)
+
+        # Route the structured bundle through the #2381 redactor so any path or
+        # secret in repo names / pathology detail is redacted before it leaves
+        # the API. The CLI applies the fail-closed leak gate on the rendered text.
+        sanitized_rows, _report = sanitize_rows([bundle.model_dump(mode="json")], config=PrivacyConfig())
+        return _PortfolioBundle.model_validate(sanitized_rows[0])
 
     async def sanitized_export(
         self,

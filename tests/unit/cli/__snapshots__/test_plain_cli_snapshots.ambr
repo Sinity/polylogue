@@ -5,6 +5,112 @@
   
   '''
 # ---
+# name: test_json_analyze_portfolio_snapshot
+  '''
+  {
+    "status": "ok",
+    "result": {
+      "portfolio": {
+        "schema_version": 1,
+        "scope": {
+          "matched_session_count": 4,
+          "analyzed_session_count": 4,
+          "truncated": false,
+          "dropped_session_count": 0
+        },
+        "session_count": {
+          "count": 4,
+          "evidence_refs": [
+            {
+              "session_id": "claude-code-session:e6b3c944-cb32-4e35-b922-<HASH>"
+            },
+            {
+              "session_id": "claude-code-session:3eb13b90-4668-4257-bdd6-<HASH>"
+            },
+            {
+              "session_id": "chatgpt-export:402913ec-9ef2-493e-b0ac-<HASH>"
+            },
+            {
+              "session_id": "chatgpt-export:8a476a87-e49d-481d-91d8-<HASH>"
+            }
+          ]
+        },
+        "origins": [
+          {
+            "origin": "chatgpt-export",
+            "session_count": 2
+          },
+          {
+            "origin": "claude-code-session",
+            "session_count": 2
+          }
+        ],
+        "repos_touched": [],
+        "estimated_cost": {
+          "total_cost_usd": 0.0,
+          "cost_is_estimated": true,
+          "tokens": {
+            "input_tokens": 174,
+            "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "evidence_refs": [
+            {
+              "session_id": "claude-code-session:e6b3c944-cb32-4e35-b922-<HASH>"
+            }
+          ]
+        },
+        "cost_distribution": {
+          "count": 0,
+          "total": 0.0,
+          "minimum": 0.0,
+          "p50": 0.0,
+          "p90": 0.0,
+          "maximum": 0.0,
+          "mean": 0.0
+        },
+        "wallclock_span": {
+          "earliest_first_message_at": "<TIMESTAMP>",
+          "latest_last_message_at": "<TIMESTAMP>",
+          "span_ms": 80251994107,
+          "summed_wall_duration_ms": <HASH>,
+          "evidence_refs": [
+            {
+              "session_id": "chatgpt-export:402913ec-9ef2-493e-b0ac-<HASH>"
+            }
+          ]
+        },
+        "wallclock_distribution_s": {
+          "count": 4,
+          "total": 150690970.11,
+          "minimum": 240.0,
+          "p50": 360.0,
+          "p90": 80251994.107,
+          "maximum": 80251994.107,
+          "mean": 37672742.5275
+        },
+        "pathologies": {
+          "status": "clean",
+          "count": 0,
+          "detail": "detectors ran; no pathology found",
+          "by_kind": {},
+          "evidence_refs": []
+        },
+        "context_loss": {
+          "status": "clean",
+          "count": 0,
+          "detail": "detectors ran; no pathology found",
+          "by_kind": {},
+          "evidence_refs": []
+        },
+        "top_pathologies": []
+      }
+    }
+  }
+  
+  '''
+# ---
 # name: test_json_analyze_postmortem_snapshot
   '''
   {
@@ -1546,6 +1652,29 @@
   
   '''
 # ---
+# name: test_markdown_analyze_portfolio_snapshot
+  '''
+  # Portfolio Report
+  
+  - **Scope:** archive-start → now
+  - **Sessions:** 4 analyzed / 4 matched
+  - **Origins:** chatgpt-export (2), claude-code-session (2)
+  - **Total cost:** $0.00 _(estimated)_
+  - **Tokens:** in 174, out 0, cache-read 0, cache-write 0
+  
+  ## Distributions
+  
+  - Cost per session (USD): no signal
+  - Wall time per session: n=4 total=1.50691e+<DURATION> min=240 p50=360 p90=8.0252e+07 max=8.0252e+07 mean=3.76727e+07
+  
+  ## Failure-mode pathologies
+  
+  - **Overall:** clean — detectors ran; no pathology found
+  - **Context loss:** clean — detectors ran; no pathology found
+  
+  
+  '''
+# ---
 # name: test_markdown_analyze_postmortem_snapshot
   '''
   # Postmortem Bundle
@@ -1588,6 +1717,22 @@
 # name: test_plain_analyze_count_snapshot
   '''
   2
+  
+  '''
+# ---
+# name: test_plain_analyze_portfolio_snapshot
+  '''
+  Polylogue Portfolio Report
+  scope: archive-start → now
+  sessions: analyzed=4 matched=4
+  origins: chatgpt-export=2, claude-code-session=2
+  total_cost: $0.00 (estimated)
+  tokens: in=174 out=0 cache_read=0 cache_write=0
+  cost_per_session_usd: no signal
+  wall_per_session_s: n=4 total=1.50691e+<DURATION> min=240 p50=360 p90=8.0252e+07 max=8.0252e+07 mean=3.76727e+07
+  wallclock_span_ms: 80251994107
+  pathologies: clean (detectors ran; no pathology found)
+  context_loss: clean (detectors ran; no pathology found)
   
   '''
 # ---

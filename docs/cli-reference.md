@@ -239,6 +239,8 @@ Options:
                                   configured subscription plan.
   --postmortem                    Distilled postmortem bundle over the matched
                                   session scope (#2380).
+  --portfolio                     Corpus-wide sanitized portfolio report over
+                                  the matched scope (#2437).
   --plan TEXT                     Subscription plan name for --cost-outlook.
   --method [linear|trailing-7d-mean|eom-naive]
                                   Projection method for --cost-outlook.
