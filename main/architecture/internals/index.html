@@ -555,7 +555,14 @@ archive.</li>
 <li>Schema bumps are deletes-then-defines, never deltas. A schema change
 edits the owning tier DDL/version and documents the re-ingest expectation.
 No upgrade helpers are added for the bump.</li>
-<li>Index schema version 7 adds JSON-object checks for <code>blocks.tool_input</code>
+<li>Index schema version 9 adds typed <code>sessions.session_kind</code> for standard vs
+temporary sessions. Existing index tiers must be rebuilt from source evidence
+or explicitly operator-patched so temporary ChatGPT/Claude/browser-capture
+sessions become schema state instead of only parser auto-tags.</li>
+<li>Index schema version 8 added <code>web_content_constructs</code> for provider-native
+web/export constructs such as citations, source references, canvas/artifact
+revisions, asset pointers, token-budget rows, and task/search records.</li>
+<li>Index schema version 7 added JSON-object checks for <code>blocks.tool_input</code>
 and <code>session_provider_usage_events.payload_json</code>. Existing index tiers must
 be rebuilt from source evidence so the canonical read model is recreated with
 the stricter JSON contract.</li>

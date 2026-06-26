@@ -392,7 +392,7 @@ over the <code>CREATE TABLE</code> statement.</p>
 <tr>
 <td><code>index.py</code></td>
 <td><code>index.db</code></td>
-<td><code>INDEX_SCHEMA_VERSION = 7</code></td>
+<td><code>INDEX_SCHEMA_VERSION = 9</code></td>
 </tr>
 <tr>
 <td><code>embeddings.py</code></td>
@@ -534,13 +534,22 @@ storage owner rather than duplicating full table definitions.</p>
 <h2>JSON payload contracts</h2>
 <p>SQLite <code>STRICT</code> mode does not make a <code>TEXT</code> column JSON-shaped. New executable
 JSON checks should use the shared helpers in <code>archive_tiers/common.py</code> so the
-contract is visible in canonical DDL instead of hand-written per table. Index
-schema version 7 enforces object JSON for <code>blocks.tool_input</code> and
+contract is visible in canonical DDL instead of hand-written per table.</p>
+<p>Recent index-tier versions:</p>
+<ul>
+<li>version 9 adds typed <code>sessions.session_kind</code> for standard vs temporary
+sessions, so temporary chats are archive schema rather than only parser tags;</li>
+<li>version 8 adds <code>web_content_constructs</code> for provider-native web/export
+constructs such as citations, source references, canvas/artifact revisions,
+asset pointers, and task/search records;</li>
+<li>version 7 enforces object JSON for <code>blocks.tool_input</code> and
 <code>session_provider_usage_events.payload_json</code>, two hot read-path columns with
-current typed writers. Broader payload columns such as insight evidence,
-inference, enrichment, work-event arrays, source hook payloads, and user
-assertion JSON should be constrained only after their historical write shapes
-are audited and the required tier-version/rebuild consequence is documented.</p>
+current typed writers.</li>
+</ul>
+<p>Broader payload columns such as insight evidence, inference, enrichment,
+work-event arrays, source hook payloads, and user assertion JSON should be
+constrained only after their historical write shapes are audited and the
+required tier-version/rebuild consequence is documented.</p>
 <h2>Identifiers</h2>
 <p>Primary keys in <code>index.db</code> are <strong>generated</strong> from natural components rather than
 opaque UUIDs (see the <code>GENERATED ALWAYS AS (...) STORED</code> columns in <code>index.py</code>):</p>
