@@ -382,11 +382,11 @@ Polylogue follows XDG conventions and works without a mandatory config file.</p>
 rendered in your pager.</p>
 <h2>First list</h2>
 <p>List recent sessions with natural-language time filters:</p>
-<pre><code class="language-bash">polylogue --since yesterday list
-polylogue --since &quot;last week&quot; -p claude-code list
+<pre><code class="language-bash">polylogue --since yesterday read --all
+polylogue --since &quot;last week&quot; --origin claude-code-session read --all
 </code></pre>
 <p>Limit and format:</p>
-<pre><code class="language-bash">polylogue --since 2026-01 --limit 5 list --format json
+<pre><code class="language-bash">polylogue --since 2026-01 --limit 5 read --all --format json
 </code></pre>
 <h2>First cost check</h2>
 <p>Review estimated API costs:</p>
@@ -450,7 +450,7 @@ roots. Optionally exposes a local HTTP API and a browser-capture receiver.</p>
 <td>Daemon health check</td>
 </tr>
 <tr>
-<td><code>polylogue &lt;id&gt; show</code></td>
+<td><code>polylogue --id &lt;id&gt; read --view transcript</code></td>
 <td>Display full session</td>
 </tr>
 </tbody>
