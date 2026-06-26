@@ -199,6 +199,7 @@ def test_claude_rich_segments_and_attachment_fields_are_preserved() -> None:
     session = parse_ai(payload, "fallback")
 
     assert CLAUDE_TEMPORARY_CHAT_INGEST_FLAG in session.ingest_flags
+    assert session.session_kind == "temporary"
     assert session.messages[0].blocks[0].metadata is None
     token_budget_constructs = session.messages[0].blocks[1].web_constructs
     assert len(token_budget_constructs) == 1

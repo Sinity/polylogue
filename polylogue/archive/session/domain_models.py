@@ -12,7 +12,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_runtime import SessionRuntimeMixin
 from polylogue.archive.session.events import SessionEvent
 from polylogue.archive.session.summary_runtime import SessionSummaryRuntimeMixin
-from polylogue.core.enums import Origin, Provider
+from polylogue.core.enums import Origin, Provider, SessionKind
 from polylogue.core.sources import origin_from_provider
 from polylogue.types import SessionId
 
@@ -33,6 +33,7 @@ class SessionSummary(SessionSummaryRuntimeMixin, BaseModel):
     id: SessionId
     origin: Origin
     title: str | None = None
+    session_kind: SessionKind = SessionKind.STANDARD
     created_at: datetime | None = None
     updated_at: datetime | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
@@ -53,6 +54,11 @@ class SessionSummary(SessionSummaryRuntimeMixin, BaseModel):
     def coerce_origin(cls, v: object) -> Origin:
         return _coerce_origin(v)
 
+    @field_validator("session_kind", mode="before")
+    @classmethod
+    def coerce_session_kind(cls, v: object) -> SessionKind:
+        return SessionKind.normalize(v)
+
 
 class Session(SessionRuntimeMixin, BaseModel):
     """Session with eagerly or lazily materialized message collection."""
@@ -60,6 +66,7 @@ class Session(SessionRuntimeMixin, BaseModel):
     id: SessionId
     origin: Origin
     title: str | None = None
+    session_kind: SessionKind = SessionKind.STANDARD
     messages: MessageCollection
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -79,6 +86,11 @@ class Session(SessionRuntimeMixin, BaseModel):
     @classmethod
     def coerce_origin(cls, v: object) -> Origin:
         return _coerce_origin(v)
+
+    @field_validator("session_kind", mode="before")
+    @classmethod
+    def coerce_session_kind(cls, v: object) -> SessionKind:
+        return SessionKind.normalize(v)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

@@ -127,6 +127,21 @@ def test_chatgpt_shared_conversation_index_shell_is_tagged() -> None:
     assert SHARED_CONVERSATION_INDEX_INGEST_FLAG in session.ingest_flags
 
 
+def test_chatgpt_temporary_payload_sets_session_kind() -> None:
+    session = chatgpt_parse(
+        {
+            "id": "temporary-native",
+            "title": "Temporary",
+            "is_temporary": True,
+            "mapping": {},
+        },
+        "fallback",
+    )
+
+    assert session.session_kind == "temporary"
+    assert "capture:temporary-chat" in session.ingest_flags
+
+
 # COERCE FLOAT - MERGED WITH FORMAT DETECTION ABOVE
 
 COERCE_FLOAT_CASES: list[CoerceFloatCase] = [

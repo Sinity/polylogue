@@ -333,8 +333,8 @@
         "path": "<PATH>",
         "exists": true,
         "size_bytes": <SIZE_BYTES>,
-        "expected_user_version": 8,
-        "user_version": 8,
+        "expected_user_version": 9,
+        "user_version": 9,
         "version_status": "ok",
         "table_counts": {
           "sessions": 2,
@@ -398,16 +398,16 @@
     "archive_facade_routes": {
       "checked": true,
       "source": "static_facade_route_catalog",
-      "total_method_count": 125,
-      "archive_ready_method_count": 124,
+      "total_method_count": 126,
+      "archive_ready_method_count": 125,
       "unsupported_method_count": 0,
       "route_counts": {
-        "archive_routed": 110,
+        "archive_routed": 111,
         "archive_direct": 14,
         "not_archive_runtime": 1
       },
       "tier_counts": {
-        "user": 38,
+        "user": 39,
         "index": 82,
         "none": 1,
         "source": 4
@@ -764,6 +764,11 @@
           "tier": "index",
           "detail": "reads archive debt projection from index.db"
         },
+        "list_assertion_candidate_reviews": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "reads candidate assertion review rows through user.db"
+        },
         "list_assertion_candidates": {
           "route": "archive_routed",
           "tier": "user",
@@ -1101,7 +1106,7 @@
         "ops.db"
       ],
       "facade_tier_route_counts": {
-        "user": 38,
+        "user": 39,
         "index": 82,
         "none": 1,
         "source": 4

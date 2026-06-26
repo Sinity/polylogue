@@ -171,6 +171,7 @@ class ArchiveSessionSummary:
     message_count: int
     word_count: int
     tags: tuple[str, ...]
+    session_kind: str = "standard"
     reported_duration_ms: int | None = None
     tool_use_count: int = 0
     thinking_count: int = 0
@@ -1283,6 +1284,7 @@ class ArchiveStore:
         row = self._conn.execute(
             f"""
             SELECT s.session_id, s.native_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
+                   s.session_kind,
                    s.message_count, s.word_count, s.reported_duration_ms,
                    s.tool_use_count, s.thinking_count, s.paste_count,
                    s.user_message_count, s.authored_user_message_count,
@@ -3062,6 +3064,7 @@ class ArchiveStore:
         rows = self._conn.execute(
             f"""
             SELECT s.session_id, s.native_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
+                   s.session_kind,
                    s.message_count, s.word_count, s.reported_duration_ms,
                    s.tool_use_count, s.thinking_count, s.paste_count,
                    s.user_message_count, s.authored_user_message_count,
@@ -4227,6 +4230,7 @@ def _summary_from_row(row: sqlite3.Row) -> ArchiveSessionSummary:
         origin=origin,
         provider=_provider_for_origin(origin),
         title=str(row["title"]) if row["title"] is not None else None,
+        session_kind=str(row["session_kind"] or "standard"),
         created_at=_iso_from_ms(row["created_at_ms"]),
         updated_at=_iso_from_ms(row["updated_at_ms"]),
         message_count=int(row["message_count"] or 0),

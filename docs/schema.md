@@ -22,7 +22,7 @@ over the `CREATE TABLE` statement.
 | Tier file | Tier | Version constant |
 |-----------|------|------------------|
 | `source.py` | `source.db` | `SOURCE_SCHEMA_VERSION = 1` |
-| `index.py` | `index.db` | `INDEX_SCHEMA_VERSION = 7` |
+| `index.py` | `index.db` | `INDEX_SCHEMA_VERSION = 9` |
 | `embeddings.py` | `embeddings.db` | `EMBEDDINGS_SCHEMA_VERSION = 1` |
 | `user.py` | `user.db` | `USER_SCHEMA_VERSION = 3` |
 | `ops.py` | `ops.db` | `OPS_SCHEMA_VERSION = 1` |
@@ -115,13 +115,23 @@ storage owner rather than duplicating full table definitions.
 
 SQLite `STRICT` mode does not make a `TEXT` column JSON-shaped. New executable
 JSON checks should use the shared helpers in `archive_tiers/common.py` so the
-contract is visible in canonical DDL instead of hand-written per table. Index
-schema version 7 enforces object JSON for `blocks.tool_input` and
-`session_provider_usage_events.payload_json`, two hot read-path columns with
-current typed writers. Broader payload columns such as insight evidence,
-inference, enrichment, work-event arrays, source hook payloads, and user
-assertion JSON should be constrained only after their historical write shapes
-are audited and the required tier-version/rebuild consequence is documented.
+contract is visible in canonical DDL instead of hand-written per table.
+
+Recent index-tier versions:
+
+- version 9 adds typed `sessions.session_kind` for standard vs temporary
+  sessions, so temporary chats are archive schema rather than only parser tags;
+- version 8 adds `web_content_constructs` for provider-native web/export
+  constructs such as citations, source references, canvas/artifact revisions,
+  asset pointers, and task/search records;
+- version 7 enforces object JSON for `blocks.tool_input` and
+  `session_provider_usage_events.payload_json`, two hot read-path columns with
+  current typed writers.
+
+Broader payload columns such as insight evidence, inference, enrichment,
+work-event arrays, source hook payloads, and user assertion JSON should be
+constrained only after their historical write shapes are audited and the
+required tier-version/rebuild consequence is documented.
 
 ## Identifiers
 

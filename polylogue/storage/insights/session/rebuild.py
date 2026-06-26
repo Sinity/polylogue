@@ -16,6 +16,7 @@ from polylogue.archive.session.session_profile import SessionProfile, build_sess
 
 # Re-export canonical chunked from polylogue.core.common.
 from polylogue.core.common import chunked
+from polylogue.core.enums import SessionKind
 from polylogue.core.memory import release_process_memory
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.hydrators import session_from_records
@@ -111,6 +112,7 @@ SELECT
     origin,
     native_id,
     title,
+    session_kind,
     CASE WHEN created_at_ms IS NULL THEN NULL ELSE strftime('%Y-%m-%dT%H:%M:%f+00:00', created_at_ms / 1000.0, 'unixepoch') END AS created_at,
     CASE WHEN updated_at_ms IS NULL THEN NULL ELSE strftime('%Y-%m-%dT%H:%M:%f+00:00', updated_at_ms / 1000.0, 'unixepoch') END AS updated_at,
     CAST(sort_key_ms AS REAL) / 1000.0 AS sort_key,
@@ -278,6 +280,7 @@ def _row_to_session_insight_session(row: sqlite3.Row) -> SessionRecord:
         origin=row["origin"],
         native_id=row["native_id"],
         title=row["title"],
+        session_kind=SessionKind.normalize(_row_text(row, "session_kind")),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         sort_key=_row_float(row, "sort_key"),

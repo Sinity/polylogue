@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from pydantic import ValidationError
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, Provider, WebConstructType
+from polylogue.core.enums import BlockType, Provider, SessionKind, WebConstructType
 from polylogue.sources.providers.claude_ai import ClaudeAISession
 
 from ..base import (
@@ -52,6 +52,10 @@ def _session_ingest_flags(payload: Mapping[str, object], *, design_chat: bool = 
     if payload.get("is_temporary") is True:
         flags.append(CLAUDE_TEMPORARY_CHAT_INGEST_FLAG)
     return flags
+
+
+def _session_kind(payload: Mapping[str, object]) -> SessionKind:
+    return SessionKind.TEMPORARY if payload.get("is_temporary") is True else SessionKind.STANDARD
 
 
 def _design_content_payload(value: object) -> Mapping[str, object]:
@@ -142,6 +146,7 @@ def _parse_design_chat(payload: Mapping[str, object], fallback_id: str) -> Parse
         source_name=Provider.CLAUDE_AI,
         provider_session_id=str(payload.get("uuid") or payload.get("id") or fallback_id),
         title=str(payload.get("title") or payload.get("name") or fallback_id),
+        session_kind=_session_kind(payload),
         created_at=str(payload.get("created_at")) if payload.get("created_at") else None,
         updated_at=str(payload.get("updated_at")) if payload.get("updated_at") else None,
         messages=messages,
@@ -168,6 +173,7 @@ def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
             source_name=Provider.CLAUDE_AI,
             provider_session_id=str(conv_id or fallback_id),
             title=str(title),
+            session_kind=_session_kind(payload),
             created_at=str(payload.get("created_at")) if payload.get("created_at") else None,
             updated_at=str(payload.get("updated_at")) if payload.get("updated_at") else None,
             messages=messages,
@@ -223,6 +229,7 @@ def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
         source_name=Provider.CLAUDE_AI,
         provider_session_id=conv.uuid,
         title=conv.title,
+        session_kind=_session_kind(payload),
         created_at=conv.created_at,
         updated_at=conv.updated_at,
         messages=messages,

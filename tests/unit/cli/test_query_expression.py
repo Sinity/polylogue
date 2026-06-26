@@ -5204,7 +5204,11 @@ class TestDaemonSessionIdFilter:
             workspace_env["archive_root"], {"query": ["id:nonexistentnope"]}, 50, 0
         )
         # A missing id is a typed-empty page, not a 500 propagated from resolve.
-        assert payload == {"items": [], "total": 0, "limit": 50, "offset": 0}
+        assert payload["items"] == []
+        assert payload["total"] == 0
+        assert payload["limit"] == 50
+        assert payload["offset"] == 0
+        assert payload["route_state"]["state"] == "no_results"
 
     def test_session_miss_returns_typed_empty_not_500(self, workspace_env: dict[str, Path]) -> None:
         index_db = workspace_env["archive_root"] / "index.db"
@@ -5213,7 +5217,11 @@ class TestDaemonSessionIdFilter:
         payload = self._handler()._do_archive_list_sessions(
             workspace_env["archive_root"], {"query": ["session:nonexistentnope"]}, 50, 0
         )
-        assert payload == {"items": [], "total": 0, "limit": 50, "offset": 0}
+        assert payload["items"] == []
+        assert payload["total"] == 0
+        assert payload["limit"] == 50
+        assert payload["offset"] == 0
+        assert payload["route_state"]["state"] == "no_results"
 
     def test_id_ambiguous_prefix_raises_query_spec_error(self, workspace_env: dict[str, Path]) -> None:
         import os
