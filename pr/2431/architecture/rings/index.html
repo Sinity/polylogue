@@ -372,6 +372,42 @@ parser provenance, and refs, see <code>docs/provider-origin-identity.md</code>.<
 <li>user and machine surfaces</li>
 <li>verification and maintenance</li>
 </ol>
+<pre><code class="language-mermaid">flowchart TD
+    SRC[&quot;Source files&lt;br/&gt;ChatGPT · Claude · Codex · Gemini · Drive · Antigravity&quot;]
+
+    subgraph R1[&quot;Ring 1 · Archive substrate&quot;]
+        DETECT[&quot;detect_provider()&lt;br/&gt;shape-based dispatch&quot;]
+        PARSE[&quot;provider parsers&lt;br/&gt;normalize → content hash (NFC)&quot;]
+        STORE[(&quot;split-tier SQLite&lt;br/&gt;source · index · embeddings · user · ops&lt;br/&gt;+ content-addressed blob store&quot;)]
+        DETECT --&gt; PARSE --&gt; STORE
+    end
+
+    subgraph R2[&quot;Ring 2 · Derived read models&quot;]
+        INSIGHTS[&quot;session profiles · work events&lt;br/&gt;phases · threads · cost rollups&lt;br/&gt;FTS5 + vector indexes&quot;]
+    end
+
+    subgraph R3[&quot;Ring 3 · Surfaces&quot;]
+        CLI[&quot;CLI&lt;br/&gt;find QUERY then VERB&quot;]
+        MCP[&quot;MCP bridge&quot;]
+        API[&quot;Python API&quot;]
+        DAEMON[&quot;daemon HTTP reader&lt;br/&gt;+ /metrics&quot;]
+    end
+
+    subgraph R4[&quot;Ring 4 · Verification &amp; maintenance&quot;]
+        VERIFY[&quot;schemas · demo fixtures&lt;br/&gt;devtools lanes · tests&quot;]
+    end
+
+    SRC --&gt; DETECT
+    STORE --&gt; INSIGHTS
+    INSIGHTS --&gt; R3
+    STORE --&gt; R3
+    R4 -.audits.-&gt; R1
+    R4 -.audits.-&gt; R2
+</code></pre>
+<p>Source evidence and user-authored state (rings 1 and the <code>user.db</code> tier) are
+durable; indexes, insight read models, embeddings, and daemon telemetry are
+rebuildable. Surfaces (ring 3) are leaf adapters — they read through the same
+archive/query substrate rather than owning their own stores.</p>
 <h2>Rings</h2>
 <h3>1. Archive Substrate</h3>
 <p>Owns stored meaning:</p>
