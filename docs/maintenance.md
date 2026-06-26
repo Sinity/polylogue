@@ -60,7 +60,7 @@ unknown target is rejected at the CLI boundary.
 
 ## When to use which surface
 
-```
+```text
                           something looks off
                                  |
             +--------------------+--------------------+
@@ -213,7 +213,7 @@ this section will gain one worked example per flag:
 ```bash
 # Planned (#1196):
 polylogue ops maintenance run --session-id abc123 --target session_insights
-polylogue ops maintenance run --provider claude        --target session_insights
+polylogue ops maintenance run --origin claude          --target session_insights
 polylogue ops maintenance run --source-root ~/.claude/projects --target dangling_fts
 polylogue ops maintenance run --since 2026-04-01 --until 2026-05-01 \
                           --target action_read_model
@@ -487,7 +487,7 @@ systemctl --user stop polylogued.service
 polylogue ops diagnostics workload --json | jq '{lease: .blob_lease_state, gc: .gc_state}'
 
 # 3. Identify the affected sessions.
-polylogue ops doctor --schemas --blob-integrity --output-format json \
+polylogue ops doctor --schemas --blob-integrity --format json \
   | jq '.unreadable_blobs[]'
 
 # 4. If you have a recent backup, restore just the blob store.
