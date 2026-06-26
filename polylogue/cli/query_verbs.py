@@ -1390,13 +1390,13 @@ def analyze_verb(
     stats_by: str | None = None,
     show_facets: bool = False,
     cost_outlook: bool = False,
-    show_postmortem: bool = False,
     plan_name: str | None = None,
     method: str = "linear",
     no_idf: bool = False,
     include_deferred: bool = False,
     output_format: str | None = None,
     limit: int | None = None,
+    show_postmortem: bool = False,
 ) -> None:
     """Analyze matched sessions: statistics, facets, and aggregates.
 
