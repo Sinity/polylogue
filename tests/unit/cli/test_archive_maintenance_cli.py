@@ -548,6 +548,42 @@ def test_blob_reference_restore_direct_cli_apply_writes_hash_checked_blob(
     assert blob_path.read_bytes() == source.read_bytes()
 
 
+def test_blob_reference_recovery_plan_cli_writes_raw_backed_manifest(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    source = cli_workspace["archive_root"] / "exports" / "recoverable.json"
+    _seed_blob_reference_debt(cli_workspace["archive_root"], source)
+    manifest = cli_workspace["archive_root"] / "plans" / "raw-backed.jsonl"
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "blob-reference-recovery-plan",
+            "--manifest-file",
+            str(manifest),
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["mode"] == "blob_reference_recovery_plan"
+    assert payload["mutates"] is False
+    assert payload["writes_manifest"] is True
+    assert payload["missing_raw_backed_blobs"] == 1
+    assert payload["by_origin"] == {"chatgpt-export": 1}
+    assert payload["by_action"] == {"direct_source_hash_mismatch": 1}
+    manifest_rows = [json.loads(line) for line in manifest.read_text(encoding="utf-8").splitlines()]
+    assert len(manifest_rows) == 1
+    assert manifest_rows[0]["source_path"] == str(source)
+
+
 def test_blob_reference_prune_orphans_cli_dry_run_keeps_refs(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,

@@ -319,6 +319,65 @@ class BlobReferenceOrphanPruneReport:
         }
 
 
+@dataclass(frozen=True)
+class BlobReferenceRecoveryPlanRow:
+    blob_hash: str
+    raw_id: str
+    origin: str | None
+    native_id: str | None
+    source_path: str | None
+    source_index: int | None
+    expected_size_bytes: int | None
+    action: str
+    reason: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "blob_hash": self.blob_hash,
+            "raw_id": self.raw_id,
+            "origin": self.origin,
+            "native_id": self.native_id,
+            "source_path": self.source_path,
+            "source_index": self.source_index,
+            "expected_size_bytes": self.expected_size_bytes,
+            "action": self.action,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
+class BlobReferenceRecoveryPlanReport:
+    """Read-only plan for raw-session-backed missing referenced blobs."""
+
+    source_db: str
+    blob_root: str
+    missing_raw_backed_blobs: int
+    manifest_path: str | None
+    by_action: dict[str, int]
+    by_origin: dict[str, int]
+    by_source_shape: dict[str, int]
+    rows: tuple[BlobReferenceRecoveryPlanRow, ...]
+    samples: tuple[BlobReferenceRecoveryPlanRow, ...]
+
+    @property
+    def ok(self) -> bool:
+        return self.missing_raw_backed_blobs == 0
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "ok": self.ok,
+            "source_db": self.source_db,
+            "blob_root": self.blob_root,
+            "missing_raw_backed_blobs": self.missing_raw_backed_blobs,
+            "manifest_path": self.manifest_path,
+            "by_action": dict(self.by_action),
+            "by_origin": dict(self.by_origin),
+            "by_source_shape": dict(self.by_source_shape),
+            "rows": [row.to_dict() for row in self.rows],
+            "samples": [sample.to_dict() for sample in self.samples],
+        }
+
+
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM sqlite_schema WHERE type='table' AND name = ? LIMIT 1",
@@ -775,12 +834,87 @@ def _blob_ref_rows_for_orphan_prune(conn: sqlite3.Connection) -> list[dict[str, 
     return [dict(row) for row in rows]
 
 
+def _missing_raw_backed_blob_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    if not _table_exists(conn, "raw_sessions"):
+        return []
+    conn.row_factory = sqlite3.Row
+    origin_column = "origin" if _column_exists(conn, "raw_sessions", "origin") else "NULL"
+    native_id_column = "native_id" if _column_exists(conn, "raw_sessions", "native_id") else "NULL"
+    source_path_column = "source_path" if _column_exists(conn, "raw_sessions", "source_path") else "NULL"
+    source_index_column = "source_index" if _column_exists(conn, "raw_sessions", "source_index") else "NULL"
+    blob_size_column = "blob_size" if _column_exists(conn, "raw_sessions", "blob_size") else "NULL"
+    rows = conn.execute(
+        f"""
+        SELECT lower(hex(blob_hash)) AS blob_hash,
+               raw_id,
+               {origin_column} AS origin,
+               {native_id_column} AS native_id,
+               {source_path_column} AS source_path,
+               {source_index_column} AS source_index,
+               {blob_size_column} AS expected_size_bytes
+        FROM raw_sessions
+        WHERE blob_hash IS NOT NULL
+        ORDER BY origin, source_path, source_index, raw_id
+        """
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _raw_backed_recovery_action(blob_hash: str, source_path: str | None, expected_size: int | None) -> tuple[str, str]:
+    if not source_path:
+        return "no_source_path", "raw row does not record a source path"
+    if _path_is_container_member(source_path):
+        outer_path, _inner = source_path.split(":", 1)
+        if not Path(outer_path).exists():
+            return "source_missing", "container source path is missing"
+        return "container_member_reacquire_required", "container member requires exact source-aware re-acquisition"
+    path = Path(source_path)
+    if not path.exists():
+        return "source_missing", "source file is missing"
+    actual_size = path.stat().st_size
+    if expected_size is not None and actual_size != expected_size:
+        return "direct_source_size_mismatch", f"source size is {actual_size}, expected {expected_size}"
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            hasher.update(chunk)
+    actual_hash = hasher.hexdigest()
+    if actual_hash == blob_hash:
+        return "direct_exact_restore_candidate", "source bytes match the expected blob hash"
+    return "direct_source_hash_mismatch", f"source hash is {actual_hash}"
+
+
 def _default_blob_ref_quarantine_path(source_db: Path) -> Path:
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     return source_db.parent / ".maintenance-state" / "blob-ref-quarantine" / f"orphan-blob-refs-{stamp}.jsonl"
 
 
 def _write_blob_ref_quarantine(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd: int | None = None
+    tmp_path: str | None = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", text=True)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = None
+            for row in rows:
+                handle.write(json.dumps(row, sort_keys=True, separators=(",", ":")))
+                handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+        tmp_path = None
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if tmp_path is not None and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
+def _write_jsonl_rows(path: Path, rows: Iterable[dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd: int | None = None
     tmp_path: str | None = None
@@ -899,6 +1033,68 @@ def prune_orphan_blob_reference_debt(
         skipped_existing_blob=skipped_existing_blob,
         skipped_raw_session_present=skipped_raw_session_present,
         samples=samples,
+    )
+
+
+def plan_raw_backed_blob_reference_recovery(
+    db_path: str | Path,
+    *,
+    store: BlobStore | None = None,
+    manifest_path: str | Path | None = None,
+    sample_size: int = 30,
+    include_rows: bool = False,
+) -> BlobReferenceRecoveryPlanReport:
+    """Classify raw-backed missing blob refs without mutating archive state."""
+
+    blob_store = store if store is not None else get_blob_store()
+    source_db = _source_db_for_blob_reference_report(db_path)
+    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
+        rows = _missing_raw_backed_blob_rows(conn)
+
+    plan_rows: list[BlobReferenceRecoveryPlanRow] = []
+    by_action: Counter[str] = Counter()
+    by_origin: Counter[str] = Counter()
+    by_source_shape: Counter[str] = Counter()
+    for row in rows:
+        blob_hash = str(row.get("blob_hash") or "")
+        if not blob_hash or blob_store.exists(blob_hash):
+            continue
+        source_path = _optional_str(row.get("source_path"))
+        source_shape = "container_member" if source_path and _path_is_container_member(source_path) else "direct_file"
+        expected_size_value = row.get("expected_size_bytes")
+        expected_size = int(expected_size_value) if expected_size_value is not None else None
+        action, reason = _raw_backed_recovery_action(blob_hash, source_path, expected_size)
+        origin = _optional_str(row.get("origin"))
+        plan_row = BlobReferenceRecoveryPlanRow(
+            blob_hash=blob_hash,
+            raw_id=str(row.get("raw_id") or ""),
+            origin=origin,
+            native_id=_optional_str(row.get("native_id")),
+            source_path=source_path,
+            source_index=int(row["source_index"]) if row.get("source_index") is not None else None,
+            expected_size_bytes=expected_size,
+            action=action,
+            reason=reason,
+        )
+        plan_rows.append(plan_row)
+        by_action[action] += 1
+        by_origin[origin or "(none)"] += 1
+        by_source_shape[source_shape] += 1
+
+    resolved_manifest_path: Path | None = Path(manifest_path) if manifest_path is not None else None
+    if resolved_manifest_path is not None:
+        _write_jsonl_rows(resolved_manifest_path, (row.to_dict() for row in plan_rows))
+
+    return BlobReferenceRecoveryPlanReport(
+        source_db=str(source_db),
+        blob_root=str(blob_store.root),
+        missing_raw_backed_blobs=len(plan_rows),
+        manifest_path=str(resolved_manifest_path) if resolved_manifest_path is not None else None,
+        by_action=_counter_dict(by_action),
+        by_origin=_counter_dict(by_origin),
+        by_source_shape=_counter_dict(by_source_shape),
+        rows=tuple(plan_rows) if include_rows else (),
+        samples=tuple(plan_rows[: max(0, sample_size)]),
     )
 
 
@@ -1203,11 +1399,14 @@ __all__ = [
     "BlobReferenceDebtClassificationReport",
     "BlobReferenceOrphanPruneSample",
     "BlobReferenceOrphanPruneReport",
+    "BlobReferenceRecoveryPlanReport",
+    "BlobReferenceRecoveryPlanRow",
     "BlobReferenceDebtReport",
     "BlobReferenceDebtRestoreReport",
     "BlobReferenceDebtRestoreSample",
     "BlobReferenceDebtSample",
     "classify_blob_reference_debt",
+    "plan_raw_backed_blob_reference_recovery",
     "prune_orphan_blob_reference_debt",
     "referenced_blob_hashes",
     "restore_direct_blob_reference_debt",
