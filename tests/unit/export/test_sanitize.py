@@ -179,3 +179,24 @@ def test_gate_refuses_raw_space_containing_path(tmp_path: Path) -> None:
     verdict = verify_sanitized_export(tmp_path, home="/home/me")
     assert verdict.ok is False
     assert verdict.absolute_path_leaks
+
+
+def test_single_segment_root_path_is_redacted_and_gated() -> None:
+    """Single-segment system roots (``/etc``) must not survive (#2381 review)."""
+    rows = [{"title": "ran in /etc and /tmp", "ok": "/etcetera stays"}]
+    sanitized, _ = sanitize_rows(rows, config=PrivacyConfig(level="standard"))
+    assert "/etc" not in sanitized[0]["title"]  # type: ignore[operator]
+    assert "/tmp" not in sanitized[0]["title"]  # type: ignore[operator]
+    assert "/etcetera" in sanitized[0]["ok"]  # type: ignore[operator]
+
+
+def test_gate_independently_catches_raw_root_and_tilde(tmp_path: Path) -> None:
+    """The authoritative gate flags raw single-segment roots and ``~/`` paths."""
+    (tmp_path / "dataset.jsonl").write_text(
+        json.dumps({"x": "/etc", "y": "~/private/key.txt"}) + "\n",
+        encoding="utf-8",
+    )
+    verdict = verify_sanitized_export(tmp_path, home="/nonexistent-home")
+    assert verdict.ok is False
+    assert verdict.absolute_path_leaks
+    assert verdict.home_path_leaks

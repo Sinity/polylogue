@@ -54,8 +54,16 @@ POSTMORTEM_FILENAME = "postmortem.json"
 # prose that interleaves several slash-runs is the *safe* direction for a
 # sanitizer: it redacts more, never less.
 _ABS_PATH_RE = re.compile(r"/(?:[A-Za-z0-9._\- ]+/)+[A-Za-z0-9._\- ]*[A-Za-z0-9._\-]")
-# ``$HOME``-relative path written with a tilde (``~/a/b``).
+# ``$HOME``-relative path written with a tilde (``~/a/b`` or bare ``~/x``).
 _TILDE_PATH_RE = re.compile(r"~/(?:[A-Za-z0-9._\- ]+/)*[A-Za-z0-9._\- ]*[A-Za-z0-9._\-]")
+# Single-segment absolute path to a well-known system/home root (``/etc``,
+# ``/tmp``, ``/home`` …). ``_ABS_PATH_RE`` requires two segments to avoid
+# flagging ``/word`` prose, so these roots are caught explicitly by both the
+# redactor and the gate. The negative lookahead excludes ``/`` so multi-segment
+# paths stay owned by ``_ABS_PATH_RE`` and ``/etcetera`` is not matched.
+_KNOWN_ROOT_PATH_RE = re.compile(
+    r"/(?:home|Users|root|tmp|var|etc|opt|mnt|media|srv|usr|private|data|realm|persist)(?![A-Za-z0-9._\-/])"
+)
 # Candidate opaque token for high-entropy detection.
 _HIGH_ENTROPY_CANDIDATE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{9,}")
 
@@ -143,6 +151,12 @@ def _redact_string(value: str) -> tuple[str, list[tuple[str, str]]]:
         reasons.append(("home_relative_path", "high"))
         return _redacted_path(match.group(0))
 
+    def _known_root_repl(match: re.Match[str]) -> str:
+        # The root name itself is the sensitive token, so drop it entirely (no
+        # retained basename) — leaving it would re-trip the gate.
+        reasons.append(("absolute_path", "high"))
+        return REDACTED_PATH_PREFIX
+
     def _secret_repl(match: re.Match[str]) -> str:
         reasons.append(("secret_pattern", "high"))
         return REDACTED_SECRET
@@ -156,6 +170,7 @@ def _redact_string(value: str) -> tuple[str, list[tuple[str, str]]]:
 
     result = _ABS_PATH_RE.sub(_path_repl, value)
     result = _TILDE_PATH_RE.sub(_home_repl, result)
+    result = _KNOWN_ROOT_PATH_RE.sub(_known_root_repl, result)
     for pattern in _SECRET_VALUE_PATTERNS:
         result = pattern.sub(_secret_repl, result)
     result = _HIGH_ENTROPY_CANDIDATE_RE.sub(_entropy_repl, result)
@@ -235,8 +250,11 @@ def _home_dir(home: str | None) -> str:
 
 
 def _scan_text(text: str, *, home: str) -> tuple[list[str], list[str], list[str]]:
-    abs_leaks = sorted({match.group(0) for match in _ABS_PATH_RE.finditer(text)})
-    home_leaks: list[str] = []
+    abs_leaks = sorted(
+        {match.group(0) for match in _ABS_PATH_RE.finditer(text)}
+        | {match.group(0) for match in _KNOWN_ROOT_PATH_RE.finditer(text)}
+    )
+    home_leaks: list[str] = [match.group(0) for match in _TILDE_PATH_RE.finditer(text)]
     normalized_home = home.rstrip("/")
     if normalized_home and len(normalized_home) > 1 and normalized_home in text:
         home_leaks.append(normalized_home)
@@ -410,12 +428,24 @@ def write_sanitized_bundle(
                     f"secrets={list(verdict.secret_leaks)})"
                 )
 
+        # Atomic publish: move any existing bundle aside first, swap the new one
+        # in, then drop the backup. If the swap fails the previous bundle is
+        # restored, so an overwrite never loses the last good bundle.
+        backup: Path | None = None
         if target.exists():
-            if target.is_dir():
-                shutil.rmtree(target)
+            backup = target.parent / f".{target.name}.bak-{uuid.uuid4().hex}"
+            target.replace(backup)
+        try:
+            tmp_target.replace(target)
+        except BaseException:
+            if backup is not None and not target.exists():
+                backup.replace(target)
+            raise
+        if backup is not None:
+            if backup.is_dir():
+                shutil.rmtree(backup, ignore_errors=True)
             else:
-                target.unlink()
-        tmp_target.replace(target)
+                backup.unlink(missing_ok=True)
     except BaseException:
         shutil.rmtree(tmp_target, ignore_errors=True)
         raise

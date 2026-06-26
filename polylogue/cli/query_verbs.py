@@ -1677,7 +1677,9 @@ def export_verb(
     except SanitizedExportError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    if output_format == "json":
+    # Honor the root --json / --format when the verb-local format is omitted.
+    effective_format = output_format or request.params.get("output_format")
+    if effective_format == "json":
         click.echo(success({"sanitized_export": model_json_document(result)}).to_json())
         return
     posture = "redacted" if result.redacted else "UNSANITIZED"

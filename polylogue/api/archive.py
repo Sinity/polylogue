@@ -1752,10 +1752,14 @@ class PolylogueArchiveMixin:
         Raw message text is intentionally NOT exported in v0 — message bodies are
         the highest-leak surface and are deferred (see #2381 follow-up).
         """
-        from polylogue.export.sanitize import produce_sanitized_export
+        from polylogue.export.sanitize import SanitizedExportError, produce_sanitized_export
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        cap = limit if limit is not None and limit > 0 else 1000
+        if limit is not None and limit <= 0:
+            # A non-positive limit must not silently fall back to the default cap:
+            # that would defeat the max-session disclosure guard (e.g. --limit 0).
+            raise SanitizedExportError(f"export --limit must be a positive integer, got {limit}")
+        cap = limit if limit is not None else 1000
 
         with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
             if spec is not None and spec.has_filters():
