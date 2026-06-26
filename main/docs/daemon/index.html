@@ -889,7 +889,18 @@ silently hiding it. The warning names the total missing referenced blobs and
 the backup directory includes <code>blob-reference-debt.json</code> with the exact count,
 bounded hash sample, and reference-source counts. Treat that report as
 read-only recovery evidence: restore missing blob files from an older backup or
-re-ingest the affected raw sources before deleting any source/blob/link rows.</p>
+re-ingest the affected raw sources before deleting any source/blob/link rows.
+For a richer recovery map, run
+<code>polylogue ops maintenance blob-reference-debt --output-format json</code>; it does
+not mutate the archive and classifies missing refs by origin, reference table,
+ref type, raw-row joinability, and whether the recorded source path still
+exists.
+For direct source files whose current bytes still hash to the missing blob
+address, <code>polylogue ops maintenance blob-reference-restore-direct --yes</code>
+can repopulate the blob store without touching SQLite rows. Container/member
+paths such as <code>export.zip:conversations.json</code> are deliberately skipped by that
+command because the referenced blob may be an extracted record inside the
+member, not the member file itself.</p>
 <h3>Vacuum Guidance</h3>
 <p>SQLite <code>VACUUM</code> rebuilds the database file, reclaiming free pages. It
 requires the full database size in free disk space. Two approaches:</p>
