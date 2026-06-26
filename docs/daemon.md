@@ -409,6 +409,11 @@ the backup directory includes `blob-reference-debt.json` with the exact count,
 bounded hash sample, and reference-source counts. Treat that report as
 read-only recovery evidence: restore missing blob files from an older backup or
 re-ingest the affected raw sources before deleting any source/blob/link rows.
+For a richer recovery map, run
+`polylogue ops maintenance blob-reference-debt --output-format json`; it does
+not mutate the archive and classifies missing refs by origin, reference table,
+ref type, raw-row joinability, and whether the recorded source path still
+exists.
 
 ### Vacuum Guidance
 

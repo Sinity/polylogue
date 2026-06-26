@@ -1559,6 +1559,10 @@ The report has a stable top-level shape carrying its `report_version`,
   `--blob-reference-debt` when diagnosing backup/integrity incidents; the
   section then reports the exact missing referenced-blob count, bounded hash
   sample, reference-source counts, and source/index DB path used.
+  For recovery planning, run
+  `polylogue ops maintenance blob-reference-debt --output-format json`; that
+  read-only classifier groups missing blob refs by table, ref type, origin,
+  raw-row joinability, validation/parse state, and source-path availability.
 - `gc_state` — high-water `gc_generations` row, `last_completed_at`,
   total generation count.
 - `fts_trigger_state` — the three expected FTS sync triggers

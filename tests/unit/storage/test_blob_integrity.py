@@ -5,7 +5,12 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from polylogue.storage.blob_integrity import referenced_blob_hashes, scan_blob_integrity, scan_blob_reference_debt
+from polylogue.storage.blob_integrity import (
+    classify_blob_reference_debt,
+    referenced_blob_hashes,
+    scan_blob_integrity,
+    scan_blob_reference_debt,
+)
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -219,6 +224,106 @@ def test_scan_blob_reference_debt_reads_initialized_source_tier(tmp_path: Path) 
     assert report.ok is True
     assert report.total_references_seen == 1
     assert report.reference_sources == {"raw_sessions": 1}
+
+
+def test_classify_blob_reference_debt_groups_recovery_evidence(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.db"
+    store = BlobStore(tmp_path / "blob")
+    source_file = tmp_path / "exports" / "chatgpt.json"
+    source_file.parent.mkdir()
+    source_file.write_text("{}", encoding="utf-8")
+    present_hash, present_size = store.write_from_bytes(b"present")
+    missing_raw_hash = "1" * 64
+    missing_attachment_hash = "2" * 64
+    orphan_ref_hash = "3" * 64
+
+    with sqlite3.connect(source_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE raw_sessions (
+                raw_id TEXT PRIMARY KEY,
+                origin TEXT,
+                native_id TEXT,
+                source_path TEXT,
+                blob_hash BLOB,
+                blob_size INTEGER NOT NULL,
+                parse_error TEXT,
+                validation_status TEXT
+            );
+            CREATE TABLE blob_refs (
+                blob_hash BLOB NOT NULL,
+                raw_id TEXT NOT NULL,
+                ref_type TEXT NOT NULL,
+                source_path TEXT,
+                size_bytes INTEGER NOT NULL,
+                PRIMARY KEY(blob_hash, raw_id, ref_type)
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, blob_hash, blob_size, validation_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "raw-present",
+                "codex-session",
+                "native-present",
+                str(source_file),
+                bytes.fromhex(present_hash),
+                present_size,
+                "passed",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, blob_hash, blob_size, validation_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "raw-missing",
+                "chatgpt-export",
+                "native-missing",
+                str(source_file),
+                bytes.fromhex(missing_raw_hash),
+                123,
+                "passed",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO blob_refs (blob_hash, raw_id, ref_type, source_path, size_bytes) VALUES (?, ?, ?, ?, ?)",
+            (bytes.fromhex(missing_attachment_hash), "raw-missing", "attachment", str(source_file), 456),
+        )
+        conn.execute(
+            "INSERT INTO blob_refs (blob_hash, raw_id, ref_type, source_path, size_bytes) VALUES (?, ?, ?, ?, ?)",
+            (bytes.fromhex(orphan_ref_hash), "raw-gone", "raw_payload", str(tmp_path / "missing.json"), 789),
+        )
+
+    report = classify_blob_reference_debt(source_db, store=store, sample_size=2, group_limit=3)
+
+    assert report.ok is False
+    assert report.distinct_referenced_blobs == 4
+    assert report.reference_rows == 4
+    assert report.missing_distinct_blobs == 3
+    assert report.missing_by_table == {"blob_refs": 2, "raw_sessions": 1}
+    assert report.missing_by_ref_type == {"attachment": 1, "raw_payload": 2}
+    assert report.missing_by_origin == {"(none)": 1, "chatgpt-export": 2}
+    assert report.missing_ref_id_join == {"ref_id_has_raw_session": 2, "ref_id_without_raw_session": 1}
+    assert report.missing_source_path_presence == {
+        "recoverable_source_path_exists": 2,
+        "source_path_missing": 1,
+    }
+    assert report.missing_validation_status == {"(none)": 1, "passed": 2}
+    assert report.missing_parse_error == {"no_parse_error": 3}
+    assert len(report.samples) == 2
+    payload = report.to_dict()
+    samples = payload["samples"]
+    assert isinstance(samples, list)
+    first_sample = samples[0]
+    assert isinstance(first_sample, dict)
+    assert first_sample["sample_source_available"] is True
 
 
 def test_scan_blob_integrity_uses_sibling_archive_source_from_index_db(tmp_path: Path) -> None:
