@@ -14,6 +14,7 @@ import os
 import sqlite3
 import tempfile
 import time
+import zipfile
 from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -21,6 +22,8 @@ from itertools import islice
 from pathlib import Path
 from typing import Any, Literal
 
+from polylogue.core.json import dumps_bytes as json_dumps_bytes
+from polylogue.core.json import loads as json_loads
 from polylogue.storage.blob_store import BlobStore, get_blob_store
 from polylogue.storage.sqlite.connection import open_read_connection
 
@@ -374,6 +377,79 @@ class BlobReferenceRecoveryPlanReport:
             "by_origin": dict(self.by_origin),
             "by_source_shape": dict(self.by_source_shape),
             "rows": [row.to_dict() for row in self.rows],
+            "samples": [sample.to_dict() for sample in self.samples],
+        }
+
+
+@dataclass(frozen=True)
+class BlobReferenceSourceReplaceSample:
+    raw_id: str
+    old_blob_hash: str
+    new_blob_hash: str | None
+    source_path: str | None
+    action: str
+    reason: str | None = None
+    bytes_written: int = 0
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "raw_id": self.raw_id,
+            "old_blob_hash": self.old_blob_hash,
+            "new_blob_hash": self.new_blob_hash,
+            "source_path": self.source_path,
+            "action": self.action,
+            "reason": self.reason,
+            "bytes_written": self.bytes_written,
+        }
+
+
+@dataclass(frozen=True)
+class BlobReferenceSourceReplaceReport:
+    """Current-source replacement report for raw-session-backed blob debt."""
+
+    source_db: str
+    blob_root: str
+    dry_run: bool
+    manifest_path: str | None
+    scanned_rows: int
+    candidate_rows: int
+    replaced_rows: int
+    written_blobs: int
+    written_bytes: int
+    skipped_existing_blob: int
+    skipped_no_source_path: int
+    skipped_source_missing: int
+    skipped_source_index: int
+    skipped_unsupported_source: int
+    skipped_error: int
+    by_origin: dict[str, int]
+    by_source_shape: dict[str, int]
+    samples: tuple[BlobReferenceSourceReplaceSample, ...]
+
+    @property
+    def ok(self) -> bool:
+        return self.replaced_rows > 0 if not self.dry_run else self.candidate_rows > 0
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "ok": self.ok,
+            "source_db": self.source_db,
+            "blob_root": self.blob_root,
+            "dry_run": self.dry_run,
+            "manifest_path": self.manifest_path,
+            "scanned_rows": self.scanned_rows,
+            "candidate_rows": self.candidate_rows,
+            "replaced_rows": self.replaced_rows,
+            "written_blobs": self.written_blobs,
+            "written_bytes": self.written_bytes,
+            "skipped_existing_blob": self.skipped_existing_blob,
+            "skipped_no_source_path": self.skipped_no_source_path,
+            "skipped_source_missing": self.skipped_source_missing,
+            "skipped_source_index": self.skipped_source_index,
+            "skipped_unsupported_source": self.skipped_unsupported_source,
+            "skipped_error": self.skipped_error,
+            "by_origin": dict(self.by_origin),
+            "by_source_shape": dict(self.by_source_shape),
             "samples": [sample.to_dict() for sample in self.samples],
         }
 
@@ -843,6 +919,8 @@ def _missing_raw_backed_blob_rows(conn: sqlite3.Connection) -> list[dict[str, An
     source_path_column = "source_path" if _column_exists(conn, "raw_sessions", "source_path") else "NULL"
     source_index_column = "source_index" if _column_exists(conn, "raw_sessions", "source_index") else "NULL"
     blob_size_column = "blob_size" if _column_exists(conn, "raw_sessions", "blob_size") else "NULL"
+    acquired_at_ms_column = "acquired_at_ms" if _column_exists(conn, "raw_sessions", "acquired_at_ms") else "NULL"
+    file_mtime_ms_column = "file_mtime_ms" if _column_exists(conn, "raw_sessions", "file_mtime_ms") else "NULL"
     rows = conn.execute(
         f"""
         SELECT lower(hex(blob_hash)) AS blob_hash,
@@ -851,7 +929,9 @@ def _missing_raw_backed_blob_rows(conn: sqlite3.Connection) -> list[dict[str, An
                {native_id_column} AS native_id,
                {source_path_column} AS source_path,
                {source_index_column} AS source_index,
-               {blob_size_column} AS expected_size_bytes
+               {blob_size_column} AS expected_size_bytes,
+               {acquired_at_ms_column} AS acquired_at_ms,
+               {file_mtime_ms_column} AS file_mtime_ms
         FROM raw_sessions
         WHERE blob_hash IS NOT NULL
         ORDER BY origin, source_path, source_index, raw_id
@@ -885,6 +965,147 @@ def _raw_backed_recovery_action(blob_hash: str, source_path: str | None, expecte
     if actual_hash == blob_hash:
         return "direct_exact_restore_candidate", "source bytes match the expected blob hash"
     return "direct_source_hash_mismatch", f"source hash is {actual_hash}"
+
+
+def _split_container_source_path(source_path: str) -> tuple[Path, str] | None:
+    outer, sep, member = source_path.partition(":")
+    if not sep or not outer or not member:
+        return None
+    return Path(outer), member
+
+
+def _json_payload_at_index(raw_bytes: bytes, source_index: int) -> object:
+    loaded = json_loads(raw_bytes)
+    if isinstance(loaded, list):
+        try:
+            return loaded[source_index]
+        except IndexError as exc:
+            raise IndexError(f"source_index {source_index} outside JSON array of {len(loaded)} payloads") from exc
+    if source_index == 0:
+        return loaded
+    raise IndexError("non-array JSON payload only supports source_index 0")
+
+
+def _jsonl_payload_at_index(raw_bytes: bytes, source_index: int) -> object:
+    for idx, line in enumerate(raw_bytes.splitlines()):
+        if idx == source_index:
+            return json_loads(line)
+    raise IndexError(f"source_index {source_index} outside JSONL stream")
+
+
+def _current_raw_payload_bytes(
+    source_path: str,
+    source_index: int | None,
+    *,
+    source_bytes_cache: dict[str, bytes] | None = None,
+    decoded_payload_cache: dict[str, object] | None = None,
+) -> tuple[bytes | None, str | None]:
+    if _path_is_container_member(source_path):
+        split = _split_container_source_path(source_path)
+        if split is None:
+            return None, "unsupported_container_path"
+        zip_path, member = split
+        if not zip_path.exists():
+            return None, "source_missing"
+        try:
+            if source_bytes_cache is not None and source_path in source_bytes_cache:
+                member_bytes = source_bytes_cache[source_path]
+            else:
+                with zipfile.ZipFile(zip_path) as archive, archive.open(member) as handle:
+                    member_bytes = handle.read()
+                if source_bytes_cache is not None:
+                    source_bytes_cache[source_path] = member_bytes
+        except KeyError:
+            return None, "source_missing"
+        if source_index is None:
+            return None, "source_index_missing"
+        try:
+            if decoded_payload_cache is not None and source_path in decoded_payload_cache:
+                decoded_payload = decoded_payload_cache[source_path]
+                if isinstance(decoded_payload, list):
+                    payload = decoded_payload[int(source_index)]
+                elif int(source_index) == 0:
+                    payload = decoded_payload
+                else:
+                    raise IndexError("non-array JSON payload only supports source_index 0")
+            else:
+                if member.endswith(".jsonl"):
+                    payload = _jsonl_payload_at_index(member_bytes, int(source_index))
+                else:
+                    decoded_payload = json_loads(member_bytes)
+                    if decoded_payload_cache is not None:
+                        decoded_payload_cache[source_path] = decoded_payload
+                    if isinstance(decoded_payload, list):
+                        payload = decoded_payload[int(source_index)]
+                    elif int(source_index) == 0:
+                        payload = decoded_payload
+                    else:
+                        raise IndexError("non-array JSON payload only supports source_index 0")
+        except (IndexError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            return None, f"source_index:{exc}"
+        return json_dumps_bytes(payload), None
+
+    path = Path(source_path)
+    if not path.exists():
+        return None, "source_missing"
+    try:
+        return path.read_bytes(), None
+    except OSError as exc:
+        return None, f"error:{exc}"
+
+
+def _delete_blob_refs_for_raw_id(conn: sqlite3.Connection, raw_id: str) -> None:
+    ref_id_column = "ref_id" if _column_exists(conn, "blob_refs", "ref_id") else "raw_id"
+    conn.execute(f"DELETE FROM blob_refs WHERE {ref_id_column} = ?", (raw_id,))
+
+
+def _insert_raw_payload_blob_ref(
+    conn: sqlite3.Connection,
+    *,
+    blob_hash: str,
+    raw_id: str,
+    source_path: str,
+    size_bytes: int,
+    acquired_at_ms: int,
+) -> None:
+    ref_id_column = "ref_id" if _column_exists(conn, "blob_refs", "ref_id") else "raw_id"
+    columns = ["blob_hash", ref_id_column, "ref_type"]
+    values: list[object] = [bytes.fromhex(blob_hash), raw_id, "raw_payload"]
+    if _column_exists(conn, "blob_refs", "source_path"):
+        columns.append("source_path")
+        values.append(source_path)
+    if _column_exists(conn, "blob_refs", "size_bytes"):
+        columns.append("size_bytes")
+        values.append(size_bytes)
+    if _column_exists(conn, "blob_refs", "acquired_at_ms"):
+        columns.append("acquired_at_ms")
+        values.append(acquired_at_ms)
+    placeholders = ", ".join("?" for _ in columns)
+    conn.execute(
+        f"INSERT OR REPLACE INTO blob_refs ({', '.join(columns)}) VALUES ({placeholders})",
+        tuple(values),
+    )
+
+
+def _update_raw_session_blob_ref(
+    conn: sqlite3.Connection,
+    *,
+    raw_id: str,
+    new_blob_hash: str,
+    new_blob_size: int,
+    acquired_at_ms: int,
+    file_mtime_ms: int | None,
+) -> None:
+    assignments = ["blob_hash = ?", "blob_size = ?"]
+    values: list[object] = [bytes.fromhex(new_blob_hash), new_blob_size]
+    if _column_exists(conn, "raw_sessions", "acquired_at_ms"):
+        assignments.append("acquired_at_ms = ?")
+        values.append(acquired_at_ms)
+    if file_mtime_ms is not None and _column_exists(conn, "raw_sessions", "file_mtime_ms"):
+        assignments.append("file_mtime_ms = ?")
+        values.append(file_mtime_ms)
+    values.append(raw_id)
+    conn.execute(f"UPDATE raw_sessions SET {', '.join(assignments)} WHERE raw_id = ?", tuple(values))
 
 
 def _default_blob_ref_quarantine_path(source_db: Path) -> Path:
@@ -1095,6 +1316,211 @@ def plan_raw_backed_blob_reference_recovery(
         by_source_shape=_counter_dict(by_source_shape),
         rows=tuple(plan_rows) if include_rows else (),
         samples=tuple(plan_rows[: max(0, sample_size)]),
+    )
+
+
+def replace_raw_backed_blob_reference_debt_from_source(
+    db_path: str | Path,
+    *,
+    store: BlobStore | None = None,
+    dry_run: bool = True,
+    manifest_path: str | Path | None = None,
+    max_count: int | None = None,
+    sample_size: int = 30,
+) -> BlobReferenceSourceReplaceReport:
+    """Replace missing raw-payload blob refs with current source-derived bytes.
+
+    This does not restore the historical missing blob. It records the old hash
+    in the manifest, writes the current source payload to the blob store, and
+    updates the existing raw_id to point at that current evidence.
+    """
+
+    if not dry_run and manifest_path is None:
+        raise ValueError("manifest_path is required when applying source replacement")
+
+    blob_store = store if store is not None else get_blob_store()
+    source_db = _source_db_for_blob_reference_report(db_path)
+    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
+        rows = _missing_raw_backed_blob_rows(conn)
+
+    samples: list[BlobReferenceSourceReplaceSample] = []
+    manifest_rows: list[dict[str, object]] = []
+    by_origin: Counter[str] = Counter()
+    by_source_shape: Counter[str] = Counter()
+    candidate_updates: list[tuple[dict[str, Any], str, int, int | None, int]] = []
+    skipped_existing_blob = 0
+    skipped_no_source_path = 0
+    skipped_source_missing = 0
+    skipped_source_index = 0
+    skipped_unsupported_source = 0
+    skipped_error = 0
+    source_bytes_cache: dict[str, bytes] = {}
+    decoded_payload_cache: dict[str, object] = {}
+
+    for row in rows:
+        old_blob_hash = str(row.get("blob_hash") or "")
+        raw_id = str(row.get("raw_id") or "")
+        if not old_blob_hash or not raw_id:
+            continue
+        if blob_store.exists(old_blob_hash):
+            skipped_existing_blob += 1
+            continue
+        if max_count is not None and len(candidate_updates) >= max_count:
+            break
+
+        source_path = _optional_str(row.get("source_path"))
+        origin = _optional_str(row.get("origin")) or "(none)"
+        by_origin[origin] += 1
+        source_shape = "container_member" if source_path and _path_is_container_member(source_path) else "direct_file"
+        by_source_shape[source_shape] += 1
+        if not source_path:
+            skipped_no_source_path += 1
+            reason: str | None = "no_source_path"
+            if len(samples) < max(0, sample_size):
+                samples.append(
+                    BlobReferenceSourceReplaceSample(raw_id, old_blob_hash, None, source_path, "skipped", reason)
+                )
+            continue
+
+        try:
+            payload_bytes, reason = _current_raw_payload_bytes(
+                source_path,
+                int(row["source_index"]) if row.get("source_index") is not None else None,
+                source_bytes_cache=source_bytes_cache,
+                decoded_payload_cache=decoded_payload_cache,
+            )
+        except OSError as exc:
+            payload_bytes, reason = None, f"error:{exc}"
+        if payload_bytes is None:
+            if reason == "source_missing":
+                skipped_source_missing += 1
+            elif reason and reason.startswith("source_index"):
+                skipped_source_index += 1
+            elif reason and reason.startswith("error:"):
+                skipped_error += 1
+            else:
+                skipped_unsupported_source += 1
+            if len(samples) < max(0, sample_size):
+                samples.append(
+                    BlobReferenceSourceReplaceSample(raw_id, old_blob_hash, None, source_path, "skipped", reason)
+                )
+            manifest_rows.append(
+                {
+                    "action": "skipped",
+                    "reason": reason,
+                    "raw_id": raw_id,
+                    "old_blob_hash": old_blob_hash,
+                    "origin": row.get("origin"),
+                    "native_id": row.get("native_id"),
+                    "source_path": source_path,
+                    "source_index": row.get("source_index"),
+                    "old_blob_size": row.get("expected_size_bytes"),
+                }
+            )
+            continue
+
+        new_blob_hash = hashlib.sha256(payload_bytes).hexdigest()
+        new_blob_size = len(payload_bytes)
+        acquired_at_ms = int(time.time() * 1000)
+        base_path = source_path.partition(":")[0] if _path_is_container_member(source_path) else source_path
+        try:
+            file_mtime_ms: int | None = int(Path(base_path).stat().st_mtime * 1000)
+        except OSError:
+            file_mtime_ms = None
+        manifest_row = {
+            "action": "would_replace" if dry_run else "replaced",
+            "raw_id": raw_id,
+            "origin": row.get("origin"),
+            "native_id": row.get("native_id"),
+            "source_path": source_path,
+            "source_index": row.get("source_index"),
+            "old_blob_hash": old_blob_hash,
+            "old_blob_size": row.get("expected_size_bytes"),
+            "new_blob_hash": new_blob_hash,
+            "new_blob_size": new_blob_size,
+            "new_equals_old": new_blob_hash == old_blob_hash,
+        }
+        manifest_rows.append(manifest_row)
+        candidate_updates.append((row, new_blob_hash, new_blob_size, file_mtime_ms, acquired_at_ms))
+        if len(samples) < max(0, sample_size):
+            samples.append(
+                BlobReferenceSourceReplaceSample(
+                    raw_id=raw_id,
+                    old_blob_hash=old_blob_hash,
+                    new_blob_hash=new_blob_hash,
+                    source_path=source_path,
+                    action="would_replace" if dry_run else "replaced",
+                    bytes_written=new_blob_size,
+                )
+            )
+
+    resolved_manifest_path: Path | None = Path(manifest_path) if manifest_path is not None else None
+    if resolved_manifest_path is not None:
+        _write_jsonl_rows(resolved_manifest_path, manifest_rows)
+
+    replaced_rows = 0
+    written_blobs = 0
+    written_bytes = 0
+    if not dry_run and candidate_updates:
+        apply_source_bytes_cache: dict[str, bytes] = {}
+        apply_decoded_payload_cache: dict[str, object] = {}
+        with sqlite3.connect(source_db) as conn:
+            conn.execute("PRAGMA foreign_keys = ON")
+            with conn:
+                for row, new_blob_hash, new_blob_size, file_mtime_ms, acquired_at_ms in candidate_updates:
+                    raw_id = str(row["raw_id"])
+                    source_path = str(row["source_path"])
+                    if not blob_store.exists(new_blob_hash):
+                        payload_bytes, _reason = _current_raw_payload_bytes(
+                            source_path,
+                            int(row["source_index"]) if row.get("source_index") is not None else None,
+                            source_bytes_cache=apply_source_bytes_cache,
+                            decoded_payload_cache=apply_decoded_payload_cache,
+                        )
+                        if payload_bytes is None:
+                            skipped_error += 1
+                            continue
+                        blob_store.write_from_bytes(payload_bytes)
+                        written_blobs += 1
+                        written_bytes += len(payload_bytes)
+                    _delete_blob_refs_for_raw_id(conn, raw_id)
+                    _update_raw_session_blob_ref(
+                        conn,
+                        raw_id=raw_id,
+                        new_blob_hash=new_blob_hash,
+                        new_blob_size=new_blob_size,
+                        acquired_at_ms=acquired_at_ms,
+                        file_mtime_ms=file_mtime_ms,
+                    )
+                    _insert_raw_payload_blob_ref(
+                        conn,
+                        blob_hash=new_blob_hash,
+                        raw_id=raw_id,
+                        source_path=source_path,
+                        size_bytes=new_blob_size,
+                        acquired_at_ms=acquired_at_ms,
+                    )
+                    replaced_rows += 1
+
+    return BlobReferenceSourceReplaceReport(
+        source_db=str(source_db),
+        blob_root=str(blob_store.root),
+        dry_run=dry_run,
+        manifest_path=str(resolved_manifest_path) if resolved_manifest_path is not None else None,
+        scanned_rows=len(rows),
+        candidate_rows=len(candidate_updates),
+        replaced_rows=replaced_rows,
+        written_blobs=written_blobs,
+        written_bytes=written_bytes,
+        skipped_existing_blob=skipped_existing_blob,
+        skipped_no_source_path=skipped_no_source_path,
+        skipped_source_missing=skipped_source_missing,
+        skipped_source_index=skipped_source_index,
+        skipped_unsupported_source=skipped_unsupported_source,
+        skipped_error=skipped_error,
+        by_origin=_counter_dict(by_origin),
+        by_source_shape=_counter_dict(by_source_shape),
+        samples=tuple(samples),
     )
 
 
@@ -1401,6 +1827,8 @@ __all__ = [
     "BlobReferenceOrphanPruneReport",
     "BlobReferenceRecoveryPlanReport",
     "BlobReferenceRecoveryPlanRow",
+    "BlobReferenceSourceReplaceReport",
+    "BlobReferenceSourceReplaceSample",
     "BlobReferenceDebtReport",
     "BlobReferenceDebtRestoreReport",
     "BlobReferenceDebtRestoreSample",
@@ -1409,6 +1837,7 @@ __all__ = [
     "plan_raw_backed_blob_reference_recovery",
     "prune_orphan_blob_reference_debt",
     "referenced_blob_hashes",
+    "replace_raw_backed_blob_reference_debt_from_source",
     "restore_direct_blob_reference_debt",
     "scan_blob_reference_debt",
     "scan_blob_integrity",

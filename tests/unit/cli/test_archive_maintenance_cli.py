@@ -584,6 +584,55 @@ def test_blob_reference_recovery_plan_cli_writes_raw_backed_manifest(
     assert manifest_rows[0]["source_path"] == str(source)
 
 
+def test_blob_reference_replace_from_source_cli_requires_manifest_for_apply(
+    cli_runner: CliRunner,
+) -> None:
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "blob-reference-replace-from-source", "--yes"],
+    )
+
+    assert result.exit_code != 0
+    assert "--manifest-file is required with --yes" in result.output
+
+
+def test_blob_reference_replace_from_source_cli_applies_with_manifest(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    source = cli_workspace["archive_root"] / "exports" / "recoverable.json"
+    _seed_blob_reference_debt(cli_workspace["archive_root"], source)
+    manifest = cli_workspace["archive_root"] / "plans" / "replace.jsonl"
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "blob-reference-replace-from-source",
+            "--yes",
+            "--manifest-file",
+            str(manifest),
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["mode"] == "blob_reference_replace_from_source"
+    assert payload["mutates"] is True
+    assert payload["writes_manifest"] is True
+    assert payload["candidate_rows"] == 1
+    assert payload["replaced_rows"] == 1
+    assert payload["skipped_error"] == 0
+    manifest_rows = [json.loads(line) for line in manifest.read_text(encoding="utf-8").splitlines()]
+    assert len(manifest_rows) == 1
+    assert manifest_rows[0]["old_blob_hash"] != manifest_rows[0]["new_blob_hash"]
+
+
 def test_blob_reference_prune_orphans_cli_dry_run_keeps_refs(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,

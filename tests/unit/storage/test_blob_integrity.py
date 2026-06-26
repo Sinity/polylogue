@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import zipfile
 from pathlib import Path
 
 from polylogue.storage.blob_integrity import (
@@ -11,6 +12,7 @@ from polylogue.storage.blob_integrity import (
     plan_raw_backed_blob_reference_recovery,
     prune_orphan_blob_reference_debt,
     referenced_blob_hashes,
+    replace_raw_backed_blob_reference_debt_from_source,
     restore_direct_blob_reference_debt,
     scan_blob_integrity,
     scan_blob_reference_debt,
@@ -615,6 +617,117 @@ def test_plan_raw_backed_blob_reference_recovery_writes_manifest(tmp_path: Path)
         "raw-size-mismatch",
         "raw-missing",
     }
+
+
+def test_replace_raw_backed_blob_reference_debt_from_source_updates_raw_refs(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.db"
+    store = BlobStore(tmp_path / "blob")
+    direct_source = tmp_path / "direct.json"
+    direct_source.write_bytes(b'{"id":"direct","value":2}')
+    zip_source = tmp_path / "export.zip"
+    with zipfile.ZipFile(zip_source, "w") as archive:
+        archive.writestr("conversations.json", json.dumps([{"id": "first"}, {"id": "second", "value": 2}]))
+    stale_direct_hash = "1" * 64
+    stale_zip_hash = "2" * 64
+    manifest_path = tmp_path / "replacement.jsonl"
+    with sqlite3.connect(source_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE raw_sessions (
+                raw_id TEXT PRIMARY KEY,
+                origin TEXT,
+                native_id TEXT,
+                source_path TEXT,
+                source_index INTEGER,
+                blob_hash BLOB,
+                blob_size INTEGER NOT NULL,
+                acquired_at_ms INTEGER,
+                file_mtime_ms INTEGER
+            );
+            CREATE TABLE blob_refs (
+                blob_hash BLOB NOT NULL,
+                ref_id TEXT NOT NULL,
+                ref_type TEXT NOT NULL,
+                source_path TEXT,
+                size_bytes INTEGER NOT NULL,
+                acquired_at_ms INTEGER NOT NULL,
+                PRIMARY KEY(blob_hash, ref_type, ref_id)
+            );
+            """
+        )
+        rows = [
+            (
+                "raw-direct",
+                "chatgpt-export",
+                "native-direct",
+                str(direct_source),
+                0,
+                bytes.fromhex(stale_direct_hash),
+                1,
+                10,
+                20,
+            ),
+            (
+                "raw-zip",
+                "chatgpt-export",
+                "native-zip",
+                f"{zip_source}:conversations.json",
+                1,
+                bytes.fromhex(stale_zip_hash),
+                2,
+                11,
+                21,
+            ),
+        ]
+        conn.executemany(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms, file_mtime_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        conn.executemany(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, ?, 'raw_payload', ?, ?, ?)
+            """,
+            [
+                (bytes.fromhex(stale_direct_hash), "raw-direct", str(direct_source), 1, 10),
+                (bytes.fromhex(stale_zip_hash), "raw-zip", f"{zip_source}:conversations.json", 2, 11),
+            ],
+        )
+
+    dry = replace_raw_backed_blob_reference_debt_from_source(
+        source_db,
+        store=store,
+        manifest_path=tmp_path / "dry-run.jsonl",
+    )
+    assert dry.dry_run is True
+    assert dry.candidate_rows == 2
+    assert dry.replaced_rows == 0
+
+    report = replace_raw_backed_blob_reference_debt_from_source(
+        source_db,
+        store=store,
+        dry_run=False,
+        manifest_path=manifest_path,
+    )
+
+    assert report.replaced_rows == 2
+    assert report.written_blobs == 2
+    manifest_rows = [json.loads(line) for line in manifest_path.read_text(encoding="utf-8").splitlines()]
+    assert {row["old_blob_hash"] for row in manifest_rows} == {stale_direct_hash, stale_zip_hash}
+    with sqlite3.connect(source_db) as conn:
+        stored = conn.execute(
+            "SELECT raw_id, lower(hex(blob_hash)), blob_size FROM raw_sessions ORDER BY raw_id"
+        ).fetchall()
+        refs = conn.execute("SELECT ref_id, lower(hex(blob_hash)) FROM blob_refs ORDER BY ref_id").fetchall()
+    assert [row[0] for row in stored] == ["raw-direct", "raw-zip"]
+    assert all(blob_hash not in {stale_direct_hash, stale_zip_hash} for _raw_id, blob_hash, _size in stored)
+    assert refs == [(raw_id, blob_hash) for raw_id, blob_hash, _size in stored]
+    assert all(store.exists(blob_hash) for _raw_id, blob_hash, _size in stored)
 
 
 def test_scan_blob_integrity_uses_sibling_archive_source_from_index_db(tmp_path: Path) -> None:
