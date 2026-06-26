@@ -63,6 +63,7 @@ EXPECTED_TOOL_NAMES = {
     "export_query_results",
     "export_sanitized",
     "get_postmortem_bundle",
+    "get_pathologies",
     "rebuild_session_insights",
     "maintenance_preview",
     "maintenance_execute",

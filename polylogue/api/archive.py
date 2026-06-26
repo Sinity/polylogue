@@ -67,6 +67,7 @@ if TYPE_CHECKING:
     from polylogue.export.sanitize import SanitizedExportRequest, SanitizedExportResult
     from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport
     from polylogue.insights.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
+    from polylogue.insights.pathology import PathologyReport
     from polylogue.insights.postmortem import PostmortemBundle
     from polylogue.insights.readiness import InsightReadinessQuery, InsightReadinessReport
     from polylogue.insights.resume import ResumeBrief, ResumeCandidate
@@ -1732,6 +1733,49 @@ class PolylogueArchiveMixin:
         bundle = compile_postmortem_bundle(profiles, digests, scope=scope)
         assert isinstance(bundle, _PostmortemBundle)
         return bundle
+
+    async def pathology_report(
+        self,
+        spec: SessionQuerySpec | None = None,
+        *,
+        limit: int | None = None,
+    ) -> PathologyReport:
+        """Mine agent-workflow pathologies across a matched session scope (#2383).
+
+        Resolves the matched session set (the same summary path
+        ``postmortem_bundle`` uses), fetches each session's recovery digest, and
+        runs the deterministic detectors in :mod:`polylogue.insights.pathology`
+        over the typed run projections. Returns the aggregate
+        :class:`PathologyReport` (findings + per-kind distribution), the
+        queryable distribution/summary view for #2383. The analysis cap defaults
+        to 200 sessions.
+        """
+        from polylogue.insights.pathology import compile_pathology_report
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        cap = limit if limit is not None and limit > 0 else 200
+
+        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
+            if spec is not None and spec.has_filters():
+                summaries = _archive_list_summaries_for_spec(archive, spec, default_limit=1_000_000)
+            else:
+                summaries = archive.list_summaries(limit=1_000_000)
+
+        session_ids: list[str] = []
+        seen: set[str] = set()
+        for summary in summaries:
+            if summary.session_id in seen:
+                continue
+            seen.add(summary.session_id)
+            session_ids.append(summary.session_id)
+
+        analyzed_ids = session_ids[:cap]
+        projections = []
+        for sid in analyzed_ids:
+            digest = await self.recovery_digest(sid)
+            if digest is not None:
+                projections.append(digest.run_projection)
+        return compile_pathology_report(projections)
 
     async def sanitized_export(
         self,

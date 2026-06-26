@@ -144,6 +144,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "export_query_results": "operation_result",
     "export_sanitized": "operation_result",
     "get_postmortem_bundle": "single_object",
+    "get_pathologies": "single_object",
     "maintenance_preview": "operation_result",
     "maintenance_execute": "operation_result",
     "maintenance_status": "operation_result",
