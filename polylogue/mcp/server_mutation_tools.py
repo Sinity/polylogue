@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from contextlib import suppress
+from dataclasses import replace
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any, cast
 
@@ -911,6 +912,9 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 tag=tag,
                 repo=repo,
             ).build_spec(hooks.clamp_limit)
+            # Drop the MCP default page limit (10) so the full matched scope is
+            # exported; the per-call cap is `limit` (default 1000 in the API).
+            spec = replace(spec, limit=None)
             try:
                 request = SanitizedExportRequest(
                     output_path=Path(output_path),

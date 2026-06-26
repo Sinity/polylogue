@@ -8,6 +8,7 @@ derived distributions are registered directly.
 from __future__ import annotations
 
 import inspect
+from dataclasses import replace
 from datetime import date
 from math import ceil
 from typing import TYPE_CHECKING, Any, cast
@@ -1096,6 +1097,12 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 tag=tag,
                 repo=repo,
             ).build_spec(hooks.clamp_limit)
+            # build_spec writes the MCP default page limit (10) into spec.limit,
+            # which `_archive_query_kwargs` prefers over the candidate-scope
+            # default — that would cap the postmortem at 10 sessions and defeat
+            # its own analysis cap. Drop the page limit so the full matched scope
+            # is considered; `postmortem_bundle`'s `limit` is the analysis cap.
+            spec = replace(spec, limit=None)
             bundle = await poly.postmortem_bundle(spec, limit=limit)
             return hooks.json_payload(bundle, exclude_none=True)
 

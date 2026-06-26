@@ -37,6 +37,10 @@ async def test_get_postmortem_bundle_delegates_and_serializes(mcp_server: MCPSer
     assert "scope" in payload
     assert "schema_version" in payload
     assert mock_poly.postmortem_bundle.await_count == 1
+    # The candidate scope must not inherit the MCP default page limit (10),
+    # which would silently cap the postmortem below its own analysis cap.
+    resolved_spec = mock_poly.postmortem_bundle.await_args.args[0]
+    assert resolved_spec.limit is None
 
 
 @pytest.mark.asyncio
@@ -107,6 +111,8 @@ async def test_export_sanitized_forces_redaction(mcp_server: MCPServerUnderTest,
     request = mock_poly.sanitized_export.await_args.args[1]
     assert request.redact is True
     assert request.acknowledge_unredacted is False
+    # The candidate scope must not inherit the MCP default page limit (10).
+    assert mock_poly.sanitized_export.await_args.args[0].limit is None
 
 
 def test_export_sanitized_has_no_redaction_disable_param(mcp_server: MCPServerUnderTest) -> None:
