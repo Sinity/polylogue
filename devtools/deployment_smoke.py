@@ -507,14 +507,6 @@ def _probe_browser_capture_archive(*, archive_root: Path) -> BrowserCaptureArchi
         error = "spooled_without_raw_rows"
     if error is None and files and raw_rows is not None and raw_rows > 0 and latest_raw_id is None:
         error = "latest_spooled_without_raw_row"
-    if (
-        error is None
-        and files
-        and latest_mtime_ms is not None
-        and latest_raw_file_mtime_ms is not None
-        and latest_mtime_ms > latest_raw_file_mtime_ms
-    ):
-        error = "spooled_newer_than_raw_rows"
     if error is None and files and not index_db_path.exists():
         error = "index_db_missing"
     if error is None and latest_raw_id is not None and index_db_path.exists():
@@ -547,6 +539,15 @@ def _probe_browser_capture_archive(*, archive_root: Path) -> BrowserCaptureArchi
                     error = "latest_spooled_indexed_native_id_mismatch"
         except sqlite3.Error as exc:
             error = f"index:{type(exc).__name__}: {exc}"
+    if (
+        error is None
+        and files
+        and latest_indexed_session_id is None
+        and latest_mtime_ms is not None
+        and latest_raw_file_mtime_ms is not None
+        and latest_mtime_ms > latest_raw_file_mtime_ms
+    ):
+        error = "spooled_newer_than_raw_rows"
     ok = error is None
     return BrowserCaptureArchiveProbe(
         spool_path=str(spool_path),
