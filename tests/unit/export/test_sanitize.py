@@ -152,3 +152,30 @@ def test_produce_writes_gated_bundle(tmp_path: Path) -> None:
         assert leak not in dataset_text
         assert leak not in manifest_text
     assert result.readme_path.exists()
+
+
+def test_space_containing_path_is_fully_redacted() -> None:
+    """A path with spaces must not leak its directory structure (#2381).
+
+    Regression: a space-naive path regex redacted ``/home/me/`` but left
+    ``Secret Project/notes.md`` exposed, and the gate (same pattern) did not
+    catch it. The sensitive directory name must not survive.
+    """
+    rows = [{"title": "edited /home/me/Secret Project/plans.md today"}]
+    sanitized, report = sanitize_rows(rows, config=PrivacyConfig(level="standard"))
+    title = sanitized[0]["title"]
+    assert isinstance(title, str)
+    assert "Secret Project" not in title
+    assert "/home/me" not in title
+    assert report.rejection_reasons.get("absolute_path", 0) >= 1
+
+
+def test_gate_refuses_raw_space_containing_path(tmp_path: Path) -> None:
+    """The fail-closed gate must flag a raw space-containing absolute path."""
+    (tmp_path / "dataset.jsonl").write_text(
+        json.dumps({"x": "/home/me/Secret Project/notes.md"}) + "\n",
+        encoding="utf-8",
+    )
+    verdict = verify_sanitized_export(tmp_path, home="/home/me")
+    assert verdict.ok is False
+    assert verdict.absolute_path_leaks

@@ -47,10 +47,15 @@ POSTMORTEM_FILENAME = "postmortem.json"
 
 # Absolute filesystem path: a leading slash followed by at least two path
 # segments. The two-segment minimum avoids flagging a lone ``/word`` token in
-# prose while still catching every real ``/a/b/...`` path.
-_ABS_PATH_RE = re.compile(r"/(?:[A-Za-z0-9._\-]+/)+[A-Za-z0-9._\-]+")
+# prose while still catching every real ``/a/b/...`` path. Segment characters
+# include spaces so a path like ``/home/me/Secret Project/notes.md`` is matched
+# as a whole — without the space, the directory and filename after the space
+# would leak past both the redactor and the (same-pattern) gate. Over-matching
+# prose that interleaves several slash-runs is the *safe* direction for a
+# sanitizer: it redacts more, never less.
+_ABS_PATH_RE = re.compile(r"/(?:[A-Za-z0-9._\- ]+/)+[A-Za-z0-9._\- ]*[A-Za-z0-9._\-]")
 # ``$HOME``-relative path written with a tilde (``~/a/b``).
-_TILDE_PATH_RE = re.compile(r"~/(?:[A-Za-z0-9._\-]+/)*[A-Za-z0-9._\-]+")
+_TILDE_PATH_RE = re.compile(r"~/(?:[A-Za-z0-9._\- ]+/)*[A-Za-z0-9._\- ]*[A-Za-z0-9._\-]")
 # Candidate opaque token for high-entropy detection.
 _HIGH_ENTROPY_CANDIDATE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{9,}")
 
