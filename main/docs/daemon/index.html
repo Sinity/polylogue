@@ -883,6 +883,13 @@ identical content is automatically deduplicated. For backup:</p>
 <li>For large archives, use restic or rsync targeting the <code>blob/</code> directory</li>
 <li>Blobs are write-once, read-many — incremental backup tools work well</li>
 </ul>
+<p>When a backup sees source rows or attachment references whose content-addressed
+blob file is absent, it keeps the backup usable but records the debt instead of
+silently hiding it. The warning names the total missing referenced blobs and
+the backup directory includes <code>blob-reference-debt.json</code> with the exact count,
+bounded hash sample, and reference-source counts. Treat that report as
+read-only recovery evidence: restore missing blob files from an older backup or
+re-ingest the affected raw sources before deleting any source/blob/link rows.</p>
 <h3>Vacuum Guidance</h3>
 <p>SQLite <code>VACUUM</code> rebuilds the database file, reclaiming free pages. It
 requires the full database size in free disk space. Two approaches:</p>

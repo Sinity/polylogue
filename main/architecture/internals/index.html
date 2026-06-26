@@ -943,6 +943,11 @@ reconciliation by default; pass <code>--exact-derived-counts</code> when diagnos
 FTS/source-row drift and the archive can afford the scan.</li>
 <li><code>blob_lease_state</code> — pending lease count, distinct lease operations,
 oldest <code>acquired_at</code>. See the lease/GC concurrency model above.</li>
+<li><code>blob_reference_debt</code> — skipped by default so routine workload snapshots do
+not stat every referenced blob path on large archives. Pass
+<code>--blob-reference-debt</code> when diagnosing backup/integrity incidents; the
+section then reports the exact missing referenced-blob count, bounded hash
+sample, reference-source counts, and source/index DB path used.</li>
 <li><code>gc_state</code> — high-water <code>gc_generations</code> row, <code>last_completed_at</code>,
 total generation count.</li>
 <li><code>fts_trigger_state</code> — the three expected FTS sync triggers
