@@ -45,6 +45,12 @@ anything different; release-please consumes the existing history.
       runtime dependencies changed.
 - [ ] `devtools release build-package` passes when Nix packaging or dependency
       closure changed.
+- [ ] `pytest tests/integration/test_installed_package_smoke.py` passes — it
+      builds + installs the wheel into a fresh venv and runs
+      `polylogue --diagnose find ...` against an empty archive root, proving the
+      installed artifact's runtime dependency closure reaches archive handling
+      (the query-first path that a previously-missed `lark` dependency broke)
+      rather than dying on a missing import.
 - [ ] `devtools workspace deployment-smoke --json` captures installed command
       versions, daemon URL, browser-capture receiver URL, archive root, and
       resource signals on the deployment host when this release claims deployed
