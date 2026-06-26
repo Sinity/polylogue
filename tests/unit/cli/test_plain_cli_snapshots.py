@@ -73,6 +73,35 @@ def seeded_db_env(
     return db_path
 
 
+@pytest.fixture
+def postmortem_seeded_env(
+    corpus_seeded_db: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    """Seed a corpus DB and materialize the session-profile insights.
+
+    The postmortem bundle reads durable ``session_profile`` insight records,
+    which the bare corpus ingest does not build. This fixture rebuilds them so
+    the snapshot exercises a populated bundle rather than an empty scope.
+    """
+    import asyncio
+
+    from polylogue.api import Polylogue
+
+    db_path = corpus_seeded_db(providers=("chatgpt", "claude-code"), count=2, seed=42)
+    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+    async def _rebuild() -> None:
+        plg = Polylogue.open()
+        try:
+            await plg.rebuild_insights()
+        finally:
+            await plg.close()
+
+    asyncio.run(_rebuild())
+    return db_path
+
+
 def _invoke(runner: CliRunner, args: list[str]) -> str:
     result = runner.invoke(cli, args, catch_exceptions=False)
     assert result.exit_code == 0, f"args={args!r} output={result.output!r}"
@@ -180,6 +209,67 @@ def test_json_facets_snapshot(
     """``polylogue --plain analyze --facets --format json`` pins JSON facets envelope (#1842)."""
     output = _invoke_json(runner, ["analyze", "--facets", "--format", "json"])
     assert output == snapshot
+
+
+def test_plain_analyze_postmortem_snapshot(
+    runner: CliRunner,
+    postmortem_seeded_env: Path,
+    snapshot: object,
+) -> None:
+    """``polylogue --plain analyze --postmortem`` pins the distilled bundle text (#2380)."""
+    output = _invoke(runner, ["--plain", "analyze", "--postmortem"])
+    assert output == snapshot
+
+
+def test_json_analyze_postmortem_snapshot(
+    runner: CliRunner,
+    postmortem_seeded_env: Path,
+    snapshot: object,
+) -> None:
+    """``polylogue --plain analyze --postmortem --format json`` pins the JSON envelope (#2380)."""
+    output = _invoke_json(runner, ["analyze", "--postmortem", "--format", "json"])
+    assert output == snapshot
+
+
+def test_analyze_postmortem_json_has_stable_headline_keys(
+    runner: CliRunner,
+    postmortem_seeded_env: Path,
+) -> None:
+    """The postmortem JSON envelope carries every named headline key (#2380 AC2)."""
+    import json as _json
+
+    result = runner.invoke(
+        cli,
+        ["--plain", "analyze", "--postmortem", "--format", "json"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    payload = _json.loads(result.output)
+    bundle = payload["result"]["postmortem"]
+    expected_keys = {
+        "schema_version",
+        "scope",
+        "session_count",
+        "wallclock_span",
+        "estimated_cost",
+        "repos_touched",
+        "top_expensive_session",
+        "subagent_branch_count",
+        "longest_tool_gap",
+        "wasted_loop",
+        "failure_mode",
+    }
+    assert expected_keys <= set(bundle)
+    assert set(bundle["estimated_cost"]["tokens"]) == {
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+    }
+    # degraded fields never fabricate a value
+    assert bundle["longest_tool_gap"]["status"] == "unavailable"
+    assert bundle["wasted_loop"]["status"] == "no_signal"
+    assert bundle["failure_mode"]["status"] == "no_signal"
 
 
 def test_analyze_facets_no_idf_omits_idf(runner: CliRunner, seeded_db_env: Path) -> None:
