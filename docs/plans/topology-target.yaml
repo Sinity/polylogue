@@ -17,7 +17,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 4935
+    loc: 5168
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -849,7 +849,7 @@ files:
     target: polylogue/cli/query_stats.py
     owner: stable
   - path: polylogue/cli/query_verbs.py
-    loc: 1876
+    loc: 1916
     target: polylogue/cli/query_verbs.py
     owner: stable
   - path: polylogue/cli/read_view_handlers.py
@@ -1073,7 +1073,7 @@ files:
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/enums.py
-    loc: 495
+    loc: 496
     target: polylogue/core/enums.py
     owner: core-primitive
     reason: core primitive
@@ -1426,7 +1426,7 @@ files:
     target: polylogue/export/__init__.py
     owner: stable
   - path: polylogue/export/sanitize.py
-    loc: 561
+    loc: 580
     target: polylogue/export/sanitize.py
     owner: stable
   - path: polylogue/insights/__init__.py
@@ -1487,11 +1487,15 @@ files:
     target: polylogue/insights/otlp_correlation.py
     owner: stable
   - path: polylogue/insights/pathology.py
-    loc: 222
+    loc: 219
     target: polylogue/insights/pathology.py
     owner: stable
+  - path: polylogue/insights/portfolio.py
+    loc: 412
+    target: polylogue/insights/portfolio.py
+    owner: stable
   - path: polylogue/insights/postmortem.py
-    loc: 523
+    loc: 521
     target: polylogue/insights/postmortem.py
     owner: stable
   - path: polylogue/insights/provenance.py
@@ -1640,7 +1644,7 @@ files:
     target: polylogue/mcp/server_context_tools.py
     owner: stable
   - path: polylogue/mcp/server_insight_tools.py
-    loc: 1112
+    loc: 1149
     target: polylogue/mcp/server_insight_tools.py
     owner: stable
   - path: polylogue/mcp/server_maintenance_tools.py
@@ -3215,7 +3219,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/user.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user_audit.py
-    loc: 135
+    loc: 136
     target: polylogue/storage/sqlite/archive_tiers/user_audit.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user_overlay.py
@@ -3223,7 +3227,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/user_overlay.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user_write.py
-    loc: 1568
+    loc: 1654
     target: polylogue/storage/sqlite/archive_tiers/user_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/write.py

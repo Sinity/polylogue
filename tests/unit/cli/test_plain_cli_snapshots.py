@@ -282,6 +282,88 @@ def test_analyze_postmortem_json_has_stable_headline_keys(
     assert bundle["failure_mode"]["status"] in {"detected", "clean", "unavailable"}
 
 
+def test_plain_analyze_portfolio_snapshot(
+    runner: CliRunner,
+    postmortem_seeded_env: Path,
+    snapshot: object,
+) -> None:
+    """``polylogue --plain analyze --portfolio`` pins the corpus report text (#2437)."""
+    output = _invoke(runner, ["--plain", "analyze", "--portfolio"])
+    assert output == snapshot
+
+
+def test_json_analyze_portfolio_snapshot(
+    runner: CliRunner,
+    postmortem_seeded_env: Path,
+    snapshot: object,
+) -> None:
+    """``polylogue --plain analyze --portfolio --format json`` pins the JSON envelope (#2437)."""
+    output = _invoke_json(runner, ["analyze", "--portfolio", "--format", "json"])
+    assert output == snapshot
+
+
+def test_markdown_analyze_portfolio_snapshot(
+    runner: CliRunner,
+    postmortem_seeded_env: Path,
+    snapshot: object,
+) -> None:
+    """``polylogue --plain analyze --portfolio --format markdown`` pins the Markdown render (#2437)."""
+    output = _invoke(runner, ["--plain", "analyze", "--portfolio", "--format", "markdown"])
+    assert output == snapshot
+
+
+def test_analyze_portfolio_json_has_stable_headline_keys(
+    runner: CliRunner,
+    postmortem_seeded_env: Path,
+) -> None:
+    """The portfolio JSON envelope carries every named headline key (#2437)."""
+    import json as _json
+
+    result = runner.invoke(
+        cli,
+        ["--plain", "analyze", "--portfolio", "--format", "json"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    payload = _json.loads(result.output)
+    bundle = payload["result"]["portfolio"]
+    expected_keys = {
+        "schema_version",
+        "scope",
+        "session_count",
+        "origins",
+        "repos_touched",
+        "estimated_cost",
+        "cost_distribution",
+        "wallclock_span",
+        "wallclock_distribution_s",
+        "pathologies",
+        "context_loss",
+    }
+    assert expected_keys <= set(bundle)
+    assert set(bundle["estimated_cost"]["tokens"]) == {
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+    }
+    assert bundle["pathologies"]["status"] in {"detected", "clean", "unavailable"}
+    assert bundle["context_loss"]["status"] in {"detected", "clean", "unavailable"}
+
+
+def test_analyze_portfolio_is_fail_closed_on_leak(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A rendered report with a surviving private path is refused, not emitted (#2437)."""
+    from polylogue.export.sanitize import SanitizedExportError, assert_text_sanitized
+
+    # The fail-closed gate must reject any rendered text that still carries an
+    # absolute path / secret. The CLI maps this to a non-zero exit and emits
+    # nothing — proven here at the gate the CLI calls.
+    with pytest.raises(SanitizedExportError):
+        assert_text_sanitized("repos_touched:\n  - /home/secret/private-repo/notes.md\n")
+    # A clean report passes the same gate (no exception).
+    assert_text_sanitized("repos_touched:\n  - polylogue: 3\n")
+
+
 def test_analyze_facets_no_idf_omits_idf(runner: CliRunner, seeded_db_env: Path) -> None:
     """`analyze --facets --no-idf` ports the old `facets --no-idf` capability (#1842)."""
     import json as _json

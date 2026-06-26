@@ -542,6 +542,24 @@ def produce_sanitized_export(
     )
 
 
+def assert_text_sanitized(text: str, *, home: str | None = None) -> None:
+    """Fail-closed leak gate for rendered text (#2437).
+
+    Re-scans an already-rendered report string with the same detector
+    :func:`verify_sanitized_export` uses (absolute/known-root/Windows paths,
+    ``$HOME``-relative paths, known secrets, emails). Raises
+    :class:`SanitizedExportError` if any class of leak survives. Callers MUST
+    emit nothing when this raises — that is the fail-closed contract.
+    """
+
+    abs_leaks, home_leaks, secret_leaks = _scan_text(text, home=_home_dir(home))
+    if abs_leaks or home_leaks or secret_leaks:
+        raise SanitizedExportError(
+            "rendered report failed the sanitizer leak gate: "
+            f"absolute_paths={abs_leaks} home_paths={home_leaks} secrets={secret_leaks}"
+        )
+
+
 __all__ = [
     "DATASET_FILENAME",
     "MANIFEST_FILENAME",
@@ -554,6 +572,7 @@ __all__ = [
     "SanitizedExportRequest",
     "SanitizedExportResult",
     "SanitizedExportVerifyResult",
+    "assert_text_sanitized",
     "produce_sanitized_export",
     "sanitize_rows",
     "verify_sanitized_export",
