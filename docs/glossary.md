@@ -36,7 +36,9 @@ Read only as deep as you need:
 | **Work packet / recovery digest** | A compact, shareable bundle summarizing what an agent session did — cost, repos touched, tools used, what to resume next — assembled from evidence, not free-typed. |
 | **Topology edge** | A typed cross-session parent link (continuation, fork, sidechain, subagent). Stored durably even when the parent is ingested out of order. |
 | **Logical session** | The resolved root of a session's parent chain. Continuations, forks, and subagent runs all roll up to one logical work session. |
+| **Context preamble** | A typed bundle composed from the archive — seed session, recent lineage, project state, and resume guidance — that a coding agent can inject at SessionStart as prior memory. Backs `read --view context` and the MCP `compose_context_preamble` / `compile_context` tools. |
 | **Daemon (`polylogued`)** | The background process that watches source directories, ingests live, rebuilds insights, and serves a local HTTP reader plus health checks and Prometheus `/metrics`. |
+| **OTel projection** | An outbound, OpenTelemetry-shaped view of evidence rows: terminal query-unit rows mapped to spans, log records, and Polylogue refs for external observability tools. An export format, not a source of truth — message text and local paths are never copied in. |
 | **Convergence** | The daemon's process of bringing the archive up to date with its sources: acquire raw rows, parse, materialize index rows, refresh insights, keep FTS in sync. |
 | **Readiness** | Whether a tier is trustworthy *right now* — e.g. all raw rows materialized, FTS index current. Stale or unverified state makes a surface report not-ready rather than silently wrong. |
 | **Archive debt** | Acquired-but-not-materialized state: a raw row with no matching parsed session, or a referenced blob with no file. Surfaced by `ops diagnostics workload`, not hidden. |
