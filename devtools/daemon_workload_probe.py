@@ -22,13 +22,14 @@ from pathlib import Path
 from typing import Any
 
 from polylogue.paths import active_index_db_path
+from polylogue.storage.blob_integrity import scan_blob_reference_debt
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 # Bumped when the JSON shape gains new top-level keys or changes a field type.
 # The compare path uses this to refuse incompatible inputs loudly.
-REPORT_VERSION = 12  # v12 exposes physical DB/table locations for logical observability surfaces.
+REPORT_VERSION = 13  # v13 adds exact missing referenced-blob debt.
 UNKNOWN_TABLE_COUNT = -2
 
 _EXPECTED_FTS_TRIGGERS: tuple[str, ...] = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
@@ -1642,6 +1643,37 @@ def _blob_lease_state(conn: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
+def _blob_reference_debt_state(db: Path, *, enabled: bool) -> dict[str, Any]:
+    if not enabled:
+        return {
+            "checked": False,
+            "ok": True,
+            "reason": "skipped; pass --blob-reference-debt to scan referenced blob files",
+        }
+    source_db = db.with_name("source.db")
+    target = source_db if source_db.exists() else db
+    if not target.exists():
+        return {
+            "checked": False,
+            "ok": False,
+            "db_path": str(target),
+            "error": "source/index database does not exist",
+        }
+    try:
+        report = scan_blob_reference_debt(target)
+    except (OSError, sqlite3.Error) as exc:
+        return {
+            "checked": False,
+            "ok": False,
+            "db_path": str(target),
+            "error": str(exc),
+        }
+    payload = report.to_dict()
+    payload["checked"] = True
+    payload["db_path"] = str(target)
+    return payload
+
+
 def _gc_state(conn: sqlite3.Connection) -> dict[str, Any]:
     if not _table_exists(conn, "gc_generations"):
         return {
@@ -2022,6 +2054,7 @@ def probe(
     integrity_check: bool = False,
     exact_derived_counts: bool = False,
     exact_table_counts: bool = False,
+    blob_reference_debt: bool = False,
 ) -> dict[str, Any]:
     ops_db = db.with_name("ops.db")
     index_db = db.with_name("index.db")
@@ -2071,6 +2104,7 @@ def probe(
             ),
             "topology_quarantine_state": _topology_quarantine_state(conn),
             "blob_lease_state": _tier_state_or_current(conn, db.with_name("source.db"), _blob_lease_state),
+            "blob_reference_debt": _blob_reference_debt_state(db, enabled=blob_reference_debt),
             "gc_state": _tier_state_or_current(conn, db.with_name("source.db"), _gc_state),
             "fts_trigger_state": _fts_trigger_state(conn),
             "daemon_resource_signal": _daemon_resource_signal(recent_attempts, conn, ops_db=ops_db),
@@ -2610,6 +2644,11 @@ def _parser() -> argparse.ArgumentParser:
         help="Run exact boundary/archive table counts instead of cheap planner estimates",
     )
     parser.add_argument(
+        "--blob-reference-debt",
+        action="store_true",
+        help="Count missing referenced blob files exactly (can stat many blob paths on large archives)",
+    )
+    parser.add_argument(
         "--compare",
         nargs=2,
         metavar=("BEFORE", "AFTER"),
@@ -2643,6 +2682,7 @@ def main(argv: list[str] | None = None) -> int:
         integrity_check=args.integrity_check,
         exact_derived_counts=args.exact_derived_counts,
         exact_table_counts=args.exact_table_counts,
+        blob_reference_debt=args.blob_reference_debt,
     )
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))

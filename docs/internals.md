@@ -499,6 +499,11 @@ The report has a stable top-level shape carrying its `report_version`,
   FTS/source-row drift and the archive can afford the scan.
 - `blob_lease_state` — pending lease count, distinct lease operations,
   oldest `acquired_at`. See the lease/GC concurrency model above.
+- `blob_reference_debt` — skipped by default so routine workload snapshots do
+  not stat every referenced blob path on large archives. Pass
+  `--blob-reference-debt` when diagnosing backup/integrity incidents; the
+  section then reports the exact missing referenced-blob count, bounded hash
+  sample, reference-source counts, and source/index DB path used.
 - `gc_state` — high-water `gc_generations` row, `last_completed_at`,
   total generation count.
 - `fts_trigger_state` — the three expected FTS sync triggers

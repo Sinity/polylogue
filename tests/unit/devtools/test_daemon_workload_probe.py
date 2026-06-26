@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+import devtools.daemon_workload_probe as workload_probe
 from devtools.daemon_workload_probe import (
     REPORT_VERSION,
     UNKNOWN_TABLE_COUNT,
@@ -16,6 +17,7 @@ from devtools.daemon_workload_probe import (
     probe,
 )
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.storage.blob_integrity import BlobReferenceDebtReport
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
     add_convergence_debt,
@@ -129,6 +131,45 @@ def test_daemon_workload_probe_reports_attempts_and_plan_shape(tmp_path: Path) -
     assert fts_plan["hazards"] == []
     assert not any(item.startswith("unavailable:") for item in fts_plan["plan"])
     assert any("blocks" in item for item in fts_plan["plan"])
+
+
+def test_daemon_workload_probe_reports_blob_reference_debt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = tmp_path / "archive.sqlite"
+    source = tmp_path / "session.jsonl"
+    _seed_minimal_archive(db, source)
+
+    def fake_scan(path: Path) -> BlobReferenceDebtReport:
+        assert path == tmp_path / "source.db"
+        return BlobReferenceDebtReport(
+            total_references_seen=3,
+            missing_referenced_blobs=2,
+            sample=("a" * 64, "b" * 64),
+            reference_sources={"raw_sessions": 1, "blob_refs": 2},
+        )
+
+    monkeypatch.setattr(workload_probe, "scan_blob_reference_debt", fake_scan)
+
+    default_payload = probe(db)
+    assert default_payload["blob_reference_debt"] == {
+        "checked": False,
+        "ok": True,
+        "reason": "skipped; pass --blob-reference-debt to scan referenced blob files",
+    }
+
+    payload = probe(db, blob_reference_debt=True)
+
+    assert payload["blob_reference_debt"] == {
+        "checked": True,
+        "db_path": str(tmp_path / "source.db"),
+        "ok": False,
+        "total_references_seen": 3,
+        "missing_referenced_blobs": 2,
+        "sample": ["a" * 64, "b" * 64],
+        "reference_sources": {"raw_sessions": 1, "blob_refs": 2},
+    }
 
 
 def test_daemon_workload_probe_defaults_to_estimated_table_counts(tmp_path: Path) -> None:

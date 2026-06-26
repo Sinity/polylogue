@@ -33,6 +33,11 @@ def diagnostics_group() -> None:
     help="Run exact derived-readiness reconciliation counts. This can scan large archive tables.",
 )
 @click.option(
+    "--blob-reference-debt",
+    is_flag=True,
+    help="Count missing referenced blob files exactly. This can stat many blob paths on large archives.",
+)
+@click.option(
     "--compare",
     nargs=2,
     type=click.Path(path_type=Path),
@@ -46,6 +51,7 @@ def workload_command(
     limit: int,
     integrity_check: bool,
     exact_derived_counts: bool,
+    blob_reference_debt: bool,
     compare: tuple[Path, Path] | None,
 ) -> None:
     """Inspect daemon ingest workload, convergence debt, and hot query plans."""
@@ -61,6 +67,8 @@ def workload_command(
         argv.append("--integrity-check")
     if exact_derived_counts:
         argv.append("--exact-derived-counts")
+    if blob_reference_debt:
+        argv.append("--blob-reference-debt")
     if compare is not None:
         before, after = compare
         argv.extend(("--compare", str(before), str(after)))

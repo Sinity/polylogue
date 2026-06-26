@@ -402,6 +402,14 @@ identical content is automatically deduplicated. For backup:
 - For large archives, use restic or rsync targeting the `blob/` directory
 - Blobs are write-once, read-many — incremental backup tools work well
 
+When a backup sees source rows or attachment references whose content-addressed
+blob file is absent, it keeps the backup usable but records the debt instead of
+silently hiding it. The warning names the total missing referenced blobs and
+the backup directory includes `blob-reference-debt.json` with the exact count,
+bounded hash sample, and reference-source counts. Treat that report as
+read-only recovery evidence: restore missing blob files from an older backup or
+re-ingest the affected raw sources before deleting any source/blob/link rows.
+
 ### Vacuum Guidance
 
 SQLite `VACUUM` rebuilds the database file, reclaiming free pages. It

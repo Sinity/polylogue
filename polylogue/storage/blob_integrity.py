@@ -87,6 +87,35 @@ class BlobIntegrityReport:
         }
 
 
+@dataclass(frozen=True)
+class BlobReferenceDebtReport:
+    """Exact, read-only debt report for DB references with no blob file.
+
+    Unlike :func:`scan_blob_integrity`, this path does not walk every blob file
+    and does not re-hash blob contents. It checks every referenced blob hash
+    from source evidence, counts the missing files exactly, and keeps only a
+    bounded sample for operator output.
+    """
+
+    total_references_seen: int
+    missing_referenced_blobs: int
+    sample: tuple[str, ...]
+    reference_sources: dict[str, int]
+
+    @property
+    def ok(self) -> bool:
+        return self.missing_referenced_blobs == 0
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "ok": self.ok,
+            "total_references_seen": self.total_references_seen,
+            "missing_referenced_blobs": self.missing_referenced_blobs,
+            "sample": list(self.sample),
+            "reference_sources": dict(self.reference_sources),
+        }
+
+
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM sqlite_schema WHERE type='table' AND name = ? LIMIT 1",
@@ -107,14 +136,26 @@ def _blob_hash_text(value: object) -> str | None:
 
 
 def _archive_source_blob_hashes(conn: sqlite3.Connection) -> list[str]:
+    hashes_by_table = _archive_source_blob_hashes_by_table(conn)
     hashes: set[str] = set()
+    for table_hashes in hashes_by_table.values():
+        hashes.update(table_hashes)
+    return sorted(hashes)
+
+
+def _archive_source_blob_hashes_by_table(conn: sqlite3.Connection) -> dict[str, list[str]]:
+    hashes_by_table: dict[str, list[str]] = {}
     if _table_exists(conn, "raw_sessions"):
         rows = conn.execute("SELECT blob_hash FROM raw_sessions").fetchall()
-        hashes.update(hash_text for row in rows if (hash_text := _blob_hash_text(row[0])) is not None)
+        raw_hashes = {hash_text for row in rows if (hash_text := _blob_hash_text(row[0])) is not None}
+        if raw_hashes:
+            hashes_by_table["raw_sessions"] = sorted(raw_hashes)
     if _table_exists(conn, "blob_refs"):
         rows = conn.execute("SELECT blob_hash FROM blob_refs").fetchall()
-        hashes.update(hash_text for row in rows if (hash_text := _blob_hash_text(row[0])) is not None)
-    return sorted(hashes)
+        ref_hashes = {hash_text for row in rows if (hash_text := _blob_hash_text(row[0])) is not None}
+        if ref_hashes:
+            hashes_by_table["blob_refs"] = sorted(ref_hashes)
+    return hashes_by_table
 
 
 def _raw_session_hashes(conn: sqlite3.Connection) -> list[str]:
@@ -146,6 +187,36 @@ def _referenced_blob_hashes(db_path: Path, conn: sqlite3.Connection) -> list[str
             pass
 
     return _raw_session_hashes(conn)
+
+
+def _reference_source_counts(db_path: Path, conn: sqlite3.Connection) -> dict[str, int]:
+    direct = _archive_source_blob_hashes_by_table(conn)
+    if direct:
+        return {table: len(hashes) for table, hashes in direct.items()}
+
+    source_db = db_path.with_name("source.db")
+    if source_db != db_path and source_db.exists():
+        try:
+            source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+            try:
+                source = _archive_source_blob_hashes_by_table(source_conn)
+                if source:
+                    return {f"source.db:{table}": len(hashes) for table, hashes in source.items()}
+            finally:
+                source_conn.close()
+        except sqlite3.Error:
+            pass
+
+    fallback_count = len(_raw_session_hashes(conn))
+    return {"raw_sessions.raw_id": fallback_count} if fallback_count else {}
+
+
+def referenced_blob_hashes(db_path: str | Path) -> list[str]:
+    """Return distinct blob hashes referenced by archive source evidence."""
+
+    resolved_db_path = Path(db_path)
+    with sqlite3.connect(f"file:{resolved_db_path}?mode=ro", uri=True) as conn:
+        return _referenced_blob_hashes(resolved_db_path, conn)
 
 
 def _pending_blob_leases(conn: sqlite3.Connection) -> dict[str, int]:
@@ -181,6 +252,37 @@ def _blob_size(store: BlobStore, blob_hash: str) -> int:
         return int(store.blob_path(blob_hash).stat().st_size)
     except (OSError, ValueError):
         return 0
+
+
+def scan_blob_reference_debt(
+    db_path: str | Path,
+    *,
+    store: BlobStore | None = None,
+    sample_size: int = _MAX_FINDING_SAMPLE,
+) -> BlobReferenceDebtReport:
+    """Count missing referenced blob files exactly without mutating state."""
+
+    blob_store = store if store is not None else get_blob_store()
+    resolved_db_path = Path(db_path)
+    with sqlite3.connect(f"file:{resolved_db_path}?mode=ro", uri=True) as conn:
+        referenced = _referenced_blob_hashes(resolved_db_path, conn)
+        reference_sources = _reference_source_counts(resolved_db_path, conn)
+
+    missing_count = 0
+    sample: list[str] = []
+    sample_limit = max(0, sample_size)
+    for blob_hash in referenced:
+        if blob_store.exists(blob_hash):
+            continue
+        missing_count += 1
+        if len(sample) < sample_limit:
+            sample.append(blob_hash)
+    return BlobReferenceDebtReport(
+        total_references_seen=len(referenced),
+        missing_referenced_blobs=missing_count,
+        sample=tuple(sample),
+        reference_sources=reference_sources,
+    )
 
 
 def scan_blob_integrity(
@@ -289,5 +391,8 @@ __all__ = [
     "BlobIntegrityFinding",
     "BlobIntegrityKind",
     "BlobIntegrityReport",
+    "BlobReferenceDebtReport",
+    "referenced_blob_hashes",
+    "scan_blob_reference_debt",
     "scan_blob_integrity",
 ]
