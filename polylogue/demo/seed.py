@@ -11,7 +11,7 @@ from pathlib import Path
 
 from polylogue.config import Source
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
-from polylogue.scenarios import build_demo_corpus_specs, seed_demo_user_overlays
+from polylogue.scenarios import DEMO_CLAUDE_CODE_SESSION_ID, build_demo_corpus_specs, seed_demo_user_overlays
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 
@@ -71,6 +71,50 @@ def _materialize_session_insights(archive_root: Path, session_ids: list[str]) ->
         conn.close()
 
 
+# Deterministic per-assistant-message Opus usage injected into the demo
+# claude-code session so cost surfaces (`analyze --postmortem` top session,
+# cost rollups) render a believable bundle on the demo archive instead of $0.
+# The demo corpus is fully synthetic; the synthetic generator does not emit
+# token usage, and adding it there would ripple every synthetic test snapshot.
+# Scoping the injection to the one demo session keeps it ripple-free.
+_DEMO_USAGE_MODEL = "claude-opus-4-8"
+_DEMO_USAGE = {
+    "input_tokens": 8000,
+    "output_tokens": 1500,
+    "cache_read_tokens": 40000,
+    "cache_write_tokens": 6000,
+}
+
+
+def _inject_demo_session_usage(archive_root: Path) -> None:
+    """Set deterministic Opus token usage on the demo claude-code assistant turns.
+
+    Cost is materialized into ``session_profiles.total_cost_usd`` from the
+    per-message token columns, so this must run *before*
+    ``_materialize_session_insights``. Demo-scoped by session id: no synthetic
+    generator change, no test-snapshot ripple.
+    """
+
+    conn = sqlite3.connect(archive_root / "index.db")
+    try:
+        conn.execute(
+            "UPDATE messages SET model_name = ?, input_tokens = ?, output_tokens = ?, "
+            "cache_read_tokens = ?, cache_write_tokens = ? "
+            "WHERE session_id = ? AND role = 'assistant'",
+            (
+                _DEMO_USAGE_MODEL,
+                _DEMO_USAGE["input_tokens"],
+                _DEMO_USAGE["output_tokens"],
+                _DEMO_USAGE["cache_read_tokens"],
+                _DEMO_USAGE["cache_write_tokens"],
+                DEMO_CLAUDE_CODE_SESSION_ID,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def demo_source_specs(source_root: Path) -> list[Source]:
     """Return relative source specs for the materialized demo world."""
 
@@ -94,6 +138,7 @@ async def seed_demo_archive(
         result = await parse_sources_archive(archive_root, demo_source_specs(source_root))
 
     session_ids = sorted(result.processed_ids)
+    _inject_demo_session_usage(archive_root)
     _materialize_session_insights(archive_root, session_ids)
 
     overlay = seed_demo_user_overlays(archive_root) if with_overlays else None
