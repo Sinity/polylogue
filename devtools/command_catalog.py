@@ -184,6 +184,18 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools render pages", "devtools render pages --check", "devtools render pages --serve"),
     ),
     CommandSpec(
+        "render visual-tapes",
+        "generated surfaces",
+        "Write VHS tape files and optionally capture GIFs for the default visual evidence specs.",
+        "devtools.render_visual_tapes",
+        use_when="Regenerate the first-contact demo screencast media from the committed tape specs.",
+        examples=(
+            "devtools render visual-tapes",
+            "devtools render visual-tapes --capture",
+            "devtools render visual-tapes --check",
+        ),
+    ),
+    CommandSpec(
         "verify",
         "verification",
         "Run the local verification baseline before pushing or creating a PR.",
