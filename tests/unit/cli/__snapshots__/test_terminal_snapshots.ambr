@@ -10,15 +10,16 @@
                                     maintenance repairs
     --cleanup                       Run destructive archive cleanup for orphaned
                                     or empty persisted data
-    --target [session_insights|dangling_fts|message_type_backfill|message_embeddin
-  gs|wal_checkpoint|orphaned_messages|empty_sessions|orphaned_attachments|orphaned
-  _blobs|superseded_raw_snapshots]
+    --target [session_insights|dangling_fts|message_type_backfill|raw_materializat
+  ion|message_embeddings|wal_checkpoint|orphaned_messages|empty_sessions|orphaned_
+  attachments|orphaned_blobs|superseded_raw_snapshots]
                                     Limit maintenance to named targets such as
                                     session_insights, dangling_fts,
-                                    message_type_backfill, message_embeddings,
-                                    wal_checkpoint, orphaned_messages,
-                                    empty_sessions, orphaned_attachments,
-                                    orphaned_blobs, or superseded_raw_snapshots
+                                    message_type_backfill, raw_materialization,
+                                    message_embeddings, wal_checkpoint,
+                                    orphaned_messages, empty_sessions,
+                                    orphaned_attachments, orphaned_blobs, or
+                                    superseded_raw_snapshots
     --preview                       Preview maintenance without executing
                                     (requires --repair or --cleanup)
     --vacuum                        Reclaim unused space after maintenance
@@ -282,7 +283,7 @@
         routed your invocation.
     Product roles:
         Search<PATH>:   find QUERY then read|select|mark
-  |analyze|delete|continue
+  |analyze|delete|continue; facets
         Setup<PATH>:  config, init, import, demo, tuto
   rial
         Reader<PATH>:           dashboard --status, dashboard
@@ -302,6 +303,7 @@
         polylogue find id:abc then read --view messages
         polylogue find id:abc then read --to browser
         polylogue find id:abc then analyze --facets
+        polylogue facets --query "vector store" --format json
         polylogue find "urgent" then delete --dry-run
         polylogue find 'repo:polylogue' then read --all --form
   at ndjson
@@ -525,11 +527,12 @@
   r mark candidates.
       analyze   Analyze matched sessions and named facet famil
   ies.
+      facets    Show global or scoped archive facet families.
       delete    Delete matched sessions.
       continue  Compile a successor-agent continuation report.
-      Use `find QUERY then ACTION`; root action words act on t
-  he query result
-      set.
+      Use `find QUERY then ACTION`; `facets` is the direct arc
+  hive aggregate
+      command.
     Setup, import, and evidence:
       config    Show resolved Polylogue configuration with...
       init      Detect chat sources and write a starter polylo
@@ -566,7 +569,7 @@
         `polylogue --diagnose <args>` to have the parser explain how it
         routed your invocation.
     Product roles:
-        Search<PATH>:   find QUERY then read|select|mark|analyze|delete|continue
+        Search<PATH>:   find QUERY then read|select|mark|analyze|delete|continue; facets
         Setup<PATH>:  config, init, import, demo, tutorial
         Reader<PATH>:           dashboard --status, dashboard
         Operations:           status (same as polylogue ops status), ops diagnostics, ops maintenance, ops backup
@@ -580,6 +583,7 @@
         polylogue find id:abc then read --view messages
         polylogue find id:abc then read --to browser
         polylogue find id:abc then analyze --facets
+        polylogue facets --query "vector store" --format json
         polylogue find "urgent" then delete --dry-run
         polylogue find 'repo:polylogue' then read --all --format ndjson
     Combined filters:
@@ -716,10 +720,11 @@
       select    Select one matched session or print candidate identities.
       mark      Mark selected sessions; review candidates under mark candidates.
       analyze   Analyze matched sessions and named facet families.
+      facets    Show global or scoped archive facet families.
       delete    Delete matched sessions.
       continue  Compile a successor-agent continuation report.
-      Use `find QUERY then ACTION`; root action words act on the query result
-      set.
+      Use `find QUERY then ACTION`; `facets` is the direct archive aggregate
+      command.
     Setup, import, and evidence:
       config    Show resolved Polylogue configuration with...
       init      Detect chat sources and write a starter polylogue.toml.
