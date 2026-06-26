@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.export.sanitize import (
+    REDACTED_EMAIL,
     REDACTED_PATH_PREFIX,
     REDACTED_SECRET,
     SanitizedExportError,
@@ -200,3 +201,51 @@ def test_gate_independently_catches_raw_root_and_tilde(tmp_path: Path) -> None:
     assert verdict.ok is False
     assert verdict.absolute_path_leaks
     assert verdict.home_path_leaks
+
+
+def test_windows_path_is_redacted_and_gated() -> None:
+    """Windows drive-letter and UNC paths must not survive (#2434)."""
+    rows = [{"title": r"opened C:\Users\me\Secret\plans.md", "unc": r"see \\fileserver\share\creds.txt"}]
+    sanitized, report = sanitize_rows(rows, config=PrivacyConfig(level="standard"))
+    title = sanitized[0]["title"]
+    unc = sanitized[0]["unc"]
+    assert isinstance(title, str) and isinstance(unc, str)
+    assert "C:\\Users" not in title
+    assert "Secret" not in title
+    assert "\\\\fileserver" not in unc
+    assert REDACTED_PATH_PREFIX in title
+    assert report.rejection_reasons.get("windows_path", 0) >= 1
+
+
+def test_gate_independently_catches_raw_windows_path(tmp_path: Path) -> None:
+    """The fail-closed gate must flag a raw Windows path."""
+    (tmp_path / "dataset.jsonl").write_text(
+        json.dumps({"x": r"C:\Users\me\secret\notes.md"}) + "\n",
+        encoding="utf-8",
+    )
+    verdict = verify_sanitized_export(tmp_path, home="/home/me")
+    assert verdict.ok is False
+    assert verdict.absolute_path_leaks
+
+
+def test_email_is_redacted_and_gated() -> None:
+    """Email addresses (PII) must not survive (#2434)."""
+    rows = [{"note": "reach me at Alice.Doe+work@example.co.uk for review"}]
+    sanitized, report = sanitize_rows(rows, config=PrivacyConfig(level="standard"))
+    note = sanitized[0]["note"]
+    assert isinstance(note, str)
+    assert "@example.co.uk" not in note
+    assert "Alice.Doe" not in note
+    assert REDACTED_EMAIL in note
+    assert report.rejection_reasons.get("email", 0) >= 1
+
+
+def test_gate_independently_catches_raw_email(tmp_path: Path) -> None:
+    """The fail-closed gate must flag a raw email address."""
+    (tmp_path / "dataset.jsonl").write_text(
+        json.dumps({"contact": "bob@example.org"}) + "\n",
+        encoding="utf-8",
+    )
+    verdict = verify_sanitized_export(tmp_path, home="/nonexistent-home")
+    assert verdict.ok is False
+    assert verdict.secret_leaks

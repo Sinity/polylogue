@@ -39,6 +39,7 @@ SANITIZED_EXPORT_BUNDLE_VERSION = 1
 
 REDACTED_PATH_PREFIX = "<redacted-path>"
 REDACTED_SECRET = "<redacted-secret>"
+REDACTED_EMAIL = "<redacted-email>"
 
 DATASET_FILENAME = "dataset.jsonl"
 MANIFEST_FILENAME = "redaction-manifest.json"
@@ -64,6 +65,14 @@ _TILDE_PATH_RE = re.compile(r"~/(?:[A-Za-z0-9._\- ]+/)*[A-Za-z0-9._\- ]*[A-Za-z0
 _KNOWN_ROOT_PATH_RE = re.compile(
     r"/(?:home|Users|root|tmp|var|etc|opt|mnt|media|srv|usr|private|data|realm|persist)(?![A-Za-z0-9._\-/])"
 )
+# Windows-style filesystem paths: a drive-letter root (``C:\Users\me\...``) or a
+# UNC share (``\\server\share\...``). Backslash-separated, so there is no overlap
+# with the POSIX ``/``-based path regexes above. Matching runs of non-space,
+# non-quote characters keeps a whole path together; over-matching is the safe
+# direction for a sanitizer.
+_WINDOWS_PATH_RE = re.compile(r"(?:[A-Za-z]:\\|\\\\)[^\s\"'<>|]*")
+# Email addresses (PII). Conservative shape: local@domain.tld.
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 # Candidate opaque token for high-entropy detection.
 _HIGH_ENTROPY_CANDIDATE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{9,}")
 
@@ -157,9 +166,17 @@ def _redact_string(value: str) -> tuple[str, list[tuple[str, str]]]:
         reasons.append(("absolute_path", "high"))
         return REDACTED_PATH_PREFIX
 
+    def _winpath_repl(match: re.Match[str]) -> str:
+        reasons.append(("windows_path", "high"))
+        return REDACTED_PATH_PREFIX
+
     def _secret_repl(match: re.Match[str]) -> str:
         reasons.append(("secret_pattern", "high"))
         return REDACTED_SECRET
+
+    def _email_repl(match: re.Match[str]) -> str:
+        reasons.append(("email", "high"))
+        return REDACTED_EMAIL
 
     def _entropy_repl(match: re.Match[str]) -> str:
         token = match.group(0)
@@ -171,6 +188,10 @@ def _redact_string(value: str) -> tuple[str, list[tuple[str, str]]]:
     result = _ABS_PATH_RE.sub(_path_repl, value)
     result = _TILDE_PATH_RE.sub(_home_repl, result)
     result = _KNOWN_ROOT_PATH_RE.sub(_known_root_repl, result)
+    result = _WINDOWS_PATH_RE.sub(_winpath_repl, result)
+    # Emails before secret/entropy passes so the address is replaced as one unit
+    # rather than partly mangled by the opaque-token detector.
+    result = _EMAIL_RE.sub(_email_repl, result)
     for pattern in _SECRET_VALUE_PATTERNS:
         result = pattern.sub(_secret_repl, result)
     result = _HIGH_ENTROPY_CANDIDATE_RE.sub(_entropy_repl, result)
@@ -253,6 +274,7 @@ def _scan_text(text: str, *, home: str) -> tuple[list[str], list[str], list[str]
     abs_leaks = sorted(
         {match.group(0) for match in _ABS_PATH_RE.finditer(text)}
         | {match.group(0) for match in _KNOWN_ROOT_PATH_RE.finditer(text)}
+        | {match.group(0) for match in _WINDOWS_PATH_RE.finditer(text)}
     )
     home_leaks: list[str] = [match.group(0) for match in _TILDE_PATH_RE.finditer(text)]
     normalized_home = home.rstrip("/")
@@ -261,6 +283,7 @@ def _scan_text(text: str, *, home: str) -> tuple[list[str], list[str], list[str]
     secret_leaks: list[str] = []
     for pattern in _SECRET_VALUE_PATTERNS:
         secret_leaks.extend(match.group(0) for match in pattern.finditer(text))
+    secret_leaks.extend(match.group(0) for match in _EMAIL_RE.finditer(text))
     return abs_leaks, sorted(set(home_leaks)), sorted(set(secret_leaks))
 
 
