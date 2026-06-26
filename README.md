@@ -24,7 +24,8 @@ work.**
 >   vocabulary is translated in the [glossary](docs/glossary.md).
 
 It ingests the session files that ChatGPT, Claude (web and Claude Code),
-Codex, Gemini, Google Drive exports, and Antigravity already leave on disk,
+Codex, Gemini (Gemini CLI and Google Drive exports), Antigravity, and Hermes
+agents already leave on disk,
 normalizes them into a content-addressed SQLite archive, and gives you
 full-text and semantic search, materialized session insights, cost rollups,
 git-correlation, a daemon HTTP reader, and an MCP bridge — all running on your
@@ -90,6 +91,16 @@ Polylogue is that substrate, and a cockpit over it:
   phases, threads, tag rollups, and cost rollups are materialized into the
   archive so the CLI, the HTTP reader, the MCP bridge, and the Python API all
   see the same numbers.
+- **Lineage & topology.** Continuations, forks, sidechains, and subagent runs
+  are linked by typed topology edges and rolled up to one *logical session*, so
+  you can ask which branch burned the time and which session is the real root
+  worth turning into a skill. Exposed through `get_session_topology`,
+  `get_logical_session`, and `get_session_tree`.
+- **Recovery & resume.** Polylogue assembles a recovery work-packet and resume
+  brief from evidence — what an interrupted agent session was doing, what it
+  touched, and what to pick up next — and surfaces abandoned or resumable
+  sessions through `find_resume_candidates`, `find_abandoned_sessions`,
+  `get_resume_brief`, `get_recovery_report`, and `get_recovery_work_packet`.
 - **Built to be inspected.** Schema is fresh-first (no in-place upgrade chain
   to guess at), blob storage is content-addressed, and the daemon exposes
   health checks and Prometheus metrics.
@@ -196,14 +207,22 @@ search plus the verbs and maintenance commands above.
 that serves live archive search, session rendering, and insight views. It
 uses the same query layer as the CLI, plus health checks
 (`polylogued health`) and a Prometheus `/metrics` endpoint. See
-[docs/daemon.md](docs/daemon.md).
+[docs/daemon.md](docs/daemon.md). Agent runs project into
+OpenTelemetry-shaped traces too: terminal query-unit rows map to spans, log
+records, and Polylogue refs via the outbound OTel projection, so an external
+observability tool can read session/cost/tool structure without copying message
+text or local paths.
 
 ### MCP bridge
 
 `polylogue-mcp --role read` exposes the archive as a Model Context Protocol
 server so AI assistants can search, list, and retrieve sessions, insights, and
 context packs from their own sessions. See
-[docs/mcp-integration.md](docs/mcp-integration.md).
+[docs/mcp-integration.md](docs/mcp-integration.md). It also composes a context
+preamble from the archive — recent lineage, project state, and resume guidance
+for a seed session — so a coding agent can inject prior memory at SessionStart
+via `compose_context_preamble` and `compile_context` (the same payload backs
+`read --view context`).
 
 ### Browser capture
 
