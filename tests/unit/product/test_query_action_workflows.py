@@ -126,7 +126,7 @@ def test_shared_action_affordance_payload_uses_grouped_contract_fields() -> None
     assert read.target == "selection"
     assert read.input.unit == "query_result_set"
     assert read.execution.cardinality_state == "explicit_multi"
-    assert read.execution.guards == ("single_match_unless_all", "file_destination_requires_out")
+    assert read.execution.guards == ("single_match_unless_all_or_first", "file_destination_requires_out")
     assert "browser" in read.output.destination_support
     assert read.output.format_support == ("human", "json", "ndjson")
     assert read.safety.safety_level == "safe"
