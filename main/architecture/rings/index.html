@@ -444,7 +444,10 @@ archive/query substrate rather than owning their own stores.</p>
 <ul>
 <li>CLI: <code>polylogue/cli/</code></li>
 <li>Python API: <code>polylogue/api/__init__.py</code></li>
-<li>MCP server: <code>polylogue/mcp/</code></li>
+<li>MCP server: <code>polylogue/mcp/</code> — exposes the distilled, agent-preferred
+surfaces (<code>get_postmortem_bundle</code>, fail-closed <code>export_sanitized</code>) alongside
+search/list/insight tools; the raw unredacted <code>export_session</code> /
+<code>export_query_results</code> exporters stay behind the admin role (#2436).</li>
 <li>daemon web reader: <code>polylogue/daemon/web_shell.py</code></li>
 <li>dashboard and TUI: <code>polylogue/ui/</code></li>
 <li>renderers: <code>polylogue/rendering/</code></li>
