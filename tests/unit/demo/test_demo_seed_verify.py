@@ -80,3 +80,27 @@ async def test_demo_verify_can_skip_daemon_source_path_leak_posture(tmp_path: Pa
     assert "raw source paths contain absolute paths" in "\n".join(strict.problems)
     assert daemon_wait.ok is True
     assert daemon_wait.absolute_path_leaks == ()
+
+
+@pytest.mark.asyncio
+async def test_seed_injects_demo_cost_for_postmortem(tmp_path: Path) -> None:
+    """The demo claude-code session must carry usage so the postmortem blade
+    renders real cost + token lanes (not $0) on the demo archive. Guards #2196
+    slice 2 and the SessionProfile cost/token round-trip."""
+
+    from polylogue.scenarios import DEMO_CLAUDE_CODE_SESSION_ID
+
+    archive_root = tmp_path / "archive"
+    await seed_demo_archive(archive_root, force=True, with_overlays=True)
+
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        row = conn.execute(
+            "SELECT total_cost_usd, total_input_tokens, total_output_tokens FROM session_profiles WHERE session_id = ?",
+            (DEMO_CLAUDE_CODE_SESSION_ID,),
+        ).fetchone()
+
+    assert row is not None
+    total_cost_usd, total_input_tokens, total_output_tokens = row
+    assert total_cost_usd > 0
+    assert total_input_tokens > 0
+    assert total_output_tokens > 0

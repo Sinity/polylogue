@@ -309,6 +309,17 @@ class SessionProfile:
             ),
             tool_calls_per_minute=coerce_float(payload.get("tool_calls_per_minute"), 0.0),
             timing_provenance=optional_string(payload.get("timing_provenance")) or "sort_key_estimated",
+            # Cost/token attribution — present in to_dict() and the record
+            # payload but previously dropped here, so a round-tripped or
+            # batch-hydrated profile reported zero tokens (and lost credit/
+            # provenance/per-model cost) even when the columns were populated.
+            total_input_tokens=coerce_int(payload.get("total_input_tokens"), 0),
+            total_output_tokens=coerce_int(payload.get("total_output_tokens"), 0),
+            total_cache_read_tokens=coerce_int(payload.get("total_cache_read_tokens"), 0),
+            total_cache_write_tokens=coerce_int(payload.get("total_cache_write_tokens"), 0),
+            total_credit_cost=coerce_float(payload.get("total_credit_cost"), 0.0),
+            cost_provenance=optional_string(payload.get("cost_provenance")) or "unknown",
+            per_model_cost_json=optional_string(payload.get("per_model_cost_json")) or "{}",
         )
 
 
