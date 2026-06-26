@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from contextlib import suppress
 from hashlib import sha256
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from polylogue.core.user_state_targets import MARK_TYPE_NAMES, TARGET_SESSION, is_mark_type_supported
 from polylogue.mcp.archive_support import blackboard_note_payload
@@ -24,6 +24,7 @@ from polylogue.mcp.payloads import (
     MCPUserMarkPayload,
     MutationResultPayload,
 )
+from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -867,6 +868,69 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             )
 
         return await hooks.async_safe_call("clear_corrections", run)
+
+    @mcp.tool()
+    async def export_sanitized(
+        output_path: str,
+        query: str | None = None,
+        origin: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        tag: str | None = None,
+        repo: str | None = None,
+        privacy_level: str = "standard",
+        with_postmortem: bool = False,
+        overwrite: bool = False,
+        limit: int | None = None,
+    ) -> str:
+        """Write a fail-closed sanitized shareable export bundle (#2381).
+
+        Write-shaped delegate to :meth:`Polylogue.sanitized_export`: resolves
+        the matched scope, redacts session-level metadata rows, writes the
+        bundle (``dataset.jsonl`` + ``redaction-manifest.json`` + ``README.md``,
+        plus a sanitized ``postmortem.json`` when requested) to *output_path*,
+        and runs an independent leak-check gate over the written files. If any
+        private absolute path or known secret survives, the publish is **refused**
+        and a typed error envelope is returned — nothing is written that leaks.
+
+        Redaction is mandatory on this surface by construction: there is no
+        disable affordance. The unredacted ``export_session`` /
+        ``export_query_results`` tools remain admin-gated for raw content.
+        """
+        from polylogue.export.sanitize import SanitizedExportError, SanitizedExportRequest
+
+        async def run() -> str:
+            from pathlib import Path
+
+            poly = hooks.get_polylogue()
+            spec = MCPSessionQueryRequest(
+                query=query,
+                origin=origin,
+                since=since,
+                until=until,
+                tag=tag,
+                repo=repo,
+            ).build_spec(hooks.clamp_limit)
+            try:
+                request = SanitizedExportRequest(
+                    output_path=Path(output_path),
+                    privacy_level=cast(Any, privacy_level),
+                    with_postmortem=with_postmortem,
+                    overwrite=overwrite,
+                    # Redacted-only by construction — no MCP redaction-disable path.
+                    redact=True,
+                    acknowledge_unredacted=False,
+                )
+                result = await poly.sanitized_export(spec, request, limit=limit)
+            except SanitizedExportError as exc:
+                return hooks.error_json(
+                    str(exc),
+                    code="sanitized_export_refused",
+                    tool="export_sanitized",
+                )
+            return hooks.json_payload(result, exclude_none=True)
+
+        return await hooks.async_safe_call("export_sanitized", run)
 
 
 __all__ = ["register_mutation_tools"]
