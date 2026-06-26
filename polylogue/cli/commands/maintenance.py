@@ -26,6 +26,12 @@ from polylogue.maintenance.targets import MAINTENANCE_TARGET_NAMES, build_mainte
 from polylogue.operations.archive_debt import _source_path_native_id_candidates
 from polylogue.paths import archive_file_set_root_for_paths, archive_root, blob_store_root, db_path, render_root
 from polylogue.storage.blob_gc import read_gc_history, run_blob_gc_report
+from polylogue.storage.blob_integrity import (
+    BlobReferenceDebtClassificationReport,
+    BlobReferenceDebtRestoreReport,
+    classify_blob_reference_debt,
+    restore_direct_blob_reference_debt,
+)
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.archive_init import (
     ArchiveInitBlockedError,
@@ -1173,6 +1179,179 @@ def blob_gc_command(max_batch: int, yes: bool, output_format: str) -> None:
             click.echo(f"Generation: {result.generation_id}")
 
 
+@maintenance_group.command("blob-reference-debt")
+@click.option(
+    "--sample-limit",
+    type=int,
+    default=30,
+    show_default=True,
+    help="Maximum number of representative missing-blob samples to include.",
+)
+@click.option(
+    "--group-limit",
+    type=int,
+    default=20,
+    show_default=True,
+    help="Maximum number of grouped classifications to include.",
+)
+@click.option(
+    "--output-format",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+    help="Output format.",
+)
+def blob_reference_debt_command(sample_limit: int, group_limit: int, output_format: str) -> None:
+    """Classify missing referenced blobs without mutating the archive."""
+    report = classify_blob_reference_debt(
+        archive_root() / "source.db",
+        sample_size=sample_limit,
+        group_limit=group_limit,
+    )
+    payload = {
+        "mode": "blob_reference_debt",
+        "mutates": False,
+        **report.to_dict(),
+    }
+
+    if output_format == "json":
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    _render_blob_reference_debt_plain(report)
+
+
+def _render_blob_reference_debt_plain(report: BlobReferenceDebtClassificationReport) -> None:
+    click.echo("Blob reference debt")
+    click.echo(f"Source DB:    {report.source_db}")
+    click.echo(f"Blob root:    {report.blob_root}")
+    click.echo(f"References:   {report.reference_rows:,} row(s), {report.distinct_referenced_blobs:,} distinct blob(s)")
+    click.echo(f"Missing:      {report.missing_distinct_blobs:,} distinct blob(s)")
+    click.echo(f"Status:       {'ok' if report.ok else 'debt-present'}")
+
+    def _render_counts(label: str, counts: dict[str, int]) -> None:
+        if not counts:
+            return
+        rendered = ", ".join(f"{key}={value:,}" for key, value in sorted(counts.items()))
+        click.echo(f"{label}: {rendered}")
+
+    _render_counts("By table    ", report.missing_by_table)
+    _render_counts("By ref type ", report.missing_by_ref_type)
+    _render_counts("By origin   ", report.missing_by_origin)
+    _render_counts("Ref-id join ", report.missing_ref_id_join)
+    _render_counts("Source paths", report.missing_source_path_presence)
+    _render_counts("Validation  ", report.missing_validation_status)
+    _render_counts("Parse errors", report.missing_parse_error)
+
+    if report.top_groups:
+        click.echo("Top groups:")
+        for group in report.top_groups:
+            tables_value = group.get("tables", ())
+            ref_types_value = group.get("ref_types", ())
+            origins_value = group.get("origins", ())
+            count_value = group.get("count", 0)
+            tables = ",".join(str(item) for item in tables_value) if isinstance(tables_value, list | tuple) else ""
+            ref_types = (
+                ",".join(str(item) for item in ref_types_value) if isinstance(ref_types_value, list | tuple) else ""
+            )
+            origins = ",".join(str(item) for item in origins_value) if isinstance(origins_value, list | tuple) else ""
+            count = count_value if isinstance(count_value, int) else 0
+            click.echo(f"  {count:>8,}  tables={tables} ref_types={ref_types} origins={origins}")
+
+    if report.samples:
+        click.echo("Samples:")
+        for sample in report.samples[:5]:
+            source = sample.sample_source_path or "(none)"
+            origin = ",".join(sample.origins) if sample.origins else "(none)"
+            click.echo(
+                f"  {sample.blob_hash} origin={origin} source_available={sample.sample_source_available} {source}"
+            )
+
+
+@maintenance_group.command("blob-reference-restore-direct")
+@click.option(
+    "--max-count",
+    type=int,
+    default=None,
+    help="Maximum number of direct-file candidates to restore or preview.",
+)
+@click.option(
+    "--sample-limit",
+    type=int,
+    default=30,
+    show_default=True,
+    help="Maximum number of representative samples to include.",
+)
+@click.option(
+    "--yes",
+    is_flag=True,
+    help="Write missing blob files. Without this flag the command is a dry-run preview.",
+)
+@click.option(
+    "--output-format",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+    help="Output format.",
+)
+def blob_reference_restore_direct_command(
+    max_count: int | None,
+    sample_limit: int,
+    yes: bool,
+    output_format: str,
+) -> None:
+    """Restore direct-file missing blobs after exact hash verification."""
+    report = restore_direct_blob_reference_debt(
+        archive_root() / "source.db",
+        dry_run=not yes,
+        max_count=max_count,
+        sample_size=sample_limit,
+    )
+    payload = {
+        "mode": "blob_reference_restore_direct",
+        "mutates": bool(yes),
+        **report.to_dict(),
+    }
+
+    if output_format == "json":
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    _render_blob_reference_restore_plain(report)
+
+
+def _render_blob_reference_restore_plain(report: BlobReferenceDebtRestoreReport) -> None:
+    click.echo("Blob reference direct-file restore")
+    click.echo(f"Source DB:    {report.source_db}")
+    click.echo(f"Blob root:    {report.blob_root}")
+    click.echo(f"Mode:         {'dry-run' if report.dry_run else 'apply'}")
+    click.echo(f"Missing:      {report.missing_distinct_blobs:,} distinct blob(s)")
+    click.echo(f"Candidates:   {report.candidate_count:,}")
+    action = "would restore" if report.dry_run else "restored"
+    affected = report.candidate_count if report.dry_run else report.restored_count
+    click.echo(f"Result:       {action} {affected:,} blob(s)")
+    if not report.dry_run:
+        click.echo(f"Bytes:        {report.restored_bytes:,}")
+    click.echo(
+        "Skipped:      "
+        f"existing={report.skipped_existing:,} "
+        f"no_source={report.skipped_no_source_path:,} "
+        f"container_member={report.skipped_container_member:,} "
+        f"source_missing={report.skipped_source_missing:,} "
+        f"size_mismatch={report.skipped_size_mismatch:,} "
+        f"hash_mismatch={report.skipped_hash_mismatch:,} "
+        f"error={report.skipped_error:,}"
+    )
+    if report.samples:
+        click.echo("Samples:")
+        for sample in report.samples[:5]:
+            detail = f" reason={sample.reason}" if sample.reason else ""
+            source = sample.source_path or "(none)"
+            click.echo(f"  {sample.action} {sample.blob_hash}{detail} {source}")
+
+
 @maintenance_group.command("gc-history")
 @click.option(
     "--limit",
@@ -1381,6 +1560,8 @@ def _render_record_plain(record: OperationRecord) -> None:
 
 __all__ = [
     "assertion_export_command",
+    "blob_reference_debt_command",
+    "blob_reference_restore_direct_command",
     "gc_history_command",
     "maintenance_group",
     "plan_command",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -112,6 +113,49 @@ def _seed_missing_blob_cursor(archive_root: Path, source: Path) -> None:
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
     )
+
+
+def _seed_blob_reference_debt(archive_root: Path, source: Path) -> None:
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text('{"title":"recoverable"}\n', encoding="utf-8")
+    missing_raw_hash = b"b" * 32
+    missing_ref_hash = b"c" * 32
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        write_source_raw_session_blob_ref(
+            conn,
+            origin="chatgpt-export",
+            source_path=str(source),
+            source_index=0,
+            blob_hash=missing_raw_hash,
+            blob_size=source.stat().st_size,
+            acquired_at_ms=1,
+            native_id="recoverable-chat",
+        )
+        conn.execute(
+            """
+            INSERT INTO blob_refs (
+                blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (missing_ref_hash, "raw-gone", "raw_payload", str(archive_root / "missing-browser-capture.json"), 10, 1),
+        )
+
+
+def _seed_direct_restorable_blob_ref(archive_root: Path, source: Path) -> str:
+    source.parent.mkdir(parents=True, exist_ok=True)
+    payload = b"direct restorable payload"
+    source.write_bytes(payload)
+    blob_hash = hashlib.sha256(payload).digest()
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO blob_refs (
+                blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (blob_hash, "raw-direct-restore", "raw_payload", str(source), source.stat().st_size, 1),
+        )
+    return blob_hash.hex()
 
 
 def test_archive_plan_cli_reports_tier_targets(cli_workspace: dict[str, Path], cli_runner: CliRunner) -> None:
@@ -377,6 +421,131 @@ def test_blob_gc_cli_yes_deletes_and_records_generation(
     assert len(history) == 1
     assert history[0].generation_id == payload["generation_id"]
     assert history[0].reclaimed_count == 1
+
+
+def test_blob_reference_debt_cli_classifies_missing_refs(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    source = cli_workspace["archive_root"] / "exports" / "recoverable.json"
+    _seed_blob_reference_debt(cli_workspace["archive_root"], source)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "blob-reference-debt",
+            "--sample-limit",
+            "1",
+            "--group-limit",
+            "2",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["mode"] == "blob_reference_debt"
+    assert payload["mutates"] is False
+    assert payload["ok"] is False
+    assert payload["missing_distinct_blobs"] == 2
+    assert payload["missing_by_table"] == {"blob_refs": 2, "raw_sessions": 1}
+    assert payload["missing_by_origin"] == {"(none)": 1, "chatgpt-export": 1}
+    assert payload["missing_ref_id_join"] == {
+        "ref_id_has_raw_session": 1,
+        "ref_id_without_raw_session": 1,
+    }
+    assert payload["missing_source_path_presence"] == {
+        "recoverable_source_path_exists": 1,
+        "source_path_missing": 1,
+    }
+    assert len(payload["samples"]) == 1
+
+
+def test_blob_reference_debt_cli_plain_output_names_read_only_debt(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    source = cli_workspace["archive_root"] / "exports" / "recoverable.json"
+    _seed_blob_reference_debt(cli_workspace["archive_root"], source)
+
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "blob-reference-debt", "--sample-limit", "1"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert "Blob reference debt" in result.output
+    assert "Status:       debt-present" in result.output
+    assert "Source paths: recoverable_source_path_exists=1, source_path_missing=1" in result.output
+
+
+def test_blob_reference_restore_direct_cli_dry_run_keeps_blob_missing(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    source = cli_workspace["archive_root"] / "exports" / "direct.jsonl"
+    blob_hash = _seed_direct_restorable_blob_ref(cli_workspace["archive_root"], source)
+    blob_path = cli_workspace["data_root"] / "polylogue" / "blob" / blob_hash[:2] / blob_hash[2:]
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "blob-reference-restore-direct",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["mode"] == "blob_reference_restore_direct"
+    assert payload["mutates"] is False
+    assert payload["dry_run"] is True
+    assert payload["candidate_count"] == 1
+    assert payload["restored_count"] == 0
+    assert not blob_path.exists()
+
+
+def test_blob_reference_restore_direct_cli_apply_writes_hash_checked_blob(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    source = cli_workspace["archive_root"] / "exports" / "direct.jsonl"
+    blob_hash = _seed_direct_restorable_blob_ref(cli_workspace["archive_root"], source)
+    blob_path = cli_workspace["data_root"] / "polylogue" / "blob" / blob_hash[:2] / blob_hash[2:]
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "blob-reference-restore-direct",
+            "--yes",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["mutates"] is True
+    assert payload["dry_run"] is False
+    assert payload["candidate_count"] == 1
+    assert payload["restored_count"] == 1
+    assert payload["skipped_hash_mismatch"] == 0
+    assert blob_path.read_bytes() == source.read_bytes()
 
 
 def test_archive_init_cli_is_dry_run_without_yes(cli_workspace: dict[str, Path], cli_runner: CliRunner) -> None:
