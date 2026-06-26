@@ -1108,5 +1108,42 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         return await hooks.async_safe_call("get_postmortem_bundle", run)
 
+    @mcp.tool()
+    async def get_pathologies(
+        query: str | None = None,
+        origin: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        tag: str | None = None,
+        repo: str | None = None,
+        limit: int | None = None,
+    ) -> str:
+        """Agent-workflow pathology distribution over a matched scope (#2383).
+
+        Read-shaped delegate to :meth:`Polylogue.pathology_report`: runs the
+        deterministic detectors (wasted-loop, missed-review, stale-context) over
+        the matched sessions' run projections and returns the typed
+        :class:`polylogue.insights.pathology.PathologyReport` — findings with
+        evidence refs plus the per-kind distribution. Deterministic and
+        rule-based (no LLM-as-judge); a rebuild over identical evidence is
+        identical.
+        """
+
+        async def run() -> str:
+            poly = hooks.get_polylogue()
+            spec = MCPSessionQueryRequest(
+                query=query,
+                origin=origin,
+                since=since,
+                until=until,
+                tag=tag,
+                repo=repo,
+            ).build_spec(hooks.clamp_limit)
+            spec = replace(spec, limit=None)
+            report = await poly.pathology_report(spec, limit=limit)
+            return hooks.json_payload(report, exclude_none=True)
+
+        return await hooks.async_safe_call("get_pathologies", run)
+
 
 __all__ = ["register_insight_tools"]

@@ -54,6 +54,7 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 | `get_session` | Get a single session by ID (supports prefix matching) |
 | `stats` | Archive statistics: totals, provider breakdown, database size |
 | `get_postmortem_bundle` | Distilled postmortem bundle over a matched scope (#2380): top sessions by cost, repos touched, tool/work-kind rollups, failure signals. Read-only. |
+| `get_pathologies` | Deterministic agent-workflow pathology distribution over a matched scope (#2383): wasted-loop, missed-review, and stale-context findings with drillable evidence. Read-only. |
 | `export_sanitized` | Write a fail-closed **redacted** shareable bundle (#2381) to a path; refuses (typed error, nothing published) if any private path or secret survives the leak gate. Write role. |
 
 > **Redacted vs. raw.** `get_postmortem_bundle` and `export_sanitized` are the

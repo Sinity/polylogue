@@ -121,3 +121,29 @@ def test_export_sanitized_has_no_redaction_disable_param(mcp_server: MCPServerUn
     assert "redact" not in params
     assert "acknowledge_unredacted" not in params
     assert "no_redact" not in params
+
+
+@pytest.mark.asyncio
+async def test_get_pathologies_delegates_and_serializes(mcp_server: MCPServerUnderTest) -> None:
+    from polylogue.insights.pathology import PathologyFinding, PathologyReport
+
+    report = PathologyReport(
+        findings=(PathologyFinding(kind="wasted_loop", session_id="s1", severity="medium", detail="3 failed turns"),),
+        counts_by_kind={"wasted_loop": 1},
+        session_count=1,
+    )
+    with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+        mock_poly = make_polylogue_mock()
+        mock_poly.pathology_report = AsyncMock(return_value=report)
+        mock_get_polylogue.return_value = mock_poly
+
+        raw = await invoke_surface_async(
+            mcp_server._tool_manager._tools["get_pathologies"].fn,
+            since="2026-01-01",
+        )
+
+    payload = json.loads(raw)
+    assert payload["counts_by_kind"] == {"wasted_loop": 1}
+    assert payload["findings"][0]["kind"] == "wasted_loop"
+    # candidate scope must not inherit the MCP default page limit
+    assert mock_poly.pathology_report.await_args.args[0].limit is None
