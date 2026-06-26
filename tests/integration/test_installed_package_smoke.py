@@ -207,6 +207,35 @@ def test_installed_polylogue_entrypoints_under_fresh_xdg(
     daemon_status = _run((str(bin_dir / "polylogued"), "status"), env=env, timeout=60)
     assert "Traceback" not in daemon_status.stdout + daemon_status.stderr
 
+    # Runtime dependency-closure probe (#2307): the query-first `find` path pulls
+    # in the Lark grammar, FTS/search providers, and archive storage — a strictly
+    # broader import closure than --version/status/analyze. A previously-missed
+    # package dependency (`lark`) only surfaced on this path, so the installed
+    # artifact must reach archive handling here rather than ModuleNotFoundError.
+    # --diagnose makes the dispatch decision observable; check=False because a
+    # zero-result query against a fresh archive may exit non-zero, which is fine —
+    # the contract is that imports resolve and dispatch reaches the archive.
+    diagnose = _run(
+        (str(bin_dir / "polylogue"), "--diagnose", "find", "polylogue"),
+        env=env,
+        timeout=60,
+        check=False,
+    )
+    combined = diagnose.stdout + diagnose.stderr
+    assert "Traceback" not in combined
+    assert "ModuleNotFoundError" not in combined
+    assert "ImportError" not in combined
+    assert "[diagnose]" in diagnose.stderr, (
+        "expected --diagnose dispatch trace; query-first import closure did not "
+        f"reach archive handling. stderr=\n{diagnose.stderr}"
+    )
+    # Reaching archive handling (here: the missing index.db report on a fresh
+    # root) is the closure proof — dispatch ran the query path through to
+    # storage instead of dying on a missing import.
+    assert "archive" in combined.lower(), (
+        f"query-first dispatch did not reach archive handling on a fresh root; stdout+stderr=\n{combined}"
+    )
+
     after = _snapshot(home)
     _assert_no_home_leak(home, before, after)
 
