@@ -401,8 +401,8 @@ handful of indexed <code>COUNT</code> and <code>SUM</code> queries.</p>
   3 results (23ms)
 </code></pre>
 <p>The user searches for a concept they remember discussing. Results appear
-instantly. Clicking any result (in the web UI) or running <code>polylogue show</code>
-(in the CLI) opens the full session.</p>
+instantly. Clicking any result (in the web UI) or running
+<code>polylogue --id &lt;id&gt; read --view transcript</code> (in the CLI) opens the full session.</p>
 <h3>15 minutes: first insight</h3>
 <p>The user runs <code>polylogue stats</code> and sees something they didn't know:</p>
 <pre><code>$ polylogue stats
@@ -632,19 +632,19 @@ presentation, not capability.</p>
 </tr>
 <tr>
 <td>List sessions</td>
-<td><code>polylogue list --since ...</code></td>
+<td><code>polylogue --since ... read --all</code></td>
 <td><code>polylogue_list_sessions</code></td>
 <td>Session list</td>
 </tr>
 <tr>
 <td>Show session</td>
-<td><code>polylogue show &lt;id&gt;</code></td>
+<td><code>polylogue --id &lt;id&gt; read --view transcript</code></td>
 <td><code>polylogue_get_session</code></td>
 <td>Session detail page</td>
 </tr>
 <tr>
 <td>Stats</td>
-<td><code>polylogue stats</code></td>
+<td><code>polylogue analyze</code></td>
 <td><code>polylogue_get_stats</code></td>
 <td>Dashboard stats panel</td>
 </tr>
