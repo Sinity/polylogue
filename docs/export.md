@@ -27,7 +27,7 @@ polylogue --id claude-ai:abc123 read --format obsidian
 Export every session matching a filter chain with `read --all`:
 
 ```bash
-polylogue --provider claude-code --since 2026-01 read --all
+polylogue --origin claude-code-session --since 2026-01 read --all
 polylogue --tag important read --all --format markdown
 polylogue "refactor" --has-tool-use read --all --format ndjson
 ```

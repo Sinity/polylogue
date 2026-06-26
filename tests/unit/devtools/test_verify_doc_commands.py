@@ -180,3 +180,74 @@ class TestMainEntrypoint:
         captured = capsys.readouterr()
         assert rc == 0
         assert "blocking" in captured.out
+
+
+class TestPolylogueCommandRecognition:
+    """#2438: query-first ``polylogue`` invocations are validated by command
+    recognition — removed commands and bad flags on recognized commands fail,
+    while free-text FTS queries stay legal."""
+
+    def test_removed_list_verb_fails(self, tmp_path: Path) -> None:
+        _write_docs(
+            tmp_path,
+            {"README.md": "```bash\npolylogue --since yesterday list\n```\n"},
+        )
+        errors, _ = check_docs(root=tmp_path)
+        assert any("'list'" in e for e in errors), errors
+
+    def test_removed_show_verb_fails(self, tmp_path: Path) -> None:
+        _write_docs(tmp_path, {"README.md": "```bash\npolylogue show abc123\n```\n"})
+        errors, _ = check_docs(root=tmp_path)
+        assert any("'show'" in e for e in errors), errors
+
+    def test_recognized_verb_with_valid_flag_passes(self, tmp_path: Path) -> None:
+        _write_docs(
+            tmp_path,
+            {"README.md": "```bash\npolylogue --origin claude-code-session analyze --count\n```\n"},
+        )
+        errors, _ = check_docs(root=tmp_path)
+        assert errors == [], errors
+
+    def test_unknown_flag_on_recognized_verb_fails(self, tmp_path: Path) -> None:
+        _write_docs(tmp_path, {"README.md": "```bash\npolylogue analyze --bogus-flag\n```\n"})
+        errors, _ = check_docs(root=tmp_path)
+        assert any("--bogus-flag" in e for e in errors), errors
+
+    def test_free_text_query_passes(self, tmp_path: Path) -> None:
+        _write_docs(tmp_path, {"README.md": "```bash\npolylogue rate limiting retries\n```\n"})
+        errors, _ = check_docs(root=tmp_path)
+        assert errors == [], errors
+
+    def test_leaf_subcommand_flag_resolves(self, tmp_path: Path) -> None:
+        # The flag lives on the ``analyze insights profiles`` leaf, not the
+        # ``analyze`` group — full-path resolution must accept it.
+        _write_docs(
+            tmp_path,
+            {"README.md": "```bash\npolylogue analyze insights profiles --tier merged\n```\n"},
+        )
+        errors, _ = check_docs(root=tmp_path)
+        assert errors == [], errors
+
+    def test_renamed_flag_fails(self, tmp_path: Path) -> None:
+        # ``--provider`` was renamed to ``--origin``.
+        _write_docs(tmp_path, {"README.md": "```bash\npolylogue read --provider claude-code\n```\n"})
+        errors, _ = check_docs(root=tmp_path)
+        assert any("--provider" in e for e in errors), errors
+
+    def test_then_chain_is_left_alone(self, tmp_path: Path) -> None:
+        # ``then`` chains attribute flags to different verbs; skip flag checks.
+        _write_docs(
+            tmp_path,
+            {"README.md": "```bash\npolylogue find id:abc then read --view messages\n```\n"},
+        )
+        errors, _ = check_docs(root=tmp_path)
+        assert errors == [], errors
+
+    def test_dated_audit_docs_are_excluded(self, tmp_path: Path) -> None:
+        # Point-in-time audits assert past command state; not held to current.
+        _write_docs(
+            tmp_path,
+            {"docs/audits/2020-01-01-x.md": "```bash\npolylogue list\n```\n"},
+        )
+        errors, _ = check_docs(root=tmp_path)
+        assert errors == [], errors

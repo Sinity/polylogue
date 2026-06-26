@@ -77,7 +77,7 @@ polylogued status
 
 ```bash
 polylogue "css refactor"
-polylogue --since yesterday list
+polylogue --since yesterday read --all
 polylogue --latest open
 ```
 

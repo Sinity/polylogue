@@ -55,8 +55,8 @@ $ polylogue "schema rebuild"
 ```
 
 The user searches for a concept they remember discussing. Results appear
-instantly. Clicking any result (in the web UI) or running `polylogue show`
-(in the CLI) opens the full session.
+instantly. Clicking any result (in the web UI) or running
+`polylogue --id <id> read --view transcript` (in the CLI) opens the full session.
 
 ### 15 minutes: first insight
 
@@ -264,9 +264,9 @@ presentation, not capability.
 | Feature | CLI | MCP | Web |
 |---------|-----|-----|-----|
 | Search | `polylogue "query"` | `polylogue_search` | Search bar |
-| List sessions | `polylogue list --since ...` | `polylogue_list_sessions` | Session list |
-| Show session | `polylogue show <id>` | `polylogue_get_session` | Session detail page |
-| Stats | `polylogue stats` | `polylogue_get_stats` | Dashboard stats panel |
+| List sessions | `polylogue --since ... read --all` | `polylogue_list_sessions` | Session list |
+| Show session | `polylogue --id <id> read --view transcript` | `polylogue_get_session` | Session detail page |
+| Stats | `polylogue analyze` | `polylogue_get_stats` | Dashboard stats panel |
 | Cost | `polylogue analyze --cost-outlook` | `polylogue_get_cost` | Dashboard cost panel |
 | Calendar heatmap | `polylogue calendar` | `polylogue_calendar` | Calendar page |
 | Timeline | `polylogue timeline` | `polylogue_timeline` | Timeline page |
