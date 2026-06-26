@@ -414,6 +414,12 @@ For a richer recovery map, run
 not mutate the archive and classifies missing refs by origin, reference table,
 ref type, raw-row joinability, and whether the recorded source path still
 exists.
+For direct source files whose current bytes still hash to the missing blob
+address, `polylogue ops maintenance blob-reference-restore-direct --yes`
+can repopulate the blob store without touching SQLite rows. Container/member
+paths such as `export.zip:conversations.json` are deliberately skipped by that
+command because the referenced blob may be an extracted record inside the
+member, not the member file itself.
 
 ### Vacuum Guidance
 

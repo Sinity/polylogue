@@ -8,6 +8,7 @@ from pathlib import Path
 from polylogue.storage.blob_integrity import (
     classify_blob_reference_debt,
     referenced_blob_hashes,
+    restore_direct_blob_reference_debt,
     scan_blob_integrity,
     scan_blob_reference_debt,
 )
@@ -324,6 +325,94 @@ def test_classify_blob_reference_debt_groups_recovery_evidence(tmp_path: Path) -
     first_sample = samples[0]
     assert isinstance(first_sample, dict)
     assert first_sample["sample_source_available"] is True
+
+
+def test_restore_direct_blob_reference_debt_dry_run_and_apply(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.db"
+    store = BlobStore(tmp_path / "blob")
+    source = tmp_path / "session.jsonl"
+    source.write_bytes(b"direct raw payload")
+    expected_hash = "e6e9b015177c95ba07d4d2bd2cb423697aa06973606e922da27371e06dc0f457"
+    container_hash = "4" * 64
+    with sqlite3.connect(source_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE raw_sessions (
+                raw_id TEXT PRIMARY KEY,
+                blob_hash BLOB NOT NULL,
+                blob_size INTEGER NOT NULL,
+                source_path TEXT
+            );
+            CREATE TABLE blob_refs (
+                blob_hash BLOB NOT NULL,
+                raw_id TEXT NOT NULL,
+                ref_type TEXT NOT NULL,
+                source_path TEXT,
+                size_bytes INTEGER NOT NULL,
+                PRIMARY KEY(blob_hash, raw_id, ref_type)
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO blob_refs (blob_hash, raw_id, ref_type, source_path, size_bytes) VALUES (?, ?, ?, ?, ?)",
+            (bytes.fromhex(expected_hash), "raw-direct", "raw_payload", str(source), source.stat().st_size),
+        )
+        conn.execute(
+            "INSERT INTO blob_refs (blob_hash, raw_id, ref_type, source_path, size_bytes) VALUES (?, ?, ?, ?, ?)",
+            (bytes.fromhex(container_hash), "raw-container", "raw_payload", f"{source}:inner.json", 10),
+        )
+
+    dry_run = restore_direct_blob_reference_debt(source_db, store=store)
+
+    assert dry_run.dry_run is True
+    assert dry_run.missing_distinct_blobs == 2
+    assert dry_run.candidate_count == 1
+    assert dry_run.restored_count == 0
+    assert dry_run.skipped_container_member == 1
+    assert not store.exists(expected_hash)
+
+    applied = restore_direct_blob_reference_debt(source_db, store=store, dry_run=False)
+
+    assert applied.dry_run is False
+    assert applied.candidate_count == 1
+    assert applied.restored_count == 1
+    assert applied.restored_bytes == source.stat().st_size
+    assert applied.skipped_container_member == 1
+    assert store.exists(expected_hash)
+    assert not store.exists(container_hash)
+
+
+def test_restore_direct_blob_reference_debt_rejects_hash_mismatch(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.db"
+    store = BlobStore(tmp_path / "blob")
+    source = tmp_path / "session.jsonl"
+    source.write_bytes(b"different bytes")
+    expected_hash = "5" * 64
+    with sqlite3.connect(source_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE blob_refs (
+                blob_hash BLOB NOT NULL,
+                raw_id TEXT NOT NULL,
+                ref_type TEXT NOT NULL,
+                source_path TEXT,
+                size_bytes INTEGER NOT NULL,
+                PRIMARY KEY(blob_hash, raw_id, ref_type)
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO blob_refs (blob_hash, raw_id, ref_type, source_path, size_bytes) VALUES (?, ?, ?, ?, ?)",
+            (bytes.fromhex(expected_hash), "raw-mismatch", "raw_payload", str(source), source.stat().st_size),
+        )
+
+    report = restore_direct_blob_reference_debt(source_db, store=store, dry_run=False)
+
+    assert report.candidate_count == 1
+    assert report.restored_count == 0
+    assert report.skipped_hash_mismatch == 1
+    assert not store.exists(expected_hash)
+    assert [path for path in store.root.rglob("*") if path.is_file()] == []
 
 
 def test_scan_blob_integrity_uses_sibling_archive_source_from_index_db(tmp_path: Path) -> None:

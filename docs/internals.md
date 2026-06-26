@@ -508,6 +508,9 @@ The report has a stable top-level shape carrying its `report_version`,
   `polylogue ops maintenance blob-reference-debt --output-format json`; that
   read-only classifier groups missing blob refs by table, ref type, origin,
   raw-row joinability, validation/parse state, and source-path availability.
+  The paired `polylogue ops maintenance blob-reference-restore-direct`
+  command only restores direct-file source paths after exact SHA-256
+  verification; archive-member paths remain source re-acquisition work.
 - `gc_state` — high-water `gc_generations` row, `last_completed_at`,
   total generation count.
 - `fts_trigger_state` — the three expected FTS sync triggers

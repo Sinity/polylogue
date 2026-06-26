@@ -28,7 +28,9 @@ from polylogue.paths import archive_file_set_root_for_paths, archive_root, blob_
 from polylogue.storage.blob_gc import read_gc_history, run_blob_gc_report
 from polylogue.storage.blob_integrity import (
     BlobReferenceDebtClassificationReport,
+    BlobReferenceDebtRestoreReport,
     classify_blob_reference_debt,
+    restore_direct_blob_reference_debt,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.archive_init import (
@@ -1267,6 +1269,89 @@ def _render_blob_reference_debt_plain(report: BlobReferenceDebtClassificationRep
             )
 
 
+@maintenance_group.command("blob-reference-restore-direct")
+@click.option(
+    "--max-count",
+    type=int,
+    default=None,
+    help="Maximum number of direct-file candidates to restore or preview.",
+)
+@click.option(
+    "--sample-limit",
+    type=int,
+    default=30,
+    show_default=True,
+    help="Maximum number of representative samples to include.",
+)
+@click.option(
+    "--yes",
+    is_flag=True,
+    help="Write missing blob files. Without this flag the command is a dry-run preview.",
+)
+@click.option(
+    "--output-format",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+    help="Output format.",
+)
+def blob_reference_restore_direct_command(
+    max_count: int | None,
+    sample_limit: int,
+    yes: bool,
+    output_format: str,
+) -> None:
+    """Restore direct-file missing blobs after exact hash verification."""
+    report = restore_direct_blob_reference_debt(
+        archive_root() / "source.db",
+        dry_run=not yes,
+        max_count=max_count,
+        sample_size=sample_limit,
+    )
+    payload = {
+        "mode": "blob_reference_restore_direct",
+        "mutates": bool(yes),
+        **report.to_dict(),
+    }
+
+    if output_format == "json":
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    _render_blob_reference_restore_plain(report)
+
+
+def _render_blob_reference_restore_plain(report: BlobReferenceDebtRestoreReport) -> None:
+    click.echo("Blob reference direct-file restore")
+    click.echo(f"Source DB:    {report.source_db}")
+    click.echo(f"Blob root:    {report.blob_root}")
+    click.echo(f"Mode:         {'dry-run' if report.dry_run else 'apply'}")
+    click.echo(f"Missing:      {report.missing_distinct_blobs:,} distinct blob(s)")
+    click.echo(f"Candidates:   {report.candidate_count:,}")
+    action = "would restore" if report.dry_run else "restored"
+    affected = report.candidate_count if report.dry_run else report.restored_count
+    click.echo(f"Result:       {action} {affected:,} blob(s)")
+    if not report.dry_run:
+        click.echo(f"Bytes:        {report.restored_bytes:,}")
+    click.echo(
+        "Skipped:      "
+        f"existing={report.skipped_existing:,} "
+        f"no_source={report.skipped_no_source_path:,} "
+        f"container_member={report.skipped_container_member:,} "
+        f"source_missing={report.skipped_source_missing:,} "
+        f"size_mismatch={report.skipped_size_mismatch:,} "
+        f"hash_mismatch={report.skipped_hash_mismatch:,} "
+        f"error={report.skipped_error:,}"
+    )
+    if report.samples:
+        click.echo("Samples:")
+        for sample in report.samples[:5]:
+            detail = f" reason={sample.reason}" if sample.reason else ""
+            source = sample.source_path or "(none)"
+            click.echo(f"  {sample.action} {sample.blob_hash}{detail} {source}")
+
+
 @maintenance_group.command("gc-history")
 @click.option(
     "--limit",
@@ -1476,6 +1561,7 @@ def _render_record_plain(record: OperationRecord) -> None:
 __all__ = [
     "assertion_export_command",
     "blob_reference_debt_command",
+    "blob_reference_restore_direct_command",
     "gc_history_command",
     "maintenance_group",
     "plan_command",

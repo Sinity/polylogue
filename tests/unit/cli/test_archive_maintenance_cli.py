@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -138,6 +139,23 @@ def _seed_blob_reference_debt(archive_root: Path, source: Path) -> None:
             """,
             (missing_ref_hash, "raw-gone", "raw_payload", str(archive_root / "missing-browser-capture.json"), 10, 1),
         )
+
+
+def _seed_direct_restorable_blob_ref(archive_root: Path, source: Path) -> str:
+    source.parent.mkdir(parents=True, exist_ok=True)
+    payload = b"direct restorable payload"
+    source.write_bytes(payload)
+    blob_hash = hashlib.sha256(payload).digest()
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO blob_refs (
+                blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (blob_hash, "raw-direct-restore", "raw_payload", str(source), source.stat().st_size, 1),
+        )
+    return blob_hash.hex()
 
 
 def test_archive_plan_cli_reports_tier_targets(cli_workspace: dict[str, Path], cli_runner: CliRunner) -> None:
@@ -465,6 +483,69 @@ def test_blob_reference_debt_cli_plain_output_names_read_only_debt(
     assert "Blob reference debt" in result.output
     assert "Status:       debt-present" in result.output
     assert "Source paths: recoverable_source_path_exists=1, source_path_missing=1" in result.output
+
+
+def test_blob_reference_restore_direct_cli_dry_run_keeps_blob_missing(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    source = cli_workspace["archive_root"] / "exports" / "direct.jsonl"
+    blob_hash = _seed_direct_restorable_blob_ref(cli_workspace["archive_root"], source)
+    blob_path = cli_workspace["data_root"] / "polylogue" / "blob" / blob_hash[:2] / blob_hash[2:]
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "blob-reference-restore-direct",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["mode"] == "blob_reference_restore_direct"
+    assert payload["mutates"] is False
+    assert payload["dry_run"] is True
+    assert payload["candidate_count"] == 1
+    assert payload["restored_count"] == 0
+    assert not blob_path.exists()
+
+
+def test_blob_reference_restore_direct_cli_apply_writes_hash_checked_blob(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    source = cli_workspace["archive_root"] / "exports" / "direct.jsonl"
+    blob_hash = _seed_direct_restorable_blob_ref(cli_workspace["archive_root"], source)
+    blob_path = cli_workspace["data_root"] / "polylogue" / "blob" / blob_hash[:2] / blob_hash[2:]
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "blob-reference-restore-direct",
+            "--yes",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["mutates"] is True
+    assert payload["dry_run"] is False
+    assert payload["candidate_count"] == 1
+    assert payload["restored_count"] == 1
+    assert payload["skipped_hash_mismatch"] == 0
+    assert blob_path.read_bytes() == source.read_bytes()
 
 
 def test_archive_init_cli_is_dry_run_without_yes(cli_workspace: dict[str, Path], cli_runner: CliRunner) -> None:

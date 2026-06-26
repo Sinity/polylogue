@@ -8,7 +8,10 @@ integrity classes with bounded default cost.
 
 from __future__ import annotations
 
+import hashlib
+import os
 import sqlite3
+import tempfile
 import time
 from collections import Counter, defaultdict
 from collections.abc import Iterable
@@ -195,6 +198,69 @@ class BlobReferenceDebtClassificationReport:
         }
 
 
+@dataclass(frozen=True)
+class BlobReferenceDebtRestoreSample:
+    blob_hash: str
+    source_path: str | None
+    action: str
+    reason: str | None = None
+    bytes_restored: int | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "blob_hash": self.blob_hash,
+            "source_path": self.source_path,
+            "action": self.action,
+            "reason": self.reason,
+            "bytes_restored": self.bytes_restored,
+        }
+
+
+@dataclass(frozen=True)
+class BlobReferenceDebtRestoreReport:
+    """Dry-run/apply report for direct-file blob debt restoration."""
+
+    source_db: str
+    blob_root: str
+    dry_run: bool
+    missing_distinct_blobs: int
+    candidate_count: int
+    restored_count: int
+    restored_bytes: int
+    skipped_existing: int
+    skipped_no_source_path: int
+    skipped_container_member: int
+    skipped_source_missing: int
+    skipped_size_mismatch: int
+    skipped_hash_mismatch: int
+    skipped_error: int
+    samples: tuple[BlobReferenceDebtRestoreSample, ...]
+
+    @property
+    def ok(self) -> bool:
+        return self.skipped_hash_mismatch == 0 and self.skipped_error == 0
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "ok": self.ok,
+            "source_db": self.source_db,
+            "blob_root": self.blob_root,
+            "dry_run": self.dry_run,
+            "missing_distinct_blobs": self.missing_distinct_blobs,
+            "candidate_count": self.candidate_count,
+            "restored_count": self.restored_count,
+            "restored_bytes": self.restored_bytes,
+            "skipped_existing": self.skipped_existing,
+            "skipped_no_source_path": self.skipped_no_source_path,
+            "skipped_container_member": self.skipped_container_member,
+            "skipped_source_missing": self.skipped_source_missing,
+            "skipped_size_mismatch": self.skipped_size_mismatch,
+            "skipped_hash_mismatch": self.skipped_hash_mismatch,
+            "skipped_error": self.skipped_error,
+            "samples": [sample.to_dict() for sample in self.samples],
+        }
+
+
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM sqlite_schema WHERE type='table' AND name = ? LIMIT 1",
@@ -353,18 +419,26 @@ def _raw_session_reference_rows(conn: sqlite3.Connection) -> list[dict[str, Any]
     if not _table_exists(conn, "raw_sessions"):
         return []
     conn.row_factory = sqlite3.Row
+    origin_column = "origin" if _column_exists(conn, "raw_sessions", "origin") else "NULL"
+    native_id_column = "native_id" if _column_exists(conn, "raw_sessions", "native_id") else "NULL"
+    source_path_column = "source_path" if _column_exists(conn, "raw_sessions", "source_path") else "NULL"
+    blob_size_column = "blob_size" if _column_exists(conn, "raw_sessions", "blob_size") else "0"
+    parse_error_column = "parse_error" if _column_exists(conn, "raw_sessions", "parse_error") else "NULL"
+    validation_status_column = (
+        "validation_status" if _column_exists(conn, "raw_sessions", "validation_status") else "NULL"
+    )
     rows = conn.execute(
-        """
+        f"""
         SELECT lower(hex(blob_hash)) AS blob_hash,
                'raw_sessions' AS table_name,
                'raw_payload' AS ref_type,
                raw_id AS ref_id,
-               origin,
-               native_id,
-               source_path,
-               blob_size AS size_bytes,
-               parse_error,
-               validation_status,
+               {origin_column} AS origin,
+               {native_id_column} AS native_id,
+               {source_path_column} AS source_path,
+               {blob_size_column} AS size_bytes,
+               {parse_error_column} AS parse_error,
+               {validation_status_column} AS validation_status,
                1 AS ref_id_has_raw_session
         FROM raw_sessions
         WHERE blob_hash IS NOT NULL
@@ -418,6 +492,13 @@ def _group_reference_rows(rows: Iterable[dict[str, Any]]) -> dict[str, list[dict
     return by_hash
 
 
+def _reference_rows_for_blob_debt(source_db: Path) -> list[dict[str, Any]]:
+    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
+        raw_refs = _raw_session_reference_rows(conn)
+        raw_by_id = {str(row["ref_id"]): row for row in raw_refs if row.get("ref_id")}
+        return [*raw_refs, *_blob_ref_reference_rows(conn, raw_by_id=raw_by_id)]
+
+
 def classify_blob_reference_debt(
     db_path: str | Path,
     *,
@@ -429,11 +510,7 @@ def classify_blob_reference_debt(
 
     blob_store = store if store is not None else get_blob_store()
     source_db = _source_db_for_blob_reference_report(db_path)
-    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
-        raw_refs = _raw_session_reference_rows(conn)
-        raw_by_id = {str(row["ref_id"]): row for row in raw_refs if row.get("ref_id")}
-        refs = [*raw_refs, *_blob_ref_reference_rows(conn, raw_by_id=raw_by_id)]
-
+    refs = _reference_rows_for_blob_debt(source_db)
     by_hash = _group_reference_rows(refs)
     missing = [(blob_hash, group) for blob_hash, group in by_hash.items() if not blob_store.exists(blob_hash)]
 
@@ -525,6 +602,205 @@ def classify_blob_reference_debt(
         missing_validation_status=_counter_dict(validation_status),
         missing_parse_error=_counter_dict(parse_error),
         top_groups=tuple(top_groups),
+        samples=tuple(samples),
+    )
+
+
+def _path_is_container_member(path: str) -> bool:
+    return ":" in path
+
+
+def _direct_restore_candidate(group: list[dict[str, Any]]) -> tuple[Path | None, str]:
+    saw_source_path = False
+    saw_container_member = False
+    saw_missing = False
+    saw_size_mismatch = False
+    for row in group:
+        source_path = _optional_str(row.get("source_path"))
+        if not source_path:
+            continue
+        saw_source_path = True
+        if _path_is_container_member(source_path):
+            saw_container_member = True
+            continue
+        path = Path(source_path)
+        if not path.exists():
+            saw_missing = True
+            continue
+        size = row.get("size_bytes")
+        if size is not None and path.stat().st_size != int(size):
+            saw_size_mismatch = True
+            continue
+        return path, "candidate"
+    if not saw_source_path:
+        return None, "no_source_path"
+    if saw_container_member:
+        return None, "container_member"
+    if saw_missing:
+        return None, "source_missing"
+    if saw_size_mismatch:
+        return None, "size_mismatch"
+    return None, "no_candidate"
+
+
+def _restore_expected_hash_from_path(blob_store: BlobStore, expected_hash: str, source_path: Path) -> tuple[str, int]:
+    blob_store.root.mkdir(parents=True, exist_ok=True)
+    fd: int | None = None
+    tmp_path: str | None = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=blob_store.root, prefix=".restore.")
+        hasher = hashlib.sha256()
+        size = 0
+        with source_path.open("rb") as source:
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
+                hasher.update(chunk)
+                os.write(fd, chunk)
+                size += len(chunk)
+        os.close(fd)
+        fd = None
+        actual_hash = hasher.hexdigest()
+        if actual_hash != expected_hash:
+            return actual_hash, size
+        destination = blob_store.blob_path(expected_hash)
+        if destination.exists():
+            return actual_hash, size
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, destination)
+        tmp_path = None
+        return actual_hash, size
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if tmp_path is not None and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
+def restore_direct_blob_reference_debt(
+    db_path: str | Path,
+    *,
+    store: BlobStore | None = None,
+    dry_run: bool = True,
+    max_count: int | None = None,
+    sample_size: int = 30,
+) -> BlobReferenceDebtRestoreReport:
+    """Restore direct-file missing blob refs after exact hash verification."""
+
+    blob_store = store if store is not None else get_blob_store()
+    source_db = _source_db_for_blob_reference_report(db_path)
+    refs = _reference_rows_for_blob_debt(source_db)
+    by_hash = _group_reference_rows(refs)
+    missing = {blob_hash: group for blob_hash, group in by_hash.items() if not blob_store.exists(blob_hash)}
+
+    candidate_count = 0
+    restored_count = 0
+    restored_bytes = 0
+    skipped_existing = 0
+    skipped_no_source_path = 0
+    skipped_container_member = 0
+    skipped_source_missing = 0
+    skipped_size_mismatch = 0
+    skipped_hash_mismatch = 0
+    skipped_error = 0
+    samples: list[BlobReferenceDebtRestoreSample] = []
+
+    for blob_hash, group in missing.items():
+        if max_count is not None and candidate_count >= max_count:
+            break
+        if blob_store.exists(blob_hash):
+            skipped_existing += 1
+            continue
+        source_path, reason = _direct_restore_candidate(group)
+        if source_path is None:
+            if reason == "no_source_path":
+                skipped_no_source_path += 1
+            elif reason == "container_member":
+                skipped_container_member += 1
+            elif reason == "source_missing":
+                skipped_source_missing += 1
+            elif reason == "size_mismatch":
+                skipped_size_mismatch += 1
+            else:
+                skipped_no_source_path += 1
+            if len(samples) < max(0, sample_size):
+                samples.append(
+                    BlobReferenceDebtRestoreSample(
+                        blob_hash=blob_hash,
+                        source_path=None,
+                        action="skipped",
+                        reason=reason,
+                    )
+                )
+            continue
+
+        candidate_count += 1
+        if dry_run:
+            if len(samples) < max(0, sample_size):
+                samples.append(
+                    BlobReferenceDebtRestoreSample(
+                        blob_hash=blob_hash,
+                        source_path=str(source_path),
+                        action="would_restore",
+                    )
+                )
+            continue
+
+        try:
+            actual_hash, size = _restore_expected_hash_from_path(blob_store, blob_hash, source_path)
+        except OSError as exc:
+            skipped_error += 1
+            if len(samples) < max(0, sample_size):
+                samples.append(
+                    BlobReferenceDebtRestoreSample(
+                        blob_hash=blob_hash,
+                        source_path=str(source_path),
+                        action="skipped",
+                        reason=f"error:{exc}",
+                    )
+                )
+            continue
+        if actual_hash != blob_hash:
+            skipped_hash_mismatch += 1
+            if len(samples) < max(0, sample_size):
+                samples.append(
+                    BlobReferenceDebtRestoreSample(
+                        blob_hash=blob_hash,
+                        source_path=str(source_path),
+                        action="skipped",
+                        reason=f"hash_mismatch:{actual_hash}",
+                    )
+                )
+            continue
+        restored_count += 1
+        restored_bytes += size
+        if len(samples) < max(0, sample_size):
+            samples.append(
+                BlobReferenceDebtRestoreSample(
+                    blob_hash=blob_hash,
+                    source_path=str(source_path),
+                    action="restored",
+                    bytes_restored=size,
+                )
+            )
+
+    return BlobReferenceDebtRestoreReport(
+        source_db=str(source_db),
+        blob_root=str(blob_store.root),
+        dry_run=dry_run,
+        missing_distinct_blobs=len(missing),
+        candidate_count=candidate_count,
+        restored_count=restored_count,
+        restored_bytes=restored_bytes,
+        skipped_existing=skipped_existing,
+        skipped_no_source_path=skipped_no_source_path,
+        skipped_container_member=skipped_container_member,
+        skipped_source_missing=skipped_source_missing,
+        skipped_size_mismatch=skipped_size_mismatch,
+        skipped_hash_mismatch=skipped_hash_mismatch,
+        skipped_error=skipped_error,
         samples=tuple(samples),
     )
 
@@ -703,9 +979,12 @@ __all__ = [
     "BlobIntegrityReport",
     "BlobReferenceDebtClassificationReport",
     "BlobReferenceDebtReport",
+    "BlobReferenceDebtRestoreReport",
+    "BlobReferenceDebtRestoreSample",
     "BlobReferenceDebtSample",
     "classify_blob_reference_debt",
     "referenced_blob_hashes",
+    "restore_direct_blob_reference_debt",
     "scan_blob_reference_debt",
     "scan_blob_integrity",
 ]
