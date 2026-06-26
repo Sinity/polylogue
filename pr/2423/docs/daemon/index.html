@@ -894,7 +894,13 @@ For a richer recovery map, run
 <code>polylogue ops maintenance blob-reference-debt --output-format json</code>; it does
 not mutate the archive and classifies missing refs by origin, reference table,
 ref type, raw-row joinability, and whether the recorded source path still
-exists.</p>
+exists.
+For direct source files whose current bytes still hash to the missing blob
+address, <code>polylogue ops maintenance blob-reference-restore-direct --yes</code>
+can repopulate the blob store without touching SQLite rows. Container/member
+paths such as <code>export.zip:conversations.json</code> are deliberately skipped by that
+command because the referenced blob may be an extracted record inside the
+member, not the member file itself.</p>
 <h3>Vacuum Guidance</h3>
 <p>SQLite <code>VACUUM</code> rebuilds the database file, reclaiming free pages. It
 requires the full database size in free disk space. Two approaches:</p>
