@@ -163,3 +163,15 @@ def test_model_normalization_accepts_provider_prefixes_and_version_suffixes() ->
     assert _normalize_model("openai/gpt-4o-2024-08-06") == "gpt-4o"
     assert _normalize_model("anthropic/claude-sonnet-4-5-20250929") == "claude-sonnet-4-5"
     assert estimate_cost(1000, 500, "openai/gpt-4o-2024-08-06") == pytest.approx(0.0075)
+
+
+def test_current_opus_flagships_are_priced_not_zero() -> None:
+    """Opus 4.7/4.8 must be priced (regression: they fell through to $0).
+
+    The version-suffix prefix match cannot reach ``claude-opus-4-6`` from a
+    ``claude-opus-4-8`` model, so the current flagship needs its own entry.
+    """
+    for version in ("claude-opus-4-7", "claude-opus-4-8"):
+        assert _normalize_model(f"{version}-20260101") == version
+        # 1M input + 1M output at Opus rates ($15 + $75) = $90.
+        assert estimate_cost(1_000_000, 1_000_000, version) == pytest.approx(90.0)

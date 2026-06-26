@@ -197,6 +197,8 @@ class ModelPricing:
 # 1M tokens. This is intentionally small and provenance-marked; provider-
 # reported exact archive costs still take precedence.
 PRICING: dict[str, ModelPricing] = {
+    "claude-opus-4-8": ModelPricing("anthropic", 15.0, 75.0, 1.5, 18.75),
+    "claude-opus-4-7": ModelPricing("anthropic", 15.0, 75.0, 1.5, 18.75),
     "claude-opus-4-6": ModelPricing("anthropic", 15.0, 75.0, 1.5, 18.75),
     "claude-opus-4-5": ModelPricing("anthropic", 15.0, 75.0, 1.5, 18.75),
     "claude-sonnet-4-6": ModelPricing("anthropic", 3.0, 15.0, 0.3, 3.75),
