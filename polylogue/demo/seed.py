@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -12,6 +13,7 @@ from polylogue.config import Source
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.scenarios import build_demo_corpus_specs, seed_demo_user_overlays
 from polylogue.schemas.synthetic import SyntheticCorpus
+from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 
 from .models import DemoSeedResult
 
@@ -46,6 +48,29 @@ def materialize_demo_source(root: Path, *, force: bool = False) -> Path:
     return source_root
 
 
+def _materialize_session_insights(archive_root: Path, session_ids: list[str]) -> None:
+    """Build the session-profile insight read models for *session_ids*.
+
+    ``parse_sources_archive`` writes the ``sessions``/``messages`` tree but does
+    not materialize the derived insight tables (``session_profiles`` and
+    siblings); the daemon convergence path normally does that in a separate
+    stage. The no-daemon demo seed must run the same rebuild so that the
+    postmortem / recovery-digest read surfaces resolve against a populated demo
+    archive instead of an empty one. Passing ``session_ids`` makes
+    ``rebuild_session_insights_sync`` commit internally and skip the full-table
+    delete/rebuild path.
+    """
+
+    if not session_ids:
+        return
+    conn = sqlite3.connect(archive_root / "index.db")
+    try:
+        conn.row_factory = sqlite3.Row
+        rebuild_session_insights_sync(conn, session_ids=session_ids)
+    finally:
+        conn.close()
+
+
 def demo_source_specs(source_root: Path) -> list[Source]:
     """Return relative source specs for the materialized demo world."""
 
@@ -67,6 +92,9 @@ async def seed_demo_archive(
     source_root = materialize_demo_source(archive_root, force=force)
     with _pushd(source_root):
         result = await parse_sources_archive(archive_root, demo_source_specs(source_root))
+
+    session_ids = sorted(result.processed_ids)
+    _materialize_session_insights(archive_root, session_ids)
 
     overlay = seed_demo_user_overlays(archive_root) if with_overlays else None
     return DemoSeedResult(

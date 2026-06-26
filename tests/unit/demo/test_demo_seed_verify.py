@@ -33,6 +33,24 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
 
 
 @pytest.mark.asyncio
+async def test_seed_materializes_session_profiles_for_postmortem(tmp_path: Path) -> None:
+    """The no-daemon seed must materialize the session-profile insight read model.
+
+    Without it ``analyze --postmortem`` (and the recovery-digest surfaces) render
+    an empty bundle on the demo archive because the postmortem aggregator fetches
+    profiles that ``parse_sources_archive`` never wrote. Guards the #2196 fix.
+    """
+
+    archive_root = tmp_path / "archive"
+    await seed_demo_archive(archive_root, force=True, with_overlays=True)
+
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        profile_count = conn.execute("SELECT count(*) FROM session_profiles").fetchone()[0]
+
+    assert profile_count == 3
+
+
+@pytest.mark.asyncio
 async def test_demo_verify_reports_missing_overlays(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
 
