@@ -17,7 +17,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 4843
+    loc: 4931
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -689,7 +689,7 @@ files:
     target: polylogue/cli/bulk_export.py
     owner: stable
   - path: polylogue/cli/click_app.py
-    loc: 479
+    loc: 480
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
@@ -849,7 +849,7 @@ files:
     target: polylogue/cli/query_stats.py
     owner: stable
   - path: polylogue/cli/query_verbs.py
-    loc: 1743
+    loc: 1874
     target: polylogue/cli/query_verbs.py
     owner: stable
   - path: polylogue/cli/read_view_handlers.py
@@ -1019,7 +1019,7 @@ files:
     target: polylogue/cli/verb_cardinality.py
     owner: stable
   - path: polylogue/cli/verb_names.py
-    loc: 18
+    loc: 19
     target: polylogue/cli/verb_names.py
     owner: stable
   - path: polylogue/config.py
@@ -1421,6 +1421,14 @@ files:
     target: polylogue/errors.py
     owner: kernel
     reason: kernel root rule
+  - path: polylogue/export/__init__.py
+    loc: 39
+    target: polylogue/export/__init__.py
+    owner: stable
+  - path: polylogue/export/sanitize.py
+    loc: 503
+    target: polylogue/export/sanitize.py
+    owner: stable
   - path: polylogue/insights/__init__.py
     loc: 30
     target: polylogue/insights/__init__.py
@@ -1479,7 +1487,7 @@ files:
     target: polylogue/insights/otlp_correlation.py
     owner: stable
   - path: polylogue/insights/postmortem.py
-    loc: 436
+    loc: 460
     target: polylogue/insights/postmortem.py
     owner: stable
   - path: polylogue/insights/provenance.py

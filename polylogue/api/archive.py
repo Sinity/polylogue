@@ -59,10 +59,12 @@ if TYPE_CHECKING:
     from polylogue.archive.query.search_hits import SessionSearchHit
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.archive.session.domain_models import Session, SessionSummary
+    from polylogue.archive.session.models import SessionProfile
     from polylogue.archive.session.neighbor_candidates import SessionNeighborCandidate
     from polylogue.archive.stats import ArchiveStats as StorageArchiveStats
     from polylogue.config import Config
     from polylogue.context.compiler import ContextImage, ContextSpec, RecoveryContextCompilation
+    from polylogue.export.sanitize import SanitizedExportRequest, SanitizedExportResult
     from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport
     from polylogue.insights.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
     from polylogue.insights.postmortem import PostmortemBundle
@@ -996,6 +998,33 @@ def _archive_session_to_session(session: ArchiveSessionEnvelope) -> Session:
     )
 
 
+def _archive_sanitized_export_row(profile: SessionProfile) -> dict[str, object]:
+    """Build one session-level metadata row for the sanitized export (#2381).
+
+    Deliberately excludes the highest-leak fields — ``repo_paths``,
+    ``cwd_paths``, ``file_paths_touched`` and raw message text — from the
+    dataset. The string fields that remain (``display_title``, ``repo_names``)
+    are still run through field redaction by the export pipeline.
+    """
+    return {
+        "id": profile.session_id,
+        "display_title": profile.title,
+        "origin": profile.origin,
+        "first_message_at": profile.first_message_at.isoformat() if profile.first_message_at else None,
+        "last_message_at": profile.last_message_at.isoformat() if profile.last_message_at else None,
+        "message_count": profile.message_count,
+        "word_count": profile.word_count,
+        "repo_names": list(profile.repo_names),
+        "total_cost_usd": profile.total_cost_usd,
+        "cost_is_estimated": profile.cost_is_estimated,
+        "input_tokens": profile.total_input_tokens,
+        "output_tokens": profile.total_output_tokens,
+        "cache_read_tokens": profile.total_cache_read_tokens,
+        "cache_write_tokens": profile.total_cache_write_tokens,
+        "wall_duration_ms": profile.wall_duration_ms,
+    }
+
+
 def _archive_summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary:
     return SessionSummary(
         id=SessionId(summary.session_id),
@@ -1703,6 +1732,68 @@ class PolylogueArchiveMixin:
         bundle = compile_postmortem_bundle(profiles, digests, scope=scope)
         assert isinstance(bundle, _PostmortemBundle)
         return bundle
+
+    async def sanitized_export(
+        self,
+        spec: SessionQuerySpec | None,
+        request: SanitizedExportRequest,
+        *,
+        limit: int | None = None,
+    ) -> SanitizedExportResult:
+        """Resolve a matched scope and write a fail-closed sanitized bundle (#2381).
+
+        Builds session-level metadata rows over the matched scope (the same
+        summary path ``postmortem_bundle`` uses), drives field redaction, and
+        writes ``dataset.jsonl`` + ``redaction-manifest.json`` + ``README.md``
+        (plus a sanitized ``postmortem.json`` when requested). The leak-check
+        gate runs against the written files and the publish is refused if any
+        private absolute path or known secret survives.
+
+        Raw message text is intentionally NOT exported in v0 — message bodies are
+        the highest-leak surface and are deferred (see #2381 follow-up).
+        """
+        from polylogue.export.sanitize import produce_sanitized_export
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        cap = limit if limit is not None and limit > 0 else 1000
+
+        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
+            if spec is not None and spec.has_filters():
+                summaries = _archive_list_summaries_for_spec(archive, spec, default_limit=1_000_000)
+            else:
+                summaries = archive.list_summaries(limit=1_000_000)
+
+        session_ids: list[str] = []
+        seen: set[str] = set()
+        for summary in summaries:
+            if summary.session_id in seen:
+                continue
+            seen.add(summary.session_id)
+            session_ids.append(summary.session_id)
+
+        matched = len(session_ids)
+        analyzed_ids = session_ids[:cap]
+        profiles_map = await self.repository.get_session_profiles_batch(analyzed_ids)
+        profiles = [profiles_map[sid] for sid in analyzed_ids if sid in profiles_map]
+        rows = [_archive_sanitized_export_row(profile) for profile in profiles]
+
+        scope: dict[str, object] = {
+            "since": spec.since if spec is not None else None,
+            "until": spec.until if spec is not None else None,
+            "query": _archive_text_query(spec) if spec is not None else None,
+            "matched_session_count": matched,
+            "exported_session_count": len(rows),
+            "truncated": matched > len(analyzed_ids),
+        }
+
+        postmortem: JSONDocument | None = None
+        if request.with_postmortem:
+            from polylogue.surfaces.payloads import model_json_document
+
+            bundle = await self.postmortem_bundle(spec, limit=limit)
+            postmortem = model_json_document(bundle, exclude_none=True)
+
+        return produce_sanitized_export(rows=rows, scope=scope, request=request, postmortem=postmortem)
 
     async def recovery_report(self, session_id: str, preset: RecoveryReportPreset) -> str | None:
         """Render one deterministic recovery report preset for a session."""

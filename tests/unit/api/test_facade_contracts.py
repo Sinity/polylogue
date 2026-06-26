@@ -215,6 +215,9 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "recovery_report",
         "find_resume_candidates",
         "export_insight_bundle",
+        # Distilled postmortem bundle (#2380) and sanitized shareable export (#2381).
+        "postmortem_bundle",
+        "sanitized_export",
         "parse_file",
         "update_index",
         "cost_outlook",
