@@ -142,6 +142,8 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "update_index": "operation_result",
     "export_session": "operation_result",
     "export_query_results": "operation_result",
+    "export_sanitized": "operation_result",
+    "get_postmortem_bundle": "single_object",
     "maintenance_preview": "operation_result",
     "maintenance_execute": "operation_result",
     "maintenance_status": "operation_result",

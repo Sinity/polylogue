@@ -53,6 +53,14 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 | `list_sessions` | List recent sessions, optionally filtered |
 | `get_session` | Get a single session by ID (supports prefix matching) |
 | `stats` | Archive statistics: totals, provider breakdown, database size |
+| `get_postmortem_bundle` | Distilled postmortem bundle over a matched scope (#2380): top sessions by cost, repos touched, tool/work-kind rollups, failure signals. Read-only. |
+| `export_sanitized` | Write a fail-closed **redacted** shareable bundle (#2381) to a path; refuses (typed error, nothing published) if any private path or secret survives the leak gate. Write role. |
+
+> **Redacted vs. raw.** `get_postmortem_bundle` and `export_sanitized` are the
+> agent-preferred distilled/redacted surfaces. The raw, unredacted
+> `export_session` / `export_query_results` exporters render full message
+> content and are gated behind the **admin** role; `export_sanitized` has no
+> redaction-disable affordance by construction.
 
 ## Available Resources
 

@@ -92,7 +92,10 @@ These expose the archive and its insights:
 
 - CLI: `polylogue/cli/`
 - Python API: `polylogue/api/__init__.py`
-- MCP server: `polylogue/mcp/`
+- MCP server: `polylogue/mcp/` — exposes the distilled, agent-preferred
+  surfaces (`get_postmortem_bundle`, fail-closed `export_sanitized`) alongside
+  search/list/insight tools; the raw unredacted `export_session` /
+  `export_query_results` exporters stay behind the admin role (#2436).
 - daemon web reader: `polylogue/daemon/web_shell.py`
 - dashboard and TUI: `polylogue/ui/`
 - renderers: `polylogue/rendering/`

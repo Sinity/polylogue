@@ -8,6 +8,7 @@ derived distributions are registered directly.
 from __future__ import annotations
 
 import inspect
+from dataclasses import replace
 from datetime import date
 from math import ceil
 from typing import TYPE_CHECKING, Any, cast
@@ -28,6 +29,7 @@ from polylogue.insights.registry import (
 )
 from polylogue.mcp.insight_tool_contracts import InsightListToolSpec
 from polylogue.mcp.payloads import MCPRootPayload
+from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -1059,6 +1061,52 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             )
 
         return await hooks.async_safe_call("session_tool_timing", run)
+
+    @mcp.tool()
+    async def get_postmortem_bundle(
+        query: str | None = None,
+        origin: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        tag: str | None = None,
+        repo: str | None = None,
+        limit: int | None = None,
+    ) -> str:
+        """Distilled postmortem bundle over a matched session scope (#2380).
+
+        Read-shaped delegate to :meth:`Polylogue.postmortem_bundle`: resolves
+        the matched session set from the filter scope, aggregates per-session
+        recovery digests, and returns the typed
+        :class:`polylogue.insights.postmortem.PostmortemBundle` (top sessions
+        by cost, repos touched, tool/work-kind rollups, failure-mode signals).
+        The analysis cap defaults to 200 sessions; a larger match marks the
+        bundle ``truncated`` rather than silently capping.
+
+        This is the agent-preferred distilled read — for a shareable file
+        bundle use ``export_sanitized`` (fail-closed redacted), not the
+        unredacted ``export_*`` tools.
+        """
+
+        async def run() -> str:
+            poly = hooks.get_polylogue()
+            spec = MCPSessionQueryRequest(
+                query=query,
+                origin=origin,
+                since=since,
+                until=until,
+                tag=tag,
+                repo=repo,
+            ).build_spec(hooks.clamp_limit)
+            # build_spec writes the MCP default page limit (10) into spec.limit,
+            # which `_archive_query_kwargs` prefers over the candidate-scope
+            # default — that would cap the postmortem at 10 sessions and defeat
+            # its own analysis cap. Drop the page limit so the full matched scope
+            # is considered; `postmortem_bundle`'s `limit` is the analysis cap.
+            spec = replace(spec, limit=None)
+            bundle = await poly.postmortem_bundle(spec, limit=limit)
+            return hooks.json_payload(bundle, exclude_none=True)
+
+        return await hooks.async_safe_call("get_postmortem_bundle", run)
 
 
 __all__ = ["register_insight_tools"]

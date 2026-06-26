@@ -61,6 +61,8 @@ EXPECTED_TOOL_NAMES = {
     "update_index",
     "export_session",
     "export_query_results",
+    "export_sanitized",
+    "get_postmortem_bundle",
     "rebuild_session_insights",
     "maintenance_preview",
     "maintenance_execute",
