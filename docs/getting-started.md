@@ -39,14 +39,14 @@ rendered in your pager.
 List recent sessions with natural-language time filters:
 
 ```bash
-polylogue --since yesterday list
-polylogue --since "last week" -p claude-code list
+polylogue --since yesterday read --all
+polylogue --since "last week" --origin claude-code-session read --all
 ```
 
 Limit and format:
 
 ```bash
-polylogue --since 2026-01 --limit 5 list --format json
+polylogue --since 2026-01 --limit 5 read --all --format json
 ```
 
 ## First cost check
@@ -91,7 +91,7 @@ polylogued status
 | `polylogue --since yesterday read --all` | Batch export |
 | `polylogued run` | Start the daemon |
 | `polylogued status` | Daemon health check |
-| `polylogue <id> show` | Display full session |
+| `polylogue --id <id> read --view transcript` | Display full session |
 
 ## Configuration
 
