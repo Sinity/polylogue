@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 from devtools.visual_vhs import (
+    VHSTape,
     check_vhs_available,
     default_tape_specs,
     generate_all_tapes,
@@ -61,14 +62,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.capture:
         if not check_vhs_available():
+            # GIF capture is an optional, best-effort step: the tapes are the
+            # committed artifact and were written above. A missing `vhs` binary
+            # is a soft skip, not a failure, so the tapes still count as success.
             print(
-                "visual-tapes: 'vhs' binary not found in PATH; skipping GIF capture",
+                "visual-tapes: 'vhs' binary not found in PATH; tapes written, GIF capture skipped",
                 file=sys.stderr,
             )
-            return 1
+            return 0
         failures: list[str] = []
         for spec in specs:
-            tape_path = output_dir / f"{spec.name}.tape"
+            tape_path = output_dir / VHSTape(spec_name=spec.name, content="").filename
             gif_path = output_dir / f"{spec.name}.gif"
             if not run_vhs_capture(tape_path, gif_path):
                 failures.append(spec.name)
