@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 import json
+import logging
 import sqlite3
 import uuid
 from collections.abc import AsyncIterator, Iterable, Sequence
@@ -64,6 +65,7 @@ if TYPE_CHECKING:
     from polylogue.context.compiler import ContextImage, ContextSpec, RecoveryContextCompilation
     from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport
     from polylogue.insights.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
+    from polylogue.insights.postmortem import PostmortemBundle
     from polylogue.insights.readiness import InsightReadinessQuery, InsightReadinessReport
     from polylogue.insights.resume import ResumeBrief, ResumeCandidate
     from polylogue.insights.transforms import (
@@ -209,6 +211,9 @@ _NOISY_REPO_LABELS = {
     "tmp",
     "var",
 }
+
+
+logger = logging.getLogger(__name__)
 
 
 class SessionNotFoundError(PolylogueError):
@@ -1623,6 +1628,81 @@ class PolylogueArchiveMixin:
             for child in children
         )
         return compile_recovery_digest(session, session_links=session_links)
+
+    async def postmortem_bundle(
+        self,
+        spec: SessionQuerySpec | None = None,
+        *,
+        limit: int | None = None,
+    ) -> PostmortemBundle:
+        """Compile a distilled postmortem bundle over a matched session scope (#2380).
+
+        Resolves the matched session set from ``spec`` (the same summary path
+        ``facets`` uses), batch-fetches profiles, fetches per-session recovery
+        digests for a bounded set, and delegates aggregation to the pure
+        :func:`compile_postmortem_bundle`. The analysis cap defaults to 200
+        sessions; when more match, the bundle is marked ``truncated`` and the
+        drop is logged rather than silently capped.
+        """
+        from polylogue.insights.postmortem import (
+            PostmortemBundle as _PostmortemBundle,
+        )
+        from polylogue.insights.postmortem import (
+            PostmortemScope,
+            compile_postmortem_bundle,
+        )
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        cap = limit if limit is not None and limit > 0 else 200
+
+        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
+            if spec is not None and spec.has_filters():
+                summaries = _archive_list_summaries_for_spec(archive, spec, default_limit=1_000_000)
+            else:
+                summaries = archive.list_summaries(limit=1_000_000)
+
+        session_ids: list[str] = []
+        seen: set[str] = set()
+        for summary in summaries:
+            if summary.session_id in seen:
+                continue
+            seen.add(summary.session_id)
+            session_ids.append(summary.session_id)
+
+        matched = len(session_ids)
+        truncated = matched > cap
+        dropped = matched - cap if truncated else 0
+        analyzed_ids = session_ids[:cap]
+        if truncated:
+            logger.warning(
+                "postmortem_bundle truncated: matched=%d cap=%d dropped=%d dropped_session_ids=%s",
+                matched,
+                cap,
+                dropped,
+                session_ids[cap:],
+            )
+
+        profiles_map = await self.repository.get_session_profiles_batch(analyzed_ids)
+        profiles = [profiles_map[sid] for sid in analyzed_ids if sid in profiles_map]
+
+        digests: dict[str, RecoveryDigest] = {}
+        for sid in analyzed_ids:
+            digest = await self.recovery_digest(sid)
+            if digest is not None:
+                digests[sid] = digest
+
+        scope = PostmortemScope(
+            since=spec.since if spec is not None else None,
+            until=spec.until if spec is not None else None,
+            query=_archive_text_query(spec) if spec is not None else None,
+            matched_session_count=matched,
+            analyzed_session_count=len(profiles),
+            truncated=truncated,
+            dropped_session_count=dropped,
+        )
+        bundle = compile_postmortem_bundle(profiles, digests, scope=scope)
+        assert isinstance(bundle, _PostmortemBundle)
+        return bundle
 
     async def recovery_report(self, session_id: str, preset: RecoveryReportPreset) -> str | None:
         """Render one deterministic recovery report preset for a session."""
