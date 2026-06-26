@@ -62,12 +62,12 @@ jobs:
           echo "Bumping homebrew formula to polylogue ${version}"
 
       - name: Check out upstream repo (for the template + README links)
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           path: upstream
 
       - name: Check out homebrew tap repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: Sinity/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
