@@ -7,6 +7,7 @@ VERB_NAMES: frozenset[str] = frozenset(
         "analyze",
         "continue",
         "delete",
+        "export",
         "mark",
         "read",
         "select",
