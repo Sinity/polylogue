@@ -276,10 +276,10 @@ def test_analyze_postmortem_json_has_stable_headline_keys(
         "cache_read_tokens",
         "cache_write_tokens",
     }
-    # degraded fields never fabricate a value
+    # longest_tool_gap still degrades; pathology fields carry an explicit status
     assert bundle["longest_tool_gap"]["status"] == "unavailable"
-    assert bundle["wasted_loop"]["status"] == "no_signal"
-    assert bundle["failure_mode"]["status"] == "no_signal"
+    assert bundle["wasted_loop"]["status"] in {"detected", "clean", "unavailable"}
+    assert bundle["failure_mode"]["status"] in {"detected", "clean", "unavailable"}
 
 
 def test_analyze_facets_no_idf_omits_idf(runner: CliRunner, seeded_db_env: Path) -> None:

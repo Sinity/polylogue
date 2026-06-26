@@ -1,10 +1,11 @@
 """Distilled agent-session postmortem bundle (#2380).
 
 One compact, shareable artifact over a matched session scope. Every headline
-metric carries at least one drillable :class:`EvidenceRef`. Two fields that
-depend on the not-yet-built pathology detector (#2383) — ``failure_mode`` and
-``wasted_loop`` — degrade honestly (null with an explicit status) rather than
-fabricating a signal. ``longest_tool_gap`` likewise degrades in v0 because the
+metric carries at least one drillable :class:`EvidenceRef`. The ``failure_mode``
+and ``wasted_loop`` fields are populated by the #2383 pathology detectors
+(:mod:`polylogue.insights.pathology`) run over the recovery-digest run
+projections; they report ``detected``/``clean``/``unavailable`` rather than
+fabricating a signal. ``longest_tool_gap`` still degrades in v0 because the
 session profile and recovery digest do not carry per-tool-call timestamps.
 
 The aggregator :func:`compile_postmortem_bundle` is pure: it consumes
@@ -21,19 +22,22 @@ from typing import TYPE_CHECKING, Literal
 
 from polylogue.core.refs import EvidenceRef
 from polylogue.insights.archive_models import ArchiveInsightModel
+from polylogue.insights.pathology import PathologyFinding, compile_pathology_report
 
 if TYPE_CHECKING:
     from polylogue.archive.session.models import SessionProfile
     from polylogue.insights.transforms import RecoveryDigest
 
-POSTMORTEM_SCHEMA_VERSION = 1
+POSTMORTEM_SCHEMA_VERSION = 2
 
 # Bounded number of evidence refs attached to an aggregate metric so a
 # whole-archive scope does not emit an unbounded ref list.
 _MAX_AGGREGATE_EVIDENCE = 5
 
 # Reasons used when a field degrades honestly instead of fabricating a value.
-_PATHOLOGY_REASON = "pathology detector (#2383) not implemented; no signal computed in v0"
+_PATHOLOGY_UNAVAILABLE_REASON = (
+    "no run projection available in scope; pathology detection needs recovery-digest evidence"
+)
 _TOOL_GAP_REASON = (
     "per-tool-call timestamps are not present in the session profile or recovery "
     "digest; longest_tool_gap is not cheaply derivable in v0"
@@ -123,14 +127,28 @@ class SubagentBranchMetric(ArchiveInsightModel):
 class DegradedField(ArchiveInsightModel):
     """A headline field with no signal — null value, explicit status, reason.
 
-    Used for fields that must never be fabricated: ``failure_mode`` and
-    ``wasted_loop`` (await the #2383 pathology detector) and ``longest_tool_gap``
-    (no per-tool-call timing in v0).
+    Used for ``longest_tool_gap`` (no per-tool-call timing in v0).
     """
 
     value: None = None
     status: Literal["no_signal", "unavailable"]
     reason: str
+
+
+class PathologyField(ArchiveInsightModel):
+    """A pathology headline field populated by the #2383 detectors.
+
+    ``status`` is ``detected`` when one or more findings exist, ``clean`` when the
+    detectors ran but found nothing, and ``unavailable`` when there was no run
+    projection to analyze. ``count`` is the number of findings; ``by_kind`` and
+    ``detail`` describe the distribution; ``evidence_refs`` drill into examples.
+    """
+
+    status: Literal["detected", "clean", "unavailable"]
+    count: int = 0
+    detail: str = ""
+    by_kind: dict[str, int] = {}
+    evidence_refs: tuple[EvidenceRef, ...] = ()
 
 
 class PostmortemBundle(ArchiveInsightModel):
@@ -145,8 +163,32 @@ class PostmortemBundle(ArchiveInsightModel):
     top_expensive_session: TopExpensiveSessionMetric
     subagent_branch_count: SubagentBranchMetric
     longest_tool_gap: DegradedField
-    wasted_loop: DegradedField
-    failure_mode: DegradedField
+    wasted_loop: PathologyField
+    failure_mode: PathologyField
+
+
+def _pathology_field(findings: Sequence[PathologyFinding]) -> PathologyField:
+    """Build a postmortem pathology field from detector findings."""
+    if not findings:
+        return PathologyField(status="clean", detail="detectors ran; no pathology found")
+    by_kind: dict[str, int] = {}
+    refs: list[EvidenceRef] = []
+    seen: set[tuple[str, str | None]] = set()
+    for finding in findings:
+        by_kind[finding.kind] = by_kind.get(finding.kind, 0) + 1
+        for ref in finding.evidence_refs:
+            key = (ref.session_id, ref.message_id)
+            if key not in seen and len(refs) < _MAX_AGGREGATE_EVIDENCE:
+                seen.add(key)
+                refs.append(ref)
+    detail = ", ".join(f"{kind}={count}" for kind, count in sorted(by_kind.items()))
+    return PathologyField(
+        status="detected",
+        count=len(findings),
+        detail=detail,
+        by_kind=by_kind,
+        evidence_refs=tuple(refs),
+    )
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -291,6 +333,17 @@ def compile_postmortem_bundle(
         evidence_refs=tuple(subagent_refs) if subagent_refs else session_refs[:1],
     )
 
+    # --- pathology detection (#2383) ----------------------------------------
+    # The recovery digests carry the typed run projection the detectors need.
+    projections = [digests[p.session_id].run_projection for p in profiles if p.session_id in digests]
+    if projections:
+        report = compile_pathology_report(projections)
+        wasted_loop = _pathology_field([f for f in report.findings if f.kind == "wasted_loop"])
+        failure_mode = _pathology_field([f for f in report.findings if f.kind in ("missed_review", "stale_context")])
+    else:
+        wasted_loop = PathologyField(status="unavailable", detail=_PATHOLOGY_UNAVAILABLE_REASON)
+        failure_mode = PathologyField(status="unavailable", detail=_PATHOLOGY_UNAVAILABLE_REASON)
+
     return PostmortemBundle(
         scope=scope,
         session_count=session_count,
@@ -300,13 +353,21 @@ def compile_postmortem_bundle(
         top_expensive_session=top_expensive_session,
         subagent_branch_count=subagent_branch_count,
         longest_tool_gap=DegradedField(status="unavailable", reason=_TOOL_GAP_REASON),
-        wasted_loop=DegradedField(status="no_signal", reason=_PATHOLOGY_REASON),
-        failure_mode=DegradedField(status="no_signal", reason=_PATHOLOGY_REASON),
+        wasted_loop=wasted_loop,
+        failure_mode=failure_mode,
     )
 
 
 def _fmt_degraded(field: DegradedField) -> str:
     return f"{field.status} ({field.reason})"
+
+
+def _fmt_pathology(field: PathologyField) -> str:
+    if field.status == "detected":
+        return f"detected ({field.count}: {field.detail})"
+    if field.status == "clean":
+        return "clean (no pathology found)"
+    return f"unavailable ({field.detail})"
 
 
 def _format_ref(ref: EvidenceRef) -> str:
@@ -378,8 +439,8 @@ def render_postmortem_plain(bundle: PostmortemBundle) -> str:
         lines.append("  repos_touched: (none)")
     lines.append(f"  subagent_branch_count: {bundle.subagent_branch_count.count}")
     lines.append(f"  longest_tool_gap: {_fmt_degraded(bundle.longest_tool_gap)}")
-    lines.append(f"  wasted_loop: {_fmt_degraded(bundle.wasted_loop)}")
-    lines.append(f"  failure_mode: {_fmt_degraded(bundle.failure_mode)}")
+    lines.append(f"  wasted_loop: {_fmt_pathology(bundle.wasted_loop)}")
+    lines.append(f"  failure_mode: {_fmt_pathology(bundle.failure_mode)}")
     evidence = _evidence_index(bundle)
     if evidence:
         lines.append("  evidence:")
@@ -427,8 +488,8 @@ def render_postmortem_markdown(bundle: PostmortemBundle) -> str:
     lines.append(f"| repos_touched | {repos} |")
     lines.append(f"| subagent_branch_count | {bundle.subagent_branch_count.count} |")
     lines.append(f"| longest_tool_gap | {_fmt_degraded(bundle.longest_tool_gap)} |")
-    lines.append(f"| wasted_loop | {_fmt_degraded(bundle.wasted_loop)} |")
-    lines.append(f"| failure_mode | {_fmt_degraded(bundle.failure_mode)} |")
+    lines.append(f"| wasted_loop | {_fmt_pathology(bundle.wasted_loop)} |")
+    lines.append(f"| failure_mode | {_fmt_pathology(bundle.failure_mode)} |")
     lines.append("")
     evidence = _evidence_index(bundle)
     if evidence:

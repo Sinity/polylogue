@@ -17,7 +17,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 4931
+    loc: 4935
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -464,7 +464,7 @@ files:
     owner: archive-semantic
     reason: archive-domain semantics
   - path: polylogue/archive/semantic/pricing.py
-    loc: 689
+    loc: 691
     target: polylogue/archive/semantic/pricing.py
     owner: archive-semantic
     reason: archive-domain semantics
@@ -537,7 +537,7 @@ files:
     owner: archive-session
     reason: archive-domain semantics
   - path: polylogue/archive/session/models.py
-    loc: 323
+    loc: 334
     target: polylogue/archive/session/models.py
     owner: archive-session
     reason: archive-domain semantics
@@ -849,7 +849,7 @@ files:
     target: polylogue/cli/query_stats.py
     owner: stable
   - path: polylogue/cli/query_verbs.py
-    loc: 1874
+    loc: 1876
     target: polylogue/cli/query_verbs.py
     owner: stable
   - path: polylogue/cli/read_view_handlers.py
@@ -1405,7 +1405,7 @@ files:
     target: polylogue/demo/script.py
     owner: stable
   - path: polylogue/demo/seed.py
-    loc: 83
+    loc: 180
     target: polylogue/demo/seed.py
     owner: stable
   - path: polylogue/demo/verify.py
@@ -1426,7 +1426,7 @@ files:
     target: polylogue/export/__init__.py
     owner: stable
   - path: polylogue/export/sanitize.py
-    loc: 503
+    loc: 561
     target: polylogue/export/sanitize.py
     owner: stable
   - path: polylogue/insights/__init__.py
@@ -1486,8 +1486,12 @@ files:
     loc: 509
     target: polylogue/insights/otlp_correlation.py
     owner: stable
+  - path: polylogue/insights/pathology.py
+    loc: 222
+    target: polylogue/insights/pathology.py
+    owner: stable
   - path: polylogue/insights/postmortem.py
-    loc: 460
+    loc: 523
     target: polylogue/insights/postmortem.py
     owner: stable
   - path: polylogue/insights/provenance.py
@@ -1636,7 +1640,7 @@ files:
     target: polylogue/mcp/server_context_tools.py
     owner: stable
   - path: polylogue/mcp/server_insight_tools.py
-    loc: 1064
+    loc: 1112
     target: polylogue/mcp/server_insight_tools.py
     owner: stable
   - path: polylogue/mcp/server_maintenance_tools.py
@@ -1644,7 +1648,7 @@ files:
     target: polylogue/mcp/server_maintenance_tools.py
     owner: stable
   - path: polylogue/mcp/server_mutation_tools.py
-    loc: 872
+    loc: 940
     target: polylogue/mcp/server_mutation_tools.py
     owner: stable
   - path: polylogue/mcp/server_prompts.py

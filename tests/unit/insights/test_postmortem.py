@@ -213,14 +213,14 @@ def test_compile_postmortem_bundle_populates_every_headline_field() -> None:
     assert bundle.subagent_branch_count.evidence_refs
     assert bundle.subagent_branch_count.evidence_refs[0].session_id == "codex-session:b"
 
-    # degraded fields: null value + explicit status, never fabricated
+    # longest_tool_gap stays degraded (no per-tool timing in v0)
     assert bundle.longest_tool_gap.value is None
     assert bundle.longest_tool_gap.status == "unavailable"
     assert bundle.longest_tool_gap.reason
-    assert bundle.wasted_loop.value is None
-    assert bundle.wasted_loop.status == "no_signal"
-    assert bundle.failure_mode.value is None
-    assert bundle.failure_mode.status == "no_signal"
+    # pathology fields: detectors ran over the digest run projection (a subagent
+    # with no failed tests / unaddressed reviews / lossy context) → clean
+    assert bundle.wasted_loop.status == "clean"
+    assert bundle.failure_mode.status == "clean"
 
     # AC1: every headline metric that carries a value has >=1 drillable ref.
     for metric in (
@@ -258,13 +258,11 @@ def test_compile_postmortem_bundle_degrades_without_signal() -> None:
     # no subagent evidence invented
     assert bundle.subagent_branch_count.count == 0
 
-    # the three never-fabricated fields
+    # longest_tool_gap degrades; pathology fields are unavailable with no digests
     assert bundle.longest_tool_gap.value is None
     assert bundle.longest_tool_gap.status == "unavailable"
-    assert bundle.wasted_loop.value is None
-    assert bundle.wasted_loop.status == "no_signal"
-    assert bundle.failure_mode.value is None
-    assert bundle.failure_mode.status == "no_signal"
+    assert bundle.wasted_loop.status == "unavailable"
+    assert bundle.failure_mode.status == "unavailable"
 
     # no repos, no wall span
     assert bundle.repos_touched == ()
@@ -309,9 +307,14 @@ def test_postmortem_bundle_json_envelope_has_stable_headline_keys() -> None:
 
     shipped = model_json_document(bundle, exclude_none=True)
     assert expected_keys <= set(shipped)
-    for field in ("longest_tool_gap", "wasted_loop", "failure_mode"):
-        degraded = shipped[field]
-        assert isinstance(degraded, dict)
-        assert degraded["status"] in {"no_signal", "unavailable"}
-        assert degraded["reason"]
-        assert degraded.get("value") is None
+    # longest_tool_gap is the remaining DegradedField (status + reason, no value)
+    gap = shipped["longest_tool_gap"]
+    assert isinstance(gap, dict)
+    assert gap["status"] in {"no_signal", "unavailable"}
+    assert gap["reason"]
+    assert gap.get("value") is None
+    # pathology fields carry an explicit detected/clean/unavailable status
+    for field in ("wasted_loop", "failure_mode"):
+        pathology = shipped[field]
+        assert isinstance(pathology, dict)
+        assert pathology["status"] in {"detected", "clean", "unavailable"}
