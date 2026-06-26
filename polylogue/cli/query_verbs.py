@@ -1341,6 +1341,12 @@ def _emit_candidate_judgment(
     is_flag=True,
     help="Project the current billing cycle for a configured subscription plan.",
 )
+@click.option(
+    "--postmortem",
+    "show_postmortem",
+    is_flag=True,
+    help="Distilled postmortem bundle over the matched session scope (#2380).",
+)
 @click.option("--plan", "plan_name", default=None, help="Subscription plan name for --cost-outlook.")
 @click.option(
     "--method",
@@ -1390,6 +1396,7 @@ def analyze_verb(
     include_deferred: bool = False,
     output_format: str | None = None,
     limit: int | None = None,
+    show_postmortem: bool = False,
 ) -> None:
     """Analyze matched sessions: statistics, facets, and aggregates.
 
@@ -1415,6 +1422,7 @@ def analyze_verb(
                 stats_by is not None,
                 show_facets,
                 cost_outlook,
+                show_postmortem,
                 plan_name is not None,
                 method != "linear",
                 no_idf,
@@ -1452,10 +1460,12 @@ def analyze_verb(
     ):
         return
 
-    selected_modes = sum(bool(flag) for flag in (count_only, show_facets, cost_outlook, stats_by is not None))
+    selected_modes = sum(
+        bool(flag) for flag in (count_only, show_facets, cost_outlook, show_postmortem, stats_by is not None)
+    )
     if selected_modes > 1:
         raise click.UsageError(
-            "Choose only one analyze mode: --count, --facets, --cost-outlook, --by, or default stats."
+            "Choose only one analyze mode: --count, --facets, --cost-outlook, --postmortem, --by, or default stats."
         )
     if not cost_outlook and plan_name is not None:
         raise click.UsageError("`analyze --plan` requires --cost-outlook.")
@@ -1469,6 +1479,23 @@ def analyze_verb(
         if output_format:
             updated = updated.with_param_updates(output_format=output_format)
         _execute_query_verb(ctx, updated)
+        return
+
+    if show_postmortem:
+        if output_format not in (None, "json", "markdown", "plaintext"):
+            raise click.UsageError("`analyze --postmortem` only supports terminal text, --format json, or markdown")
+        from polylogue.cli.shared.machine_errors import success
+        from polylogue.insights.postmortem import render_postmortem_markdown, render_postmortem_plain
+        from polylogue.surfaces.payloads import model_json_document
+
+        spec = request.query_spec()
+        bundle = run_coroutine_sync(env.polylogue.postmortem_bundle(spec, limit=limit))
+        if output_format == "json":
+            click.echo(success({"postmortem": model_json_document(bundle, exclude_none=True)}).to_json())
+        elif output_format == "markdown":
+            click.echo(render_postmortem_markdown(bundle))
+        else:
+            click.echo(render_postmortem_plain(bundle))
         return
 
     if limit is not None:

@@ -234,6 +234,8 @@ Options:
                                   result set; cheap families are default.
   --cost-outlook                  Project the current billing cycle for a
                                   configured subscription plan.
+  --postmortem                    Distilled postmortem bundle over the matched
+                                  session scope (#2380).
   --plan TEXT                     Subscription plan name for --cost-outlook.
   --method [linear|trailing-7d-mean|eom-naive]
                                   Projection method for --cost-outlook.
