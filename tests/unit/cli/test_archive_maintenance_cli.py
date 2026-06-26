@@ -548,6 +548,77 @@ def test_blob_reference_restore_direct_cli_apply_writes_hash_checked_blob(
     assert blob_path.read_bytes() == source.read_bytes()
 
 
+def test_blob_reference_prune_orphans_cli_dry_run_keeps_refs(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    source = cli_workspace["archive_root"] / "exports" / "recoverable.json"
+    _seed_blob_reference_debt(cli_workspace["archive_root"], source)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "blob-reference-prune-orphans",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["mode"] == "blob_reference_prune_orphans"
+    assert payload["mutates"] is False
+    assert payload["dry_run"] is True
+    assert payload["missing_orphan_refs"] == 1
+    assert payload["pruned_refs"] == 0
+    with sqlite3.connect(cli_workspace["archive_root"] / "source.db") as conn:
+        refs = conn.execute("SELECT source_path FROM blob_refs ORDER BY source_path").fetchall()
+    assert refs == [(str(source),), (str(cli_workspace["archive_root"] / "missing-browser-capture.json"),)]
+
+
+def test_blob_reference_prune_orphans_cli_apply_quarantines_deleted_refs(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    source = cli_workspace["archive_root"] / "exports" / "recoverable.json"
+    _seed_blob_reference_debt(cli_workspace["archive_root"], source)
+    quarantine_file = cli_workspace["archive_root"] / "quarantine" / "blob-refs.jsonl"
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "blob-reference-prune-orphans",
+            "--yes",
+            "--quarantine-file",
+            str(quarantine_file),
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["mutates"] is True
+    assert payload["dry_run"] is False
+    assert payload["missing_orphan_refs"] == 1
+    assert payload["pruned_refs"] == 1
+    assert payload["quarantine_path"] == str(quarantine_file)
+    exported = [json.loads(line) for line in quarantine_file.read_text(encoding="utf-8").splitlines()]
+    assert exported[0]["ref_id"] == "raw-gone"
+    assert exported[0]["source_path"].endswith("missing-browser-capture.json")
+    with sqlite3.connect(cli_workspace["archive_root"] / "source.db") as conn:
+        refs = conn.execute("SELECT source_path FROM blob_refs ORDER BY source_path").fetchall()
+    assert refs == [(str(source),)]
+
+
 def test_archive_init_cli_is_dry_run_without_yes(cli_workspace: dict[str, Path], cli_runner: CliRunner) -> None:
     _stage_uninitialized_archive(cli_workspace)
     result = cli_runner.invoke(
