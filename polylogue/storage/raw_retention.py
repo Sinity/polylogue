@@ -70,6 +70,12 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     return row is not None
 
 
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    if not _table_exists(conn, table):
+        return False
+    return any(row[1] == column for row in conn.execute(f"PRAGMA table_info({table})").fetchall())
+
+
 def _blob_hash_text(value: object) -> str | None:
     if value is None:
         return None
@@ -210,6 +216,10 @@ def cleanup_superseded_raw_snapshots(
         )
 
     placeholders = ", ".join("?" for _ in raw_ids)
+    if _column_exists(conn, "blob_refs", "ref_id"):
+        conn.execute(f"DELETE FROM blob_refs WHERE ref_id IN ({placeholders})", raw_ids)
+    elif _column_exists(conn, "blob_refs", "raw_id"):
+        conn.execute(f"DELETE FROM blob_refs WHERE raw_id IN ({placeholders})", raw_ids)
     conn.execute(f"DELETE FROM raw_sessions WHERE raw_id IN ({placeholders})", raw_ids)
     conn.commit()
 

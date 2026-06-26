@@ -32,12 +32,12 @@ def _ensure_archive_source_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """CREATE TABLE blob_refs (
             blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
-            raw_id TEXT NOT NULL REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
+            ref_id TEXT NOT NULL,
             ref_type TEXT NOT NULL CHECK(ref_type IN ('raw_payload', 'attachment', 'sidecar')),
             source_path TEXT,
             size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
             acquired_at_ms INTEGER NOT NULL,
-            PRIMARY KEY(blob_hash, raw_id, ref_type)
+            PRIMARY KEY(blob_hash, ref_type, ref_id)
         ) STRICT"""
     )
 
@@ -64,7 +64,7 @@ def _insert_archive_raw_session(
     conn.execute(
         """
         INSERT INTO blob_refs (
-            blob_hash, raw_id, ref_type, source_path, size_bytes, acquired_at_ms
+            blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms
         ) VALUES (?, ?, 'raw_payload', ?, ?, ?)
         """,
         (bytes.fromhex(blob_hash), raw_id, str(source_path), blob_size, acquired_at_ms),
@@ -140,6 +140,8 @@ def test_superseded_raw_snapshot_cleanup_keeps_newest_per_source(tmp_path: Path)
         str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions ORDER BY raw_id").fetchall()
     }
     assert remaining_raw_ids == {full_new, append_current, missing_old, missing_new}
+    remaining_ref_ids = {str(row[0]) for row in conn.execute("SELECT ref_id FROM blob_refs ORDER BY ref_id").fetchall()}
+    assert remaining_ref_ids == {full_new, append_current, missing_old, missing_new}
 
 
 def test_superseded_raw_snapshot_cleanup_preserves_index_referenced_raws(tmp_path: Path) -> None:
@@ -240,7 +242,9 @@ def test_archive_cleanup_compacts_append_snapshot_without_session_events(tmp_pat
     assert not blob_store.exists(old_raw)
     assert blob_store.exists(current_raw)
     assert conn.execute("SELECT 1 FROM raw_sessions WHERE raw_id = ?", (old_raw,)).fetchone() is None
+    assert conn.execute("SELECT 1 FROM blob_refs WHERE ref_id = ?", (old_raw,)).fetchone() is None
     assert conn.execute("SELECT 1 FROM raw_sessions WHERE raw_id = ?", (current_raw,)).fetchone() is not None
+    assert conn.execute("SELECT 1 FROM blob_refs WHERE ref_id = ?", (current_raw,)).fetchone() is not None
 
 
 def test_superseded_raw_snapshot_cleanup_uses_archive_blob_hashes(tmp_path: Path) -> None:
@@ -288,4 +292,4 @@ def test_superseded_raw_snapshot_cleanup_uses_archive_blob_hashes(tmp_path: Path
     assert not blob_store.exists(old_blob)
     assert blob_store.exists(current_blob)
     assert conn.execute("SELECT 1 FROM raw_sessions WHERE raw_id = 'raw-old-not-a-blob-hash'").fetchone() is None
-    assert conn.execute("SELECT 1 FROM blob_refs WHERE raw_id = 'raw-old-not-a-blob-hash'").fetchone() is None
+    assert conn.execute("SELECT 1 FROM blob_refs WHERE ref_id = 'raw-old-not-a-blob-hash'").fetchone() is None
