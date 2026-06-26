@@ -9,6 +9,20 @@
 **Polylogue is a local archive and cockpit for your AI sessions and agent
 work.**
 
+> **Skim this in 7 minutes.** Every AI tool you use scatters its transcripts —
+> one JSON dump per vendor, one log stream per coding agent, one half-broken
+> export per browser plugin. Polylogue pulls all of them into a single
+> searchable archive on your own machine, then lets you ask what an agent did
+> yesterday: what it cost, what it touched, what it tested, and what to resume
+> next.
+>
+> - **30 seconds** — the bold line above: local, source-agnostic, idempotent.
+> - **3 minutes** — this section, the [one-command demo](#try-it-in-one-command),
+>   and the [architecture diagram](docs/architecture.md).
+> - **30 minutes** — [architecture.md](docs/architecture.md),
+>   [internals.md](docs/internals.md), and [search.md](docs/search.md). New
+>   vocabulary is translated in the [glossary](docs/glossary.md).
+
 It ingests the session files that ChatGPT, Claude (web and Claude Code),
 Codex, Gemini, Google Drive exports, and Antigravity already leave on disk,
 normalizes them into a content-addressed SQLite archive, and gives you
@@ -24,6 +38,36 @@ machine, against your data.
 - **Idempotent.** Re-ingesting the same data is a no-op; content hashes
   prevent duplication, and editable metadata (tags, summaries) does not
   trigger re-import.
+
+## Try it in one command
+
+No real data and no API key required. This seeds a throwaway, deterministic
+demo archive (three sessions — one each from ChatGPT, Claude Code, and Codex)
+and shows them coexisting in a single queryable substrate:
+
+```bash
+export POLYLOGUE_ARCHIVE_ROOT="$(mktemp -d)/archive"
+polylogue demo seed --root "$POLYLOGUE_ARCHIVE_ROOT" --force --with-overlays
+polylogue analyze --facets
+```
+
+```text
+Facets (global) — matched result set:
+  sessions: 3  messages: 19
+  Provider origins:
+    chatgpt-export: 1
+    claude-code-session: 1
+    codex-session: 1
+  User tags:
+    pytest-triage: 1
+```
+
+From here, `polylogue find "pytest" then read --view messages` renders the
+matched transcript, and `polylogue demo verify --root "$POLYLOGUE_ARCHIVE_ROOT"`
+checks the same semantic facts CI does. The screencast media for these flows is
+regenerable from committed tape specs with a single command —
+`devtools render visual-tapes --capture` (writes `.tape` files, and `.gif`s when
+the `vhs` binary is present).
 
 ## Why this exists
 

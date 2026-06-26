@@ -13,6 +13,45 @@ Polylogue is a local archive for AI sessions. The system has four rings:
 3. user and machine surfaces
 4. verification and maintenance
 
+```mermaid
+flowchart TD
+    SRC["Source files<br/>ChatGPT · Claude · Codex · Gemini · Drive · Antigravity"]
+
+    subgraph R1["Ring 1 · Archive substrate"]
+        DETECT["detect_provider()<br/>shape-based dispatch"]
+        PARSE["provider parsers<br/>normalize → content hash (NFC)"]
+        STORE[("split-tier SQLite<br/>source · index · embeddings · user · ops<br/>+ content-addressed blob store")]
+        DETECT --> PARSE --> STORE
+    end
+
+    subgraph R2["Ring 2 · Derived read models"]
+        INSIGHTS["session profiles · work events<br/>phases · threads · cost rollups<br/>FTS5 + vector indexes"]
+    end
+
+    subgraph R3["Ring 3 · Surfaces"]
+        CLI["CLI<br/>find QUERY then VERB"]
+        MCP["MCP bridge"]
+        API["Python API"]
+        DAEMON["daemon HTTP reader<br/>+ /metrics"]
+    end
+
+    subgraph R4["Ring 4 · Verification & maintenance"]
+        VERIFY["schemas · demo fixtures<br/>devtools lanes · tests"]
+    end
+
+    SRC --> DETECT
+    STORE --> INSIGHTS
+    INSIGHTS --> R3
+    STORE --> R3
+    R4 -.audits.-> R1
+    R4 -.audits.-> R2
+```
+
+Source evidence and user-authored state (rings 1 and the `user.db` tier) are
+durable; indexes, insight read models, embeddings, and daemon telemetry are
+rebuildable. Surfaces (ring 3) are leaf adapters — they read through the same
+archive/query substrate rather than owning their own stores.
+
 ## Rings
 
 ### 1. Archive Substrate

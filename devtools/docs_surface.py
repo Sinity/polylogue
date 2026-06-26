@@ -20,6 +20,11 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "docs/installation.md",
         "Source checkout, Nix flake, and managed NixOS/Home Manager install paths.",
     ),
+    DocsEntry(
+        "Glossary",
+        "docs/glossary.md",
+        "Plain-language translation of the internal taxonomy, with 30s/3min/30min entry layers.",
+    ),
     DocsEntry("CLI Reference", "docs/cli-reference.md", "Generated command reference from live help output."),
     DocsEntry(
         "Search & Query",
