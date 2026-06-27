@@ -242,8 +242,34 @@ class ArtifactObservationListQuery:
     offset: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class RunProjectionListQuery:
+    """Canonical selection for materialized run-projection read-models.
+
+    One query shape covers ``session_runs``, ``session_observed_events``, and
+    ``session_context_snapshots``; each reader honours only the filter fields
+    that map to its table columns and ignores the rest. ``sort`` selects
+    ``position`` (default) or ``recency`` ordering.
+    """
+
+    session_id: str | None = None
+    run_ref: str | None = None
+    harness: str | None = None
+    role: str | None = None
+    status: str | None = None
+    kind: str | None = None
+    delivery_state: str | None = None
+    boundary: str | None = None
+    inheritance_mode: str | None = None
+    query: str | None = None
+    sort: str = "position"
+    limit: int | None = 50
+    offset: int = 0
+
+
 __all__ = [
     "ArtifactObservationListQuery",
+    "RunProjectionListQuery",
     "SessionCountQueryKwargs",
     "SessionListQueryKwargs",
     "SessionRecordQuery",

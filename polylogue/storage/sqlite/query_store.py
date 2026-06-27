@@ -26,6 +26,9 @@ from polylogue.storage.sqlite.query_store_archive import SQLiteQueryStoreArchive
 from polylogue.storage.sqlite.query_store_insight_profiles import (
     SQLiteQueryStoreInsightProfilesMixin,
 )
+from polylogue.storage.sqlite.query_store_insight_run_projection import (
+    SQLiteQueryStoreInsightRunProjectionMixin,
+)
 from polylogue.storage.sqlite.query_store_insight_timelines import (
     SQLiteQueryStoreInsightTimelinesMixin,
 )
@@ -36,6 +39,7 @@ class SQLiteQueryStore(
     SQLiteQueryStoreArchiveMixin,
     SQLiteQueryStoreInsightProfilesMixin,
     SQLiteQueryStoreInsightTimelinesMixin,
+    SQLiteQueryStoreInsightRunProjectionMixin,
     SQLiteQueryStoreMaintenanceMixin,
 ):
     """Canonical low-level read/query API for SQLite archive state."""
