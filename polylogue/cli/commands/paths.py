@@ -8,6 +8,8 @@ from pathlib import Path
 
 import click
 
+from polylogue.storage import archive_layout
+
 
 @click.command("paths")
 @click.option(
@@ -51,16 +53,18 @@ def paths_command(output_format: str) -> None:
     missing_tiers = [name for name, path in tier_paths.items() if not path.exists()]
     archive_ready = source_db.exists() and db.exists()
     final_shape_ready = not missing_tiers
-    archive_layout_blockers = _archive_layout_blockers(
-        present_tiers=present_tiers,
-        missing_tiers=missing_tiers,
+    missing_backup_required = [tier for tier in archive_layout.BACKUP_REQUIRED_TIERS if tier in missing_tiers]
+    layout_blockers = archive_layout.archive_layout_blockers(
+        present_count=len(present_tiers),
+        final_shape_ready=final_shape_ready,
+        missing_backup_required=missing_backup_required,
     )
-    archive_layout_ready = not archive_layout_blockers
-    storage_layout = _storage_layout(
-        present_tiers=present_tiers,
+    archive_layout_ready = not layout_blockers
+    storage_layout = archive_layout.classify_storage_layout(
+        present_count=len(present_tiers),
         final_shape_ready=final_shape_ready,
     )
-    active_database_role = _active_database_role(active_db, tier_paths=tier_paths)
+    active_database_role = archive_layout.active_tier_role(active_db, tier_paths)
     blob = blob_store_root().resolve()
     config_dir = config_home().resolve()
     toml_path = (config_dir / "polylogue.toml").resolve()
@@ -88,7 +92,7 @@ def paths_command(output_format: str) -> None:
             "archive_ready": archive_ready,
             "final_shape_ready": final_shape_ready,
             "archive_layout_ready": archive_layout_ready,
-            "archive_layout_blockers": archive_layout_blockers,
+            "archive_layout_blockers": layout_blockers,
             "present_tiers": present_tiers,
             "missing_tiers": missing_tiers,
             "source_database_path": str(source_db),
@@ -124,7 +128,7 @@ def paths_command(output_format: str) -> None:
     if missing_tiers and present_tiers:
         layout_extra += f"; missing={','.join(missing_tiers)}"
     _print_line("Storage layout", storage_layout, extra=layout_extra)
-    layout_status_extra = "ready" if archive_layout_ready else f"blocked={','.join(archive_layout_blockers)}"
+    layout_status_extra = "ready" if archive_layout_ready else f"blocked={','.join(layout_blockers)}"
     _print_line("Archive layout", "ready" if archive_layout_ready else "not ready", extra=layout_status_extra)
     _print_line("Source DB", str(source_db), extra=_size_fmt(source_db) if source_db.exists() else "not found")
     _print_line("Index DB", str(db), extra=_size_fmt(db) if db.exists() else "not found")
@@ -237,37 +241,6 @@ def _parse_mount_source(raw: str) -> str | None:
     if raw.startswith("/"):
         return raw
     return None
-
-
-def _storage_layout(*, present_tiers: list[str], final_shape_ready: bool) -> str:
-    if final_shape_ready:
-        return "archive_complete"
-    if present_tiers:
-        return "archive_partial"
-    return "archive_missing"
-
-
-def _archive_layout_blockers(
-    *,
-    present_tiers: list[str],
-    missing_tiers: list[str],
-) -> list[str]:
-    blockers: list[str] = []
-    if not present_tiers:
-        blockers.append("no_archive_tiers_present")
-    if missing_tiers:
-        blockers.append("missing_archive_tiers")
-    for tier in ("source", "embeddings", "user"):
-        if tier in missing_tiers:
-            blockers.append(f"missing_backup_required_tier:{tier}")
-    return blockers
-
-
-def _active_database_role(active_db: Path, *, tier_paths: dict[str, Path]) -> str:
-    for name, path in tier_paths.items():
-        if active_db == path:
-            return name
-    return "unknown"
 
 
 def _size_fmt(p: Path) -> str:
