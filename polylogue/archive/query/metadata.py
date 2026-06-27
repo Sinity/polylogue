@@ -606,38 +606,10 @@ _SESSION_SCOPED_STRUCTURAL_EXAMPLES: dict[str, str] = {
     "words": "session.words:<=200",
 }
 
-_RUNTIME_SESSION_SCOPED_STRUCTURAL_FIELDS = {
-    "assistant_messages",
-    "assistant_words",
-    "authored_user_messages",
-    "authored_user_words",
-    "cwd",
-    "date",
-    "duration_ms",
-    "id",
-    "messages",
-    "origin",
-    "paste_messages",
-    "repo",
-    "since",
-    "system_messages",
-    "tag",
-    "thinking_messages",
-    "title",
-    "tool_messages",
-    "tool_use_messages",
-    "until",
-    "user_messages",
-    "user_words",
-    "words",
-}
 
-
-def _session_scoped_field_info(*, runtime_transform: bool = False) -> tuple[StructuralQueryFieldInfo, ...]:
+def _session_scoped_field_info() -> tuple[StructuralQueryFieldInfo, ...]:
     fields: list[StructuralQueryFieldInfo] = []
     for field, example in sorted(_SESSION_SCOPED_STRUCTURAL_EXAMPLES.items()):
-        if runtime_transform and field not in _RUNTIME_SESSION_SCOPED_STRUCTURAL_FIELDS:
-            continue
         info = EXPRESSION_FIELD_REGISTRY.get(field)
         description = info["description"] if info is not None else f"Owning session {field} predicate."
         fields.append(
@@ -651,7 +623,6 @@ def _session_scoped_field_info(*, runtime_transform: bool = False) -> tuple[Stru
 
 
 _SCOPED_SESSION_STRUCTURAL_FIELD_INFO = _session_scoped_field_info()
-_RUNTIME_SCOPED_SESSION_STRUCTURAL_FIELD_INFO = _session_scoped_field_info(runtime_transform=True)
 _SCOPED_SESSION_STRUCTURAL_FIELDS = tuple(field.name for field in _SCOPED_SESSION_STRUCTURAL_FIELD_INFO)
 
 
