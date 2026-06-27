@@ -82,6 +82,57 @@ raw rows, or rollups disagree, move the stale index tier aside and rebuild
 `index.db` from `source.db`/raw archives. Do not patch a live archive manually to
 make usage totals line up.
 
+### Codex disjoint billing lanes
+
+Codex (OpenAI) `token_count` events report **overlapping** token counts:
+`input_tokens` is *inclusive* of `cached_input_tokens`, and `output_tokens` is
+*inclusive* of `reasoning_output_tokens`. Verified across the operator's full
+real corpus (1.84M token_count events): `cached <= input` on 100% of rows, and
+`total == input + output` on 98.9% (reasoning is a subset of output, not an
+additional term). Because a coding agent re-sends its whole context every turn,
+cached input is the dominant term — **~96% of Codex input** on the real archive.
+
+The cost model bills `input` and `cache_read` as **separate additive lanes**
+(`pricing.py:_cost_components`, the Anthropic convention where `input` means
+fresh/uncached input). So the rollup subtracts cached out of input —
+`fresh_input = input - cached` — before storing the
+`session_model_usage` lanes. After this mapping `fresh_input + cache_read`
+reconstructs the provider's input exactly, so each token is billed once.
+Storing input inclusive of cached *and* a separate `cache_read` lane would bill
+the cached tokens twice (once at the full input rate, once at the cache-read
+rate); on the real corpus that inflated Codex API-list-equivalent cost **7.69x**
+($76,856 → $591,103). The mapping lives in
+`_provider_usage_disjoint_lanes` (`storage/sqlite/archive_tiers/write.py`).
+
+**Reproduce it.** `scripts/cost_accounting_demo.py` ingests a crafted Codex
+session through the real writer, reads the materialized rollup back, prices it
+with the real catalog, and prints the corrected lanes next to the pre-fix
+double-billed cost — all from hand-checkable token numbers, no mocks:
+
+```bash
+uv run python scripts/cost_accounting_demo.py
+```
+
+A captured run is committed at
+[docs/examples/cost-accounting-demo.txt](examples/cost-accounting-demo.txt)
+(synthetic, no private data).
+
+Operators can cross-verify the real archive against Codex's own authoritative
+token store (`~/.codex/state_5.sqlite`, joined on the thread UUID in the
+`codex-session:<uuid>` session id). On the operator's archive the per-thread
+`MAX(total_tokens)` vs authoritative `tokens_used` ratio has **median 1.000**;
+the aggregate is higher only because the archive retains sessions the live tool
+has pruned (36 B tokens across 96 threads):
+
+```bash
+uv run python scripts/cost_accounting_demo.py \
+  --archive ~/.local/share/polylogue --codex-state ~/.codex/state_5.sqlite
+```
+
+> Existing archives carry rollups computed before this fix; the corrected lanes
+> apply to new ingests. Re-materialize with the fresh-first rebuild path above
+> to update stored cost.
+
 ## Basis Taxonomy
 
 A single estimate carries cost on five independent axes
