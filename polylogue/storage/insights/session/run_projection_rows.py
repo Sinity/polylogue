@@ -34,32 +34,36 @@ def _ref_text(ref: ObjectRef | EvidenceRef | None) -> str | None:
 # (every ref/identifier the runtime haystack searched) so ``text:`` behaviour is
 # equivalent on the SQL path, not silently narrowed.
 def run_search_text(run: ProjectedRun) -> str:
+    # Exact field set of the removed runtime ``text`` matcher for runs (no more,
+    # no less): run/parent/agent/context refs, lineage + evidence refs, transcript,
+    # provider_origin, harness, role, title, cwd, git_branch, status, confidence.
+    # native_session_id / native_parent_session_id were NOT in the runtime ``text``
+    # haystack (they are reachable via their own field predicates), so they stay out.
     return _join_search_text(
-        run.title,
-        run.harness,
-        run.role,
-        run.status,
-        run.provider_origin,
         run.run_ref.format(),
         _ref_text(run.parent_run_ref),
         _ref_text(run.agent_ref),
-        _ref_text(run.context_snapshot_ref),
-        _ref_text(run.transcript_ref),
-        run.native_session_id,
-        run.native_parent_session_id,
+        *(ref.format() for ref in run.lineage_refs),
+        run.provider_origin,
+        run.harness,
+        run.role,
+        run.title,
         run.cwd,
         run.git_branch,
-        *(ref.format() for ref in run.lineage_refs),
+        run.status,
+        run.confidence,
+        _ref_text(run.transcript_ref),
         *(ref.format() for ref in run.evidence_refs),
+        _ref_text(run.context_snapshot_ref),
     )
 
 
 def observed_event_search_text(event: ObservedEvent) -> str:
+    # Exact field set of the removed runtime ``text`` matcher for observed events:
+    # summary + subject/object/evidence refs only. kind / delivery_state / run_ref
+    # are reachable via their own field predicates, not via ``text``.
     return _join_search_text(
-        event.kind,
         event.summary,
-        event.delivery_state,
-        event.run_ref.format(),
         _ref_text(event.subject_ref),
         *(ref.format() for ref in event.object_refs),
         *(ref.format() for ref in event.evidence_refs),
