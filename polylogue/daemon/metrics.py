@@ -86,6 +86,12 @@ from typing import Protocol, TypedDict
 
 from polylogue.daemon.process_start import uptime_seconds
 from polylogue.logging import get_logger
+from polylogue.storage import archive_layout
+from polylogue.storage.archive_layout import (
+    ARCHIVE_ACTIVE_TIER_ROLES,
+    ARCHIVE_LAYOUT_BLOCKER_LABELS,
+    ARCHIVE_STORAGE_LAYOUTS,
+)
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 
 logger = get_logger(__name__)
@@ -95,34 +101,6 @@ logger = get_logger(__name__)
 # backup_required), preserving the source→index→embeddings→user→ops order.
 _ARCHIVE_TIER_FILES: tuple[tuple[str, str, int, bool], ...] = tuple(
     (spec.tier.value, spec.filename, spec.version, spec.backup_required) for spec in ARCHIVE_TIER_SPECS.values()
-)
-
-_ARCHIVE_LAYOUT_BLOCKERS: tuple[str, ...] = (
-    "no_archive_tiers_present",
-    "missing_archive_tiers",
-    "schema_mismatch:source",
-    "schema_mismatch:index",
-    "schema_mismatch:embeddings",
-    "schema_mismatch:user",
-    "schema_mismatch:ops",
-    "missing_backup_required_tier:source",
-    "missing_backup_required_tier:embeddings",
-    "missing_backup_required_tier:user",
-)
-
-_ARCHIVE_STORAGE_LAYOUTS: tuple[str, ...] = (
-    "archive_missing",
-    "archive_partial",
-    "archive_complete",
-)
-
-_ARCHIVE_ACTIVE_TIER_ROLES: tuple[str, ...] = (
-    "source",
-    "index",
-    "embeddings",
-    "user",
-    "ops",
-    "unknown",
 )
 
 _KNOWN_STORAGE_ROUTES: frozenset[str] = frozenset(
@@ -1516,10 +1494,12 @@ def _emit_archive_storage_metrics(lines: list[str], db: Path) -> None:
     )
     archive_ready = present["source"] and present["index"]
     final_shape_ready = all(present.values())
-    storage_layout = _archive_storage_layout(present_count=present_count, final_shape_ready=final_shape_ready)
-    active_tier_role = _archive_active_tier_role(db, tier_paths)
+    storage_layout = archive_layout.classify_storage_layout(
+        present_count=present_count, final_shape_ready=final_shape_ready
+    )
+    active_tier_role = archive_layout.active_tier_role(db, [(tier, path) for tier, path, _, _ in tier_paths])
     active_store = "archive_file_set" if archive_ready else "empty"
-    blockers = _archive_layout_blockers(
+    blockers = archive_layout.archive_layout_blockers(
         present_count=present_count,
         final_shape_ready=final_shape_ready,
         schema_mismatches=schema_mismatches,
@@ -1530,7 +1510,7 @@ def _emit_archive_storage_metrics(lines: list[str], db: Path) -> None:
         name="polylogue_archive_storage_layout",
         help_text="Current archive file-set layout shape.",
         metric_type="gauge",
-        samples=[({"layout": layout}, 1 if layout == storage_layout else 0) for layout in _ARCHIVE_STORAGE_LAYOUTS],
+        samples=[({"layout": layout}, 1 if layout == storage_layout else 0) for layout in ARCHIVE_STORAGE_LAYOUTS],
     )
     _emit_metric(
         lines,
@@ -1554,7 +1534,7 @@ def _emit_archive_storage_metrics(lines: list[str], db: Path) -> None:
         name="polylogue_archive_active_tier_role",
         help_text="Role of the database path used as the active metrics anchor.",
         metric_type="gauge",
-        samples=[({"role": role}, 1 if role == active_tier_role else 0) for role in _ARCHIVE_ACTIVE_TIER_ROLES],
+        samples=[({"role": role}, 1 if role == active_tier_role else 0) for role in ARCHIVE_ACTIVE_TIER_ROLES],
     )
     _emit_metric(
         lines,
@@ -1575,41 +1555,8 @@ def _emit_archive_storage_metrics(lines: list[str], db: Path) -> None:
         name="polylogue_archive_blocker",
         help_text="Archive layout blockers by bounded blocker label.",
         metric_type="gauge",
-        samples=[({"blocker": blocker}, 1 if blocker in blockers else 0) for blocker in _ARCHIVE_LAYOUT_BLOCKERS],
+        samples=[({"blocker": blocker}, 1 if blocker in blockers else 0) for blocker in ARCHIVE_LAYOUT_BLOCKER_LABELS],
     )
-
-
-def _archive_storage_layout(*, present_count: int, final_shape_ready: bool) -> str:
-    if final_shape_ready:
-        return "archive_complete"
-    if present_count:
-        return "archive_partial"
-    return "archive_missing"
-
-
-def _archive_active_tier_role(db: Path, tier_paths: list[tuple[str, Path, int, bool]]) -> str:
-    resolved = db.resolve(strict=False)
-    for tier, path, _expected_version, _backup_required in tier_paths:
-        if resolved == path.resolve(strict=False):
-            return tier
-    return "unknown"
-
-
-def _archive_layout_blockers(
-    *,
-    present_count: int,
-    final_shape_ready: bool,
-    schema_mismatches: list[str],
-    missing_backup_required: list[str],
-) -> set[str]:
-    blockers: set[str] = set()
-    if present_count == 0:
-        blockers.add("no_archive_tiers_present")
-    if not final_shape_ready:
-        blockers.add("missing_archive_tiers")
-    blockers.update(f"schema_mismatch:{tier}" for tier in schema_mismatches)
-    blockers.update(f"missing_backup_required_tier:{tier}" for tier in missing_backup_required)
-    return blockers
 
 
 def _emit_archive_source_index_link_metrics(
