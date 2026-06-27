@@ -438,7 +438,6 @@ _QUERY_VERB_HELP: dict[str, str] = {
     "analyze": "Analyze matched sessions and named facet families.",
     "continue": "Compile a successor-agent continuation report.",
     "delete": "Delete matched sessions.",
-    "export": "Export the matched scope as a fail-closed sanitized bundle.",
     "mark": "Mark selected sessions; review candidates under mark candidates.",
     "read": "Read matched sessions (route to view/destination).",
     "select": "Select one matched session or print candidate identities.",

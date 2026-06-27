@@ -85,6 +85,7 @@ _KNOWN_MINIMAL: dict[str, dict[str, object]] = {
     "build_context_pack": {"project_repo": "test"},
     "readiness_check": {},
     "stats": {},
+    "get_postmortem_bundle": {},
 }
 
 

@@ -1613,6 +1613,17 @@
                 "deleted_count": 0,
                 "candidate_count": 0,
                 "rationale": "assertion lifecycle claim"
+              },
+              {
+                "name": "pathologies",
+                "storage": "assertions",
+                "assertion_kind": "pathology",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
               }
             ]
           }
