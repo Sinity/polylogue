@@ -141,7 +141,15 @@ def select_pending_session_window(
     max_sessions: int | None = None,
     max_messages: int | None = None,
 ) -> list[PendingSession]:
-    """Return one bounded, resumable pending-session window."""
+    """Return one bounded, resumable pending-session window.
+
+    Windows are ordered newest-first (``updated_at_ms`` DESC). When the
+    embedding budget is smaller than the corpus — the common case, since a
+    full embed of a large archive can exceed the provider's free-token
+    allotment — newest-first ensures the most query-relevant (recently
+    active) sessions are embedded first. It is also correct for the daemon's
+    ambient catch-up, which should cover just-ingested sessions promptly.
+    """
 
     pending: list[PendingSession] = []
     message_total = 0
@@ -168,7 +176,7 @@ def select_pending_session_window(
             {join_clause}
             WHERE {where_clause}
               {id_filter}
-            ORDER BY COALESCE(c.updated_at_ms, 0), c.session_id
+            ORDER BY COALESCE(c.updated_at_ms, 0) DESC, c.session_id
             """,
             tuple(params),
         )
@@ -183,7 +191,7 @@ def select_pending_session_window(
             {join_clause}
             WHERE {where_clause}
               {id_filter}
-            ORDER BY COALESCE(c.updated_at_ms, 0), c.session_id
+            ORDER BY COALESCE(c.updated_at_ms, 0) DESC, c.session_id
             """,
             tuple(params),
         )
@@ -249,7 +257,7 @@ def select_pending_archive_session_window(
         {join_clause}
         WHERE {where_clause}
           {id_filter}
-        ORDER BY s.sort_key_ms IS NULL, s.sort_key_ms, s.session_id
+        ORDER BY (s.sort_key_ms IS NULL), s.sort_key_ms DESC, s.session_id
         """,
         tuple(params),
     )
