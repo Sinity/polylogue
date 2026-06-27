@@ -55,6 +55,7 @@ async def replace_session_runs_bulk(
         records=records,
         extractor=session_run_insert_values,
         transaction_depth=transaction_depth,
+        or_replace=True,
     )
 
 
@@ -82,6 +83,7 @@ async def replace_session_observed_events_bulk(
         records=records,
         extractor=session_observed_event_insert_values,
         transaction_depth=transaction_depth,
+        or_replace=True,
     )
 
 
@@ -109,4 +111,5 @@ async def replace_session_context_snapshots_bulk(
         records=records,
         extractor=session_context_snapshot_insert_values,
         transaction_depth=transaction_depth,
+        or_replace=True,
     )
