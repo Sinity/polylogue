@@ -10,12 +10,6 @@ from polylogue.core.enums import Origin
 from polylogue.core.sources import provider_from_origin
 from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.mcp.payloads import MCPMutationStatusPayload, MCPRootPayload
-from polylogue.mcp.query_contracts import (
-    MCPContentProjectionRequest,
-    MCPSessionQueryRequest,
-    MCPToolLimit,
-    MCPToolOffset,
-)
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -284,36 +278,6 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("update_index", run)
 
     @mcp.tool()
-    async def export_session(
-        id: str,
-        format: str = "markdown",
-        no_code_blocks: bool = False,
-        no_tool_calls: bool = False,
-        no_tool_outputs: bool = False,
-        no_file_reads: bool = False,
-        prose_only: bool = False,
-    ) -> str:
-        async def run() -> str:
-            from polylogue.rendering.formatting import format_session, normalize_session_output_format
-
-            projection = MCPContentProjectionRequest(
-                no_code_blocks=no_code_blocks,
-                no_tool_calls=no_tool_calls,
-                no_tool_outputs=no_tool_outputs,
-                no_file_reads=no_file_reads,
-                prose_only=prose_only,
-            ).build_projection()
-
-            poly = hooks.get_polylogue()
-            conv = await poly.get_session(id, content_projection=projection)
-            if conv is None:
-                return hooks.error_json(f"Session not found: {id}", code="not_found")
-            fmt = normalize_session_output_format(format)
-            return format_session(conv, fmt, None, content_projection=projection)
-
-        return await hooks.async_safe_call("export_session", run)
-
-    @mcp.tool()
     async def rebuild_session_insights(session_ids: list[str] | None = None) -> str:
         async def run() -> str:
             poly = hooks.get_polylogue()
@@ -331,89 +295,6 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             )
 
         return await hooks.async_safe_call("rebuild_session_insights", run)
-
-    @mcp.tool()
-    async def export_query_results(
-        query: str | None = None,
-        format: str = "markdown",
-        limit: MCPToolLimit = 10,
-        offset: MCPToolOffset = 0,
-        retrieval_lane: str | None = None,
-        origin: str | None = None,
-        since: str | None = None,
-        tag: str | None = None,
-        title: str | None = None,
-        referenced_path: str | None = None,
-        action: str | None = None,
-        exclude_action: str | None = None,
-        action_sequence: str | None = None,
-        action_text: str | None = None,
-        tool: str | None = None,
-        exclude_tool: str | None = None,
-        sort: str | None = None,
-        has_tool_use: bool = False,
-        has_thinking: bool = False,
-        min_messages: int | None = None,
-        min_words: int | None = None,
-        no_code_blocks: bool = False,
-        no_tool_calls: bool = False,
-        no_tool_outputs: bool = False,
-        no_file_reads: bool = False,
-        prose_only: bool = False,
-    ) -> str:
-        async def run() -> str:
-            from polylogue.rendering.formatting import format_session, normalize_session_output_format
-
-            fmt = normalize_session_output_format(format)
-            spec = MCPSessionQueryRequest(
-                query=query,
-                retrieval_lane=retrieval_lane,
-                origin=origin,
-                since=since,
-                tag=tag,
-                title=title,
-                referenced_path=referenced_path,
-                action=action,
-                exclude_action=exclude_action,
-                action_sequence=action_sequence,
-                action_text=action_text,
-                tool=tool,
-                exclude_tool=exclude_tool,
-                sort=sort,
-                limit=limit,
-                offset=offset,
-                has_tool_use=has_tool_use,
-                has_thinking=has_thinking,
-                min_messages=min_messages,
-                min_words=min_words,
-            ).build_spec(hooks.clamp_limit)
-            projection = MCPContentProjectionRequest(
-                no_code_blocks=no_code_blocks,
-                no_tool_calls=no_tool_calls,
-                no_tool_outputs=no_tool_outputs,
-                no_file_reads=no_file_reads,
-                prose_only=prose_only,
-            ).build_projection()
-            sessions = await spec.list(hooks.get_config())
-            return hooks.json_payload(
-                MCPRootPayload(
-                    root={
-                        "count": len(sessions),
-                        "format": fmt,
-                        "exports": [
-                            {
-                                "session_id": str(session.id),
-                                "origin": session.origin.value,
-                                "title": session.display_title,
-                                "content": format_session(session, fmt, None, content_projection=projection),
-                            }
-                            for session in sessions
-                        ],
-                    }
-                )
-            )
-
-        return await hooks.async_safe_call("export_query_results", run)
 
 
 __all__ = ["register_maintenance_tools"]

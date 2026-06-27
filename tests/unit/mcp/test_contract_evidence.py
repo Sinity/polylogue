@@ -192,24 +192,6 @@ class TestToolErrorEnvelopes:
         body = _structured_error(result)
         assert body.get("code") == "not_found", f"expected code='not_found', got {body!r}"
 
-    def test_export_session_missing_returns_not_found_envelope(
-        self,
-        mcp_server: MCPServerUnderTest,
-    ) -> None:
-        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
-            mock_poly = make_polylogue_mock()
-            mock_poly.get_session = AsyncMock(return_value=None)
-            mock_get_polylogue.return_value = mock_poly
-
-            result = invoke_surface(
-                mcp_server._tool_manager._tools["export_session"].fn,
-                id="missing",
-                format="markdown",
-            )
-
-        body = _structured_error(result)
-        assert body.get("code") == "not_found", f"expected code='not_found', got {body!r}"
-
     def test_get_session_summary_missing_returns_not_found_envelope(
         self,
         mcp_server: MCPServerUnderTest,

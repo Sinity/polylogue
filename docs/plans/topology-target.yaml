@@ -17,7 +17,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 5168
+    loc: 5059
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -689,7 +689,7 @@ files:
     target: polylogue/cli/bulk_export.py
     owner: stable
   - path: polylogue/cli/click_app.py
-    loc: 480
+    loc: 479
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
@@ -849,7 +849,7 @@ files:
     target: polylogue/cli/query_stats.py
     owner: stable
   - path: polylogue/cli/query_verbs.py
-    loc: 1916
+    loc: 1773
     target: polylogue/cli/query_verbs.py
     owner: stable
   - path: polylogue/cli/read_view_handlers.py
@@ -1019,7 +1019,7 @@ files:
     target: polylogue/cli/verb_cardinality.py
     owner: stable
   - path: polylogue/cli/verb_names.py
-    loc: 19
+    loc: 18
     target: polylogue/cli/verb_names.py
     owner: stable
   - path: polylogue/config.py
@@ -1421,14 +1421,6 @@ files:
     target: polylogue/errors.py
     owner: kernel
     reason: kernel root rule
-  - path: polylogue/export/__init__.py
-    loc: 39
-    target: polylogue/export/__init__.py
-    owner: stable
-  - path: polylogue/export/sanitize.py
-    loc: 580
-    target: polylogue/export/sanitize.py
-    owner: stable
   - path: polylogue/insights/__init__.py
     loc: 30
     target: polylogue/insights/__init__.py
@@ -1644,15 +1636,15 @@ files:
     target: polylogue/mcp/server_context_tools.py
     owner: stable
   - path: polylogue/mcp/server_insight_tools.py
-    loc: 1149
+    loc: 1147
     target: polylogue/mcp/server_insight_tools.py
     owner: stable
   - path: polylogue/mcp/server_maintenance_tools.py
-    loc: 419
+    loc: 300
     target: polylogue/mcp/server_maintenance_tools.py
     owner: stable
   - path: polylogue/mcp/server_mutation_tools.py
-    loc: 940
+    loc: 872
     target: polylogue/mcp/server_mutation_tools.py
     owner: stable
   - path: polylogue/mcp/server_prompts.py

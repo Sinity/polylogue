@@ -794,7 +794,8 @@ These expose the archive and its insights:
 
 - CLI: `polylogue/cli/`
 - Python API: `polylogue/api/__init__.py`
-- MCP server: `polylogue/mcp/`
+- MCP server: `polylogue/mcp/` — exposes the distilled, agent-preferred
+  surfaces (`get_postmortem_bundle`) alongside search/list/insight tools.
 - daemon web reader: `polylogue/daemon/web_shell.py`
 - dashboard and TUI: `polylogue/ui/`
 - renderers: `polylogue/rendering/`

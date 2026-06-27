@@ -1512,7 +1512,6 @@ def analyze_verb(
         if output_format not in (None, "json", "markdown", "plaintext"):
             raise click.UsageError("`analyze --portfolio` only supports terminal text, --format json, or markdown")
         from polylogue.cli.shared.machine_errors import success
-        from polylogue.export.sanitize import SanitizedExportError, assert_text_sanitized
         from polylogue.insights.portfolio import render_portfolio_markdown, render_portfolio_plain
         from polylogue.surfaces.payloads import model_json_document
 
@@ -1521,20 +1520,11 @@ def analyze_verb(
         if output_format == "json":
             payload = model_json_document(portfolio, exclude_none=True)
             rendered_json = success({"portfolio": payload}).to_json()
-            # Fail-closed: refuse to emit if any private data survived redaction.
-            try:
-                assert_text_sanitized(rendered_json)
-            except SanitizedExportError as exc:
-                raise click.ClickException(str(exc)) from exc
             click.echo(rendered_json)
             return
         rendered = (
             render_portfolio_markdown(portfolio) if output_format == "markdown" else render_portfolio_plain(portfolio)
         )
-        try:
-            assert_text_sanitized(rendered)
-        except SanitizedExportError as exc:
-            raise click.ClickException(str(exc)) from exc
         click.echo(rendered)
         return
 
@@ -1596,146 +1586,6 @@ def analyze_verb(
     if output_format:
         updated = updated.with_param_updates(output_format=output_format)
     _execute_query_verb(ctx, updated)
-
-
-@click.command("export")
-@click.option(
-    "--sanitized",
-    "sanitized",
-    is_flag=True,
-    default=False,
-    help="Produce a fail-closed sanitized, shareable bundle (the only export mode in v0).",
-)
-@click.option(
-    "--out",
-    "-o",
-    "out_path",
-    type=click.Path(),
-    default=None,
-    help="Output bundle directory (required).",
-)
-@click.option(
-    "--privacy-level",
-    type=click.Choice(["strict", "standard", "permissive"]),
-    default="standard",
-    help="Redaction posture (default: standard).",
-)
-@click.option(
-    "--with-postmortem",
-    "with_postmortem",
-    is_flag=True,
-    default=False,
-    help="Embed a sanitized postmortem report alongside the dataset.",
-)
-@click.option(
-    "--with-spans",
-    "with_spans",
-    is_flag=True,
-    default=False,
-    help="Embed sanitized OTel-style run/action spans (spans.jsonl) in the bundle.",
-)
-@click.option("--overwrite", is_flag=True, default=False, help="Replace an existing bundle directory.")
-@click.option(
-    "--no-redact",
-    "no_redact",
-    is_flag=True,
-    default=False,
-    help="Escape hatch: emit raw, UNSANITIZED data. Refused unless combined with --i-accept-unredacted-leak.",
-)
-@click.option(
-    "--i-accept-unredacted-leak",
-    "accept_unredacted",
-    is_flag=True,
-    default=False,
-    help="Loud confirmation required to actually emit an unredacted bundle with --no-redact.",
-)
-@click.option(
-    "--json",
-    "output_format",
-    flag_value="json",
-    default=None,
-    help="Shortcut for --format json.",
-)
-@click.option(
-    "--format",
-    "-f",
-    "output_format",
-    type=click.Choice(["json", "plaintext"]),
-    default=None,
-    help="Output format for the export result summary.",
-)
-@click.option("--limit", "-l", "-n", type=int, default=None, help="Max matched sessions to export.")
-@click.pass_context
-def export_verb(
-    ctx: click.Context,
-    sanitized: bool = False,
-    out_path: str | None = None,
-    privacy_level: str = "standard",
-    with_postmortem: bool = False,
-    overwrite: bool = False,
-    no_redact: bool = False,
-    accept_unredacted: bool = False,
-    output_format: str | None = None,
-    limit: int | None = None,
-    with_spans: bool = False,
-) -> None:
-    """Export the matched session scope as a fail-closed sanitized bundle (#2381).
-
-    \b
-    Writes a directory with dataset.jsonl + redaction-manifest.json + README.md.
-    Session-level metadata only in v0 — raw message text is NOT exported.
-    The publish is refused if any private absolute path or known secret survives.
-
-    \b
-    Examples:
-        polylogue find 'repo:polylogue since:7d' then export --sanitized -o /tmp/share
-        polylogue find 'since:30d' then export --sanitized -o /tmp/share --with-postmortem
-    """
-    from pathlib import Path as _Path
-
-    from polylogue.cli.shared.machine_errors import success
-    from polylogue.export.sanitize import SanitizedExportError, SanitizedExportRequest
-    from polylogue.schemas.privacy_config import PrivacyLevel
-    from polylogue.surfaces.payloads import model_json_document
-
-    if not sanitized:
-        raise click.UsageError("`export` currently only supports `--sanitized`.")
-    if out_path is None:
-        raise click.UsageError("`export --sanitized` requires an output directory via -o/--out.")
-    if no_redact and not accept_unredacted:
-        raise click.UsageError(
-            "`export --no-redact` emits UNSANITIZED data and is refused by default; "
-            "pass --i-accept-unredacted-leak to confirm."
-        )
-
-    env: AppEnv = ctx.obj
-    request = _parent_request(ctx)
-    spec = request.query_spec()
-    level: PrivacyLevel = cast("PrivacyLevel", privacy_level)
-    export_request = SanitizedExportRequest(
-        output_path=_Path(out_path),
-        privacy_level=level,
-        with_postmortem=with_postmortem,
-        with_spans=with_spans,
-        overwrite=overwrite,
-        redact=not no_redact,
-        acknowledge_unredacted=accept_unredacted,
-    )
-    try:
-        result = run_coroutine_sync(env.polylogue.sanitized_export(spec, export_request, limit=limit))
-    except SanitizedExportError as exc:
-        raise click.ClickException(str(exc)) from exc
-
-    # Honor the root --json / --format when the verb-local format is omitted.
-    effective_format = output_format or request.params.get("output_format")
-    if effective_format == "json":
-        click.echo(success({"sanitized_export": model_json_document(result)}).to_json())
-        return
-    posture = "redacted" if result.redacted else "UNSANITIZED"
-    click.echo(
-        f"Wrote sanitized export ({posture}) to {result.output_path}: "
-        f"{result.row_count} rows, {result.total_rejected} redactions, verify_ok={result.verify_ok}"
-    )
 
 
 def _attach_analyze_subcommands() -> None:
@@ -1908,7 +1758,6 @@ QUERY_VERBS = (
     delete_verb,
     mark_verb,
     analyze_verb,
-    export_verb,
 )
 
 
@@ -1918,7 +1767,6 @@ __all__ = [
     "analyze_verb",
     "continue_verb",
     "delete_verb",
-    "export_verb",
     "mark_verb",
     "read_verb",
     "select_verb",

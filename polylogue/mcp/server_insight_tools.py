@@ -1082,9 +1082,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         The analysis cap defaults to 200 sessions; a larger match marks the
         bundle ``truncated`` rather than silently capping.
 
-        This is the agent-preferred distilled read — for a shareable file
-        bundle use ``export_sanitized`` (fail-closed redacted), not the
-        unredacted ``export_*`` tools.
+        This is the agent-preferred distilled read over the matched scope.
         """
 
         async def run() -> str:

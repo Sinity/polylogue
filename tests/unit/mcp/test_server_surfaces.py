@@ -1496,62 +1496,6 @@ class TestExportSessionTool:
         assert payload["messages"][0]["text"] == "Alpha\n\nOmega"
         assert "```" not in payload["messages"][0]["content_blocks"][0]["text"]
 
-    def test_export_markdown(self: object, simple_session: Session, mcp_server: MCPServerUnderTest) -> None:
-        with (
-            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
-            patch("polylogue.rendering.formatting.format_session") as mock_format,
-        ):
-            mock_poly = make_polylogue_mock()
-            mock_poly.get_session = AsyncMock(return_value=simple_session)
-            mock_get_polylogue.return_value = mock_poly
-            mock_format.return_value = "# Test Session\n\nFormatted content"
-
-            result = invoke_surface(
-                mcp_server._tool_manager._tools["export_session"].fn,
-                id="test:conv-123",
-                format="markdown",
-            )
-
-        assert "Test Session" in result
-        mock_format.assert_called_once()
-        call_args = mock_format.call_args
-        assert call_args[0][0] == simple_session
-        assert call_args[0][1] == "markdown"
-
-    def test_export_not_found(self: object, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
-            mock_poly = make_polylogue_mock()
-            mock_poly.get_session = AsyncMock(return_value=None)
-            mock_get_polylogue.return_value = mock_poly
-
-            result = invoke_surface(mcp_server._tool_manager._tools["export_session"].fn, id="nonexistent")
-
-        parsed = json.loads(result)
-        assert "message" in parsed
-        assert "not found" in parsed["message"].lower()
-
-    def test_export_invalid_format_falls_back_to_markdown(
-        self: object,
-        simple_session: Session,
-        mcp_server: MCPServerUnderTest,
-    ) -> None:
-        with (
-            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
-            patch("polylogue.rendering.formatting.format_session") as mock_format,
-        ):
-            mock_poly = make_polylogue_mock()
-            mock_poly.get_session = AsyncMock(return_value=simple_session)
-            mock_get_polylogue.return_value = mock_poly
-            mock_format.return_value = "# Content"
-
-            invoke_surface(
-                mcp_server._tool_manager._tools["export_session"].fn,
-                id="test:conv-123",
-                format="invalid_format",
-            )
-
-        assert mock_format.call_args.args[1] == "markdown"
-
 
 class TestTypedPayloads:
     def test_session_to_summary_dict(self: object, simple_session: Session) -> None:

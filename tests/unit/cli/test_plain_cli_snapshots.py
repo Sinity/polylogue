@@ -351,26 +351,6 @@ def test_analyze_portfolio_json_has_stable_headline_keys(
     assert bundle["context_loss"]["status"] in {"detected", "clean", "unavailable"}
 
 
-def test_analyze_portfolio_is_fail_closed_on_leak(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A rendered report with a surviving private path is refused, not emitted (#2437)."""
-    from polylogue.export.sanitize import SanitizedExportError, assert_text_sanitized
-
-    # The fail-closed gate must reject any rendered text that still carries an
-    # absolute path / secret. The CLI maps this to a non-zero exit and emits
-    # nothing — proven here at the gate the CLI calls.
-    leaked = "/home/secret/private-repo/notes.md"
-    with pytest.raises(SanitizedExportError) as excinfo:
-        assert_text_sanitized(f"repos_touched:\n  - {leaked}\n")
-    # The error message is echoed by the CLI, so it must report counts/classes
-    # only — never the surviving private value itself (would re-leak it).
-    message = str(excinfo.value)
-    assert leaked not in message
-    assert "/home/secret" not in message
-    assert "absolute_paths=1" in message
-    # A clean report passes the same gate (no exception).
-    assert_text_sanitized("repos_touched:\n  - polylogue: 3\n")
-
-
 def test_analyze_facets_no_idf_omits_idf(runner: CliRunner, seeded_db_env: Path) -> None:
     """`analyze --facets --no-idf` ports the old `facets --no-idf` capability (#1842)."""
     import json as _json

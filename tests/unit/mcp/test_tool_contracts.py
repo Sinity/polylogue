@@ -1686,50 +1686,6 @@ class TestMutationTools:
         assert parsed["total"] == 6
         mock_poly.rebuild_insights.assert_awaited_once_with(session_ids=["conv-1", "conv-2"])
 
-    @pytest.mark.asyncio
-    async def test_export_query_results_uses_shared_query_contract(
-        self,
-        simple_session: Session,
-        mcp_server: MCPServerUnderTest,
-        tmp_path: Path,
-    ) -> None:
-        from types import SimpleNamespace
-
-        # export_query_results uses the archive path (spec.list), not the facade
-        archive_root = tmp_path / "archive"
-        with ArchiveStore(archive_root):
-            _seed_archive(
-                archive_root,
-                provider=Provider.CHATGPT,
-                native_id="export-test-1",
-                title="Test for export",
-                text="hello evidence here",
-            )
-
-        with (
-            patch("polylogue.mcp.server._get_config") as mock_get_config,
-            patch("polylogue.rendering.formatting.format_session") as mock_format,
-        ):
-            mock_get_config.return_value = SimpleNamespace(
-                archive_root=archive_root,
-                db_path=archive_root / "index.db",
-            )
-            mock_format.return_value = '{"exported": true}'
-
-            result = await invoke_surface_async(
-                mcp_server._tool_manager._tools["export_query_results"].fn,
-                query="hello",
-                origin="chatgpt-export",
-                format="json",
-                limit=3,
-            )
-
-        parsed = json.loads(result)
-        assert parsed["count"] == 1
-        assert parsed["format"] == "json"
-        assert parsed["exports"][0]["session_id"]
-        assert parsed["exports"][0]["content"] == '{"exported": true}'
-
 
 def test_mcp_search_params_match_query_spec() -> None:
     """search tool parameters must cover the same filter axes as SessionQuerySpec (#819)."""

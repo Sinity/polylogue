@@ -59,12 +59,10 @@ if TYPE_CHECKING:
     from polylogue.archive.query.search_hits import SessionSearchHit
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.archive.session.domain_models import Session, SessionSummary
-    from polylogue.archive.session.models import SessionProfile
     from polylogue.archive.session.neighbor_candidates import SessionNeighborCandidate
     from polylogue.archive.stats import ArchiveStats as StorageArchiveStats
     from polylogue.config import Config
     from polylogue.context.compiler import ContextImage, ContextSpec, RecoveryContextCompilation
-    from polylogue.export.sanitize import SanitizedExportRequest, SanitizedExportResult
     from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport
     from polylogue.insights.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
     from polylogue.insights.pathology import PathologyReport
@@ -1038,33 +1036,6 @@ def _archive_session_to_session(session: ArchiveSessionEnvelope) -> Session:
     )
 
 
-def _archive_sanitized_export_row(profile: SessionProfile) -> dict[str, object]:
-    """Build one session-level metadata row for the sanitized export (#2381).
-
-    Deliberately excludes the highest-leak fields — ``repo_paths``,
-    ``cwd_paths``, ``file_paths_touched`` and raw message text — from the
-    dataset. The string fields that remain (``display_title``, ``repo_names``)
-    are still run through field redaction by the export pipeline.
-    """
-    return {
-        "id": profile.session_id,
-        "display_title": profile.title,
-        "origin": profile.origin,
-        "first_message_at": profile.first_message_at.isoformat() if profile.first_message_at else None,
-        "last_message_at": profile.last_message_at.isoformat() if profile.last_message_at else None,
-        "message_count": profile.message_count,
-        "word_count": profile.word_count,
-        "repo_names": list(profile.repo_names),
-        "total_cost_usd": profile.total_cost_usd,
-        "cost_is_estimated": profile.cost_is_estimated,
-        "input_tokens": profile.total_input_tokens,
-        "output_tokens": profile.total_output_tokens,
-        "cache_read_tokens": profile.total_cache_read_tokens,
-        "cache_write_tokens": profile.total_cache_write_tokens,
-        "wall_duration_ms": profile.wall_duration_ms,
-    }
-
-
 def _archive_summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary:
     return SessionSummary(
         id=SessionId(summary.session_id),
@@ -1889,26 +1860,18 @@ class PolylogueArchiveMixin:
         limit: int | None = None,
         top_n: int = 10,
     ) -> PortfolioBundle:
-        """Compile a corpus-wide, sanitized portfolio report (#2437).
+        """Compile a corpus-wide portfolio report (#2437).
 
         Resolves the matched session set (the same summary path
         ``postmortem_bundle`` uses), batch-fetches profiles + recovery digests,
         and delegates aggregation to the pure :func:`compile_portfolio_bundle`
         (session/repo/origin counts, cost + wall-clock distributions, pathology
-        and context-loss distribution). The compiled bundle is then routed
-        through the #2381 sanitizer (`sanitize_rows`) so path/secret fields are
-        redacted before it leaves the API; the CLI applies the fail-closed leak
-        gate over the rendered text. The analysis cap defaults to 200 sessions.
+        and context-loss distribution). The analysis cap defaults to 200 sessions.
         """
-        from polylogue.export.sanitize import sanitize_rows
-        from polylogue.insights.portfolio import (
-            PortfolioBundle as _PortfolioBundle,
-        )
         from polylogue.insights.portfolio import (
             compile_portfolio_bundle,
         )
         from polylogue.insights.postmortem import PostmortemScope
-        from polylogue.schemas.privacy_config import PrivacyConfig
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         cap = limit if limit is not None and limit > 0 else 200
@@ -1958,128 +1921,7 @@ class PolylogueArchiveMixin:
             truncated=truncated,
             dropped_session_count=dropped,
         )
-        bundle = compile_portfolio_bundle(profiles, digests, scope=scope, top_n=top_n)
-
-        # Route the structured bundle through the #2381 redactor so any path or
-        # secret in repo names / pathology detail is redacted before it leaves
-        # the API. The CLI applies the fail-closed leak gate on the rendered text.
-        sanitized_rows, _report = sanitize_rows([bundle.model_dump(mode="json")], config=PrivacyConfig())
-        return _PortfolioBundle.model_validate(sanitized_rows[0])
-
-    async def sanitized_export(
-        self,
-        spec: SessionQuerySpec | None,
-        request: SanitizedExportRequest,
-        *,
-        limit: int | None = None,
-    ) -> SanitizedExportResult:
-        """Resolve a matched scope and write a fail-closed sanitized bundle (#2381).
-
-        Builds session-level metadata rows over the matched scope (the same
-        summary path ``postmortem_bundle`` uses), drives field redaction, and
-        writes ``dataset.jsonl`` + ``redaction-manifest.json`` + ``README.md``
-        (plus a sanitized ``postmortem.json`` when requested). The leak-check
-        gate runs against the written files and the publish is refused if any
-        private absolute path or known secret survives.
-
-        Raw message text is intentionally NOT exported in v0 — message bodies are
-        the highest-leak surface and are deferred (see #2381 follow-up).
-        """
-        from polylogue.export.sanitize import SanitizedExportError, produce_sanitized_export
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        if limit is not None and limit <= 0:
-            # A non-positive limit must not silently fall back to the default cap:
-            # that would defeat the max-session disclosure guard (e.g. --limit 0).
-            raise SanitizedExportError(f"export --limit must be a positive integer, got {limit}")
-        cap = limit if limit is not None else 1000
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            if spec is not None and spec.has_filters():
-                summaries = _archive_list_summaries_for_spec(archive, spec, default_limit=1_000_000)
-            else:
-                summaries = archive.list_summaries(limit=1_000_000)
-
-        session_ids: list[str] = []
-        seen: set[str] = set()
-        for summary in summaries:
-            if summary.session_id in seen:
-                continue
-            seen.add(summary.session_id)
-            session_ids.append(summary.session_id)
-
-        matched = len(session_ids)
-        analyzed_ids = session_ids[:cap]
-        profiles_map = await self.repository.get_session_profiles_batch(analyzed_ids)
-        profiles = [profiles_map[sid] for sid in analyzed_ids if sid in profiles_map]
-        rows = [_archive_sanitized_export_row(profile) for profile in profiles]
-
-        scope: dict[str, object] = {
-            "since": spec.since if spec is not None else None,
-            "until": spec.until if spec is not None else None,
-            "query": _archive_text_query(spec) if spec is not None else None,
-            "matched_session_count": matched,
-            "exported_session_count": len(rows),
-            "truncated": matched > len(analyzed_ids),
-        }
-
-        postmortem: JSONDocument | None = None
-        if request.with_postmortem:
-            from polylogue.surfaces.payloads import model_json_document
-
-            bundle = await self.postmortem_bundle(spec, limit=limit)
-            postmortem = model_json_document(bundle, exclude_none=True)
-
-        spans: list[dict[str, object]] | None = None
-        if request.with_spans:
-            exported_session_ids = {sid for sid in analyzed_ids if sid in profiles_map}
-            scope_origins = tuple(dict.fromkeys(profile.origin for profile in profiles if profile.origin))
-            spans = await self._sanitized_export_spans(spec, scope_origins, cap, session_ids=exported_session_ids)
-
-        return produce_sanitized_export(rows=rows, scope=scope, request=request, postmortem=postmortem, spans=spans)
-
-    async def _sanitized_export_spans(
-        self,
-        spec: SessionQuerySpec | None,
-        origins: Sequence[str],
-        cap: int,
-        *,
-        session_ids: set[str],
-    ) -> list[dict[str, object]]:
-        """Project scope-bounded run/action evidence into OTel-style span dicts.
-
-        Used only by the opt-in ``--with-spans`` export leg (#2434). The spans
-        are sanitized + leak-gated by the same fail-closed contract as the rest
-        of the bundle; this method only fetches and shapes them.
-
-        Query-unit expressions require an explicit predicate, so spans are
-        fetched per origin present in the exported session set (one
-        ``<unit> where session.origin:<origin>`` query per origin), bounded by the
-        export's ``since``/``until`` window, and then **filtered to the exact
-        exported session ids**. Origin/time scoping alone would pull runs/actions
-        for unrelated sessions of the same origin when the export was narrowed by
-        a repo/tag/text/limit filter; the ``session_ids`` filter keeps
-        ``spans.jsonl`` aligned with the dataset rows.
-        """
-        from polylogue.surfaces.payloads import model_json_document
-        from polylogue.telemetry.otel_projection import project_query_unit_rows_to_otel
-
-        since = spec.since if spec is not None else None
-        until = spec.until if spec is not None else None
-
-        rows: list[Any] = []
-        for origin in origins:
-            for unit in ("runs", "actions"):
-                envelope = await self.query_units(
-                    f"{unit} where session.origin:{origin}",
-                    limit=cap,
-                    since=since,
-                    until=until,
-                )
-                rows.extend(row for row in envelope.items if str(getattr(row, "session_id", "")) in session_ids)
-
-        projection = project_query_unit_rows_to_otel("export:sanitized-spans", rows)
-        return [cast("dict[str, object]", model_json_document(span)) for span in projection.spans]
+        return compile_portfolio_bundle(profiles, digests, scope=scope, top_n=top_n)
 
     async def recovery_report(self, session_id: str, preset: RecoveryReportPreset) -> str | None:
         """Render one deterministic recovery report preset for a session."""

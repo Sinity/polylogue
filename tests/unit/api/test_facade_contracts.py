@@ -215,9 +215,8 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "recovery_report",
         "find_resume_candidates",
         "export_insight_bundle",
-        # Distilled postmortem bundle (#2380) and sanitized shareable export (#2381).
+        # Distilled postmortem bundle (#2380).
         "postmortem_bundle",
-        "sanitized_export",
         "parse_file",
         "update_index",
         "cost_outlook",
@@ -246,6 +245,10 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "resolve_ref",
         "export_otel",
         "session_correlation_payload",
+        # Pathology and portfolio read methods added in recent PRs.
+        "pathology_report",
+        "materialize_pathology_assertions",
+        "portfolio_bundle",
     }
 )
 

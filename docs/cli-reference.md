@@ -204,9 +204,6 @@ Commands:
     ops     Run operational archive and daemon commands.
     `polylogue status` is the root shortcut for `polylogue ops status`; deeper
     maintenance stays under `ops`.
-
-  Other commands:
-    export  Export the matched scope as a fail-closed sanitized bundle.
 ```
 
 ## Analyze Verb
