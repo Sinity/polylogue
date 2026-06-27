@@ -855,6 +855,77 @@ def _delete_tables_with_progress_sync(
             )
 
 
+# Per-session insight tables keyed by session_id with ON DELETE CASCADE to
+# sessions(session_id). The full rebuild upserts these per chunk and commits
+# per chunk (bounded WAL), so it no longer clears them upfront — old rows for
+# not-yet-processed sessions stay visible until their chunk runs (no empty
+# window). Rows whose session was deleted since the last rebuild are pruned
+# after the chunk loop instead (see _delete_orphan_session_insights_*).
+_PER_SESSION_INSIGHT_TABLES: tuple[str, ...] = (
+    "session_work_events",
+    "session_phases",
+    "session_runs",
+    "session_observed_events",
+    "session_context_snapshots",
+    "session_latency_profiles",
+    "session_profiles",
+)
+
+
+def _delete_orphan_session_insights_sync(
+    conn: sqlite3.Connection,
+    *,
+    progress_callback: ProgressCallback | None,
+) -> None:
+    """Delete per-session insight rows whose session no longer exists.
+
+    Because the full rebuild upserts per-session insight rows chunk-by-chunk
+    instead of clearing them upfront, sessions deleted since the last rebuild
+    leave orphan insight rows behind. The write profile enforces
+    ``foreign_keys=ON`` so a session DELETE normally cascades to these tables,
+    but ingest/maintenance paths that mutate ``sessions`` with FK enforcement
+    disabled can leave orphans; prune them explicitly for safety.
+    """
+    for table in _PER_SESSION_INSIGHT_TABLES:
+        deleted = conn.execute(
+            f"DELETE FROM {table} WHERE session_id NOT IN (SELECT session_id FROM sessions)"
+        ).rowcount
+        if progress_callback is not None:
+            progress_callback(int(max(deleted, 0)), desc=f"rebuild: pruned orphans from {table}")
+
+
+async def _delete_orphan_session_insights_async(
+    conn: aiosqlite.Connection,
+    *,
+    progress_callback: ProgressCallback | None,
+) -> None:
+    """Async sibling of ``_delete_orphan_session_insights_sync``."""
+    for table in _PER_SESSION_INSIGHT_TABLES:
+        cursor = await conn.execute(f"DELETE FROM {table} WHERE session_id NOT IN (SELECT session_id FROM sessions)")
+        if progress_callback is not None:
+            rowcount = getattr(cursor, "rowcount", 0) or 0
+            progress_callback(int(rowcount if rowcount > 0 else 0), desc=f"rebuild: pruned orphans from {table}")
+
+
+async def _load_message_counts_async(
+    conn: aiosqlite.Connection,
+    session_ids: Sequence[str],
+) -> dict[str, int]:
+    if not session_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in session_ids)
+    cursor = await conn.execute(
+        f"""
+        SELECT session_id, message_count
+        FROM sessions
+        WHERE session_id IN ({placeholders})
+        """,
+        tuple(session_ids),
+    )
+    rows = await cursor.fetchall()
+    return {str(row["session_id"]): int(row["message_count"] or 0) for row in rows}
+
+
 def rebuild_session_insights_sync(
     conn: sqlite3.Connection,
     *,
@@ -875,37 +946,47 @@ def rebuild_session_insights_sync(
     previous_profile_groups: set[tuple[str, str]] = set()
     thread_materialized_at_ms = _epoch_ms_or_none(now_iso()) or 0
     if session_ids is None:
-        # #1607: the seven DELETEs hold the write lock for seconds-to-minutes
-        # at archive scale and were previously silent. Emit a progress
-        # heartbeat per table so the operator sees forward motion instead
-        # of full insight rebuilds appearing to hang with no output.
-        # The full rebuild stays inside one transaction (the implicit tx
-        # started by the first DELETE spans every subsequent DML through
-        # the final ``conn.commit()`` at the bottom of this function), so
-        # a SIGKILL mid-rebuild rolls the WAL back to the prior state on
-        # the next open — the prior insights are intact, not emptied.
-        # thread_sessions before threads keeps the FK cascade ordering explicit
-        # even if foreign_keys are off; both are repopulated per root in the
-        # thread-refresh phase below. The 'thread' materialization markers are
-        # cleared then re-stamped there so readiness stale_thread_count reflects
-        # exactly the rebuilt membership.
-        _delete_tables_with_progress_sync(
-            conn,
-            tables=(
-                "session_work_events",
-                "session_phases",
-                "session_runs",
-                "session_observed_events",
-                "session_context_snapshots",
-                "session_latency_profiles",
-                "session_profiles",
-                "session_tag_rollups",
-                "thread_sessions",
-                "threads",
-            ),
-            progress_callback=progress_callback,
+        # #1607 / bounded-WAL rebuild model:
+        #
+        # The previous design cleared every per-session insight table upfront
+        # and rebuilt the whole archive inside ONE transaction, committing
+        # once at the end. At production scale (16K+ sessions) that held the
+        # write lock for minutes and grew the WAL into multi-GB territory
+        # (~6 GB observed), and it blocked readers for the entire window.
+        #
+        # The new model commits per chunk so the WAL is bounded to roughly one
+        # message-budget chunk:
+        #   * Per-session insight rows are NOT cleared upfront. Each chunk
+        #     upserts (DELETE-by-session + INSERT) via the bulk writers, so a
+        #     not-yet-processed session keeps its OLD insight rows visible until
+        #     its chunk runs — there is no window where the archive shows empty
+        #     per-session insights.
+        #   * Sessions deleted since the last rebuild leave orphan insight rows
+        #     (the rebuild no longer wipes the tables); they are pruned by
+        #     _delete_orphan_session_insights_sync after the chunk loop.
+        #   * Aggregate tables (thread_sessions, threads, session_tag_rollups)
+        #     and the 'thread' materialization markers are still cleared and
+        #     rebuilt in the aggregate phase below; that phase is comparatively
+        #     small and stays in its own final transaction.
+        #
+        # Resumability: a crash mid-rebuild leaves a mix of freshly-upserted and
+        # stale per-session insight rows (never an emptied archive). The next
+        # full rebuild or incremental convergence simply re-upserts and finishes
+        # the orphan/aggregate phases.
+        #
+        # The full path message-budget chunks like the incremental path so a
+        # page of a few giant sessions cannot blow up RSS or the per-chunk WAL.
+        all_session_ids = tuple(str(row["session_id"]) for row in conn.execute(_ALL_SESSION_IDS_SQL).fetchall())
+        message_counts = _load_message_counts_sync(conn, all_session_ids)
+        session_chunks = (
+            chunk.session_ids
+            for chunk in _chunk_session_ids_by_message_budget_sync(
+                all_session_ids,
+                message_counts=message_counts,
+                page_size=page_size,
+                message_budget=_SESSION_INSIGHT_REBUILD_MESSAGE_BUDGET,
+            )
         )
-        session_chunks = iter_session_id_pages_sync(conn, page_size=page_size)
     else:
         session_ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids))
         t0 = time.perf_counter()
@@ -1016,11 +1097,18 @@ def rebuild_session_insights_sync(
         if len(batch.messages) >= _SESSION_INSIGHT_RELEASE_MESSAGE_THRESHOLD:
             del batch, record_bundles
             release_process_memory()
+        # Commit each chunk so the WAL is bounded to one message-budget chunk
+        # instead of the whole archive. The bulk writers upsert per session, so
+        # committing mid-rebuild leaves processed sessions fresh and
+        # not-yet-processed sessions on their prior rows (no empty window).
+        conn.commit()
     if not saw_session_ids:
         if session_ids is None:
+            # Empty-archive full rebuild: every per-session insight row is now an
+            # orphan (its session is gone). Prune them plus the aggregate tables.
+            _delete_orphan_session_insights_sync(conn, progress_callback=progress_callback)
             conn.execute("DELETE FROM thread_sessions")
             conn.execute("DELETE FROM threads")
-            conn.execute("DELETE FROM session_phases")
             conn.execute("DELETE FROM session_tag_rollups")
             conn.execute("DELETE FROM insight_materialization WHERE insight_type = 'thread'")
         conn.commit()
@@ -1057,8 +1145,19 @@ def rebuild_session_insights_sync(
             tag_rollups=int(tag_rollup_count),
         )
 
-    # threads / thread_sessions were cleared in the DELETE phase above; re-stamp
-    # the 'thread' markers so readiness reflects only the rebuilt membership.
+    # Per-session insight rows were upserted (not cleared upfront), so prune any
+    # whose session no longer exists before the aggregate phase. foreign_keys=ON
+    # on the write profile normally cascades session deletes here, but prune
+    # explicitly so an FK-disabled mutation path cannot leave stale insights.
+    _delete_orphan_session_insights_sync(conn, progress_callback=progress_callback)
+
+    # threads / thread_sessions are rebuilt by upsert per surviving root; clear
+    # them (and the 'thread' markers) first so roots that disappeared do not
+    # leave stale aggregate rows. This aggregate phase is comparatively small
+    # and commits once at the end. thread_sessions before threads keeps the FK
+    # cascade ordering explicit even if foreign_keys are off.
+    conn.execute("DELETE FROM thread_sessions")
+    conn.execute("DELETE FROM threads")
     conn.execute("DELETE FROM insight_materialization WHERE insight_type = 'thread'")
     thread_count = 0
     for root_chunk in iter_root_id_pages_sync(conn):
@@ -1105,37 +1204,40 @@ async def rebuild_session_insights_async(
         replace_session_work_events,
     )
 
-    if session_ids is None:
-        # See _delete_tables_with_progress_sync for the sync analogue and
-        # the #1607 context. The implicit transaction spans every DML
-        # through the eventual COMMIT, so SIGKILL mid-rebuild rolls back
-        # to prior state on next open.
-        for table in (
-            "session_work_events",
-            "session_phases",
-            "session_runs",
-            "session_observed_events",
-            "session_context_snapshots",
-            "session_latency_profiles",
-            "session_profiles",
-            "session_tag_rollups",
-        ):
-            cursor = await conn.execute(f"DELETE FROM {table}")
-            if progress_callback is not None:
-                rowcount = getattr(cursor, "rowcount", 0) or 0
-                progress_callback(int(rowcount if rowcount > 0 else 0), desc=f"rebuild: cleared {table}")
-    elif not session_ids:
+    # Bounded-WAL parity with rebuild_session_insights_sync (#1607): the full
+    # rebuild no longer clears the per-session insight tables upfront. Each
+    # chunk upserts (DELETE-by-session + INSERT) and commits, so the WAL is
+    # bounded to one chunk and not-yet-processed sessions keep their prior
+    # insight rows visible (no empty window). Orphan rows for deleted sessions
+    # are pruned after the loop; aggregate tables are cleared in the aggregate
+    # phase below. Per-chunk commits are gated on transaction_depth == 0 so a
+    # nested-savepoint caller is never committed out from under.
+    if session_ids is not None and not session_ids:
         # An empty target list means "rebuild these zero sessions" — a no-op,
         # NOT a global wipe. Mirror rebuild_session_insights_sync, which returns
         # early for an empty (non-None) session_ids without deleting anything.
-        # Only session_ids is None (full rebuild) clears the derived tables above.
         return _empty_rebuild_counts()
+
+    commit_per_chunk = transaction_depth == 0
 
     profile_count = 0
     work_event_count = 0
     phase_count = 0
     if session_ids is None:
-        async for chunk in iter_session_id_pages_async(conn, page_size=page_size):
+        all_session_ids = [
+            str(row["session_id"]) for row in await (await conn.execute(_ALL_SESSION_IDS_SQL)).fetchall()
+        ]
+        message_counts = await _load_message_counts_async(conn, all_session_ids)
+        full_chunks = [
+            full_chunk.session_ids
+            for full_chunk in _chunk_session_ids_by_message_budget_sync(
+                all_session_ids,
+                message_counts=message_counts,
+                page_size=page_size,
+                message_budget=_SESSION_INSIGHT_REBUILD_MESSAGE_BUDGET,
+            )
+        ]
+        for chunk in full_chunks:
             batch = await load_async_batch(conn, chunk)
             root_ids_by_session = await thread_root_ids_async(conn, chunk)
             record_bundles = build_session_insight_record_bundles(
@@ -1191,6 +1293,8 @@ async def rebuild_session_insights_async(
             if len(batch.messages) >= _SESSION_INSIGHT_RELEASE_MESSAGE_THRESHOLD:
                 del batch, record_bundles
                 release_process_memory()
+            if commit_per_chunk:
+                await conn.commit()
     else:
         for chunk_ids in chunked(list(session_ids), size=page_size):
             batch = await load_async_batch(conn, chunk_ids)
@@ -1248,6 +1352,15 @@ async def rebuild_session_insights_async(
             if len(batch.messages) >= _SESSION_INSIGHT_RELEASE_MESSAGE_THRESHOLD:
                 del batch, record_bundles
                 release_process_memory()
+            if commit_per_chunk:
+                await conn.commit()
+
+    if session_ids is None:
+        # Full rebuild upserted per-session insight rows without an upfront
+        # clear; prune rows for sessions deleted since the last rebuild before
+        # the aggregate phase (foreign_keys=ON normally cascades, but prune
+        # explicitly for safety — parity with the sync path).
+        await _delete_orphan_session_insights_async(conn, progress_callback=progress_callback)
 
     await conn.execute("DELETE FROM threads")
     thread_count = 0

@@ -712,19 +712,21 @@ def test_session_insight_rebuild_sync_reports_progress(cli_workspace: CliWorkspa
         progress_callback=lambda amount, desc=None: observed.append((json_int(amount), desc)),
     )
 
-    # The canonical full-rebuild path emits a "rebuild: cleared <table>" event
-    # per DELETE before materializing the session-insight tables (#1743 P13:
-    # the archive rebuild now delegates to rebuild_session_insights_sync).
-    cleared_events = [event for event in observed if event[1] and event[1].startswith("rebuild: cleared ")]
-    assert [desc for _, desc in cleared_events] == [
-        "rebuild: cleared session_work_events",
-        "rebuild: cleared session_phases",
-        "rebuild: cleared session_latency_profiles",
-        "rebuild: cleared session_profiles",
-        "rebuild: cleared session_tag_rollups",
-        "rebuild: cleared thread_sessions",
-        "rebuild: cleared threads",
+    # Bounded-WAL model (#2458): the full rebuild no longer clears per-session
+    # insight tables upfront. It upserts/commits per chunk and prunes orphan
+    # rows after the loop, emitting a per-table "pruned orphans" heartbeat. The
+    # old upfront "cleared session_*" heartbeats must be gone.
+    prune_events = [event for event in observed if event[1] and event[1].startswith("rebuild: pruned orphans from ")]
+    assert [desc for _, desc in prune_events] == [
+        "rebuild: pruned orphans from session_work_events",
+        "rebuild: pruned orphans from session_phases",
+        "rebuild: pruned orphans from session_runs",
+        "rebuild: pruned orphans from session_observed_events",
+        "rebuild: pruned orphans from session_context_snapshots",
+        "rebuild: pruned orphans from session_latency_profiles",
+        "rebuild: pruned orphans from session_profiles",
     ]
+    assert not [event for event in observed if event[1] and event[1].startswith("rebuild: cleared session_")]
 
 
 def test_session_insight_rebuild_materializes_profile_and_repo_for_git_session(
