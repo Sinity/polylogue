@@ -289,6 +289,21 @@ def _archive(tmp_path: Path) -> Polylogue:
     return Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
 
 
+def _materialize_run_projection(index_db: Path) -> None:
+    """Run the session-insight materializer so derived run-projection tables exist.
+
+    The ``run`` / ``observed-event`` / ``context-snapshot`` units now read the
+    materialized ``session_runs`` / ``session_observed_events`` /
+    ``session_context_snapshots`` tables rather than recomputing the projection
+    at query time, so tests must rebuild insights after writing sessions.
+    """
+    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+    from polylogue.storage.sqlite.connection import open_connection
+
+    with open_connection(index_db) as conn:
+        rebuild_session_insights_sync(conn)
+
+
 _HASH = b"x" * 32
 
 
@@ -942,8 +957,8 @@ async def test_explain_query_expression_exposes_terminal_unit_payload(tmp_path: 
         await archive.close()
 
 
-async def test_explain_query_expression_exposes_runtime_transform_unit_payload(tmp_path: Path) -> None:
-    """Runtime-transform unit-source explain output names its projection leg."""
+async def test_explain_query_expression_exposes_sql_unit_payload(tmp_path: Path) -> None:
+    """SQL unit-source explain output names its terminal projection leg."""
     archive = _archive(tmp_path)
     try:
         payload = await archive.explain_query_expression(
@@ -952,10 +967,13 @@ async def test_explain_query_expression_exposes_runtime_transform_unit_payload(t
 
         assert payload["lowerer"] == "lark-query-unit-source-to-terminal-unit"
         assert payload["selected_units"] == ["context-snapshot"]
-        assert payload["execution_legs"] == ["runtime-transform", "sql", "terminal-context-snapshot-rows"]
-        assert payload["plan_description"] == ["terminal unit source: context-snapshot"]
+        assert payload["execution_legs"] == ["sql", "terminal-context-snapshot-rows"]
+        assert payload["plan_description"] == [
+            "terminal unit source: context-snapshot",
+            "compatibility session selector: exists context-snapshot(...)",
+        ]
         lowering_plan = cast(dict[str, object], payload["lowering_plan"])
-        assert "compatibility_selector" not in lowering_plan
+        assert "compatibility_selector" in lowering_plan
         assert payload["predicate"]
     finally:
         await archive.close()
@@ -2116,6 +2134,8 @@ async def test_query_units_returns_context_snapshot_rows(tmp_path: Path) -> None
                 )
             )
 
+        _materialize_run_projection(archive.config.archive_root / "index.db")
+
         envelope = await archive.query_units(
             "context-snapshots where boundary:session_start AND text:facade-context-snapshot-v1"
         )
@@ -2271,6 +2291,8 @@ async def test_query_units_returns_run_rows(tmp_path: Path) -> None:
             .save()
         )
 
+        _materialize_run_projection(index_db)
+
         envelope = await archive.query_units(
             "runs where session.repo:polylogue AND role:subagent AND status:completed AND agent:Explore"
         )
@@ -2328,6 +2350,8 @@ async def test_export_otel_projects_query_unit_rows(tmp_path: Path) -> None:
             )
             .save()
         )
+
+        _materialize_run_projection(index_db)
 
         payload = await archive.export_otel(
             source_ref="session:codex-session:ext-facade-otel-v1",

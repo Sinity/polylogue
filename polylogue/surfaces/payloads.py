@@ -77,9 +77,12 @@ if TYPE_CHECKING:
         ArchiveActionQueryRow,
         ArchiveAssertionQueryRow,
         ArchiveBlockQueryRow,
+        ArchiveContextSnapshotQueryRow,
         ArchiveFileQueryRow,
         ArchiveMessageQueryRow,
+        ArchiveObservedEventQueryRow,
         ArchiveQueryUnitAggregateRow,
+        ArchiveRunQueryRow,
     )
     from polylogue.storage.sqlite.archive_tiers.user_write import (
         ArchiveAssertionCandidateReviewEnvelope,
@@ -1722,6 +1725,22 @@ class ObservedEventQueryRowPayload(SurfacePayloadModel):
     def _validate_observed_event_evidence_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return tuple(normalize_public_ref_text(ref) for ref in value)
 
+    @classmethod
+    def from_row(cls, row: ArchiveObservedEventQueryRow) -> ObservedEventQueryRowPayload:
+        event = row.event
+        return cls(
+            event_ref=event.event_ref.format(),
+            session_id=row.session_id,
+            origin=row.origin,
+            title=row.title,
+            kind=event.kind,
+            summary=event.summary,
+            delivery_state=event.delivery_state,
+            subject_ref=event.subject_ref.format() if event.subject_ref is not None else None,
+            object_refs=tuple(ref.format() for ref in event.object_refs),
+            evidence_refs=tuple(ref.format() for ref in event.evidence_refs),
+        )
+
 
 class ContextSnapshotQueryRowPayload(SurfacePayloadModel):
     """Shared terminal-query row for runtime-transform context snapshots."""
@@ -1752,6 +1771,22 @@ class ContextSnapshotQueryRowPayload(SurfacePayloadModel):
     @classmethod
     def _validate_context_evidence_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return tuple(normalize_public_ref_text(ref) for ref in value)
+
+    @classmethod
+    def from_row(cls, row: ArchiveContextSnapshotQueryRow) -> ContextSnapshotQueryRowPayload:
+        snapshot = row.snapshot
+        return cls(
+            snapshot_ref=snapshot.snapshot_ref.format(),
+            session_id=row.session_id,
+            origin=row.origin,
+            title=row.title,
+            run_ref=snapshot.run_ref.format(),
+            boundary=snapshot.boundary,
+            inheritance_mode=snapshot.inheritance_mode,
+            segment_refs=tuple(ref.format() for ref in snapshot.segment_refs),
+            evidence_refs=tuple(ref.format() for ref in snapshot.evidence_refs),
+            metadata=dict(snapshot.metadata),
+        )
 
 
 class RunQueryRowPayload(SurfacePayloadModel):
@@ -1797,6 +1832,31 @@ class RunQueryRowPayload(SurfacePayloadModel):
     @classmethod
     def _validate_run_evidence_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return tuple(normalize_public_ref_text(ref) for ref in value)
+
+    @classmethod
+    def from_row(cls, row: ArchiveRunQueryRow) -> RunQueryRowPayload:
+        run = row.run
+        return cls(
+            run_ref=run.run_ref.format(),
+            session_id=row.session_id,
+            origin=row.origin,
+            title=row.title,
+            native_session_id=run.native_session_id,
+            native_parent_session_id=run.native_parent_session_id,
+            parent_run_ref=run.parent_run_ref.format() if run.parent_run_ref is not None else None,
+            agent_ref=run.agent_ref.format() if run.agent_ref is not None else None,
+            lineage_refs=tuple(ref.format() for ref in run.lineage_refs),
+            provider_origin=run.provider_origin,
+            harness=run.harness,
+            role=run.role,
+            cwd=run.cwd,
+            git_branch=run.git_branch,
+            status=run.status,
+            confidence=run.confidence,
+            transcript_ref=run.transcript_ref.format() if run.transcript_ref is not None else None,
+            evidence_refs=tuple(ref.format() for ref in run.evidence_refs),
+            context_snapshot_ref=run.context_snapshot_ref.format() if run.context_snapshot_ref is not None else None,
+        )
 
 
 QueryUnitRowPayload: TypeAlias = (

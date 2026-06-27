@@ -677,14 +677,7 @@ def _context_snapshot_field_infos() -> tuple[StructuralQueryFieldInfo, ...]:
 
 def _run_field_infos() -> tuple[StructuralQueryFieldInfo, ...]:
     infos = [_RUN_STRUCTURAL_FIELD_INFO[name] for name in sorted(_RUN_STRUCTURAL_FIELDS)]
-    return tuple(sorted((*infos, *_RUNTIME_SCOPED_SESSION_STRUCTURAL_FIELD_INFO), key=lambda field: field.name))
-
-
-def _runtime_field_infos(
-    infos: dict[str, StructuralQueryFieldInfo], names: set[str]
-) -> tuple[StructuralQueryFieldInfo, ...]:
-    own_infos = [infos[name] for name in sorted(names)]
-    return tuple(sorted((*own_infos, *_RUNTIME_SCOPED_SESSION_STRUCTURAL_FIELD_INFO), key=lambda field: field.name))
+    return tuple(sorted((*infos, *_SCOPED_SESSION_STRUCTURAL_FIELD_INFO), key=lambda field: field.name))
 
 
 STRUCTURAL_QUERY_UNIT_REGISTRY: dict[str, StructuralQueryUnitInfo] = {
@@ -714,19 +707,19 @@ STRUCTURAL_QUERY_UNIT_REGISTRY: dict[str, StructuralQueryUnitInfo] = {
         example="exists assertion(kind:decision AND status:active AND text:review)",
     ),
     "run": StructuralQueryUnitInfo(
-        description="Return runtime-transform runs satisfying the child predicate.",
+        description="Match or return materialized runs satisfying the child predicate.",
         fields=_run_field_infos(),
         example="runs where session.repo:polylogue AND role:main",
     ),
     "observed-event": StructuralQueryUnitInfo(
-        description="Return runtime-transform observed events satisfying the child predicate.",
-        fields=_runtime_field_infos(_OBSERVED_EVENT_STRUCTURAL_FIELD_INFO, _OBSERVED_EVENT_STRUCTURAL_FIELDS),
-        example="observed-events where session.repo:polylogue AND delivery_state:acted_on",
+        description="Match or return materialized observed events satisfying the child predicate.",
+        fields=_observed_event_field_infos(),
+        example="observed-events where kind:review_posted",
     ),
     "context-snapshot": StructuralQueryUnitInfo(
-        description="Return runtime-transform context snapshots satisfying the child predicate.",
-        fields=_runtime_field_infos(_CONTEXT_SNAPSHOT_STRUCTURAL_FIELD_INFO, _CONTEXT_SNAPSHOT_STRUCTURAL_FIELDS),
-        example="context-snapshots where session.repo:polylogue AND boundary:session_start",
+        description="Match or return materialized context snapshots satisfying the child predicate.",
+        fields=_context_snapshot_field_infos(),
+        example="context-snapshots where boundary:session_start",
     ),
 }
 
@@ -810,40 +803,40 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         "run",
         "run",
         "runs",
-        exists_supported=False,
-        lowerer_kind="runtime_transform",
+        exists_supported=True,
         payload_model="RunQueryRowPayload",
-        runtime_query_method="_query_runs",
+        sql_query_method="query_runs",
         cli_plain_renderer="run",
         fields=_unit_info("run").fields,
         description=_unit_info("run").description,
         example=_unit_info("run").example,
+        terminal_example="runs where session.repo:polylogue AND role:main",
     ),
     QueryUnitDescriptor(
         "observed-event",
         "observed-event",
         "observed-events",
-        exists_supported=False,
-        lowerer_kind="runtime_transform",
+        exists_supported=True,
         payload_model="ObservedEventQueryRowPayload",
-        runtime_query_method="_query_observed_events",
+        sql_query_method="query_observed_events",
         cli_plain_renderer="observed-event",
         fields=_unit_info("observed-event").fields,
         description=_unit_info("observed-event").description,
         example=_unit_info("observed-event").example,
+        terminal_example="observed-events where kind:review_posted AND delivery_state:observed",
     ),
     QueryUnitDescriptor(
         "context-snapshot",
         "context-snapshot",
         "context-snapshots",
-        exists_supported=False,
-        lowerer_kind="runtime_transform",
+        exists_supported=True,
         payload_model="ContextSnapshotQueryRowPayload",
-        runtime_query_method="_query_context_snapshots",
+        sql_query_method="query_context_snapshots",
         cli_plain_renderer="context-snapshot",
         fields=_unit_info("context-snapshot").fields,
         description=_unit_info("context-snapshot").description,
         example=_unit_info("context-snapshot").example,
+        terminal_example="context-snapshots where boundary:session_start",
     ),
 )
 _QUERY_UNIT_BY_UNIT: dict[QueryUnitName, QueryUnitDescriptor] = {

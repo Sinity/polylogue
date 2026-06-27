@@ -78,6 +78,7 @@ from polylogue.insights.readiness import (
     normalize_insight_readiness_name,
 )
 from polylogue.insights.rigor import list_rigor_contracts
+from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery, build_tool_usage_insight
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.insights.session.records import SessionProfileRecord
@@ -290,6 +291,36 @@ class ArchiveAssertionQueryRow:
     context_policy: JSONValue
     created_at_ms: int
     updated_at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveRunQueryRow:
+    """Terminal query projection over materialized ``session_runs`` rows."""
+
+    session_id: str
+    origin: str
+    title: str | None
+    run: ProjectedRun
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveObservedEventQueryRow:
+    """Terminal query projection over materialized ``session_observed_events`` rows."""
+
+    session_id: str
+    origin: str
+    title: str | None
+    event: ObservedEvent
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveContextSnapshotQueryRow:
+    """Terminal query projection over materialized ``session_context_snapshots`` rows."""
+
+    session_id: str
+    origin: str
+    title: str | None
+    snapshot: ContextSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -3947,6 +3978,144 @@ class ArchiveStore:
             for row in rows
         ]
 
+    def query_runs(
+        self,
+        predicate: QueryPredicate,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        session_filters: Mapping[str, object] | None = None,
+        sort: Literal["time"] | None = None,
+        sort_direction: Literal["asc", "desc"] = "asc",
+    ) -> list[ArchiveRunQueryRow]:
+        """Return materialized run rows matching a unit-scoped predicate."""
+
+        normalized_limit = max(int(limit), 0)
+        normalized_offset = max(int(offset), 0)
+        order_direction = _query_unit_order_direction(sort_direction)
+        if sort == "time":
+            order_by = f"r.position {order_direction}, r.run_ref {order_direction}"
+        else:
+            order_by = "r.session_id, r.position, r.run_ref"
+        clause, params = _structural_predicate_clause("run", "r", predicate, session_alias="s")
+        session_clause = ""
+        session_params: list[object] = []
+        if session_filters:
+            session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
+        rows = self._conn.execute(
+            f"""
+            SELECT r.session_id, s.origin, s.title, r.payload_json
+            FROM session_runs r
+            JOIN sessions s ON r.session_id = s.session_id
+            WHERE {clause}
+            {session_clause}
+            ORDER BY {order_by}
+            LIMIT ? OFFSET ?
+            """,
+            [*params, *session_params, normalized_limit, normalized_offset],
+        ).fetchall()
+        return [
+            ArchiveRunQueryRow(
+                session_id=str(row["session_id"]),
+                origin=str(row["origin"]),
+                title=str(row["title"]) if row["title"] is not None else None,
+                run=ProjectedRun.model_validate(json.loads(row["payload_json"])),
+            )
+            for row in rows
+        ]
+
+    def query_observed_events(
+        self,
+        predicate: QueryPredicate,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        session_filters: Mapping[str, object] | None = None,
+        sort: Literal["time"] | None = None,
+        sort_direction: Literal["asc", "desc"] = "asc",
+    ) -> list[ArchiveObservedEventQueryRow]:
+        """Return materialized observed-event rows matching a unit-scoped predicate."""
+
+        normalized_limit = max(int(limit), 0)
+        normalized_offset = max(int(offset), 0)
+        order_direction = _query_unit_order_direction(sort_direction)
+        if sort == "time":
+            order_by = f"e.position {order_direction}, e.event_ref {order_direction}"
+        else:
+            order_by = "e.session_id, e.position, e.event_ref"
+        clause, params = _structural_predicate_clause("observed-event", "e", predicate, session_alias="s")
+        session_clause = ""
+        session_params: list[object] = []
+        if session_filters:
+            session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
+        rows = self._conn.execute(
+            f"""
+            SELECT e.session_id, s.origin, s.title, e.payload_json
+            FROM session_observed_events e
+            JOIN sessions s ON e.session_id = s.session_id
+            WHERE {clause}
+            {session_clause}
+            ORDER BY {order_by}
+            LIMIT ? OFFSET ?
+            """,
+            [*params, *session_params, normalized_limit, normalized_offset],
+        ).fetchall()
+        return [
+            ArchiveObservedEventQueryRow(
+                session_id=str(row["session_id"]),
+                origin=str(row["origin"]),
+                title=str(row["title"]) if row["title"] is not None else None,
+                event=ObservedEvent.model_validate(json.loads(row["payload_json"])),
+            )
+            for row in rows
+        ]
+
+    def query_context_snapshots(
+        self,
+        predicate: QueryPredicate,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        session_filters: Mapping[str, object] | None = None,
+        sort: Literal["time"] | None = None,
+        sort_direction: Literal["asc", "desc"] = "asc",
+    ) -> list[ArchiveContextSnapshotQueryRow]:
+        """Return materialized context-snapshot rows matching a unit-scoped predicate."""
+
+        normalized_limit = max(int(limit), 0)
+        normalized_offset = max(int(offset), 0)
+        order_direction = _query_unit_order_direction(sort_direction)
+        if sort == "time":
+            order_by = f"c.position {order_direction}, c.snapshot_ref {order_direction}"
+        else:
+            order_by = "c.session_id, c.position, c.snapshot_ref"
+        clause, params = _structural_predicate_clause("context-snapshot", "c", predicate, session_alias="s")
+        session_clause = ""
+        session_params: list[object] = []
+        if session_filters:
+            session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
+        rows = self._conn.execute(
+            f"""
+            SELECT c.session_id, s.origin, s.title, c.payload_json
+            FROM session_context_snapshots c
+            JOIN sessions s ON c.session_id = s.session_id
+            WHERE {clause}
+            {session_clause}
+            ORDER BY {order_by}
+            LIMIT ? OFFSET ?
+            """,
+            [*params, *session_params, normalized_limit, normalized_offset],
+        ).fetchall()
+        return [
+            ArchiveContextSnapshotQueryRow(
+                session_id=str(row["session_id"]),
+                origin=str(row["origin"]),
+                title=str(row["title"]) if row["title"] is not None else None,
+                snapshot=ContextSnapshot.model_validate(json.loads(row["payload_json"])),
+            )
+            for row in rows
+        ]
+
     def stats(
         self,
         *,
@@ -5422,6 +5591,79 @@ def _assertion_field_predicate_clause(assertion_alias: str, predicate: QueryFiel
     raise ValueError(f"unsupported assertion predicate field: {field}")
 
 
+def _run_field_predicate_clause(run_alias: str, predicate: QueryFieldPredicate) -> tuple[str, list[object]]:
+    field = predicate.bound_field_name(context="lowering run predicates")
+    if field in {"harness", "role", "status", "confidence"}:
+        return _in_or_equals_clause(f"{run_alias}.{field}", predicate.values, lower=True)
+    if field in {"origin", "provider_origin"}:
+        return _in_or_equals_clause(f"{run_alias}.provider_origin", predicate.values, lower=True)
+    if field in {"run", "run_ref"}:
+        return _like_clause(f"{run_alias}.run_ref", predicate.values)
+    if field in {"parent", "parent_run_ref"}:
+        return _like_clause(f"{run_alias}.parent_run_ref", predicate.values)
+    if field in {"agent", "agent_ref"}:
+        return _like_clause(f"{run_alias}.agent_ref", predicate.values)
+    if field in {"context_snapshot", "context_snapshot_ref"}:
+        return _like_clause(f"{run_alias}.context_snapshot_ref", predicate.values)
+    if field in {"transcript", "transcript_ref"}:
+        return _like_clause(f"{run_alias}.transcript_ref", predicate.values)
+    if field in {"lineage", "lineage_ref"}:
+        return _like_clause(f"{run_alias}.lineage_refs_json", predicate.values)
+    if field == "evidence":
+        return _like_clause(f"{run_alias}.evidence_refs_json", predicate.values)
+    if field == "native_session_id":
+        return _like_clause(f"{run_alias}.native_session_id", predicate.values)
+    if field == "native_parent_session_id":
+        return _like_clause(f"{run_alias}.native_parent_session_id", predicate.values)
+    if field == "cwd":
+        return _like_clause(f"{run_alias}.cwd", predicate.values)
+    if field in {"branch", "git_branch"}:
+        return _like_clause(f"{run_alias}.git_branch", predicate.values)
+    if field == "title":
+        return _like_clause(f"{run_alias}.title", predicate.values)
+    if field == "text":
+        return _like_clause(f"{run_alias}.search_text", predicate.values)
+    raise ValueError(f"unsupported run predicate field: {field}")
+
+
+def _observed_event_field_predicate_clause(
+    event_alias: str, predicate: QueryFieldPredicate
+) -> tuple[str, list[object]]:
+    field = predicate.bound_field_name(context="lowering observed-event predicates")
+    if field in {"kind", "delivery_state"}:
+        return _in_or_equals_clause(f"{event_alias}.{field}", predicate.values, lower=True)
+    if field == "summary":
+        return _like_clause(f"{event_alias}.summary", predicate.values)
+    if field in {"subject", "subject_ref"}:
+        return _like_clause(f"{event_alias}.subject_ref", predicate.values)
+    if field in {"object", "object_ref"}:
+        return _like_clause(f"{event_alias}.object_refs_json", predicate.values)
+    if field == "evidence":
+        return _like_clause(f"{event_alias}.evidence_refs_json", predicate.values)
+    if field == "text":
+        return _like_clause(f"{event_alias}.search_text", predicate.values)
+    raise ValueError(f"unsupported observed-event predicate field: {field}")
+
+
+def _context_snapshot_field_predicate_clause(
+    snapshot_alias: str, predicate: QueryFieldPredicate
+) -> tuple[str, list[object]]:
+    field = predicate.bound_field_name(context="lowering context-snapshot predicates")
+    if field in {"boundary", "inheritance_mode"}:
+        return _in_or_equals_clause(f"{snapshot_alias}.{field}", predicate.values, lower=True)
+    if field in {"run", "run_ref"}:
+        return _like_clause(f"{snapshot_alias}.run_ref", predicate.values)
+    if field in {"segment", "segment_ref"}:
+        return _like_clause(f"{snapshot_alias}.segment_refs_json", predicate.values)
+    if field == "evidence":
+        return _like_clause(f"{snapshot_alias}.evidence_refs_json", predicate.values)
+    if field == "metadata":
+        return _like_clause(f"{snapshot_alias}.metadata_json", predicate.values)
+    if field == "text":
+        return _like_clause(f"{snapshot_alias}.search_text", predicate.values)
+    raise ValueError(f"unsupported context-snapshot predicate field: {field}")
+
+
 def _structural_predicate_clause(
     unit: str,
     row_alias: str,
@@ -5449,6 +5691,12 @@ def _structural_predicate_clause(
             return _block_field_predicate_clause(row_alias, predicate)
         if unit == "assertion":
             return _assertion_field_predicate_clause(row_alias, predicate)
+        if unit == "run":
+            return _run_field_predicate_clause(row_alias, predicate)
+        if unit == "observed-event":
+            return _observed_event_field_predicate_clause(row_alias, predicate)
+        if unit == "context-snapshot":
+            return _context_snapshot_field_predicate_clause(row_alias, predicate)
     if isinstance(predicate, QueryNotPredicate):
         clause, params = _structural_predicate_clause(unit, row_alias, predicate.child, session_alias=session_alias)
         return (f"NOT ({clause})" if clause else "", params)
@@ -5566,6 +5814,30 @@ def _exists_predicate_clause(table_alias: str, predicate: QueryExistsPredicate) 
                 SELECT 1
                 FROM user_tier.assertions {row_alias}
                 WHERE {row_alias}.target_ref = 'session:' || {table_alias}.session_id
+                  AND {child_clause}
+            )
+            """.strip(),
+            params,
+        )
+    if predicate.unit in {"run", "observed-event", "context-snapshot"}:
+        run_projection_tables = {
+            "run": ("session_runs", "exists_runs"),
+            "observed-event": ("session_observed_events", "exists_observed_events"),
+            "context-snapshot": ("session_context_snapshots", "exists_context_snapshots"),
+        }
+        table_name, row_alias = run_projection_tables[predicate.unit]
+        child_clause, params = _structural_predicate_clause(
+            predicate.unit,
+            row_alias,
+            predicate.child,
+            session_alias=table_alias,
+        )
+        return (
+            f"""
+            EXISTS (
+                SELECT 1
+                FROM {table_name} {row_alias}
+                WHERE {row_alias}.session_id = {table_alias}.session_id
                   AND {child_clause}
             )
             """.strip(),

@@ -470,7 +470,7 @@ def test_query_action_explain_json_outputs_terminal_action_floor(
     assert payload["plan_description"][-1] == f"terminal action: {expected['action']}"
 
 
-def test_root_query_explain_json_marks_runtime_transform_unit_payload(cli_runner: CliRunner) -> None:
+def test_root_query_explain_json_marks_sql_unit_payload(cli_runner: CliRunner) -> None:
     result = cli_runner.invoke(
         click_cli,
         [
@@ -487,9 +487,12 @@ def test_root_query_explain_json_marks_runtime_transform_unit_payload(cli_runner
     payload = json.loads(result.output)
     assert payload["lowerer"] == "lark-query-unit-source-to-terminal-unit"
     assert payload["selected_units"] == ["run"]
-    assert payload["execution_legs"] == ["runtime-transform", "sql", "terminal-run-rows"]
-    assert payload["plan_description"] == ["terminal unit source: run"]
-    assert "compatibility_selector" not in payload["lowering_plan"]
+    assert payload["execution_legs"] == ["sql", "terminal-run-rows"]
+    assert payload["plan_description"] == [
+        "terminal unit source: run",
+        "compatibility session selector: exists run(...)",
+    ]
+    assert "compatibility_selector" in payload["lowering_plan"]
     assert payload["ast"]["unit_source"]["unit"] == "run"
 
 

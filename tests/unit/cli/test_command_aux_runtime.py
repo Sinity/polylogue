@@ -250,8 +250,10 @@ def test_query_pipeline_stage_candidates_come_from_unit_descriptors() -> None:
     count_sort_candidate = next(candidate for candidate in sort_candidates if candidate.value == "sort by count")
     assert count_sort_candidate.insert == "sort by count desc"
 
-    runtime_candidates = shell_completion_values.query_pipeline_stage_candidates("context-snapshots", "")
-    assert [candidate.value for candidate in runtime_candidates] == ["limit", "offset"]
+    # context-snapshot is a SQL terminal unit without an aggregate lowerer: it
+    # offers row sort-by-time plus limit/offset, but no group-by/count stages.
+    sql_row_candidates = shell_completion_values.query_pipeline_stage_candidates("context-snapshots", "")
+    assert [candidate.value for candidate in sql_row_candidates] == ["sort by time", "limit", "offset"]
 
 
 def test_query_expression_value_completion_uses_field_completion_source() -> None:

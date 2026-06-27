@@ -542,7 +542,7 @@ _QUERY_GRAMMAR = rf"""
     EXISTS: /exists/i
     SEQ: /seq/i
     ARROW: "->"
-    STRUCT_UNIT: /(message|action|block|assertion|file)/i
+    STRUCT_UNIT: /(observed-event|context-snapshot|message|action|block|assertion|file|run)/i
     OR: /or/i
     AND: /and/i
     NOT: /not/i
@@ -1215,7 +1215,7 @@ class _BooleanQueryTransformer(Transformer[Token, QueryPredicate]):
 
     def exists_leaf(self, _exists: Token, unit: Token, child: QueryPredicate) -> QueryPredicate:
         unit_value = str(unit).lower()
-        if unit_value not in {"message", "action", "block", "assertion", "file"}:
+        if unit_value not in set(structural_query_units()):
             raise ExpressionCompileError(f"unsupported structural query unit {unit_value!r}", field=None)
         return QueryExistsPredicate(unit=cast(QueryExistsUnit, unit_value), child=child)
 
@@ -1241,9 +1241,7 @@ def _is_boolean_expression(expression: str) -> bool:
     stripped = expression.lstrip()
     lower = stripped.lower()
     exists_prefixes = tuple(
-        prefix
-        for unit in ("message", "action", "block", "assertion", "file")
-        for prefix in (f"exists {unit}(", f"exists {unit} (")
+        prefix for unit in structural_query_units() for prefix in (f"exists {unit}(", f"exists {unit} (")
     )
     if (
         stripped.startswith("(")
@@ -1507,6 +1505,22 @@ def _ensure_sql_aggregate_pipeline_lowerer(unit: QueryUnitName, *, stage: str) -
         )
 
 
+def _ensure_aggregate_lowerer_supported(unit: QueryUnitName, *, stage: str) -> None:
+    """Reject aggregate (``count``) on SQL units without an aggregate lowerer.
+
+    ``run`` / ``observed-event`` / ``context-snapshot`` are SQL-backed terminal
+    units that do not yet advertise aggregate group fields (#2006), so aggregate
+    pipelines must fail typed/narrow instead of reaching an unwired
+    ``query_unit_counts`` path.
+    """
+    descriptor = query_unit_descriptor(unit)
+    if descriptor is None or not descriptor.aggregate_group_fields:
+        raise ExpressionCompileError(
+            f"pipeline `{stage}` is not supported for {unit} rows; this terminal unit has no aggregate lowerer",
+            field=stage.partition(" ")[0],
+        )
+
+
 def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSource:
     sort = _parse_sort_stage(stage)
     if sort is not None:
@@ -1546,6 +1560,7 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
         if source.limit is not None or source.offset is not None:
             raise ExpressionCompileError("pipeline `group by` must appear before `limit` and `offset`", field="group")
         _ensure_sql_aggregate_pipeline_lowerer(source.unit, stage="group by")
+        _ensure_aggregate_lowerer_supported(source.unit, stage="group by")
         _validate_aggregate_group_field(source.unit, group_by)
         return replace(
             source,
@@ -1559,6 +1574,7 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
         if source.limit is not None or source.offset is not None:
             raise ExpressionCompileError("pipeline `count` must appear before `limit` and `offset`", field="count")
         _ensure_sql_aggregate_pipeline_lowerer(source.unit, stage="count")
+        _ensure_aggregate_lowerer_supported(source.unit, stage="count")
         return replace(
             source,
             aggregate="count",

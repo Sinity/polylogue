@@ -81,8 +81,8 @@ def test_query_unit_descriptors_own_terminal_aliases() -> None:
     assert terminal_query_unit("files") == "file"
     assert terminal_query_unit("context-snapshots") == "context-snapshot"
     assert observed_descriptor.plural_source == "observed-events"
-    assert observed_descriptor.exists_supported is False
-    assert observed_descriptor.lowerer_kind == "runtime_transform"
+    assert observed_descriptor.exists_supported is True
+    assert observed_descriptor.lowerer_kind == "sql"
     assert observed_descriptor.payload_model == "ObservedEventQueryRowPayload"
     assert message_descriptor.exists_supported is True
     assert message_descriptor.lowerer_kind == "sql"
@@ -95,37 +95,49 @@ def test_query_unit_descriptors_own_terminal_aliases() -> None:
     assert "files" in terminal_query_source_list().split("/")
     assert ("assertions", "assertion") in terminal_query_source_pairs()
     assert ("files", "file") in terminal_query_source_pairs()
-    assert structural_query_units() == ("action", "assertion", "block", "file", "message")
+    assert structural_query_units() == (
+        "action",
+        "assertion",
+        "block",
+        "context-snapshot",
+        "file",
+        "message",
+        "observed-event",
+        "run",
+    )
     assert tuple(descriptor.unit for descriptor in query_unit_descriptors(exists_supported=True)) == (
         "message",
         "action",
         "block",
         "assertion",
         "file",
-    )
-    assert tuple(descriptor.unit for descriptor in query_unit_descriptors(lowerer_kind="runtime_transform")) == (
         "run",
         "observed-event",
         "context-snapshot",
     )
-    assert structural_query_fields("context-snapshot") == ()
+    assert tuple(descriptor.unit for descriptor in query_unit_descriptors(lowerer_kind="runtime_transform")) == ()
+    assert "boundary" in structural_query_fields("context-snapshot")
     assert "boundary" in terminal_query_fields("context-snapshots")
     assert "polylogue --format json runs where ..." in terminal_query_cli_surfaces()
     assert "runs where session.repo:polylogue AND role:main" in terminal_query_examples()
 
 
-def test_runtime_terminal_units_expose_only_summary_available_session_scope() -> None:
+def test_sql_terminal_units_expose_full_session_scope() -> None:
     from polylogue.archive.query.metadata import terminal_query_fields
 
     message_fields = set(terminal_query_fields("messages"))
     context_fields = set(terminal_query_fields("context-snapshots"))
     observed_fields = set(terminal_query_fields("observed-events"))
 
-    assert {"session.action", "session.tool", "session.path", "session.has"}.issubset(message_fields)
+    # run/observed-event/context-snapshot are now SQL terminal units, so they
+    # expose the full session-scoped field set rather than the old runtime
+    # summary subset.
+    full_session_scope = {"session.action", "session.tool", "session.path", "session.has"}
+    assert full_session_scope.issubset(message_fields)
     assert {"session.repo", "session.origin", "session.messages", "session.date"}.issubset(context_fields)
     assert {"session.repo", "session.origin", "session.messages", "session.date"}.issubset(observed_fields)
-    assert context_fields.isdisjoint({"session.action", "session.tool", "session.path", "session.has"})
-    assert observed_fields.isdisjoint({"session.action", "session.tool", "session.path", "session.has"})
+    assert full_session_scope.issubset(context_fields)
+    assert full_session_scope.issubset(observed_fields)
 
 
 def test_query_unit_schema_surfaces_are_descriptor_derived() -> None:

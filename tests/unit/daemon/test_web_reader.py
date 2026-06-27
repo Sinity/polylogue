@@ -83,6 +83,20 @@ def test_query_spec_param_builder_uses_canonical_query_fields() -> None:
     assert result["filter_has_tool_use"] is True
 
 
+def _materialize_run_projection(index_db: Path) -> None:
+    """Rebuild session insights so the materialized run-projection tables exist.
+
+    The ``run`` / ``observed-event`` / ``context-snapshot`` units read the
+    derived ``session_runs`` / ``session_observed_events`` /
+    ``session_context_snapshots`` tables, so tests must materialize after writing.
+    """
+    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+    from polylogue.storage.sqlite.connection import open_connection
+
+    with open_connection(index_db) as conn:
+        rebuild_session_insights_sync(conn)
+
+
 @contextmanager
 def _running_server(
     workspace: dict[str, Path],
@@ -1920,6 +1934,8 @@ class TestReaderQueryUnits:
             .save()
         )
 
+        _materialize_run_projection(index_db)
+
         expression = quote("runs where session.repo:polylogue AND role:subagent AND status:completed")
         with _running_server(workspace_env) as (_, base_url):
             payload = cast(dict[str, object], _get_json(base_url, f"/api/query-units?expression={expression}"))
@@ -1946,6 +1962,8 @@ class TestReaderQueryUnits:
             .save()
         )
 
+        _materialize_run_projection(index_db)
+
         expression = quote("observed-events where session.repo:polylogue AND kind:session_started")
         with _running_server(workspace_env) as (_, base_url):
             payload = cast(dict[str, object], _get_json(base_url, f"/api/query-units?expression={expression}"))
@@ -1969,6 +1987,8 @@ class TestReaderQueryUnits:
             .add_message("m-context", role="user", text="Daemon context snapshot seed")
             .save()
         )
+
+        _materialize_run_projection(index_db)
 
         expression = quote("context-snapshots where session.repo:polylogue AND boundary:session_start AND text:context")
         with _running_server(workspace_env) as (_, base_url):
@@ -2650,14 +2670,13 @@ class TestQueryNoResultsDiagnosticPath:
         assert "error" in body
         assert body.get("ok") is False
 
-    def test_session_list_rejects_terminal_only_unit_query(self, workspace_env: dict[str, Path]) -> None:
-        """Session-list queries must not lower runtime rows into broken EXISTS predicates."""
+    def test_session_list_accepts_exists_supported_unit_query(self, workspace_env: dict[str, Path]) -> None:
+        """run/observed-event/context-snapshot now lower to exists session selectors."""
         expression = quote("runs where role:subagent")
         with _running_server(workspace_env) as (_, base_url):
             status, body = _get_json_ex(base_url, f"/api/sessions?query={expression}")
-        assert status == 400
-        assert body.get("ok") is False
-        assert "terminal run rows" in str(body.get("detail") or body.get("message") or "")
+        assert status == 200
+        assert body.get("ok") is not False
 
     def test_list_with_no_match_returns_diagnostics(self, workspace_env: dict[str, Path]) -> None:
         """A list with a tag that doesn't exist returns items=[] with total=0."""

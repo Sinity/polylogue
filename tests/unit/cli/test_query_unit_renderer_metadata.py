@@ -43,5 +43,6 @@ def test_terminal_query_unit_descriptors_resolve_executors(descriptor: object) -
     assert descriptor.sql_query_method is not None
     assert descriptor.runtime_query_method is None
     assert hasattr(ArchiveStore, descriptor.sql_query_method)
-    assert descriptor.aggregate_group_fields
+    # Aggregate support is optional: run/observed-event/context-snapshot are
+    # SQL-backed terminal units without an aggregate lowerer yet (#2006).
     assert _row_payload_model(descriptor) is not None
