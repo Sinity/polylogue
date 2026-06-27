@@ -9,6 +9,7 @@ source pydantic model; typed columns are projected from it on write and the full
 
 from __future__ import annotations
 
+from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun, RunProjection
 from polylogue.storage.insights.session.profiles import now_iso
 from polylogue.storage.runtime import (
@@ -24,6 +25,14 @@ def _join_search_text(*parts: str | None) -> str:
     return " \n".join(part.strip() for part in parts if part and part.strip())
 
 
+def _ref_text(ref: ObjectRef | EvidenceRef | None) -> str | None:
+    return ref.format() if ref is not None else None
+
+
+# The ``search_text`` columns back the ``text:`` predicate for each unit. They
+# reproduce the field coverage of the removed runtime-transform ``text`` matcher
+# (every ref/identifier the runtime haystack searched) so ``text:`` behaviour is
+# equivalent on the SQL path, not silently narrowed.
 def run_search_text(run: ProjectedRun) -> str:
     return _join_search_text(
         run.title,
@@ -32,9 +41,16 @@ def run_search_text(run: ProjectedRun) -> str:
         run.status,
         run.provider_origin,
         run.run_ref.format(),
+        _ref_text(run.parent_run_ref),
+        _ref_text(run.agent_ref),
+        _ref_text(run.context_snapshot_ref),
+        _ref_text(run.transcript_ref),
         run.native_session_id,
+        run.native_parent_session_id,
         run.cwd,
         run.git_branch,
+        *(ref.format() for ref in run.lineage_refs),
+        *(ref.format() for ref in run.evidence_refs),
     )
 
 
@@ -44,6 +60,9 @@ def observed_event_search_text(event: ObservedEvent) -> str:
         event.summary,
         event.delivery_state,
         event.run_ref.format(),
+        _ref_text(event.subject_ref),
+        *(ref.format() for ref in event.object_refs),
+        *(ref.format() for ref in event.evidence_refs),
     )
 
 
@@ -51,7 +70,10 @@ def context_snapshot_search_text(snapshot: ContextSnapshot) -> str:
     return _join_search_text(
         snapshot.boundary,
         snapshot.inheritance_mode,
+        snapshot.snapshot_ref.format(),
         snapshot.run_ref.format(),
+        *(ref.format() for ref in snapshot.segment_refs),
+        *(ref.format() for ref in snapshot.evidence_refs),
         *snapshot.metadata.values(),
     )
 
