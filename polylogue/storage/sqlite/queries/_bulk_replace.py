@@ -39,6 +39,7 @@ async def replace_insight_rows(
     records: Sequence[T],
     extractor: Callable[[T], tuple[Any, ...]],
     transaction_depth: int,
+    or_replace: bool = False,
 ) -> None:
     """DELETE rows matching ``id_values`` then INSERT ``records``.
 
@@ -59,7 +60,7 @@ async def replace_insight_rows(
         )
     if records:
         await conn.executemany(
-            build_insert_sql(table, columns),
+            build_insert_sql(table, columns, or_replace=or_replace),
             [extractor(record) for record in records],
         )
     if transaction_depth == 0:

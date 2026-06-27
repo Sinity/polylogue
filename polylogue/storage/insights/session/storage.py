@@ -189,9 +189,10 @@ def _placeholders(columns: Sequence[str]) -> str:
     return ", ".join("?" for _ in columns)
 
 
-def build_insert_sql(table: str, columns: Sequence[str]) -> str:
+def build_insert_sql(table: str, columns: Sequence[str], *, or_replace: bool = False) -> str:
+    verb = "INSERT OR REPLACE" if or_replace else "INSERT"
     return f"""
-        INSERT INTO {table} (
+        {verb} INTO {table} (
             {", ".join(columns)}
         ) VALUES ({_placeholders(columns)})
         """
@@ -956,7 +957,7 @@ def replace_session_runs_sync(
     conn.execute("DELETE FROM session_runs WHERE session_id = ?", (session_id,))
     if records:
         conn.executemany(
-            build_insert_sql("session_runs", _SESSION_RUN_COLUMNS),
+            build_insert_sql("session_runs", _SESSION_RUN_COLUMNS, or_replace=True),
             [session_run_insert_values(record) for record in records],
         )
 
@@ -971,7 +972,7 @@ def replace_session_runs_bulk_sync(
     records = [record for session_records in records_by_session.values() for record in session_records]
     if records:
         conn.executemany(
-            build_insert_sql("session_runs", _SESSION_RUN_COLUMNS),
+            build_insert_sql("session_runs", _SESSION_RUN_COLUMNS, or_replace=True),
             [session_run_insert_values(record) for record in records],
         )
 
@@ -984,7 +985,7 @@ def replace_session_observed_events_sync(
     conn.execute("DELETE FROM session_observed_events WHERE session_id = ?", (session_id,))
     if records:
         conn.executemany(
-            build_insert_sql("session_observed_events", _SESSION_OBSERVED_EVENT_COLUMNS),
+            build_insert_sql("session_observed_events", _SESSION_OBSERVED_EVENT_COLUMNS, or_replace=True),
             [session_observed_event_insert_values(record) for record in records],
         )
 
@@ -999,7 +1000,7 @@ def replace_session_observed_events_bulk_sync(
     records = [record for session_records in records_by_session.values() for record in session_records]
     if records:
         conn.executemany(
-            build_insert_sql("session_observed_events", _SESSION_OBSERVED_EVENT_COLUMNS),
+            build_insert_sql("session_observed_events", _SESSION_OBSERVED_EVENT_COLUMNS, or_replace=True),
             [session_observed_event_insert_values(record) for record in records],
         )
 
@@ -1012,7 +1013,7 @@ def replace_session_context_snapshots_sync(
     conn.execute("DELETE FROM session_context_snapshots WHERE session_id = ?", (session_id,))
     if records:
         conn.executemany(
-            build_insert_sql("session_context_snapshots", _SESSION_CONTEXT_SNAPSHOT_COLUMNS),
+            build_insert_sql("session_context_snapshots", _SESSION_CONTEXT_SNAPSHOT_COLUMNS, or_replace=True),
             [session_context_snapshot_insert_values(record) for record in records],
         )
 
@@ -1027,7 +1028,7 @@ def replace_session_context_snapshots_bulk_sync(
     records = [record for session_records in records_by_session.values() for record in session_records]
     if records:
         conn.executemany(
-            build_insert_sql("session_context_snapshots", _SESSION_CONTEXT_SNAPSHOT_COLUMNS),
+            build_insert_sql("session_context_snapshots", _SESSION_CONTEXT_SNAPSHOT_COLUMNS, or_replace=True),
             [session_context_snapshot_insert_values(record) for record in records],
         )
 

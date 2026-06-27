@@ -136,3 +136,60 @@ async def test_run_projection_materialization_parity(tmp_path: Path) -> None:
         await replace_session_runs(conn, session_id, run_records, 0)
         rerun = await list_runs(conn, RunProjectionListQuery(session_id=session_id, limit=None))
         assert [record.run for record in rerun] == list(projection.runs)
+
+
+def test_run_ref_collision_across_sessions_upserts(tmp_path: Path) -> None:
+    """A subagent run (parent's projection) shares its run_ref with the child
+    session's own main run — both are ``run:<child_session_id>``. Materializing
+    both in one bulk pass must not violate the ``run_ref`` PRIMARY KEY; the
+    run-projection writers upsert (INSERT OR REPLACE) so the shared run collapses
+    to one row. Reproduces the real-archive failure that synthetic distinct-id
+    fixtures never triggered.
+    """
+    from polylogue.core.refs import EvidenceRef, ObjectRef
+    from polylogue.insights.run_projection import ProjectedRun, RunProjection
+    from polylogue.storage.insights.session.storage import replace_session_runs_bulk_sync
+
+    ev = (EvidenceRef.parse("codex-session:child::m1"),)
+    shared = ObjectRef.parse("run:codex-session:child")
+    parent = RunProjection(
+        session_id="codex-session:parent",
+        runs=(
+            ProjectedRun(run_ref=ObjectRef.parse("run:codex-session:parent"), role="main", evidence_refs=ev),
+            ProjectedRun(
+                run_ref=shared,
+                role="subagent",
+                parent_run_ref=ObjectRef.parse("run:codex-session:parent"),
+                evidence_refs=ev,
+            ),
+        ),
+    )
+    child = RunProjection(
+        session_id="codex-session:child",
+        runs=(ProjectedRun(run_ref=shared, role="main", evidence_refs=ev),),
+    )
+
+    conn = sqlite3.connect(tmp_path / "index.db")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(INDEX_DDL)
+    for native in ("parent", "child"):
+        conn.execute(
+            "INSERT INTO sessions(native_id, origin, content_hash) VALUES(?, ?, ?)",
+            (native, "codex-session", b"\x00" * 32),
+        )
+    conn.commit()
+
+    # Previously raised: sqlite3.IntegrityError: UNIQUE constraint failed: session_runs.run_ref
+    replace_session_runs_bulk_sync(
+        conn,
+        {
+            "codex-session:parent": build_session_run_records(parent, materialized_at=_MATERIALIZED_AT),
+            "codex-session:child": build_session_run_records(child, materialized_at=_MATERIALIZED_AT),
+        },
+    )
+
+    shared_rows = conn.execute("SELECT run_ref FROM session_runs WHERE run_ref = ?", (shared.format(),)).fetchall()
+    assert len(shared_rows) == 1  # the shared run collapsed to one row, no crash
+    total = conn.execute("SELECT count(*) FROM session_runs").fetchone()[0]
+    assert total == 2  # run:...:parent (main) + the single shared run:...:child
+    conn.close()
