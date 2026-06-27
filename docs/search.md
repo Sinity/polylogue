@@ -143,9 +143,13 @@ currently support `sort by time [asc|desc]`,
 and `offset N` for SQL-backed terminal rows (`messages`, `actions`, `blocks`,
 `files`, `assertions`). Query-string limits narrow the surface limit instead of expanding
 caller/API caps, and query-string offsets are added to the caller offset.
-Runtime-transform terminal rows (`runs`, `observed-events`, `context-snapshots`)
-reject sort/aggregate stages until they have streaming or aggregate lowerers;
-they must not collect every projected row in memory merely to sort a page.
+`runs`, `observed-events`, and `context-snapshots` are now SQL-backed terminal
+rows over the materialized run-projection tables (`session_runs`,
+`session_observed_events`, `session_context_snapshots`); they support
+`sort by time`, `limit`, and `offset` and are usable as `exists run(...)` /
+`exists observed-event(...)` / `exists context-snapshot(...)` session selectors.
+They do not yet expose `group by | count` aggregation (no aggregate lowerer), so
+aggregate stages on these units fail with a typed error rather than broadening.
 Pipeline syntax is terminal-row syntax: session-selector surfaces reject piped
 queries, including aggregate stages like `group by role | count`, instead of
 dropping those stages and widening the query to `exists message(...)`.
@@ -255,14 +259,17 @@ one child row matching the nested predicate.
 | `block` | `action`, `command`, `path`, `text`, `time`, `tool`, `type` |
 | `file` | `action`, `command`, `path`, `text`, `time`, `tool`, `type` |
 | `assertion` | `author`, `author_kind`, `author_ref`, `body`, `context`, `evidence`, `key`, `kind`, `scope`, `scope_ref`, `status`, `target`, `target_ref`, `text`, `value`, `visibility` |
+| `run` | `agent`, `branch`, `confidence`, `context_snapshot`, `cwd`, `evidence`, `harness`, `lineage`, `native_session_id`, `native_parent_session_id`, `origin`, `parent`, `provider_origin`, `role`, `run`, `status`, `text`, `title`, `transcript` |
+| `observed-event` | `delivery_state`, `evidence`, `kind`, `object`, `subject`, `summary`, `text` |
+| `context-snapshot` | `boundary`, `evidence`, `inheritance_mode`, `metadata`, `run`, `segment`, `text` |
 
 Structural units also accept `session.<field>` predicates for the owning
 session fields that their lowerer can evaluate. SQL-backed units can use the
 full session filter surface, including action/tool/path/feature predicates.
-Runtime-transform units (`runs`, `observed-events`, `context-snapshots`) can
-only use fields present on the session-summary projection, such as
-`session.repo`, `session.origin`, `session.tag`, `session.title`,
-`session.date`, `session.since`, and `session.until`. Count and date session
+`runs`, `observed-events`, and `context-snapshots` are SQL-backed over the
+materialized run-projection tables, so they too accept the full session filter
+surface (e.g. `session.repo`, `session.tool`, `session.path`) alongside their
+own fields above. Count and date session
 fields accept compact comparison prefixes such as `session.messages:>=2`,
 `session.words:<=500`, and `session.date:>=2026-01-02`. This lets a unit query
 carry its session scope inline instead of splitting selection between the
@@ -351,14 +358,16 @@ non-empty `tool_path`. It returns one row per owning session and normalized path
 with action counts and first/last tool-use refs. It is not a global filesystem
 inventory and does not claim that a file still exists on disk.
 
-`runs`, `observed-events`, and `context-snapshots` are runtime-transform row
-sources. They return projected evidence from existing recovery/run-projection
-transforms, not durable SQL table rows, so they are terminal unit sources only;
-they do not act as `exists run(...)`, `exists observed-event(...)`, or
-`exists context-snapshot(...)` session selectors. Their inline `session.*`
-predicates are limited to summary-backed fields; SQL-backed session predicates
-such as `session.action`, `session.tool`, `session.path`, and `session.has` are
-typed errors for these runtime sources rather than empty or broadened matches.
+`runs`, `observed-events`, and `context-snapshots` are SQL-backed row sources
+over the materialized run-projection tables (`session_runs`,
+`session_observed_events`, `session_context_snapshots`), which the session-insight
+materializer recomputes from each session's recovery/run-projection evidence.
+They are both terminal unit sources (`runs where ...`) and `exists run(...)` /
+`exists observed-event(...)` / `exists context-snapshot(...)` session selectors,
+and they accept the full SQL-backed session filter surface (`session.action`,
+`session.tool`, `session.path`, `session.has`, …). They support `sort by time`,
+`limit`, and `offset`; they do not yet expose `group by | count` aggregation, so
+aggregate stages on these units fail with a typed error rather than broadening.
 
 Session filters such as `--origin`, `--tag`, `--repo`, `--since`, and `--until`
 still narrow the owning sessions before rows are returned. Session-only actions
