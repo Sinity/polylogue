@@ -2852,7 +2852,7 @@ files:
     target: polylogue/storage/insights/session/profiles.py
     owner: stable
   - path: polylogue/storage/insights/session/rebuild.py
-    loc: 1177
+    loc: 1300
     target: polylogue/storage/insights/session/rebuild.py
     owner: stable
   - path: polylogue/storage/insights/session/records.py
@@ -2871,6 +2871,10 @@ files:
     loc: 272
     target: polylogue/storage/insights/session/repo_observations.py
     owner: stable
+  - path: polylogue/storage/insights/session/run_projection_rows.py
+    loc: 147
+    target: polylogue/storage/insights/session/run_projection_rows.py
+    owner: stable
   - path: polylogue/storage/insights/session/runtime.py
     loc: 142
     target: polylogue/storage/insights/session/runtime.py
@@ -2880,7 +2884,7 @@ files:
     target: polylogue/storage/insights/session/status.py
     owner: stable
   - path: polylogue/storage/insights/session/storage.py
-    loc: 825
+    loc: 1067
     target: polylogue/storage/insights/session/storage.py
     owner: stable
   - path: polylogue/storage/insights/session/threads.py
@@ -2896,7 +2900,7 @@ files:
     target: polylogue/storage/insights/timeline/__init__.py
     owner: stable
   - path: polylogue/storage/insights/timeline/records.py
-    loc: 112
+    loc: 161
     target: polylogue/storage/insights/timeline/records.py
     owner: stable
   - path: polylogue/storage/insights/topology/__init__.py
@@ -2913,7 +2917,7 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/query_models.py
-    loc: 254
+    loc: 280
     target: polylogue/storage/query_models.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -2941,7 +2945,7 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/repository/__init__.py
-    loc: 111
+    loc: 115
     target: polylogue/storage/repository/__init__.py
     owner: stable
   - path: polylogue/storage/repository/archive/__init__.py
@@ -2994,6 +2998,11 @@ files:
     target: polylogue/storage/repository/insight/profile_reads.py
     owner: stable
     cross_cut: { layer: read }
+  - path: polylogue/storage/repository/insight/run_projection_reads.py
+    loc: 187
+    target: polylogue/storage/repository/insight/run_projection_reads.py
+    owner: stable
+    cross_cut: { layer: read }
   - path: polylogue/storage/repository/insight/summary_reads.py
     loc: 42
     target: polylogue/storage/repository/insight/summary_reads.py
@@ -3040,7 +3049,7 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/runtime/__init__.py
-    loc: 87
+    loc: 96
     target: polylogue/storage/runtime/__init__.py
     owner: stable
   - path: polylogue/storage/runtime/archive/__init__.py
@@ -3163,7 +3172,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/bootstrap.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/common.py
-    loc: 56
+    loc: 76
     target: polylogue/storage/sqlite/archive_tiers/common.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/embedding_write.py
@@ -3175,7 +3184,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/embeddings.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/index.py
-    loc: 823
+    loc: 931
     target: polylogue/storage/sqlite/archive_tiers/index.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/ops.py
@@ -3306,6 +3315,10 @@ files:
     loc: 177
     target: polylogue/storage/sqlite/queries/mappers_insight_timelines.py
     owner: stable
+  - path: polylogue/storage/sqlite/queries/mappers_run_projection.py
+    loc: 71
+    target: polylogue/storage/sqlite/queries/mappers_run_projection.py
+    owner: stable
   - path: polylogue/storage/sqlite/queries/mappers_support.py
     loc: 149
     target: polylogue/storage/sqlite/queries/mappers_support.py
@@ -3353,6 +3366,16 @@ files:
   - path: polylogue/storage/sqlite/queries/session_insight_profile_writes.py
     loc: 102
     target: polylogue/storage/sqlite/queries/session_insight_profile_writes.py
+    owner: stable
+    cross_cut: { layer: write }
+  - path: polylogue/storage/sqlite/queries/session_insight_run_projection_reads.py
+    loc: 132
+    target: polylogue/storage/sqlite/queries/session_insight_run_projection_reads.py
+    owner: stable
+    cross_cut: { layer: read }
+  - path: polylogue/storage/sqlite/queries/session_insight_run_projection_writes.py
+    loc: 112
+    target: polylogue/storage/sqlite/queries/session_insight_run_projection_writes.py
     owner: stable
     cross_cut: { layer: write }
   - path: polylogue/storage/sqlite/queries/session_insight_summary_queries.py
@@ -3413,7 +3436,7 @@ files:
     target: polylogue/storage/sqlite/queries/tool_usage.py
     owner: stable
   - path: polylogue/storage/sqlite/query_store.py
-    loc: 117
+    loc: 121
     target: polylogue/storage/sqlite/query_store.py
     owner: stable
   - path: polylogue/storage/sqlite/query_store_archive.py
@@ -3423,6 +3446,10 @@ files:
   - path: polylogue/storage/sqlite/query_store_insight_profiles.py
     loc: 115
     target: polylogue/storage/sqlite/query_store_insight_profiles.py
+    owner: stable
+  - path: polylogue/storage/sqlite/query_store_insight_run_projection.py
+    loc: 45
+    target: polylogue/storage/sqlite/query_store_insight_run_projection.py
     owner: stable
   - path: polylogue/storage/sqlite/query_store_insight_timelines.py
     loc: 99

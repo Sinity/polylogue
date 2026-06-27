@@ -9,7 +9,16 @@ from typing import Literal, TypeAlias
 QueryBoolOp: TypeAlias = Literal["and", "or"]
 QueryCompareOp: TypeAlias = Literal["=", ">", ">=", "<", "<="]
 QueryFieldScope: TypeAlias = Literal["session", "unit"]
-QueryExistsUnit: TypeAlias = Literal["message", "action", "block", "assertion", "file"]
+QueryExistsUnit: TypeAlias = Literal[
+    "message",
+    "action",
+    "block",
+    "assertion",
+    "file",
+    "run",
+    "observed-event",
+    "context-snapshot",
+]
 
 
 @dataclass(frozen=True)

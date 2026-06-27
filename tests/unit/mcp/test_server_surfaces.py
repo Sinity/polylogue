@@ -81,6 +81,20 @@ def _write_archive_session(
     )
 
 
+def _materialize_run_projection(index_db: Path) -> None:
+    """Rebuild session insights so the materialized run-projection tables exist.
+
+    The ``run`` / ``observed-event`` / ``context-snapshot`` units read the
+    derived ``session_runs`` / ``session_observed_events`` /
+    ``session_context_snapshots`` tables, so tests must materialize after writing.
+    """
+    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+    from polylogue.storage.sqlite.connection import open_connection
+
+    with open_connection(index_db) as conn:
+        rebuild_session_insights_sync(conn)
+
+
 def _summary_for(session: Session) -> SessionSummary:
     return SessionSummary(
         id=SessionId(str(session.id)),
@@ -692,6 +706,7 @@ class TestArchiveGenericToolSurfaces:
                     },
                 ],
             )
+        _materialize_run_projection(archive_root / "index.db")
 
         with (
             patch("polylogue.mcp.server._get_config") as mock_get_config,
@@ -730,6 +745,7 @@ class TestArchiveGenericToolSurfaces:
                 text="observed event terminal row",
                 working_directories=["/realm/project/polylogue"],
             )
+        _materialize_run_projection(archive_root / "index.db")
 
         with (
             patch("polylogue.mcp.server._get_config") as mock_get_config,
@@ -767,6 +783,7 @@ class TestArchiveGenericToolSurfaces:
                 text="review injection context for PR #2100",
                 working_directories=["/realm/project/polylogue"],
             )
+        _materialize_run_projection(archive_root / "index.db")
 
         with (
             patch("polylogue.mcp.server._get_config") as mock_get_config,

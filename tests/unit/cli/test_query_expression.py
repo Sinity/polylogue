@@ -63,6 +63,20 @@ from polylogue.storage.runtime import MessageRecord
 # ---------------------------------------------------------------------------
 
 
+def _materialize_run_projection(index_db: Path) -> None:
+    """Rebuild session insights so the materialized run-projection tables exist.
+
+    The ``run`` / ``observed-event`` / ``context-snapshot`` units read the
+    derived ``session_runs`` / ``session_observed_events`` /
+    ``session_context_snapshots`` tables, so tests must materialize after writing.
+    """
+    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+    from polylogue.storage.sqlite.connection import open_connection
+
+    with open_connection(index_db) as conn:
+        rebuild_session_insights_sync(conn)
+
+
 def _spec(**kwargs: Any) -> SessionQuerySpec:
     """Build a SessionQuerySpec with only the given fields set, rest default."""
     return SessionQuerySpec(**kwargs)
@@ -704,9 +718,15 @@ class TestBooleanQueryExpression:
             "unit": "context-snapshot",
         }
 
-    def test_runtime_terminal_unit_rejects_session_scope_not_in_summary_projection(self) -> None:
-        with pytest.raises(ExpressionCompileError, match="field 'session.action' is not supported"):
-            parse_unit_source_expression("context-snapshots where session.action:file_edit")
+    def test_sql_terminal_unit_accepts_full_session_scope(self) -> None:
+        source = parse_unit_source_expression("context-snapshots where session.action:file_edit")
+
+        assert source is not None
+        predicate = cast(QueryFieldPredicate, source.predicate)
+        assert predicate.field_ref is not None
+        assert predicate.field_ref.scope == "session"
+        assert predicate.field_ref.name == "action"
+        assert predicate.field_ref.unit == "context-snapshot"
 
     def test_sql_terminal_unit_accepts_session_path_scope(self) -> None:
         source = parse_unit_source_expression("messages where session.path:polylogue/archive AND role:assistant")
@@ -894,14 +914,18 @@ class TestBooleanQueryExpression:
         with pytest.raises(ExpressionCompileError, match="unsupported pipeline stage"):
             parse_unit_source_expression("sessions where repo:polylogue | messages where role:assistant | sample 3")
 
-    def test_pipeline_rejects_sort_on_runtime_transform_units(self) -> None:
-        with pytest.raises(ExpressionCompileError, match="runtime-transform units need a streaming lowerer"):
-            parse_unit_source_expression(
-                "sessions where repo:polylogue | runs where status:completed | sort by time desc"
-            )
+    def test_pipeline_accepts_sort_by_time_on_sql_run_rows(self) -> None:
+        source = parse_unit_source_expression(
+            "sessions where repo:polylogue | runs where status:completed | sort by time desc"
+        )
+        assert source is not None
+        assert source.unit == "run"
+        assert source.sort is not None
+        assert source.sort.field == "time"
+        assert source.sort.direction == "desc"
 
-    def test_pipeline_rejects_aggregate_on_runtime_transform_units(self) -> None:
-        with pytest.raises(ExpressionCompileError, match="runtime-transform units need an aggregate lowerer"):
+    def test_pipeline_rejects_aggregate_on_unaggregated_sql_units(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="has no aggregate lowerer"):
             parse_unit_source_expression(
                 "sessions where repo:polylogue | context-snapshots where boundary:session_start | count"
             )
@@ -1025,7 +1049,7 @@ class TestBooleanQueryExpression:
         )
         assert explanation.selected_units == ("observed-event",)
         assert explanation.lowering_plan is not None
-        assert "compatibility_selector" not in explanation.lowering_plan
+        assert "compatibility_selector" in explanation.lowering_plan
 
     def test_parse_run_source_expression_preserves_terminal_unit(self) -> None:
         source = parse_unit_source_expression("runs where session.repo:polylogue AND role:subagent AND agent:Explore")
@@ -1043,26 +1067,31 @@ class TestBooleanQueryExpression:
         explanation = explain_expression("runs where session.repo:polylogue AND role:subagent AND agent:Explore")
         assert explanation.lowerer == "lark-query-unit-source-to-terminal-unit"
         assert explanation.selected_units == ("run",)
-        assert explanation.execution_legs == ("runtime-transform", "sql", "terminal-run-rows")
-        assert explanation.plan_description == ("terminal unit source: run",)
+        assert explanation.execution_legs == ("sql", "terminal-run-rows")
+        assert explanation.plan_description == (
+            "terminal unit source: run",
+            "compatibility session selector: exists run(...)",
+        )
         assert explanation.lowering_plan is not None
-        assert "compatibility_selector" not in explanation.lowering_plan
+        assert "compatibility_selector" in explanation.lowering_plan
 
     @pytest.mark.parametrize(
-        ("expression", "unit_text"),
+        "expression",
         (
-            ("runs where role:subagent", "terminal run rows"),
-            ("observed-events where kind:session_started", "terminal observed-event rows"),
-            ("context-snapshots where boundary:session_start", "terminal context-snapshot rows"),
+            "runs where role:subagent",
+            "observed-events where kind:session_started",
+            "context-snapshots where boundary:session_start",
         ),
     )
-    def test_terminal_only_unit_sources_do_not_compile_to_session_selectors(
+    def test_exists_supported_unit_sources_compile_to_session_selectors(
         self,
         expression: str,
-        unit_text: str,
     ) -> None:
-        with pytest.raises(ExpressionCompileError, match=unit_text):
-            compile_expression(expression)
+        # These units are now SQL + exists-supported, so a bare terminal-source
+        # expression lowers to an ``exists <unit>(...)`` session selector instead
+        # of being rejected as terminal-only.
+        spec = compile_expression(expression)
+        assert spec is not None
 
     def test_parse_context_snapshot_source_expression_preserves_terminal_unit(self) -> None:
         source = parse_unit_source_expression(
@@ -1084,7 +1113,7 @@ class TestBooleanQueryExpression:
         )
         assert explanation.selected_units == ("context-snapshot",)
         assert explanation.lowering_plan is not None
-        assert "compatibility_selector" not in explanation.lowering_plan
+        assert "compatibility_selector" in explanation.lowering_plan
 
     def test_action_source_where_lowers_to_structural_exists(self) -> None:
         ast = parse_expression_ast("actions where action:file_edit AND path:archive/query")
@@ -3166,6 +3195,8 @@ class TestBooleanQueryExpression:
             "observed-events where session.repo:polylogue AND delivery_state:acted_on AND text:#2100"
         )
         assert source is not None
+        _materialize_run_projection(index_db)
+
         with ArchiveStore.open_existing(archive_root) as archive:
             envelope = query_unit_rows(
                 archive,
@@ -3262,6 +3293,8 @@ class TestBooleanQueryExpression:
             "runs where session.repo:polylogue AND role:subagent AND agent:Explore AND status:completed"
         )
         assert source is not None
+        _materialize_run_projection(index_db)
+
         with ArchiveStore.open_existing(archive_root) as archive:
             envelope = query_unit_rows(
                 archive,
@@ -3284,6 +3317,57 @@ class TestBooleanQueryExpression:
         assert row.git_branch == "feature/query-runs"
         assert row.cwd == "/realm/project/polylogue"
         assert row.context_snapshot_ref == "context-snapshot:codex-session:child-run:subagent_start"
+
+    def test_terminal_run_sort_by_time_orders_across_sessions(self, workspace_env: dict[str, Path]) -> None:
+        """`runs | sort by time` orders by owning-session time, not per-session position.
+
+        Native ids old/mid/new have alphabetical order (mid<new<old) distinct from
+        their chronological order, so position-only ordering (the pre-fix bug, which
+        interleaved every session's position-0 row and broke ties on run_ref) would
+        return them mis-ordered. The fix orders by source_updated_at first.
+        """
+        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.surfaces.payloads import RunQueryRowPayload
+        from tests.infra.storage_records import SessionBuilder
+
+        archive_root = workspace_env["archive_root"]
+        index_db = archive_root / "index.db"
+        for native, stamp in (
+            ("old", "2026-01-01T00:00:00+00:00"),
+            ("mid", "2026-02-01T00:00:00+00:00"),
+            ("new", "2026-03-01T00:00:00+00:00"),
+        ):
+            (
+                SessionBuilder(index_db, native)
+                .provider("codex")
+                .git_repository_url("polylogue")
+                .title(f"run sort {native}")
+                .created_at(stamp)
+                .updated_at(stamp)
+                .add_message(f"m-{native}", role="user", text=f"Session {native} work.")
+                .save()
+            )
+        _materialize_run_projection(index_db)
+
+        def _suffixes(direction: str) -> list[str]:
+            source = parse_unit_source_expression(f"runs where session.repo:polylogue | sort by time {direction}")
+            assert source is not None
+            with ArchiveStore.open_existing(archive_root) as archive:
+                envelope = query_unit_rows(
+                    archive,
+                    source,
+                    query=f"runs where session.repo:polylogue | sort by time {direction}",
+                    limit=10,
+                )
+            suffixes: list[str] = []
+            for row in envelope.items:
+                assert isinstance(row, RunQueryRowPayload)
+                suffixes.append(row.session_id.rsplit("-", 1)[-1])
+            return suffixes
+
+        assert _suffixes("asc") == ["old", "mid", "new"]
+        assert _suffixes("desc") == ["new", "mid", "old"]
 
     def test_terminal_context_snapshot_source_returns_runtime_rows(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.archive.query.unit_results import query_unit_rows
@@ -3315,6 +3399,8 @@ class TestBooleanQueryExpression:
             "context-snapshots where session.repo:polylogue AND boundary:session_start AND text:ext-hit"
         )
         assert source is not None
+        _materialize_run_projection(index_db)
+
         with ArchiveStore.open_existing(archive_root) as archive:
             envelope = query_unit_rows(
                 archive,
@@ -3358,13 +3444,11 @@ class TestBooleanQueryExpression:
         )
         assert review_row.metadata["delivery_state"] == "injected_context"
 
-        with pytest.raises(ExpressionCompileError, match="field 'session.tool' is not supported"):
-            parse_unit_source_expression("context-snapshots where session.tool:bash AND boundary:session_start")
+        # SQL terminal units now accept the full session-scoped field set.
+        assert parse_unit_source_expression("context-snapshots where session.tool:bash AND boundary:session_start")
+        assert parse_unit_source_expression("context-snapshots where session.path:polylogue AND boundary:session_start")
 
-        with pytest.raises(ExpressionCompileError, match="field 'session.path' is not supported"):
-            parse_unit_source_expression("context-snapshots where session.path:polylogue AND boundary:session_start")
-
-    def test_runtime_transform_unit_rejects_unbound_session_predicate(
+    def test_sql_terminal_unit_rejects_unbound_session_predicate(
         self,
         workspace_env: dict[str, Path],
     ) -> None:
@@ -3388,7 +3472,7 @@ class TestBooleanQueryExpression:
             predicate=QueryFieldPredicate(field="session.repo", values=("polylogue",)),
         )
         with ArchiveStore.open_existing(archive_root) as archive:
-            with pytest.raises(ValueError, match="unbound query field predicate"):
+            with pytest.raises(ValueError, match="unbound session-scoped query field predicate"):
                 query_unit_rows(
                     archive,
                     source,
@@ -3425,6 +3509,8 @@ class TestBooleanQueryExpression:
             "context-snapshots where session.since:2026-01-02 AND boundary:session_start AND text:created-only"
         )
         assert source is not None
+        _materialize_run_projection(index_db)
+
         with ArchiveStore.open_existing(archive_root) as archive:
             envelope = query_unit_rows(
                 archive,
@@ -3523,6 +3609,8 @@ class TestBooleanQueryExpression:
             "AND boundary:session_start"
         )
         assert source is not None
+        _materialize_run_projection(index_db)
+
         with ArchiveStore.open_existing(archive_root) as archive:
             envelope = query_unit_rows(
                 archive,
@@ -3546,11 +3634,8 @@ class TestBooleanQueryExpression:
         assert isinstance(row, ContextSnapshotQueryRowPayload)
         assert row.session_id == "codex-session:ext-summary-hit"
 
-    def test_context_snapshot_unit_source_paginates_session_summaries(
-        self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Runtime-transform row scans do not silently stop at one summary page."""
-        import polylogue.archive.query.unit_results as unit_results
+    def test_context_snapshot_unit_source_paginates_via_sql_limit_offset(self, workspace_env: dict[str, Path]) -> None:
+        """SQL terminal row pagination honours limit/offset over materialized rows."""
         from polylogue.archive.query.unit_results import query_unit_rows
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from polylogue.surfaces.payloads import ContextSnapshotQueryRowPayload
@@ -3566,22 +3651,89 @@ class TestBooleanQueryExpression:
                 .add_message(f"m-page-{index}", role="user", text=f"page-marker-{index}")
                 .save()
             )
+        _materialize_run_projection(index_db)
 
-        monkeypatch.setattr(unit_results, "_SUMMARY_SCAN_BATCH_SIZE", 2)
-        source = parse_unit_source_expression("context-snapshots where session.id:page-2 AND boundary:session_start")
+        expression = "context-snapshots where boundary:session_start"
+        source = parse_unit_source_expression(expression)
         assert source is not None
-        with ArchiveStore.open_existing(archive_root) as archive:
-            envelope = query_unit_rows(
-                archive,
-                source,
-                query="context-snapshots where session.id:page-2 AND boundary:session_start",
-                limit=10,
-            )
 
-        assert len(envelope.items) == 1
-        row = envelope.items[0]
-        assert isinstance(row, ContextSnapshotQueryRowPayload)
-        assert row.session_id == "codex-session:ext-page-2"
+        with ArchiveStore.open_existing(archive_root) as archive:
+            first_page = query_unit_rows(archive, source, query=expression, limit=2, offset=0)
+            second_page = query_unit_rows(archive, source, query=expression, limit=2, offset=2)
+
+        assert len(first_page.items) == 2
+        assert first_page.next_offset == 2
+        assert len(second_page.items) == 1
+        assert second_page.next_offset is None
+        seen = {
+            cast(ContextSnapshotQueryRowPayload, item).session_id for item in (*first_page.items, *second_page.items)
+        }
+        assert seen == {
+            "codex-session:ext-page-0",
+            "codex-session:ext-page-1",
+            "codex-session:ext-page-2",
+        }
+
+    def test_exists_run_projection_predicates_select_sessions(self, workspace_env: dict[str, Path]) -> None:
+        """`exists run/observed-event/context-snapshot(...)` lower to SQL session selectors."""
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        archive_root = workspace_env["archive_root"]
+        index_db = archive_root / "index.db"
+        (
+            SessionBuilder(index_db, "exists-hit")
+            .provider("codex")
+            .git_repository_url("polylogue")
+            .title("exists hit")
+            .add_message(
+                "m-hit",
+                role="assistant",
+                text="Subagent dispatched for the audit.",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "id": "tool-hit",
+                        "name": "Task",
+                        "tool_input": {
+                            "subagent_type": "Explore",
+                            "taskId": "task-hit",
+                            "child_session_id": "codex-session:exists-child",
+                            "prompt": "Audit the run projection.",
+                        },
+                    },
+                    {"type": "tool_result", "tool_id": "tool-hit", "text": "Subagent done.\n1 passed"},
+                ],
+            )
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "exists-miss")
+            .provider("codex")
+            .git_repository_url("polylogue")
+            .title("exists miss")
+            .add_message("m-miss", role="user", text="No subagents here.")
+            .save()
+        )
+        _materialize_run_projection(index_db)
+
+        with ArchiveStore.open_existing(archive_root) as archive:
+
+            def selected(expression: str) -> list[str]:
+                spec = compile_expression(expression)
+                assert spec.boolean_predicate is not None
+                rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
+                return sorted(row.session_id for row in rows)
+
+            # Discriminating exists predicates select only the subagent session.
+            assert selected("sessions where exists run(role:subagent)") == ["codex-session:ext-exists-hit"]
+            assert selected("exists observed-event(kind:subagent_started)") == ["codex-session:ext-exists-hit"]
+            assert selected("exists context-snapshot(boundary:subagent_start)") == ["codex-session:ext-exists-hit"]
+            # Every session has a main run, so the broad predicate selects both.
+            assert selected("sessions where exists run(role:main)") == [
+                "codex-session:ext-exists-hit",
+                "codex-session:ext-exists-miss",
+            ]
 
     def test_exists_block_tool_predicate_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore

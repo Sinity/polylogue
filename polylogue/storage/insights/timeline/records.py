@@ -10,6 +10,7 @@ from polylogue.insights.archive_models import (
     WorkEventEvidencePayload,
     WorkEventInferencePayload,
 )
+from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
 from polylogue.storage.runtime.store_constants import (
     SESSION_INFERENCE_FAMILY,
     SESSION_INFERENCE_VERSION,
@@ -109,4 +110,52 @@ class SessionPhaseRecord(BaseModel):
         return value
 
 
-__all__ = ["SessionPhaseRecord", "SessionWorkEventRecord"]
+class SessionRunRecord(BaseModel):
+    """Materialized ``session_runs`` row wrapping one :class:`ProjectedRun`.
+
+    The run model is the single source of truth: typed columns (run_ref,
+    harness, role, status, ...) are derived from it on write, and ``payload_json``
+    stores ``run.model_dump(mode="json")`` for lossless hydration on read. This
+    guarantees stored rows round-trip back to the exact projection output.
+    """
+
+    session_id: SessionId
+    position: int
+    materializer_version: int = SESSION_INSIGHT_MATERIALIZER_VERSION
+    materialized_at: str
+    source_updated_at: str | None = None
+    run: ProjectedRun
+    search_text: str
+
+
+class SessionObservedEventRecord(BaseModel):
+    """Materialized ``session_observed_events`` row wrapping one :class:`ObservedEvent`."""
+
+    session_id: SessionId
+    position: int
+    materializer_version: int = SESSION_INSIGHT_MATERIALIZER_VERSION
+    materialized_at: str
+    source_updated_at: str | None = None
+    event: ObservedEvent
+    search_text: str
+
+
+class SessionContextSnapshotRecord(BaseModel):
+    """Materialized ``session_context_snapshots`` row wrapping one :class:`ContextSnapshot`."""
+
+    session_id: SessionId
+    position: int
+    materializer_version: int = SESSION_INSIGHT_MATERIALIZER_VERSION
+    materialized_at: str
+    source_updated_at: str | None = None
+    snapshot: ContextSnapshot
+    search_text: str
+
+
+__all__ = [
+    "SessionContextSnapshotRecord",
+    "SessionObservedEventRecord",
+    "SessionPhaseRecord",
+    "SessionRunRecord",
+    "SessionWorkEventRecord",
+]
