@@ -207,10 +207,21 @@ def _resolve_user_config_path() -> Path:
 def _write_embedding_section(*, enabled: bool, voyage_api_key: str | None) -> Path:
     """Persist the embedding configuration to the user TOML."""
     path = _resolve_user_config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    existing = path.read_text(encoding="utf-8") if path.exists() else ""
-    updated = _splice_embedding_section(existing, enabled=enabled, voyage_api_key=voyage_api_key)
-    path.write_text(updated, encoding="utf-8")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+        updated = _splice_embedding_section(existing, enabled=enabled, voyage_api_key=voyage_api_key)
+        path.write_text(updated, encoding="utf-8")
+    except OSError as exc:
+        raise click.ClickException(
+            f"Cannot write embedding config to {path}: {exc.strerror or exc}.\n"
+            "This config is read-only — on a Nix/Home-Manager-managed setup it is a\n"
+            "store symlink. To activate embeddings, either:\n"
+            "  - point POLYLOGUE_CONFIG at a writable polylogue.toml and re-run, or\n"
+            "  - set [embedding] enabled = true in your managed config, or\n"
+            "  - skip the config write entirely: `polylogue ops embed backfill` reads\n"
+            "    VOYAGE_API_KEY from the environment and does not require enable."
+        ) from exc
     return path
 
 
