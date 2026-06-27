@@ -1,174 +1,199 @@
-# Session Lineage Model — forks, resumes, sidechains, subagents, compaction
+# Session Lineage Model — one representation for forks, resumes, compaction, subagents
 
 Status: **draft / proposed** (design before implementation)
-Tracking: [#2467](https://github.com/Sinity/polylogue/issues/2467)
-Author evidence: measured against the live 37 GB / 16 K-session archive, 2026-06-27.
+Tracking: [#2467](https://github.com/Sinity/polylogue/issues/2467) (lineage/dedup),
+[#2468](https://github.com/Sinity/polylogue/issues/2468) (attachment bytes).
+Evidence: measured against the live 37 GB / 16 K-session archive and the Codex
+(`/realm/project/_inactive/codex`) and Claude Code sources, 2026-06-28.
 
-## Why this document exists
+## The problem
 
-Polylogue ingests every physical session artifact (one rollout/transcript file =
-one physical session) as an independent session with its own full message tree.
-But agentic tooling routinely produces **multiple physical artifacts that share
-content**: a resumed Codex thread replays its parent, a parallel agent fan-out
-forks one context into N rollouts, Claude auto-compaction re-emits a whole
-conversation to summarize it. When the shared content is stored and counted once
-per physical artifact, the archive **misrepresents its own contents**:
+Providers encode the *same* structural facts in incompatible, often denormalized
+ways. If polylogue faithfully ingests each encoding as-is, it both **duplicates
+content** and **misrepresents context**:
 
-- headline session count is inflated (16,414 physical vs 8,807 logical roots, 1.86×);
-- ~32 % of message rows are duplicate-bearing (Codex fork replays);
-- ~42 % of block texts are non-unique (includes legitimate recurrence, but a
-  large slice is fork replay);
-- cost/token totals over-count (Codex 189.7 B physical vs 139.3 B authoritative
-  `state_5.sqlite`, a ~50 B / 1.36× inflation entirely inside fork families);
-- FTS indexes the same content many times → duplicate hits, skewed ranking;
-- embeddings (when enabled) would pay to embed the same content many times.
+- 16,414 physical sessions vs 8,807 logical roots (1.86×); ~32 % of message rows
+  are duplicate-bearing; Codex token total 189.7 B physical vs 139.3 B
+  authoritative (`state_5.sqlite`), the excess being fork replays.
 
-This is a correctness problem in the **data model**, not a reporting cosmetic.
-The lineage is already *detected* (`session_profiles.logical_session_id` groups
-fork families correctly); the failure is that **storage and nearly every
-aggregate ignore it**.
+The fix is **not** to mirror each provider's quirks. It is to recognize that
+behind the encodings there are only **two structural concepts**, model those once
+internally, and derive every provider-agnostic view from that model. The hard
+constraint: **unify without lying about content** — every real message is
+preserved exactly once; nothing the model actually saw or the user actually wrote
+is dropped or fabricated.
 
-## Taxonomy of session relationships (measured)
+## The two structural concepts
 
-| Relationship | Origin | Real count | Content sharing | Correct accounting |
-|---|---|---|---|---|
-| **Linear resume** | Codex (33 families) | child ⊇ parent prefix | parent's prefix replayed in child | count shared content **once** |
-| **Parallel fork / fan-out** | Codex (42 families, ≤35 siblings) | all siblings share a common prefix | prefix replayed in every sibling | count shared prefix **once**, each branch's unique tail once |
-| **Subagent (Task)** | Claude (7,383) | ~99 % unique work | only the task prompt/result echoes parent | count **fully** — real distinct work |
-| **Sidechain** | Claude (131) | embedded sub-thread | likely overlaps parent (to verify) | dedupe overlap |
-| **Auto-compaction** | Claude `agent-acompact-*` (187) | 100 % of parent | whole conversation re-emitted to summarize | **not a session** — derived view; exclude from counts/cost/search |
-| **Main / root** | all (8,427 `branch_type=null`) | unique | — | count |
+### 1. Prefix inheritance (fork / resume / continuation)
 
-Key correction to an earlier hasty read: **real Task subagents are not
-duplication.** They are genuine distinct work and must be counted. The
-duplication is narrow and concentrated: Codex resume+fork families and Claude
-auto-compaction.
+A session begins from another session's content up to some point, then diverges.
+Its effective context = *parent's content through the branch point* + *its own*.
 
-## Where the current model breaks (code-confirmed)
+- **Codex** (fork / subagent `thread_spawn` / resume): **denormalized** — the
+  parent's full history is *copied* into the child rollout (verified in
+  `thread_manager.rs::spawn_subagent` → `stored_thread_to_initial_history`; the
+  child rollout physically replays ~62 K inherited messages with fresh
+  ids/timestamps, plus ~30 of its own). `session_meta.forked_from_id` marks the
+  parent explicitly.
+- **Claude Code** (resume): **normalized** — threads via `uuid`/`parentUuid`,
+  no copy across files. Claude already does the right thing.
 
-Ingestion (`pipeline/ids.py`, `storage/sqlite/archive_tiers/write.py`): **no
-cross-session content dedup.** Each physical session writes its full message and
-block rows keyed by `(session_id, …)`. `content_hash` is per-session (folds in
-session id/position/native id), so identical text across forks gets different
-hashes and cannot dedupe. The byte-level blob store dedupes large tool-output
-*bytes*, but the message/block *rows* are duplicated.
+Same concept, opposite encodings. We model it **one way**: the child has a typed
+lineage edge to the parent at a branch point and stores **only its own
+(post-branch) messages**; the inherited prefix is *referenced*, never copied.
 
-Aggregates — physical (over-count) vs logical (correct):
+### 2. Context discontinuity (compaction)
 
-- **PHYSICAL / over-count:** `cost_compute`, `session_model_usage` aggregation,
-  `stats.get_stats_by`, `aggregate_message_stats`, `list_summaries`,
-  `fts5`/`hybrid` search, `embeddings`, `aggregate_cost_rollup_insights`,
-  per-session work-events/phases.
-- **ALREADY LOGICAL:** `session_tag_rollups` (dedupes via `logical_session_ids`),
-  `get_logical_session` (structure), `ThreadInsight` (root-keyed).
+At a point in a session the prior context is evicted and replaced, for all
+subsequent turns, by a **summary**. From that point the model sees
+`[summary, later…]`, not the full prefix. The pre-compaction messages still
+*happened* (they stay in the archive) — they are simply no longer in context.
 
-Parser misclassification: `claude/code_parser.py` keys subagent detection on
-`fallback_id.startswith("agent-")`, which captures `agent-acompact-*`
-auto-compaction and labels it `branch_type=subagent`. Compaction is a derived
-re-summarization of the parent, not an independent session.
+- **Codex**: explicit — a `compacted` rollout record carries `message` (the
+  summary) and `replacement_history` (the post-compaction context =
+  kept user messages + summary). Verified in `compact.rs`.
+- **Claude Code inline**: a `type=user`, `isCompactSummary: true` record
+  ("This session is being continued from a previous conversation that ran out of
+  context…") inserted in the same session; prior messages retained.
+- **Claude Code auto-compact agent** (`agent-acompact-*`): an agent that
+  re-reads the whole conversation to produce the summary; its transcript is a
+  **100 % copy of the parent + ~2 unique blocks** (the summary). 187 such
+  sessions; polylogue currently mis-stores each as a full duplicate subagent.
 
-## The correct model
+Same concept, three encodings. We model it **one way**: a compaction boundary at
+point N with a summary message S; messages before N stay stored once; effective
+context after N = `[S] + post-N`. The `agent-acompact-*` copy is just "a
+compaction that the provider implemented as a copy" — both concept #1 (it is a
+copy → normalize) and #2 (it carries a summary → boundary) apply.
 
-**Content is the atom.** Messages/blocks should be content-addressed and stored
-once; a physical session is an *ordered view* (a sequence of references) over
-shared content; a logical session is the **union DAG** of content across its
-fork family. Every aggregate counts content **once per logical session**.
+ChatGPT / Gemini / Antigravity have neither concept (confirmed: no compaction or
+fork machinery in their parsers).
 
-This is a git-like model: blocks ≈ blobs (content-addressed), messages ≈ tree
-entries, physical sessions ≈ refs/commits, fork families ≈ branches sharing
-history. It makes the duplication impossible by construction rather than
-correcting for it in every consumer.
+## The model: store content once, structure as edges, derive context
 
-Token/cost attribution under this model: a turn's token usage is attributed to
-the **canonical (earliest) physical session** that produced that content;
-replays in later forks/resumes are references, not new consumption — except
-where a fork genuinely *re-ran* the model over the shared prefix (real cache-read
-consumption). The cumulative-vs-delta and cached-in-input subtleties already
-handled in `_provider_usage_disjoint_lanes` compose with this: dedupe first by
-content lineage, then price the deduped lanes.
+- **Messages are stored exactly once**, in the session where they originated.
+- **Copies are edges, not rows.** A copy-bearing session (Codex fork/resume,
+  Claude acompact) stores a typed lineage edge to its parent + only its unique
+  tail. The copied prefix is never materialized. (The raw artifact with the full
+  copy is still preserved as a blob in `source.db` — index.db is derived, so
+  normalizing it loses nothing recoverable.)
+- **The compaction summary is a real message**, stored once at the boundary. It
+  is not flagged "derived/fake" — semantically it *is* the message that replaces
+  the prefix in context. Its meaning is structural (where it sits in the
+  context-lineage), carried by the compaction boundary, not by a content type.
+- **Fresh spawns stay whole.** A Task subagent that starts from a fresh context
+  (Claude `agent-<hex>`, ~99 % unique content) is real distinct work: stored
+  fully, with a `spawned-fresh` edge to its parent (relationship without prefix
+  sharing).
+- **Effective context is derived**, never stored redundantly. "What the model
+  saw at turn T" = walk inheritance edges + apply compaction boundaries over the
+  once-stored messages. Aggregates (counts, cost, search, embeddings) count each
+  real message once; copies contribute nothing (they are edges); the summary
+  counts once (it is a real message with real generation cost).
 
-## Phased plan (proposed)
+Physical artifacts remain first-class and recoverable (raw blobs in `source.db`);
+we are normalizing the *derived index*, not erasing sessions. A "logical session"
+is just the composed view across edges, not a replacement for the physical ones.
 
-**Phase 0 — stop the misclassification (small, clearly correct).**
-Classify `agent-acompact-*` as compaction, not subagent. Decide its kind
-(`compaction` branch/edge type or `metadata_document` artifact) and exclude it
-from session counts/cost/search. Re-ingest or backfill the 187 rows.
+## Ingest
 
-**Phase 1 — make aggregates lineage-aware (read-time correctness, no schema
-change).** Route cost, stats/counts, FTS result dedup, and embedding selection
-through a logical-session/content-dedup view. Establishes a single
-`logical_session` accounting helper that all surfaces consume. Validates against
-authoritative stores (`state_5.sqlite`, `stats-cache.json`). Fixes the *numbers*
-without re-ingest; storage stays duplicated.
+1. **Detect the relationship from explicit markers**, never from content alone:
+   `forked_from_id` / `thread_spawn` (Codex fork), Codex `compacted` record,
+   Claude `isCompactSummary`, `agent-acompact-*` id, sidechain/subagent markers.
+   The marker fixes the *type* (copy-with-prefix vs fresh-spawn vs compaction).
+2. **Extract the unique tail for copy-bearing sessions** by content-diff against
+   the *known* parent — scoped to the lineage, so coincidentally-identical text
+   in unrelated sessions never collides. Use **conservative contiguous
+   prefix-alignment**: classify a message as inherited only inside the matching
+   prefix run, never by isolated equality, so a genuinely-new block that happens
+   to equal a parent block is never dropped (no content loss).
+3. **Defer resolution for out-of-order ingest** (child before parent) using the
+   existing late-resolution machinery already used for `parent_session_id` /
+   `session_links` (#1258/#1259). Compaction needs no parent lookup (the boundary
+   is in-band).
 
-**Phase 2 — structural content-addressing (the "unlikely by construction"
-fix).** Content-address blocks/messages so shared prefixes are stored once and
-forks reference them. Schema change + re-ingest. Eliminates storage bloat and
-makes every current and future aggregate correct at the source. Large; gated on
-Phase 1 evidence and an explicit re-ingest plan (see CONTRIBUTING "Schema-Touching
-Changes").
+## Reads and aggregates
 
-## Attachment preservation (same root shape — folded in)
+- Single composition point: `get_messages(conn, session_id)`
+  (`storage/sqlite/queries/message_query_reads.py`) resolves the inheritance edge
+  and composes `parent prefix + own tail` for a full transcript. The same point
+  serves Claude resume chains, which need composition anyway and don't get it
+  today (Claude `continuation` count is currently 0 — a pre-existing gap this
+  fixes).
+- Session-keyed derived tables (FTS, `session_model_usage`, work-events, phases,
+  embeddings) hold only real (once-stored) content, so they are correct by
+  construction instead of needing per-consumer dedup. Search over an inherited
+  prefix resolves through the parent; embeddings never pay twice.
+- `message_id` / position keying must accommodate "this session's messages start
+  after an inherited range" — resolved at the composition layer, not by copying
+  parent rows into the child's PK space.
 
-Tracking: [#2468](https://github.com/Sinity/polylogue/issues/2468).
+## Attachment preservation (Ref #2468)
 
-Attachments are **metadata-only by construction** — the same "no real
-content-addressed store" failure. Measured on the live archive: 8,425
-attachment rows claim **8.4 GB** but **0/8,425 blobs exist**; 4,751 (56 %) are
-zero-byte. The `attachments.blob_hash` is a **synthetic metadata hash**
-(`write.py:_attachment_blob_hash` returns `bytes.fromhex(attachment_id)`), not a
-hash of bytes. Bytes are never captured: `download_assets` is accepted then
-`del`'d (`api/ingest.py:54`); parsers set `path=None`; the real `path` is used in
-the dedup hash then discarded; pasted text is marker-only; **fork/duplicate-message
-attachments are silently dropped** (`write.py:_write_attachments`,
-`if message_id is None: continue`). Attachments are absent from MCP output, FTS,
-and embeddings.
+Same root failure (no real content store), separate fix. Attachments are
+**metadata-only by construction**: 8,425 rows claim 8.4 GB but **0 blobs exist**;
+56 % are zero-byte. `attachments.blob_hash` is a *synthetic metadata hash*
+(`write.py:_attachment_blob_hash` → `bytes.fromhex(attachment_id)`), not bytes;
+`download_assets` is accepted then `del`'d (`api/ingest.py`); parsers set
+`path=None` and the real path is hashed then discarded; pasted text is
+marker-only; **fork/duplicate-message attachments are silently dropped**. The
+structural work must:
 
-The `attachments` table already has the right *shape* (content-addressed +
-`ref_count`) — it just stores a fake hash and no bytes. The structural model
-must therefore:
+- store attachment bytes in the blob store keyed by **true SHA-256 of bytes**,
+  ref-counted (the `attachments` table already has the right shape, just a fake
+  hash);
+- add an ingest **acquisition step** that fetches/reads bytes (Drive/OAuth API,
+  local path, inline base64, export-zip member) and records per-attachment status
+  (acquired / unavailable / unfetched) instead of fabricating a hash;
+- preserve the real `path`/`source_url` for re-acquisition;
+- carry attachments through lineage instead of dropping them; surface them in
+  read paths and make extractable text searchable.
 
-- store attachment bytes in the **same content-addressed blob store** keyed by
-  true SHA-256 of bytes, ref-counted, deduped across sessions/forks;
-- add an **acquisition step** at ingest that actually fetches/reads bytes
-  (Drive/OAuth API, local path, inline base64, export-zip member) and records a
-  per-attachment acquisition status (`acquired` / `unavailable` / `unfetched`)
-  instead of a fake hash;
-- preserve the real source `path`/`source_url` so re-acquisition is possible;
-- carry attachments through fork/continuation lineage instead of dropping them;
-- surface attachments in read paths (MCP, render) and make their text
-  searchable where extractable.
+Recoverability is per-source (Drive via API; browser-capture chats likely need
+official export zips; repo tarballs regenerable) — re-ingest classifies each.
 
-Recoverability is per-source: aistudio-drive (2,839) via Drive API; browser-
-capture chatgpt/claude (5,480) likely need official export zips or are gone;
-repo tarballs are regenerable. Re-ingest must classify each rather than fabricate
-a hash.
+## What we deliberately do NOT do
 
-## Open decisions (need operator input)
+- **No content-addressing of messages/blocks.** Identical-but-unrelated text
+  ("continue", a bare `git status`) must stay distinct events; dedup is by
+  *lineage*, not content hash. (Earlier draft got this wrong.)
+- **No storing copies, even flagged.** Flagged duplicates force every consumer to
+  special-case them; normalization avoids that entirely.
+- **No per-provider branches downstream.** Provider quirks are resolved at ingest
+  into the one model; nothing past ingest knows about `forked_from_id` vs
+  `isCompactSummary`.
+- **No deleting physical artifacts.** Raw rollouts stay in `source.db`; the index
+  is rebuildable.
 
-1. **Default reporting unit.** Should headline session count / cost / search
-   default to **logical** sessions (subagents and forks folded into their work
-   session) or **physical**, with the other available via a flag? Recommendation:
-   logical as the default headline, physical available explicitly.
-2. **Phase 2 commitment.** Is the structural content-addressed overhaul in scope,
-   or do we stop at Phase 1 read-time correctness for now?
-3. **Re-ingest tolerance.** Phases 0 and 2 want a fresh re-ingest of the real
-   archive; acceptable, and a chance to dogfood ingest throughput.
+## Decisions
 
-## Verification anchors (already established)
+- **Default reporting unit: logical** (composed view); physical available
+  explicitly. Physical artifacts remain fully recoverable.
+- **Approach: normalize copies** (store edge + tail), don't store-and-flag.
+- **Re-ingest is acceptable** and is the occasion to optimize ingest throughput
+  first (ties to the operator's ingest-snappiness goal and #2391).
+
+## Phased implementation
+
+0. Classify `agent-acompact-*` as compaction, not generic subagent.
+1. Schema: typed lineage edges with branch point + compaction boundaries +
+   a `copied-from`/inheritance reference; attachment acquisition + real blob hash.
+2. Ingest: marker detection + conservative tail extraction + deferred resolution;
+   real attachment byte acquisition.
+3. Reads: lineage composition at `get_messages`; effective-context derivation.
+4. Optimize ingest, then re-ingest the real archive.
+5. Validate against authoritative stores (`state_5.sqlite`, `stats-cache.json`):
+   per-thread token ratio → 1.00; attachment blobs present > 0; no duplicate
+   message rows across fork families.
+
+## Verification anchors (established)
 
 - Codex per-thread vs `state_5.sqlite`: median ratio 1.000 after the disjoint-lane
-  fix; aggregate excess = fork replay, not pruned history.
-- Claude per-model vs `stats-cache.json`: 1.09× (stale 6-day window + minor
-  model-attribution drift), no resume duplication.
-- Fork families confirmed as real on-disk rollouts (parallel fan-out, e.g.
-  parent `019d1c2a` + 20 children created within ~45 s), 100 % block-text overlap
-  with parent, ~30 unique blocks each.
-
-## Remaining verification before implementation
-
-- Sidechain (131) content overlap with parent — dedupe needed?
-- Whether Codex fork rollouts re-emit parent `token_count` events (determines
-  whether per-turn delta summation also double counts).
-- Completeness of `logical_session_id` for out-of-order / missing-parent forks
-  (`topology_edges` #1258 resolution).
+  cost fix; aggregate excess = fork replay.
+- Claude per-model vs `stats-cache.json`: 1.09× (stale window + attribution), no
+  resume duplication.
+- `agent-acompact-*`: 100 % parent overlap, ~2 unique blocks (n=5 sampled),
+  187 total.
+- Fork families: real on-disk rollouts, `forked_from_id` explicit, 100 % block
+  overlap with parent, ~30 unique blocks each.
