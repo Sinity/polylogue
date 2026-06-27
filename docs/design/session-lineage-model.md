@@ -108,6 +108,42 @@ makes every current and future aggregate correct at the source. Large; gated on
 Phase 1 evidence and an explicit re-ingest plan (see CONTRIBUTING "Schema-Touching
 Changes").
 
+## Attachment preservation (same root shape — folded in)
+
+Tracking: [#2468](https://github.com/Sinity/polylogue/issues/2468).
+
+Attachments are **metadata-only by construction** — the same "no real
+content-addressed store" failure. Measured on the live archive: 8,425
+attachment rows claim **8.4 GB** but **0/8,425 blobs exist**; 4,751 (56 %) are
+zero-byte. The `attachments.blob_hash` is a **synthetic metadata hash**
+(`write.py:_attachment_blob_hash` returns `bytes.fromhex(attachment_id)`), not a
+hash of bytes. Bytes are never captured: `download_assets` is accepted then
+`del`'d (`api/ingest.py:54`); parsers set `path=None`; the real `path` is used in
+the dedup hash then discarded; pasted text is marker-only; **fork/duplicate-message
+attachments are silently dropped** (`write.py:_write_attachments`,
+`if message_id is None: continue`). Attachments are absent from MCP output, FTS,
+and embeddings.
+
+The `attachments` table already has the right *shape* (content-addressed +
+`ref_count`) — it just stores a fake hash and no bytes. The structural model
+must therefore:
+
+- store attachment bytes in the **same content-addressed blob store** keyed by
+  true SHA-256 of bytes, ref-counted, deduped across sessions/forks;
+- add an **acquisition step** at ingest that actually fetches/reads bytes
+  (Drive/OAuth API, local path, inline base64, export-zip member) and records a
+  per-attachment acquisition status (`acquired` / `unavailable` / `unfetched`)
+  instead of a fake hash;
+- preserve the real source `path`/`source_url` so re-acquisition is possible;
+- carry attachments through fork/continuation lineage instead of dropping them;
+- surface attachments in read paths (MCP, render) and make their text
+  searchable where extractable.
+
+Recoverability is per-source: aistudio-drive (2,839) via Drive API; browser-
+capture chatgpt/claude (5,480) likely need official export zips or are gone;
+repo tarballs are regenerable. Re-ingest must classify each rather than fabricate
+a hash.
+
 ## Open decisions (need operator input)
 
 1. **Default reporting unit.** Should headline session count / cost / search
