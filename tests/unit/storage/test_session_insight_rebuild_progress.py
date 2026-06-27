@@ -1,17 +1,20 @@
-"""Progress reporting + atomicity invariants for ``rebuild_session_insights_sync`` (#1607).
+"""Progress reporting + bounded-WAL invariants for ``rebuild_session_insights_sync``.
 
-Pins two contracts:
+Pins the contracts of the bounded-WAL rebuild model (#1607 heartbeats, #2458
+per-chunk commit):
 
-1. The seven DELETEs that open a full rebuild emit a progress event per
-   table (instead of running silently for seconds-to-minutes against
-   the production-scale insight tables). Operators tailing the log see
-   forward motion at table granularity, not "stuck at start".
+1. ``_delete_tables_with_progress_sync`` still emits one progress event per
+   table it clears (the aggregate-table helper, exercised directly below).
 
-2. The full rebuild runs as a single transaction — the implicit
-   transaction started by the first DELETE spans every subsequent DML
-   through the eventual ``conn.commit()``. A SIGKILL or unraised
-   exception before COMMIT must leave the prior insights intact rather
-   than emptying the archive.
+2. The full rebuild no longer clears per-session insight tables upfront. It
+   upserts per chunk, commits per chunk (bounded WAL), and prunes orphan rows
+   after the chunk loop — emitting a per-table "pruned orphans" heartbeat so
+   operators still see forward motion.
+
+3. Because per-session insight rows are upserted (not wiped) and the failing
+   chunk never commits, an exception mid-rebuild leaves the prior insights
+   intact rather than emptying the archive — now achieved by upsert + no
+   upfront delete instead of one giant transaction.
 """
 
 from __future__ import annotations
@@ -102,12 +105,13 @@ def test_delete_tables_progress_callback_is_optional(tmp_path: Path) -> None:
         conn.close()
 
 
-def test_full_rebuild_emits_progress_for_each_deleted_table(
+def test_full_rebuild_emits_orphan_prune_progress_per_table(
     cli_workspace: dict[str, Path],
 ) -> None:
-    """The full native ``rebuild_insights`` path must surface DELETE progress
-    through the user-supplied callback so "polylogue ... --rebuild-insights"
-    stops hanging silently (#1607 parity over archive)."""
+    """The bounded-WAL full rebuild (#2458) does not clear per-session insight
+    tables upfront; it prunes orphan rows after the chunk loop and emits a
+    per-table heartbeat so the operator still sees forward motion. The old
+    upfront "cleared session_*" heartbeats must be gone."""
     db_path = cli_workspace["db_path"]
     (
         SessionBuilder(db_path, "conv-1")
@@ -125,31 +129,34 @@ def test_full_rebuild_emits_progress_for_each_deleted_table(
 
     _rebuild(db_path, progress_callback=progress)
 
-    delete_events = [desc for desc in events if desc and desc.startswith("rebuild: cleared ")]
-    assert delete_events == [
-        "rebuild: cleared session_work_events",
-        "rebuild: cleared session_phases",
-        "rebuild: cleared session_latency_profiles",
-        "rebuild: cleared session_profiles",
-        "rebuild: cleared session_tag_rollups",
-        "rebuild: cleared thread_sessions",
-        "rebuild: cleared threads",
+    prune_events = [desc for desc in events if desc and desc.startswith("rebuild: pruned orphans from ")]
+    assert prune_events == [
+        "rebuild: pruned orphans from session_work_events",
+        "rebuild: pruned orphans from session_phases",
+        "rebuild: pruned orphans from session_runs",
+        "rebuild: pruned orphans from session_observed_events",
+        "rebuild: pruned orphans from session_context_snapshots",
+        "rebuild: pruned orphans from session_latency_profiles",
+        "rebuild: pruned orphans from session_profiles",
     ]
+    # The bounded-WAL model removed the upfront per-session table wipe.
+    assert not [desc for desc in events if desc and desc.startswith("rebuild: cleared session_")]
 
 
 # ---------------------------------------------------------------------------
-# Atomicity — SIGKILL/exception mid-rebuild leaves prior insights intact
+# No-empty-window — exception mid-rebuild leaves prior insights intact
 # ---------------------------------------------------------------------------
 
 
-def test_full_rebuild_rolls_back_on_exception_keeping_prior_profiles(
+def test_full_rebuild_failure_preserves_prior_profiles(
     cli_workspace: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """If the rebuild loop raises between the DELETE phase and ``conn.commit()``,
-    the implicit transaction must roll back so prior session_profiles
-    survive — not the "seconds-to-minutes of empty archive" the #1607
-    report worried about.
+    """In the bounded-WAL model (#2458) there is no upfront wipe of per-session
+    insight tables: each chunk upserts and commits independently. If the loop
+    raises while building the first chunk's records, that chunk never commits
+    and no other session's rows were touched, so the prior session_profiles
+    survive — not the "seconds-to-minutes of empty archive" #1607 worried about.
     """
     db_path = cli_workspace["db_path"]
     (
@@ -166,9 +173,10 @@ def test_full_rebuild_rolls_back_on_exception_keeping_prior_profiles(
     baseline = _count_profiles(db_path)
     assert baseline >= 1, "baseline rebuild produced no profiles"
 
-    # Now arrange for the next rebuild's per-session loop to fail after the
-    # DELETE phase. The archive rebuild imports build_session_insight_records
-    # at call time from the rebuild module, so patching it there is observed.
+    # Now arrange for the next rebuild's per-session loop to fail while building
+    # the first chunk's records (before any chunk commit). The archive rebuild
+    # imports build_session_insight_records at call time from the rebuild
+    # module, so patching it there is observed.
     from polylogue.storage.insights.session import rebuild as rebuild_module
 
     def _explode(*args: object, **kwargs: object) -> None:
@@ -179,7 +187,7 @@ def test_full_rebuild_rolls_back_on_exception_keeping_prior_profiles(
     with pytest.raises(RuntimeError, match="simulated mid-rebuild failure"):
         _rebuild(db_path)
 
-    # The post-failure count must equal the baseline. If the DELETEs had
-    # leaked past their implicit transaction, this would be 0.
+    # The post-failure count must equal the baseline. If the rebuild had wiped
+    # the per-session tables upfront, this would be 0.
     surviving = _count_profiles(db_path)
     assert surviving == baseline, f"rebuild failure emptied prior insights: baseline={baseline}, surviving={surviving}"

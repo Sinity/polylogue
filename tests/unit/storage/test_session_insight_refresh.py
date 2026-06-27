@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -688,6 +689,107 @@ def test_targeted_session_insight_rebuild_splits_large_message_batches(
 
     assert counts.profiles == 3
     assert chunk_profile_counts == [1, 2]
+
+
+def test_full_rebuild_commits_incrementally_and_prunes_orphans(tmp_path: Path) -> None:
+    """Bounded-WAL full rebuild (#2458) must:
+
+    1. commit each chunk so intermediate committed state is visible from a
+       second connection;
+    2. keep prior per-session insights visible for not-yet-processed sessions
+       during the rebuild (no empty window);
+    3. prune per-session insight rows whose session was deleted since the last
+       rebuild (orphan cleanup).
+    """
+    db_path = _current_index_db(tmp_path, "bounded-wal-rebuild")
+    live_natives = ["conv-live-0", "conv-live-1", "conv-live-2"]
+    orphan_native = "conv-orphan"
+
+    with open_connection(db_path) as conn:
+        for native in [*live_natives, orphan_native]:
+            store_records(
+                session=make_session(native, title=f"v1-{native}"),
+                messages=[make_message(f"{native}:msg-1", native, text=f"work {native}")],
+                attachments=[],
+                conn=conn,
+            )
+        conn.commit()
+        # Baseline rebuild: every session gets a profile row.
+        rebuild_session_insights_sync(conn)
+        conn.commit()
+
+    live_ids = [_sid(native) for native in live_natives]
+    orphan_id = _sid(orphan_native)
+
+    with open_connection(db_path) as conn:
+        baseline = {
+            str(row["session_id"]) for row in conn.execute("SELECT session_id FROM session_profiles").fetchall()
+        }
+    assert baseline == {*live_ids, orphan_id}
+
+    # Flip live session titles v1 -> v2 (so the rebuilt profile.title changes).
+    with open_connection(db_path) as conn:
+        for native in live_natives:
+            conn.execute("UPDATE sessions SET title = ? WHERE session_id = ?", (f"v2-{native}", _sid(native)))
+        conn.commit()
+
+    # Delete the orphan's session row WITHOUT FK cascade (a plain sqlite3
+    # connection has foreign_keys OFF by default) so its session_profiles row
+    # survives as an orphan the rebuild must prune.
+    with sqlite3.connect(str(db_path)) as raw:
+        raw.execute("DELETE FROM sessions WHERE session_id = ?", (orphan_id,))
+        raw.commit()
+
+    with open_connection(db_path) as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM session_profiles WHERE session_id = ?",
+                (orphan_id,),
+            ).fetchone()[0]
+            == 1
+        ), "orphan profile should still be present going into the rebuild"
+
+    committed_v2_counts: list[int] = []
+    live_profile_counts: list[int] = []
+
+    def observe(amount: int, desc: str | None = None) -> None:
+        del amount
+        # Sample only on per-chunk materialize heartbeats, not the orphan-prune
+        # or aggregate-clear heartbeats (those descs start with "rebuild:").
+        if desc is not None and desc.startswith("rebuild:"):
+            return
+        with sqlite3.connect(str(db_path)) as probe:
+            probe.row_factory = sqlite3.Row
+            rows = probe.execute(
+                "SELECT session_id, title FROM session_profiles WHERE session_id IN (?, ?, ?)",
+                tuple(live_ids),
+            ).fetchall()
+        # Every live session always has a profile row at every callback (no empty window).
+        live_profile_counts.append(len({str(row["session_id"]) for row in rows}))
+        # Live profiles whose committed title already flipped to v2.
+        committed_v2_counts.append(sum(1 for row in rows if str(row["title"]).startswith("v2-")))
+
+    with open_connection(db_path) as conn:
+        counts = rebuild_session_insights_sync(conn, page_size=1, progress_callback=observe)
+
+    # 3 live sessions, page_size=1 -> 3 single-session chunks -> 3 materialize callbacks.
+    assert len(committed_v2_counts) == 3
+    # No empty window: every live session is present at every callback.
+    assert live_profile_counts == [3, 3, 3]
+    # Incremental commit: the callback fires before its own chunk commits, so the
+    # count of already-committed v2 profiles grows 0 -> 1 -> 2 across chunks. A
+    # single end-of-rebuild commit would instead leave this [0, 0, 0].
+    assert committed_v2_counts == [0, 1, 2]
+
+    with open_connection(db_path) as conn:
+        final = {
+            str(row["session_id"]): str(row["title"])
+            for row in conn.execute("SELECT session_id, title FROM session_profiles").fetchall()
+        }
+    # Orphan pruned; all live profiles rebuilt to v2.
+    assert set(final) == set(live_ids)
+    assert all(title.startswith("v2-") for title in final.values())
+    assert counts.profiles == 3
 
 
 def test_full_rebuild_restores_thread_spine_membership_and_markers(tmp_path: Path) -> None:
