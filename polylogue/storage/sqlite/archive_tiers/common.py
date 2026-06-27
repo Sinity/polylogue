@@ -2,12 +2,31 @@
 
 from __future__ import annotations
 
-from polylogue.core.enums import PolylogueStrEnum, nullable_sql_check_in, sql_check_in
+from polylogue.core.enums import (
+    PolylogueStrEnum,
+    nullable_sql_check_in,
+    sql_check_in,
+    sql_string_literal,
+)
 
 
 def check(column: str, enum_type: type[PolylogueStrEnum]) -> str:
     """Return a non-null enum CHECK expression."""
     return sql_check_in(column, enum_type)
+
+
+def literal_check(column: str, *values: str) -> str:
+    """Return a non-null ``column IN (...)`` expression for explicit literals.
+
+    Mirrors :func:`check`, but for closed vocabularies expressed as
+    ``typing.Literal`` aliases rather than ``PolylogueStrEnum`` types. Callers
+    expand the alias with ``typing.get_args`` at the call site so this helper
+    stays free of an ``insights`` import inside the storage substrate.
+    """
+    if not values:
+        raise ValueError("literal_check requires at least one value")
+    rendered = ", ".join(sql_string_literal(value) for value in values)
+    return f"{column} IN ({rendered})"
 
 
 def nullable_check(column: str, enum_type: type[PolylogueStrEnum]) -> str:
@@ -52,5 +71,6 @@ __all__ = [
     "json_array_check",
     "json_check",
     "json_object_check",
+    "literal_check",
     "nullable_check",
 ]
