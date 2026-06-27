@@ -526,6 +526,25 @@ def test_pending_window_uses_live_counts_for_message_bound() -> None:
         conn.close()
 
 
+def test_pending_archive_window_honors_min_messages() -> None:
+    conn = sqlite3.connect(":memory:")
+    try:
+        _setup_minimal_embedding_db(conn)
+        # The archive selector orders by sort_key_ms; the minimal DDL omits it.
+        conn.execute("ALTER TABLE sessions ADD COLUMN sort_key_ms INTEGER")
+        _insert_session(conn, "substantial", message_count=5)
+        _insert_session(conn, "trivial", message_count=1)
+        conn.commit()
+
+        # A message-count floor skips trivial sessions so a limited embedding
+        # budget is not spent on near-empty stubs.
+        pending = select_pending_archive_session_window(conn, status_table="", min_messages=3)
+
+        assert [item.session_id for item in pending] == ["substantial"]
+    finally:
+        conn.close()
+
+
 def test_no_message_session_records_clean_status(tmp_path: Path) -> None:
     db_path = tmp_path / "archive.sqlite"
     _setup_minimal_embedding_file(db_path)

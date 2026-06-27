@@ -229,8 +229,15 @@ def select_pending_archive_session_window(
     rebuild: bool = False,
     max_sessions: int | None = None,
     max_messages: int | None = None,
+    min_messages: int | None = None,
 ) -> list[PendingSession]:
-    """Return one bounded pending-session window from a archive index."""
+    """Return one bounded pending-session window from a archive index.
+
+    ``min_messages`` skips sessions below a message-count floor so a limited
+    embedding budget is not spent on trivial sessions (provider smoke tests,
+    empty stubs). It complements the budget bounds (``max_*``) with a quality
+    floor, making selective embedding affordable for real users.
+    """
 
     pending: list[PendingSession] = []
     message_total = 0
@@ -241,6 +248,11 @@ def select_pending_archive_session_window(
         placeholders = ", ".join("?" for _ in unique_ids)
         id_filter = f"AND s.session_id IN ({placeholders})"
         params.extend(unique_ids)
+
+    min_filter = ""
+    if min_messages is not None:
+        min_filter = "AND s.message_count >= ?"
+        params.append(int(min_messages))
 
     if status_table is None:
         status_table = "embedding_status" if _table_exists(conn, "embedding_status") else ""
@@ -257,6 +269,7 @@ def select_pending_archive_session_window(
         {join_clause}
         WHERE {where_clause}
           {id_filter}
+          {min_filter}
         ORDER BY (s.sort_key_ms IS NULL), s.sort_key_ms DESC, s.session_id
         """,
         tuple(params),
