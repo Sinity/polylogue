@@ -402,12 +402,12 @@ def embed_archive_session_sync(
             return EmbedSessionOutcome(status="not_found", session_id=session_id)
         rows = index_conn.execute(
             """
-            SELECT m.message_id, m.role, m.content_hash,
+            SELECT m.message_id, m.role, m.content_hash, m.material_origin,
                    GROUP_CONCAT(b.text, char(10) || char(10)) AS text
             FROM messages m
             LEFT JOIN blocks b ON b.message_id = m.message_id AND b.text IS NOT NULL
             WHERE m.session_id = ?
-            GROUP BY m.message_id, m.role, m.content_hash, m.position, m.variant_index
+            GROUP BY m.message_id, m.role, m.content_hash, m.material_origin, m.position, m.variant_index
             ORDER BY m.position, m.variant_index
             """,
             (session_id,),
@@ -422,7 +422,9 @@ def embed_archive_session_sync(
                 title=None if session["title"] is None else str(session["title"]),
             )
 
-        embeddable = [row for row in rows if _should_embed_archive_message(row["role"], row["text"])]
+        embeddable = [
+            row for row in rows if _should_embed_archive_message(row["material_origin"], row["role"], row["text"])
+        ]
         if not embeddable:
             _record_archive_embedding_success(
                 embeddings_conn, session_id=session_id, origin=str(session["origin"]), message_count=0
@@ -514,16 +516,32 @@ def _record_archive_embedding_success(
         )
 
 
-def _should_embed_archive_message(role: object, text: object) -> bool:
+# Material origins that are NOT conversational prose: large tool outputs,
+# injected runtime context/protocol, and generated packs. Embedding these
+# pollutes semantic search and is expensive (tool_result alone is ~38% of all
+# messages). We embed authored prose (assistant/human) plus ambiguous/unknown
+# origins (e.g. non-Claude providers that don't tag material_origin), and skip
+# the known-noise origins.
+_NON_PROSE_MATERIAL_ORIGINS = frozenset(
+    {
+        "tool_result",
+        "runtime_context",
+        "runtime_protocol",
+        "generated_analysis_pack",
+        "generated_context_pack",
+    }
+)
+
+
+def _should_embed_archive_message(material_origin: object, role: object, text: object) -> bool:
     if not isinstance(text, str) or not text.strip():
         return False
     stripped = text.strip()
     if len(stripped) < 20:
         return False
-    role_value = str(role)
-    if role_value == "system":
+    if str(role) == "system":
         return False
-    return not (role_value == "tool" and stripped.lower() in {"ok", "success", "done", "error", "failed"})
+    return material_origin is None or str(material_origin) not in _NON_PROSE_MATERIAL_ORIGINS
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
