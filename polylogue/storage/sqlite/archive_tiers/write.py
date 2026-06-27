@@ -2200,6 +2200,37 @@ def _write_provider_usage_event(
     )
 
 
+def _provider_usage_disjoint_lanes(
+    input_with_cached: int,
+    output_with_reasoning: int,
+    cache_read: int,
+    cache_write: int,
+) -> tuple[int, int, int, int]:
+    """Map Codex ``token_count`` totals onto disjoint billing lanes.
+
+    Codex (OpenAI) reports ``input_tokens`` *inclusive* of
+    ``cached_input_tokens`` and ``output_tokens`` *inclusive* of
+    ``reasoning_output_tokens``. Verified across the full real corpus
+    (1.84M token_count events): ``cached <= input`` on 100% of rows, and
+    ``total == input + output`` on 98.9% (reasoning is a subset of output,
+    not an additional term).
+
+    The cost model (`archive/semantic/pricing.py:_cost_components`) bills
+    ``input`` and ``cache_read`` as *separate additive lanes* — the Anthropic
+    convention where ``input`` means fresh/uncached input. So the cached
+    portion must be subtracted out of ``input`` or it is billed twice: once at
+    the full input rate and again at the discounted cache-read rate. On the
+    real archive cached is ~96% of Codex input, so the double-count inflated
+    Codex input cost by roughly 8x. Likewise ``reasoning`` is already inside
+    ``output``; adding it again over-counts output.
+
+    Returns ``(fresh_input, output, cache_read, cache_write)`` with fresh input
+    clamped at zero (defensive; ``input >= cached`` holds on every observed row).
+    """
+    fresh_input = max(input_with_cached - cache_read, 0)
+    return fresh_input, output_with_reasoning, cache_read, cache_write
+
+
 def _aggregate_provider_usage_into_model_usage(conn: sqlite3.Connection, session_id: str) -> None:
     """Fold provider-reported token-count totals into model usage rows.
 
@@ -2280,27 +2311,33 @@ def _aggregate_provider_usage_into_model_usage(conn: sqlite3.Connection, session
             bucket[4] += last_reasoning
 
     for model_name, totals in latest_total_by_model.items():
+        lane_input, lane_output, lane_cache_read, lane_cache_write = _provider_usage_disjoint_lanes(
+            totals[0], totals[1], totals[2], totals[3]
+        )
         _upsert_provider_usage_model_rollup(
             conn,
             session_id,
             model_name,
-            input_tokens=totals[0],
-            output_tokens=totals[1] + totals[4],
-            cache_read_tokens=totals[2],
-            cache_write_tokens=totals[3],
+            input_tokens=lane_input,
+            output_tokens=lane_output,
+            cache_read_tokens=lane_cache_read,
+            cache_write_tokens=lane_cache_write,
         )
 
     for model_name, summed_totals in summed_last_by_model.items():
         if model_name in latest_total_by_model:
             continue
+        lane_input, lane_output, lane_cache_read, lane_cache_write = _provider_usage_disjoint_lanes(
+            summed_totals[0], summed_totals[1], summed_totals[2], summed_totals[3]
+        )
         _upsert_provider_usage_model_rollup(
             conn,
             session_id,
             model_name,
-            input_tokens=summed_totals[0],
-            output_tokens=summed_totals[1] + summed_totals[4],
-            cache_read_tokens=summed_totals[2],
-            cache_write_tokens=summed_totals[3],
+            input_tokens=lane_input,
+            output_tokens=lane_output,
+            cache_read_tokens=lane_cache_read,
+            cache_write_tokens=lane_cache_write,
         )
 
 
@@ -2372,27 +2409,33 @@ def _aggregate_appended_provider_usage_into_model_usage(
             bucket[4] += last_reasoning
 
     for model_name, totals in latest_total_by_model.items():
+        lane_input, lane_output, lane_cache_read, lane_cache_write = _provider_usage_disjoint_lanes(
+            totals[0], totals[1], totals[2], totals[3]
+        )
         _upsert_provider_usage_model_rollup(
             conn,
             session_id,
             model_name,
-            input_tokens=totals[0],
-            output_tokens=totals[1] + totals[4],
-            cache_read_tokens=totals[2],
-            cache_write_tokens=totals[3],
+            input_tokens=lane_input,
+            output_tokens=lane_output,
+            cache_read_tokens=lane_cache_read,
+            cache_write_tokens=lane_cache_write,
         )
 
     for model_name, summed_totals in summed_last_by_model.items():
         if model_name in latest_total_by_model or _provider_usage_has_cumulative_total(conn, session_id, model_name):
             continue
+        lane_input, lane_output, lane_cache_read, lane_cache_write = _provider_usage_disjoint_lanes(
+            summed_totals[0], summed_totals[1], summed_totals[2], summed_totals[3]
+        )
         _increment_provider_usage_model_rollup(
             conn,
             session_id,
             model_name,
-            input_tokens=summed_totals[0],
-            output_tokens=summed_totals[1] + summed_totals[4],
-            cache_read_tokens=summed_totals[2],
-            cache_write_tokens=summed_totals[3],
+            input_tokens=lane_input,
+            output_tokens=lane_output,
+            cache_read_tokens=lane_cache_read,
+            cache_write_tokens=lane_cache_write,
         )
 
 
