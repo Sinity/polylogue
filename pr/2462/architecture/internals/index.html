@@ -555,6 +555,16 @@ archive.</li>
 <li>Schema bumps are deletes-then-defines, never deltas. A schema change
 edits the owning tier DDL/version and documents the re-ingest expectation.
 No upgrade helpers are added for the bump.</li>
+<li>Index schema version 11 materializes the run projection into three derived
+read-model tables — <code>session_runs</code>, <code>session_observed_events</code>, and
+<code>session_context_snapshots</code> — recomputed by the session-insight materializer
+(<code>compile_recovery_digest(...).run_projection</code>) exactly like <code>session_profiles</code>.
+They give the <code>run</code> / <code>observed-event</code> / <code>context-snapshot</code> query units a
+durable SQL-backed lowerer (terminal rows, <code>exists</code>, and sort) instead of the
+per-query recovery-transform scan. They are derived/rebuildable, not a new
+source of truth; the durable evidence stays <code>session_events</code> + <code>messages</code> +
+<code>topology_edges</code>. Existing index tiers must be rebuilt from source evidence
+(<code>polylogue ops reset --database &amp;&amp; polylogued run</code>).</li>
 <li>Index schema version 10 adds a role-leading <code>idx_messages_role</code> index so
 daemon <code>/api/facets</code> can compute global role counts without scanning the
 session-role compound index and spilling to a temp B-tree. Existing index
