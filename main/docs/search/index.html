@@ -480,9 +480,13 @@ currently support <code>sort by time [asc|desc]</code>,
 and <code>offset N</code> for SQL-backed terminal rows (<code>messages</code>, <code>actions</code>, <code>blocks</code>,
 <code>files</code>, <code>assertions</code>). Query-string limits narrow the surface limit instead of expanding
 caller/API caps, and query-string offsets are added to the caller offset.
-Runtime-transform terminal rows (<code>runs</code>, <code>observed-events</code>, <code>context-snapshots</code>)
-reject sort/aggregate stages until they have streaming or aggregate lowerers;
-they must not collect every projected row in memory merely to sort a page.
+<code>runs</code>, <code>observed-events</code>, and <code>context-snapshots</code> are now SQL-backed terminal
+rows over the materialized run-projection tables (<code>session_runs</code>,
+<code>session_observed_events</code>, <code>session_context_snapshots</code>); they support
+<code>sort by time</code>, <code>limit</code>, and <code>offset</code> and are usable as <code>exists run(...)</code> /
+<code>exists observed-event(...)</code> / <code>exists context-snapshot(...)</code> session selectors.
+They do not yet expose <code>group by | count</code> aggregation (no aggregate lowerer), so
+aggregate stages on these units fail with a typed error rather than broadening.
 Pipeline syntax is terminal-row syntax: session-selector surfaces reject piped
 queries, including aggregate stages like <code>group by role | count</code>, instead of
 dropping those stages and widening the query to <code>exists message(...)</code>.</p>
@@ -663,15 +667,27 @@ one child row matching the nested predicate.</p>
 <td><code>assertion</code></td>
 <td><code>author</code>, <code>author_kind</code>, <code>author_ref</code>, <code>body</code>, <code>context</code>, <code>evidence</code>, <code>key</code>, <code>kind</code>, <code>scope</code>, <code>scope_ref</code>, <code>status</code>, <code>target</code>, <code>target_ref</code>, <code>text</code>, <code>value</code>, <code>visibility</code></td>
 </tr>
+<tr>
+<td><code>run</code></td>
+<td><code>agent</code>, <code>branch</code>, <code>confidence</code>, <code>context_snapshot</code>, <code>cwd</code>, <code>evidence</code>, <code>harness</code>, <code>lineage</code>, <code>native_session_id</code>, <code>native_parent_session_id</code>, <code>origin</code>, <code>parent</code>, <code>provider_origin</code>, <code>role</code>, <code>run</code>, <code>status</code>, <code>text</code>, <code>title</code>, <code>transcript</code></td>
+</tr>
+<tr>
+<td><code>observed-event</code></td>
+<td><code>delivery_state</code>, <code>evidence</code>, <code>kind</code>, <code>object</code>, <code>subject</code>, <code>summary</code>, <code>text</code></td>
+</tr>
+<tr>
+<td><code>context-snapshot</code></td>
+<td><code>boundary</code>, <code>evidence</code>, <code>inheritance_mode</code>, <code>metadata</code>, <code>run</code>, <code>segment</code>, <code>text</code></td>
+</tr>
 </tbody>
 </table>
 <p>Structural units also accept <code>session.&lt;field&gt;</code> predicates for the owning
 session fields that their lowerer can evaluate. SQL-backed units can use the
 full session filter surface, including action/tool/path/feature predicates.
-Runtime-transform units (<code>runs</code>, <code>observed-events</code>, <code>context-snapshots</code>) can
-only use fields present on the session-summary projection, such as
-<code>session.repo</code>, <code>session.origin</code>, <code>session.tag</code>, <code>session.title</code>,
-<code>session.date</code>, <code>session.since</code>, and <code>session.until</code>. Count and date session
+<code>runs</code>, <code>observed-events</code>, and <code>context-snapshots</code> are SQL-backed over the
+materialized run-projection tables, so they too accept the full session filter
+surface (e.g. <code>session.repo</code>, <code>session.tool</code>, <code>session.path</code>) alongside their
+own fields above. Count and date session
 fields accept compact comparison prefixes such as <code>session.messages:&gt;=2</code>,
 <code>session.words:&lt;=500</code>, and <code>session.date:&gt;=2026-01-02</code>. This lets a unit query
 carry its session scope inline instead of splitting selection between the
@@ -741,14 +757,16 @@ polylogue context-snapshots where session.messages:&gt;=2 AND session.date:&gt;=
 non-empty <code>tool_path</code>. It returns one row per owning session and normalized path,
 with action counts and first/last tool-use refs. It is not a global filesystem
 inventory and does not claim that a file still exists on disk.</p>
-<p><code>runs</code>, <code>observed-events</code>, and <code>context-snapshots</code> are runtime-transform row
-sources. They return projected evidence from existing recovery/run-projection
-transforms, not durable SQL table rows, so they are terminal unit sources only;
-they do not act as <code>exists run(...)</code>, <code>exists observed-event(...)</code>, or
-<code>exists context-snapshot(...)</code> session selectors. Their inline <code>session.*</code>
-predicates are limited to summary-backed fields; SQL-backed session predicates
-such as <code>session.action</code>, <code>session.tool</code>, <code>session.path</code>, and <code>session.has</code> are
-typed errors for these runtime sources rather than empty or broadened matches.</p>
+<p><code>runs</code>, <code>observed-events</code>, and <code>context-snapshots</code> are SQL-backed row sources
+over the materialized run-projection tables (<code>session_runs</code>,
+<code>session_observed_events</code>, <code>session_context_snapshots</code>), which the session-insight
+materializer recomputes from each session's recovery/run-projection evidence.
+They are both terminal unit sources (<code>runs where ...</code>) and <code>exists run(...)</code> /
+<code>exists observed-event(...)</code> / <code>exists context-snapshot(...)</code> session selectors,
+and they accept the full SQL-backed session filter surface (<code>session.action</code>,
+<code>session.tool</code>, <code>session.path</code>, <code>session.has</code>, …). They support <code>sort by time</code>,
+<code>limit</code>, and <code>offset</code>; they do not yet expose <code>group by | count</code> aggregation, so
+aggregate stages on these units fail with a typed error rather than broadening.</p>
 <p>Session filters such as <code>--origin</code>, <code>--tag</code>, <code>--repo</code>, <code>--since</code>, and <code>--until</code>
 still narrow the owning sessions before rows are returned. Session-only actions
 and result-shaping modes that do not have row semantics yet, such as
