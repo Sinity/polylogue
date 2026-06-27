@@ -17,7 +17,13 @@ from polylogue.storage.insights.session.records import (
     SessionProfileRecord,
     ThreadRecord,
 )
-from polylogue.storage.insights.timeline.records import SessionPhaseRecord, SessionWorkEventRecord
+from polylogue.storage.insights.timeline.records import (
+    SessionContextSnapshotRecord,
+    SessionObservedEventRecord,
+    SessionPhaseRecord,
+    SessionRunRecord,
+    SessionWorkEventRecord,
+)
 from polylogue.storage.runtime.archive.records import (
     AttachmentRecord,
     BlockRecord,
@@ -75,7 +81,10 @@ __all__ = [
     "SESSION_INFERENCE_FAMILY",
     "SESSION_INFERENCE_VERSION",
     "SESSION_INSIGHT_MATERIALIZER_VERSION",
+    "SessionContextSnapshotRecord",
+    "SessionObservedEventRecord",
     "SessionPhaseRecord",
+    "SessionRunRecord",
     "SessionLatencyProfileRecord",
     "SessionProfileRecord",
     "SessionTagRollupRecord",

@@ -1,0 +1,147 @@
+"""Run-projection row builders and hydration helpers.
+
+The ``session_runs`` / ``session_observed_events`` / ``session_context_snapshots``
+derived tables materialize the storage-free
+:class:`polylogue.insights.run_projection.RunProjection`. Each record wraps the
+source pydantic model; typed columns are projected from it on write and the full
+``model_dump(mode="json")`` is stored in ``payload_json`` for lossless read-back.
+"""
+
+from __future__ import annotations
+
+from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun, RunProjection
+from polylogue.storage.insights.session.profiles import now_iso
+from polylogue.storage.runtime import (
+    SessionContextSnapshotRecord,
+    SessionObservedEventRecord,
+    SessionRunRecord,
+)
+from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
+from polylogue.types import SessionId
+
+
+def _join_search_text(*parts: str | None) -> str:
+    return " \n".join(part.strip() for part in parts if part and part.strip())
+
+
+def run_search_text(run: ProjectedRun) -> str:
+    return _join_search_text(
+        run.title,
+        run.harness,
+        run.role,
+        run.status,
+        run.provider_origin,
+        run.run_ref.format(),
+        run.native_session_id,
+        run.cwd,
+        run.git_branch,
+    )
+
+
+def observed_event_search_text(event: ObservedEvent) -> str:
+    return _join_search_text(
+        event.kind,
+        event.summary,
+        event.delivery_state,
+        event.run_ref.format(),
+    )
+
+
+def context_snapshot_search_text(snapshot: ContextSnapshot) -> str:
+    return _join_search_text(
+        snapshot.boundary,
+        snapshot.inheritance_mode,
+        snapshot.run_ref.format(),
+        *snapshot.metadata.values(),
+    )
+
+
+def build_session_run_records(
+    projection: RunProjection,
+    *,
+    materialized_at: str | None = None,
+    source_updated_at: str | None = None,
+) -> list[SessionRunRecord]:
+    built_at = materialized_at or now_iso()
+    session_id = SessionId(projection.session_id)
+    return [
+        SessionRunRecord(
+            session_id=session_id,
+            position=index,
+            materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
+            materialized_at=built_at,
+            source_updated_at=source_updated_at,
+            run=run,
+            search_text=run_search_text(run),
+        )
+        for index, run in enumerate(projection.runs)
+    ]
+
+
+def build_session_observed_event_records(
+    projection: RunProjection,
+    *,
+    materialized_at: str | None = None,
+    source_updated_at: str | None = None,
+) -> list[SessionObservedEventRecord]:
+    built_at = materialized_at or now_iso()
+    session_id = SessionId(projection.session_id)
+    return [
+        SessionObservedEventRecord(
+            session_id=session_id,
+            position=index,
+            materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
+            materialized_at=built_at,
+            source_updated_at=source_updated_at,
+            event=event,
+            search_text=observed_event_search_text(event),
+        )
+        for index, event in enumerate(projection.events)
+    ]
+
+
+def build_session_context_snapshot_records(
+    projection: RunProjection,
+    *,
+    materialized_at: str | None = None,
+    source_updated_at: str | None = None,
+) -> list[SessionContextSnapshotRecord]:
+    built_at = materialized_at or now_iso()
+    session_id = SessionId(projection.session_id)
+    return [
+        SessionContextSnapshotRecord(
+            session_id=session_id,
+            position=index,
+            materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
+            materialized_at=built_at,
+            source_updated_at=source_updated_at,
+            snapshot=snapshot,
+            search_text=context_snapshot_search_text(snapshot),
+        )
+        for index, snapshot in enumerate(projection.context_snapshots)
+    ]
+
+
+def hydrate_projected_run(record: SessionRunRecord) -> ProjectedRun:
+    return record.run
+
+
+def hydrate_observed_event(record: SessionObservedEventRecord) -> ObservedEvent:
+    return record.event
+
+
+def hydrate_context_snapshot(record: SessionContextSnapshotRecord) -> ContextSnapshot:
+    return record.snapshot
+
+
+__all__ = [
+    "build_session_context_snapshot_records",
+    "build_session_observed_event_records",
+    "build_session_run_records",
+    "context_snapshot_search_text",
+    "hydrate_context_snapshot",
+    "hydrate_observed_event",
+    "hydrate_projected_run",
+    "observed_event_search_text",
+    "run_search_text",
+]

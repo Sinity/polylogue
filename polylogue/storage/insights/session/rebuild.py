@@ -36,12 +36,20 @@ from polylogue.storage.insights.session.profiles import (
     hydrate_session_profile,
     now_iso,
 )
+from polylogue.storage.insights.session.run_projection_rows import (
+    build_session_context_snapshot_records,
+    build_session_observed_event_records,
+    build_session_run_records,
+)
 from polylogue.storage.insights.session.runtime import SessionInsightCounts
 from polylogue.storage.insights.session.storage import (
     _epoch_ms_or_none,
+    replace_session_context_snapshots_bulk_sync,
     replace_session_latency_profiles_bulk_sync,
+    replace_session_observed_events_bulk_sync,
     replace_session_phases_bulk_sync,
     replace_session_profiles_bulk_sync,
+    replace_session_runs_bulk_sync,
     replace_session_work_events_bulk_sync,
     replace_threads_bulk_sync,
 )
@@ -61,11 +69,14 @@ from polylogue.storage.runtime import (
     AttachmentRecord,
     BlockRecord,
     MessageRecord,
+    SessionContextSnapshotRecord,
     SessionEventRecord,
     SessionLatencyProfileRecord,
+    SessionObservedEventRecord,
     SessionPhaseRecord,
     SessionProfileRecord,
     SessionRecord,
+    SessionRunRecord,
     SessionWorkEventRecord,
     ThreadRecord,
 )
@@ -203,6 +214,9 @@ class SessionInsightRecordBundle:
     latency_profile_record: SessionLatencyProfileRecord
     work_event_records: list[SessionWorkEventRecord]
     phase_records: list[SessionPhaseRecord]
+    run_records: list[SessionRunRecord]
+    observed_event_records: list[SessionObservedEventRecord]
+    context_snapshot_records: list[SessionContextSnapshotRecord]
     repo_observations: tuple[object, ...] = ()
     """Repo observations for ``session_repos`` (#1253).
 
@@ -222,6 +236,18 @@ class SessionInsightRecordBundle:
     @property
     def phase_count(self) -> int:
         return len(self.phase_records)
+
+    @property
+    def run_count(self) -> int:
+        return len(self.run_records)
+
+    @property
+    def observed_event_count(self) -> int:
+        return len(self.observed_event_records)
+
+    @property
+    def context_snapshot_count(self) -> int:
+        return len(self.context_snapshot_records)
 
 
 @dataclass(slots=True, frozen=True)
@@ -579,11 +605,41 @@ def build_session_insight_records(
     t0 = time.perf_counter()
     phase_records = build_session_phase_records(profile, materialized_at=materialized_at)
     add_timing("build_records.phase_records", t0)
+    t0 = time.perf_counter()
+    # The run projection is computed from the same hydrated Session via the
+    # recovery digest, with no cross-session links (session_links=()), so the
+    # materialized rows match the runtime query path exactly. compile_recovery_digest
+    # always yields a main run, so RunProjection's ">=1 run" invariant holds for
+    # every session, including empty ones. A projection failure must surface, not
+    # be swallowed, so the rebuild fails loudly on malformed evidence.
+    from polylogue.insights.transforms import compile_recovery_digest
+
+    run_projection = compile_recovery_digest(session, session_links=()).run_projection
+    source_updated_at = profile_record.source_updated_at
+    run_records = build_session_run_records(
+        run_projection,
+        materialized_at=materialized_at,
+        source_updated_at=source_updated_at,
+    )
+    observed_event_records = build_session_observed_event_records(
+        run_projection,
+        materialized_at=materialized_at,
+        source_updated_at=source_updated_at,
+    )
+    context_snapshot_records = build_session_context_snapshot_records(
+        run_projection,
+        materialized_at=materialized_at,
+        source_updated_at=source_updated_at,
+    )
+    add_timing("build_records.run_projection_records", t0)
     return SessionInsightRecordBundle(
         profile_record=profile_record,
         latency_profile_record=latency_profile_record,
         work_event_records=work_event_records,
         phase_records=phase_records,
+        run_records=run_records,
+        observed_event_records=observed_event_records,
+        context_snapshot_records=context_snapshot_records,
         repo_observations=repo_observations,
     )
 
@@ -631,6 +687,9 @@ def _stamp_bundle_materialization(conn: sqlite3.Connection, bundle: SessionInsig
         ("latency", profile.materializer_version, bundle.latency_profile_record.input_row_count),
         ("work_events", SESSION_INSIGHT_MATERIALIZER_VERSION, len(bundle.work_event_records)),
         ("phases", SESSION_INSIGHT_MATERIALIZER_VERSION, len(bundle.phase_records)),
+        ("runs", SESSION_INSIGHT_MATERIALIZER_VERSION, len(bundle.run_records)),
+        ("observed_events", SESSION_INSIGHT_MATERIALIZER_VERSION, len(bundle.observed_event_records)),
+        ("context_snapshots", SESSION_INSIGHT_MATERIALIZER_VERSION, len(bundle.context_snapshot_records)),
     ):
         apply_insight_materialization(
             conn,
@@ -835,6 +894,9 @@ def rebuild_session_insights_sync(
             tables=(
                 "session_work_events",
                 "session_phases",
+                "session_runs",
+                "session_observed_events",
+                "session_context_snapshots",
                 "session_latency_profiles",
                 "session_profiles",
                 "session_tag_rollups",
@@ -919,6 +981,20 @@ def rebuild_session_insights_sync(
             {bundle.session_id: bundle.phase_records for bundle in record_bundles},
         )
         add_timing("write_phases", t0)
+        t0 = time.perf_counter()
+        replace_session_runs_bulk_sync(
+            conn,
+            {bundle.session_id: bundle.run_records for bundle in record_bundles},
+        )
+        replace_session_observed_events_bulk_sync(
+            conn,
+            {bundle.session_id: bundle.observed_event_records for bundle in record_bundles},
+        )
+        replace_session_context_snapshots_bulk_sync(
+            conn,
+            {bundle.session_id: bundle.context_snapshot_records for bundle in record_bundles},
+        )
+        add_timing("write_run_projection", t0)
         t0 = time.perf_counter()
         for bundle in record_bundles:
             _stamp_bundle_materialization(conn, bundle)
@@ -1018,6 +1094,11 @@ async def rebuild_session_insights_async(
         replace_session_latency_profile,
         replace_session_profile,
     )
+    from polylogue.storage.sqlite.queries.session_insight_run_projection_writes import (
+        replace_session_context_snapshots,
+        replace_session_observed_events,
+        replace_session_runs,
+    )
     from polylogue.storage.sqlite.queries.session_insight_thread_queries import replace_thread
     from polylogue.storage.sqlite.queries.session_insight_timeline_writes import (
         replace_session_phases,
@@ -1032,6 +1113,9 @@ async def rebuild_session_insights_async(
         for table in (
             "session_work_events",
             "session_phases",
+            "session_runs",
+            "session_observed_events",
+            "session_context_snapshots",
             "session_latency_profiles",
             "session_profiles",
             "session_tag_rollups",
@@ -1043,6 +1127,9 @@ async def rebuild_session_insights_async(
     elif not session_ids:
         await conn.execute("DELETE FROM threads")
         await conn.execute("DELETE FROM session_phases")
+        await conn.execute("DELETE FROM session_runs")
+        await conn.execute("DELETE FROM session_observed_events")
+        await conn.execute("DELETE FROM session_context_snapshots")
         await conn.execute("DELETE FROM session_latency_profiles")
         await conn.execute("DELETE FROM session_tag_rollups")
         return _empty_rebuild_counts()
@@ -1073,6 +1160,24 @@ async def rebuild_session_insights_async(
                     conn,
                     bundle.session_id,
                     bundle.phase_records,
+                    transaction_depth,
+                )
+                await replace_session_runs(
+                    conn,
+                    bundle.session_id,
+                    bundle.run_records,
+                    transaction_depth,
+                )
+                await replace_session_observed_events(
+                    conn,
+                    bundle.session_id,
+                    bundle.observed_event_records,
+                    transaction_depth,
+                )
+                await replace_session_context_snapshots(
+                    conn,
+                    bundle.session_id,
+                    bundle.context_snapshot_records,
                     transaction_depth,
                 )
             profile_count += chunk_profiles
@@ -1112,6 +1217,24 @@ async def rebuild_session_insights_async(
                     conn,
                     bundle.session_id,
                     bundle.phase_records,
+                    transaction_depth,
+                )
+                await replace_session_runs(
+                    conn,
+                    bundle.session_id,
+                    bundle.run_records,
+                    transaction_depth,
+                )
+                await replace_session_observed_events(
+                    conn,
+                    bundle.session_id,
+                    bundle.observed_event_records,
+                    transaction_depth,
+                )
+                await replace_session_context_snapshots(
+                    conn,
+                    bundle.session_id,
+                    bundle.context_snapshot_records,
                     transaction_depth,
                 )
             profile_count += chunk_profiles
