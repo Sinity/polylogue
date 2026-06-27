@@ -266,7 +266,17 @@ class QueryUnitSort:
     direction: Literal["asc", "desc"] = "asc"
 
 
-QueryUnitPipelineStageKind = Literal["session_scope", "sort", "limit", "offset", "group", "count"]
+QueryUnitPipelineStageKind = Literal[
+    "session_scope", "sort", "limit", "offset", "group", "count", "transform", "terminal"
+]
+
+#: Closed vocabulary of terminal actions that a query-unit pipeline can end in.
+#: Each action name must have a registered executor in
+#: :data:`polylogue.archive.query.unit_results.TERMINAL_ACTION_EXECUTORS`.
+#: ``rows`` returns the resolved unit rows; ``count`` returns the aggregate
+#: ``group by ... | count`` rollup. Future actions (read/analyze/bundle/
+#: postmortem) register their unit-level executors here as they land (#2006).
+QueryUnitTerminalAction = Literal["rows", "count"]
 
 
 @dataclass(frozen=True)
@@ -333,6 +343,48 @@ class QueryUnitCountStage:
         return {"kind": "count", "metric": "count"}
 
 
+@dataclass(frozen=True)
+class QueryUnitTransformStage:
+    """Named row-shaping transform stage in a terminal query-unit pipeline.
+
+    Reserved vocabulary member for #2006's ``Transform(name, args)`` pipeline
+    node. No row-level transform is wired today, so this stage is part of the
+    closed AST/payload vocabulary but is never produced by the current parser;
+    it exists so surfaces and the executor registry share one source of truth
+    for the pipeline-stage taxonomy rather than re-deriving it.
+    """
+
+    name: str
+    args: tuple[tuple[str, str], ...] = ()
+
+    def to_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {"kind": "transform", "name": self.name}
+        if self.args:
+            payload["args"] = dict(self.args)
+        return payload
+
+
+@dataclass(frozen=True)
+class QueryUnitTerminalStage:
+    """Terminal action that emits the resolved query-unit set (#2006).
+
+    Every terminal query-unit pipeline ends in exactly one terminal node. The
+    ``action`` names the executor that runs the final ``select -> shape ->
+    terminal`` step (``rows`` for unit rows, ``count`` for the aggregate
+    rollup). ``args`` carries typed terminal parameters for future actions
+    (read view, analyze mode, bundle kind) without widening the node shape.
+    """
+
+    action: QueryUnitTerminalAction
+    args: tuple[tuple[str, str], ...] = ()
+
+    def to_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {"kind": "terminal", "action": self.action}
+        if self.args:
+            payload["args"] = dict(self.args)
+        return payload
+
+
 QueryUnitPipelineStage = (
     QueryUnitSessionScopeStage
     | QueryUnitSortStage
@@ -340,6 +392,8 @@ QueryUnitPipelineStage = (
     | QueryUnitOffsetStage
     | QueryUnitGroupStage
     | QueryUnitCountStage
+    | QueryUnitTransformStage
+    | QueryUnitTerminalStage
 )
 
 
@@ -356,14 +410,19 @@ class QueryUnitPipeline:
     sort: QueryUnitSort | None = None
     group_by: str | None = None
     aggregate: Literal["count"] | None = None
+    terminal: QueryUnitTerminalStage = QueryUnitTerminalStage(action="rows")
 
     def to_payload(self) -> dict[str, object]:
+        # The terminal node is the final element of the ordered stage sequence
+        # (#2006 Pipeline AST: ``... Sort, Limit, Terminal(action)``), so
+        # ``stages`` and the executed ``pipeline_stages`` page metadata stay
+        # identical and always culminate in the terminal action.
         payload: dict[str, object] = {
             "source": {
                 "unit": self.source_unit,
                 "predicate": self.predicate.to_payload(),
             },
-            "stages": [stage.to_payload() for stage in self.stages],
+            "stages": [stage.to_payload() for stage in self.stages] + [self.terminal.to_payload()],
         }
         if self.session_predicate is not None:
             payload["session_scope"] = self.session_predicate.to_payload()
@@ -404,6 +463,7 @@ class QueryUnitSource:
     def pipeline(self) -> QueryUnitPipeline:
         """Return the typed executable pipeline for this terminal source."""
 
+        terminal_action: QueryUnitTerminalAction = "count" if self.aggregate == "count" else "rows"
         return QueryUnitPipeline(
             source_unit=self.unit,
             predicate=self.predicate,
@@ -414,6 +474,7 @@ class QueryUnitSource:
             sort=self.sort,
             group_by=self.group_by,
             aggregate=self.aggregate,
+            terminal=QueryUnitTerminalStage(action=terminal_action),
         )
 
 
@@ -2642,6 +2703,9 @@ __all__ = [
     "QueryUnitSortStage",
     "QueryUnitSort",
     "QueryUnitSource",
+    "QueryUnitTerminalAction",
+    "QueryUnitTerminalStage",
+    "QueryUnitTransformStage",
     "_HAS_BOOL_MAP",
     "parse_unit_source_expression",
     "parse_expression_ast",
