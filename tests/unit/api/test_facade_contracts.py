@@ -1921,6 +1921,7 @@ async def test_query_units_reports_pipeline_stages(tmp_path: Path) -> None:
             },
             {"kind": "limit", "value": 1},
             {"kind": "offset", "value": 1},
+            {"kind": "terminal", "action": "rows"},
         )
         assert envelope.pipeline is not None
         assert envelope.pipeline["stages"] == list(envelope.pipeline_stages)

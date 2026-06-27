@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, cast
 
-from polylogue.archive.query.expression import QueryUnitPipeline, QueryUnitSource
+from polylogue.archive.query.expression import (
+    ExpressionCompileError,
+    QueryUnitPipeline,
+    QueryUnitSource,
+)
 from polylogue.archive.query.metadata import (
     QueryUnitDescriptor,
     query_unit_descriptor,
@@ -32,7 +36,22 @@ from polylogue.surfaces.payloads import (
 
 
 def _pipeline_stage_payloads(pipeline: QueryUnitPipeline) -> tuple[dict[str, object], ...]:
-    return tuple(stage.to_payload() for stage in pipeline.stages)
+    """Return the executed pipeline stages, ending in the terminal-action node.
+
+    The terminal node is always appended so every executed page carries the
+    full ``select -> shape -> terminal`` chain in its ``pipeline_stages``,
+    mirroring the typed AST (#2006).
+    """
+
+    return tuple(stage.to_payload() for stage in pipeline.stages) + (pipeline.terminal.to_payload(),)
+
+
+class UnsupportedTerminalActionError(ExpressionCompileError):
+    """Raised when a query-unit terminal action has no registered executor.
+
+    Typed and narrow by construction: an unknown or unwired terminal action
+    fails loudly rather than silently broadening to a different terminal (#2006).
+    """
 
 
 @dataclass(frozen=True)
@@ -163,6 +182,107 @@ def query_unit_request(
     )
 
 
+@dataclass(frozen=True)
+class TerminalExecutionContext:
+    """Resolved inputs for a single terminal-action executor invocation.
+
+    Shared shape across every registered terminal so the dispatcher in
+    :func:`_build_sql_envelope` stays a thin registry lookup and each executor
+    runs the same ``select -> shape -> terminal`` chain (#2006).
+    """
+
+    archive: ArchiveStore
+    source: QueryUnitSource
+    descriptor: QueryUnitDescriptor
+    query: str
+    limit: int
+    offset: int
+    caller_offset: int
+    fetch_limit: int
+    session_filters: Mapping[str, object] | None
+
+
+TerminalExecutor = Callable[[TerminalExecutionContext], QueryUnitResultEnvelope]
+
+
+def _execute_count_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnvelope:
+    """Terminal ``count`` action: emit the aggregate group rollup page."""
+
+    pipeline = ctx.source.pipeline
+    aggregate_sort = (
+        cast(Literal["count", "key"], pipeline.sort.field)
+        if pipeline.sort is not None and pipeline.sort.field in {"count", "key"}
+        else None
+    )
+    aggregate_sort_direction: Literal["asc", "desc"] = (
+        pipeline.sort.direction if aggregate_sort is not None and pipeline.sort is not None else "desc"
+    )
+    aggregate_rows = ctx.archive.query_unit_counts(
+        pipeline.source_unit,
+        pipeline.predicate,
+        group_by=pipeline.group_by,
+        sort=aggregate_sort,
+        sort_direction=aggregate_sort_direction,
+        limit=ctx.fetch_limit,
+        offset=ctx.offset,
+        session_filters=ctx.session_filters,
+    )
+    return build_query_unit_aggregate_envelope(
+        tuple(QueryUnitAggregateRowPayload.from_row(row) for row in aggregate_rows[: ctx.limit]),
+        unit=ctx.source.unit,
+        query=ctx.query,
+        limit=ctx.limit,
+        offset=ctx.caller_offset,
+        has_next=len(aggregate_rows) > ctx.limit,
+        pipeline=pipeline.to_payload(),
+        pipeline_stages=_pipeline_stage_payloads(pipeline),
+    )
+
+
+def _execute_rows_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnvelope:
+    """Terminal ``rows`` action: emit the resolved unit-row page."""
+
+    pipeline = ctx.source.pipeline
+    sort = pipeline.sort.field if pipeline.sort is not None else None
+    sort_direction = pipeline.sort.direction if pipeline.sort is not None else "asc"
+    method_name = ctx.descriptor.sql_query_method
+    payload_model = _row_payload_model(ctx.descriptor)
+    if method_name is None or payload_model is None:
+        raise ValueError(f"Query unit {ctx.source.unit!r} is not wired to a SQL executor")
+    query_method = cast(Any, getattr(ctx.archive, method_name))
+    rows = cast(
+        Sequence[Any],
+        query_method(
+            pipeline.predicate,
+            limit=ctx.fetch_limit,
+            offset=ctx.offset,
+            session_filters=ctx.session_filters,
+            sort=sort,
+            sort_direction=sort_direction,
+        ),
+    )
+    return build_query_unit_envelope(
+        tuple(payload_model.from_row(row) for row in rows[: ctx.limit]),
+        unit=ctx.source.unit,
+        query=ctx.query,
+        limit=ctx.limit,
+        offset=ctx.caller_offset,
+        has_next=len(rows) > ctx.limit,
+        pipeline=pipeline.to_payload(),
+        pipeline_stages=_pipeline_stage_payloads(pipeline),
+    )
+
+
+#: Single source of truth mapping a terminal-action name to its executor.
+#: The pipeline's ``terminal.action`` selects the executor; one executor runs
+#: the full ``select -> shape -> terminal`` chain for every read surface
+#: (CLI find, MCP query_units, daemon /api/query-units, Python API) (#2006).
+TERMINAL_ACTION_EXECUTORS: dict[str, TerminalExecutor] = {
+    "rows": _execute_rows_terminal,
+    "count": _execute_count_terminal,
+}
+
+
 def _build_sql_envelope(
     archive: ArchiveStore,
     source: QueryUnitSource,
@@ -176,62 +296,26 @@ def _build_sql_envelope(
     session_filters: Mapping[str, object] | None,
 ) -> QueryUnitResultEnvelope:
     pipeline = source.pipeline
-    if pipeline.aggregate == "count":
-        aggregate_sort = (
-            cast(Literal["count", "key"], pipeline.sort.field)
-            if pipeline.sort is not None and pipeline.sort.field in {"count", "key"}
-            else None
+    action = pipeline.terminal.action
+    executor = TERMINAL_ACTION_EXECUTORS.get(action)
+    if executor is None:
+        registered = ", ".join(sorted(TERMINAL_ACTION_EXECUTORS))
+        raise UnsupportedTerminalActionError(
+            f"unsupported terminal action {action!r} for {source.unit} rows; registered actions: {registered}",
+            field=None,
         )
-        aggregate_sort_direction: Literal["asc", "desc"] = (
-            pipeline.sort.direction if aggregate_sort is not None and pipeline.sort is not None else "desc"
-        )
-        aggregate_rows = archive.query_unit_counts(
-            pipeline.source_unit,
-            pipeline.predicate,
-            group_by=pipeline.group_by,
-            sort=aggregate_sort,
-            sort_direction=aggregate_sort_direction,
-            limit=fetch_limit,
-            offset=offset,
-            session_filters=session_filters,
-        )
-        return build_query_unit_aggregate_envelope(
-            tuple(QueryUnitAggregateRowPayload.from_row(row) for row in aggregate_rows[:limit]),
-            unit=source.unit,
+    return executor(
+        TerminalExecutionContext(
+            archive=archive,
+            source=source,
+            descriptor=descriptor,
             query=query,
             limit=limit,
-            offset=caller_offset,
-            has_next=len(aggregate_rows) > limit,
-            pipeline=pipeline.to_payload(),
-            pipeline_stages=_pipeline_stage_payloads(pipeline),
-        )
-    sort = pipeline.sort.field if pipeline.sort is not None else None
-    sort_direction = pipeline.sort.direction if pipeline.sort is not None else "asc"
-    method_name = descriptor.sql_query_method
-    payload_model = _row_payload_model(descriptor)
-    if method_name is None or payload_model is None:
-        raise ValueError(f"Query unit {source.unit!r} is not wired to a SQL executor")
-    query_method = cast(Any, getattr(archive, method_name))
-    rows = cast(
-        Sequence[Any],
-        query_method(
-            pipeline.predicate,
-            limit=fetch_limit,
             offset=offset,
+            caller_offset=caller_offset,
+            fetch_limit=fetch_limit,
             session_filters=session_filters,
-            sort=sort,
-            sort_direction=sort_direction,
-        ),
-    )
-    return build_query_unit_envelope(
-        tuple(payload_model.from_row(row) for row in rows[:limit]),
-        unit=source.unit,
-        query=query,
-        limit=limit,
-        offset=caller_offset,
-        has_next=len(rows) > limit,
-        pipeline=pipeline.to_payload(),
-        pipeline_stages=_pipeline_stage_payloads(pipeline),
+        )
     )
 
 
@@ -284,6 +368,10 @@ def query_unit_envelope(archive: ArchiveStore, request: QueryUnitRequest) -> Que
 
 __all__ = [
     "QueryUnitRequest",
+    "TERMINAL_ACTION_EXECUTORS",
+    "TerminalExecutionContext",
+    "TerminalExecutor",
+    "UnsupportedTerminalActionError",
     "query_unit_envelope",
     "query_unit_request",
     "query_unit_rows",

@@ -360,7 +360,7 @@ class TestExplainExpression:
                             "kind": "and",
                         },
                     },
-                    "stages": [],
+                    "stages": [{"kind": "terminal", "action": "rows"}],
                 },
             },
         }
@@ -411,6 +411,7 @@ class TestExplainExpression:
                         {"kind": "sort", "sort": {"field": "time", "direction": "desc"}},
                         {"kind": "limit", "value": 2},
                         {"kind": "offset", "value": 3},
+                        {"kind": "terminal", "action": "rows"},
                     ],
                     "result": {
                         "sort": {"field": "time", "direction": "desc"},
@@ -460,6 +461,7 @@ class TestExplainExpression:
             "stages": [
                 _session_scope_stage("repo", "polylogue"),
                 {"kind": "limit", "value": 5},
+                {"kind": "terminal", "action": "rows"},
             ],
             "result": {"limit": 5},
         }
@@ -2063,6 +2065,7 @@ class TestBooleanQueryExpression:
             _session_scope_stage("repo", "polylogue"),
             {"kind": "limit", "value": 1},
             {"kind": "offset", "value": 1},
+            {"kind": "terminal", "action": "rows"},
         )
         assert envelope.pipeline is not None
         assert envelope.pipeline["stages"] == list(envelope.pipeline_stages)
@@ -2136,6 +2139,7 @@ class TestBooleanQueryExpression:
                 },
             },
             {"kind": "sort", "sort": {"field": "time", "direction": "asc"}},
+            {"kind": "terminal", "action": "rows"},
         )
         rows = [row for row in envelope.items if isinstance(row, MessageQueryRowPayload)]
         assert [row.session_id for row in rows] == [
@@ -2179,6 +2183,7 @@ class TestBooleanQueryExpression:
             _session_scope_stage("repo", "polylogue"),
             {"kind": "limit", "value": 1},
             {"kind": "offset", "value": 1},
+            {"kind": "terminal", "action": "rows"},
         ]
         assert [item["text"] for item in payload["items"]] == ["second"]
 
@@ -2224,6 +2229,7 @@ class TestBooleanQueryExpression:
             _session_scope_stage("repo", "polylogue"),
             {"kind": "group", "field": "role"},
             {"kind": "count", "metric": "count"},
+            {"kind": "terminal", "action": "count"},
         )
         assert envelope.pipeline is not None
         assert envelope.pipeline["stages"] == list(envelope.pipeline_stages)
@@ -2268,6 +2274,7 @@ class TestBooleanQueryExpression:
             {"kind": "count", "metric": "count"},
             {"kind": "sort", "sort": {"field": "count", "direction": "asc"}},
             {"kind": "limit", "value": 2},
+            {"kind": "terminal", "action": "count"},
         )
         assert [(row.group_key, row.count) for row in envelope.items] == [
             ("system", 1),
@@ -2311,6 +2318,7 @@ class TestBooleanQueryExpression:
             _session_scope_stage("repo", "polylogue"),
             {"kind": "group", "field": "role"},
             {"kind": "count", "metric": "count"},
+            {"kind": "terminal", "action": "count"},
         ]
         assert sorted((item["group_key"], item["count"]) for item in payload["items"]) == [
             ("assistant", 1),
@@ -2328,6 +2336,93 @@ class TestBooleanQueryExpression:
 
         with pytest.raises(ValueError, match="Unsupported terminal query unit: bundle"):
             query_unit_rows(cast(ArchiveStore, object()), source, query="bundles where text:needle", limit=10)
+
+    def test_pipeline_carries_typed_rows_terminal_node(self) -> None:
+        from polylogue.archive.query.expression import QueryUnitTerminalStage
+
+        source = parse_unit_source_expression("messages where role:assistant | limit 2")
+        assert source is not None
+        pipeline = source.pipeline
+        assert pipeline.terminal == QueryUnitTerminalStage(action="rows")
+        stages = cast(list[dict[str, object]], pipeline.to_payload()["stages"])
+        assert stages[-1] == {"kind": "terminal", "action": "rows"}
+
+    def test_pipeline_carries_typed_count_terminal_node(self) -> None:
+        from polylogue.archive.query.expression import QueryUnitTerminalStage
+
+        source = parse_unit_source_expression("messages where role:assistant | group by role | count")
+        assert source is not None
+        pipeline = source.pipeline
+        assert pipeline.terminal == QueryUnitTerminalStage(action="count")
+        stages = cast(list[dict[str, object]], pipeline.to_payload()["stages"])
+        assert stages[-1] == {"kind": "terminal", "action": "count"}
+
+    def test_single_executor_runs_select_shape_terminal_chain(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.surfaces.payloads import MessageQueryRowPayload
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "hit")
+            .provider("claude-code")
+            .git_repository_url("polylogue")
+            .title("terminal chain")
+            .add_message("m-old", role="assistant", text="old", timestamp="2026-01-01T00:00:00+00:00")
+            .add_message("m-new", role="assistant", text="new", timestamp="2026-01-02T00:00:00+00:00")
+            .save()
+        )
+
+        # Full pipeline: session scope -> unit filter -> shape (sort) -> terminal rows.
+        source = parse_unit_source_expression(
+            "sessions where repo:polylogue | messages where role:assistant | sort by time desc | limit 1"
+        )
+        assert source is not None
+        assert source.pipeline.terminal.action == "rows"
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            envelope = query_unit_rows(archive, source, query="terminal-chain", limit=20)
+
+        # One executor ran the whole select -> shape -> terminal chain: the page
+        # carries the terminal node as the final pipeline stage and the rows are
+        # shaped/sorted by it.
+        assert envelope.pipeline_stages[-1] == {"kind": "terminal", "action": "rows"}
+        assert envelope.limit == 1
+        rows = [row for row in envelope.items if isinstance(row, MessageQueryRowPayload)]
+        assert [row.text for row in rows] == ["new"]
+
+    def test_unsupported_terminal_action_raises_typed_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from polylogue.archive.query import unit_results
+        from polylogue.archive.query.metadata import query_unit_descriptor
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        source = parse_unit_source_expression("messages where role:assistant")
+        assert source is not None
+        descriptor = query_unit_descriptor("message")
+        assert descriptor is not None
+
+        # Simulate a terminal action with no registered executor (e.g. a future
+        # `read`/`analyze` action not yet wired). The dispatcher must fail typed
+        # and narrow, never silently broaden to a different terminal.
+        monkeypatch.delitem(unit_results.TERMINAL_ACTION_EXECUTORS, "rows")
+        with pytest.raises(unit_results.UnsupportedTerminalActionError, match="unsupported terminal action 'rows'"):
+            unit_results._build_sql_envelope(
+                cast(ArchiveStore, object()),
+                source,
+                descriptor,
+                query="messages where role:assistant",
+                limit=10,
+                offset=0,
+                caller_offset=0,
+                fetch_limit=11,
+                session_filters=None,
+            )
 
     def test_terminal_source_pipeline_sort_desc_executes_before_limit(
         self,
