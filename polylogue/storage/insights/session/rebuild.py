@@ -1125,13 +1125,10 @@ async def rebuild_session_insights_async(
                 rowcount = getattr(cursor, "rowcount", 0) or 0
                 progress_callback(int(rowcount if rowcount > 0 else 0), desc=f"rebuild: cleared {table}")
     elif not session_ids:
-        await conn.execute("DELETE FROM threads")
-        await conn.execute("DELETE FROM session_phases")
-        await conn.execute("DELETE FROM session_runs")
-        await conn.execute("DELETE FROM session_observed_events")
-        await conn.execute("DELETE FROM session_context_snapshots")
-        await conn.execute("DELETE FROM session_latency_profiles")
-        await conn.execute("DELETE FROM session_tag_rollups")
+        # An empty target list means "rebuild these zero sessions" — a no-op,
+        # NOT a global wipe. Mirror rebuild_session_insights_sync, which returns
+        # early for an empty (non-None) session_ids without deleting anything.
+        # Only session_ids is None (full rebuild) clears the derived tables above.
         return _empty_rebuild_counts()
 
     profile_count = 0

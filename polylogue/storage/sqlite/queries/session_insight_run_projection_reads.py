@@ -26,6 +26,8 @@ __all__ = [
 def _order_by(query: RunProjectionListQuery, alias: str, pk_column: str) -> str:
     if query.sort == "recency":
         return f"ORDER BY COALESCE({alias}.source_updated_at, {alias}.materialized_at) DESC, {alias}.position, {alias}.{pk_column}"
+    if query.sort != "position":
+        raise ValueError(f"unsupported run-projection sort: {query.sort!r} (expected 'position' or 'recency')")
     return f"ORDER BY {alias}.session_id, {alias}.position, {alias}.{pk_column}"
 
 

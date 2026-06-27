@@ -3318,6 +3318,57 @@ class TestBooleanQueryExpression:
         assert row.cwd == "/realm/project/polylogue"
         assert row.context_snapshot_ref == "context-snapshot:codex-session:child-run:subagent_start"
 
+    def test_terminal_run_sort_by_time_orders_across_sessions(self, workspace_env: dict[str, Path]) -> None:
+        """`runs | sort by time` orders by owning-session time, not per-session position.
+
+        Native ids old/mid/new have alphabetical order (mid<new<old) distinct from
+        their chronological order, so position-only ordering (the pre-fix bug, which
+        interleaved every session's position-0 row and broke ties on run_ref) would
+        return them mis-ordered. The fix orders by source_updated_at first.
+        """
+        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.surfaces.payloads import RunQueryRowPayload
+        from tests.infra.storage_records import SessionBuilder
+
+        archive_root = workspace_env["archive_root"]
+        index_db = archive_root / "index.db"
+        for native, stamp in (
+            ("old", "2026-01-01T00:00:00+00:00"),
+            ("mid", "2026-02-01T00:00:00+00:00"),
+            ("new", "2026-03-01T00:00:00+00:00"),
+        ):
+            (
+                SessionBuilder(index_db, native)
+                .provider("codex")
+                .git_repository_url("polylogue")
+                .title(f"run sort {native}")
+                .created_at(stamp)
+                .updated_at(stamp)
+                .add_message(f"m-{native}", role="user", text=f"Session {native} work.")
+                .save()
+            )
+        _materialize_run_projection(index_db)
+
+        def _suffixes(direction: str) -> list[str]:
+            source = parse_unit_source_expression(f"runs where session.repo:polylogue | sort by time {direction}")
+            assert source is not None
+            with ArchiveStore.open_existing(archive_root) as archive:
+                envelope = query_unit_rows(
+                    archive,
+                    source,
+                    query=f"runs where session.repo:polylogue | sort by time {direction}",
+                    limit=10,
+                )
+            suffixes: list[str] = []
+            for row in envelope.items:
+                assert isinstance(row, RunQueryRowPayload)
+                suffixes.append(row.session_id.rsplit("-", 1)[-1])
+            return suffixes
+
+        assert _suffixes("asc") == ["old", "mid", "new"]
+        assert _suffixes("desc") == ["new", "mid", "old"]
+
     def test_terminal_context_snapshot_source_returns_runtime_rows(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.archive.query.unit_results import query_unit_rows
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore

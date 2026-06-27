@@ -3994,7 +3994,10 @@ class ArchiveStore:
         normalized_offset = max(int(offset), 0)
         order_direction = _query_unit_order_direction(sort_direction)
         if sort == "time":
-            order_by = f"r.position {order_direction}, r.run_ref {order_direction}"
+            order_by = (
+                f"COALESCE(r.source_updated_at, '') {order_direction}, "
+                f"r.session_id {order_direction}, r.position {order_direction}, r.run_ref {order_direction}"
+            )
         else:
             order_by = "r.session_id, r.position, r.run_ref"
         clause, params = _structural_predicate_clause("run", "r", predicate, session_alias="s")
@@ -4040,7 +4043,10 @@ class ArchiveStore:
         normalized_offset = max(int(offset), 0)
         order_direction = _query_unit_order_direction(sort_direction)
         if sort == "time":
-            order_by = f"e.position {order_direction}, e.event_ref {order_direction}"
+            order_by = (
+                f"COALESCE(e.source_updated_at, '') {order_direction}, "
+                f"e.session_id {order_direction}, e.position {order_direction}, e.event_ref {order_direction}"
+            )
         else:
             order_by = "e.session_id, e.position, e.event_ref"
         clause, params = _structural_predicate_clause("observed-event", "e", predicate, session_alias="s")
@@ -4086,7 +4092,10 @@ class ArchiveStore:
         normalized_offset = max(int(offset), 0)
         order_direction = _query_unit_order_direction(sort_direction)
         if sort == "time":
-            order_by = f"c.position {order_direction}, c.snapshot_ref {order_direction}"
+            order_by = (
+                f"COALESCE(c.source_updated_at, '') {order_direction}, "
+                f"c.session_id {order_direction}, c.position {order_direction}, c.snapshot_ref {order_direction}"
+            )
         else:
             order_by = "c.session_id, c.position, c.snapshot_ref"
         clause, params = _structural_predicate_clause("context-snapshot", "c", predicate, session_alias="s")
