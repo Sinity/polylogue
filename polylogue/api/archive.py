@@ -2032,8 +2032,9 @@ class PolylogueArchiveMixin:
 
         spans: list[dict[str, object]] | None = None
         if request.with_spans:
+            exported_session_ids = {sid for sid in analyzed_ids if sid in profiles_map}
             scope_origins = tuple(dict.fromkeys(profile.origin for profile in profiles if profile.origin))
-            spans = await self._sanitized_export_spans(spec, scope_origins, cap)
+            spans = await self._sanitized_export_spans(spec, scope_origins, cap, session_ids=exported_session_ids)
 
         return produce_sanitized_export(rows=rows, scope=scope, request=request, postmortem=postmortem, spans=spans)
 
@@ -2042,6 +2043,8 @@ class PolylogueArchiveMixin:
         spec: SessionQuerySpec | None,
         origins: Sequence[str],
         cap: int,
+        *,
+        session_ids: set[str],
     ) -> list[dict[str, object]]:
         """Project scope-bounded run/action evidence into OTel-style span dicts.
 
@@ -2049,11 +2052,14 @@ class PolylogueArchiveMixin:
         are sanitized + leak-gated by the same fail-closed contract as the rest
         of the bundle; this method only fetches and shapes them.
 
-        Query-unit expressions require an explicit predicate, so spans are scoped
-        by the origins present in the exported session set (one
-        ``<unit> where session.origin:<origin>`` query per origin), additionally
-        bounded by the export's ``since``/``until`` window. This covers the same
-        sessions the dataset rows describe without a query-unit "select all" form.
+        Query-unit expressions require an explicit predicate, so spans are
+        fetched per origin present in the exported session set (one
+        ``<unit> where session.origin:<origin>`` query per origin), bounded by the
+        export's ``since``/``until`` window, and then **filtered to the exact
+        exported session ids**. Origin/time scoping alone would pull runs/actions
+        for unrelated sessions of the same origin when the export was narrowed by
+        a repo/tag/text/limit filter; the ``session_ids`` filter keeps
+        ``spans.jsonl`` aligned with the dataset rows.
         """
         from polylogue.surfaces.payloads import model_json_document
         from polylogue.telemetry.otel_projection import project_query_unit_rows_to_otel
@@ -2070,7 +2076,7 @@ class PolylogueArchiveMixin:
                     since=since,
                     until=until,
                 )
-                rows.extend(envelope.items)
+                rows.extend(row for row in envelope.items if str(getattr(row, "session_id", "")) in session_ids)
 
         projection = project_query_unit_rows_to_otel("export:sanitized-spans", rows)
         return [cast("dict[str, object]", model_json_document(span)) for span in projection.spans]
