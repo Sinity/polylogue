@@ -1627,6 +1627,13 @@ def analyze_verb(
     default=False,
     help="Embed a sanitized postmortem report alongside the dataset.",
 )
+@click.option(
+    "--with-spans",
+    "with_spans",
+    is_flag=True,
+    default=False,
+    help="Embed sanitized OTel-style run/action spans (spans.jsonl) in the bundle.",
+)
 @click.option("--overwrite", is_flag=True, default=False, help="Replace an existing bundle directory.")
 @click.option(
     "--no-redact",
@@ -1670,6 +1677,7 @@ def export_verb(
     accept_unredacted: bool = False,
     output_format: str | None = None,
     limit: int | None = None,
+    with_spans: bool = False,
 ) -> None:
     """Export the matched session scope as a fail-closed sanitized bundle (#2381).
 
@@ -1708,6 +1716,7 @@ def export_verb(
         output_path=_Path(out_path),
         privacy_level=level,
         with_postmortem=with_postmortem,
+        with_spans=with_spans,
         overwrite=overwrite,
         redact=not no_redact,
         acknowledge_unredacted=accept_unredacted,

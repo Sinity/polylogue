@@ -45,6 +45,7 @@ DATASET_FILENAME = "dataset.jsonl"
 MANIFEST_FILENAME = "redaction-manifest.json"
 README_FILENAME = "README.md"
 POSTMORTEM_FILENAME = "postmortem.json"
+SPANS_FILENAME = "spans.jsonl"
 
 # Absolute filesystem path: a leading slash followed by at least two path
 # segments. The two-segment minimum avoids flagging a lone ``/word`` token in
@@ -103,6 +104,7 @@ class SanitizedExportRequest(ArchiveInsightModel):
     output_path: Path
     privacy_level: PrivacyLevel = "standard"
     with_postmortem: bool = False
+    with_spans: bool = False
     overwrite: bool = False
     redact: bool = True
     acknowledge_unredacted: bool = False
@@ -116,7 +118,9 @@ class SanitizedExportResult(ArchiveInsightModel):
     manifest_path: Path
     readme_path: Path
     postmortem_path: Path | None = None
+    spans_path: Path | None = None
     row_count: int = 0
+    span_count: int = 0
     redacted: bool = True
     total_included: int = 0
     total_rejected: int = 0
@@ -301,7 +305,7 @@ def verify_sanitized_export(
     """
 
     resolved_home = _home_dir(home)
-    files = (DATASET_FILENAME, MANIFEST_FILENAME, README_FILENAME, POSTMORTEM_FILENAME)
+    files = (DATASET_FILENAME, MANIFEST_FILENAME, README_FILENAME, POSTMORTEM_FILENAME, SPANS_FILENAME)
     scanned: list[str] = []
     abs_leaks: list[str] = []
     home_leaks: list[str] = []
@@ -354,6 +358,7 @@ def _readme_text(*, redacted: bool, row_count: int) -> str:
         f"- `{DATASET_FILENAME}` — one session-level metadata row per line.",
         f"- `{MANIFEST_FILENAME}` — every redaction decision (what was removed, by which rule).",
         f"- `{POSTMORTEM_FILENAME}` — sanitized postmortem report (only when requested).",
+        f"- `{SPANS_FILENAME}` — sanitized OTel-style run/action spans (only when requested).",
         "",
         "## What is included",
         "",
@@ -412,6 +417,7 @@ def write_sanitized_bundle(
     scope: Mapping[str, object],
     request: SanitizedExportRequest,
     postmortem: Mapping[str, object] | None = None,
+    spans: Sequence[Mapping[str, object]] | None = None,
     home: str | None = None,
     run_gate: bool = True,
 ) -> SanitizedExportResult:
@@ -430,6 +436,7 @@ def write_sanitized_bundle(
     tmp_target.mkdir(parents=False)
 
     postmortem_path: Path | None = None
+    spans_path: Path | None = None
     try:
         _write_text(tmp_target / DATASET_FILENAME, _dataset_text(rows))
         manifest = _manifest_document(report=report, scope=scope, request=request, row_count=len(rows))
@@ -438,6 +445,9 @@ def write_sanitized_bundle(
         if postmortem is not None:
             postmortem_path = target / POSTMORTEM_FILENAME
             _write_text(tmp_target / POSTMORTEM_FILENAME, dumps(dict(postmortem)))
+        if spans is not None:
+            spans_path = target / SPANS_FILENAME
+            _write_text(tmp_target / SPANS_FILENAME, _dataset_text(spans))
 
         verify_ok = True
         if run_gate:
@@ -479,7 +489,9 @@ def write_sanitized_bundle(
         manifest_path=target / MANIFEST_FILENAME,
         readme_path=target / README_FILENAME,
         postmortem_path=postmortem_path,
+        spans_path=spans_path,
         row_count=len(rows),
+        span_count=len(spans) if spans is not None else 0,
         redacted=request.redact,
         total_included=report.total_included,
         total_rejected=report.total_rejected,
@@ -493,6 +505,7 @@ def produce_sanitized_export(
     scope: Mapping[str, object],
     request: SanitizedExportRequest,
     postmortem: Mapping[str, object] | None = None,
+    spans: Sequence[Mapping[str, object]] | None = None,
     home: str | None = None,
 ) -> SanitizedExportResult:
     """Sanitize ``rows`` (+ scope/postmortem) and write the gated bundle.
@@ -516,6 +529,7 @@ def produce_sanitized_export(
             scope=dict(scope),
             request=request,
             postmortem=None if postmortem is None else dict(postmortem),
+            spans=None if spans is None else [dict(span) for span in spans],
             home=home,
             run_gate=False,
         )
@@ -530,6 +544,13 @@ def produce_sanitized_export(
         sanitized_pm_value = sanitizer.value(dict(postmortem), "postmortem")
         if isinstance(sanitized_pm_value, dict):
             sanitized_postmortem = sanitized_pm_value
+    sanitized_spans: list[dict[str, object]] | None = None
+    if spans is not None:
+        sanitized_spans = []
+        for index, span in enumerate(spans):
+            sanitized_span_value = sanitizer.value(dict(span), f"spans[{index}]")
+            if isinstance(sanitized_span_value, dict):
+                sanitized_spans.append(sanitized_span_value)
     report = sanitizer.finalize()
     return write_sanitized_bundle(
         rows=sanitized_rows,
@@ -537,6 +558,7 @@ def produce_sanitized_export(
         scope=sanitized_scope,
         request=request,
         postmortem=sanitized_postmortem,
+        spans=sanitized_spans,
         home=home,
         run_gate=True,
     )
@@ -569,6 +591,7 @@ __all__ = [
     "MANIFEST_FILENAME",
     "POSTMORTEM_FILENAME",
     "README_FILENAME",
+    "SPANS_FILENAME",
     "REDACTED_PATH_PREFIX",
     "REDACTED_SECRET",
     "SANITIZED_EXPORT_BUNDLE_VERSION",
