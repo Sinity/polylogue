@@ -206,3 +206,48 @@ def test_parse_code_drops_progress_hook_records() -> None:
     provider_ids = {m.provider_message_id for m in result.messages}
     assert provider_ids == {"u-1", "a-1"}
     assert all("prog" not in pid for pid in provider_ids)
+
+
+def test_message_usage_payload_captures_server_tool_use() -> None:
+    """web_search/web_fetch request counts are billed separately and must be
+    preserved in the usage event payload (they ride into payload_json)."""
+    from polylogue.sources.parsers.claude.code_parser import _message_usage_event_payload
+
+    payload = _message_usage_event_payload(
+        {
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "server_tool_use": {"web_search_requests": 3, "web_fetch_requests": 1},
+        },
+        model_name="claude-opus-4-8",
+        model_effort=None,
+    )
+    assert payload["server_tool_use"] == {"web_search_requests": 3, "web_fetch_requests": 1}
+
+
+def test_message_usage_payload_omits_all_zero_server_tool_use() -> None:
+    """Most CLI sessions never call web tools; an all-zero sub-dict is dropped so
+    payload_json is not bloated on every message."""
+    from polylogue.sources.parsers.claude.code_parser import _message_usage_event_payload
+
+    payload = _message_usage_event_payload(
+        {
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "server_tool_use": {"web_search_requests": 0, "web_fetch_requests": 0},
+        },
+        model_name=None,
+        model_effort=None,
+    )
+    assert "server_tool_use" not in payload
+
+
+def test_message_usage_payload_without_server_tool_use_key() -> None:
+    from polylogue.sources.parsers.claude.code_parser import _message_usage_event_payload
+
+    payload = _message_usage_event_payload(
+        {"input_tokens": 10, "output_tokens": 5},
+        model_name=None,
+        model_effort=None,
+    )
+    assert "server_tool_use" not in payload
