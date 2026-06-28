@@ -133,6 +133,22 @@ def _message_usage_event_payload(
         "semantics": "per_message",
         "last_token_usage": last_usage,
     }
+    # Anthropic bills web_search / web_fetch separately from token usage and
+    # reports the request counts under usage.server_tool_use. The token lanes
+    # above never carry them, so they would otherwise be lost. Record only when a
+    # count is positive: most CLI sessions never call web tools, and an all-zero
+    # sub-dict on every message would bloat the persisted payload_json for no
+    # signal. The bytes ride into payload_json via the existing writer, so this
+    # needs no schema change. (server_tool_use research, agent #03.)
+    server_tool_use = usage.get("server_tool_use")
+    if isinstance(server_tool_use, dict):
+        web_search_requests = _safe_int(server_tool_use.get("web_search_requests"))
+        web_fetch_requests = _safe_int(server_tool_use.get("web_fetch_requests"))
+        if web_search_requests or web_fetch_requests:
+            payload["server_tool_use"] = {
+                "web_search_requests": web_search_requests,
+                "web_fetch_requests": web_fetch_requests,
+            }
     if model_name:
         payload["model"] = model_name
     if model_effort:
