@@ -33,7 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 11
+INDEX_SCHEMA_VERSION = 14
 
 INDEX_DDL = f"""
 CREATE TABLE IF NOT EXISTS sessions (
@@ -126,6 +126,13 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_session_position
 ON messages(session_id, position, variant_index);
+
+-- Serves the sort-key ordering used by iter_messages keyset pagination,
+-- get_messages_batch, and get_messages_paginated. Without it those reads filter
+-- by session_id (via the position index) then sort the whole session in a temp
+-- B-tree on every chunk (#2467 perf audit).
+CREATE INDEX IF NOT EXISTS idx_messages_session_sortkey
+ON messages(session_id, occurred_at_ms, message_id);
 
 CREATE INDEX IF NOT EXISTS idx_messages_parent
 ON messages(parent_message_id)
@@ -315,6 +322,18 @@ CREATE TABLE IF NOT EXISTS session_links (
     dst_native_id           TEXT NOT NULL,
     link_type               TEXT NOT NULL CHECK ({check("link_type", LinkType)}),
     resolved_dst_session_id TEXT REFERENCES sessions(session_id) ON DELETE SET NULL,
+    -- Lineage normalization (#2467): for a prefix-sharing child (fork / resume /
+    -- spawned subagent / auto-compaction copy) the child stores only its own
+    -- divergent tail; `branch_point_message_id` is the last parent message the
+    -- child inherited, and `inheritance` records whether the child shares the
+    -- parent's leading prefix ('prefix-sharing') or is a fresh spawn that merely
+    -- references the parent ('spawned-fresh'). NULL until the parent is resolved.
+    -- Deliberately NOT a FK: message_id is deterministic, so a parent full-replace
+    -- re-ingest re-creates the same id. An `ON DELETE SET NULL` FK would instead
+    -- null this during the parent's DELETE step and permanently break the child's
+    -- composition (the cascade fires before the re-INSERT) — see #2467 audit.
+    branch_point_message_id TEXT,
+    inheritance             TEXT CHECK(inheritance IN ('prefix-sharing', 'spawned-fresh') OR inheritance IS NULL),
     status                  TEXT CHECK(status IN ('repaired', 'quarantined') OR status IS NULL),
     method                  TEXT,
     confidence              REAL NOT NULL DEFAULT 1.0 CHECK(confidence BETWEEN 0 AND 1),
@@ -447,7 +466,14 @@ CREATE TABLE IF NOT EXISTS attachments (
     display_name           TEXT,
     media_type             TEXT,
     byte_count             INTEGER NOT NULL DEFAULT 0 CHECK(byte_count >= 0),
-    blob_hash              BLOB NOT NULL CHECK(length(blob_hash) = 32),
+    -- #2468: real SHA-256 of the stored bytes when acquired, else NULL. Previously
+    -- a synthetic hash of attachment metadata was written here, falsely implying a
+    -- blob existed (0 blobs were ever stored). `acquisition_status` records whether
+    -- the bytes were fetched ('acquired'), are known unrecoverable from the source
+    -- polylogue holds ('unavailable'), or have not yet been fetched ('unfetched').
+    blob_hash              BLOB CHECK(blob_hash IS NULL OR length(blob_hash) = 32),
+    acquisition_status     TEXT NOT NULL DEFAULT 'unfetched'
+                               CHECK(acquisition_status IN ('acquired', 'unavailable', 'unfetched')),
     ref_count              INTEGER NOT NULL DEFAULT 0 CHECK(ref_count >= 0)
 ) STRICT;
 

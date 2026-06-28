@@ -28,6 +28,7 @@ class PreflightReport:
     max_sessions: int | None = None
     max_messages: int | None = None
     max_cost_usd: float | None = None
+    min_messages: int | None = None
 
 
 def message_window_for_cost(max_cost_usd: float | None) -> int | None:
@@ -65,6 +66,7 @@ def read_pending_message_count(
     rebuild: bool = False,
     max_sessions: int | None = None,
     max_messages: int | None = None,
+    min_messages: int | None = None,
 ) -> tuple[int, int, int]:
     """Return ``(total_convs, pending_convs, pending_messages)``.
 
@@ -81,6 +83,7 @@ def read_pending_message_count(
             rebuild=rebuild,
             max_sessions=max_sessions,
             max_messages=max_messages,
+            min_messages=min_messages,
         )
 
     if not db_path.exists():
@@ -152,6 +155,7 @@ def _read_archive_pending_message_count(
     rebuild: bool = False,
     max_sessions: int | None = None,
     max_messages: int | None = None,
+    min_messages: int | None = None,
 ) -> tuple[int, int, int]:
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -166,13 +170,14 @@ def _read_archive_pending_message_count(
         else:
             status_table = ""
         total = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
-        if max_sessions is not None or max_messages is not None:
+        if max_sessions is not None or max_messages is not None or min_messages is not None:
             pending = _select_archive_pending_window(
                 conn,
                 status_table=status_table,
                 rebuild=rebuild,
                 max_sessions=max_sessions,
                 max_messages=max_messages,
+                min_messages=min_messages,
             )
             return total, len(pending), sum(item[1] for item in pending)
         if rebuild or not status_table:
@@ -225,36 +230,24 @@ def _select_archive_pending_window(
     rebuild: bool,
     max_sessions: int | None,
     max_messages: int | None,
+    min_messages: int | None = None,
 ) -> list[tuple[str, int]]:
-    pending: list[tuple[str, int]] = []
-    message_total = 0
-    where_clause = "1 = 1" if rebuild or not status_table else "(e.session_id IS NULL OR e.needs_reindex = 1)"
-    join_clause = f"LEFT JOIN {status_table} e ON e.session_id = s.session_id" if status_table else ""
-    cursor = conn.execute(
-        f"""
-        SELECT s.session_id, s.message_count
-        FROM sessions s
-        {join_clause}
-        WHERE {where_clause}
-        ORDER BY s.sort_key_ms IS NULL, s.sort_key_ms, s.session_id
-        """
+    # Delegate to the canonical selector so the preflight window matches the
+    # window the backfill actually embeds — same newest-first ordering, same
+    # pending where-clause, same min-message floor. This previously kept a
+    # divergent oldest-first copy, so the preflight estimated a different
+    # (oldest, often empty-stub) window than what was embedded.
+    from polylogue.storage.embeddings.materialization import select_pending_archive_session_window
+
+    pending = select_pending_archive_session_window(
+        conn,
+        status_table=status_table,
+        rebuild=rebuild,
+        max_sessions=max_sessions,
+        max_messages=max_messages,
+        min_messages=min_messages,
     )
-    while True:
-        rows = cursor.fetchmany(500)
-        if not rows:
-            break
-        for row in rows:
-            session_id = str(row[0])
-            message_count = int(row[1] or 0)
-            if max_sessions is not None and len(pending) >= max_sessions:
-                return pending
-            if max_messages is not None and pending and message_total + message_count > max_messages:
-                return pending
-            pending.append((session_id, message_count))
-            message_total += message_count
-            if max_messages is not None and message_total >= max_messages:
-                return pending
-    return pending
+    return [(item.session_id, item.message_count) for item in pending]
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
@@ -272,6 +265,7 @@ def build_preflight_report(
     max_sessions: int | None = None,
     max_messages: int | None = None,
     max_cost_usd: float | None = None,
+    min_messages: int | None = None,
 ) -> PreflightReport:
     """Build a :class:`PreflightReport` without contacting Voyage."""
     from polylogue.config import load_polylogue_config
@@ -287,6 +281,7 @@ def build_preflight_report(
         rebuild=rebuild,
         max_sessions=max_sessions,
         max_messages=effective_max_messages,
+        min_messages=min_messages,
     )
     estimated_tokens = pending_messages * ESTIMATED_TOKENS_PER_MESSAGE
     estimated_cost = estimated_tokens * VOYAGE_4_COST_PER_1M_TOKENS / 1_000_000
@@ -299,10 +294,13 @@ def build_preflight_report(
         model=cfg.embedding_model,
         dimension=cfg.embedding_dimension,
         cost_cap_usd=cfg.embedding_max_cost_usd,
-        windowed=max_sessions is not None or max_messages is not None or max_cost_usd is not None,
+        windowed=(
+            max_sessions is not None or max_messages is not None or max_cost_usd is not None or min_messages is not None
+        ),
         max_sessions=max_sessions,
         max_messages=effective_max_messages,
         max_cost_usd=max_cost_usd,
+        min_messages=min_messages,
     )
 
 

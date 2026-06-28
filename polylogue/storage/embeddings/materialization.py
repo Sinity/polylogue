@@ -141,7 +141,15 @@ def select_pending_session_window(
     max_sessions: int | None = None,
     max_messages: int | None = None,
 ) -> list[PendingSession]:
-    """Return one bounded, resumable pending-session window."""
+    """Return one bounded, resumable pending-session window.
+
+    Windows are ordered newest-first (``updated_at_ms`` DESC). When the
+    embedding budget is smaller than the corpus — the common case, since a
+    full embed of a large archive can exceed the provider's free-token
+    allotment — newest-first ensures the most query-relevant (recently
+    active) sessions are embedded first. It is also correct for the daemon's
+    ambient catch-up, which should cover just-ingested sessions promptly.
+    """
 
     pending: list[PendingSession] = []
     message_total = 0
@@ -168,7 +176,7 @@ def select_pending_session_window(
             {join_clause}
             WHERE {where_clause}
               {id_filter}
-            ORDER BY COALESCE(c.updated_at_ms, 0), c.session_id
+            ORDER BY COALESCE(c.updated_at_ms, 0) DESC, c.session_id
             """,
             tuple(params),
         )
@@ -183,7 +191,7 @@ def select_pending_session_window(
             {join_clause}
             WHERE {where_clause}
               {id_filter}
-            ORDER BY COALESCE(c.updated_at_ms, 0), c.session_id
+            ORDER BY COALESCE(c.updated_at_ms, 0) DESC, c.session_id
             """,
             tuple(params),
         )
@@ -221,8 +229,15 @@ def select_pending_archive_session_window(
     rebuild: bool = False,
     max_sessions: int | None = None,
     max_messages: int | None = None,
+    min_messages: int | None = None,
 ) -> list[PendingSession]:
-    """Return one bounded pending-session window from a archive index."""
+    """Return one bounded pending-session window from a archive index.
+
+    ``min_messages`` skips sessions below a message-count floor so a limited
+    embedding budget is not spent on trivial sessions (provider smoke tests,
+    empty stubs). It complements the budget bounds (``max_*``) with a quality
+    floor, making selective embedding affordable for real users.
+    """
 
     pending: list[PendingSession] = []
     message_total = 0
@@ -233,6 +248,11 @@ def select_pending_archive_session_window(
         placeholders = ", ".join("?" for _ in unique_ids)
         id_filter = f"AND s.session_id IN ({placeholders})"
         params.extend(unique_ids)
+
+    min_filter = ""
+    if min_messages is not None:
+        min_filter = "AND s.message_count >= ?"
+        params.append(int(min_messages))
 
     if status_table is None:
         status_table = "embedding_status" if _table_exists(conn, "embedding_status") else ""
@@ -249,7 +269,8 @@ def select_pending_archive_session_window(
         {join_clause}
         WHERE {where_clause}
           {id_filter}
-        ORDER BY s.sort_key_ms IS NULL, s.sort_key_ms, s.session_id
+          {min_filter}
+        ORDER BY (s.sort_key_ms IS NULL), s.sort_key_ms DESC, s.session_id
         """,
         tuple(params),
     )
@@ -381,12 +402,12 @@ def embed_archive_session_sync(
             return EmbedSessionOutcome(status="not_found", session_id=session_id)
         rows = index_conn.execute(
             """
-            SELECT m.message_id, m.role, m.content_hash,
+            SELECT m.message_id, m.role, m.content_hash, m.material_origin,
                    GROUP_CONCAT(b.text, char(10) || char(10)) AS text
             FROM messages m
             LEFT JOIN blocks b ON b.message_id = m.message_id AND b.text IS NOT NULL
             WHERE m.session_id = ?
-            GROUP BY m.message_id, m.role, m.content_hash, m.position, m.variant_index
+            GROUP BY m.message_id, m.role, m.content_hash, m.material_origin, m.position, m.variant_index
             ORDER BY m.position, m.variant_index
             """,
             (session_id,),
@@ -401,7 +422,9 @@ def embed_archive_session_sync(
                 title=None if session["title"] is None else str(session["title"]),
             )
 
-        embeddable = [row for row in rows if _should_embed_archive_message(row["role"], row["text"])]
+        embeddable = [
+            row for row in rows if _should_embed_archive_message(row["material_origin"], row["role"], row["text"])
+        ]
         if not embeddable:
             _record_archive_embedding_success(
                 embeddings_conn, session_id=session_id, origin=str(session["origin"]), message_count=0
@@ -493,16 +516,32 @@ def _record_archive_embedding_success(
         )
 
 
-def _should_embed_archive_message(role: object, text: object) -> bool:
+# Material origins that are NOT conversational prose: large tool outputs,
+# injected runtime context/protocol, and generated packs. Embedding these
+# pollutes semantic search and is expensive (tool_result alone is ~38% of all
+# messages). We embed authored prose (assistant/human) plus ambiguous/unknown
+# origins (e.g. non-Claude providers that don't tag material_origin), and skip
+# the known-noise origins.
+_NON_PROSE_MATERIAL_ORIGINS = frozenset(
+    {
+        "tool_result",
+        "runtime_context",
+        "runtime_protocol",
+        "generated_analysis_pack",
+        "generated_context_pack",
+    }
+)
+
+
+def _should_embed_archive_message(material_origin: object, role: object, text: object) -> bool:
     if not isinstance(text, str) or not text.strip():
         return False
     stripped = text.strip()
     if len(stripped) < 20:
         return False
-    role_value = str(role)
-    if role_value == "system":
+    if str(role) == "system":
         return False
-    return not (role_value == "tool" and stripped.lower() in {"ok", "success", "done", "error", "failed"})
+    return material_origin is None or str(material_origin) not in _NON_PROSE_MATERIAL_ORIGINS
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:

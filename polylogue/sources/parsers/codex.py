@@ -438,6 +438,12 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
     session_timestamp_pair: _TimestampPair | None = None
     latest_message_timestamp: _TimestampPair | None = None
     session_metas_seen: list[str] = []  # Collect all session_meta IDs for parent tracking
+    # Explicit lineage markers from the child's own (first) session_meta. Codex
+    # records `forked_from_id` for forks/resumes and a `source.subagent.thread_spawn`
+    # block for spawned subagents; both inherit the parent's context as a copied
+    # prefix in this rollout. See docs/design/session-lineage-model.md.
+    forked_from_id: str | None = None
+    is_subagent_spawn = False
     session_git: dict[str, object] | None = None  # Git context from session metadata
     session_instructions: str | None = None  # System instructions from session metadata
     working_directories: set[str] = set()
@@ -467,6 +473,27 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
                     payload=event_payload,
                 )
             )
+            # Materialize the compaction summary as a real message at the
+            # boundary, mirroring Claude Code, so both providers present a uniform
+            # summary message that replaces the prior context (#2467). The
+            # pre-compaction messages stay stored once; the boundary marks where
+            # context discontinues.
+            summary_text = str(event_payload["summary"])
+            if summary_text:
+                messages.append(
+                    ParsedMessage(
+                        provider_message_id=f"compaction-summary-{idx}",
+                        role=Role.SYSTEM,
+                        text=summary_text,
+                        timestamp=timestamp,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=summary_text)],
+                        message_type=MessageType.SUMMARY,
+                        position=message_position,
+                        variant_index=0,
+                        is_active_path=True,
+                    )
+                )
+                message_position += 1
             continue
 
         # Handle turn-context events
@@ -557,6 +584,13 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
                     session_id = meta_id
                     session_timestamp_pair = parse_timestamp_pair(_record_timestamp(session_meta))
                     session_timestamp = session_timestamp_pair[1] if session_timestamp_pair is not None else None
+                    # Lineage markers live on the child's own (first) meta only.
+                    forked_val = session_meta.get("forked_from_id")
+                    if isinstance(forked_val, str) and forked_val.strip():
+                        forked_from_id = forked_val.strip()
+                    source_val = session_meta.get("source")
+                    if isinstance(source_val, dict) and isinstance(source_val.get("subagent"), dict):
+                        is_subagent_spawn = True
             git_context = _git_context(session_meta)
             if git_context and not session_git:
                 session_git = git_context
@@ -585,8 +619,6 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
 
             msg_id = _record_id(message_record) or f"msg-{idx}"
             if not content_blocks and text:
-                from .base import ParsedContentBlock
-
                 content_blocks = [ParsedContentBlock(type=BlockType.TEXT, text=text)]
             token_usage = _token_usage(message_record)
             model_name = _string_field(message_record, "model", "model_name") or current_model_name
@@ -616,9 +648,22 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
             message_position += 1
             latest_message_timestamp = _newer_timestamp_pair(latest_message_timestamp, timestamp_pair)
 
-    # Second session_meta ID (if present) is the parent session
-    parent_id = session_metas_seen[1] if len(session_metas_seen) > 1 else None
-    branch_type = BranchType.CONTINUATION if parent_id else None
+    # Lineage: prefer the explicit markers on the child's own session_meta.
+    #   - `source.subagent.thread_spawn` → spawned subagent (inherits a prefix)
+    #   - `forked_from_id` (no subagent block) → user fork / resume of the parent
+    # Both copy the parent's context as a leading prefix into this rollout; the
+    # archive write path normalizes that copy into a lineage edge + branch point.
+    # Fall back to the legacy heuristic (a second embedded session_meta id) when
+    # no explicit marker is present.
+    if forked_from_id is not None:
+        parent_id: str | None = forked_from_id
+        branch_type = BranchType.SUBAGENT if is_subagent_spawn else BranchType.FORK
+    elif len(session_metas_seen) > 1:
+        parent_id = session_metas_seen[1]
+        branch_type = BranchType.CONTINUATION
+    else:
+        parent_id = None
+        branch_type = None
 
     updated_at_pair = _newer_timestamp_pair(session_timestamp_pair, latest_message_timestamp)
 

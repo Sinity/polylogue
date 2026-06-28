@@ -338,6 +338,42 @@ devtools lab smoke run archive-smoke --tier 0
 devtools lab smoke run reader-visual-smoke
 ```
 
+## Mining the archive
+
+`scripts/agent_forensics.py` turns an archive into a longitudinal findings
+report — token economy, cost (API-equivalent *and* subscription-credit views),
+cache amplification, model evolution, and the adoption curve — with SVG charts.
+Pure standard library, read-only, reproducible against any archive:
+
+```bash
+python scripts/agent_forensics.py --archive ~/.local/share/polylogue --out ./forensics
+# or against the synthetic demo archive (no private data):
+polylogue demo seed --root /tmp/demo --force --with-overlays --format json
+python scripts/agent_forensics.py --archive /tmp/demo --out ./forensics-demo
+```
+
+See [docs/agent-forensics.md](docs/agent-forensics.md) for what it reports and
+the token-accounting traps it handles (per-event deltas vs cumulative totals,
+cost provenance, subscription cache-read economics).
+
+`scripts/cost_accounting_demo.py` proves the cross-provider cost accounting end
+to end with no mocks: it ingests a crafted Codex session through Polylogue's
+real writer, reads the materialized rollup back, and shows the corrected
+disjoint billing lanes next to what the pre-fix code charged. Codex reports
+input *inclusive* of cached and output *inclusive* of reasoning; billing those
+naively double-counts, and because an agent re-sends its whole context each turn
+cached is ~96% of input — a 7.69x cost inflation on the real corpus.
+
+```bash
+uv run python scripts/cost_accounting_demo.py
+# operator cross-verify against Codex's authoritative token store (private):
+uv run python scripts/cost_accounting_demo.py \
+  --archive ~/.local/share/polylogue --codex-state ~/.codex/state_5.sqlite
+```
+
+See [docs/cost-model.md § Codex disjoint billing lanes](docs/cost-model.md#codex-disjoint-billing-lanes)
+for the token semantics and cross-verification result.
+
 <!-- BEGIN GENERATED: docs-surface -->
 ## Documentation
 

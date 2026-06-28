@@ -5,7 +5,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from polylogue.archive.semantic.cost_records import SessionCostBreakdown, SessionCostSummary
-from polylogue.archive.semantic.pricing import _normalize_model, estimate_cost, estimate_session_cost
+from polylogue.archive.semantic.pricing import (
+    CATALOG_EFFECTIVE_DATE,
+    CATALOG_PROVENANCE,
+    _normalize_model,
+    estimate_cost,
+    estimate_session_cost,
+)
 from polylogue.archive.semantic.subscription_pricing import compute_credit_cost, get_credit_rate
 from polylogue.archive.semantic.tokenizer import TOKENIZER_VERSION, estimate_tokens_from_words
 
@@ -13,7 +19,10 @@ if TYPE_CHECKING:
     from polylogue.archive.models import Session
     from polylogue.archive.semantic.pricing import CostEstimatePayload
 
-_PRICE_SNAPSHOT_VERSION = "polylogue-curated-litellm-shaped-seed"
+# Stamped onto computed cost records so re-priced rows are distinguishable from
+# rows priced under an earlier catalog. Derived from the canonical catalog
+# constants in pricing.py (single source of truth) rather than hardcoded.
+_PRICE_SNAPSHOT_VERSION = f"{CATALOG_PROVENANCE}-{CATALOG_EFFECTIVE_DATE}"
 
 
 def compute_session_cost(
