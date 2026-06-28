@@ -436,6 +436,11 @@ class ArchiveStore:
             self._conn.execute(f"PRAGMA busy_timeout = {max(0, int(read_timeout * 1000))}")
         self._user_tier_attached = False
         self._tags_relation = "session_tags"
+        # Lazily opened persistent write connection to source.db. Keeping it open
+        # across writes lets a bulk caller batch raw-session commits (it is the
+        # twin of the index.db commit batched on self._conn) instead of paying a
+        # source-tier fsync per session. Opened on first raw write only.
+        self._source_conn: sqlite3.Connection | None = None
         self._attach_user_tier_if_present()
 
     @classmethod
@@ -467,7 +472,38 @@ class ArchiveStore:
         except sqlite3.Error:
             return
 
+    def _ensure_source_conn(self) -> sqlite3.Connection:
+        """Return the persistent source.db write connection, opening it lazily."""
+        if self._source_conn is None:
+            conn = sqlite3.connect(self.source_db_path)
+            conn.execute("PRAGMA foreign_keys = ON")
+            self._source_conn = conn
+        return self._source_conn
+
+    def commit(self) -> None:
+        """Commit the index.db and (if open) source.db write connections.
+
+        Bulk callers that pass ``manage_transaction=False`` to the write methods
+        own commit cadence; this flushes both tiers' in-flight batch.
+        """
+        self._conn.commit()
+        if self._source_conn is not None:
+            self._source_conn.commit()
+
+    def rollback(self) -> None:
+        """Roll back the index.db and (if open) source.db write connections.
+
+        Used by a bulk caller to discard an uncommitted, half-applied batch when
+        a write raises, before propagating the error.
+        """
+        self._conn.rollback()
+        if self._source_conn is not None:
+            self._source_conn.rollback()
+
     def close(self) -> None:
+        if self._source_conn is not None:
+            self._source_conn.close()
+            self._source_conn = None
         self._conn.close()
 
     def write_parsed(self, session: ParsedSession, *, content_hash: str | None = None) -> str:
@@ -484,8 +520,15 @@ class ArchiveStore:
         source_index: int = 0,
         stage_timings_s: dict[str, float] | None = None,
         stage_timing_prefix: str = "append",
+        manage_transaction: bool = True,
     ) -> tuple[str, str]:
-        """Write raw acquisition bytes and the parsed session they produced."""
+        """Write raw acquisition bytes and the parsed session they produced.
+
+        With the default ``manage_transaction=True`` each tier write commits on
+        its own. A bulk caller passes ``manage_transaction=False`` and owns
+        commit cadence via :meth:`commit` / :meth:`rollback` so the source.db and
+        index.db writes are batched into shared transactions.
+        """
 
         def add_timing(name: str, started_at: float) -> None:
             if stage_timings_s is not None:
@@ -493,25 +536,20 @@ class ArchiveStore:
                 stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - started_at)
 
         t0 = time.perf_counter()
-        source_conn = sqlite3.connect(self.source_db_path)
+        source_conn = self._ensure_source_conn()
         add_timing("source_connect", t0)
-        try:
-            t0 = time.perf_counter()
-            source_conn.execute("PRAGMA foreign_keys = ON")
-            raw_id = write_source_raw_session(
-                source_conn,
-                origin=origin_from_provider(session.source_name),
-                source_path=source_path,
-                source_index=source_index,
-                native_id=session.provider_session_id,
-                payload=payload,
-                acquired_at_ms=acquired_at_ms,
-            )
-            add_timing("source_raw_write", t0)
-        finally:
-            t0 = time.perf_counter()
-            source_conn.close()
-            add_timing("source_close", t0)
+        t0 = time.perf_counter()
+        raw_id = write_source_raw_session(
+            source_conn,
+            origin=origin_from_provider(session.source_name),
+            source_path=source_path,
+            source_index=source_index,
+            native_id=session.provider_session_id,
+            payload=payload,
+            acquired_at_ms=acquired_at_ms,
+            manage_transaction=manage_transaction,
+        )
+        add_timing("source_raw_write", t0)
         t0 = time.perf_counter()
         session_id = write_parsed_session_to_archive(
             self._conn,
@@ -520,6 +558,7 @@ class ArchiveStore:
             merge_append=source_index < 0,
             stage_timings_s=stage_timings_s,
             stage_timing_prefix=stage_timing_prefix,
+            manage_transaction=manage_transaction,
         )
         add_timing("index_parsed_write", t0)
         return raw_id, session_id
@@ -535,8 +574,12 @@ class ArchiveStore:
         source_index: int = 0,
         stage_timings_s: dict[str, float] | None = None,
         stage_timing_prefix: str = "full",
+        manage_transaction: bool = True,
     ) -> tuple[str, str]:
-        """Write parsed session metadata for an already-materialized raw blob."""
+        """Write parsed session metadata for an already-materialized raw blob.
+
+        See :meth:`write_raw_and_parsed` for the ``manage_transaction`` contract.
+        """
 
         def add_timing(name: str, started_at: float) -> None:
             if stage_timings_s is not None:
@@ -544,26 +587,21 @@ class ArchiveStore:
                 stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - started_at)
 
         t0 = time.perf_counter()
-        source_conn = sqlite3.connect(self.source_db_path)
+        source_conn = self._ensure_source_conn()
         add_timing("source_connect", t0)
-        try:
-            t0 = time.perf_counter()
-            source_conn.execute("PRAGMA foreign_keys = ON")
-            raw_id = write_source_raw_session_blob_ref(
-                source_conn,
-                origin=origin_from_provider(session.source_name),
-                source_path=source_path,
-                source_index=source_index,
-                native_id=session.provider_session_id,
-                blob_hash=bytes.fromhex(blob_hash_hex),
-                blob_size=blob_size,
-                acquired_at_ms=acquired_at_ms,
-            )
-            add_timing("source_raw_blob_ref_write", t0)
-        finally:
-            t0 = time.perf_counter()
-            source_conn.close()
-            add_timing("source_close", t0)
+        t0 = time.perf_counter()
+        raw_id = write_source_raw_session_blob_ref(
+            source_conn,
+            origin=origin_from_provider(session.source_name),
+            source_path=source_path,
+            source_index=source_index,
+            native_id=session.provider_session_id,
+            blob_hash=bytes.fromhex(blob_hash_hex),
+            blob_size=blob_size,
+            acquired_at_ms=acquired_at_ms,
+            manage_transaction=manage_transaction,
+        )
+        add_timing("source_raw_blob_ref_write", t0)
         t0 = time.perf_counter()
         session_id = write_parsed_session_to_archive(
             self._conn,
@@ -572,6 +610,7 @@ class ArchiveStore:
             merge_append=source_index < 0,
             stage_timings_s=stage_timings_s,
             stage_timing_prefix=stage_timing_prefix,
+            manage_transaction=manage_transaction,
         )
         add_timing("index_parsed_write", t0)
         return raw_id, session_id
