@@ -539,6 +539,20 @@ def _estimate_from_usage(
         )
     components = _cost_components(usage, pricing)
     total = sum(component.usd for component in components)
+    # Flag a paid model that carries cache tokens but has no catalog cache rate:
+    # _cost_components priced that lane at $0 silently, which understates cost.
+    # The likely cause is a model new enough that the vendored LiteLLM snapshot
+    # lacks its cache pricing. Surface it as a data-quality reason rather than a
+    # hidden understatement. Gated on the model being paid so genuinely-free
+    # models (e.g. local-llama, all lanes $0) are not flagged.
+    missing_reasons: tuple[str, ...] = ()
+    if pricing.input_usd_per_1m > 0 or pricing.output_usd_per_1m > 0:
+        unpriced: list[str] = []
+        if usage.cache_read_tokens > 0 and pricing.cache_read_usd_per_1m == 0.0:
+            unpriced.append("missing_cache_read_price")
+        if usage.cache_write_tokens > 0 and pricing.cache_write_usd_per_1m == 0.0:
+            unpriced.append("missing_cache_write_price")
+        missing_reasons = tuple(unpriced)
     return CostEstimatePayload(
         source_name=source_name,
         session_id=session_id,
@@ -556,6 +570,7 @@ def _estimate_from_usage(
         price=pricing.to_payload(model_name=model_name, normalized_model=normalized_model),
         components=components,
         provenance=(*provenance, CATALOG_PROVENANCE),
+        missing_reasons=missing_reasons,
     )
 
 

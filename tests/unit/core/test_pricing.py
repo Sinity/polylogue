@@ -175,3 +175,74 @@ def test_current_opus_flagships_are_priced_not_zero() -> None:
         assert _normalize_model(f"{version}-20260101") == version
         # 1M input + 1M output at Opus rates ($15 + $75) = $90.
         assert estimate_cost(1_000_000, 1_000_000, version) == pytest.approx(90.0)
+
+
+def test_paid_model_missing_cache_rate_is_flagged_not_silently_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A paid model carrying cache tokens but no catalog cache rate must surface
+    a data-quality reason instead of silently pricing that lane at $0 (e.g. a
+    model newer than the vendored LiteLLM snapshot)."""
+    from polylogue.archive.semantic import pricing as pricing_mod
+    from polylogue.archive.semantic.pricing import CostUsagePayload, ModelPricing, _estimate_from_usage
+
+    paid_no_cache = ModelPricing(
+        source_name="test",
+        input_usd_per_1m=1.0,
+        output_usd_per_1m=2.0,
+        cache_read_usd_per_1m=0.0,
+        cache_write_usd_per_1m=0.0,
+    )
+    monkeypatch.setitem(pricing_mod.PRICING, "test-paid-nocache", paid_no_cache)
+
+    estimate = _estimate_from_usage(
+        source_name="test",
+        model_name="test-paid-nocache",
+        usage=CostUsagePayload(input_tokens=100, output_tokens=10, cache_read_tokens=1000),
+        provenance=("message_token_usage",),
+    )
+    assert estimate.status == "priced"
+    assert "missing_cache_read_price" in estimate.missing_reasons
+    # Priced lanes still cost; the unpriced cache lane is $0 but now flagged.
+    assert estimate.total_usd > 0
+
+
+def test_free_model_with_cache_tokens_is_not_flagged(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A genuinely free model (all lanes $0, e.g. local-llama) must NOT be
+    flagged just because it has cache tokens — the guard is gated on paid."""
+    from polylogue.archive.semantic import pricing as pricing_mod
+    from polylogue.archive.semantic.pricing import CostUsagePayload, ModelPricing, _estimate_from_usage
+
+    free_model = ModelPricing(source_name="test", input_usd_per_1m=0.0, output_usd_per_1m=0.0)
+    monkeypatch.setitem(pricing_mod.PRICING, "test-free-model", free_model)
+
+    estimate = _estimate_from_usage(
+        source_name="test",
+        model_name="test-free-model",
+        usage=CostUsagePayload(input_tokens=100, output_tokens=10, cache_read_tokens=1000),
+        provenance=("message_token_usage",),
+    )
+    assert estimate.status == "priced"
+    assert estimate.missing_reasons == ()
+
+
+def test_paid_model_with_cache_rate_is_not_flagged(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A paid model that has a cache rate is not flagged — control case."""
+    from polylogue.archive.semantic import pricing as pricing_mod
+    from polylogue.archive.semantic.pricing import CostUsagePayload, ModelPricing, _estimate_from_usage
+
+    paid_with_cache = ModelPricing(
+        source_name="test",
+        input_usd_per_1m=1.0,
+        output_usd_per_1m=2.0,
+        cache_read_usd_per_1m=0.1,
+        cache_write_usd_per_1m=1.25,
+    )
+    monkeypatch.setitem(pricing_mod.PRICING, "test-paid-cache", paid_with_cache)
+
+    estimate = _estimate_from_usage(
+        source_name="test",
+        model_name="test-paid-cache",
+        usage=CostUsagePayload(input_tokens=100, output_tokens=10, cache_read_tokens=1000, cache_write_tokens=50),
+        provenance=("message_token_usage",),
+    )
+    assert estimate.status == "priced"
+    assert estimate.missing_reasons == ()
