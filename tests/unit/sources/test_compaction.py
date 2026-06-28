@@ -177,7 +177,6 @@ class TestClaudeCodeAcompactClassification:
         result = parse_code(self._payload(), "agent-acompact-0fdce0d10b47bcc9")
         assert result.parent_session_provider_id == "parent-sess"
         assert result.branch_type == BranchType.CONTINUATION
-        assert result.branch_type != BranchType.SUBAGENT
         # Identity preserved as a distinct artifact composed under the parent.
         assert result.provider_session_id == "parent-sess:agent-acompact-0fdce0d10b47bcc9"
 

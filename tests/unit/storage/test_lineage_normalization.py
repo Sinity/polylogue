@@ -50,7 +50,7 @@ def _msg(pid: str, role: Role, text: str, position: int) -> ParsedMessage:
     )
 
 
-async def _read_texts(path: Path, session_id: str) -> list[str]:
+async def _read_texts(path: Path, session_id: str) -> list[str | None]:
     conn = await aiosqlite.connect(path)
     try:
         conn.row_factory = aiosqlite.Row
