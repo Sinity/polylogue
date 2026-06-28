@@ -136,6 +136,62 @@ def test_prefix_sharing_child_stores_only_tail_and_composes(tmp_path: Path) -> N
     assert composed == ["hello", "hi there", "child diverges here", "child reply"]
 
 
+def test_child_before_parent_is_reextracted_on_resolution(tmp_path: Path) -> None:
+    """A prefix-sharing child ingested before its parent is stored whole, then
+    normalized (inherited prefix deleted) once the parent arrives."""
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="child",
+        title="child",
+        parent_session_provider_id="parent",
+        branch_type=BranchType.FORK,
+        messages=[
+            _msg("c0", Role.USER, "hello", 0),
+            _msg("c1", Role.ASSISTANT, "hi there", 1),
+            _msg("cx", Role.USER, "child diverges here", 2),
+            _msg("cy", Role.ASSISTANT, "child reply", 3),
+        ],
+    )
+    child_id = write_parsed_session_to_archive(conn, child)
+    # Parent absent → stored whole, edge not yet extracted.
+    assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (child_id,)).fetchone()[0] == 4
+    assert (
+        conn.execute("SELECT inheritance FROM session_links WHERE src_session_id = ?", (child_id,)).fetchone()[0]
+        is None
+    )
+
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="parent",
+        title="parent",
+        messages=[
+            _msg("p0", Role.USER, "hello", 0),
+            _msg("p1", Role.ASSISTANT, "hi there", 1),
+            _msg("p2", Role.USER, "parent continues alone", 2),
+        ],
+    )
+    write_parsed_session_to_archive(conn, parent)
+
+    # Resolution re-extracted the child: only its tail remains, edge recorded.
+    stored = conn.execute(
+        "SELECT position FROM messages WHERE session_id = ? ORDER BY position", (child_id,)
+    ).fetchall()
+    assert [row[0] for row in stored] == [2, 3]
+    link = conn.execute(
+        "SELECT inheritance, branch_point_message_id FROM session_links WHERE src_session_id = ?",
+        (child_id,),
+    ).fetchone()
+    assert link["inheritance"] == "prefix-sharing"
+    assert link["branch_point_message_id"] is not None
+
+    conn.close()
+    composed = asyncio.run(_read_texts(db, child_id))
+    assert composed == ["hello", "hi there", "child diverges here", "child reply"]
+
+
 def test_spawned_fresh_child_keeps_all_messages(tmp_path: Path) -> None:
     """A child that shares no leading prefix with its parent (a fresh Task
     subagent) is stored whole; the edge is 'spawned-fresh' with no branch

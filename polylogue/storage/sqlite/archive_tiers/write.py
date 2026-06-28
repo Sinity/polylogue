@@ -1953,6 +1953,11 @@ def _resolve_session_graph(conn: sqlite3.Connection, session_id: str, native_id:
             """,
             (session_id, row[0], native_id),
         )
+        # Deferred tail extraction (#2467): a child ingested before its parent was
+        # stored whole (the inherited prefix could not be aligned yet). Now that
+        # the parent exists, normalize the child the same way the parent-known
+        # write path does — drop the inherited prefix rows and record the edge.
+        _reextract_prefix_tail_db(conn, str(row[0]), session_id)
 
     impacted_session_ids = {session_id, *(str(row[0]) for row in inbound_rows)}
     old_root_ids = _root_ids(conn, impacted_session_ids)
@@ -2989,6 +2994,56 @@ def _composed_db_signatures(conn: sqlite3.Connection, session_id: str, *, _depth
         if entry[0] == branch_point_message_id:
             break
     return prefix + own
+
+
+def _reextract_prefix_tail_db(conn: sqlite3.Connection, child_session_id: str, parent_session_id: str) -> None:
+    """Normalize a child that was stored whole because its parent was ingested
+    later (#2467). Aligns the child's already-stored messages against the parent's
+    composed transcript, deletes the inherited-prefix rows, and records the edge.
+    Only runs while the lineage edge is still un-extracted (``inheritance`` NULL).
+    """
+    edge = conn.execute(
+        """
+        SELECT dst_origin, dst_native_id, link_type
+        FROM session_links
+        WHERE src_session_id = ?
+          AND resolved_dst_session_id = ?
+          AND inheritance IS NULL
+        LIMIT 1
+        """,
+        (child_session_id, parent_session_id),
+    ).fetchone()
+    if edge is None:
+        return
+    dst_origin, dst_native_id, link_type = edge
+    parent_composed = _composed_db_signatures(conn, parent_session_id)
+    child_composed = _composed_db_signatures(conn, child_session_id)
+    k = 0
+    limit = min(len(parent_composed), len(child_composed))
+    while k < limit and parent_composed[k][1] == child_composed[k][1]:
+        k += 1
+
+    def _set_edge(branch_point_message_id: str | None, inheritance: str) -> None:
+        conn.execute(
+            """
+            UPDATE session_links
+            SET branch_point_message_id = ?, inheritance = ?
+            WHERE src_session_id = ? AND dst_origin = ? AND dst_native_id = ? AND link_type = ?
+            """,
+            (branch_point_message_id, inheritance, child_session_id, dst_origin, dst_native_id, link_type),
+        )
+
+    if k == 0:
+        _set_edge(None, "spawned-fresh")
+        return
+    prefix_message_ids = [child_composed[i][0] for i in range(k)]
+    placeholders = ",".join("?" for _ in prefix_message_ids)
+    conn.execute(
+        f"DELETE FROM messages WHERE message_id IN ({placeholders})",
+        tuple(prefix_message_ids),
+    )
+    _set_edge(parent_composed[k - 1][0], "prefix-sharing")
+    _refresh_session_counts(conn, child_session_id)
 
 
 def _extract_prefix_tail(
