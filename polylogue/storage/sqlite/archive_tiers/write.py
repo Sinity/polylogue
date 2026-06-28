@@ -227,6 +227,7 @@ def write_parsed_session_to_archive(
     merge_append: bool = False,
     stage_timings_s: dict[str, float] | None = None,
     stage_timing_prefix: str = "append",
+    signature_cache: dict[str, list[tuple[str, str]]] | None = None,
 ) -> str:
     """Write one parsed session into an initialized archive index DB."""
     t0 = time.perf_counter()
@@ -243,6 +244,10 @@ def write_parsed_session_to_archive(
     origin = origin_from_provider(session.source_name)
     native_id = session.provider_session_id
     session_id = archive_session_id(origin.value, native_id)
+    # This session's own rows are about to be rewritten; drop any stale memoized
+    # own-signatures so the batch cache never serves pre-write rows for it.
+    if signature_cache is not None:
+        signature_cache.pop(session_id, None)
     messages = _normalized_messages(session.messages)
     # Lineage normalization (#2467): when this is a prefix-sharing child whose
     # parent is already in the archive, drop the inherited prefix and keep only
@@ -256,7 +261,7 @@ def write_parsed_session_to_archive(
         parent_session_id = _existing_parent_session_id(conn, session, origin.value)
         if parent_session_id is not None and messages:
             branch_point_message_id, lineage_inheritance, messages = _extract_prefix_tail(
-                conn, parent_session_id, messages
+                conn, parent_session_id, messages, cache=signature_cache
             )
     duplicate_message_native_ids = _duplicate_message_native_ids(messages)
     active_leaf_message_id = _active_leaf_message_id(
@@ -487,7 +492,7 @@ def write_parsed_session_to_archive(
             _refresh_session_counts(conn, session_id)
         add_timing("index.session_counts", t0)
         t0 = time.perf_counter()
-        _resolve_session_graph(conn, session_id, native_id, origin.value)
+        _resolve_session_graph(conn, session_id, native_id, origin.value, cache=signature_cache)
         add_timing("index.graph_resolve", t0)
         if session.ingest_flags:
             t0 = time.perf_counter()
@@ -1932,7 +1937,14 @@ def _write_session_link(
     )
 
 
-def _resolve_session_graph(conn: sqlite3.Connection, session_id: str, native_id: str, origin: str) -> None:
+def _resolve_session_graph(
+    conn: sqlite3.Connection,
+    session_id: str,
+    native_id: str,
+    origin: str,
+    *,
+    cache: dict[str, list[tuple[str, str]]] | None = None,
+) -> None:
     conn.execute(
         """
         UPDATE sessions
@@ -1968,7 +1980,7 @@ def _resolve_session_graph(conn: sqlite3.Connection, session_id: str, native_id:
         # stored whole (the inherited prefix could not be aligned yet). Now that
         # the parent exists, normalize the child the same way the parent-known
         # write path does — drop the inherited prefix rows and record the edge.
-        _reextract_prefix_tail_db(conn, str(row[0]), session_id)
+        _reextract_prefix_tail_db(conn, str(row[0]), session_id, cache=cache)
 
     impacted_session_ids = {session_id, *(str(row[0]) for row in inbound_rows)}
     old_root_ids = _root_ids(conn, impacted_session_ids)
@@ -2946,10 +2958,11 @@ def _parsed_message_signature(message: ParsedMessage) -> str:
     return _message_signature_from_blocks(role, fields)
 
 
-def _composed_db_signatures(conn: sqlite3.Connection, session_id: str, *, _depth: int = 0) -> list[tuple[str, str]]:
-    """Return ``[(message_id, signature), ...]`` for ``session_id``'s composed
-    transcript (its inherited prefix + own tail), recursively resolving any
-    prefix-sharing lineage edge. Mirrors the read-side composition."""
+def _own_db_signatures(conn: sqlite3.Connection, session_id: str) -> list[tuple[str, str]]:
+    """Return ``[(message_id, signature), ...]`` for ``session_id``'s OWN stored
+    message rows (no inherited prefix). This is the expensive SQL+SHA-256 leg of
+    composition; it depends only on the session's own rows, so it can be memoized
+    per ingest batch and invalidated whenever those rows change."""
     own_rows = conn.execute(
         """
         SELECT m.message_id, m.position, m.role,
@@ -2986,6 +2999,30 @@ def _composed_db_signatures(conn: sqlite3.Connection, session_id: str, *, _depth
                 )
             )
     flush()
+    return own
+
+
+def _composed_db_signatures(
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    cache: dict[str, list[tuple[str, str]]] | None = None,
+    _depth: int = 0,
+) -> list[tuple[str, str]]:
+    """Return ``[(message_id, signature), ...]`` for ``session_id``'s composed
+    transcript (its inherited prefix + own tail), recursively resolving any
+    prefix-sharing lineage edge. Mirrors the read-side composition.
+
+    When ``cache`` is supplied, each session's OWN signatures are memoized by
+    ``session_id`` for the life of one ingest batch. The composed (prefix+own)
+    result is never cached because it embeds ancestor signatures that could be
+    rewritten in the same batch; only the own-row leg is stable per session.
+    """
+    own = cache.get(session_id) if cache is not None else None
+    if own is None:
+        own = _own_db_signatures(conn, session_id)
+        if cache is not None:
+            cache[session_id] = own
 
     if _depth >= _MAX_LINEAGE_DEPTH:
         return own
@@ -3004,7 +3041,7 @@ def _composed_db_signatures(conn: sqlite3.Connection, session_id: str, *, _depth
     if edge is None:
         return own
     parent_id, branch_point_message_id = edge
-    parent_composed = _composed_db_signatures(conn, str(parent_id), _depth=_depth + 1)
+    parent_composed = _composed_db_signatures(conn, str(parent_id), cache=cache, _depth=_depth + 1)
     prefix: list[tuple[str, str]] = []
     for entry in parent_composed:
         prefix.append(entry)
@@ -3013,7 +3050,13 @@ def _composed_db_signatures(conn: sqlite3.Connection, session_id: str, *, _depth
     return prefix + own
 
 
-def _reextract_prefix_tail_db(conn: sqlite3.Connection, child_session_id: str, parent_session_id: str) -> None:
+def _reextract_prefix_tail_db(
+    conn: sqlite3.Connection,
+    child_session_id: str,
+    parent_session_id: str,
+    *,
+    cache: dict[str, list[tuple[str, str]]] | None = None,
+) -> None:
     """Normalize a child that was stored whole because its parent was ingested
     later (#2467). Aligns the child's already-stored messages against the parent's
     composed transcript, deletes the inherited-prefix rows, and records the edge.
@@ -3033,8 +3076,8 @@ def _reextract_prefix_tail_db(conn: sqlite3.Connection, child_session_id: str, p
     if edge is None:
         return
     dst_origin, dst_native_id, link_type = edge
-    parent_composed = _composed_db_signatures(conn, parent_session_id)
-    child_composed = _composed_db_signatures(conn, child_session_id)
+    parent_composed = _composed_db_signatures(conn, parent_session_id, cache=cache)
+    child_composed = _composed_db_signatures(conn, child_session_id, cache=cache)
     k = 0
     limit = min(len(parent_composed), len(child_composed))
     while k < limit and parent_composed[k][1] == child_composed[k][1]:
@@ -3059,6 +3102,10 @@ def _reextract_prefix_tail_db(conn: sqlite3.Connection, child_session_id: str, p
         f"DELETE FROM messages WHERE message_id IN ({placeholders})",
         tuple(prefix_message_ids),
     )
+    # The child's own rows just changed (inherited prefix deleted); drop its
+    # memoized own-signatures so any later compose in this batch recomputes them.
+    if cache is not None:
+        cache.pop(child_session_id, None)
     _set_edge(parent_composed[k - 1][0], "prefix-sharing")
     _refresh_session_counts(conn, child_session_id)
 
@@ -3067,11 +3114,13 @@ def _extract_prefix_tail(
     conn: sqlite3.Connection,
     parent_session_id: str,
     messages: list[ParsedMessage],
+    *,
+    cache: dict[str, list[tuple[str, str]]] | None = None,
 ) -> tuple[str | None, str | None, list[ParsedMessage]]:
     """Align ``messages`` (the child's full parsed messages, which replay the
     parent's prefix) against the parent's composed transcript. Returns
     ``(branch_point_message_id, inheritance, tail_messages)``."""
-    parent_composed = _composed_db_signatures(conn, parent_session_id)
+    parent_composed = _composed_db_signatures(conn, parent_session_id, cache=cache)
     if not parent_composed:
         return (None, "spawned-fresh", messages)
     child_sigs = [_parsed_message_signature(m) for m in messages]

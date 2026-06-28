@@ -33,7 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 14
+INDEX_SCHEMA_VERSION = 15
 
 INDEX_DDL = f"""
 CREATE TABLE IF NOT EXISTS sessions (
@@ -128,11 +128,16 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_position
 ON messages(session_id, position, variant_index);
 
 -- Serves the sort-key ordering used by iter_messages keyset pagination,
--- get_messages_batch, and get_messages_paginated. Without it those reads filter
--- by session_id (via the position index) then sort the whole session in a temp
--- B-tree on every chunk (#2467 perf audit).
+-- get_messages_batch, and get_messages_paginated. Those reads order by
+-- `(occurred_at_ms IS NULL), occurred_at_ms, message_id` (NULL-timestamp rows
+-- sort last). The leading IS NULL expression must itself be an indexed column or
+-- the planner ignores the index and sorts the whole session in a temp B-tree on
+-- every chunk — verified via EXPLAIN QUERY PLAN: a plain
+-- (session_id, occurred_at_ms, message_id) index still triggers
+-- `USE TEMP B-TREE FOR ORDER BY`, while the expression index below plans as a
+-- covering-index scan with no sort (#2467 / #2475 perf audit).
 CREATE INDEX IF NOT EXISTS idx_messages_session_sortkey
-ON messages(session_id, occurred_at_ms, message_id);
+ON messages(session_id, (occurred_at_ms IS NULL), occurred_at_ms, message_id);
 
 CREATE INDEX IF NOT EXISTS idx_messages_parent
 ON messages(parent_message_id)

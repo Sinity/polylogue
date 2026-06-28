@@ -161,3 +161,36 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
         ] == [f"{current_session_id}:msg-user"]
 
     await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_paginated_read_uses_sortkey_index_without_temp_btree(tmp_path: Path) -> None:
+    """idx_messages_session_sortkey (expression index, v15) must satisfy the
+    `(occurred_at_ms IS NULL), occurred_at_ms, message_id` ordering so paginated/
+    keyset reads do not fall back to a per-session temp B-tree sort (#2475)."""
+    import sqlite3
+
+    initialize_active_archive_root(tmp_path)
+    backend = SQLiteBackend(db_path=tmp_path / "index.db")
+    conv = make_session("conv-eqp", title="EQP")
+    messages = [
+        make_message(f"msg-{i}", "conv-eqp", role="user", text=f"t{i}", timestamp=f"2026-01-01T00:00:{i:02d}Z")
+        for i in range(20)
+    ]
+    await save_session_to_archive(backend, session=conv, messages=messages)
+
+    conn = sqlite3.connect(tmp_path / "index.db")
+    try:
+        sid = conn.execute("SELECT session_id FROM sessions LIMIT 1").fetchone()[0]
+        query = (
+            "SELECT m.message_id FROM messages m JOIN sessions s ON s.session_id = m.session_id "
+            "WHERE m.session_id = ? "
+            "ORDER BY (m.occurred_at_ms IS NULL), m.occurred_at_ms, m.message_id LIMIT 50"
+        )
+        plan_rows = conn.execute(f"EXPLAIN QUERY PLAN {query}", (sid,)).fetchall()
+        plan = " | ".join(str(r[3]) for r in plan_rows)
+    finally:
+        conn.close()
+
+    assert "TEMP B-TREE" not in plan.upper(), f"unexpected temp sort in plan: {plan}"
+    assert "idx_messages_session_sortkey" in plan, f"sortkey index not used: {plan}"

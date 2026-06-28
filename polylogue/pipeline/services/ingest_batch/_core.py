@@ -214,7 +214,11 @@ def _append_delta_payload(
 
 
 def _write_session(
-    conn: sqlite3.Connection, payload: SessionWritePayload, *, force_write: bool = False
+    conn: sqlite3.Connection,
+    payload: SessionWritePayload,
+    *,
+    force_write: bool = False,
+    signature_cache: dict[str, list[tuple[str, str]]] | None = None,
 ) -> tuple[bool, dict[str, int]]:
     """Write one parsed session payload into the current archive index.
 
@@ -290,6 +294,7 @@ def _write_session(
         content_hash=payload.content_hash,
         raw_id=payload.raw_id,
         merge_append=merge_append,
+        signature_cache=signature_cache,
     )
     counts["sessions"] = 1
     counts["messages"] = len(session_to_write.messages)
@@ -362,10 +367,11 @@ def _write_session_entry(
     *,
     summary: _IngestBatchSummary,
     force_write: bool = False,
+    signature_cache: dict[str, list[tuple[str, str]]] | None = None,
 ) -> bool:
     try:
         t_write = time.perf_counter()
-        content_changed, counts = _write_session(conn, cdata, force_write=force_write)
+        content_changed, counts = _write_session(conn, cdata, force_write=force_write, signature_cache=signature_cache)
         write_elapsed = time.perf_counter() - t_write
         summary.write_elapsed_s += write_elapsed
         if write_elapsed > summary.max_write_elapsed_s:
@@ -465,8 +471,15 @@ def _drain_ready_session_entries(
 ) -> int:
     _delete_stale_sessions_for_raw_entries(conn, ready_entries)
     written_count = 0
+    # One signature cache per drained batch memoizes each session's own composed
+    # signatures so a parent with K fork-children is computed once, not K times
+    # (#2475, hotspot 1). Entries are invalidated when their own rows are
+    # rewritten or re-extracted in this same batch.
+    signature_cache: dict[str, list[tuple[str, str]]] = {}
     for raw_id, cdata in _topo_sort_session_entries(ready_entries):
-        wrote = _write_session_entry(conn, raw_id, cdata, summary=summary, force_write=force_write)
+        wrote = _write_session_entry(
+            conn, raw_id, cdata, summary=summary, force_write=force_write, signature_cache=signature_cache
+        )
         discard_session_data_payload(cdata)
         if not wrote:
             continue
