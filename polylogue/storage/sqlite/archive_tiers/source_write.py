@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from contextlib import nullcontext
 from dataclasses import dataclass
 
 from polylogue.core.enums import ArtifactSupportStatus, Origin, ValidationMode, ValidationStatus
@@ -212,8 +213,16 @@ def write_source_raw_session(
     additional_blob_refs: tuple[ArchiveSourceBlobRef, ...] = (),
     artifact: ArchiveSourceArtifact | None = None,
     hook_event: ArchiveHookEvent | None = None,
+    manage_transaction: bool = True,
 ) -> str:
-    """Insert one raw session and its required raw-payload blob reference."""
+    """Insert one raw session and its required raw-payload blob reference.
+
+    By default the write runs in its own transaction (``with conn:``) committed
+    on success. A bulk caller that batches many sessions into one transaction —
+    to amortize the per-commit fsync and WAL churn that dominate re-ingest I/O —
+    passes ``manage_transaction=False`` and owns the surrounding commit and any
+    rollback-on-error itself.
+    """
     conn.execute("PRAGMA foreign_keys = ON")
     origin_value = _enum_value(origin)
     blob_hash = deterministic_blob_hash(payload)
@@ -226,7 +235,7 @@ def write_source_raw_session(
         native_id,
     )
 
-    with conn:
+    with conn if manage_transaction else nullcontext():
         conn.execute(
             """
             INSERT OR REPLACE INTO raw_sessions (
@@ -298,8 +307,12 @@ def write_source_raw_session_blob_ref(
     acquired_at_ms: int,
     native_id: str | None = None,
     raw_id: str | None = None,
+    manage_transaction: bool = True,
 ) -> str:
-    """Insert one raw session that already has a materialized raw-payload blob."""
+    """Insert one raw session that already has a materialized raw-payload blob.
+
+    See :func:`write_source_raw_session` for the ``manage_transaction`` contract.
+    """
     if len(blob_hash) != 32:
         raise ValueError("blob_hash must be a 32-byte SHA-256 digest")
     conn.execute("PRAGMA foreign_keys = ON")
@@ -311,7 +324,7 @@ def write_source_raw_session_blob_ref(
         blob_hash,
         native_id,
     )
-    with conn:
+    with conn if manage_transaction else nullcontext():
         conn.execute(
             """
             INSERT OR REPLACE INTO raw_sessions (

@@ -9,6 +9,7 @@ import sqlite3
 import time
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -228,8 +229,16 @@ def write_parsed_session_to_archive(
     stage_timings_s: dict[str, float] | None = None,
     stage_timing_prefix: str = "append",
     signature_cache: dict[str, list[tuple[str, str]]] | None = None,
+    manage_transaction: bool = True,
 ) -> str:
-    """Write one parsed session into an initialized archive index DB."""
+    """Write one parsed session into an initialized archive index DB.
+
+    By default the whole write runs in its own transaction (``with conn:``)
+    committed on success. A bulk caller that wants many sessions in one
+    transaction — to amortize the per-commit fsync and WAL page churn that
+    dominate re-ingest I/O — passes ``manage_transaction=False`` and owns the
+    surrounding commit and any rollback-on-error itself.
+    """
     t0 = time.perf_counter()
 
     def add_timing(name: str, started_at: float) -> None:
@@ -276,7 +285,10 @@ def write_parsed_session_to_archive(
     add_timing("index.prepare", t0)
     session_counts = _session_count_values(messages)
 
-    with conn:
+    # When the caller owns the transaction (bulk batching) we must not commit
+    # per session; nullcontext leaves BEGIN/COMMIT to the caller.
+    transaction = conn if manage_transaction else nullcontext()
+    with transaction:
         t0 = time.perf_counter()
         conn.execute(
             """

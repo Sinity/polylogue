@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,26 @@ from polylogue.pipeline.services.parsing_models import ParseResult
 from polylogue.sources.source_parsing import iter_source_sessions_with_raw
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
+# Work-based commit batching (#dogfood ingest-commit-batching). Re-ingest is
+# I/O-wait-bound: source.db and index.db each fsync per session under
+# per-session commit. Committing once ~8000 accumulated messages have been
+# written amortizes the fsync/WAL churn (validated ~1.37x throughput, ~4x fewer
+# bytes, peak WAL ~14 MB << 40 MB autocheckpoint). Session-count batching was
+# rejected (uneven transaction size -> larger WAL); one-shot was rejected
+# (slower + large WAL). Override with POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES;
+# a value <= 0 restores per-session commit (escape hatch).
+COMMIT_BATCH_MESSAGE_THRESHOLD = 8000
+
+
+def _commit_batch_message_threshold() -> int:
+    raw = os.environ.get("POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES")
+    if raw is None:
+        return COMMIT_BATCH_MESSAGE_THRESHOLD
+    try:
+        return int(raw)
+    except ValueError:
+        return COMMIT_BATCH_MESSAGE_THRESHOLD
+
 
 async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> ParseResult:
     """Parse configured sources directly into archive source/index tiers."""
@@ -19,20 +40,32 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
     acquired_at_ms = int(datetime.now(UTC).timestamp() * 1000)
     raw_rows_written = 0
     index_rows_written = 0
+    threshold = _commit_batch_message_threshold()
+    batched = threshold > 0
+    pending_messages = 0
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
         for source in sources:
             for raw_data, session in iter_source_sessions_with_raw(source, capture_raw=True):
                 payload = _archive_raw_payload(raw_data, session)
                 source_path = _archive_raw_source_path(raw_data, source)
                 source_index = _archive_raw_source_index(raw_data)
-                _raw_id, session_id = archive.write_raw_and_parsed(
-                    session,
-                    payload=payload,
-                    source_path=source_path,
-                    acquired_at_ms=acquired_at_ms,
-                    source_index=source_index,
-                    stage_timings_s=result.stage_timings_s,
-                )
+                try:
+                    _raw_id, session_id = archive.write_raw_and_parsed(
+                        session,
+                        payload=payload,
+                        source_path=source_path,
+                        acquired_at_ms=acquired_at_ms,
+                        source_index=source_index,
+                        stage_timings_s=result.stage_timings_s,
+                        manage_transaction=not batched,
+                    )
+                except Exception:
+                    # Discard the in-flight uncommitted batch so a failed write
+                    # never leaves prior sessions in this batch half-applied.
+                    # Re-ingest is restartable from durable source evidence.
+                    if batched:
+                        archive.rollback()
+                    raise
                 raw_rows_written += 1
                 index_rows_written += 1
                 await result.merge_result(
@@ -47,6 +80,13 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
                     },
                     content_changed=True,
                 )
+                if batched:
+                    pending_messages += len(session.messages)
+                    if pending_messages >= threshold:
+                        archive.commit()
+                        pending_messages = 0
+        if batched and pending_messages > 0:
+            archive.commit()
     result.batch_observations.append(
         {
             "primary_ingest_store": "archive_file_set",
