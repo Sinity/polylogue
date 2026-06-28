@@ -381,3 +381,76 @@ def test_fork_composes_on_paginated_batch_and_iter(tmp_path: Path) -> None:
             await conn.close()
 
     asyncio.run(_exercise())
+
+
+def test_shared_signature_cache_composes_correctly(tmp_path: Path) -> None:
+    """A batch-scoped signature cache shared across writes must not corrupt
+    lineage composition (#2475). Two forks of one parent and a parent re-ingest
+    all share a single cache dict; every child must still compose its full
+    logical transcript and the parent re-ingest invalidation must hold.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    cache: dict[str, list[tuple[str, str]]] = {}
+
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="parent",
+        title="parent",
+        messages=[
+            _msg("p0", Role.USER, "hello", 0),
+            _msg("p1", Role.ASSISTANT, "hi there", 1),
+            _msg("p2", Role.USER, "parent continues alone", 2),
+        ],
+    )
+    write_parsed_session_to_archive(conn, parent, signature_cache=cache)
+
+    def _fork(name: str, tail_user: str, tail_assistant: str) -> str:
+        child = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=name,
+            title=name,
+            parent_session_provider_id="parent",
+            branch_type=BranchType.FORK,
+            messages=[
+                _msg(f"{name}0", Role.USER, "hello", 0),
+                _msg(f"{name}1", Role.ASSISTANT, "hi there", 1),
+                _msg(f"{name}x", Role.USER, tail_user, 2),
+                _msg(f"{name}y", Role.ASSISTANT, tail_assistant, 3),
+            ],
+        )
+        # Two SEPARATE write calls that SHARE one signature_cache dict.
+        return write_parsed_session_to_archive(conn, child, signature_cache=cache)
+
+    fork_a_id = _fork("forka", "fork A diverges", "fork A reply")
+    fork_b_id = _fork("forkb", "fork B diverges", "fork B reply")
+
+    def _composed(session_id: str) -> list[str]:
+        return [
+            "".join(block.text or "" for block in message.blocks)
+            for message in read_archive_session_envelope(conn, session_id).messages
+        ]
+
+    assert _composed(fork_a_id) == ["hello", "hi there", "fork A diverges", "fork A reply"]
+    assert _composed(fork_b_id) == ["hello", "hi there", "fork B diverges", "fork B reply"]
+
+    # Re-ingest the parent with a grown tail through the SAME shared cache. The
+    # per-write invalidation must drop the parent's stale own-signatures so both
+    # forks still compose the (unchanged) shared prefix + their own tails.
+    parent_grown = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="parent",
+        title="parent",
+        messages=[
+            _msg("p0", Role.USER, "hello", 0),
+            _msg("p1", Role.ASSISTANT, "hi there", 1),
+            _msg("p2", Role.USER, "parent continues alone", 2),
+            _msg("p3", Role.ASSISTANT, "parent grows more", 3),
+        ],
+    )
+    write_parsed_session_to_archive(conn, parent_grown, signature_cache=cache)
+
+    assert _composed(fork_a_id) == ["hello", "hi there", "fork A diverges", "fork A reply"]
+    assert _composed(fork_b_id) == ["hello", "hi there", "fork B diverges", "fork B reply"]
+
+    conn.close()
