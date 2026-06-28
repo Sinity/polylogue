@@ -302,6 +302,25 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "bench ingest-throughput",
+        "benchmarking",
+        "Measure ingest wall-clock throughput on a synthetic fixture.",
+        "devtools.ingest_throughput_probe",
+        use_when=(
+            "Measure ingest wall-clock / throughput, the time-based counterpart to the "
+            "bytes-based ingest-amplification probe. Drives the public batch-ingest path over "
+            "a deterministic synthetic corpus in a temp dir and times each append batch, "
+            "reporting messages/sessions per second and a per-batch-ms distribution. "
+            "Wall-clock is host-variable: diagnostic and campaign-comparable, no CI thresholds. "
+            "Additive measurement only — does not touch production ingest logic."
+        ),
+        examples=(
+            "devtools bench ingest-throughput",
+            "devtools bench ingest-throughput --json",
+            "devtools bench ingest-throughput --batches 20 --seed 2391",
+        ),
+    ),
+    CommandSpec(
         "lab snapshot read-surface",
         "verification lab",
         "Capture and compare archive read-surface snapshots.",

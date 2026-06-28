@@ -157,6 +157,7 @@ These are the commands worth remembering during normal repo work:
 | --- | --- |
 | `devtools bench campaign` | Run or compare benchmark campaigns. |
 | `devtools bench ingest-amplification` | Measure deterministic per-tier ingest write amplification on a synthetic fixture (#1851). |
+| `devtools bench ingest-throughput` | Measure ingest wall-clock throughput on a synthetic fixture. |
 | `devtools bench memory` | Measure query-memory envelopes on generated fixtures. |
 | `devtools bench mutation` | Run focused mutation campaigns and maintain their local index. |
 | `devtools bench slo` | Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements. |
