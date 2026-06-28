@@ -10,6 +10,7 @@ Covers:
 
 from __future__ import annotations
 
+from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import Origin
 from polylogue.pipeline.semantic_capture import detect_context_compaction
 from polylogue.sources.parsers.claude.code_parser import parse_code
@@ -154,6 +155,36 @@ class TestClaudeCodeRecordCompaction:
 # =============================================================================
 # Claude Code parser — session_events emission
 # =============================================================================
+
+
+class TestClaudeCodeAcompactClassification:
+    """`agent-acompact-*` is auto-compaction (a copy of the parent + summary),
+    not distinct subagent work. It must link to the parent but classify as a
+    continuation rather than a subagent."""
+
+    def _payload(self) -> list[object]:
+        return [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "sessionId": "parent-sess",
+                "timestamp": "2024-01-01T10:00:00Z",
+                "message": {"role": "user", "content": "hello"},
+            },
+        ]
+
+    def test_acompact_classified_as_continuation_not_subagent(self) -> None:
+        result = parse_code(self._payload(), "agent-acompact-0fdce0d10b47bcc9")
+        assert result.parent_session_provider_id == "parent-sess"
+        assert result.branch_type == BranchType.CONTINUATION
+        assert result.branch_type != BranchType.SUBAGENT
+        # Identity preserved as a distinct artifact composed under the parent.
+        assert result.provider_session_id == "parent-sess:agent-acompact-0fdce0d10b47bcc9"
+
+    def test_real_subagent_still_classified_as_subagent(self) -> None:
+        result = parse_code(self._payload(), "agent-a1b2c3d4e5f6")
+        assert result.parent_session_provider_id == "parent-sess"
+        assert result.branch_type == BranchType.SUBAGENT
 
 
 class TestClaudeCodeParserSessionEvents:

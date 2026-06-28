@@ -349,16 +349,26 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
             first_duplicate_uuid,
         )
 
-    is_subagent = fallback_id.startswith("agent-")
+    # `agent-acompact-*` is Claude Code's auto-compaction agent: it re-reads the
+    # whole conversation to emit a summary, so its transcript is a 100% copy of
+    # the parent plus the summary. It is a compaction continuation of the parent,
+    # NOT distinct subagent work. It still carries the same `agent-` prefix and
+    # parent linkage as a real subagent, so keep the composed id / parent link but
+    # classify the relationship as a continuation. Slice C folds it into a typed
+    # compaction boundary; here we at least stop counting it as a subagent.
+    is_agent = fallback_id.startswith("agent-")
+    is_acompact = fallback_id.startswith("agent-acompact-")
     parent_session_id: str | None = None
-    if is_subagent and session_id:
+    if is_agent and session_id:
         composed_session_id = f"{session_id}:{fallback_id}"
         parent_session_id = session_id
     else:
         composed_session_id = session_id or fallback_id
 
-    if is_subagent:
-        branch_type: BranchType | None = BranchType.SUBAGENT
+    if is_acompact:
+        branch_type: BranchType | None = BranchType.CONTINUATION
+    elif is_agent:
+        branch_type = BranchType.SUBAGENT
     elif has_sidechain:
         branch_type = BranchType.SIDECHAIN
     else:

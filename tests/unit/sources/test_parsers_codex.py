@@ -127,6 +127,84 @@ class TestSessionMetadata:
         assert result.parent_session_provider_id is None
         assert result.branch_type is None
 
+    def test_forked_from_id_sets_fork_parent(self) -> None:
+        # A user fork / resume records `forked_from_id` on the child's own meta.
+        payload = [
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": "child-1",
+                    "forked_from_id": "parent-1",
+                    "timestamp": "2024-01-01",
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hello"}],
+                },
+            },
+        ]
+        result = parse(payload, "fallback")
+        assert result.provider_session_id == "child-1"
+        assert result.parent_session_provider_id == "parent-1"
+        assert result.branch_type == BranchType.FORK
+
+    def test_subagent_thread_spawn_sets_subagent_parent(self) -> None:
+        # A spawned subagent records `source.subagent.thread_spawn` in addition
+        # to `forked_from_id`; that distinguishes it from a plain user fork.
+        payload = [
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": "child-2",
+                    "forked_from_id": "parent-2",
+                    "source": {
+                        "subagent": {
+                            "thread_spawn": {
+                                "parent_thread_id": "parent-2",
+                                "depth": 1,
+                                "agent_role": "explorer",
+                            }
+                        }
+                    },
+                    "timestamp": "2024-01-01",
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "exploring"}],
+                },
+            },
+        ]
+        result = parse(payload, "fallback")
+        assert result.provider_session_id == "child-2"
+        assert result.parent_session_provider_id == "parent-2"
+        assert result.branch_type == BranchType.SUBAGENT
+
+    def test_forked_from_id_beats_legacy_second_meta_heuristic(self) -> None:
+        # When the explicit marker is present, the embedded parent meta (second
+        # session_meta = the copied parent's header) must not override it.
+        payload = [
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": "child-3",
+                    "forked_from_id": "real-parent",
+                    "timestamp": "2024-01-01",
+                },
+            },
+            {"type": "session_meta", "payload": {"id": "real-parent", "timestamp": "2024-01-01"}},
+        ]
+        result = parse(payload, "fallback")
+        assert result.parent_session_provider_id == "real-parent"
+        assert result.branch_type == BranchType.FORK
+
     def test_duplicate_session_meta_id_not_counted_twice(self) -> None:
         payload = [
             {"type": "session_meta", "payload": {"id": "same-id", "timestamp": "2024-01-01"}},
