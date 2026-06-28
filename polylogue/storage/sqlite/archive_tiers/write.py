@@ -1726,23 +1726,28 @@ def _write_attachments(
         if message_id is None:
             continue
         touched_attachment_ids.add(attachment_id)
+        blob_hash, byte_count, acquisition_status = _acquire_attachment_blob(attachment)
         conn.execute(
             """
             INSERT INTO attachments (
-                attachment_id, display_name, media_type, byte_count, blob_hash, ref_count
-            ) VALUES (?, ?, ?, ?, ?, 0)
+                attachment_id, display_name, media_type, byte_count, blob_hash, acquisition_status, ref_count
+            ) VALUES (?, ?, ?, ?, ?, ?, 0)
             ON CONFLICT(attachment_id) DO UPDATE SET
                 display_name = COALESCE(excluded.display_name, attachments.display_name),
                 media_type = COALESCE(excluded.media_type, attachments.media_type),
                 byte_count = excluded.byte_count,
-                blob_hash = excluded.blob_hash
+                blob_hash = COALESCE(excluded.blob_hash, attachments.blob_hash),
+                acquisition_status =
+                    CASE WHEN excluded.acquisition_status = 'acquired'
+                         THEN 'acquired' ELSE attachments.acquisition_status END
             """,
             (
                 attachment_id,
                 _sqlite_text(attachment.name),
                 _sqlite_text(attachment.mime_type),
-                attachment.size_bytes or 0,
-                _attachment_blob_hash(attachment_id, attachment),
+                byte_count,
+                blob_hash,
+                acquisition_status,
             ),
         )
         ref_position = _attachment_position(attachment)
@@ -3233,9 +3238,24 @@ def _attachment_position(attachment: ParsedAttachment) -> int:
     return int.from_bytes(digest.digest()[:4], "big")
 
 
-def _attachment_blob_hash(attachment_id: str, attachment: ParsedAttachment) -> bytes:
-    del attachment
-    return bytes.fromhex(attachment_id)
+def _acquire_attachment_blob(attachment: ParsedAttachment) -> tuple[bytes | None, int, str]:
+    """Acquire an attachment's bytes when available (#2468).
+
+    Returns ``(blob_hash, byte_count, acquisition_status)``. Inline bytes present
+    in the source export are written to the content-addressed blob store and the
+    true SHA-256 is returned with status ``acquired``. Otherwise no blob is
+    written: the hash is ``None`` and the status is ``unfetched`` (the bytes may
+    be re-acquired later from ``source_url`` / provider file id). The former
+    behavior — fabricating a 32-byte hash from the attachment id with no blob ever
+    stored — is gone.
+    """
+    inline = attachment.inline_bytes
+    if inline:
+        from polylogue.storage.blob_store import get_blob_store
+
+        hash_hex, size = get_blob_store().write_from_bytes(inline)
+        return (bytes.fromhex(hash_hex), size, "acquired")
+    return (None, attachment.size_bytes or 0, "unfetched")
 
 
 def _attachment_source_url(attachment: ParsedAttachment) -> str | None:

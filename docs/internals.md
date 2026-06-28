@@ -106,6 +106,14 @@ schema shape:
 - Schema bumps are deletes-then-defines, never deltas. A schema change
   edits the owning tier DDL/version and documents the re-ingest expectation.
   No upgrade helpers are added for the bump.
+- Index schema version 13 makes attachment bytes honest (#2468). `attachments.blob_hash`
+  is now nullable and holds the **true SHA-256 of the stored bytes** when acquired
+  (previously a synthetic hash of the attachment id was written with no blob ever
+  stored — 0 blobs for 8,425 rows). A new `acquisition_status`
+  (`acquired` / `unavailable` / `unfetched`) records whether the bytes were
+  fetched. Inline export bytes (e.g. Gemini base64) are written to the
+  content-addressed blob store at ingest; other sources stay `unfetched` with the
+  source ref preserved for later re-acquisition. Rebuild from source evidence.
 - Index schema version 12 normalizes prefix-sharing lineage (#2467). A fork,
   resume, spawned subagent, or auto-compaction copy physically replays the
   parent's leading context; the writer now drops that inherited prefix and keeps

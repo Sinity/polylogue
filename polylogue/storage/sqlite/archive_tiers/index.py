@@ -33,7 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 12
+INDEX_SCHEMA_VERSION = 13
 
 INDEX_DDL = f"""
 CREATE TABLE IF NOT EXISTS sessions (
@@ -455,7 +455,14 @@ CREATE TABLE IF NOT EXISTS attachments (
     display_name           TEXT,
     media_type             TEXT,
     byte_count             INTEGER NOT NULL DEFAULT 0 CHECK(byte_count >= 0),
-    blob_hash              BLOB NOT NULL CHECK(length(blob_hash) = 32),
+    -- #2468: real SHA-256 of the stored bytes when acquired, else NULL. Previously
+    -- a synthetic hash of attachment metadata was written here, falsely implying a
+    -- blob existed (0 blobs were ever stored). `acquisition_status` records whether
+    -- the bytes were fetched ('acquired'), are known unrecoverable from the source
+    -- polylogue holds ('unavailable'), or have not yet been fetched ('unfetched').
+    blob_hash              BLOB CHECK(blob_hash IS NULL OR length(blob_hash) = 32),
+    acquisition_status     TEXT NOT NULL DEFAULT 'unfetched'
+                               CHECK(acquisition_status IN ('acquired', 'unavailable', 'unfetched')),
     ref_count              INTEGER NOT NULL DEFAULT 0 CHECK(ref_count >= 0)
 ) STRICT;
 

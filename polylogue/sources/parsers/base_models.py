@@ -194,6 +194,11 @@ class ParsedAttachment(BaseModel):
     attachment_kind: str | None = None
     source_url: str | None = None
     caption: str | None = None
+    # Transport-only (#2468): raw bytes already present in the source export (e.g.
+    # Gemini inline base64). When set, ingestion writes them to the content-
+    # addressed blob store and records the true SHA-256 + 'acquired' status instead
+    # of fabricating a hash. Excluded from serialization/repr; not a stored field.
+    inline_bytes: bytes | None = Field(default=None, exclude=True, repr=False)
 
     @field_validator("path")
     @classmethod

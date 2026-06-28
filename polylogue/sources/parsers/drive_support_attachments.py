@@ -128,6 +128,15 @@ def attachment_from_inline_file(
     attachment_key = data if isinstance(data, str) and data else hash_payload(inline_file)
     attachment_id = f"inline-file-{hash_text_short(str(attachment_key), length=24)}"
     size_bytes = inline_file_size_bytes(data)
+    # Keep the decoded bytes so ingestion can store them in the blob store (#2468);
+    # inline files are the one attachment kind whose bytes live in the source
+    # export. A non-base64 string is not real file bytes — leave it unfetched.
+    inline_bytes: bytes | None = None
+    if isinstance(data, str) and data:
+        try:
+            inline_bytes = base64.b64decode(data, validate=True)
+        except (ValueError, binascii.Error):
+            inline_bytes = None
     return ParsedAttachment(
         provider_attachment_id=attachment_id,
         message_provider_id=message_id,
@@ -137,6 +146,7 @@ def attachment_from_inline_file(
         path=None,
         attachment_kind="inline_file",
         upload_origin="paste",
+        inline_bytes=inline_bytes,
     )
 
 
