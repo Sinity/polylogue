@@ -106,6 +106,17 @@ schema shape:
 - Schema bumps are deletes-then-defines, never deltas. A schema change
   edits the owning tier DDL/version and documents the re-ingest expectation.
   No upgrade helpers are added for the bump.
+- Index schema version 15 makes `idx_messages_session_sortkey` an expression
+  index — `(session_id, (occurred_at_ms IS NULL), occurred_at_ms, message_id)`
+  (#2475 perf audit). The keyset/paginated message reads order by
+  `(occurred_at_ms IS NULL), occurred_at_ms, message_id` so NULL-timestamp rows
+  sort last; the v14 plain `(session_id, occurred_at_ms, message_id)` index could
+  not satisfy that leading `IS NULL` expression, so the planner fell back to
+  `USE TEMP B-TREE FOR ORDER BY` and sorted the whole session per chunk
+  (expensive on multi-thousand-message sessions). The expression index matches
+  the ORDER BY exactly and plans as a covering-index scan with no temp sort
+  (verified via EXPLAIN QUERY PLAN). Rebuild from source evidence
+  (`polylogue ops reset --database && polylogued run`).
 - Index schema version 14 hardens lineage normalization (#2467 audit).
   `session_links.branch_point_message_id` is no longer a FK with `ON DELETE SET
   NULL`: a parent's full-replace re-ingest (`DELETE FROM messages` then re-INSERT)
