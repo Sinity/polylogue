@@ -473,6 +473,27 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
                     payload=event_payload,
                 )
             )
+            # Materialize the compaction summary as a real message at the
+            # boundary, mirroring Claude Code, so both providers present a uniform
+            # summary message that replaces the prior context (#2467). The
+            # pre-compaction messages stay stored once; the boundary marks where
+            # context discontinues.
+            summary_text = str(event_payload["summary"])
+            if summary_text:
+                messages.append(
+                    ParsedMessage(
+                        provider_message_id=f"compaction-summary-{idx}",
+                        role=Role.SYSTEM,
+                        text=summary_text,
+                        timestamp=timestamp,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=summary_text)],
+                        message_type=MessageType.SUMMARY,
+                        position=message_position,
+                        variant_index=0,
+                        is_active_path=True,
+                    )
+                )
+                message_position += 1
             continue
 
         # Handle turn-context events
@@ -598,8 +619,6 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
 
             msg_id = _record_id(message_record) or f"msg-{idx}"
             if not content_blocks and text:
-                from .base import ParsedContentBlock
-
                 content_blocks = [ParsedContentBlock(type=BlockType.TEXT, text=text)]
             token_usage = _token_usage(message_record)
             model_name = _string_field(message_record, "model", "model_name") or current_model_name

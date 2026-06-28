@@ -388,10 +388,17 @@ class TestCodexParserSessionEvents:
             },
         ]
         result = parse_codex(payload, "fallback")
-        assert len(result.messages) == 3
-        assert result.messages[0].text == "first message"
-        assert result.messages[1].text == "second message"
-        assert result.messages[2].text == "third message"
+        # The compaction summary is now materialized as a real SYSTEM/summary
+        # message at the boundary (parity with Claude Code), in addition to the
+        # session event — so it sits between the surrounding messages.
+        assert [m.text for m in result.messages] == [
+            "first message",
+            "compacted",
+            "second message",
+            "third message",
+        ]
+        assert result.messages[1].role == "system"
+        assert result.messages[1].message_type.value == "summary"
         assert len(result.session_events) == 2
         assert result.session_events[0].event_type == "compaction"
         assert result.session_events[1].event_type == "turn_context"
