@@ -244,6 +244,20 @@ def write_parsed_session_to_archive(
     native_id = session.provider_session_id
     session_id = archive_session_id(origin.value, native_id)
     messages = _normalized_messages(session.messages)
+    # Lineage normalization (#2467): when this is a prefix-sharing child whose
+    # parent is already in the archive, drop the inherited prefix and keep only
+    # the divergent tail. All downstream writes (messages, blocks, counts,
+    # attachments, events) then operate on the tail, so each real message is
+    # stored exactly once. Only applies to full-replace writes; merge-append is
+    # an incremental extend of the same session.
+    branch_point_message_id: str | None = None
+    lineage_inheritance: str | None = None
+    if not merge_append:
+        parent_session_id = _existing_parent_session_id(conn, session, origin.value)
+        if parent_session_id is not None and messages:
+            branch_point_message_id, lineage_inheritance, messages = _extract_prefix_tail(
+                conn, parent_session_id, messages
+            )
     duplicate_message_native_ids = _duplicate_message_native_ids(messages)
     active_leaf_message_id = _active_leaf_message_id(
         session_id,
@@ -354,6 +368,7 @@ def write_parsed_session_to_archive(
             _replace_full_session_messages_and_blocks(
                 conn,
                 session,
+                messages,
                 duplicate_native_ids=duplicate_message_native_ids,
                 stage_timings_s=stage_timings_s,
                 stage_timing_prefix=stage_timing_prefix,
@@ -417,7 +432,13 @@ def write_parsed_session_to_archive(
         )
         add_timing("index.parent_links", t0)
         t0 = time.perf_counter()
-        _write_session_link(conn, session_id, session)
+        _write_session_link(
+            conn,
+            session_id,
+            session,
+            branch_point_message_id=branch_point_message_id,
+            inheritance=lineage_inheritance,
+        )
         add_timing("index.session_link", t0)
         t0 = time.perf_counter()
         event_position_offset = _next_session_event_position(conn, session_id)
@@ -1074,8 +1095,16 @@ def read_session_phases(
     }
 
 
-def read_archive_session_envelope(conn: sqlite3.Connection, session_id: str) -> ArchiveSessionEnvelope:
-    """Read a compact archive envelope used by self-verify and writer tests."""
+def read_archive_session_envelope(
+    conn: sqlite3.Connection, session_id: str, *, _depth: int = 0
+) -> ArchiveSessionEnvelope:
+    """Read a compact archive envelope.
+
+    For a prefix-sharing lineage child (#2467) the inherited prefix is not stored
+    under this session; the returned ``messages`` compose the parent's transcript
+    up to the branch point followed by this session's own messages, so reads see
+    the full logical transcript while storage holds each message once.
+    """
     conn.row_factory = sqlite3.Row
     session = conn.execute(
         """
@@ -1188,6 +1217,21 @@ def read_archive_session_envelope(conn: sqlite3.Connection, session_id: str) -> 
                 attachments=tuple(attachments_by_message.get(message["message_id"], ())),
             )
         )
+
+    # Lineage composition (#2467): prepend the parent's composed transcript up to
+    # and including the branch point. The parent envelope is itself composed via
+    # this same recursion, so nested lineages resolve correctly.
+    if _depth < _MAX_LINEAGE_DEPTH:
+        edge = _prefix_sharing_edge_sync(conn, str(session["session_id"]))
+        if edge is not None:
+            parent_session_id, branch_point_message_id = edge
+            parent_messages = read_archive_session_envelope(conn, parent_session_id, _depth=_depth + 1).messages
+            prefix: list[ArchiveMessageRow] = []
+            for parent_message in parent_messages:
+                prefix.append(parent_message)
+                if parent_message.message_id == branch_point_message_id:
+                    break
+            messages = prefix + messages
 
     return ArchiveSessionEnvelope(
         session_id=session["session_id"],
@@ -1454,6 +1498,7 @@ def _write_web_constructs(
 def _replace_full_session_messages_and_blocks(
     conn: sqlite3.Connection,
     session: ParsedSession,
+    messages: list[ParsedMessage],
     *,
     duplicate_native_ids: frozenset[str],
     stage_timings_s: dict[str, float] | None = None,
@@ -1490,7 +1535,7 @@ def _replace_full_session_messages_and_blocks(
         _write_messages(
             conn,
             session_id,
-            session.messages,
+            messages,
             duplicate_native_ids=duplicate_native_ids,
         )
         add_timing("messages", t0)
@@ -1498,7 +1543,7 @@ def _replace_full_session_messages_and_blocks(
         _write_blocks(
             conn,
             session_id,
-            session.messages,
+            messages,
             duplicate_native_ids=duplicate_native_ids,
         )
         add_timing("blocks", t0)
@@ -1837,21 +1882,32 @@ def _write_parent_links(
         )
 
 
-def _write_session_link(conn: sqlite3.Connection, session_id: str, session: ParsedSession) -> None:
+def _write_session_link(
+    conn: sqlite3.Connection,
+    session_id: str,
+    session: ParsedSession,
+    *,
+    branch_point_message_id: str | None = None,
+    inheritance: str | None = None,
+) -> None:
     if not session.parent_session_provider_id:
         return
     link_type = _enum_value(session.branch_type) or "continuation"
     conn.execute(
         """
         INSERT OR REPLACE INTO session_links (
-            src_session_id, dst_origin, dst_native_id, link_type, status, method, confidence, evidence_json, observed_at_ms
-        ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?)
+            src_session_id, dst_origin, dst_native_id, link_type,
+            branch_point_message_id, inheritance,
+            status, method, confidence, evidence_json, observed_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
         """,
         (
             session_id,
             origin_from_provider(session.source_name).value,
             _sqlite_text(session.parent_session_provider_id),
             link_type,
+            branch_point_message_id,
+            inheritance,
             "parser-parent",
             1.0,
             _json_dumps({"parent_session_provider_id": session.parent_session_provider_id}),
@@ -2807,6 +2863,181 @@ def _message_blocks(message: ParsedMessage) -> Sequence[ParsedContentBlock]:
     if message.text:
         return (ParsedContentBlock(type=BlockType.TEXT, text=message.text),)
     return ()
+
+
+# --- Lineage normalization (#2467): prefix-inheritance tail extraction ---------
+#
+# A fork / resume / spawned subagent / auto-compaction child rollout physically
+# copies the parent's context as a leading prefix. We store only the child's
+# divergent tail plus a lineage edge with a branch point, so each real message is
+# stored exactly once. The branch point is found by conservative contiguous
+# prefix-alignment against the parent's *composed* transcript, using a per-message
+# content signature (role + ordered block content). A message is treated as
+# inherited only inside the matching leading run, so a genuinely-new block that
+# happens to equal a parent block is never dropped.
+
+_SIG_FIELD_SEP = "\x1f"
+_SIG_BLOCK_SEP = "\x1e"
+_MAX_LINEAGE_DEPTH = 64
+
+
+def _canonical_json(value: object) -> str:
+    """Stable JSON for signature comparison; accepts a value or a JSON string."""
+    if value is None:
+        return "null"
+    parsed: object = value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError):
+            return value
+    try:
+        return json.dumps(parsed, sort_keys=True, separators=(",", ":"), default=str)
+    except (TypeError, ValueError):
+        return str(parsed)
+
+
+def _message_signature_from_blocks(role: str, block_fields: list[tuple[str, str, str, str]]) -> str:
+    parts = [role]
+    for block_type, text, tool_name, tool_input in block_fields:
+        parts.append(_SIG_FIELD_SEP.join((block_type, text, tool_name, tool_input)))
+    return hashlib.sha256(_SIG_BLOCK_SEP.join(parts).encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def _parsed_message_signature(message: ParsedMessage) -> str:
+    role = _enum_value(message.role) or ""
+    fields: list[tuple[str, str, str, str]] = []
+    for block in _message_blocks(message):
+        fields.append(
+            (
+                _block_type(block).value,
+                block.text or "",
+                block.tool_name or "",
+                _canonical_json(block.tool_input) if block.tool_input is not None else "null",
+            )
+        )
+    return _message_signature_from_blocks(role, fields)
+
+
+def _composed_db_signatures(conn: sqlite3.Connection, session_id: str, *, _depth: int = 0) -> list[tuple[str, str]]:
+    """Return ``[(message_id, signature), ...]`` for ``session_id``'s composed
+    transcript (its inherited prefix + own tail), recursively resolving any
+    prefix-sharing lineage edge. Mirrors the read-side composition."""
+    own_rows = conn.execute(
+        """
+        SELECT m.message_id, m.position, m.role,
+               b.block_type, b.text, b.tool_name, b.tool_input
+        FROM messages m
+        LEFT JOIN blocks b ON b.message_id = m.message_id
+        WHERE m.session_id = ? AND m.variant_index = 0
+        ORDER BY m.position, b.position
+        """,
+        (session_id,),
+    ).fetchall()
+    own: list[tuple[str, str]] = []
+    cur_id: str | None = None
+    cur_role = ""
+    cur_blocks: list[tuple[str, str, str, str]] = []
+
+    def flush() -> None:
+        if cur_id is not None:
+            own.append((cur_id, _message_signature_from_blocks(cur_role, cur_blocks)))
+
+    for message_id, _position, role, block_type, text, tool_name, tool_input in own_rows:
+        if message_id != cur_id:
+            flush()
+            cur_id = message_id
+            cur_role = role or ""
+            cur_blocks = []
+        if block_type is not None:
+            cur_blocks.append(
+                (
+                    block_type,
+                    text or "",
+                    tool_name or "",
+                    _canonical_json(tool_input) if tool_input is not None else "null",
+                )
+            )
+    flush()
+
+    if _depth >= _MAX_LINEAGE_DEPTH:
+        return own
+    edge = conn.execute(
+        """
+        SELECT resolved_dst_session_id, branch_point_message_id
+        FROM session_links
+        WHERE src_session_id = ?
+          AND inheritance = 'prefix-sharing'
+          AND resolved_dst_session_id IS NOT NULL
+          AND branch_point_message_id IS NOT NULL
+        LIMIT 1
+        """,
+        (session_id,),
+    ).fetchone()
+    if edge is None:
+        return own
+    parent_id, branch_point_message_id = edge
+    parent_composed = _composed_db_signatures(conn, str(parent_id), _depth=_depth + 1)
+    prefix: list[tuple[str, str]] = []
+    for entry in parent_composed:
+        prefix.append(entry)
+        if entry[0] == branch_point_message_id:
+            break
+    return prefix + own
+
+
+def _extract_prefix_tail(
+    conn: sqlite3.Connection,
+    parent_session_id: str,
+    messages: list[ParsedMessage],
+) -> tuple[str | None, str | None, list[ParsedMessage]]:
+    """Align ``messages`` (the child's full parsed messages, which replay the
+    parent's prefix) against the parent's composed transcript. Returns
+    ``(branch_point_message_id, inheritance, tail_messages)``."""
+    parent_composed = _composed_db_signatures(conn, parent_session_id)
+    if not parent_composed:
+        return (None, "spawned-fresh", messages)
+    child_sigs = [_parsed_message_signature(m) for m in messages]
+    k = 0
+    limit = min(len(parent_composed), len(child_sigs))
+    while k < limit and parent_composed[k][1] == child_sigs[k]:
+        k += 1
+    if k == 0:
+        return (None, "spawned-fresh", messages)
+    branch_point_message_id = parent_composed[k - 1][0]
+    return (branch_point_message_id, "prefix-sharing", messages[k:])
+
+
+def _prefix_sharing_edge_sync(conn: sqlite3.Connection, session_id: str) -> tuple[str, str] | None:
+    """Return ``(parent_session_id, branch_point_message_id)`` for a resolved
+    prefix-sharing lineage edge, else ``None``. Mirrors the async reader."""
+    row = conn.execute(
+        """
+        SELECT resolved_dst_session_id, branch_point_message_id
+        FROM session_links
+        WHERE src_session_id = ?
+          AND inheritance = 'prefix-sharing'
+          AND resolved_dst_session_id IS NOT NULL
+          AND branch_point_message_id IS NOT NULL
+        LIMIT 1
+        """,
+        (session_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return (str(row[0]), str(row[1]))
+
+
+def _existing_parent_session_id(conn: sqlite3.Connection, session: ParsedSession, origin_value: str) -> str | None:
+    parent_provider_id = session.parent_session_provider_id
+    if not parent_provider_id:
+        return None
+    parent_session_id = archive_session_id(origin_value, parent_provider_id)
+    row = conn.execute(
+        "SELECT 1 FROM sessions WHERE session_id = ? LIMIT 1",
+        (parent_session_id,),
+    ).fetchone()
+    return parent_session_id if row is not None else None
 
 
 def _active_leaf_message_id(

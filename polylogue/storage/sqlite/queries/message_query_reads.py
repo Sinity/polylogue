@@ -53,23 +53,82 @@ async def _resolve_session_id(conn: aiosqlite.Connection, session_id: str) -> st
     return str(row["session_id"]) if row is not None else session_id
 
 
-async def get_messages(
-    conn: aiosqlite.Connection,
-    session_id: str,
-) -> list[MessageRecord]:
-    session_id = await _resolve_session_id(conn, session_id)
+_MAX_LINEAGE_DEPTH = 64
+
+
+async def _prefix_sharing_edge(conn: aiosqlite.Connection, session_id: str) -> tuple[str, str] | None:
+    """Return ``(parent_session_id, branch_point_message_id)`` if this session
+    inherits a parent's leading prefix (fork / resume / spawned subagent /
+    auto-compaction copy), else ``None``. See the lineage model (#2467)."""
+    cursor = await conn.execute(
+        """
+        SELECT resolved_dst_session_id, branch_point_message_id
+        FROM session_links
+        WHERE src_session_id = ?
+          AND inheritance = 'prefix-sharing'
+          AND resolved_dst_session_id IS NOT NULL
+          AND branch_point_message_id IS NOT NULL
+        LIMIT 1
+        """,
+        (session_id,),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return None
+    return (str(row["resolved_dst_session_id"]), str(row["branch_point_message_id"]))
+
+
+async def _own_messages(conn: aiosqlite.Connection, session_id: str, *, position_order: bool) -> list[MessageRecord]:
+    # A non-lineage session keeps the historical sort-key ordering, which the
+    # keyset streamer (iter_messages) mirrors. Lineage composition needs strict
+    # position order so the parent prefix is cut at the right message regardless
+    # of timestamp gaps or sort-key ties.
+    order_by = (
+        "m.position, m.variant_index"
+        if position_order
+        else "(m.occurred_at_ms IS NULL), m.occurred_at_ms, m.message_id"
+    )
     cursor = await conn.execute(
         f"""
         SELECT {_MESSAGE_RECORD_SELECT}
         FROM messages m
         JOIN sessions s ON s.session_id = m.session_id
         WHERE m.session_id = ?
-        ORDER BY (m.occurred_at_ms IS NULL), m.occurred_at_ms, m.message_id
+        ORDER BY {order_by}
         """,
         (session_id,),
     )
     rows = await cursor.fetchall()
     return [_row_to_message(row) for row in rows]
+
+
+async def get_messages(
+    conn: aiosqlite.Connection,
+    session_id: str,
+    *,
+    _depth: int = 0,
+    _compose_in_position_order: bool = False,
+) -> list[MessageRecord]:
+    session_id = await _resolve_session_id(conn, session_id)
+    edge = None if _depth >= _MAX_LINEAGE_DEPTH else await _prefix_sharing_edge(conn, session_id)
+
+    # Lineage composition (#2467): a prefix-sharing child stores only its own
+    # divergent tail; compose the parent's transcript up to and including the
+    # branch point, then append this session's own messages. The composed view is
+    # position-ordered end to end; a plain session keeps the sort-key order that
+    # the keyset streamer relies on.
+    if edge is None:
+        return await _own_messages(conn, session_id, position_order=_compose_in_position_order)
+
+    parent_session_id, branch_point_message_id = edge
+    parent_messages = await get_messages(conn, parent_session_id, _depth=_depth + 1, _compose_in_position_order=True)
+    own = await _own_messages(conn, session_id, position_order=True)
+    prefix: list[MessageRecord] = []
+    for record in parent_messages:
+        prefix.append(record)
+        if record.message_id == branch_point_message_id:
+            break
+    return prefix + own
 
 
 async def get_messages_batch(

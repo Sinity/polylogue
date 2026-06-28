@@ -106,6 +106,20 @@ schema shape:
 - Schema bumps are deletes-then-defines, never deltas. A schema change
   edits the owning tier DDL/version and documents the re-ingest expectation.
   No upgrade helpers are added for the bump.
+- Index schema version 12 normalizes prefix-sharing lineage (#2467). A fork,
+  resume, spawned subagent, or auto-compaction copy physically replays the
+  parent's leading context; the writer now drops that inherited prefix and keeps
+  only the child's divergent tail, recording the relationship on `session_links`
+  via two new columns: `branch_point_message_id` (the last inherited parent
+  message) and `inheritance` (`prefix-sharing` vs `spawned-fresh`). Reads
+  (`get_messages`, `read_archive_session_envelope`) compose the parent transcript
+  up to the branch point + the child's own tail, so each real message is stored
+  once while the full logical transcript is still served. Existing index tiers
+  must be rebuilt from source evidence (`polylogue ops reset --database &&
+  polylogued run`); `source.db` is untouched, so this is a derived-index rebuild
+  with no user-data impact. (The matching parser detection of Codex
+  `forked_from_id`/`thread_spawn` and Claude `agent-acompact-*` shipped
+  alongside.)
 - Index schema version 11 materializes the run projection into three derived
   read-model tables — `session_runs`, `session_observed_events`, and
   `session_context_snapshots` — recomputed by the session-insight materializer

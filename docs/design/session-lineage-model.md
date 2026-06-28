@@ -176,16 +176,34 @@ official export zips; repo tarballs regenerable) — re-ingest classifies each.
 
 ## Phased implementation
 
-0. Classify `agent-acompact-*` as compaction, not generic subagent.
-1. Schema: typed lineage edges with branch point + compaction boundaries +
-   a `copied-from`/inheritance reference; attachment acquisition + real blob hash.
-2. Ingest: marker detection + conservative tail extraction + deferred resolution;
-   real attachment byte acquisition.
-3. Reads: lineage composition at `get_messages`; effective-context derivation.
+Status as of the prefix-inheritance slices (index schema **v12**):
+
+0. **Done** — `agent-acompact-*` is classified as a compaction continuation, not
+   a generic subagent; Codex `forked_from_id` / `source.subagent.thread_spawn`
+   are detected and set `branch_type` SUBAGENT/FORK.
+1. **Done (prefix-inheritance)** — `session_links` carries
+   `branch_point_message_id` + `inheritance` (`prefix-sharing` / `spawned-fresh`).
+   Compaction boundaries (range columns) + attachment real-blob-hash remain for
+   the compaction and attachment slices.
+2. **Done (parent-known path)** — marker detection + conservative contiguous
+   prefix-alignment (per-message content signature) extract the divergent tail at
+   write time; only the tail + edge are stored. **Remaining:** deferred
+   re-extraction when a child is ingested before its parent (the child is stored
+   whole and the edge left unresolved until then); real attachment byte
+   acquisition.
+3. **Done (prefix-inheritance)** — both read paths compose: the async
+   `get_messages` query and the sync `read_archive_session_envelope` (used by MCP
+   `get_session` / CLI `read`) prepend the parent transcript up to the branch
+   point. Effective-context derivation lands with the compaction slice.
 4. Optimize ingest, then re-ingest the real archive.
 5. Validate against authoritative stores (`state_5.sqlite`, `stats-cache.json`):
    per-thread token ratio → 1.00; attachment blobs present > 0; no duplicate
    message rows across fork families.
+
+Verified on the live corpus: Codex subagent `019ccbf9` (forked from `019ccbf8`)
+shares an 18-message prefix; after normalization the parent keeps 110 rows and
+the child stores its 162-message tail (was 180 with the full replay), and a
+composed read reconstructs the full 180-message transcript exactly.
 
 ## Verification anchors (established)
 
