@@ -124,10 +124,18 @@ async def get_messages(
     parent_messages = await get_messages(conn, parent_session_id, _depth=_depth + 1, _compose_in_position_order=True)
     own = await _own_messages(conn, session_id, position_order=True)
     prefix: list[MessageRecord] = []
+    found = False
     for record in parent_messages:
         prefix.append(record)
         if record.message_id == branch_point_message_id:
+            found = True
             break
+    # If the branch point is not present in the parent's composed transcript (a
+    # dangling reference, e.g. the parent message was hard-deleted), do NOT splice
+    # the entire parent in — return this session's own tail rather than an
+    # over-long transcript (#2467 audit).
+    if not found:
+        return own
     return prefix + own
 
 

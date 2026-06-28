@@ -106,6 +106,15 @@ schema shape:
 - Schema bumps are deletes-then-defines, never deltas. A schema change
   edits the owning tier DDL/version and documents the re-ingest expectation.
   No upgrade helpers are added for the bump.
+- Index schema version 14 hardens lineage normalization (#2467 audit).
+  `session_links.branch_point_message_id` is no longer a FK with `ON DELETE SET
+  NULL`: a parent's full-replace re-ingest (`DELETE FROM messages` then re-INSERT)
+  would otherwise null the child's branch point during the DELETE step and
+  permanently break the child's composition. `message_id` is deterministic, so the
+  plain-TEXT reference survives the re-create; reads bail to the child's own tail
+  if a branch point ever dangles. Also adds `idx_messages_session_sortkey` so the
+  keyset/paginated message reads stop doing a temp B-tree sort per chunk. Rebuild
+  from source evidence.
 - Index schema version 13 makes attachment bytes honest (#2468). `attachments.blob_hash`
   is now nullable and holds the **true SHA-256 of the stored bytes** when acquired
   (previously a synthetic hash of the attachment id was written with no blob ever

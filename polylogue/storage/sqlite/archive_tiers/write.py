@@ -397,6 +397,7 @@ def write_parsed_session_to_archive(
             _write_web_constructs(
                 conn,
                 session,
+                messages,
                 position_offset=position_offset,
                 duplicate_native_ids=duplicate_message_native_ids,
                 replace_session=False,
@@ -1227,11 +1228,16 @@ def read_archive_session_envelope(
             parent_session_id, branch_point_message_id = edge
             parent_messages = read_archive_session_envelope(conn, parent_session_id, _depth=_depth + 1).messages
             prefix: list[ArchiveMessageRow] = []
+            found = False
             for parent_message in parent_messages:
                 prefix.append(parent_message)
                 if parent_message.message_id == branch_point_message_id:
+                    found = True
                     break
-            messages = prefix + messages
+            # Dangling branch point (parent message hard-deleted): keep this
+            # session's own tail rather than splice the entire parent (#2467 audit).
+            if found:
+                messages = prefix + messages
 
     return ArchiveSessionEnvelope(
         session_id=session["session_id"],
@@ -1424,6 +1430,7 @@ def _write_blocks(
 def _write_web_constructs(
     conn: sqlite3.Connection,
     session: ParsedSession,
+    messages: list[ParsedMessage],
     *,
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
@@ -1434,7 +1441,10 @@ def _write_web_constructs(
     provider = _enum_value(session.source_name)
     rows: list[tuple[object, ...]] = []
     block_ids: list[str] = []
-    for fallback_position, message in enumerate(session.messages):
+    # Iterate the (possibly lineage-sliced) tail messages, not session.messages —
+    # a web construct on an inherited-prefix message would FK-violate against rows
+    # that were never written under this session (#2467 audit).
+    for fallback_position, message in enumerate(messages):
         message_id = _message_id(
             session_id,
             message,
@@ -1551,6 +1561,7 @@ def _replace_full_session_messages_and_blocks(
         _write_web_constructs(
             conn,
             session,
+            messages,
             duplicate_native_ids=duplicate_native_ids,
         )
         add_timing("web_constructs", t0)
@@ -2918,12 +2929,18 @@ def _parsed_message_signature(message: ParsedMessage) -> str:
     role = _enum_value(message.role) or ""
     fields: list[tuple[str, str, str, str]] = []
     for block in _message_blocks(message):
+        # Serialize tool_input through the same `_json_dumps` the writer uses to
+        # store it, then canonicalize — so the parsed-side signature matches the
+        # DB-side signature (which canonicalizes the stored JSON string). Calling
+        # `_canonical_json` on the raw value would mis-handle scalar strings, which
+        # it treats as JSON to re-parse (#2467 audit M6).
+        tool_input = _canonical_json(_json_dumps(block.tool_input)) if block.tool_input is not None else "null"
         fields.append(
             (
                 _block_type(block).value,
                 block.text or "",
                 block.tool_name or "",
-                _canonical_json(block.tool_input) if block.tool_input is not None else "null",
+                tool_input,
             )
         )
     return _message_signature_from_blocks(role, fields)

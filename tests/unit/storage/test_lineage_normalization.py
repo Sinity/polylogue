@@ -192,6 +192,67 @@ def test_child_before_parent_is_reextracted_on_resolution(tmp_path: Path) -> Non
     assert composed == ["hello", "hi there", "child diverges here", "child reply"]
 
 
+def test_parent_reingest_keeps_child_composing(tmp_path: Path) -> None:
+    """Regression for the FK-cascade bug (#2467 audit H1): re-ingesting a parent
+    via full replace must NOT null the child's branch point. branch_point_message_id
+    is deliberately not a FK, so the deterministic message id survives the parent's
+    DELETE+re-INSERT and the child keeps composing the full transcript."""
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="parent",
+        title="parent",
+        messages=[
+            _msg("p0", Role.USER, "hello", 0),
+            _msg("p1", Role.ASSISTANT, "hi there", 1),
+        ],
+    )
+    write_parsed_session_to_archive(conn, parent)
+
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="child",
+        title="child",
+        parent_session_provider_id="parent",
+        branch_type=BranchType.FORK,
+        messages=[
+            _msg("c0", Role.USER, "hello", 0),
+            _msg("c1", Role.ASSISTANT, "hi there", 1),
+            _msg("cx", Role.USER, "child diverges", 2),
+        ],
+    )
+    child_id = write_parsed_session_to_archive(conn, child)
+    assert [
+        "".join(b.text or "" for b in m.blocks) for m in read_archive_session_envelope(conn, child_id).messages
+    ] == ["hello", "hi there", "child diverges"]
+
+    # Parent grows and is re-ingested (full replace) — the common production case.
+    parent_grown = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="parent",
+        title="parent",
+        messages=[
+            _msg("p0", Role.USER, "hello", 0),
+            _msg("p1", Role.ASSISTANT, "hi there", 1),
+            _msg("p2", Role.USER, "parent keeps going", 2),
+        ],
+    )
+    write_parsed_session_to_archive(conn, parent_grown)
+
+    # The child's branch point survived; it still composes the full transcript.
+    link = conn.execute(
+        "SELECT inheritance, branch_point_message_id FROM session_links WHERE src_session_id = ?",
+        (child_id,),
+    ).fetchone()
+    assert link["inheritance"] == "prefix-sharing"
+    assert link["branch_point_message_id"] is not None
+    assert [
+        "".join(b.text or "" for b in m.blocks) for m in read_archive_session_envelope(conn, child_id).messages
+    ] == ["hello", "hi there", "child diverges"]
+
+
 def test_spawned_fresh_child_keeps_all_messages(tmp_path: Path) -> None:
     """A child that shares no leading prefix with its parent (a fresh Task
     subagent) is stored whole; the edge is 'spawned-fresh' with no branch

@@ -33,7 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 13
+INDEX_SCHEMA_VERSION = 14
 
 INDEX_DDL = f"""
 CREATE TABLE IF NOT EXISTS sessions (
@@ -126,6 +126,13 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_session_position
 ON messages(session_id, position, variant_index);
+
+-- Serves the sort-key ordering used by iter_messages keyset pagination,
+-- get_messages_batch, and get_messages_paginated. Without it those reads filter
+-- by session_id (via the position index) then sort the whole session in a temp
+-- B-tree on every chunk (#2467 perf audit).
+CREATE INDEX IF NOT EXISTS idx_messages_session_sortkey
+ON messages(session_id, occurred_at_ms, message_id);
 
 CREATE INDEX IF NOT EXISTS idx_messages_parent
 ON messages(parent_message_id)
@@ -321,7 +328,11 @@ CREATE TABLE IF NOT EXISTS session_links (
     -- child inherited, and `inheritance` records whether the child shares the
     -- parent's leading prefix ('prefix-sharing') or is a fresh spawn that merely
     -- references the parent ('spawned-fresh'). NULL until the parent is resolved.
-    branch_point_message_id TEXT REFERENCES messages(message_id) ON DELETE SET NULL,
+    -- Deliberately NOT a FK: message_id is deterministic, so a parent full-replace
+    -- re-ingest re-creates the same id. An `ON DELETE SET NULL` FK would instead
+    -- null this during the parent's DELETE step and permanently break the child's
+    -- composition (the cascade fires before the re-INSERT) — see #2467 audit.
+    branch_point_message_id TEXT,
     inheritance             TEXT CHECK(inheritance IN ('prefix-sharing', 'spawned-fresh') OR inheritance IS NULL),
     status                  TEXT CHECK(status IN ('repaired', 'quarantined') OR status IS NULL),
     method                  TEXT,
