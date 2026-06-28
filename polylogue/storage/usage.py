@@ -979,13 +979,18 @@ def _provider_cumulative_usage(conn: sqlite3.Connection, origin: str | None) -> 
         JOIN sessions s ON s.session_id = e.session_id
         {_where_origin(origin, table_alias="s")}
           {"AND" if origin is not None else "WHERE"} ({total_predicate})
-        ORDER BY s.origin, e.session_id, model_key, e.position
+        ORDER BY s.origin, e.session_id, e.position
         """,
         _origin_args(origin),
     ).fetchall()
-    latest: dict[tuple[str, str, str], UsageCounters] = {}
+    # The cumulative total_* is session-global, so dedupe to one latest
+    # cumulative per (origin, session) — the highest-position event — rather
+    # than per model. Partitioning by model and summing double-counts because
+    # each model's latest cumulative already includes prior models' tokens
+    # (#2472). ORDER BY ... e.position makes the last write per session win.
+    latest: dict[tuple[str, str], UsageCounters] = {}
     for row in rows:
-        latest[(str(row["origin"]), str(row["session_id"]), str(row["model_key"]))] = UsageCounters.from_row(
+        latest[(str(row["origin"]), str(row["session_id"]))] = UsageCounters.from_row(
             row,
             input_key="input_tokens",
             output_key="output_tokens",
@@ -995,7 +1000,7 @@ def _provider_cumulative_usage(conn: sqlite3.Connection, origin: str | None) -> 
             total_key="total_tokens",
         )
     by_origin: dict[str, UsageCounters] = defaultdict(UsageCounters)
-    for (origin_name, _session_id, _model_key), counters in latest.items():
+    for (origin_name, _session_id), counters in latest.items():
         by_origin[origin_name] = by_origin[origin_name].plus(counters)
     return dict(by_origin)
 
