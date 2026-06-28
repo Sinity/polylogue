@@ -68,6 +68,11 @@ class ParsedContentBlock(BaseModel):
     tool_input: Mapping[str, object] | None = None
     media_type: str | None = None
     metadata: dict[str, object] | None = None
+    # Structured tool-result outcome (keystone): captured from the source's
+    # own outcome fields (Claude toolUseResult.is_error, command exit codes)
+    # so in-session outcomes are readable instead of regex-guessed from text.
+    is_error: bool | None = None
+    exit_code: int | None = None
     web_constructs: list[ParsedWebConstruct] = Field(default_factory=list)
 
     @field_validator("type", mode="before")

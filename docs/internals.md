@@ -106,6 +106,17 @@ schema shape:
 - Schema bumps are deletes-then-defines, never deltas. A schema change
   edits the owning tier DDL/version and documents the re-ingest expectation.
   No upgrade helpers are added for the bump.
+- Index schema version 16 captures structured tool-result outcomes (the
+  "keystone"). `blocks` gains `tool_result_is_error` (0/1, nullable) and
+  `tool_result_exit_code` (nullable INTEGER); the `actions` view exposes them
+  as `is_error` / `exit_code` alongside the paired tool_use row. Previously the
+  source's own outcome fields (Claude `is_error` on tool_result content, Codex
+  `function_call_output.metadata.exit_code`) were dropped at parse, forcing
+  in-session outcomes ("tests passed", "command failed") to be regex-guessed
+  from result text. Now they are read from structure: NULL means unknown
+  (default), never a fabricated positive. This is additive — existing rows
+  read NULL until rebuilt. Rebuild from source evidence
+  (`polylogue ops reset --database && polylogued run`).
 - Index schema version 15 makes `idx_messages_session_sortkey` an expression
   index — `(session_id, (occurred_at_ms IS NULL), occurred_at_ms, message_id)`
   (#2475 perf audit). The keyset/paginated message reads order by

@@ -347,6 +347,24 @@ def _codex_tool_message(record: dict[str, object], *, index: int, position: int)
         output_text = output if isinstance(output, str) else json.dumps(output, sort_keys=True) if output else None
         if not tool_id and not output_text:
             return None
+        # Keystone: Codex shell/function results wrap the payload as
+        # {"output": "...", "metadata": {"exit_code": N, ...}}. Capture the
+        # structured exit code so outcomes are readable instead of inferred.
+        exit_code: int | None = None
+        is_error: bool | None = None
+        parsed_output: object = output
+        if isinstance(output, str):
+            try:
+                parsed_output = json.loads(output)
+            except (ValueError, TypeError):
+                parsed_output = None
+        if isinstance(parsed_output, dict):
+            metadata = parsed_output.get("metadata")
+            if isinstance(metadata, dict):
+                raw_exit = metadata.get("exit_code")
+                if isinstance(raw_exit, int) and not isinstance(raw_exit, bool):
+                    exit_code = raw_exit
+                    is_error = raw_exit != 0
         return ParsedMessage(
             provider_message_id=str(payload.get("id") or tool_id or f"function-call-output-{index}"),
             role=Role.TOOL,
@@ -360,6 +378,8 @@ def _codex_tool_message(record: dict[str, object], *, index: int, position: int)
                     type=BlockType.TOOL_RESULT,
                     tool_id=str(tool_id) if tool_id else None,
                     text=output_text,
+                    is_error=is_error,
+                    exit_code=exit_code,
                 )
             ],
         )

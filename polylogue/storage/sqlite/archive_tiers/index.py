@@ -33,7 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 15
+INDEX_SCHEMA_VERSION = 16
 
 INDEX_DDL = f"""
 CREATE TABLE IF NOT EXISTS sessions (
@@ -179,6 +179,8 @@ CREATE TABLE IF NOT EXISTS blocks (
     semantic_type   TEXT,
     media_type      TEXT,
     language        TEXT,
+    tool_result_is_error  INTEGER CHECK (tool_result_is_error IN (0, 1)),
+    tool_result_exit_code INTEGER,
     tool_command    TEXT GENERATED ALWAYS AS (json_extract(tool_input, '$.command')) VIRTUAL,
     tool_path       TEXT GENERATED ALWAYS AS (
                         COALESCE(json_extract(tool_input, '$.file_path'), json_extract(tool_input, '$.path'))
@@ -282,6 +284,8 @@ SELECT
     u.tool_path,
     u.tool_input,
     r.text AS output_text,
+    r.tool_result_is_error AS is_error,
+    r.tool_result_exit_code AS exit_code,
     r.block_id AS tool_result_block_id
 FROM blocks u
 LEFT JOIN blocks r

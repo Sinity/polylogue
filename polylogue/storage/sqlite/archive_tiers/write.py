@@ -1431,14 +1431,17 @@ def _write_blocks(
                     _sqlite_text(_semantic_type(block)),
                     _sqlite_text(block.media_type),
                     _sqlite_text(_block_language(block)),
+                    _sqlite_bool(getattr(block, "is_error", None)),
+                    getattr(block, "exit_code", None),
                 )
 
     conn.executemany(
         """
         INSERT OR REPLACE INTO blocks (
             message_id, session_id, position, block_type, text, tool_name,
-            tool_id, tool_input, semantic_type, media_type, language
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            tool_id, tool_input, semantic_type, media_type, language,
+            tool_result_is_error, tool_result_exit_code
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows(),
     )
@@ -3494,6 +3497,13 @@ def _sqlite_text(value: str | None) -> str | None:
     if not _SURROGATE_RE.search(value):
         return value
     return _SURROGATE_RE.sub("\ufffd", value)
+
+
+def _sqlite_bool(value: bool | None) -> int | None:
+    """Map an optional bool to SQLite 0/1, preserving None (unknown)."""
+    if value is None:
+        return None
+    return 1 if value else 0
 
 
 def _sqlite_json_value(value: object) -> object:
