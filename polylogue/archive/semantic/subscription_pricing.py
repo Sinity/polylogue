@@ -82,20 +82,25 @@ class ModelCreditRate:
 
 
 MODEL_CREDIT_RATES: dict[str, ModelCreditRate] = {
+    # Subscription credits are "billed at API rates"
+    # (https://docs.anthropic.com/en/docs/claude-code/pricing), and every Claude
+    # model prices output at 5x input ($15/$75 Opus, $3/$15 Sonnet, $0.80/$4
+    # Haiku). So output_credits must be 5x input_credits; cache writes (5-min)
+    # bill at the input rate, cache reads are free on subscription plans.
     "claude-opus-4-6": ModelCreditRate(
-        "anthropic", "claude-opus-4-6", 10, 10, cache_read_credits=0, cache_write_credits=10
+        "anthropic", "claude-opus-4-6", 10, 50, cache_read_credits=0, cache_write_credits=10
     ),
     "claude-opus-4-5": ModelCreditRate(
-        "anthropic", "claude-opus-4-5", 10, 10, cache_read_credits=0, cache_write_credits=10
+        "anthropic", "claude-opus-4-5", 10, 50, cache_read_credits=0, cache_write_credits=10
     ),
     "claude-sonnet-4-6": ModelCreditRate(
-        "anthropic", "claude-sonnet-4-6", 6, 6, cache_read_credits=0, cache_write_credits=6
+        "anthropic", "claude-sonnet-4-6", 6, 30, cache_read_credits=0, cache_write_credits=6
     ),
     "claude-sonnet-4-5": ModelCreditRate(
-        "anthropic", "claude-sonnet-4-5", 6, 6, cache_read_credits=0, cache_write_credits=6
+        "anthropic", "claude-sonnet-4-5", 6, 30, cache_read_credits=0, cache_write_credits=6
     ),
     "claude-haiku-4-5": ModelCreditRate(
-        "anthropic", "claude-haiku-4-5", 2, 2, cache_read_credits=0, cache_write_credits=2
+        "anthropic", "claude-haiku-4-5", 2, 10, cache_read_credits=0, cache_write_credits=2
     ),
 }
 
