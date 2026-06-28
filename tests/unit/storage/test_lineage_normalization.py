@@ -26,7 +26,12 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     read_archive_session_envelope,
     write_parsed_session_to_archive,
 )
-from polylogue.storage.sqlite.queries.message_query_reads import get_messages
+from polylogue.storage.sqlite.queries.message_query_reads import (
+    get_messages,
+    get_messages_batch,
+    get_messages_paginated,
+    iter_messages,
+)
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -300,3 +305,79 @@ def test_spawned_fresh_child_keeps_all_messages(tmp_path: Path) -> None:
     conn.close()
     composed = asyncio.run(_read_texts(db, child_id))
     assert composed == ["fresh subagent prompt", "fresh subagent answer"]
+
+
+def _build_parent_and_fork(db: Path) -> tuple[str, str]:
+    """Persist a parent and a prefix-sharing fork; return (parent_id, child_id).
+
+    The fork replays the parent's first two messages then diverges, so its full
+    logical transcript is 4 messages while only 2 (its tail) are physically
+    stored under the child.
+    """
+    conn = _connect(db)
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="parent",
+        title="parent",
+        messages=[
+            _msg("p0", Role.USER, "hello", 0),
+            _msg("p1", Role.ASSISTANT, "hi there", 1),
+            _msg("p2", Role.USER, "parent continues alone", 2),
+        ],
+    )
+    parent_id = write_parsed_session_to_archive(conn, parent)
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="child",
+        title="child",
+        parent_session_provider_id="parent",
+        branch_type=BranchType.FORK,
+        messages=[
+            _msg("c0", Role.USER, "hello", 0),
+            _msg("c1", Role.ASSISTANT, "hi there", 1),
+            _msg("cx", Role.USER, "child diverges here", 2),
+            _msg("cy", Role.ASSISTANT, "child reply", 3),
+        ],
+    )
+    child_id = write_parsed_session_to_archive(conn, child)
+    conn.close()
+    return parent_id, child_id
+
+
+def test_fork_composes_on_paginated_batch_and_iter(tmp_path: Path) -> None:
+    """All read surfaces compose a fork's full logical transcript, not the
+    tail-only physical rows (#2470)."""
+    db = tmp_path / "index.db"
+    _parent_id, child_id = _build_parent_and_fork(db)
+    full = ["hello", "hi there", "child diverges here", "child reply"]
+
+    async def _exercise() -> None:
+        conn = await aiosqlite.connect(db)
+        try:
+            conn.row_factory = aiosqlite.Row
+
+            # Paginated: total is the composed length; pages slice the composed list.
+            page1, total = await get_messages_paginated(conn, child_id, limit=2, offset=0)
+            assert total == 4
+            assert [r.text for r in page1] == full[:2]
+            page2, total2 = await get_messages_paginated(conn, child_id, limit=2, offset=2)
+            assert total2 == 4
+            assert [r.text for r in page2] == full[2:]
+
+            # Batch: the child's entry carries the composed transcript.
+            result, all_messages = await get_messages_batch(conn, [child_id])
+            assert [r.text for r in result[child_id]] == full
+            # all_messages must include every composed record for block hydration.
+            assert {r.message_id for r in result[child_id]} <= {r.message_id for r in all_messages}
+
+            # Streaming: iter_messages yields the composed transcript in order.
+            streamed = [r.text async for r in iter_messages(conn, child_id)]
+            assert streamed == full
+
+            # limit is honored over the composed stream.
+            limited = [r.text async for r in iter_messages(conn, child_id, limit=3)]
+            assert limited == full[:3]
+        finally:
+            await conn.close()
+
+    asyncio.run(_exercise())
