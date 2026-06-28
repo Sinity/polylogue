@@ -139,6 +139,41 @@ async def get_messages(
     return prefix + own
 
 
+def _filter_composed(
+    records: list[MessageRecord],
+    *,
+    message_role: MessageRoleFilter = (),
+    message_type: MessageTypeName | None = None,
+    sort_key_since: float | None = None,
+    sort_key_until: float | None = None,
+) -> list[MessageRecord]:
+    """Apply the SQL-level read filters in Python over an already-composed
+    lineage transcript.
+
+    Composition (#2467) spans two sessions, so these filters cannot be pushed
+    into the per-session SQL. Forks are a minority of sessions, so filtering the
+    composed list in memory keeps the common (non-fork) read paths on their fast
+    SQL/keyset queries while making fork reads return the full logical transcript
+    instead of a tail-only truncation (#2470). The predicates mirror the SQL:
+    a NULL ``sort_key`` is excluded whenever a ``since``/``until`` bound is set,
+    exactly as ``m.occurred_at_ms >= ?`` drops NULL rows.
+    """
+    role_set = set(message_role) if message_role else None
+    type_match = validate_message_type_filter(message_type) if message_type else None
+    out: list[MessageRecord] = []
+    for record in records:
+        if role_set is not None and record.role not in role_set:
+            continue
+        if type_match is not None and record.message_type != type_match:
+            continue
+        if sort_key_since is not None and (record.sort_key is None or record.sort_key < sort_key_since):
+            continue
+        if sort_key_until is not None and (record.sort_key is None or record.sort_key > sort_key_until):
+            continue
+        out.append(record)
+    return out
+
+
 async def get_messages_batch(
     conn: aiosqlite.Connection,
     session_ids: list[str],
@@ -155,45 +190,67 @@ async def get_messages_batch(
     result: dict[str, list[MessageRecord]] = {cid: [] for cid in session_ids}
     result.update({cid: [] for cid in resolved_ids})
     all_messages: list[MessageRecord] = []
-    placeholders = ",".join("?" for _ in resolved_ids)
-    query = f"""
-        SELECT {_MESSAGE_RECORD_SELECT}
-        FROM messages m
-        JOIN sessions s ON s.session_id = m.session_id
-        WHERE m.session_id IN ({placeholders})
-    """
-    params: list[str | float] = list(resolved_ids)
 
-    role_values = message_role_sql_values(message_role)
-    if role_values:
-        role_placeholders = ",".join("?" for _ in role_values)
-        query += f" AND m.role IN ({role_placeholders})"
-        params.extend(role_values)
+    # Prefix-sharing children store only their divergent tail; the plain SQL
+    # IN-query below would return that truncated tail. Compose them per-session
+    # instead so a batched fork read carries its full logical transcript (#2470).
+    fork_ids = {rid for rid in dict.fromkeys(resolved_ids) if await _prefix_sharing_edge(conn, rid) is not None}
+    sql_ids = [rid for rid in resolved_ids if rid not in fork_ids]
 
-    if sort_key_since is not None:
-        query += " AND m.occurred_at_ms >= ?"
-        params.append(sort_key_since * 1000.0)
+    if sql_ids:
+        placeholders = ",".join("?" for _ in sql_ids)
+        query = f"""
+            SELECT {_MESSAGE_RECORD_SELECT}
+            FROM messages m
+            JOIN sessions s ON s.session_id = m.session_id
+            WHERE m.session_id IN ({placeholders})
+        """
+        params: list[str | float] = list(sql_ids)
 
-    if sort_key_until is not None:
-        query += " AND m.occurred_at_ms <= ?"
-        params.append(sort_key_until * 1000.0)
+        role_values = message_role_sql_values(message_role)
+        if role_values:
+            role_placeholders = ",".join("?" for _ in role_values)
+            query += f" AND m.role IN ({role_placeholders})"
+            params.extend(role_values)
 
-    query += " ORDER BY (m.occurred_at_ms IS NULL), m.occurred_at_ms, m.message_id"
-    cursor = await conn.execute(
-        query,
-        tuple(params),
-    )
-    rows = await cursor.fetchall()
+        if sort_key_since is not None:
+            query += " AND m.occurred_at_ms >= ?"
+            params.append(sort_key_since * 1000.0)
 
-    for row in rows:
-        cid = row["session_id"]
-        msg = _row_to_message(row)
-        if cid in result:
-            result[cid].append(msg)
+        if sort_key_until is not None:
+            query += " AND m.occurred_at_ms <= ?"
+            params.append(sort_key_until * 1000.0)
+
+        query += " ORDER BY (m.occurred_at_ms IS NULL), m.occurred_at_ms, m.message_id"
+        cursor = await conn.execute(
+            query,
+            tuple(params),
+        )
+        rows = await cursor.fetchall()
+
+        for row in rows:
+            cid = row["session_id"]
+            msg = _row_to_message(row)
+            if cid in result:
+                result[cid].append(msg)
+            for requested, resolved in resolved_pairs:
+                if requested != cid and resolved == cid and requested in result:
+                    result[requested].append(msg)
+            all_messages.append(msg)
+
+    for fork_id in fork_ids:
+        composed = _filter_composed(
+            await get_messages(conn, fork_id),
+            message_role=message_role,
+            sort_key_since=sort_key_since,
+            sort_key_until=sort_key_until,
+        )
         for requested, resolved in resolved_pairs:
-            if requested != cid and resolved == cid and requested in result:
-                result[requested].append(msg)
-        all_messages.append(msg)
+            if resolved == fork_id and requested in result:
+                result[requested] = list(composed)
+        if fork_id in result:
+            result[fork_id] = list(composed)
+        all_messages.extend(composed)
 
     return result, all_messages
 
@@ -213,6 +270,19 @@ async def get_messages_paginated(
     count of messages matching the SQL-level filters (before limit/offset).
     """
     session_id = await _resolve_session_id(conn, session_id)
+
+    # A prefix-sharing child stores only its divergent tail, so paginating its
+    # own ``messages`` rows returns a truncated transcript. Compose the full
+    # lineage view, filter in Python, and slice it for offset/limit (#2470).
+    # ``total`` is the filtered composed length so page math stays consistent.
+    if await _prefix_sharing_edge(conn, session_id) is not None:
+        composed = _filter_composed(
+            await get_messages(conn, session_id),
+            message_role=message_role,
+            message_type=message_type,
+        )
+        return composed[offset : offset + limit], len(composed)
+
     query = f"""
         SELECT {_MESSAGE_RECORD_SELECT}
         FROM messages m
@@ -275,6 +345,21 @@ async def iter_messages(
     session_id = await _resolve_session_id(conn, session_id)
     yielded = 0
     effective_roles = message_roles or ((Role.USER, Role.ASSISTANT) if dialogue_only else ())
+
+    # Keyset streaming is per-session, but a prefix-sharing child's logical
+    # transcript spans its parent, so the cursor cannot stream across the
+    # lineage boundary. Compose the full transcript and yield from it for forks
+    # (a minority of sessions); plain sessions keep the linear keyset stream
+    # below (#2470).
+    if await _prefix_sharing_edge(conn, session_id) is not None:
+        composed = _filter_composed(await get_messages(conn, session_id), message_role=effective_roles)
+        for record in composed:
+            if limit is not None and yielded >= limit:
+                return
+            yield record
+            yielded += 1
+        return
+
     role_values = message_role_sql_values(effective_roles)
 
     # Keyset cursor of the previous chunk's final row. ``have_cursor``
