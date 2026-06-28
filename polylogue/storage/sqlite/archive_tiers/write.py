@@ -2323,11 +2323,19 @@ def _provider_usage_disjoint_lanes(
 def _aggregate_provider_usage_into_model_usage(conn: sqlite3.Connection, session_id: str) -> None:
     """Fold provider-reported token-count totals into model usage rows.
 
-    Codex ``token_count`` rows may carry cumulative ``total_token_usage``. For
-    those rows we take the latest total per model instead of summing the whole
-    event stream. Older/simple token-count rows only expose request-scoped
-    ``last_token_usage``; those are summed per model. Unknown-model events only
-    fall back to a session model when exactly one model row exists, keeping
+    Codex ``token_count`` rows carry a *session-global* cumulative running total
+    in their ``total_*`` columns — the counter spans the whole session, not a
+    single model. So the cumulative is taken as one session-wide latest value
+    (the highest-position ``token_count`` row that carries any ``total_*``),
+    attributed to the model named on that row, and written as a single rollup.
+    Partitioning the cumulative by model and summing would double-count, because
+    each model's "latest cumulative" already includes every prior model's
+    tokens (#2472).
+
+    Older/simple token-count rows only expose request-scoped ``last_token_usage``
+    (Claude-style per-message per-model deltas); when no cumulative ``total_*``
+    appears at all, those are summed per model. Unknown-model events only fall
+    back to a session model when exactly one model row exists, keeping
     multi-model sessions auditable rather than guessed.
     """
 
@@ -2357,7 +2365,13 @@ def _aggregate_provider_usage_into_model_usage(conn: sqlite3.Connection, session
         if row[0] and str(row[0]).strip()
     ]
 
-    latest_total_by_model: dict[str, tuple[int, int, int, int, int, int]] = {}
+    # The cumulative is session-global, so we keep a single latest cumulative
+    # for the whole session (rows are ordered by position, so the last row that
+    # carries any total_* wins = highest position) attributed to the model named
+    # on that row. summed_last_* stays per-model for Claude-style per-message
+    # reporting, and is only used when no cumulative total appears at all.
+    latest_total: tuple[int, int, int, int, int, int] | None = None
+    latest_total_model = ""
     summed_last_by_model: dict[str, list[int]] = {}
 
     for row in rows:
@@ -2381,7 +2395,7 @@ def _aggregate_provider_usage_into_model_usage(conn: sqlite3.Connection, session
         total_tokens = int(row[14] or 0)
 
         if total_input or total_output or total_cache_read or total_cache_write or total_reasoning or total_tokens:
-            latest_total_by_model[model_name] = (
+            latest_total = (
                 total_input,
                 total_output,
                 total_cache_read,
@@ -2389,6 +2403,7 @@ def _aggregate_provider_usage_into_model_usage(conn: sqlite3.Connection, session
                 total_reasoning,
                 total_tokens,
             )
+            latest_total_model = model_name
             continue
 
         if last_input or last_output or last_cache_read or last_cache_write or last_reasoning or last_total:
@@ -2399,23 +2414,25 @@ def _aggregate_provider_usage_into_model_usage(conn: sqlite3.Connection, session
             bucket[3] += last_cache_write
             bucket[4] += last_reasoning
 
-    for model_name, totals in latest_total_by_model.items():
+    if latest_total is not None:
+        # Session-global cumulative: one rollup for the latest model. The
+        # cumulative already subsumes every per-request last_*, so summed_last
+        # rows are intentionally not written (writing them too double-counts).
         lane_input, lane_output, lane_cache_read, lane_cache_write = _provider_usage_disjoint_lanes(
-            totals[0], totals[1], totals[2], totals[3]
+            latest_total[0], latest_total[1], latest_total[2], latest_total[3]
         )
         _upsert_provider_usage_model_rollup(
             conn,
             session_id,
-            model_name,
+            latest_total_model,
             input_tokens=lane_input,
             output_tokens=lane_output,
             cache_read_tokens=lane_cache_read,
             cache_write_tokens=lane_cache_write,
         )
+        return
 
     for model_name, summed_totals in summed_last_by_model.items():
-        if model_name in latest_total_by_model:
-            continue
         lane_input, lane_output, lane_cache_read, lane_cache_write = _provider_usage_disjoint_lanes(
             summed_totals[0], summed_totals[1], summed_totals[2], summed_totals[3]
         )
@@ -2457,7 +2474,13 @@ def _aggregate_appended_provider_usage_into_model_usage(
         return
 
     existing_models = _provider_usage_existing_models(conn, session_id)
-    latest_total_by_model: dict[str, tuple[int, int, int, int, int, int]] = {}
+    # The cumulative total_* is session-global (see the full-write aggregator).
+    # The highest-position appended row that carries any total_* therefore holds
+    # the authoritative running total for the *whole* session, including rows
+    # before start_position, so we keep one session-wide latest cumulative
+    # rather than partitioning it per model (#2472).
+    latest_total: tuple[int, int, int, int, int, int] | None = None
+    latest_total_model = ""
     summed_last_by_model: dict[str, list[int]] = {}
 
     for row in rows:
@@ -2479,7 +2502,7 @@ def _aggregate_appended_provider_usage_into_model_usage(
         total_tokens = int(row[13] or 0)
 
         if total_input or total_output or total_cache_read or total_cache_write or total_reasoning or total_tokens:
-            latest_total_by_model[model_name] = (
+            latest_total = (
                 total_input,
                 total_output,
                 total_cache_read,
@@ -2487,6 +2510,7 @@ def _aggregate_appended_provider_usage_into_model_usage(
                 total_reasoning,
                 total_tokens,
             )
+            latest_total_model = model_name
             continue
 
         if last_input or last_output or last_cache_read or last_cache_write or last_reasoning or last_total:
@@ -2497,22 +2521,29 @@ def _aggregate_appended_provider_usage_into_model_usage(
             bucket[3] += last_cache_write
             bucket[4] += last_reasoning
 
-    for model_name, totals in latest_total_by_model.items():
+    if latest_total is not None:
+        # Overwrite the single session-global cumulative rollup. If the model
+        # switched since a prior append window, the earlier model's cumulative
+        # rollup is now stale (the new cumulative already subsumes it); clear
+        # those stale origin_reported cumulative rows so they are not summed
+        # back in alongside the new latest.
         lane_input, lane_output, lane_cache_read, lane_cache_write = _provider_usage_disjoint_lanes(
-            totals[0], totals[1], totals[2], totals[3]
+            latest_total[0], latest_total[1], latest_total[2], latest_total[3]
         )
         _upsert_provider_usage_model_rollup(
             conn,
             session_id,
-            model_name,
+            latest_total_model,
             input_tokens=lane_input,
             output_tokens=lane_output,
             cache_read_tokens=lane_cache_read,
             cache_write_tokens=lane_cache_write,
         )
+        _clear_stale_cumulative_rollups(conn, session_id, keep_model=latest_total_model)
+        return
 
     for model_name, summed_totals in summed_last_by_model.items():
-        if model_name in latest_total_by_model or _provider_usage_has_cumulative_total(conn, session_id, model_name):
+        if _provider_usage_has_cumulative_total(conn, session_id, model_name):
             continue
         lane_input, lane_output, lane_cache_read, lane_cache_write = _provider_usage_disjoint_lanes(
             summed_totals[0], summed_totals[1], summed_totals[2], summed_totals[3]
@@ -2567,6 +2598,34 @@ def _provider_usage_has_cumulative_total(conn: sqlite3.Connection, session_id: s
         (session_id, model_name),
     ).fetchone()
     return row is not None
+
+
+def _clear_stale_cumulative_rollups(conn: sqlite3.Connection, session_id: str, *, keep_model: str) -> None:
+    """Zero origin-reported token rollups for all models except ``keep_model``.
+
+    The Codex cumulative total is session-global, so exactly one rollup row
+    should carry it. When an append window's latest cumulative is attributed to
+    a different model than a previous window, the earlier model's rollup still
+    holds a (now-subsumed) cumulative; left in place it would be summed back in
+    on read. This resets those stale token counts to zero while keeping the
+    model row itself (#2472).
+    """
+    conn.execute(
+        """
+        UPDATE session_model_usage
+        SET input_tokens = 0,
+            output_tokens = 0,
+            cache_read_tokens = 0,
+            cache_write_tokens = 0,
+            cost_usd = NULL,
+            priced_with = NULL,
+            priced_at_ms = NULL
+        WHERE session_id = ?
+          AND model_name != ?
+          AND cost_provenance = 'origin_reported'
+        """,
+        (session_id, keep_model),
+    )
 
 
 def _upsert_provider_usage_model_rollup(

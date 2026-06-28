@@ -1108,7 +1108,7 @@ def test_provider_usage_events_roll_up_simple_last_usage_when_no_cumulative_tota
     }
 
 
-def test_provider_usage_events_roll_up_multiple_named_models_without_guessing(tmp_path: Path) -> None:
+def test_provider_usage_events_roll_up_session_global_cumulative_to_latest_model(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     session = ParsedSession(
         source_name=Provider.CODEX,
@@ -1153,9 +1153,120 @@ def test_provider_usage_events_roll_up_multiple_named_models_without_guessing(tm
         """,
         (session_id,),
     ).fetchall()
+    # The Codex cumulative total_* is session-global, not per-model. The highest
+    # position token_count row with a resolved model is the o4-mini event (the
+    # final 999/999 row has no model and 2 models exist, so it is not guessed).
+    # Its cumulative already subsumes the earlier gpt-5-codex total, so the
+    # rollup attributes the whole session to o4-mini and leaves gpt-5-codex's
+    # skeleton row at zero rather than summing 100+50 across models (#2472).
     assert [dict(row) for row in rows] == [
-        {"model_name": "gpt-5-codex", "input_tokens": 100, "output_tokens": 20},
+        {"model_name": "gpt-5-codex", "input_tokens": 0, "output_tokens": 0},
         {"model_name": "o4-mini", "input_tokens": 50, "output_tokens": 10},
+    ]
+
+
+def test_provider_usage_cumulative_model_switch_uses_highest_position_not_per_model_sum(
+    tmp_path: Path,
+) -> None:
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-usage-model-switch",
+        models_used=["gpt-5.3-codex", "gpt-5.4"],
+        messages=[],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-5.3-codex",
+                    "total_token_usage": {"input_tokens": 100, "total_tokens": 100},
+                },
+            ),
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-5.3-codex",
+                    "total_token_usage": {"input_tokens": 300, "total_tokens": 300},
+                },
+            ),
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-5.4",
+                    "total_token_usage": {"input_tokens": 500, "total_tokens": 500},
+                },
+            ),
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, session)
+
+    rows = conn.execute(
+        """
+        SELECT model_name, input_tokens
+        FROM session_model_usage
+        WHERE session_id = ?
+        ORDER BY model_name
+        """,
+        (session_id,),
+    ).fetchall()
+    # The cumulative is session-global. The highest-position event (gpt-5.4,
+    # total 500) holds the running total for the WHOLE session, so the rollup is
+    # exactly 500 attributed to gpt-5.4 — NOT 300 (gpt-5.3 latest) + 500 = 800
+    # split across the two models (#2472).
+    assert [dict(row) for row in rows] == [
+        {"model_name": "gpt-5.3-codex", "input_tokens": 0},
+        {"model_name": "gpt-5.4", "input_tokens": 500},
+    ]
+
+
+def test_provider_usage_per_message_last_usage_still_rolls_up_per_model(tmp_path: Path) -> None:
+    # No cumulative total_* anywhere — the Claude-style per-message per-model
+    # delta path. These legitimately sum per model and must not regress to a
+    # single session-global rollup (#2472).
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-usage-per-message",
+        models_used=["model-a", "model-b"],
+        messages=[],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "model": "model-a",
+                    "last_token_usage": {"input_tokens": 10, "output_tokens": 4},
+                },
+            ),
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "model": "model-b",
+                    "last_token_usage": {"input_tokens": 7, "output_tokens": 2},
+                },
+            ),
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, session)
+
+    rows = conn.execute(
+        """
+        SELECT model_name, input_tokens, output_tokens
+        FROM session_model_usage
+        WHERE session_id = ?
+        ORDER BY model_name
+        """,
+        (session_id,),
+    ).fetchall()
+    assert [dict(row) for row in rows] == [
+        {"model_name": "model-a", "input_tokens": 10, "output_tokens": 4},
+        {"model_name": "model-b", "input_tokens": 7, "output_tokens": 2},
     ]
 
 
@@ -1558,6 +1669,78 @@ def test_provider_usage_append_last_usage_does_not_override_cumulative(tmp_path:
         "output_tokens": 40,
         "cost_provenance": "origin_reported",
     }
+
+
+def test_provider_usage_append_model_switch_clears_stale_cumulative(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    first = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-usage-append-switch",
+        models_used=["gpt-5.3-codex", "gpt-5.4"],
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                model_name="gpt-5.3-codex",
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="first")],
+            )
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                source_message_provider_id="m1",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-5.3-codex",
+                    "total_token_usage": {"input_tokens": 300, "total_tokens": 300},
+                },
+            )
+        ],
+    )
+    second = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-usage-append-switch",
+        models_used=["gpt-5.3-codex", "gpt-5.4"],
+        messages=[
+            ParsedMessage(
+                provider_message_id="m2",
+                role=Role.ASSISTANT,
+                model_name="gpt-5.4",
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="second")],
+            )
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                source_message_provider_id="m2",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-5.4",
+                    "total_token_usage": {"input_tokens": 500, "total_tokens": 500},
+                },
+            )
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, first)
+    write_parsed_session_to_archive(conn, second, merge_append=True)
+
+    rows = conn.execute(
+        """
+        SELECT model_name, input_tokens
+        FROM session_model_usage
+        WHERE session_id = ?
+        ORDER BY model_name
+        """,
+        (session_id,),
+    ).fetchall()
+    # The appended window's latest cumulative (gpt-5.4, 500) is the session-
+    # global running total. The earlier gpt-5.3-codex cumulative rollup (300) is
+    # now subsumed and must be cleared, not left to be summed back to 800 (#2472).
+    assert [dict(row) for row in rows] == [
+        {"model_name": "gpt-5.3-codex", "input_tokens": 0},
+        {"model_name": "gpt-5.4", "input_tokens": 500},
+    ]
 
 
 def test_reported_costs_skip_message_token_aggregate_on_plain_append(
