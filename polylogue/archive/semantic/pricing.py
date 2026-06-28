@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import re
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -43,8 +46,8 @@ CostBasis = Literal[
 ]
 
 LITELLM_PRICE_MAP_URL = "https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json"
-CATALOG_PROVENANCE = "polylogue-curated-litellm-shaped-seed"
-CATALOG_EFFECTIVE_DATE = "2026-04-24"
+CATALOG_PROVENANCE = "litellm-model-prices-vendored+polylogue-curated-overrides"
+CATALOG_EFFECTIVE_DATE = "2026-06-27"
 
 
 class PricingModel(BaseModel):
@@ -193,10 +196,11 @@ class ModelPricing:
         )
 
 
-# Curated seed shaped after LiteLLM's model price map. Costs are USD per
-# 1M tokens. This is intentionally small and provenance-marked; provider-
-# reported exact archive costs still take precedence.
-PRICING: dict[str, ModelPricing] = {
+# Hand-verified overrides (USD per 1M tokens). These win over the vendored
+# LiteLLM catalog (built in `_load_litellm_catalog`), so Anthropic cache rates
+# we've checked stay exact even if upstream drifts. Provider-reported exact
+# archive costs still take precedence over both.
+_CURATED_PRICING: dict[str, ModelPricing] = {
     "claude-opus-4-8": ModelPricing("anthropic", 15.0, 75.0, 1.5, 18.75),
     "claude-opus-4-7": ModelPricing("anthropic", 15.0, 75.0, 1.5, 18.75),
     "claude-opus-4-6": ModelPricing("anthropic", 15.0, 75.0, 1.5, 18.75),
@@ -224,6 +228,59 @@ PRICING: dict[str, ModelPricing] = {
     "gemini-2.0-flash": ModelPricing("google", 0.1, 0.4),
     "gemini-2.5-pro": ModelPricing("google", 1.25, 10.0),
 }
+
+
+def _load_litellm_catalog() -> dict[str, ModelPricing]:
+    """Build a ModelPricing catalog from the vendored LiteLLM price map.
+
+    LiteLLM's ``model_prices_and_context_window.json`` covers ~all current
+    models (incl. gpt-5.x / codex / deepseek) with per-token input/output and
+    cache costs. We vendor it at data/litellm_model_prices.json and convert
+    per-token to per-1M. Refresh with::
+
+        curl -sL https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json \
+          -o polylogue/archive/semantic/data/litellm_model_prices.json
+
+    Keys are stored both fully-qualified (``openai/gpt-5.4``) and bare
+    (``gpt-5.4``); on a bare-name collision a non-Azure provider wins so
+    generic lookups get list pricing.
+    """
+    path = Path(__file__).parent / "data" / "litellm_model_prices.json"
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    catalog: dict[str, ModelPricing] = {}
+    for key, entry in raw.items():
+        # Skip the meta spec row and any blank key — an empty key would be a
+        # prefix of every model name and silently price unknown models.
+        if not key or not key.strip() or key == "sample_spec":
+            continue
+        if not isinstance(entry, dict):
+            continue
+        ic = entry.get("input_cost_per_token")
+        oc = entry.get("output_cost_per_token")
+        if not isinstance(ic, (int, float)) or not isinstance(oc, (int, float)):
+            continue
+        provider = str(entry.get("litellm_provider") or "litellm")
+        pricing = ModelPricing(
+            source_name=provider,
+            input_usd_per_1m=float(ic) * 1_000_000,
+            output_usd_per_1m=float(oc) * 1_000_000,
+            cache_read_usd_per_1m=float(entry.get("cache_read_input_token_cost") or 0.0) * 1_000_000,
+            cache_write_usd_per_1m=float(entry.get("cache_creation_input_token_cost") or 0.0) * 1_000_000,
+            source_url=LITELLM_PRICE_MAP_URL,
+            provenance="litellm-model-prices-vendored",
+        )
+        catalog[key] = pricing
+        bare = key.split("/")[-1]
+        if bare and (bare not in catalog or not provider.startswith("azure")):
+            catalog[bare] = pricing
+    return catalog
+
+
+# Full catalog: vendored LiteLLM map as the base, hand-verified entries override.
+PRICING: dict[str, ModelPricing] = {**_load_litellm_catalog(), **_CURATED_PRICING}
 
 _PRICING_KEYS_DESC = tuple(sorted(PRICING, key=len, reverse=True))
 
@@ -276,6 +333,12 @@ def _normalize_model(model: str) -> str:
     lowered = lowered.removeprefix("anthropic/")
     lowered = lowered.removeprefix("google/")
     lowered = lowered.removeprefix("gemini/")
+    # Canonicalize trailing date snapshots to the base model so cost rollups
+    # don't fragment by release date (e.g. gpt-4o-2024-08-06 -> gpt-4o,
+    # claude-opus-4-8-20260101 -> claude-opus-4-8). Done before the exact-match
+    # lookup because the vendored LiteLLM catalog carries dated keys too.
+    lowered = re.sub(r"-\d{4}-\d{2}-\d{2}$", "", lowered)
+    lowered = re.sub(r"-\d{8}$", "", lowered)
     if lowered in PRICING:
         return lowered
     for key in _PRICING_KEYS_DESC:

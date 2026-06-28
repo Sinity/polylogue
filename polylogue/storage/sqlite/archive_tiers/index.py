@@ -33,7 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 11
+INDEX_SCHEMA_VERSION = 13
 
 INDEX_DDL = f"""
 CREATE TABLE IF NOT EXISTS sessions (
@@ -315,6 +315,14 @@ CREATE TABLE IF NOT EXISTS session_links (
     dst_native_id           TEXT NOT NULL,
     link_type               TEXT NOT NULL CHECK ({check("link_type", LinkType)}),
     resolved_dst_session_id TEXT REFERENCES sessions(session_id) ON DELETE SET NULL,
+    -- Lineage normalization (#2467): for a prefix-sharing child (fork / resume /
+    -- spawned subagent / auto-compaction copy) the child stores only its own
+    -- divergent tail; `branch_point_message_id` is the last parent message the
+    -- child inherited, and `inheritance` records whether the child shares the
+    -- parent's leading prefix ('prefix-sharing') or is a fresh spawn that merely
+    -- references the parent ('spawned-fresh'). NULL until the parent is resolved.
+    branch_point_message_id TEXT REFERENCES messages(message_id) ON DELETE SET NULL,
+    inheritance             TEXT CHECK(inheritance IN ('prefix-sharing', 'spawned-fresh') OR inheritance IS NULL),
     status                  TEXT CHECK(status IN ('repaired', 'quarantined') OR status IS NULL),
     method                  TEXT,
     confidence              REAL NOT NULL DEFAULT 1.0 CHECK(confidence BETWEEN 0 AND 1),
@@ -447,7 +455,14 @@ CREATE TABLE IF NOT EXISTS attachments (
     display_name           TEXT,
     media_type             TEXT,
     byte_count             INTEGER NOT NULL DEFAULT 0 CHECK(byte_count >= 0),
-    blob_hash              BLOB NOT NULL CHECK(length(blob_hash) = 32),
+    -- #2468: real SHA-256 of the stored bytes when acquired, else NULL. Previously
+    -- a synthetic hash of attachment metadata was written here, falsely implying a
+    -- blob existed (0 blobs were ever stored). `acquisition_status` records whether
+    -- the bytes were fetched ('acquired'), are known unrecoverable from the source
+    -- polylogue holds ('unavailable'), or have not yet been fetched ('unfetched').
+    blob_hash              BLOB CHECK(blob_hash IS NULL OR length(blob_hash) = 32),
+    acquisition_status     TEXT NOT NULL DEFAULT 'unfetched'
+                               CHECK(acquisition_status IN ('acquired', 'unavailable', 'unfetched')),
     ref_count              INTEGER NOT NULL DEFAULT 0 CHECK(ref_count >= 0)
 ) STRICT;
 

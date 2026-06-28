@@ -1021,14 +1021,33 @@ def test_provider_usage_events_repair_single_model_usage_rollup(tmp_path: Path) 
         """,
         (session_id,),
     ).fetchone()
+    # Codex reports input inclusive of cached and output inclusive of reasoning.
+    # The rollup stores disjoint billing lanes: fresh input = 100 - 20 cached;
+    # output = 30 (reasoning is already inside output, not re-added).
     assert dict(usage) == {
         "model_name": "gpt-5-codex",
-        "input_tokens": 100,
-        "output_tokens": 70,
+        "input_tokens": 80,
+        "output_tokens": 30,
         "cache_read_tokens": 20,
         "cache_write_tokens": 0,
         "cost_provenance": "origin_reported",
     }
+
+
+def test_provider_usage_disjoint_lanes_subtracts_cached_and_does_not_re_add_reasoning() -> None:
+    from polylogue.storage.sqlite.archive_tiers.write import _provider_usage_disjoint_lanes
+
+    # Codex reports input INCLUSIVE of cached and output INCLUSIVE of reasoning.
+    # input=1000 (900 of it cached), output=120 (80 of it reasoning), cache_write=10.
+    fresh_input, output, cache_read, cache_write = _provider_usage_disjoint_lanes(1000, 120, 900, 10)
+    assert (fresh_input, output, cache_read, cache_write) == (100, 120, 900, 10)
+    # Disjoint reconstruction: fresh_input + cache_read == the provider's input,
+    # so the cached portion is billed on exactly one lane, not two.
+    assert fresh_input + cache_read == 1000
+    # Output is passed through unchanged — reasoning is already inside it.
+    assert output == 120
+    # Guard: if cached somehow exceeds input, fresh input clamps to 0 (never negative).
+    assert _provider_usage_disjoint_lanes(20, 10, 30, 0)[0] == 0
 
 
 def test_provider_usage_events_roll_up_simple_last_usage_when_no_cumulative_total(tmp_path: Path) -> None:
@@ -1078,9 +1097,11 @@ def test_provider_usage_events_roll_up_simple_last_usage_when_no_cumulative_tota
         """,
         (session_id,),
     ).fetchone()
+    # Summed last-usage across two events: input 10+20=30 less cached 2 = 28
+    # fresh; output 5+6=11 (reasoning 7 already inside output, not re-added).
     assert dict(usage) == {
-        "input_tokens": 30,
-        "output_tokens": 18,
+        "input_tokens": 28,
+        "output_tokens": 11,
         "cache_read_tokens": 2,
         "cache_write_tokens": 3,
         "cost_provenance": "origin_reported",
@@ -1461,9 +1482,11 @@ def test_provider_usage_append_incremental_rolls_up_last_usage(tmp_path: Path) -
         """,
         (session_id,),
     ).fetchone()
+    # input 10+3=13 (no cached); output 5+4=9 (reasoning 2+1 already inside
+    # output, not re-added).
     assert dict(row) == {
         "input_tokens": 13,
-        "output_tokens": 12,
+        "output_tokens": 9,
         "cache_read_tokens": 0,
         "cache_write_tokens": 0,
         "cost_provenance": "origin_reported",

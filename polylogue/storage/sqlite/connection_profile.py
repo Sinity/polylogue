@@ -71,7 +71,14 @@ class SQLiteConnectionProfile:
 
 
 DB_TIMEOUT = 30
-READ_DB_TIMEOUT = 1
+# Read busy_timeout. WAL readers normally don't block on a writer, but the
+# brief window where a writer holds an exclusive lock (commit + TRUNCATE
+# checkpoint) can exceed a second on a multi-GiB archive. A 1 s timeout turned
+# that transient window into a hard "database is locked" error on interactive
+# read surfaces (e.g. `polylogue find` during daemon ingest); 5 s lets the read
+# wait out the checkpoint and succeed while staying far below the 30 s writer
+# timeout, so reads remain responsive.
+READ_DB_TIMEOUT = 5
 WRITE_CACHE_SIZE_KIB = 131072  # 128 MiB
 DAEMON_WRITE_CACHE_SIZE_KIB = 16384  # 16 MiB
 READ_CACHE_SIZE_KIB = 32768  # 32 MiB

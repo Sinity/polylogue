@@ -55,6 +55,7 @@ def _build_preflight_report(
     max_sessions: int | None = None,
     max_messages: int | None = None,
     max_cost_usd: float | None = None,
+    min_messages: int | None = None,
 ) -> PreflightReport:
     """Build a :class:`PreflightReport` without contacting Voyage."""
     return build_preflight_report(
@@ -63,6 +64,7 @@ def _build_preflight_report(
         max_sessions=max_sessions,
         max_messages=max_messages,
         max_cost_usd=max_cost_usd,
+        min_messages=min_messages,
     )
 
 
@@ -101,6 +103,8 @@ def _render_preflight(env: AppEnv, report: PreflightReport) -> None:
             limits.append(f"{report.max_messages:,} messages")
         if report.max_cost_usd is not None:
             limits.append(f"${report.max_cost_usd:.4f}")
+        if report.min_messages is not None:
+            limits.append(f"≥{report.min_messages:,} msgs/session")
         console.print(f"  Window limit:          {', '.join(limits)}")
         console.print(f"  Window sessions:  {report.pending_sessions:,}")
         console.print(f"  Window messages:       {report.pending_messages:,}")
@@ -207,10 +211,21 @@ def _resolve_user_config_path() -> Path:
 def _write_embedding_section(*, enabled: bool, voyage_api_key: str | None) -> Path:
     """Persist the embedding configuration to the user TOML."""
     path = _resolve_user_config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    existing = path.read_text(encoding="utf-8") if path.exists() else ""
-    updated = _splice_embedding_section(existing, enabled=enabled, voyage_api_key=voyage_api_key)
-    path.write_text(updated, encoding="utf-8")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+        updated = _splice_embedding_section(existing, enabled=enabled, voyage_api_key=voyage_api_key)
+        path.write_text(updated, encoding="utf-8")
+    except OSError as exc:
+        raise click.ClickException(
+            f"Cannot write embedding config to {path}: {exc.strerror or exc}.\n"
+            "This config is read-only — on a Nix/Home-Manager-managed setup it is a\n"
+            "store symlink. To activate embeddings, either:\n"
+            "  - point POLYLOGUE_CONFIG at a writable polylogue.toml and re-run, or\n"
+            "  - set [embedding] enabled = true in your managed config, or\n"
+            "  - skip the config write entirely: `polylogue ops embed backfill` reads\n"
+            "    VOYAGE_API_KEY from the environment and does not require enable."
+        ) from exc
     return path
 
 
@@ -401,6 +416,12 @@ def preflight_subcommand(
     help="Approximate maximum Voyage cost to include in this catch-up window.",
 )
 @click.option(
+    "--min-messages",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Skip sessions with fewer than this many messages (avoid spending budget on trivial/empty sessions).",
+)
+@click.option(
     "--stop-after-seconds",
     type=click.IntRange(min=1),
     default=None,
@@ -433,6 +454,7 @@ def backfill_subcommand(
     max_errors: int | None,
     rebuild: bool,
     yes: bool,
+    min_messages: int | None,
 ) -> None:
     """Run the first embedding batch with per-session cost feedback.
 
@@ -456,6 +478,7 @@ def backfill_subcommand(
         max_sessions=max_sessions,
         max_messages=max_messages,
         max_cost_usd=max_cost_usd,
+        min_messages=min_messages,
     )
     _render_preflight(env, report)
     if not yes and not click.confirm("\nProceed with backfill?", default=False):
@@ -498,6 +521,7 @@ def backfill_subcommand(
         max_sessions=max_sessions,
         stop_after_seconds=stop_after_seconds,
         max_errors=max_errors,
+        min_messages=min_messages,
     )
 
 
@@ -511,6 +535,7 @@ def _run_archive_backfill(
     max_sessions: int | None,
     stop_after_seconds: int | None,
     max_errors: int | None,
+    min_messages: int | None = None,
 ) -> None:
     from polylogue.protocols import VectorProvider
     from polylogue.storage.embeddings.materialization import (
@@ -537,6 +562,7 @@ def _run_archive_backfill(
             rebuild=rebuild,
             max_sessions=max_sessions,
             max_messages=report.max_messages,
+            min_messages=min_messages,
         )
     finally:
         conn.close()

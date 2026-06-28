@@ -112,13 +112,18 @@ def test_provider_usage_report_keeps_events_cumulative_and_rollups_separate(tmp_
         "reasoning_output_tokens": 50,
         "total_tokens": 150,
     }
+    # Derived rollup stores disjoint billing lanes, not the raw cumulative
+    # counters. Output = 10 (reasoning is already inside output, not re-added).
+    # This fixture has cached (30) > input (20) — impossible in real Codex data
+    # but a guard case: fresh input = max(20 - 30, 0) clamps to 0 rather than
+    # going negative.
     assert row.model_rollup_usage.to_dict() == {
-        "input_tokens": 20,
-        "output_tokens": 60,
+        "input_tokens": 0,
+        "output_tokens": 10,
         "cached_input_tokens": 30,
         "cache_write_tokens": 40,
         "reasoning_output_tokens": 0,
-        "total_tokens": 150,
+        "total_tokens": 80,
     }
     assert "zero-token provider events" in " ".join(row.caveats)
     assert row.sample_missing_model_sessions == ("codex-session:provider-usage-report",)

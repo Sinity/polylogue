@@ -537,6 +537,9 @@ def test_archive_tiers_archive_facade_resolves_exact_and_prefix_session_ids(tmp_
     with ArchiveStore.open_existing(root) as facade:
         assert facade.resolve_session_id(session_id) == session_id
         assert facade.resolve_session_id("codex-session:codex-resolve") == session_id
+        # Suffix fallback: a bare native id (no origin prefix) — e.g. the UUID
+        # that appears as a session's source filename — resolves uniquely.
+        assert facade.resolve_session_id("codex-resolve-1") == session_id
 
 
 def test_archive_tiers_archive_facade_filters_since_session_scope(tmp_path: Path) -> None:

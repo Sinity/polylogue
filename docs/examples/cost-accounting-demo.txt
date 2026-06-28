@@ -1,0 +1,32 @@
+========================================================================
+Polylogue cross-provider cost accounting — Codex token semantics demo
+========================================================================
+
+Raw Codex token_count event (cumulative totals as the provider reports them):
+  input_tokens            =  100,000  (includes cached)
+  cached_input_tokens     =   96,000
+  output_tokens           =      300  (includes reasoning)
+  reasoning_output_tokens =      200
+  cache_write_tokens      =    4,000
+
+Materialized session_model_usage row (read back from the real writer):
+  model = gpt-5-codex
+  input_tokens (fresh)    =    4,000   <- 100,000 - 96,000 cached
+  cache_read_tokens       =   96,000
+  output_tokens           =      300   <- reasoning already inside, not re-added
+  cache_write_tokens      =    4,000
+  invariant: fresh_input + cache_read = 100,000 == provider input  ✓ (each token billed once)
+
+Pricing (gpt-5-codex, USD/1M): input 1.25  output 10.0  cache_read 0.125  cache_write 0.0
+
+  Correct cost (disjoint lanes):        $0.020000
+  Pre-fix cost (cached double-billed):  $0.142000
+  Inflation factor:                     7.10x
+
+Why: the 96,000 cached tokens were billed at BOTH the full input rate
+(1.25/M, because they sat inside input_tokens) AND the cache-read rate
+(0.125/M). Subtracting cached out of input bills each token once.
+
+The exact multiple depends on the per-session output/cache mix. Across
+the operator's real 13-month, 199.6B-token Codex corpus the aggregate
+inflation is 7.69x: $76,856 correct vs $591,103 pre-fix (API-list-equiv).

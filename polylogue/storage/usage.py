@@ -691,21 +691,22 @@ def _expected_provider_model_rollups(
             bucket[3] += last_values[3]
             bucket[4] += last_values[4]
     expected: dict[str, dict[str, tuple[int, int, int, int]]] = defaultdict(dict)
+    # Same disjoint-lane mapping the materializer applies, so this audit's
+    # "expected" rollup matches the corrected session_model_usage rows instead
+    # of flagging false drift (cached is subtracted out of input; reasoning is
+    # already inside output). See _provider_usage_disjoint_lanes for the
+    # corpus-verified Codex token semantics.
+    from polylogue.storage.sqlite.archive_tiers.write import _provider_usage_disjoint_lanes
+
     for (session_id, model_name), total_tuple in latest_total_by_model.items():
-        expected[session_id][model_name] = (
-            total_tuple[0],
-            total_tuple[1] + total_tuple[4],
-            total_tuple[2],
-            total_tuple[3],
+        expected[session_id][model_name] = _provider_usage_disjoint_lanes(
+            total_tuple[0], total_tuple[1], total_tuple[2], total_tuple[3]
         )
     for (session_id, model_name), last_totals in summed_last_by_model.items():
         if (session_id, model_name) in latest_total_by_model:
             continue
-        expected[session_id][model_name] = (
-            last_totals[0],
-            last_totals[1] + last_totals[4],
-            last_totals[2],
-            last_totals[3],
+        expected[session_id][model_name] = _provider_usage_disjoint_lanes(
+            last_totals[0], last_totals[1], last_totals[2], last_totals[3]
         )
     return {session_id: dict(rows) for session_id, rows in expected.items()}
 
