@@ -112,6 +112,13 @@ class ParseResult:
         # materialization can refresh derived session-insight rows explicitly.
         self._changed_session_ids: list[str] = []
         self.batch_observations: list[ParseBatchObservation] = []
+        # Per-stage wall-clock totals (seconds) summed across every session
+        # written this run, keyed `<prefix>.<stage>` (e.g.
+        # `append.index.full_replace.fts_insert`). Populated by the archive
+        # write path when a caller threads `stage_timings_s` through; empty
+        # otherwise. Used by `devtools bench ingest-throughput` to attribute
+        # ingest time per stage.
+        self.stage_timings_s: dict[str, float] = {}
 
     @property
     def changed_session_ids(self) -> tuple[str, ...]:

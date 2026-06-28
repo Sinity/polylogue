@@ -31,6 +31,7 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
                     source_path=source_path,
                     acquired_at_ms=acquired_at_ms,
                     source_index=source_index,
+                    stage_timings_s=result.stage_timings_s,
                 )
                 raw_rows_written += 1
                 index_rows_written += 1
