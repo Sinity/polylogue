@@ -155,21 +155,17 @@ surfaces, not in `session_work_events.heuristic_label`.
 
 ## Work Phases
 
-Sessions are segmented into phases based on activity patterns.
+Sessions are segmented into time-gap phases for navigation and rough timeline
+shape. These are intervals, not intent labels.
 
 ```bash
 polylogue analyze insights phases
-polylogue analyze insights phases --kind implementation
+polylogue analyze insights phases --session-id claude-ai:abc123
 ```
 
-Phase kinds:
-
-| Kind | Description |
-|------|-------------|
-| `planning` | Design discussion, requirements gathering |
-| `implementation` | Code writing and editing |
-| `verification` | Testing, linting, debugging |
-| `exploration` | Searching, browsing, reading |
+Phase rows expose start/end time, message range, word count, and tool-count
+evidence. Intent labels such as planning or verification belong on work-event
+heuristics, not on phase intervals.
 
 ## Work Threads
 

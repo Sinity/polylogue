@@ -3289,7 +3289,7 @@ async def test_archive_tiers_api_timeline_insights_read_index_tier(tmp_path: Pat
         )
         phases = await archive.get_session_phase_insights(session_id)
         filtered_phases = await archive.list_session_phase_insights(
-            SessionPhaseInsightQuery(provider=Provider.CODEX.value, kind="coding", limit=10)
+            SessionPhaseInsightQuery(provider=Provider.CODEX.value, limit=10)
         )
 
         assert len(events) == 1

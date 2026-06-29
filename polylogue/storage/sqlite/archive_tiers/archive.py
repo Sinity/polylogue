@@ -797,7 +797,6 @@ class ArchiveStore:
         *,
         session_id: str | None = None,
         provider: str | None = None,
-        kind: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
         limit: int | None = 50,
@@ -813,10 +812,6 @@ class ArchiveStore:
         if origin is not None:
             where.append("s.origin = ?")
             params.append(origin)
-        # `kind` no longer filters: session_phases are time-gap-segmented
-        # intervals with no intent/type classification (the always-constant
-        # phase_type column was dropped in index schema v18). The parameter is
-        # retained for call-signature stability but is intentionally ignored.
         if since_ms is not None:
             where.append("COALESCE(sp.started_at_ms, s.sort_key_ms) >= ?")
             params.append(since_ms)

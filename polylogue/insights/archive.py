@@ -119,7 +119,7 @@ class SessionWorkEventInsightQuery(SearchableSessionTimelineInsightQuery):
 
 
 class SessionPhaseInsightQuery(SessionTimelineWindowInsightQuery):
-    kind: str | None = None
+    pass
 
 
 class ThreadInsightQuery(SearchableTimeWindowInsightQuery):
