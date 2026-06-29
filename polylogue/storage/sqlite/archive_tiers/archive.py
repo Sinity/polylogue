@@ -4450,9 +4450,7 @@ def _summary_from_row(row: sqlite3.Row) -> ArchiveSessionSummary:
         working_directories=working_directories,
         git_branch=str(row["git_branch"]) if row["git_branch"] is not None else None,
         git_repository_url=str(row["git_repository_url"]) if row["git_repository_url"] is not None else None,
-        provider_project_ref=(
-            str(row["provider_project_ref"]) if row["provider_project_ref"] is not None else None
-        ),
+        provider_project_ref=(str(row["provider_project_ref"]) if row["provider_project_ref"] is not None else None),
     )
 
 
@@ -4810,16 +4808,6 @@ def _phase_insight_from_archive_row(
         "duration_ms": phase.duration_ms,
         "tool_counts": phase.tool_counts,
         "word_count": phase.word_count,
-    }
-    # The always-constant session_phases.confidence column was dropped in
-    # index schema v18. The phase inference confidence now lives only in the
-    # inference_json payload (default 0.0); read it from there.
-    _raw_confidence = phase.inference.get("confidence", 0.0)
-    phase_confidence = float(_raw_confidence) if isinstance(_raw_confidence, (int, float)) else 0.0
-    inference_payload = {
-        **phase.inference,
-        "confidence": phase_confidence,
-        "support_level": confidence_from_score(phase_confidence),
     }
     return SessionPhaseInsight(
         phase_id=phase.phase_id,
