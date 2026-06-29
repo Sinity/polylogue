@@ -986,6 +986,8 @@ def _archive_message_to_domain(message: ArchiveMessageRow, *, provider: Provider
                 "semantic_type": block.semantic_type,
                 "tool_input": _maybe_parse_json_object(block.tool_input),
                 "metadata": _maybe_parse_json_object(block.metadata),
+                "tool_result_is_error": block.tool_result_is_error,
+                "tool_result_exit_code": block.tool_result_exit_code,
             }.items()
             if value is not None
         }

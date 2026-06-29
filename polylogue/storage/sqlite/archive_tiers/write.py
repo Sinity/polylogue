@@ -51,6 +51,9 @@ class ArchiveBlockRow:
     tool_input: str | None = None
     metadata: str | None = None
     language: str | None = None
+    # Keystone structured tool-result outcome (schema v16). NULL = unknown.
+    tool_result_is_error: int | None = None
+    tool_result_exit_code: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1193,7 +1196,7 @@ def read_archive_session_envelope(
         block_rows = conn.execute(
             """
             SELECT block_id, message_id, block_type, text, tool_name, tool_id, semantic_type,
-                   tool_input, language
+                   tool_input, language, tool_result_is_error, tool_result_exit_code
             FROM blocks
             WHERE message_id = ?
             ORDER BY position
@@ -1220,6 +1223,8 @@ def read_archive_session_envelope(
                         semantic_type=block["semantic_type"],
                         tool_input=block["tool_input"],
                         language=block["language"],
+                        tool_result_is_error=block["tool_result_is_error"],
+                        tool_result_exit_code=block["tool_result_exit_code"],
                     )
                     for block in block_rows
                 ),

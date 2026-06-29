@@ -106,6 +106,8 @@ def _row_to_content_block(row: sqlite3.Row) -> BlockRecord:
         tool_input=_row_text(row, "tool_input"),
         metadata=_row_text(row, "metadata"),
         semantic_type=SemanticBlockType.from_string(semantic_type) if semantic_type is not None else None,
+        tool_result_is_error=_row_int(row, "tool_result_is_error"),
+        tool_result_exit_code=_row_int(row, "tool_result_exit_code"),
     )
 
 

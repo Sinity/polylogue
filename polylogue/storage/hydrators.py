@@ -108,6 +108,8 @@ def message_from_record(
                 "media_type": media_type,
                 "metadata": block_metadata,
                 "semantic_type": str(b.semantic_type) if b.semantic_type is not None else None,
+                "tool_result_is_error": b.tool_result_is_error,
+                "tool_result_exit_code": b.tool_result_exit_code,
             }
         )
 
