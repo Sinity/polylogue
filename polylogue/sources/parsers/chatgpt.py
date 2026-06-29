@@ -508,11 +508,20 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
         ingest_flags.append("capture:temporary-chat")
     session_kind = SessionKind.TEMPORARY if payload.get("is_temporary") is True else SessionKind.STANDARD
 
+    # ChatGPT "project" token (g-p-<id>): present in project-scoped conversations
+    # as gizmo_id / conversation_template_id. A bare g-<id> is a custom GPT, not a
+    # project, so only the g-p- prefix is treated as a workspace/project ref.
+    project_raw = payload.get("conversation_template_id") or payload.get("gizmo_id")
+    provider_project_ref = (
+        str(project_raw) if isinstance(project_raw, str) and project_raw.startswith("g-p-") else None
+    )
+
     return ParsedSession(
         source_name=Provider.CHATGPT,
         provider_session_id=str(conv_id or fallback_id),
         title=str(title),
         session_kind=session_kind,
+        provider_project_ref=provider_project_ref,
         created_at=str(payload.get("create_time")) if payload.get("create_time") is not None else None,
         updated_at=str(payload.get("update_time")) if payload.get("update_time") is not None else None,
         messages=messages,

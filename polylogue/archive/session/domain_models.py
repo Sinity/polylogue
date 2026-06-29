@@ -18,12 +18,6 @@ from polylogue.core.web_urls import canonical_session_url, native_id_from_sessio
 from polylogue.types import SessionId
 
 
-def _project_ref_of(metadata: dict[str, object]) -> str | None:
-    """ChatGPT project/workspace token stashed in session metadata, if present."""
-    ref = metadata.get("provider_project_ref")
-    return ref if isinstance(ref, str) and ref else None
-
-
 def _coerce_origin(v: object) -> Origin:
     if isinstance(v, Origin):
         return v
@@ -47,6 +41,7 @@ class SessionSummary(SessionSummaryRuntimeMixin, BaseModel):
     working_directories: tuple[str, ...] = ()
     git_branch: str | None = None
     git_repository_url: str | None = None
+    provider_project_ref: str | None = None
     parent_id: SessionId | None = None
     branch_type: BranchType | None = None
     message_count: int | None = None
@@ -71,7 +66,7 @@ class SessionSummary(SessionSummaryRuntimeMixin, BaseModel):
     def canonical_url(self) -> str | None:
         """Public web URL for web-originated sessions; None for local origins."""
         return canonical_session_url(
-            self.origin, native_id_from_session_id(self.id), _project_ref_of(self.metadata)
+            self.origin, native_id_from_session_id(self.id), self.provider_project_ref
         )
 
 
@@ -89,6 +84,7 @@ class Session(SessionRuntimeMixin, BaseModel):
     working_directories: tuple[str, ...] = ()
     git_branch: str | None = None
     git_repository_url: str | None = None
+    provider_project_ref: str | None = None
     session_events: tuple[SessionEvent, ...] = ()
     parent_id: SessionId | None = None
     branch_type: BranchType | None = None
@@ -112,7 +108,7 @@ class Session(SessionRuntimeMixin, BaseModel):
     def canonical_url(self) -> str | None:
         """Public web URL for web-originated sessions; None for local origins."""
         return canonical_session_url(
-            self.origin, native_id_from_session_id(self.id), _project_ref_of(self.metadata)
+            self.origin, native_id_from_session_id(self.id), self.provider_project_ref
         )
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
