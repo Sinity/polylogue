@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 from polylogue.archive.attachment.models import Attachment
 from polylogue.archive.message.messages import MessageCollection
@@ -14,7 +14,14 @@ from polylogue.archive.session.events import SessionEvent
 from polylogue.archive.session.summary_runtime import SessionSummaryRuntimeMixin
 from polylogue.core.enums import Origin, Provider, SessionKind
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.web_urls import canonical_session_url, native_id_from_session_id
 from polylogue.types import SessionId
+
+
+def _project_ref_of(metadata: dict[str, object]) -> str | None:
+    """ChatGPT project/workspace token stashed in session metadata, if present."""
+    ref = metadata.get("provider_project_ref")
+    return ref if isinstance(ref, str) and ref else None
 
 
 def _coerce_origin(v: object) -> Origin:
@@ -59,6 +66,14 @@ class SessionSummary(SessionSummaryRuntimeMixin, BaseModel):
     def coerce_session_kind(cls, v: object) -> SessionKind:
         return SessionKind.normalize(v)
 
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def canonical_url(self) -> str | None:
+        """Public web URL for web-originated sessions; None for local origins."""
+        return canonical_session_url(
+            self.origin, native_id_from_session_id(self.id), _project_ref_of(self.metadata)
+        )
+
 
 class Session(SessionRuntimeMixin, BaseModel):
     """Session with eagerly or lazily materialized message collection."""
@@ -91,6 +106,14 @@ class Session(SessionRuntimeMixin, BaseModel):
     @classmethod
     def coerce_session_kind(cls, v: object) -> SessionKind:
         return SessionKind.normalize(v)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def canonical_url(self) -> str | None:
+        """Public web URL for web-originated sessions; None for local origins."""
+        return canonical_session_url(
+            self.origin, native_id_from_session_id(self.id), _project_ref_of(self.metadata)
+        )
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
