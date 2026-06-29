@@ -416,21 +416,12 @@ paths:
         schema:
           type: boolean
           default: true
-      - name: max_messages
+      - name: max_tokens
         in: query
         required: false
-        description: Maximum messages per session for context-pack.
+        description: 'Read-view option advertised by /api/read-view-profiles: max_tokens.'
         schema:
-          type: integer
-          minimum: 1
-      - name: max_text
-        in: query
-        required: false
-        description: Maximum text characters per context-pack message excerpt.
-        schema:
-          type: integer
-          minimum: 1
-          default: 200
+          type: string
       - name: no_redact
         in: query
         required: false

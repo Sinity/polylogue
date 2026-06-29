@@ -77,6 +77,8 @@ Options:
   --origin TEXT                   Include origins (comma = OR)
   --exclude-origin TEXT           Exclude origins
   -r, --repo TEXT                 Filter by repository name (comma = OR)
+  --project TEXT                  Filter by provider project ref, e.g. ChatGPT
+                                  g-p-<id> (comma = OR)
   -t, --tag TEXT                  Include tags (comma = OR, supports
                                   key:value)
   --exclude-tag TEXT              Exclude tags
@@ -293,8 +295,7 @@ Usage: polylogue read [OPTIONS] [REF]
       timeline, tools, files, metadata, continuation
 
 Options:
-  -v, --view [summary|transcript|messages|raw|context|context-pack|recovery|neighbors|correlation]
-                                  What to render (summary, transcript,
+  -v, --view VIEW[,VIEW...]       What to render (summary, transcript,
                                   messages, raw, context, context-pack,
                                   recovery, neighbors, correlation).
                                   [default: summary]
@@ -340,8 +341,11 @@ Options:
   --query TEXT                    Free-text query (--view context-pack).
   --max-sessions INTEGER          Max sessions, 1-20 (--view context-pack).
                                   [default: 5]
-  --max-messages INTEGER          Max messages per session, 1-100 (--view
-                                  context-pack).  [default: 20]
+  --max-tokens INTEGER            Bound accumulated output to a token budget;
+                                  over-budget segments are reported as
+                                  omissions.
+  --include-assertions            Include context-inject assertion claims in
+                                  the compiled context image.
   --no-redact                     Do not redact filesystem paths (--view
                                   context-pack).
   --no-code-blocks                Exclude code blocks (--view messages).

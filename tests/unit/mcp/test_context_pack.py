@@ -1,67 +1,74 @@
-"""Unit tests for the build_context_pack MCP tool."""
+"""Unit tests for the build_context_pack MCP tool and context-pack selection.
+
+build_context_pack collapsed onto the shared ``compile_context`` engine: it is a
+thin lens that selects sessions through the query algebra and returns the
+``ContextImage`` payload. These tests cover the selection helper directly and the
+tool's delegation/contract; ContextImage compilation itself is covered by the API
+and compiler test suites.
+"""
 
 from __future__ import annotations
 
 import json
-import sqlite3
-from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.models import Session
 from polylogue.archive.query.spec import SessionQuerySpec
-from polylogue.core.enums import BlockType, Provider
+from polylogue.context.compiler import ContextImage, ContextOmission, ContextSegment, ContextSpec
+from polylogue.core.enums import Provider
 from polylogue.mcp.context_pack import select_context_pack_sessions
-from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import (
     EXPECTED_TOOL_NAMES,
     MCPServerUnderTest,
-    invoke_surface,
+    invoke_surface_async,
+    make_polylogue_mock,
 )
+from unittest.mock import AsyncMock, patch
 
 
-def _seed_context_pack_archive(tmp_path: Path, *, provider_session_id: str) -> Path:
-    """Seed an archive with one session and return its root."""
-    archive_root = tmp_path / "archive"
-    with ArchiveStore(archive_root) as archive:
-        archive.write_parsed(
-            ParsedSession(
-                source_name=Provider.CODEX,
-                provider_session_id=provider_session_id,
-                title="Context pack fixture",
-                created_at="2026-01-01T00:00:00+00:00",
-                updated_at="2026-01-01T00:01:00+00:00",
-                messages=[
-                    ParsedMessage(
-                        provider_message_id="m1",
-                        role=Role.USER,
-                        text="context pack body",
-                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="context pack body")],
-                    )
-                ],
-            )
+def _context_image(*, with_messages: bool = True) -> ContextImage:
+    """Build a representative ContextImage as compile_context would emit."""
+    segments: tuple[ContextSegment, ...] = ()
+    if with_messages:
+        segments = (
+            ContextSegment(
+                segment_id="read-view:codex-session:ctx-1:messages",
+                kind="read_view",
+                title="Messages",
+                markdown="# Messages\n\nuser: needle\n",
+                payload_kind="messages",
+                token_estimate=2,
+            ),
         )
-    return archive_root
+    spec = ContextSpec(purpose="handoff", seed_refs=("session:codex-session:ctx-1",), read_views=("messages",))
+    return ContextImage(
+        spec=spec,
+        segments=segments,
+        evidence_refs=(),
+        omitted=()
+        if with_messages
+        else (ContextOmission(ref="session:codex-session:ctx-1", view="messages", reason="budget", detail="over"),),
+        token_estimate=2 if with_messages else 0,
+    )
 
 
 class TestBuildContextPackRegistration:
     """Verify the build_context_pack tool is registered and callable."""
 
     def test_tool_name_is_in_expected_set(self) -> None:
-        """The tool is listed in EXPECTED_TOOL_NAMES."""
         assert "build_context_pack" in EXPECTED_TOOL_NAMES
 
     def test_tool_is_registered_on_server(self, mcp_server: MCPServerUnderTest) -> None:
-        """The tool is present in the server tool manager."""
         tools = mcp_server._tool_manager._tools
         assert "build_context_pack" in tools
         assert callable(tools["build_context_pack"].fn)
+
+
+class TestContextPackSelection:
+    """The recall-oriented query-algebra selection retained after the collapse."""
 
     @pytest.mark.asyncio
     async def test_context_pack_broadens_zero_result_archaeology_query(self) -> None:
@@ -97,9 +104,6 @@ class TestBuildContextPackRegistration:
 
         assert selection.sessions == [conv]
         assert selection.match_strategy == "term_recall"
-        # The strict pass runs the whole pasted query through the shared
-        # parser/lowerer, which splits bare words into one FTS term each, then the
-        # term_recall fallback probes single tokens after the strict miss.
         assert ("supersedes_event_id", "event_replacements", "equivalence_key") in seen_queries
         assert ("event_replacements",) in seen_queries
 
@@ -137,217 +141,60 @@ class TestBuildContextPackRegistration:
         assert selection.match_strategy == "relaxed_project_term_recall"
         assert selection.relaxed_filters == ("project_path",)
 
-    def test_summary_detail_omits_messages(self, mcp_server: MCPServerUnderTest, tmp_path: Path) -> None:
-        """Summary detail level omits message bodies on the archive path."""
-        from polylogue.mcp.server_support import _set_runtime_services
 
-        archive_root = _seed_context_pack_archive(tmp_path, provider_session_id="summary-detail")
+class TestBuildContextPackDelegation:
+    """The tool delegates to context_pack_payload and serializes the ContextImage."""
 
-        tools = mcp_server._tool_manager._tools
-        fn = tools["build_context_pack"].fn
-        mock_services = MagicMock()
-        mock_services.get_config.return_value = SimpleNamespace(
-            archive_root=archive_root,
-            db_path=archive_root / "index.db",
-        )
-        _set_runtime_services(mock_services)
+    @pytest.mark.asyncio
+    async def test_returns_context_image_payload(self, mcp_server: MCPServerUnderTest) -> None:
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.context_pack_payload = AsyncMock(return_value=_context_image())
+            mock_get_polylogue.return_value = mock_poly
 
-        try:
-            result = invoke_surface(fn, max_sessions=1, detail_level="summary")
-            parsed = json.loads(result)
-            convs = parsed.get("sessions", [])
-            assert convs
-            assert len(convs[0].get("messages", [])) == 0
-        finally:
-            _set_runtime_services(None)
-
-    def test_redact_paths_defaults_to_true(self, mcp_server: MCPServerUnderTest, tmp_path: Path) -> None:
-        """Provenance.redacted is True by default on the archive path."""
-        from polylogue.mcp.server_support import _set_runtime_services
-
-        archive_root = _seed_context_pack_archive(tmp_path, provider_session_id="redact-default")
-
-        tools = mcp_server._tool_manager._tools
-        fn = tools["build_context_pack"].fn
-        mock_services = MagicMock()
-        mock_services.get_config.return_value = SimpleNamespace(
-            archive_root=archive_root,
-            db_path=archive_root / "index.db",
-        )
-        _set_runtime_services(mock_services)
-
-        try:
-            result = invoke_surface(fn, max_sessions=1, detail_level="summary")
-            parsed = json.loads(result)
-            assert parsed["provenance"]["redacted"] is True
-            assert parsed["redaction_policy"] == "public_refs_and_redacted_paths"
-            assert "archive_root" not in parsed["provenance"]
-            assert "active_db_path" not in parsed["provenance"]
-            assert any(omission["reason"] == "redacted" for omission in parsed["omissions"])
-
-            raw_result = invoke_surface(fn, max_sessions=1, detail_level="summary", redact_paths=False)
-            raw = json.loads(raw_result)
-            assert raw["provenance"]["redacted"] is False
-            assert raw["redaction_policy"] == "raw_paths_explicit_opt_in"
-            assert raw["provenance"]["archive_root"] == str(archive_root)
-            assert raw["provenance"]["active_db_path"] == str(archive_root / "index.db")
-        finally:
-            _set_runtime_services(None)
-
-    def test_tool_reads_archive_file_set_from_archive_tiers(
-        self, mcp_server: MCPServerUnderTest, tmp_path: Path
-    ) -> None:
-        from polylogue.mcp.server_support import _set_runtime_services
-
-        archive_root = tmp_path / "archive"
-        with ArchiveStore(archive_root) as archive:
-            archive.write_parsed(
-                ParsedSession(
-                    source_name=Provider.CODEX,
-                    provider_session_id="mcp-context-v1",
-                    title="MCP archive context pack",
-                    created_at="2026-01-01T00:00:00+00:00",
-                    updated_at="2026-01-01T00:01:00+00:00",
-                    messages=[
-                        ParsedMessage(
-                            provider_message_id="m1",
-                            role=Role.USER,
-                            text="mcp context needle",
-                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="mcp context needle")],
-                        )
-                    ],
-                )
+            raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["build_context_pack"].fn,
+                query="needle",
+                max_sessions=1,
             )
-            with sqlite3.connect(archive.user_db_path) as conn:
-                upsert_assertion(
-                    conn,
-                    assertion_id="mcp-context-decision",
-                    target_ref="session:codex-session:mcp-context-v1",
-                    scope_ref="repo:polylogue",
-                    kind=AssertionKind.DECISION,
-                    body_text="Thread MCP context packs through assertion claims.",
-                    status="active",
-                    context_policy={"inject": True},
-                    now_ms=1_700_000_000_000,
-                )
-                conn.commit()
 
-        tools = mcp_server._tool_manager._tools
-        fn = tools["build_context_pack"].fn
-        mock_services = MagicMock()
-        mock_services.get_config.return_value = SimpleNamespace(
-            archive_root=archive_root,
-            db_path=archive_root / "index.db",
-        )
-        mock_services.get_repository.side_effect = AssertionError("context pack must not open archive query store")
-        mock_services.get_archive_ops.side_effect = AssertionError("context pack must not open archive operations")
-        _set_runtime_services(mock_services)
+        payload = json.loads(raw)
+        assert "segments" in payload
+        assert payload["segments"][0]["payload_kind"] == "messages"
+        assert payload["token_estimate"] == 2
+        # Delegated to the shared engine with messages included by default.
+        kwargs = mock_poly.context_pack_payload.call_args.kwargs
+        assert kwargs["query"] == "needle"
+        assert kwargs["include_messages"] is True
+        assert kwargs["redact_paths"] is True
 
-        try:
-            result = invoke_surface(fn, query="needle", max_sessions=1, max_messages_per_session=1)
-            parsed = json.loads(result)
-            assert parsed["total_sessions"] == 1
-            assert parsed["selection_strategy"] == "strict"
-            assert parsed["scope"]["read_views"] == ["context-pack"]
-            assert parsed["evidence_refs"] == ["codex-session:mcp-context-v1"]
-            assert parsed["token_estimate"] > 0
-            assert parsed["size_estimate"]["json_bytes"] > 0
-            assert parsed["provenance"]["archive_runtime"] == "archive_file_set"
-            assert parsed["provenance"]["redacted"] is True
-            assert "archive_root" not in parsed["provenance"]
-            assert "active_db_path" not in parsed["provenance"]
-            session = parsed["sessions"][0]
-            assert session["session_id"] == "codex-session:mcp-context-v1"
-            assert session["origin"] == "codex-session"
-            assert session["messages"][0]["text"] == "mcp context needle"
-            assert parsed["decisions"]["items"] == [
-                "decision: Thread MCP context packs through assertion claims. [session:codex-session:mcp-context-v1]"
-            ]
-        finally:
-            _set_runtime_services(None)
+    @pytest.mark.asyncio
+    async def test_summary_detail_omits_messages(self, mcp_server: MCPServerUnderTest) -> None:
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.context_pack_payload = AsyncMock(return_value=_context_image(with_messages=False))
+            mock_get_polylogue.return_value = mock_poly
 
-    def test_tool_reads_archive_file_set_with_index_anchor(
-        self, mcp_server: MCPServerUnderTest, tmp_path: Path
-    ) -> None:
-        from polylogue.mcp.server_support import _set_runtime_services
-
-        archive_root = tmp_path / "archive"
-        with ArchiveStore(archive_root) as archive:
-            archive.write_parsed(
-                ParsedSession(
-                    source_name=Provider.CODEX,
-                    provider_session_id="mcp-context-v1-mixed",
-                    title="MCP mixed archive context pack",
-                    messages=[
-                        ParsedMessage(
-                            provider_message_id="m1",
-                            role=Role.USER,
-                            text="mixed context needle",
-                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="mixed context needle")],
-                        )
-                    ],
-                )
+            await invoke_surface_async(
+                mcp_server._tool_manager._tools["build_context_pack"].fn,
+                max_sessions=1,
+                detail_level="summary",
             )
-        db_anchor = archive_root / "index.db"
 
-        tools = mcp_server._tool_manager._tools
-        fn = tools["build_context_pack"].fn
-        mock_services = MagicMock()
-        mock_services.get_config.return_value = SimpleNamespace(
-            archive_root=archive_root,
-            db_path=db_anchor,
-        )
-        mock_services.get_repository.side_effect = AssertionError("context pack must not open archive query store")
-        mock_services.get_archive_ops.side_effect = AssertionError("context pack must not open archive operations")
-        _set_runtime_services(mock_services)
+        kwargs = mock_poly.context_pack_payload.call_args.kwargs
+        assert kwargs["include_messages"] is False
 
-        try:
-            result = invoke_surface(fn, query="mixed", max_sessions=1, max_messages_per_session=1)
-            parsed = json.loads(result)
-            assert parsed["total_sessions"] == 1
-            assert parsed["provenance"]["archive_runtime"] == "archive_file_set"
-            assert parsed["provenance"]["redacted"] is True
-            assert "active_db_path" not in parsed["provenance"]
-            assert any(omission["reason"] == "redacted" for omission in parsed["omissions"])
-            assert parsed["sessions"][0]["session_id"] == "codex-session:mcp-context-v1-mixed"
-        finally:
-            _set_runtime_services(None)
+    @pytest.mark.asyncio
+    async def test_redact_paths_passthrough(self, mcp_server: MCPServerUnderTest) -> None:
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.context_pack_payload = AsyncMock(return_value=_context_image())
+            mock_get_polylogue.return_value = mock_poly
 
+            await invoke_surface_async(
+                mcp_server._tool_manager._tools["build_context_pack"].fn,
+                max_sessions=1,
+                redact_paths=False,
+            )
 
-class TestContextPackModels:
-    """Smoke test the Pydantic models directly."""
-
-    def test_payload_default_construction(self) -> None:
-        from polylogue.mcp.context_pack import ContextPackPayload
-
-        payload = ContextPackPayload()
-        assert payload.provenance.source == "polylogue"
-        assert payload.provenance.redacted is True
-        assert payload.provenance.archive_runtime == "archive_file_set"
-        assert isinstance(payload.sessions, list)
-        assert len(payload.sessions) == 0
-
-    def test_redact_path_home_directory(self) -> None:
-        import os
-
-        from polylogue.mcp.context_pack import redact_path
-
-        home = os.path.expanduser("~")
-        result = redact_path(home + "/projects/foo")
-        assert result == "~/projects/foo"
-        assert not result.startswith(home)
-
-    def test_redact_path_non_home_unchanged(self) -> None:
-        from polylogue.mcp.context_pack import redact_path
-
-        result = redact_path("/tmp/scratch")
-        assert result == "/tmp/scratch"
-
-    def test_redact_path_exact_home(self) -> None:
-        import os
-
-        from polylogue.mcp.context_pack import redact_path
-
-        home = os.path.expanduser("~")
-        result = redact_path(home)
-        assert result == "~"
+        assert mock_poly.context_pack_payload.call_args.kwargs["redact_paths"] is False

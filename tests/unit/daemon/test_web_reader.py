@@ -2042,7 +2042,7 @@ class TestReaderViewProfiles:
         assert recovery_http["formats"] == ["json", "markdown"]
         assert "report" in cast(list[str], recovery_http["query_params"])
         context_pack_http = cast(dict[str, object], profiles["context-pack"]["http"])
-        assert "max_messages" in cast(list[str], context_pack_http["query_params"])
+        assert "max_tokens" in cast(list[str], context_pack_http["query_params"])
 
     def test_read_view_execution_route_returns_messages_recovery_raw_context_and_context_pack(
         self,
@@ -2061,7 +2061,7 @@ class TestReaderViewProfiles:
             context = cast(dict[str, object], _get_json(base_url, f"/api/sessions/{C1}/read?view=context"))
             context_pack = cast(
                 dict[str, object],
-                _get_json(base_url, f"/api/sessions/{C1}/read?view=context-pack&max_messages=5"),
+                _get_json(base_url, f"/api/sessions/{C1}/read?view=context-pack"),
             )
             neighbors = cast(
                 dict[str, object],
@@ -2097,28 +2097,16 @@ class TestReaderViewProfiles:
         assert context_payload["preamble_version"] == "1.0"
         assert context_pack["view"] == "context-pack"
         context_payload = cast(dict[str, object], context_pack["payload"])
-        assert context_payload["total_sessions"] == 1
-        assert context_payload["selection_strategy"] == "session-id"
-        assert context_payload["redaction_policy"] == "public_refs_and_redacted_paths"
-        assert context_payload["evidence_refs"] == [C1]
+        # Context pack now returns the shared ContextImage payload compiled from
+        # the seed session through compile_context.
+        context_spec = cast(dict[str, object], context_payload["spec"])
+        assert context_spec["seed_refs"] == [f"session:{C1}"]
+        assert "messages" in cast(list[str], context_spec["read_views"])
+        segments = cast(list[dict[str, object]], context_payload["segments"])
+        assert any(segment.get("payload_kind") == "messages" for segment in segments)
         assert isinstance(context_payload["token_estimate"], int)
         assert context_payload["token_estimate"] > 0
-        context_size_estimate = cast(dict[str, object], context_payload["size_estimate"])
-        assert isinstance(context_size_estimate["json_bytes"], int)
-        assert isinstance(context_size_estimate["message_text_bytes"], int)
-        assert context_size_estimate["json_bytes"] > 0
-        assert context_size_estimate["message_text_bytes"] > 0
-        context_scope = cast(dict[str, object], context_payload["scope"])
-        assert context_scope["seed_refs"] == [f"session:{C1}"]
-        context_provenance = cast(dict[str, object], context_payload["provenance"])
-        assert context_provenance["redacted"] is True
-        assert "archive_root" not in context_provenance
-        assert "active_db_path" not in context_provenance
-        assert any(
-            omission["reason"] == "redacted" for omission in cast(list[dict[str, object]], context_payload["omissions"])
-        )
-        context_query = cast(dict[str, object], context_payload["query_context"])
-        assert context_query["query_matched"] == 1
+        assert isinstance(context_payload["omitted"], list)
         context_sessions = cast(list[dict[str, object]], context_payload["sessions"])
         assert context_sessions[0]["session_id"] == C1
         assert neighbors["view"] == "neighbors"

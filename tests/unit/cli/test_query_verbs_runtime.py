@@ -886,7 +886,6 @@ def test_read_view_registry_builds_typed_view_options() -> None:
             "project_repo": "github.com/Sinity/polylogue",
             "pack_query": "route contracts",
             "max_sessions": 3,
-            "max_messages": 8,
             "no_redact": True,
         },
     )
@@ -896,7 +895,6 @@ def test_read_view_registry_builds_typed_view_options() -> None:
     assert options.project_repo == "github.com/Sinity/polylogue"
     assert options.query == "route contracts"
     assert options.max_sessions == 3
-    assert options.max_messages == 8
     assert options.no_redact is True
 
 
