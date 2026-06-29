@@ -76,8 +76,7 @@ def test_zero_evidence_implies_no_paste(
         # ``[Pasted text #N]`` marker yields ``projected``, a size/code-fence
         # proxy yields ``whole_message_fallback``.
         assert state in {"projected", "whole_message_fallback"}, (
-            f"Text-only evidence should produce projected (marker) or "
-            f"whole_message_fallback (heuristic), got {state}"
+            f"Text-only evidence should produce projected (marker) or whole_message_fallback (heuristic), got {state}"
         )
         if state == "projected":
             assert has_paste_marker(message_text or None)
