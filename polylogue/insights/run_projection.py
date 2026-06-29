@@ -17,27 +17,21 @@ from polylogue.insights.archive_models import ArchiveInsightModel
 
 RunHarness = Literal["claude-code", "codex", "chatgpt", "local", "unknown"]
 RunStatus = Literal["completed", "failed", "unknown"]
-ContextBoundary = Literal["session_start", "subagent_start", "review_injection", "resume", "unknown"]
+ContextBoundary = Literal["session_start", "subagent_start", "resume", "unknown"]
 ContextInheritanceMode = Literal["clean", "summary", "prefix", "snapshot", "injected", "unknown"]
 ObservedEventKind = Literal[
     "session_started",
     "tool_finished",
     "subagent_started",
     "subagent_finished",
-    "pr_opened",
-    "pr_merged",
-    "review_posted",
-    "review_seen_by_tool",
-    "review_injected_context",
-    "review_acknowledged",
-    "review_acted_on",
-    "issue_closed",
-    "check_passed",
-    "check_failed",
+    # Structured in-session outcomes from the keystone tool-result fields (#2482).
+    # External truths (PR/issue/CI state) are not synthesized from prose.
+    "command_succeeded",
+    "command_failed",
     "test_passed",
     "test_failed",
 ]
-ObservedDeliveryState = Literal["observed", "seen_by_tool", "injected_context", "acknowledged", "acted_on", "unknown"]
+ObservedDeliveryState = Literal["observed", "unknown"]
 
 
 class _RawRefLike(Protocol):
@@ -266,43 +260,19 @@ def build_run_projection(
         )
 
     for index, event in enumerate(recovery_events):
+        # Structured outcome events carry no GitHub/issue object refs and always
+        # have delivery_state "observed" — their evidence is the tool-call block.
         evidence_refs = _to_evidence_refs(event.raw_refs)
-        event_ref = _event_ref(session_id, event.kind, index)
-        event_object_refs = _event_object_refs(event)
-        context_snapshot_ref: ObjectRef | None = None
-        if event.kind == "review_injected_context":
-            context_snapshot_ref = _context_snapshot_ref(session_id, f"review_injection:{index}")
         observed.append(
             ObservedEvent(
-                event_ref=event_ref,
+                event_ref=_event_ref(session_id, event.kind, index),
                 kind=event.kind,
                 run_ref=main_run_ref,
                 summary=event.summary,
-                delivery_state=_delivery_state_for_event(event.kind),
                 subject_ref=ObjectRef(kind="message", object_id=evidence_refs[0].message_id or session_id),
-                object_refs=(
-                    *(ref for ref in (context_snapshot_ref,) if ref is not None),
-                    *event_object_refs,
-                ),
                 evidence_refs=evidence_refs,
             )
         )
-        if event.kind == "review_injected_context":
-            snapshots.append(
-                ContextSnapshot(
-                    snapshot_ref=_context_snapshot_ref(session_id, f"review_injection:{index}"),
-                    run_ref=main_run_ref,
-                    boundary="review_injection",
-                    inheritance_mode="injected",
-                    segment_refs=(event_ref, *event_object_refs),
-                    evidence_refs=evidence_refs,
-                    metadata={
-                        "source": "recovery-event",
-                        "event_ref": event_ref.format(),
-                        "delivery_state": "injected_context",
-                    },
-                )
-            )
 
     for index, report in enumerate(subagent_reports):
         child_id = report.resolved_child_session_id or report.child_session_id or report.task_id or f"subagent-{index}"
@@ -400,18 +370,6 @@ def _event_ref(session_id: str, kind: str, index: int) -> ObjectRef:
     return ObjectRef(kind="observed-event", object_id=f"{session_id}:{kind}:{index}")
 
 
-def _delivery_state_for_event(kind: ObservedEventKind) -> ObservedDeliveryState:
-    if kind == "review_seen_by_tool":
-        return "seen_by_tool"
-    if kind == "review_injected_context":
-        return "injected_context"
-    if kind == "review_acknowledged":
-        return "acknowledged"
-    if kind == "review_acted_on":
-        return "acted_on"
-    return "observed"
-
-
 def _harness_for_origin(source_origin: str) -> RunHarness:
     if source_origin == "codex-session":
         return "codex"
@@ -426,7 +384,7 @@ def _main_run_status(
     recovery_events: Sequence[_RecoveryEventLike],
     tool_summaries: Sequence[_ToolSummaryLike],
 ) -> RunStatus:
-    if any(event.kind in {"check_failed", "test_failed"} for event in recovery_events):
+    if any(event.kind in {"command_failed", "test_failed"} for event in recovery_events):
         return "failed"
     if any(tool.status == "failed" for tool in tool_summaries):
         return "failed"
@@ -456,27 +414,6 @@ def _tool_call_ref(tool: _ToolSummaryLike) -> ObjectRef | None:
         return None
     session_id = tool.raw_refs[0].to_evidence_ref().session_id
     return ObjectRef(kind="tool-call", object_id=f"{session_id}:{tool.tool_id}")
-
-
-def _event_object_refs(event: _RecoveryEventLike) -> tuple[ObjectRef, ...]:
-    if event.kind.startswith("pr_"):
-        return tuple(ObjectRef(kind="github-pr", object_id=ref) for ref in _number_refs(event.summary))
-    if event.kind.startswith("review_"):
-        return tuple(ObjectRef(kind="github-review", object_id=ref) for ref in _number_refs(event.summary))
-    if event.kind == "issue_closed":
-        return tuple(ObjectRef(kind="github-issue", object_id=ref) for ref in _number_refs(event.summary))
-    if event.kind.startswith("check_"):
-        name = event.summary.removesuffix(" passed").removesuffix(" failed").strip()
-        return (ObjectRef(kind="check-run", object_id=name),) if name else ()
-    return ()
-
-
-def _number_refs(value: str) -> tuple[str, ...]:
-    refs: list[str] = []
-    for part in value.split():
-        if part.startswith("#") and len(part) > 1 and part[1:].isdigit():
-            refs.append(part)
-    return tuple(dict.fromkeys(refs))
 
 
 __all__ = [

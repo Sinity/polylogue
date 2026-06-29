@@ -74,16 +74,13 @@ _ISSUE_RE = re.compile(
     re.IGNORECASE,
 )
 _PR_RE = re.compile(r"(?:pull/|PR\s+#?)(?P<number>\d{3,6})", re.IGNORECASE)
-_REVIEW_PR_RE = re.compile(r"\b(?:review|comment|finding)s?\b.*(?:pull/|PR\s+#?)(?P<number>\d{3,6})", re.IGNORECASE)
-_CREATED_PR_RE = re.compile(
-    r"\b(?:created|opened)\s+(?:pull\s+request|PR)\s+#?(?P<number>\d{3,6})\b",
-    re.IGNORECASE,
-)
-_MERGED_RE = re.compile(r"\bMERGED\s+#(?P<number>\d{3,6})\b", re.IGNORECASE)
+# _TEST_PASS_RE / _TEST_FAIL_RE / _CHECK_PASS_RE classify whether a tool ran a
+# test/check (handler_kind) and collect preview evidence lines. They do NOT
+# assert outcomes — in-session command/test success/failure is read from the
+# structured keystone tool-result fields, not regex-guessed from prose (#2482).
 _TEST_PASS_RE = re.compile(r"\b(?P<count>\d+)\s+passed\b", re.IGNORECASE)
 _TEST_FAIL_RE = re.compile(r"\b(?P<count>\d+)\s+failed\b", re.IGNORECASE)
 _CHECK_PASS_RE = re.compile(r"\b(?P<name>[A-Za-z0-9_.() -]+)\s+\.\.\.\s+ok\b")
-_CHECK_FAIL_RE = re.compile(r"\b(?P<name>[A-Za-z0-9_.() -]+)\s+\.\.\.\s+(?:FAIL|FAILED|failure)\b", re.IGNORECASE)
 _COMMIT_SHA_RE = re.compile(r"\b(?P<sha>[0-9a-f]{7,40})\b", re.IGNORECASE)
 _DECISION_RE = re.compile(r"\b(decision|decided|choose|chosen):?\s+(?P<text>.+)", re.IGNORECASE)
 _STATUS_HEADING_RE = re.compile(r"^\s*(goal|done|in flight|blockers?|next):\s*(?P<text>.+)$", re.IGNORECASE)
@@ -255,17 +252,13 @@ class RunStateSummary(ArchiveInsightModel):
 
 
 class RecoveryEvent(ArchiveInsightModel):
+    # Structured in-session outcome events. Derived from the keystone
+    # tool-result fields (exit_code / is_error) on a paired tool_result block,
+    # never regex-mined from message prose (#2482). External truths (PR/issue/CI
+    # state) are NOT synthesized here — they belong to git/GitHub.
     kind: Literal[
-        "pr_opened",
-        "pr_merged",
-        "review_posted",
-        "review_seen_by_tool",
-        "review_injected_context",
-        "review_acknowledged",
-        "review_acted_on",
-        "issue_closed",
-        "check_passed",
-        "check_failed",
+        "command_succeeded",
+        "command_failed",
         "test_passed",
         "test_failed",
     ]
@@ -1043,12 +1036,12 @@ def _work_packet_entries(
             evidence_refs=observed.evidence_refs,
         )
     for event in events:
+        # Structured outcome events carry no GitHub/issue object refs — their
+        # evidence is the tool-call block itself.
         yield RecoveryWorkPacketEntry(
             section="events",
             label=event.kind,
             text=event.summary,
-            metadata=_event_packet_metadata(event),
-            object_refs=_event_object_refs(event),
             evidence_refs=_to_evidence_refs(event.raw_refs),
         )
     for report in subagent_reports:
@@ -1138,7 +1131,7 @@ def _work_packet_entries(
         yield RecoveryWorkPacketEntry(
             section="evidence_gaps",
             label="events",
-            text="No PR, issue, test, check, or merge events were extracted.",
+            text="No structured tool or test outcome events were extracted.",
             support="missing_evidence",
             evidence_refs=packet_evidence_refs,
         )
@@ -1172,23 +1165,6 @@ def _to_evidence_refs(refs: Sequence[TransformRawRef]) -> tuple[EvidenceRef, ...
     return tuple(ref.to_evidence_ref() for ref in refs)
 
 
-def _event_packet_metadata(event: RecoveryEvent) -> dict[str, str]:
-    metadata: dict[str, str] = {}
-    pr_refs = tuple(_number_refs(_PR_RE, event.summary)) if event.kind.startswith("pr_") else ()
-    review_refs = tuple(_number_refs(_PR_RE, event.summary)) if event.kind.startswith("review_") else ()
-    issue_refs = tuple(_number_refs(_ISSUE_RE, event.summary)) if event.kind == "issue_closed" else ()
-    test_evidence = (event.summary,) if event.kind.startswith(("check_", "test_")) else ()
-    if pr_refs:
-        metadata["pr_refs"] = ", ".join(pr_refs)
-    if review_refs:
-        metadata["review_refs"] = ", ".join(review_refs)
-    if issue_refs:
-        metadata["issue_refs"] = ", ".join(issue_refs)
-    if test_evidence:
-        metadata["test_evidence"] = " | ".join(test_evidence)
-    return metadata
-
-
 def _unique_object_refs(refs: Iterable[ObjectRef | None]) -> tuple[ObjectRef, ...]:
     seen: set[str] = set()
     unique: list[ObjectRef] = []
@@ -1206,20 +1182,6 @@ def _unique_object_refs(refs: Iterable[ObjectRef | None]) -> tuple[ObjectRef, ..
 def _subagent_report_object_ref(session_id: str, report: SubagentReport) -> ObjectRef:
     stable_id = report.tool_id or report.task_id or report.child_session_id or "unknown"
     return ObjectRef(kind="subagent-report", object_id=f"{session_id}:{stable_id}")
-
-
-def _event_object_refs(event: RecoveryEvent) -> tuple[ObjectRef, ...]:
-    """Return typed refs for addressable event targets extracted from summaries."""
-
-    if event.kind.startswith("pr_"):
-        return _github_object_refs("github-pr", _number_refs(_PR_RE, event.summary))
-    if event.kind.startswith("review_"):
-        return _github_object_refs("github-review", _number_refs(_PR_RE, event.summary))
-    if event.kind == "issue_closed":
-        return _github_object_refs("github-issue", _number_refs(_ISSUE_RE, event.summary))
-    if event.kind.startswith("check_"):
-        return _check_run_object_refs(event.summary)
-    return ()
 
 
 def _tool_packet_metadata(tool: ToolSummary) -> dict[str, str]:
@@ -1264,15 +1226,6 @@ def _github_object_refs(
     """Format GitHub number refs as opaque public object refs."""
 
     return tuple(ObjectRef(kind=kind, object_id=ref) for ref in refs)
-
-
-def _check_run_object_refs(summary: str) -> tuple[ObjectRef, ...]:
-    """Format a named check event summary as a public check-run ref."""
-
-    name = summary.removesuffix(" passed").removesuffix(" failed").strip()
-    if not name:
-        return ()
-    return (ObjectRef(kind="check-run", object_id=name),)
 
 
 def _refs_without_pr_refs(issue_refs: Sequence[str], pr_refs: Sequence[str]) -> tuple[str, ...]:
@@ -1323,7 +1276,11 @@ def _render_continue_report(digest: RecoveryDigest) -> str:
             f"- next: {item}{_evidence_suffix(digest, digest.run_state.raw_refs)}"
             for item in digest.run_state.next_actions[:8]
         )
-    lines.extend(["", "## Recent Events"])
+    # Structured in-session outcomes read from the keystone tool-result fields
+    # (exit_code / is_error). These are facts about what a tool returned, not
+    # prose-mined candidates (#2482). External truths (PR/issue/CI state) are
+    # not synthesized here.
+    lines.extend(["", "## Recent Outcomes (structured tool/test results)"])
     if digest.events:
         lines.extend(
             f"- {event.kind}: {event.summary}{_evidence_suffix(digest, event.raw_refs)}" for event in digest.events[:10]
@@ -1379,22 +1336,11 @@ def _render_blame_report(digest: RecoveryDigest) -> str:
         f"- extracted_claims: {digest.forensic_index.claim_count}{_evidence_suffix(digest, session_refs)}",
         f"- evidence_locations: {len(digest.forensic_index.entries)}{_evidence_suffix(digest, session_refs)}",
         "",
-        "## Checks And Tests",
+        "## Command And Test Outcomes",
     ]
-    check_events = [
-        event for event in digest.events if event.kind in {"check_passed", "check_failed", "test_passed", "test_failed"}
-    ]
-    if check_events:
+    if digest.events:
         lines.extend(
-            f"- {event.kind}: {event.summary}{_evidence_suffix(digest, event.raw_refs)}" for event in check_events
-        )
-    else:
-        lines.append(f"- none extracted{_evidence_suffix(digest, session_refs)}")
-    lines.extend(["", "## GitHub Events"])
-    github_events = [event for event in digest.events if event.kind in {"pr_opened", "pr_merged", "issue_closed"}]
-    if github_events:
-        lines.extend(
-            f"- {event.kind}: {event.summary}{_evidence_suffix(digest, event.raw_refs)}" for event in github_events
+            f"- {event.kind}: {event.summary}{_evidence_suffix(digest, event.raw_refs)}" for event in digest.events
         )
     else:
         lines.append(f"- none extracted{_evidence_suffix(digest, session_refs)}")
@@ -1573,6 +1519,7 @@ def _extract_tool_summaries(session: Session, messages: Sequence[Message]) -> It
             if result_ref is not None:
                 refs.append(result_ref)
             output_text = _block_text(result_block or {})
+            is_error, exit_code = _block_outcome(result_block or {})
             tool_name = _tool_name(block)
             command = _tool_command(block)
             yield ToolSummary(
@@ -1580,7 +1527,7 @@ def _extract_tool_summaries(session: Session, messages: Sequence[Message]) -> It
                 tool_id=tool_id,
                 command=command,
                 handler_kind=_tool_handler_kind(tool_name=tool_name, command=command, output_text=output_text),
-                status=_tool_status(output_text),
+                status=_tool_status(is_error, exit_code),
                 line_count=_line_count(output_text),
                 output_preview=_preview(output_text),
                 pr_refs=tuple(_number_refs(_PR_RE, output_text)),
@@ -1684,16 +1631,95 @@ def _session_link_child_keys(link: Mapping[str, object]) -> tuple[str, ...]:
 
 
 def _extract_events(session: Session, messages: Sequence[Message]) -> Iterable[RecoveryEvent]:
+    """Structured in-session outcome events from paired tool-result blocks.
+
+    Success/failure is read from the keystone tool-result fields
+    (``tool_result_exit_code`` / ``tool_result_is_error``) on a tool_use's
+    paired tool_result block — never regex-guessed from prose. A tool whose
+    result carries no structured outcome yields no event (NULL = unknown,
+    never a fabricated positive).
+    """
+    result_by_tool_id: dict[str, Mapping[str, object]] = {}
+    for message in messages:
+        for block in message.blocks:
+            if str(block.get("type") or "") != "tool_result":
+                continue
+            tool_id = _optional_text(block.get("tool_id") or block.get("id"))
+            if tool_id:
+                result_by_tool_id[tool_id] = block
+
     seen: set[tuple[str, str]] = set()
     for message in messages:
-        message_ref = _message_ref(session, message)
-        for text in _message_text_fragments(message):
-            for event in _events_from_text(text, message_ref):
-                key = (event.kind, event.summary)
-                if key in seen:
-                    continue
-                seen.add(key)
-                yield event
+        for index, block in enumerate(message.blocks):
+            if str(block.get("type") or "") != "tool_use":
+                continue
+            if _is_subagent_tool(block):
+                continue
+            tool_id = _optional_text(block.get("tool_id") or block.get("id"))
+            result_block = result_by_tool_id.get(tool_id) if tool_id else None
+            if result_block is None:
+                continue
+            is_error, exit_code = _block_outcome(result_block)
+            status = _tool_status(is_error, exit_code)
+            if status == "unknown":
+                continue
+            tool_name = _tool_name(block)
+            command = _tool_command(block)
+            handler_kind = _tool_handler_kind(
+                tool_name=tool_name, command=command, output_text=_block_text(result_block)
+            )
+            event = _outcome_event(
+                handler_kind=handler_kind,
+                status=status,
+                tool_name=tool_name,
+                command=command,
+                exit_code=exit_code,
+                ref=_block_ref(session, message, index, block),
+            )
+            key = (event.kind, event.summary)
+            if key in seen:
+                continue
+            seen.add(key)
+            yield event
+
+
+def _block_outcome(block: Mapping[str, object]) -> tuple[int | None, int | None]:
+    """Read the keystone (is_error, exit_code) outcome off a tool_result block."""
+
+    return _block_int(block, "tool_result_is_error"), _block_int(block, "tool_result_exit_code")
+
+
+def _block_int(block: Mapping[str, object], key: str) -> int | None:
+    value = block.get(key)
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def _outcome_event(
+    *,
+    handler_kind: str,
+    status: Literal["ok", "failed", "unknown"],
+    tool_name: str,
+    command: str | None,
+    exit_code: int | None,
+    ref: TransformRawRef,
+) -> RecoveryEvent:
+    """Build a structured outcome event from a tool's structured result status."""
+
+    success = status == "ok"
+    label = _preview(command or tool_name, limit=120)
+    exit_suffix = f" (exit {exit_code})" if exit_code is not None else ""
+    kind: Literal["command_succeeded", "command_failed", "test_passed", "test_failed"]
+    if handler_kind == "test":
+        kind = "test_passed" if success else "test_failed"
+        verb = "passed" if success else "failed"
+    else:
+        kind = "command_succeeded" if success else "command_failed"
+        verb = "succeeded" if success else "failed"
+    return RecoveryEvent(kind=kind, summary=f"{label} {verb}{exit_suffix}", raw_refs=(ref,))
 
 
 def _extract_run_state(session: Session, messages: Sequence[Message]) -> RunStateSummary | None:
@@ -1805,92 +1831,6 @@ def _extend_unique(target: list[str], values: Iterable[str]) -> None:
             continue
         seen.add(value)
         target.append(value)
-
-
-def _events_from_text(text: str, ref: TransformRawRef) -> Iterable[RecoveryEvent]:
-    for match in _MERGED_RE.finditer(text):
-        number = match.group("number")
-        yield RecoveryEvent(kind="pr_merged", summary=f"PR #{number} merged", raw_refs=(ref,))
-    for line in text.splitlines():
-        lowered = line.lower()
-        created_pr_match = _CREATED_PR_RE.search(line)
-        if created_pr_match is not None:
-            yield RecoveryEvent(
-                kind="pr_opened",
-                summary=f"PR #{created_pr_match.group('number')} opened",
-                raw_refs=(ref,),
-            )
-        review_match = _REVIEW_PR_RE.search(line)
-        if review_match is not None:
-            number = review_match.group("number")
-            review_kind: Literal[
-                "review_posted",
-                "review_seen_by_tool",
-                "review_injected_context",
-                "review_acknowledged",
-                "review_acted_on",
-            ] = "review_posted"
-            if any(term in lowered for term in ("addressed", "acted on", "fixed", "resolved")):
-                review_kind = "review_acted_on"
-            elif any(term in lowered for term in ("acknowledged", "classified", "triaged")):
-                review_kind = "review_acknowledged"
-            elif any(term in lowered for term in ("injected", "context")):
-                review_kind = "review_injected_context"
-            elif any(term in lowered for term in ("read", "fetched", "inspected", "seen")):
-                review_kind = "review_seen_by_tool"
-            review_label = {
-                "review_posted": "posted",
-                "review_seen_by_tool": "seen by tool",
-                "review_injected_context": "injected into context",
-                "review_acknowledged": "acknowledged",
-                "review_acted_on": "acted on",
-            }[review_kind]
-            yield RecoveryEvent(kind=review_kind, summary=f"Review on PR #{number} {review_label}", raw_refs=(ref,))
-            continue
-        if "pull/" in lowered or "pr " in lowered:
-            pr_match = _PR_RE.search(line)
-            if pr_match is not None:
-                number = pr_match.group("number")
-                kind: Literal["pr_opened", "pr_merged"] = "pr_merged" if "merge" in lowered else "pr_opened"
-                yield RecoveryEvent(
-                    kind=kind, summary=f"PR #{number} {'merged' if kind == 'pr_merged' else 'opened'}", raw_refs=(ref,)
-                )
-        if "closed issue" in lowered or "closed #" in lowered:
-            issue_match = _ISSUE_RE.search(line)
-            if issue_match is not None:
-                yield RecoveryEvent(
-                    kind="issue_closed",
-                    summary=f"Issue #{issue_match.group('number')} closed",
-                    raw_refs=(ref,),
-                )
-        pass_match = _TEST_PASS_RE.search(line)
-        if pass_match:
-            yield RecoveryEvent(
-                kind="test_passed",
-                summary=f"{pass_match.group('count')} tests passed",
-                raw_refs=(ref,),
-            )
-        fail_match = _TEST_FAIL_RE.search(line)
-        if fail_match:
-            yield RecoveryEvent(
-                kind="test_failed",
-                summary=f"{fail_match.group('count')} tests failed",
-                raw_refs=(ref,),
-            )
-        check_match = _CHECK_PASS_RE.search(line)
-        if check_match:
-            yield RecoveryEvent(
-                kind="check_passed",
-                summary=f"{check_match.group('name').strip()} passed",
-                raw_refs=(ref,),
-            )
-        failed_check_match = _CHECK_FAIL_RE.search(line)
-        if failed_check_match:
-            yield RecoveryEvent(
-                kind="check_failed",
-                summary=f"{failed_check_match.group('name').strip()} failed",
-                raw_refs=(ref,),
-            )
 
 
 def _extract_decision_candidates(session: Session, messages: Sequence[Message]) -> Iterable[DecisionCandidate]:
@@ -2161,14 +2101,17 @@ def _caveats(text: str) -> Iterable[str]:
             yield _preview(line, limit=180)
 
 
-def _tool_status(output_text: str) -> Literal["ok", "failed", "unknown"]:
-    lowered = output_text.lower()
-    if not lowered:
-        return "unknown"
-    if "exit code 0" in lowered or " passed" in lowered or "\nok" in lowered:
-        return "ok"
-    if "exit code 1" in lowered or "failed" in lowered or "traceback" in lowered:
-        return "failed"
+def _tool_status(is_error: int | None, exit_code: int | None) -> Literal["ok", "failed", "unknown"]:
+    """Tool outcome from the structured keystone result fields.
+
+    Exit code is authoritative when present; otherwise the boolean is_error
+    flag decides. NULL on both means unknown — never a fabricated positive
+    inferred from output text (#2482).
+    """
+    if exit_code is not None:
+        return "ok" if exit_code == 0 else "failed"
+    if is_error is not None:
+        return "failed" if is_error else "ok"
     return "unknown"
 
 

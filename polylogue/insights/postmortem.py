@@ -339,7 +339,7 @@ def compile_postmortem_bundle(
     if projections:
         report = compile_pathology_report(projections)
         wasted_loop = _pathology_field([f for f in report.findings if f.kind == "wasted_loop"])
-        failure_mode = _pathology_field([f for f in report.findings if f.kind in ("missed_review", "stale_context")])
+        failure_mode = _pathology_field([f for f in report.findings if f.kind == "stale_context"])
     else:
         wasted_loop = PathologyField(status="unavailable", detail=_PATHOLOGY_UNAVAILABLE_REASON)
         failure_mode = PathologyField(status="unavailable", detail=_PATHOLOGY_UNAVAILABLE_REASON)

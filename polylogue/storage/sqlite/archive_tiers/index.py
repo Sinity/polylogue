@@ -33,7 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 17
+INDEX_SCHEMA_VERSION = 18
 
 INDEX_DDL = f"""
 CREATE TABLE IF NOT EXISTS sessions (
