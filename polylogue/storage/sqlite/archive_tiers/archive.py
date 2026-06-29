@@ -813,9 +813,10 @@ class ArchiveStore:
         if origin is not None:
             where.append("s.origin = ?")
             params.append(origin)
-        if kind is not None:
-            where.append("sp.phase_type = ?")
-            params.append(kind)
+        # `kind` no longer filters: session_phases are time-gap-segmented
+        # intervals with no intent/type classification (the always-constant
+        # phase_type column was dropped in index schema v18). The parameter is
+        # retained for call-signature stability but is intentionally ignored.
         if since_ms is not None:
             where.append("COALESCE(sp.started_at_ms, s.sort_key_ms) >= ?")
             params.append(since_ms)
@@ -843,12 +844,11 @@ class ArchiveStore:
             materialization = _read_archive_materialization(self._conn, "phases", phase_session_id)
             session_origin = _session_origin(self._conn, phase_session_id)
             for phase in read_session_phases(self._conn, session_id=phase_session_id).values():
-                if kind is None or phase.phase_type == kind:
-                    indexed[(phase.session_id, phase.position)] = _phase_insight_from_archive_row(
-                        phase,
-                        origin=session_origin,
-                        materialization=materialization,
-                    )
+                indexed[(phase.session_id, phase.position)] = _phase_insight_from_archive_row(
+                    phase,
+                    origin=session_origin,
+                    materialization=materialization,
+                )
         return [indexed[(str(row["session_id"]), int(row["position"]))] for row in rows]
 
     def get_thread_insight(self, thread_id: str) -> ThreadInsight | None:
@@ -4864,10 +4864,15 @@ def _phase_insight_from_archive_row(
         "tool_counts": phase.tool_counts,
         "word_count": phase.word_count,
     }
+    # The always-constant session_phases.confidence column was dropped in
+    # index schema v18. The phase inference confidence now lives only in the
+    # inference_json payload (default 0.0); read it from there.
+    _raw_confidence = phase.inference.get("confidence", 0.0)
+    phase_confidence = float(_raw_confidence) if isinstance(_raw_confidence, (int, float)) else 0.0
     inference_payload = {
         **phase.inference,
-        "confidence": phase.confidence,
-        "support_level": confidence_from_score(phase.confidence),
+        "confidence": phase_confidence,
+        "support_level": confidence_from_score(phase_confidence),
     }
     return SessionPhaseInsight(
         phase_id=phase.phase_id,

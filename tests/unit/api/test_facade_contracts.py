@@ -3267,8 +3267,6 @@ async def test_archive_tiers_api_timeline_insights_read_index_tier(tmp_path: Pat
                 conn,
                 session_id=session_id,
                 position=0,
-                phase_type="coding",
-                confidence=0.73,
                 start_index=0,
                 end_index=1,
                 started_at_ms=1_770_000_060_000,

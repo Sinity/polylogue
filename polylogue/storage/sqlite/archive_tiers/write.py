@@ -202,8 +202,6 @@ class ArchiveSessionPhase:
     phase_id: str
     session_id: str
     position: int
-    phase_type: str
-    confidence: float
     start_index: int
     end_index: int
     started_at_ms: int | None
@@ -1011,8 +1009,6 @@ def upsert_session_phase(
     *,
     session_id: str,
     position: int,
-    phase_type: str,
-    confidence: float = 0.0,
     start_index: int = 0,
     end_index: int = 0,
     started_at_ms: int | None = None,
@@ -1032,14 +1028,12 @@ def upsert_session_phase(
         conn.execute(
             """
             INSERT INTO session_phases (
-                session_id, position, phase_type, confidence, start_index, end_index,
+                session_id, position, start_index, end_index,
                 started_at_ms, ended_at_ms, duration_ms, tool_counts_json, word_count,
                 input_high_water_mark, input_high_water_mark_source,
                 evidence_json, inference_json, search_text
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id, position) DO UPDATE SET
-                phase_type = excluded.phase_type,
-                confidence = excluded.confidence,
                 start_index = excluded.start_index,
                 end_index = excluded.end_index,
                 started_at_ms = excluded.started_at_ms,
@@ -1056,8 +1050,6 @@ def upsert_session_phase(
             (
                 session_id,
                 position,
-                phase_type,
-                confidence,
                 start_index,
                 end_index,
                 started_at_ms,
@@ -1085,7 +1077,7 @@ def read_session_phases(
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         """
-        SELECT phase_id, session_id, position, phase_type, confidence, start_index, end_index,
+        SELECT phase_id, session_id, position, start_index, end_index,
             started_at_ms, ended_at_ms, duration_ms, tool_counts_json, word_count,
             input_high_water_mark, input_high_water_mark_source,
             evidence_json, inference_json, search_text
@@ -1100,8 +1092,6 @@ def read_session_phases(
             phase_id=row["phase_id"],
             session_id=row["session_id"],
             position=row["position"],
-            phase_type=row["phase_type"],
-            confidence=row["confidence"],
             start_index=row["start_index"],
             end_index=row["end_index"],
             started_at_ms=row["started_at_ms"],
