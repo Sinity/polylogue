@@ -2107,8 +2107,6 @@ class TestReaderViewProfiles:
         assert isinstance(context_payload["token_estimate"], int)
         assert context_payload["token_estimate"] > 0
         assert isinstance(context_payload["omitted"], list)
-        context_sessions = cast(list[dict[str, object]], context_payload["sessions"])
-        assert context_sessions[0]["session_id"] == C1
         assert neighbors["view"] == "neighbors"
         neighbor_payload = cast(dict[str, object], neighbors["payload"])
         neighbor_rows = cast(list[dict[str, object]], neighbor_payload["neighbors"])

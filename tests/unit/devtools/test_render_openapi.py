@@ -53,5 +53,5 @@ def test_openapi_read_view_route_uses_shared_http_capability_contract() -> None:
     assert parameters["format"]["schema"]["enum"] == list(read_view_http_format_choices())
     assert set(read_view_http_query_params()).issubset(parameters)
     assert "context-pack" in read_route["description"]
-    assert parameters["max_text"]["schema"]["default"] == 200
+    assert "max_tokens" in parameters
     assert parameters["message_role"]["schema"]["type"] == "string"

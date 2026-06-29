@@ -110,13 +110,9 @@ def _read_view_parameter(name: str) -> dict[str, Any]:
             "description": "Messages/neighbor page size where applicable.",
             "schema": {"type": "integer", "minimum": 1},
         },
-        "max_messages": {
-            "description": "Maximum messages per session for context-pack.",
+        "max_tokens": {
+            "description": "Token budget for the compiled context image; over-budget segments are omitted.",
             "schema": {"type": "integer", "minimum": 1},
-        },
-        "max_text": {
-            "description": "Maximum text characters per context-pack message excerpt.",
-            "schema": {"type": "integer", "minimum": 1, "default": 200},
         },
         "message_role": {
             "description": "Restrict the messages view to one or more message roles.",

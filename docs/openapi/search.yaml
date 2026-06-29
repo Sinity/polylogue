@@ -419,9 +419,10 @@ paths:
       - name: max_tokens
         in: query
         required: false
-        description: 'Read-view option advertised by /api/read-view-profiles: max_tokens.'
+        description: Token budget for the compiled context image; over-budget segments are omitted.
         schema:
-          type: string
+          type: integer
+          minimum: 1
       - name: no_redact
         in: query
         required: false

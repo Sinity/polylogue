@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import click
 import pytest
@@ -66,40 +66,13 @@ def test_read_all_and_analyze_count_update_parent_request() -> None:
         with patch("polylogue.cli.query_verbs.run_bulk_export_view") as bulk_export:
             wrapped_read(
                 child,
-                "summary",
-                "terminal",
-                "json",
-                None,
-                True,
-                (),
-                (),
-                None,
-                7,
-                0,
-                24,
-                None,
-                2,
-                0.3,
-                True,
-                False,
-                5,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                5,
-                20,
-                False,
-                False,
-                False,
-                False,
-                False,
-                False,
-                "id,title",
-                False,
-                False,
+                **_read_verb_kwargs(
+                    view="summary",
+                    output_format="json",
+                    export_all=True,
+                    limit=7,
+                    fields="id,title",
+                ),
             )
 
     bulk_export.assert_not_called()
@@ -116,40 +89,13 @@ def test_read_all_and_analyze_count_update_parent_request() -> None:
         with patch("polylogue.cli.query_verbs.run_bulk_export_view") as bulk_export:
             wrapped_read(
                 child,
-                "summary",
-                "file",
-                "json",
-                out_path,
-                True,
-                (),
-                (),
-                None,
-                None,
-                0,
-                24,
-                None,
-                2,
-                0.3,
-                True,
-                False,
-                5,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                5,
-                20,
-                False,
-                False,
-                False,
-                False,
-                False,
-                False,
-                None,
-                False,
-                False,
+                **_read_verb_kwargs(
+                    view="summary",
+                    destination="file",
+                    output_format="json",
+                    out_path=out_path,
+                    export_all=True,
+                ),
             )
 
     bulk_export.assert_not_called()
@@ -213,7 +159,8 @@ def test_read_direct_ref_emits_shared_resolution_payload(capsys: pytest.CaptureF
             pack_origin=None,
             pack_query=None,
             max_sessions=5,
-            max_messages=20,
+            max_tokens=None,
+            include_assertions=False,
             no_redact=False,
             no_code_blocks=False,
             no_tool_calls=False,
@@ -285,10 +232,13 @@ def test_select_verb_json_flag_overrides_print_field() -> None:
 
 
 def test_read_view_click_choices_come_from_view_profiles() -> None:
+    # --view accepts a comma-separated list of views (for multi-view composition),
+    # so it is a free string validated against the profile registry at runtime
+    # rather than a single-value click.Choice.
     option = next(param for param in query_verbs.read_verb.params if param.name == "view")
 
-    assert isinstance(option.type, click.Choice)
-    assert tuple(option.type.choices) == read_view_choices()
+    assert not isinstance(option.type, click.Choice)
+    assert query_verbs._READ_VIEWS == read_view_choices()
 
 
 def test_read_view_handlers_cover_view_profiles() -> None:
@@ -354,7 +304,8 @@ def _read_verb_kwargs(**overrides: object) -> dict[str, object]:
         "pack_origin": None,
         "pack_query": None,
         "max_sessions": 5,
-        "max_messages": 20,
+        "max_tokens": None,
+        "include_assertions": False,
         "no_redact": False,
         "no_code_blocks": False,
         "no_tool_calls": False,
@@ -458,17 +409,26 @@ def test_read_verb_context_composes_preamble_not_passthrough() -> None:
 
 
 def test_read_verb_context_pack_invokes_pack_view() -> None:
-    """read --view context-pack routes to the context-pack view with pack options."""
+    """read --view context-pack compiles a ContextImage via context_pack_payload."""
+    from polylogue.context.compiler import ContextImage, ContextSpec
+
     _, child = _context_pair(query_terms=())
+    child.obj.polylogue = SimpleNamespace(context_pack_payload=MagicMock(name="context_pack_payload"))
     wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
-    with patch("polylogue.context.pack.run_context_pack_view") as pack:
+    image = ContextImage(spec=ContextSpec(seed_query="cost", read_views=("messages",)), segments=())
+    with (
+        patch("polylogue.cli.query_verbs.run_coroutine_sync", return_value=image),
+        patch("polylogue.cli.read_views.base.deliver_content") as deliver,
+    ):
         wrapped(child, **_read_verb_kwargs(view="context-pack", pack_query="cost", max_sessions=3))
 
-    pack.assert_called_once()
-    assert pack.call_args.kwargs["query"] == "cost"
-    assert pack.call_args.kwargs["max_sessions"] == 3
+    child.obj.polylogue.context_pack_payload.assert_called_once()
+    kwargs = child.obj.polylogue.context_pack_payload.call_args.kwargs
+    assert kwargs["query"] == "cost"
+    assert kwargs["max_sessions"] == 3
+    deliver.assert_called_once()
 
 
 def test_read_verb_recovery_compiles_digest() -> None:
@@ -831,14 +791,14 @@ def test_read_view_recovery_requires_session_id() -> None:
 def test_read_view_rejects_format_outside_selected_profile() -> None:
     env = SimpleNamespace(polylogue=SimpleNamespace())
 
-    with pytest.raises(click.UsageError, match="read --view context-pack does not support --format json"):
+    with pytest.raises(click.UsageError, match="read --view raw does not support --format markdown"):
         read_view_handlers.run_read_view(
             cast(AppEnv, env),
             RootModeRequest.from_params({}),
             ReadViewInvocation(
-                view="context-pack",
-                session_id=None,
-                output_format="json",
+                view="raw",
+                session_id="codex-session:abc",
+                output_format="markdown",
                 destination="terminal",
                 out_path=None,
             ),
