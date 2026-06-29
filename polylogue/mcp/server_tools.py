@@ -819,10 +819,18 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def get_messages(
         session_id: str,
+        message_role: str | None = None,
+        message_type: str | None = None,
+        material_origin: str | None = None,
         limit: MCPToolLimit = 50,
         offset: MCPToolOffset = 0,
     ) -> str:
         async def run() -> str:
+            from polylogue.archive.message.types import validate_message_type_filter
+
+            normalized_message_type = (
+                validate_message_type_filter(message_type).value if message_type is not None else None
+            )
             config = hooks.get_config()
             try:
                 with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
@@ -831,6 +839,9 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 return hooks.json_payload(
                     archive_messages_payload(
                         session,
+                        roles=(message_role,) if message_role else (),
+                        message_type=normalized_message_type,
+                        material_origins=(material_origin,) if material_origin else (),
                         limit=hooks.clamp_limit(limit),
                         offset=max(0, offset),
                     )

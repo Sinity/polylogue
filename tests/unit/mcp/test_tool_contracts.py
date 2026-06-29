@@ -862,6 +862,22 @@ class TestGetSessionTool:
         assert [message["text"] for message in payload["messages"]] == expected_texts
         assert payload["total"] == len(expected_texts)
 
+    def test_get_messages_rejects_unknown_message_type(self, mcp_server: MCPServerUnderTest) -> None:
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_get_polylogue.return_value = mock_poly
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["get_messages"].fn,
+                session_id="test:long",
+                message_type="summmary",
+            )
+
+        body = json.loads(result)
+        assert body["is_error"] is True
+        assert body["tool"] == "get_messages"
+        assert body["code"] == "internal_error"
+        mock_poly.get_messages_paginated.assert_not_called()
+
     def test_get_messages_returns_unfiltered_session_messages(
         self,
         tmp_path: Path,
