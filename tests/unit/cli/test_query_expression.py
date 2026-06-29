@@ -3898,8 +3898,18 @@ class TestBooleanQueryExpression:
             SessionBuilder(index_db, "authored-count-hit")
             .provider("claude-code")
             .title("authored count hit")
-            .add_message("m-hit-prompt-1", role="user", text="please inspect")
-            .add_message("m-hit-prompt-2", role="user", text="and add coverage")
+            .add_message(
+                "m-hit-prompt-1",
+                role="user",
+                text="please inspect",
+                material_origin="human_authored",
+            )
+            .add_message(
+                "m-hit-prompt-2",
+                role="user",
+                text="and add coverage",
+                material_origin="human_authored",
+            )
             .add_message(
                 "m-hit-runtime",
                 role="user",
@@ -3912,7 +3922,12 @@ class TestBooleanQueryExpression:
             SessionBuilder(index_db, "authored-count-control")
             .provider("claude-code")
             .title("authored count control")
-            .add_message("m-control-prompt", role="user", text="please inspect")
+            .add_message(
+                "m-control-prompt",
+                role="user",
+                text="please inspect",
+                material_origin="human_authored",
+            )
             .add_message(
                 "m-control-runtime-1",
                 role="user",
