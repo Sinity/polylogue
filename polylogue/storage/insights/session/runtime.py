@@ -18,6 +18,10 @@ SessionInsightReadyFlag: TypeAlias = Literal[
     "work_event_inference_rows_ready",
     "work_event_inference_fts_ready",
     "phase_inference_rows_ready",
+    "phase_rows_ready",
+    "run_rows_ready",
+    "observed_event_rows_ready",
+    "context_snapshot_rows_ready",
     "threads_ready",
     "threads_fts_ready",
     "tag_rollups_ready",
@@ -140,3 +144,30 @@ class SessionInsightStatusSnapshot:
 
     def ready_flag(self, key: SessionInsightReadyFlag) -> bool:
         return bool(getattr(self, key))
+
+    @property
+    def phase_count(self) -> int:
+        """Evidence-tier session phase row count.
+
+        ``phase_inference_count`` is the historical storage/status field name.
+        Public readers should prefer this alias: phases are deterministic
+        time-gap intervals, not a probabilistic phase-kind inference surface.
+        """
+
+        return self.phase_inference_count
+
+    @property
+    def expected_phase_count(self) -> int:
+        return self.expected_phase_inference_count
+
+    @property
+    def stale_phase_count(self) -> int:
+        return self.stale_phase_inference_count
+
+    @property
+    def orphan_phase_count(self) -> int:
+        return self.orphan_phase_inference_count
+
+    @property
+    def phase_rows_ready(self) -> bool:
+        return self.phase_inference_rows_ready
