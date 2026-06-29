@@ -66,17 +66,9 @@ def build_retrieval_bands_from_status(
     evidence_materialized_rows = session_status.profile_row_count
     evidence_ready = True
 
-    inference_source_rows = (
-        session_status.profile_row_count
-        + session_status.work_event_inference_count
-        + session_status.phase_inference_count
-    )
-    inference_materialized_rows = (
-        session_status.profile_row_count
-        + session_status.work_event_inference_fts_count
-        + session_status.phase_inference_count
-    )
-    inference_ready = session_status.work_event_inference_fts_ready and session_status.phase_inference_rows_ready
+    inference_source_rows = session_status.profile_row_count + session_status.work_event_inference_count
+    inference_materialized_rows = session_status.profile_row_count + session_status.work_event_inference_fts_count
+    inference_ready = session_status.work_event_inference_fts_ready
     enrichment_source_rows = session_status.profile_row_count
     enrichment_materialized_rows = session_status.profile_row_count
     enrichment_ready = True
@@ -126,15 +118,13 @@ def build_retrieval_bands_from_status(
                 session_status.profile_inference_fts_duplicate_count
                 + session_status.work_event_inference_fts_duplicate_count
                 + session_status.stale_work_event_inference_count
-                + session_status.stale_phase_inference_count
             ),
             "detail": (
                 f"Inference retrieval ready ({inference_materialized_rows:,}/{inference_source_rows:,} supporting rows)"
                 if inference_ready
                 else (
                     f"Inference retrieval pending ({inference_materialized_rows:,}/{inference_source_rows:,} supporting rows; "
-                    f"work_event_inference_fts={session_status.work_event_inference_fts_count:,}/{session_status.work_event_inference_count:,}, "
-                    f"phase_inference={session_status.phase_inference_count:,}/{session_status.expected_phase_inference_count:,})"
+                    f"work_event_inference_fts={session_status.work_event_inference_fts_count:,}/{session_status.work_event_inference_count:,})"
                 )
             ),
         },

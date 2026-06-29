@@ -246,7 +246,7 @@ def build_timeline_statuses(metrics: Metrics) -> dict[str, DerivedModelStatus]:
         "session_phase_inference": _session_timeline_status(
             metrics,
             name="session_phase_inference",
-            label="Session phase inference",
+            label="Session phase intervals",
             ready_key="phase_rows_ready",
             rows_key="phase_rows",
             expected_rows_key="expected_phase_rows",

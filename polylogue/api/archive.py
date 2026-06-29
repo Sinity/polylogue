@@ -688,7 +688,7 @@ def _archive_health_report(config: Config) -> ReadinessReport:
             insights_ready = (
                 insight_status.profile_rows_ready
                 and insight_status.work_event_inference_rows_ready
-                and insight_status.phase_inference_rows_ready
+                and insight_status.phase_rows_ready
                 and insight_status.threads_ready
             )
             checks.append(

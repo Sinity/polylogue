@@ -51,7 +51,6 @@ from polylogue.insights.archive import (
     SessionLatencyProfileInsight,
     SessionLatencyProfilePayload,
     SessionPhaseEvidencePayload,
-    SessionPhaseInferencePayload,
     SessionPhaseInsight,
     SessionProfileInsight,
     SessionTagRollupInsight,
@@ -2938,12 +2937,12 @@ class ArchiveStore:
             "session_phases": (
                 "Session Phases",
                 "session_phases",
-                status.phase_inference_count,
-                status.expected_phase_inference_count,
+                status.phase_count,
+                status.expected_phase_count,
                 0,
-                status.stale_phase_inference_count,
-                status.orphan_phase_inference_count,
-                {"phase_inference_rows_ready": status.phase_inference_rows_ready},
+                status.stale_phase_count,
+                status.orphan_phase_count,
+                {"phase_rows_ready": status.phase_rows_ready},
                 ("session_phases",),
             ),
             "threads": (
@@ -4859,25 +4858,13 @@ def _phase_insight_from_archive_row(
         "tool_counts": phase.tool_counts,
         "word_count": phase.word_count,
     }
-    # The always-constant session_phases.confidence column was dropped in
-    # index schema v18. The phase inference confidence now lives only in the
-    # inference_json payload (default 0.0); read it from there.
-    _raw_confidence = phase.inference.get("confidence", 0.0)
-    phase_confidence = float(_raw_confidence) if isinstance(_raw_confidence, (int, float)) else 0.0
-    inference_payload = {
-        **phase.inference,
-        "confidence": phase_confidence,
-        "support_level": confidence_from_score(phase_confidence),
-    }
     return SessionPhaseInsight(
         phase_id=phase.phase_id,
         session_id=phase.session_id,
         source_name=_provider_for_origin(origin).value,
         phase_index=phase.position,
         provenance=_archive_provenance(materialization),
-        inference_provenance=_archive_inference_provenance(materialization),
         evidence=SessionPhaseEvidencePayload.model_validate(evidence_payload),
-        inference=SessionPhaseInferencePayload.model_validate(inference_payload),
     )
 
 

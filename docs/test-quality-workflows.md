@@ -184,7 +184,7 @@ Use the named lanes through the runner.
 | `live-insights-coverage-day` | 180 | Live archive day coverage insight surface over the recent semantic slice |
 | `live-insights-coverage-provider` | 180 | Live archive provider coverage insight surface |
 | `live-insights-debt` | 180 | Live archive debt and cleanup insight view |
-| `live-insights-phases` | 180 | Live archive inferred phase insight surface |
+| `live-insights-phases` | 180 | Live archive phase interval evidence surface |
 | `live-insights-profiles-evidence` | 180 | Live archive evidence-tier session-profile insight surface |
 | `live-insights-profiles-inference` | 180 | Live archive inference-tier session-profile insight surface |
 | `live-insights-status` | 180 | Live archive insight status view |
@@ -367,7 +367,7 @@ These projections explain which executable lanes, inferred fixture scenarios, or
 | `validation-lane` | `live-insights-coverage-day` | `archive-coverage-query-loop` | `archive_session_rows`<br>`session_profile_rows`<br>`archive_coverage_results` | `query-archive-coverage` | — | `insights`<br>`coverage` | Live archive day coverage insight surface over the recent semantic slice |
 | `validation-lane` | `live-insights-coverage-provider` | `archive-coverage-query-loop` | `archive_session_rows`<br>`session_profile_rows`<br>`archive_coverage_results` | `query-archive-coverage` | — | `insights`<br>`coverage` | Live archive provider coverage insight surface |
 | `validation-lane` | `live-insights-debt` | `archive-debt-query-loop` | `archive_readiness`<br>`embedding_status_results`<br>`message_fts`<br>`archive_debt_results` | `query-archive-debt` | — | `insights`<br>`debt` | Live archive debt and cleanup insight view |
-| `validation-lane` | `live-insights-phases` | `session-phase-query-loop` | `session_phase_rows`<br>`session_phase_results` | `query-session-phases` | — | `insights`<br>`phases` | Live archive inferred phase insight surface |
+| `validation-lane` | `live-insights-phases` | `session-phase-query-loop` | `session_phase_rows`<br>`session_phase_results` | `query-session-phases` | — | `insights`<br>`phases` | Live archive phase interval evidence surface |
 | `validation-lane` | `live-insights-profiles-evidence` | `session-profile-query-loop` | `session_profile_rows`<br>`session_profile_results` | `query-session-profiles` | — | `insights`<br>`session-profiles` | Live archive evidence-tier session-profile insight surface |
 | `validation-lane` | `live-insights-profiles-inference` | `session-profile-query-loop` | `session_profile_rows`<br>`session_profile_results` | `query-session-profiles` | — | `insights`<br>`session-profiles` | Live archive inference-tier session-profile insight surface |
 | `validation-lane` | `live-insights-small` | `session-insight-status-query-loop`<br>`session-tag-rollup-query-loop`<br>`session-query-loop` | `session_insight_readiness`<br>`session_insight_status_results`<br>`session_tag_rollup_rows`<br>`session_tag_rollup_results`<br>`message_fts`<br>`session_query_results` | `query-session-insight-status`<br>`query-session-tag-rollups`<br>`query-sessions` | — | `insights`<br>`status`<br>`tags`<br>`live`<br>`project-stats` | Bounded live archive insight and grouped-stats lane |

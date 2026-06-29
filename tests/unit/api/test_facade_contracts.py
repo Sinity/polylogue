@@ -3305,6 +3305,9 @@ async def test_archive_tiers_api_timeline_insights_read_index_tier(tmp_path: Pat
         assert phases[0].source_name == Provider.CODEX.value
         assert phases[0].provenance.materializer_version == 8
         assert phases[0].evidence.tool_counts == {"apply_patch": 1}
+        assert phases[0].semantic_tier == "evidence"
+        assert phases[0].inference is None
+        assert phases[0].inference_provenance is None
     finally:
         await archive.close()
 
@@ -3974,9 +3977,9 @@ async def test_archive_tiers_api_session_insight_status_reads_index_tier(tmp_pat
         assert status.expected_work_event_inference_count == 1
         assert status.stale_work_event_inference_count == 0
         assert status.work_event_inference_rows_ready is True
-        assert status.phase_inference_count == 1
-        assert status.expected_phase_inference_count == 1
-        assert status.phase_inference_rows_ready is True
+        assert status.phase_count == 1
+        assert status.expected_phase_count == 1
+        assert status.phase_rows_ready is True
         assert status.thread_count == 2
         assert status.root_threads == 2
         assert status.threads_ready is True

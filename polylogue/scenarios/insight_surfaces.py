@@ -62,7 +62,7 @@ INSIGHT_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
         live_variants=(
             CliSurfaceVariant(
                 name="live-insights-phases",
-                description="Live archive inferred phase insight surface",
+                description="Live archive phase interval evidence surface",
                 suffix_args=("--limit", "3", "--format", "json"),
                 env="any",
             ),
