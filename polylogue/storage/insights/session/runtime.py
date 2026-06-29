@@ -18,6 +18,7 @@ SessionInsightReadyFlag: TypeAlias = Literal[
     "work_event_inference_rows_ready",
     "work_event_inference_fts_ready",
     "phase_inference_rows_ready",
+    "phase_rows_ready",
     "run_rows_ready",
     "observed_event_rows_ready",
     "context_snapshot_rows_ready",
