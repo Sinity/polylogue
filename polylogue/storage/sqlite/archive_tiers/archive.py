@@ -839,6 +839,10 @@ class ArchiveStore:
         if origin is not None:
             where.append("s.origin = ?")
             params.append(origin)
+        # `kind` no longer filters: session_phases are time-gap-segmented
+        # intervals with no intent/type classification (the always-constant
+        # phase_type column was dropped in index schema v18). The parameter is
+        # retained for call-signature stability but is intentionally ignored.
         if since_ms is not None:
             where.append("COALESCE(sp.started_at_ms, s.sort_key_ms) >= ?")
             params.append(since_ms)
@@ -4810,6 +4814,16 @@ def _phase_insight_from_archive_row(
         "duration_ms": phase.duration_ms,
         "tool_counts": phase.tool_counts,
         "word_count": phase.word_count,
+    }
+    # The always-constant session_phases.confidence column was dropped in
+    # index schema v18. The phase inference confidence now lives only in the
+    # inference_json payload (default 0.0); read it from there.
+    _raw_confidence = phase.inference.get("confidence", 0.0)
+    phase_confidence = float(_raw_confidence) if isinstance(_raw_confidence, (int, float)) else 0.0
+    inference_payload = {
+        **phase.inference,
+        "confidence": phase_confidence,
+        "support_level": confidence_from_score(phase_confidence),
     }
     return SessionPhaseInsight(
         phase_id=phase.phase_id,
