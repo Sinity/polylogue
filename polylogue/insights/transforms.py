@@ -1357,9 +1357,7 @@ def _render_continue_report(digest: SessionDigest) -> str:
     # not synthesized here.
     lines.extend(["", "## Recent Outcomes (structured tool/test results)"])
     if digest.events:
-        lines.extend(
-            f"- {event.kind}: {event.summary}{_evidence_suffix(digest, event.raw_refs)}" for event in digest.events[:10]
-        )
+        lines.extend(f"- {event.kind}: {event.summary}{_evidence_suffix(digest, event.raw_refs)}" for event in digest.events[:10])
     else:
         lines.append(f"- none extracted{_evidence_suffix(digest, session_refs)}")
     lines.extend(["", "## Subagent Reports"])
