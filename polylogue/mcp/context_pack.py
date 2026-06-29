@@ -1,4 +1,11 @@
-"""Context pack builder — typed models for agent-facing context bundles."""
+"""Context-pack session selection helpers.
+
+The context-pack *payload* is no longer assembled here: compilation collapsed
+onto the shared ``compile_context`` / ``ContextImage`` engine (see
+``polylogue.context.compiler`` and ``Polylogue.context_pack_payload``). What
+remains is the recall-oriented query-algebra **selection** used to pick which
+sessions a context pack should cover.
+"""
 
 from __future__ import annotations
 
@@ -9,8 +16,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, TypedDict
 
-from pydantic import BaseModel, Field
-
 from polylogue.mcp.archive_support import archive_index_active_paths, archive_query_filters
 from polylogue.storage.sqlite.archive_tiers.archive import (
     ArchiveSessionSearchHit,
@@ -19,162 +24,17 @@ from polylogue.storage.sqlite.archive_tiers.archive import (
 )
 
 if TYPE_CHECKING:
-    from polylogue.archive.actions.actions import Action
     from polylogue.archive.query.spec import SessionQuerySpec
 
 
-class ContextPackProject(BaseModel):
-    repo_url: str | None = None
-    repo_name: str | None = None
-    branch: str | None = None
-    cwd_paths: list[str] = Field(default_factory=list)
-    affected_paths: list[str] = Field(default_factory=list)
-
-
-class ContextPackDateRange(BaseModel):
-    since: str | None = None
-    until: str | None = None
-    earliest: str | None = None
-    latest: str | None = None
-    sessions_in_range: int = 0
-    session_count_in_range: int = 0
-    has_gaps: bool = False
-
-
-class ContextPackQueryContext(BaseModel):
-    query: str | None = None
-    project_path: str | None = None
-    project_repo: str | None = None
-    origin: str | None = None
-    query_matched: int = 0
-    query_total: int = 0
-    total_matching_sessions: int = 0
-    sessions_included: int = 0
-    match_strategy: str = "strict"
-    relaxed_filters: list[str] = Field(default_factory=list)
-
-
-class ContextPackMessage(BaseModel):
-    role: str
-    text: str
-    sort_key: float | None = None
-    has_tool_use: bool = False
-    has_thinking: bool = False
-
-
-class ContextPackSession(BaseModel):
-    session_id: str
-    title: str | None = None
-    origin: str
-    created_at: str | None = None
-    updated_at: str | None = None
-    message_count: int = 0
-    tool_use_count: int | None = None
-    messages: list[ContextPackMessage] = Field(default_factory=list)
-    cwd_paths: list[str] = Field(default_factory=list)
-    branch_names: list[str] = Field(default_factory=list)
-    affected_paths: list[str] = Field(default_factory=list)
-
-
-class ContextPackActionSummary(BaseModel):
-    tool_name: str
-    count: int
-    cwd_paths: list[str] = Field(default_factory=list)
-    affected_paths: list[str] = Field(default_factory=list)
-
-
-class ContextPackUnresolvedWork(BaseModel):
-    session_id: str | None = None
-    origin: str | None = None
-    title: str | None = None
-    description: str | None = None
-    last_activity: str | None = None
-    tool_use_count: int | None = None
-    reason: str | None = None
-    source: str = "action"
-
-
-class ContextPackProvenance(BaseModel):
-    generated_at: str = ""
-    source: str = "polylogue"
-    redacted: bool = True
-    archive_runtime: str = "archive_file_set"
-    archive_root: str | None = None
-    active_db_path: str | None = None
-    redaction_policy: str = "public_refs_and_redacted_paths"
-
-
-class ContextPackScope(BaseModel):
-    """What a context-pack selected and bounded for handoff."""
-
-    seed_refs: list[str] = Field(default_factory=list)
-    read_views: list[str] = Field(default_factory=lambda: ["context-pack"])
-    project_path: str | None = None
-    project_repo: str | None = None
-    origin: str | None = None
-    since: str | None = None
-    until: str | None = None
-    query: str | None = None
-    include_messages: bool = True
-    limits: dict[str, int] = Field(default_factory=dict)
-
-
-class ContextPackOmission(BaseModel):
-    """Material intentionally omitted or unavailable in a context-pack."""
-
-    ref: str | None = None
-    query: str | None = None
-    view: str | None = None
-    reason: str
-    detail: str
-    evidence_refs: list[str] = Field(default_factory=list)
-
-
-class ContextPackSizeEstimate(BaseModel):
-    """Approximate byte/token posture for context-pack consumers."""
-
-    json_bytes: int = 0
-    message_text_bytes: int = 0
-    session_count: int = 0
-    message_count: int = 0
-    token_estimate: int = 0
-
-
-class ContextPackIntent(BaseModel):
-    """What the user was trying to accomplish (from session title + first messages)."""
-
-    summary: str = ""
-    goals: list[str] = Field(default_factory=list)
-
-
-class ContextPackDecisions(BaseModel):
-    """Key decisions and their context (from actions + message analysis)."""
-
-    items: list[str] = Field(default_factory=list)
-
-
-class ContextPackPayload(BaseModel):
-    selection_strategy: str = "strict"
-    scope: ContextPackScope = Field(default_factory=ContextPackScope)
-    omissions: list[ContextPackOmission] = Field(default_factory=list)
-    evidence_refs: list[str] = Field(default_factory=list)
-    caveats: list[str] = Field(default_factory=list)
-    redaction_policy: str = "public_refs_and_redacted_paths"
-    token_estimate: int = 0
-    size_estimate: ContextPackSizeEstimate = Field(default_factory=ContextPackSizeEstimate)
-    intent: ContextPackIntent = Field(default_factory=ContextPackIntent)
-    decisions: ContextPackDecisions = Field(default_factory=ContextPackDecisions)
-    project: ContextPackProject = Field(default_factory=ContextPackProject)
-    date_range: ContextPackDateRange = Field(default_factory=ContextPackDateRange)
-    query_context: ContextPackQueryContext = Field(default_factory=ContextPackQueryContext)
-    sessions: list[ContextPackSession] = Field(default_factory=list)
-    action_summaries: list[ContextPackActionSummary] = Field(default_factory=list)
-    unresolved_work: list[ContextPackUnresolvedWork] = Field(default_factory=list)
-    provenance: ContextPackProvenance = Field(default_factory=ContextPackProvenance)
-    total_sessions: int = 0
-    total_messages: int = 0
-    total_tool_calls: int = 0
-    truncated: bool = False
+def _clamp_context_pack_limit(value: int | object) -> int:
+    if isinstance(value, bool):
+        return 1
+    if isinstance(value, int):
+        return max(1, min(value, 20))
+    if isinstance(value, str | bytes | bytearray):
+        return max(1, min(int(value), 20))
+    return 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -435,72 +295,3 @@ def _parse_archive_datetime(value: str | None) -> datetime | None:
     if value is None:
         return None
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
-
-
-def redact_path(path: str) -> str:
-    import os
-
-    home = os.path.expanduser("~")
-    if path.startswith(home):
-        return "~" + path[len(home) :]
-    return path
-
-
-def _build_project_context(
-    actions: Sequence[Action],
-    *,
-    redact: bool = True,
-) -> ContextPackProject:
-    """Build project context from actions across matched sessions."""
-    cwd_set: list[str] = []
-    branch_set: list[str] = []
-    affected_set: list[str] = []
-
-    for event in actions:
-        if event.cwd_path:
-            cwd_display = redact_path(event.cwd_path) if redact else event.cwd_path
-            if cwd_display not in cwd_set:
-                cwd_set.append(cwd_display)
-        for branch in event.branch_names:
-            if branch and branch not in branch_set:
-                branch_set.append(branch)
-        for path in event.affected_paths:
-            affected = redact_path(path) if redact else path
-            if affected not in affected_set:
-                affected_set.append(affected)
-
-    # Use first non-empty branch as primary
-    primary_branch = branch_set[0] if branch_set else None
-
-    return ContextPackProject(
-        branch=primary_branch,
-        cwd_paths=cwd_set,
-        affected_paths=affected_set,
-    )
-
-
-def _summarize_actions(
-    actions: Sequence[Action],
-    *,
-    redact: bool = True,
-) -> list[ContextPackActionSummary]:
-    """Aggregate actions into tool-level summaries."""
-    counts: dict[str, int] = {}
-    cwds: dict[str, set[str]] = {}
-    paths: dict[str, set[str]] = {}
-    for action in actions:
-        tool = action.normalized_tool_name
-        counts[tool] = counts.get(tool, 0) + 1
-        if action.cwd_path:
-            cwds.setdefault(tool, set()).add(redact_path(action.cwd_path) if redact else action.cwd_path)
-        for path in action.affected_paths:
-            paths.setdefault(tool, set()).add(redact_path(path) if redact else path)
-    return [
-        ContextPackActionSummary(
-            tool_name=tool,
-            count=cnt,
-            cwd_paths=sorted(cwds.get(tool, set())),
-            affected_paths=sorted(paths.get(tool, set())),
-        )
-        for tool, cnt in sorted(counts.items(), key=lambda x: -x[1])
-    ]

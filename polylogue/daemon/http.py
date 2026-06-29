@@ -3180,11 +3180,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 include_messages = True
                 if self._get_param(params, "include_messages") is not None:
                     include_messages = self._get_bool(params, "include_messages")
+                max_tokens = self._get_int(params, "max_tokens", 0) or None
                 context_payload = await poly.context_pack_payload(
                     seed_session_id=conv_id,
                     max_sessions=1,
-                    max_messages_per_session=self._get_int(params, "max_messages", 20),
-                    max_text=self._get_int(params, "max_text", 200),
+                    max_tokens=max_tokens,
                     include_messages=include_messages,
                     redact_paths=not self._get_bool(params, "no_redact"),
                 )
