@@ -409,8 +409,8 @@ def _phase_summary(phases: Sequence[SessionPhaseInsight]) -> tuple[ResumePhase, 
         ResumePhase(
             phase_index=phase.phase_index,
             message_range=phase.evidence.message_range,
-            confidence=phase.inference.confidence,
-            support_level=phase.inference.support_level,
+            confidence=phase.inference.confidence if phase.inference is not None else 0.0,
+            support_level=phase.inference.support_level if phase.inference is not None else "weak",
         )
         for phase in phases[:5]
     )

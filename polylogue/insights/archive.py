@@ -324,15 +324,15 @@ class SessionWorkEventInsight(ArchiveInsightModel):
 class SessionPhaseInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
     insight_kind: str = "session_phase"
-    semantic_tier: str = "inference"
+    semantic_tier: str = "evidence"
     phase_id: str
     session_id: str
     source_name: str
     phase_index: int
     provenance: ArchiveInsightProvenance
-    inference_provenance: ArchiveInferenceProvenance
+    inference_provenance: ArchiveInferenceProvenance | None = None
     evidence: SessionPhaseEvidencePayload
-    inference: SessionPhaseInferencePayload
+    inference: SessionPhaseInferencePayload | None = None
 
     @classmethod
     def from_record(cls, record: SessionPhaseRecord) -> SessionPhaseInsight:
@@ -342,9 +342,7 @@ class SessionPhaseInsight(ArchiveInsightModel):
             source_name=record.source_name,
             phase_index=record.phase_index,
             provenance=_record_provenance(record),
-            inference_provenance=_record_inference_provenance(record),
             evidence=record.evidence_payload,
-            inference=record.inference_payload,
         )
 
 

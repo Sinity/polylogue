@@ -12,7 +12,7 @@ Operational readiness, audit, and export stay under `polylogue ops insights`.
 |-------------|-------------|-------------|
 | Session Profiles | `analyze insights profiles` | Per-session evidence, inference, and probabilistic enrichment: repos, tools, costs, durations, message counts, workflow shape, terminal state, summaries |
 | Work Events | `analyze insights work-events` | File-level operations detected within sessions |
-| Work Phases | `analyze insights phases` | Session segment classification: planning, implementation, verification, exploration |
+| Work Phases | `analyze insights phases` | Time-gap session intervals for navigation and rough timeline shape |
 | Work Threads | `analyze insights threads` | Multi-session groupings by repo and work continuity |
 | Session Latency Profiles | API / MCP | Per-session response/tool latency aggregates and stuck-tool counts |
 | Tag Rollups | `analyze insights tags` | Tag usage across sessions |
