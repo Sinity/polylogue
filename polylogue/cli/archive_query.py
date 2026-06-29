@@ -78,6 +78,7 @@ class _ArchiveFilterKwargs(TypedDict):
     tags: tuple[str, ...]
     excluded_tags: tuple[str, ...]
     repo_names: tuple[str, ...]
+    project_refs: tuple[str, ...]
     has_types: tuple[str, ...]
     has_tool_use: bool
     has_thinking: bool
@@ -177,6 +178,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     tags = _tags(params.get("tag"))
     excluded_tags = _tags(params.get("exclude_tag"))
     repo_names = _csv_tokens(params.get("repo"))
+    project_refs = _csv_tokens(params.get("project"))
     has_types = _csv_tokens(params.get("has_type"))
     has_tool_use = bool(params.get("filter_has_tool_use"))
     has_thinking = bool(params.get("filter_has_thinking"))
@@ -229,6 +231,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         "tags": tags,
         "excluded_tags": excluded_tags,
         "repo_names": repo_names,
+        "project_refs": project_refs,
         "has_types": has_types,
         "has_tool_use": has_tool_use,
         "has_thinking": has_thinking,
@@ -356,6 +359,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                     tags=tags,
                     excluded_tags=excluded_tags,
                     repo_names=repo_names,
+                    project_refs=project_refs,
                     has_types=has_types,
                     has_tool_use=has_tool_use,
                     has_thinking=has_thinking,
@@ -596,6 +600,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             tags=tags,
             excluded_tags=excluded_tags,
             repo_names=repo_names,
+            project_refs=project_refs,
             has_types=has_types,
             has_tool_use=has_tool_use,
             has_thinking=has_thinking,

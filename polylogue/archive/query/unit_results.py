@@ -115,6 +115,7 @@ def query_unit_session_filters(**params: object) -> dict[str, object]:
     tags = tuple(tag.lower() for tag in split_csv(params.get("tags") or params.get("tag")))
     excluded_tags = tuple(tag.lower() for tag in split_csv(params.get("excluded_tags") or params.get("exclude_tag")))
     repo_names = split_csv(params.get("repo_names") or params.get("repo"))
+    project_refs = split_csv(params.get("project_refs") or params.get("project"))
     has_types = split_csv(params.get("has_types") or params.get("has_type"))
     since_ms = params.get("since_ms")
     until_ms = params.get("until_ms")
@@ -125,6 +126,7 @@ def query_unit_session_filters(**params: object) -> dict[str, object]:
         "tags": tags,
         "excluded_tags": excluded_tags,
         "repo_names": repo_names,
+        "project_refs": project_refs,
         "has_types": has_types,
         "has_tool_use": _bool_param(params.get("has_tool_use") or params.get("filter_has_tool_use")),
         "has_thinking": _bool_param(params.get("has_thinking") or params.get("filter_has_thinking")),

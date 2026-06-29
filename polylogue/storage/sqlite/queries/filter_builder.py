@@ -49,6 +49,7 @@ def _build_session_filters(
     tool_terms: list[str] | tuple[str, ...] | None = None,
     excluded_tool_terms: list[str] | tuple[str, ...] | None = None,
     repo_names: list[str] | tuple[str, ...] | None = None,
+    project_refs: list[str] | tuple[str, ...] | None = None,
     has_tool_use: bool = False,
     has_thinking: bool = False,
     has_paste: bool = False,
@@ -196,6 +197,11 @@ def _build_session_filters(
             f"WHERE sp.session_id = {conv_id_col} AND value IN ({placeholders}))"
         )
         params.extend(repo_names)
+    if project_refs:
+        project_column = "c.provider_project_ref" if needs_stats_alias else "provider_project_ref"
+        placeholders = ",".join("?" for _ in project_refs)
+        where_clauses.append(f"{project_column} IN ({placeholders})")
+        params.extend(project_refs)
     if message_type:
         where_clauses.append(
             f"EXISTS (SELECT 1 FROM messages mt WHERE mt.session_id = {conv_id_col} AND mt.message_type = ?)"

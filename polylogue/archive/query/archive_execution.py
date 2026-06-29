@@ -130,6 +130,7 @@ class _ArchiveFilterKwargs(TypedDict):
     tags: tuple[str, ...]
     excluded_tags: tuple[str, ...]
     repo_names: tuple[str, ...]
+    project_refs: tuple[str, ...]
     has_types: tuple[str, ...]
     has_tool_use: bool
     has_thinking: bool
@@ -165,6 +166,7 @@ def _plan_filter_kwargs(plan: SessionQueryPlan) -> _ArchiveFilterKwargs:
         "tags": plan.tags,
         "excluded_tags": plan.excluded_tags,
         "repo_names": plan.repo_names,
+        "project_refs": plan.project_refs,
         "has_types": plan.has_types,
         "has_tool_use": plan.filter_has_tool_use,
         "has_thinking": plan.filter_has_thinking,

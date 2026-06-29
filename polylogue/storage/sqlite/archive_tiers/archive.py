@@ -2499,6 +2499,7 @@ class ArchiveStore:
         tags: tuple[str, ...] = (),
         excluded_tags: tuple[str, ...] = (),
         repo_names: tuple[str, ...] = (),
+        project_refs: tuple[str, ...] = (),
         has_types: tuple[str, ...] = (),
         has_tool_use: bool = False,
         has_thinking: bool = False,
@@ -2533,6 +2534,7 @@ class ArchiveStore:
             tags=tags,
             excluded_tags=excluded_tags,
             repo_names=repo_names,
+            project_refs=project_refs,
             has_types=has_types,
             has_tool_use=has_tool_use,
             has_thinking=has_thinking,
@@ -3082,6 +3084,7 @@ class ArchiveStore:
         tags: tuple[str, ...] = (),
         excluded_tags: tuple[str, ...] = (),
         repo_names: tuple[str, ...] = (),
+        project_refs: tuple[str, ...] = (),
         has_types: tuple[str, ...] = (),
         has_tool_use: bool = False,
         has_thinking: bool = False,
@@ -3119,6 +3122,7 @@ class ArchiveStore:
             tags=tags,
             excluded_tags=excluded_tags,
             repo_names=repo_names,
+            project_refs=project_refs,
             has_types=has_types,
             has_tool_use=has_tool_use,
             has_thinking=has_thinking,
@@ -3205,6 +3209,7 @@ class ArchiveStore:
         tags: tuple[str, ...] = (),
         excluded_tags: tuple[str, ...] = (),
         repo_names: tuple[str, ...] = (),
+        project_refs: tuple[str, ...] = (),
         has_types: tuple[str, ...] = (),
         has_tool_use: bool = False,
         has_thinking: bool = False,
@@ -3248,6 +3253,7 @@ class ArchiveStore:
             tags=tags,
             excluded_tags=excluded_tags,
             repo_names=repo_names,
+            project_refs=project_refs,
             has_types=has_types,
             has_tool_use=has_tool_use,
             has_thinking=has_thinking,
@@ -3332,6 +3338,7 @@ class ArchiveStore:
         tags: tuple[str, ...] = (),
         excluded_tags: tuple[str, ...] = (),
         repo_names: tuple[str, ...] = (),
+        project_refs: tuple[str, ...] = (),
         has_types: tuple[str, ...] = (),
         has_tool_use: bool = False,
         has_thinking: bool = False,
@@ -3368,6 +3375,7 @@ class ArchiveStore:
             tags=tags,
             excluded_tags=excluded_tags,
             repo_names=repo_names,
+            project_refs=project_refs,
             has_types=has_types,
             has_tool_use=has_tool_use,
             has_thinking=has_thinking,
@@ -3430,6 +3438,7 @@ class ArchiveStore:
         tags: tuple[str, ...] = (),
         excluded_tags: tuple[str, ...] = (),
         repo_names: tuple[str, ...] = (),
+        project_refs: tuple[str, ...] = (),
         has_types: tuple[str, ...] = (),
         has_tool_use: bool = False,
         has_thinking: bool = False,
@@ -3466,6 +3475,7 @@ class ArchiveStore:
             tags=tags,
             excluded_tags=excluded_tags,
             repo_names=repo_names,
+            project_refs=project_refs,
             has_types=has_types,
             has_tool_use=has_tool_use,
             has_thinking=has_thinking,
@@ -4195,6 +4205,7 @@ class ArchiveStore:
         tags: tuple[str, ...] = (),
         excluded_tags: tuple[str, ...] = (),
         repo_names: tuple[str, ...] = (),
+        project_refs: tuple[str, ...] = (),
         has_types: tuple[str, ...] = (),
         has_tool_use: bool = False,
         has_thinking: bool = False,
@@ -4228,6 +4239,7 @@ class ArchiveStore:
             tags=tags,
             excluded_tags=excluded_tags,
             repo_names=repo_names,
+            project_refs=project_refs,
             has_types=has_types,
             has_tool_use=has_tool_use,
             has_thinking=has_thinking,
@@ -4374,6 +4386,7 @@ class ArchiveStore:
         tags: tuple[str, ...] = (),
         excluded_tags: tuple[str, ...] = (),
         repo_names: tuple[str, ...] = (),
+        project_refs: tuple[str, ...] = (),
         has_types: tuple[str, ...] = (),
         has_tool_use: bool = False,
         has_thinking: bool = False,
@@ -4407,6 +4420,7 @@ class ArchiveStore:
             tags=tags,
             excluded_tags=excluded_tags,
             repo_names=repo_names,
+            project_refs=project_refs,
             has_types=has_types,
             has_tool_use=has_tool_use,
             has_thinking=has_thinking,
@@ -5316,6 +5330,8 @@ def _field_predicate_clause(
         return f"{table_alias}.session_id = ?", [values[-1]]
     if field == "repo":
         kwargs["repo_names"] = values
+    elif field == "project":
+        kwargs["project_refs"] = values
     elif field == "origin":
         kwargs["origins"] = values
     elif field == "tag":
@@ -5999,6 +6015,7 @@ def _session_filter_clause(
     tags: tuple[str, ...] = (),
     excluded_tags: tuple[str, ...] = (),
     repo_names: tuple[str, ...] = (),
+    project_refs: tuple[str, ...] = (),
     has_types: tuple[str, ...] = (),
     has_tool_use: bool = False,
     has_thinking: bool = False,
@@ -6078,6 +6095,10 @@ def _session_filter_clause(
             """.strip()
         )
         params.extend(repo_names)
+    if project_refs:
+        placeholders = ", ".join("?" for _ in project_refs)
+        clauses.append(f"{table_alias}.provider_project_ref IN ({placeholders})")
+        params.extend(project_refs)
     if has_types:
         placeholders = ", ".join("?" for _ in has_types)
         clauses.append(
