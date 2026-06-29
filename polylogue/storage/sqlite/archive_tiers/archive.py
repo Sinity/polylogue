@@ -188,6 +188,7 @@ class ArchiveSessionSummary:
     working_directories: tuple[str, ...] = ()
     git_branch: str | None = None
     git_repository_url: str | None = None
+    provider_project_ref: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1361,7 +1362,7 @@ class ArchiveStore:
                    s.assistant_message_count, s.system_message_count,
                    s.tool_message_count, s.user_word_count, s.authored_user_word_count,
                    s.assistant_word_count,
-                   s.git_branch, s.git_repository_url,
+                   s.git_branch, s.git_repository_url, s.provider_project_ref,
                    COALESCE(
                        (
                            SELECT json_group_array(swd.path)
@@ -3162,7 +3163,7 @@ class ArchiveStore:
                    s.assistant_message_count, s.system_message_count,
                    s.tool_message_count, s.user_word_count, s.authored_user_word_count,
                    s.assistant_word_count,
-                   s.git_branch, s.git_repository_url,
+                   s.git_branch, s.git_repository_url, s.provider_project_ref,
                    COALESCE(
                        (
                            SELECT json_group_array(swd.path)
@@ -4489,6 +4490,9 @@ def _summary_from_row(row: sqlite3.Row) -> ArchiveSessionSummary:
         working_directories=working_directories,
         git_branch=str(row["git_branch"]) if row["git_branch"] is not None else None,
         git_repository_url=str(row["git_repository_url"]) if row["git_repository_url"] is not None else None,
+        provider_project_ref=(
+            str(row["provider_project_ref"]) if row["provider_project_ref"] is not None else None
+        ),
     )
 
 

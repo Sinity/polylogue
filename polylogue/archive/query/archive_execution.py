@@ -202,6 +202,7 @@ def _summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary:
         working_directories=tuple(summary.working_directories),
         git_branch=summary.git_branch,
         git_repository_url=summary.git_repository_url,
+        provider_project_ref=summary.provider_project_ref,
         message_count=summary.message_count,
         tags_m2m=summary.tags,
     )
@@ -277,6 +278,7 @@ def _session_to_session(session: ArchiveSessionEnvelope) -> Session:
         working_directories=tuple(session.working_directories),
         git_branch=session.git_branch,
         git_repository_url=session.git_repository_url,
+        provider_project_ref=session.provider_project_ref,
         parent_id=SessionId(session.parent_session_id) if session.parent_session_id else None,
         branch_type=BranchType(session.branch_type) if session.branch_type else None,
     )

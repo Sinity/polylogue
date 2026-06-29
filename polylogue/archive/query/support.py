@@ -40,6 +40,7 @@ def session_to_summary(session: Session) -> SessionSummary:
         working_directories=session.working_directories,
         git_branch=session.git_branch,
         git_repository_url=session.git_repository_url,
+        provider_project_ref=session.provider_project_ref,
         parent_id=session.parent_id,
         branch_type=session.branch_type,
         message_count=len(session.messages),
