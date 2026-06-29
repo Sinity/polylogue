@@ -3269,48 +3269,46 @@ class TestBooleanQueryExpression:
 
         archive_root = workspace_env["archive_root"]
         index_db = archive_root / "index.db"
+        _failed_suite_blocks = [
+            {"type": "tool_use", "id": "t1", "name": "Bash", "tool_input": {"command": "pytest tests/unit"}},
+            {"type": "tool_result", "tool_id": "t1", "text": "1 failed", "tool_result_exit_code": 1},
+        ]
         (
             SessionBuilder(index_db, "hit")
             .provider("codex")
             .git_repository_url("polylogue")
-            .title("review handled")
-            .add_message("m-hit", role="assistant", text="Addressed review on PR #2100")
+            .title("tests failed")
+            .add_message("m-hit", role="assistant", text="Ran the suite.", blocks=_failed_suite_blocks)
             .save()
         )
         (
             SessionBuilder(index_db, "wrong-repo")
             .provider("codex")
             .git_repository_url("sinex")
-            .title("review elsewhere")
-            .add_message("m-wrong-repo", role="assistant", text="Addressed review on PR #2100")
+            .title("tests failed elsewhere")
+            .add_message("m-wrong-repo", role="assistant", text="Ran the suite.", blocks=_failed_suite_blocks)
             .save()
         )
 
-        source = parse_unit_source_expression(
-            "observed-events where session.repo:polylogue AND delivery_state:acted_on AND text:#2100"
-        )
+        query = "observed-events where session.repo:polylogue AND kind:test_failed AND delivery_state:observed"
+        source = parse_unit_source_expression(query)
         assert source is not None
         _materialize_run_projection(index_db)
 
         with ArchiveStore.open_existing(archive_root) as archive:
-            envelope = query_unit_rows(
-                archive,
-                source,
-                query="observed-events where session.repo:polylogue AND delivery_state:acted_on AND text:#2100",
-                limit=10,
-            )
+            envelope = query_unit_rows(archive, source, query=query, limit=10)
 
         assert envelope.unit == "observed-event"
         assert len(envelope.items) == 1
         row = envelope.items[0]
         assert isinstance(row, ObservedEventQueryRowPayload)
         assert (row.kind, row.delivery_state, row.session_id) == (
-            "review_acted_on",
-            "acted_on",
+            "test_failed",
+            "observed",
             "codex-session:ext-hit",
         )
-        assert row.object_refs == ("github-review:#2100",)
-        assert row.evidence_refs == ("codex-session:ext-hit::codex-session:ext-hit:m-hit",)
+        # Structured outcome events synthesize no GitHub/issue object refs.
+        assert row.object_refs == ()
 
     def test_terminal_run_source_returns_runtime_rows(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.archive.query.unit_results import query_unit_rows
@@ -3477,7 +3475,7 @@ class TestBooleanQueryExpression:
             .provider("codex")
             .git_repository_url("polylogue")
             .title("context hit")
-            .add_message("m-hit", role="user", text="Initial prompt. Injected review into context for PR #2100")
+            .add_message("m-hit", role="user", text="Initial prompt for ext-hit.")
             .add_message("m-subagent", role="assistant", text="Subagent final report")
             .save()
         )
@@ -3514,30 +3512,6 @@ class TestBooleanQueryExpression:
         assert row.snapshot_ref.startswith("context-snapshot:")
         assert row.run_ref.startswith("run:")
         assert row.evidence_refs == ("codex-session:ext-hit",)
-
-        review_source = parse_unit_source_expression(
-            "context-snapshots where session.repo:polylogue AND boundary:review_injection AND segment:#2100"
-        )
-        assert review_source is not None
-        with ArchiveStore.open_existing(archive_root) as archive:
-            review_envelope = query_unit_rows(
-                archive,
-                review_source,
-                query="context-snapshots where session.repo:polylogue AND boundary:review_injection AND segment:#2100",
-                limit=10,
-            )
-
-        assert review_envelope.unit == "context-snapshot"
-        assert len(review_envelope.items) == 1
-        review_row = review_envelope.items[0]
-        assert isinstance(review_row, ContextSnapshotQueryRowPayload)
-        assert review_row.boundary == "review_injection"
-        assert review_row.inheritance_mode == "injected"
-        assert review_row.segment_refs == (
-            "observed-event:codex-session:ext-hit:review_injected_context:0",
-            "github-review:#2100",
-        )
-        assert review_row.metadata["delivery_state"] == "injected_context"
 
         # SQL terminal units now accept the full session-scoped field set.
         assert parse_unit_source_expression("context-snapshots where session.tool:bash AND boundary:session_start")
@@ -4915,6 +4889,7 @@ class TestCLIRootRequestWiring:
 class TestFieldRegistry:
     FIELD_DESCRIPTOR_CASES = {
         "repo": ("repo:polylogue", "repo_names", ("polylogue",)),
+        "project": ("project:g-p-6a40343a", "project_refs", ("g-p-6a40343a",)),
         "origin": ("origin:claude-code-session", "origins", ("claude-code-session",)),
         "tag": ("tag:review", "tags", ("review",)),
         "path": ("path:polylogue/cli", "referenced_path", ("polylogue/cli",)),

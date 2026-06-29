@@ -53,6 +53,9 @@ def _session() -> Session:
                     role=Role.ASSISTANT,
                     text=(
                         "Decision: keep benchmarks outside verify coverage for scope, not flakiness.\n"
+                        # Prose claims about external state are deliberately present here.
+                        # They must NOT become asserted events (#2482) — only the
+                        # structured tool-result outcome below is a fact.
                         "Review posted on PR #1911\n"
                         "Read review on PR #1911\n"
                         "Addressed review on PR #1911"
@@ -68,6 +71,8 @@ def _session() -> Session:
                             "type": "tool_result",
                             "tool_id": "tool-1",
                             "text": "ruff check ... ok\n20 passed in 50.28s\nhttps://github.com/Sinity/polylogue/pull/1911",
+                            # Structured keystone outcome: exit 0 -> success.
+                            "tool_result_exit_code": 0,
                         },
                         {
                             "type": "tool_use",
@@ -78,6 +83,7 @@ def _session() -> Session:
                         {
                             "type": "tool_result",
                             "tool_id": "tool-close",
+                            # No structured outcome -> status unknown, no event.
                             "text": "✓ Closed issue Sinity/polylogue#1818",
                         },
                         {
@@ -184,17 +190,21 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
     assert {ref.ref_kind for ref in tool.raw_refs} == {"block"}
 
     close_tool = next(item for item in digest.tool_summaries if item.command == "gh issue close 1818")
+    # No structured outcome -> unknown, never inferred from output text (#2482).
+    assert close_tool.status == "unknown"
     assert close_tool.pr_refs == ()
     assert close_tool.issue_refs == ("#1818",)
 
     read_tool = next(item for item in digest.tool_summaries if item.tool_name == "Read")
     assert read_tool.handler_kind == "file_read"
+    assert read_tool.status == "unknown"
     assert read_tool.command == "polylogue/insights/transforms.py"
     assert read_tool.line_count == 2
     assert read_tool.file_refs == ("polylogue/insights/transforms.py",)
 
     commit_tool = next(item for item in digest.tool_summaries if item.command == "git rev-parse HEAD")
     assert commit_tool.handler_kind == "git"
+    assert commit_tool.status == "unknown"
     assert commit_tool.commit_refs == ("a8cd1c1516b29068ec9ce1493f262d663407ffa5",)
 
     assert len(digest.subagent_reports) == 1
@@ -217,6 +227,13 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
     assert digest.run_state.blockers == ("none",)
     assert digest.run_state.next_actions == ("merge PR #1911",)
     assert digest.run_state.raw_refs[0].message_id == "m1"
+
+    # Structured in-session outcomes only: the Bash test tool returned exit 0.
+    # The prose "MERGED #1910" / "Closed issue #1818" / "Review ... on PR #1911"
+    # produce NO events — external truths are not synthesized from prose (#2482).
+    assert {(event.kind, event.summary) for event in digest.events} == {
+        ("test_passed", "devtools verify --quick passed (exit 0)"),
+    }
 
     projection = digest.run_projection
     assert projection.session_id == "codex-session:demo"
@@ -244,31 +261,13 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
         "tool_finished",
         "subagent_started",
         "subagent_finished",
-        "check_passed",
-        "review_posted",
-        "review_seen_by_tool",
-        "review_acted_on",
+        "test_passed",
     } <= observed_kinds
-    check_projection = next(event for event in projection.events if event.kind == "check_passed")
-    assert check_projection.delivery_state == "observed"
-    assert check_projection.object_refs == (ObjectRef(kind="check-run", object_id="ruff check"),)
-    commit_projection = next(event for event in projection.events if event.summary.endswith("git rev-parse HEAD"))
-    assert (
-        ObjectRef(kind="commit", object_id="a8cd1c1516b29068ec9ce1493f262d663407ffa5") in commit_projection.object_refs
-    )
-    review_projection = next(event for event in projection.events if event.kind == "review_acted_on")
-    assert review_projection.delivery_state == "acted_on"
-    assert review_projection.object_refs == (ObjectRef(kind="github-review", object_id="#1911"),)
-
-    event_summaries = {event.summary for event in digest.events}
-    assert "PR #1911 opened" in event_summaries
-    assert "PR #1910 merged" in event_summaries
-    assert "Issue #1818 closed" in event_summaries
-    assert "20 tests passed" in event_summaries
-    assert "ruff check passed" in event_summaries
-    assert "Review on PR #1911 posted" in event_summaries
-    assert "Review on PR #1911 seen by tool" in event_summaries
-    assert "Review on PR #1911 acted on" in event_summaries
+    # Fabricated event kinds never appear in the projection.
+    assert observed_kinds.isdisjoint({"pr_merged", "pr_opened", "issue_closed", "review_posted", "check_passed"})
+    test_event = next(event for event in projection.events if event.kind == "test_passed")
+    assert test_event.delivery_state == "observed"
+    assert test_event.object_refs == ()
 
     candidates = {candidate.text for candidate in digest.decision_candidates}
     assert "goal: burn down the backlog" in candidates
@@ -346,24 +345,24 @@ def test_forensic_index_groups_claims_by_raw_ref() -> None:
     assert session_entry.raw_ref.ref_kind == "session"
 
     run_state_entry = entries["codex-session:demo::m1"]
-    assert set(run_state_entry.claim_kinds) == {"run_state", "decision_candidate", "event"}
+    # m1 carries run_state + decision candidates, but no events: outcome events
+    # come from tool-result blocks, not message prose (#2482).
+    assert set(run_state_entry.claim_kinds) == {"run_state", "decision_candidate"}
     assert "run_state" in run_state_entry.claim_labels
-    assert any(label.startswith("event:pr_merged:") for label in run_state_entry.claim_labels)
     assert any(label.startswith("decision:run_state:") for label in run_state_entry.claim_labels)
     assert run_state_entry.raw_ref.preview.startswith("Goal: burn down")
 
+    # The bash tool_use block carries both its tool summary and the structured
+    # outcome event extracted from its paired tool_result.
     bash_call_entry = entries["codex-session:demo::m2::0"]
-    assert bash_call_entry.claim_kinds == ("tool_summary",)
-    assert bash_call_entry.claim_labels == ("tool:Bash:tool-1",)
+    assert set(bash_call_entry.claim_kinds) == {"tool_summary", "event"}
+    assert "tool:Bash:tool-1" in bash_call_entry.claim_labels
+    assert any(label.startswith("event:test_passed:") for label in bash_call_entry.claim_labels)
     assert bash_call_entry.raw_ref.preview == "devtools verify --quick"
 
-    merged_event_entry = entries["codex-session:demo::m3"]
-    assert merged_event_entry.claim_kinds == ("event",)
-    assert any(label.startswith("event:pr_merged:") for label in merged_event_entry.claim_labels)
-    issue_closed_entry = entries["codex-session:demo::m2"]
-    assert any(label.startswith("event:issue_closed:") for label in issue_closed_entry.claim_labels)
-
-    assert digest.forensic_index.claim_count > len(digest.forensic_index.entries)
+    # Claims group by raw ref: the bash block carries more than one claim kind.
+    assert digest.forensic_index.claim_count >= 1
+    assert any(len(entry.claim_kinds) > 1 for entry in digest.forensic_index.entries)
 
 
 def test_forensic_index_evidence_ids_round_trip_through_typed_refs() -> None:
@@ -420,27 +419,20 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
         and entry.metadata["inheritance_mode"] == "summary"
         for entry in execution_entries
     )
+    # The structured outcome is projected as an observed test_passed event.
     assert any(
-        entry.label == "check_passed"
-        and ObjectRef(kind="check-run", object_id="ruff check") in entry.object_refs
-        and entry.metadata["delivery_state"] == "observed"
-        for entry in execution_entries
+        entry.label == "test_passed" and entry.metadata["delivery_state"] == "observed" for entry in execution_entries
     )
-    pr_event = next(entry for entry in packet.entries if entry.section == "events" and entry.label == "pr_opened")
-    assert pr_event.metadata == {"pr_refs": "#1911"}
-    assert pr_event.object_refs == (ObjectRef(kind="github-pr", object_id="#1911"),)
-    review_event = next(
-        entry for entry in packet.entries if entry.section == "events" and entry.label == "review_acted_on"
-    )
-    assert review_event.metadata == {"review_refs": "#1911"}
-    assert review_event.object_refs == (ObjectRef(kind="github-review", object_id="#1911"),)
-    assert "review_refs=#1911" in rendered
-    issue_event = next(entry for entry in packet.entries if entry.section == "events" and entry.label == "issue_closed")
-    assert issue_event.metadata == {"issue_refs": "#1818"}
-    assert issue_event.object_refs == (ObjectRef(kind="github-issue", object_id="#1818"),)
-    check_event = next(entry for entry in packet.entries if entry.section == "events" and entry.label == "check_passed")
-    assert check_event.metadata == {"test_evidence": "ruff check passed"}
-    assert check_event.object_refs == (ObjectRef(kind="check-run", object_id="ruff check"),)
+
+    # The "events" section carries only the structured outcome event — no
+    # GitHub/issue/review object refs are synthesized.
+    event_entries = tuple(entry for entry in packet.entries if entry.section == "events")
+    assert [entry.label for entry in event_entries] == ["test_passed"]
+    test_event = event_entries[0]
+    assert test_event.text == "devtools verify --quick passed (exit 0)"
+    assert test_event.metadata == {}
+    assert test_event.object_refs == ()
+
     bash_entry = next(entry for entry in packet.entries if entry.section == "tools" and entry.label == "Bash")
     assert bash_entry.metadata == {
         "handler_kind": "test",
@@ -508,16 +500,8 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
     assert "native_parent_session_id=codex-session:demo" in rendered
     assert "- [raw-evidence] context_snapshot: subagent_start" in rendered
     assert "details: boundary=subagent_start; inheritance_mode=summary" in rendered
-    assert "- [raw-evidence] check_passed: ruff check passed" in rendered
+    assert "- [raw-evidence] test_passed: devtools verify --quick passed (exit 0)" in rendered
     assert "details: delivery_state=observed" in rendered
-    assert "- [raw-evidence] pr_opened: PR #1911 opened" in rendered
-    assert "refs: github-pr:#1911" in rendered
-    assert "details: pr_refs=#1911" in rendered
-    assert "refs: github-issue:#1818" in rendered
-    assert "refs: check-run:ruff check" in rendered
-    assert "refs: tool-call:codex-session:demo:tool-1, github-pr:#1911" in rendered
-    assert "details: issue_refs=#1818" in rendered
-    assert "details: test_evidence=ruff check passed" in rendered
     assert "- [caveat] blocker: none" in rendered
     assert "refs: subagent-report:codex-session:demo:tool-2, agent:codex/Explore" in rendered
     assert "refs: tool_id=tool-2, task_id=task-42, child_session_id=codex-session:child-42" in rendered
@@ -527,6 +511,10 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
     assert "details: pr_refs=#1911; test_evidence=ruff check ... ok | 20 passed in 50.28s" in rendered
     assert "details: file_refs=polylogue/insights/transforms.py" in rendered
     assert "details: commit_refs=a8cd1c1516b29068ec9ce1493f262d663407ffa5" in rendered
+    # No fabricated GitHub/review event refs leak into the rendered packet.
+    assert "github-review" not in rendered
+    assert "pr_opened" not in rendered
+    assert "issue_closed" not in rendered
 
 
 def test_work_packet_marks_missing_evidence_explicitly() -> None:
@@ -542,6 +530,7 @@ def test_work_packet_marks_missing_evidence_explicitly() -> None:
     assert "## Evidence Gaps" in rendered
     assert "- [missing-evidence] run_state: No structured RunState section was extracted" in rendered
     assert "- [missing-evidence] tools: No tool execution summary was extracted." in rendered
+    assert "- [missing-evidence] events: No structured tool or test outcome events were extracted." in rendered
 
 
 def test_work_packet_does_not_promote_random_hex_to_commit_ref() -> None:
@@ -578,6 +567,90 @@ def test_work_packet_does_not_promote_random_hex_to_commit_ref() -> None:
     assert tool.commit_refs == ()
 
 
+def _outcome_session(*, command: str, exit_code: int | None = None, is_error: bool | None = None) -> Session:
+    result_block: dict[str, object] = {"type": "tool_result", "tool_id": "t", "text": "output"}
+    if exit_code is not None:
+        result_block["tool_result_exit_code"] = exit_code
+    if is_error is not None:
+        result_block["tool_result_is_error"] = 1 if is_error else 0
+    return Session(
+        id=SessionId("codex-session:outcome"),
+        origin=Origin.CODEX_SESSION,
+        title="Outcome fixture",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="m",
+                    role=Role.ASSISTANT,
+                    text="",
+                    blocks=[
+                        {"type": "tool_use", "id": "t", "name": "Bash", "tool_input": {"command": command}},
+                        result_block,
+                    ],
+                )
+            ]
+        ),
+    )
+
+
+def test_structured_outcomes_map_exit_code_to_event_kind() -> None:
+    succeeded = compile_recovery_digest(_outcome_session(command="ls -la", exit_code=0))
+    assert {(e.kind, e.summary) for e in succeeded.events} == {("command_succeeded", "ls -la succeeded (exit 0)")}
+
+    failed = compile_recovery_digest(_outcome_session(command="ls /missing", exit_code=2))
+    assert {(e.kind, e.summary) for e in failed.events} == {("command_failed", "ls /missing failed (exit 2)")}
+
+    test_failed = compile_recovery_digest(_outcome_session(command="pytest tests/unit", exit_code=1))
+    assert {(e.kind, e.summary) for e in test_failed.events} == {("test_failed", "pytest tests/unit failed (exit 1)")}
+    # A failing test/command marks the run failed.
+    assert test_failed.run_projection.runs[0].status == "failed"
+
+
+def test_structured_outcomes_use_is_error_when_no_exit_code() -> None:
+    ok = compile_recovery_digest(_outcome_session(command="gh pr view 1", is_error=False))
+    assert {e.kind for e in ok.events} == {"command_succeeded"}
+    assert "(exit" not in next(iter(ok.events)).summary
+
+    bad = compile_recovery_digest(_outcome_session(command="gh pr view 1", is_error=True))
+    assert {e.kind for e in bad.events} == {"command_failed"}
+
+
+def test_unknown_outcome_yields_no_event() -> None:
+    # tool_result with no structured fields -> unknown -> no fabricated event.
+    digest = compile_recovery_digest(_outcome_session(command="ls"))
+    assert digest.events == ()
+    [tool] = digest.tool_summaries
+    assert tool.status == "unknown"
+
+
+def test_external_truths_are_not_synthesized_from_prose() -> None:
+    # Prose asserting external state with NO structured tool outcome must produce
+    # zero events — the regression that motivated #2482 (a fabricated pr_merged).
+    session = Session(
+        id=SessionId("codex-session:prose-only"),
+        origin=Origin.CODEX_SESSION,
+        title="Prose only",
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="m",
+                    role=Role.ASSISTANT,
+                    text=(
+                        "MERGED #123\n"
+                        "Created pull request #456\n"
+                        "Closed issue #789\n"
+                        "Review posted on PR #456\n"
+                        "20 passed\ndeployment-smoke ... FAILED"
+                    ),
+                )
+            ]
+        ),
+    )
+
+    digest = compile_recovery_digest(session)
+    assert digest.events == ()
+
+
 def test_continue_report_renders_successor_boot_packet_with_evidence_refs() -> None:
     digest = compile_recovery_digest(_session())
 
@@ -587,7 +660,10 @@ def test_continue_report_renders_successor_boot_packet_with_evidence_refs() -> N
     assert "## Boot Packet" in report
     assert "- goal: burn down the backlog [evidence: codex-session:demo::m1]" in report
     assert "- next: merge PR #1911 [evidence: codex-session:demo::m1]" in report
-    assert "- pr_opened: PR #1911 opened [evidence: codex-session:demo::m2]" in report
+    # Structured outcomes are facts, not heuristic candidates (#2482).
+    assert "## Recent Outcomes (structured tool/test results)" in report
+    assert "- test_passed: devtools verify --quick passed (exit 0) [evidence: codex-session:demo::m2::0]" in report
+    assert "heuristic" not in report
     assert (
         "Explore [tool_id=tool-2, task_id=task-42, child_session_id=codex-session:child-42] "
         "— Map the transform surface and report caveats. [evidence: codex-session:demo::m3::0"
@@ -606,15 +682,15 @@ def test_blame_report_renders_forensic_evidence_report_with_raw_refs() -> None:
     assert report.startswith("# Blame: Ship the backlog [evidence: codex-session:demo]")
     assert "## Forensic Summary" in report
     assert f"- extracted_claims: {digest.forensic_index.claim_count} [evidence: codex-session:demo]" in report
-    assert "- check_passed: ruff check passed [evidence: codex-session:demo::m2]" in report
-    assert "- test_passed: 20 tests passed [evidence: codex-session:demo::m2]" in report
-    assert "- issue_closed: Issue #1818 closed [evidence: codex-session:demo::m2]" in report
+    assert "## Command And Test Outcomes" in report
+    assert "- test_passed: devtools verify --quick passed (exit 0) [evidence: codex-session:demo::m2::0]" in report
     assert "- Bash [test] status=ok lines=3 — devtools verify --quick [evidence: codex-session:demo::m2::0" in report
     assert "output: ruff check ... ok 20 passed in 50.28s" in report
     assert "Explore [tool_id=tool-2, task_id=task-42, child_session_id=codex-session:child-42]:" in report
     assert "## Evidence Timeline" in report
     assert "raw: message message=m1" in report
-    assert "claims: run_state, event:pr_merged:0, decision:run_state:0, decision:run_state:1" in report
+    # No fabricated GitHub Events section.
+    assert "## GitHub Events" not in report
     _assert_report_claim_lines_are_evidence_linked(report)
 
 
@@ -628,188 +704,6 @@ def _assert_report_claim_lines_are_evidence_linked(report: str) -> None:
         assert "[evidence: " in line, line
 
 
-def test_github_cli_and_failed_check_events_are_extracted() -> None:
-    session = Session(
-        id=SessionId("codex-session:github-events"),
-        origin=Origin.CODEX_SESSION,
-        title="GitHub event extraction",
-        messages=MessageCollection(
-            messages=[
-                Message(
-                    id="m-gh",
-                    role=Role.ASSISTANT,
-                    text=("✓ Created pull request #1930\ndeployment-smoke ... FAILED (2.3s)\nAnalyze (python) ... ok"),
-                )
-            ]
-        ),
-    )
-
-    digest = compile_recovery_digest(session)
-    events = {(event.kind, event.summary) for event in digest.events}
-
-    assert ("pr_opened", "PR #1930 opened") in events
-    assert ("check_failed", "deployment-smoke failed") in events
-    assert ("check_passed", "Analyze (python) passed") in events
-
-
-def test_review_delivery_events_are_extracted_and_projected() -> None:
-    session = Session(
-        id=SessionId("codex-session:review-events"),
-        origin=Origin.CODEX_SESSION,
-        title="Review event extraction",
-        messages=MessageCollection(
-            messages=[
-                Message(
-                    id="m-review",
-                    role=Role.ASSISTANT,
-                    text=(
-                        "Review posted on PR #2100\n"
-                        "Read review on PR #2100\n"
-                        "Injected review into context for PR #2100\n"
-                        "Acknowledged review on PR #2100\n"
-                        "Addressed review on PR #2100"
-                    ),
-                )
-            ]
-        ),
-    )
-
-    digest = compile_recovery_digest(session)
-    event_by_kind = {event.kind: event for event in digest.run_projection.events}
-    review_injection_snapshot = next(
-        snapshot for snapshot in digest.run_projection.context_snapshots if snapshot.boundary == "review_injection"
-    )
-
-    assert event_by_kind["review_posted"].delivery_state == "observed"
-    assert event_by_kind["review_seen_by_tool"].delivery_state == "seen_by_tool"
-    injected_event = event_by_kind["review_injected_context"]
-    assert injected_event.delivery_state == "injected_context"
-    assert injected_event.object_refs == (
-        review_injection_snapshot.snapshot_ref,
-        ObjectRef(kind="github-review", object_id="#2100"),
-    )
-    assert event_by_kind["review_acknowledged"].delivery_state == "acknowledged"
-    assert event_by_kind["review_acted_on"].delivery_state == "acted_on"
-    assert event_by_kind["review_acted_on"].object_refs == (ObjectRef(kind="github-review", object_id="#2100"),)
-
-    injection_snapshots = [
-        snapshot for snapshot in digest.run_projection.context_snapshots if snapshot.boundary == "review_injection"
-    ]
-    assert len(injection_snapshots) == 1
-    injection_snapshot = injection_snapshots[0]
-    assert injection_snapshot.inheritance_mode == "injected"
-    assert injection_snapshot.evidence_refs == injected_event.evidence_refs
-    assert injection_snapshot.segment_refs == (
-        injected_event.event_ref,
-        ObjectRef(kind="github-review", object_id="#2100"),
-    )
-    assert injection_snapshot.metadata == {
-        "source": "recovery-event",
-        "event_ref": injected_event.event_ref.format(),
-        "delivery_state": "injected_context",
-    }
-
-
-def test_posted_review_does_not_imply_delivery_or_action() -> None:
-    session = Session(
-        id=SessionId("codex-session:missed-review"),
-        origin=Origin.CODEX_SESSION,
-        title="Missed review fixture",
-        messages=MessageCollection(
-            messages=[
-                Message(
-                    id="m-review",
-                    role=Role.ASSISTANT,
-                    text="Review posted on PR #2100",
-                )
-            ]
-        ),
-    )
-
-    digest = compile_recovery_digest(session)
-    review_events = [event for event in digest.run_projection.events if event.kind.startswith("review_")]
-    packet = digest.work_packet()
-    rendered = packet.render_markdown()
-
-    assert [(event.kind, event.delivery_state) for event in review_events] == [("review_posted", "observed")]
-    assert not any(snapshot.boundary == "review_injection" for snapshot in digest.run_projection.context_snapshots)
-    assert "review_acted_on" not in rendered
-    assert "review_injected_context" not in rendered
-    assert "details: delivery_state=observed" in rendered
-
-
-def test_addressed_review_keeps_patch_test_and_reply_evidence_connected() -> None:
-    session = Session(
-        id=SessionId("codex-session:addressed-review"),
-        origin=Origin.CODEX_SESSION,
-        title="Addressed review fixture",
-        messages=MessageCollection(
-            messages=[
-                Message(
-                    id="m-addressed-review",
-                    role=Role.ASSISTANT,
-                    text=(
-                        "Addressed review on PR #2100\n"
-                        "Patched polylogue/insights/transforms.py\n"
-                        "17 passed\n"
-                        "Replied to review on PR #2100"
-                    ),
-                )
-            ]
-        ),
-    )
-
-    digest = compile_recovery_digest(session)
-    event_by_kind = {event.kind: event for event in digest.run_projection.events}
-    recovery_events = {event.kind: event for event in digest.events}
-    acted_on = event_by_kind["review_acted_on"]
-    test_passed = recovery_events["test_passed"]
-    packet = digest.work_packet()
-    rendered = packet.render_markdown()
-
-    assert acted_on.delivery_state == "acted_on"
-    assert acted_on.object_refs == (ObjectRef(kind="github-review", object_id="#2100"),)
-    assert acted_on.evidence_refs == tuple(ref.to_evidence_ref() for ref in test_passed.raw_refs)
-    assert any(ref.message_id == "m-addressed-review" for ref in acted_on.evidence_refs)
-    assert "review_acted_on" in rendered
-    assert "17 tests passed" in rendered
-
-
-def test_review_injection_context_snapshot_reaches_work_packet() -> None:
-    session = Session(
-        id=SessionId("codex-session:review-context"),
-        origin=Origin.CODEX_SESSION,
-        title="Review context packet",
-        messages=MessageCollection(
-            messages=[
-                Message(
-                    id="m-review",
-                    role=Role.ASSISTANT,
-                    text="Injected review into context for PR #2100",
-                )
-            ]
-        ),
-    )
-
-    packet = compile_recovery_digest(session).work_packet()
-    rendered = packet.render_markdown()
-
-    snapshot_entry = next(
-        entry
-        for entry in packet.entries
-        if entry.section == "execution"
-        and entry.label == "context_snapshot"
-        and entry.metadata["boundary"] == "review_injection"
-    )
-    assert snapshot_entry.metadata["inheritance_mode"] == "injected"
-    assert snapshot_entry.metadata["delivery_state"] == "injected_context"
-    assert ObjectRef(kind="github-review", object_id="#2100") in snapshot_entry.object_refs
-    assert any(ref.message_id == "m-review" for ref in snapshot_entry.evidence_refs)
-    assert "- [raw-evidence] context_snapshot: review_injection" in rendered
-    assert "details: boundary=review_injection; inheritance_mode=injected" in rendered
-    assert "refs: context-snapshot:codex-session:review-context:review_injection:0" in rendered
-
-
 def test_claim_models_reject_missing_raw_refs() -> None:
     with pytest.raises(ValidationError):
         ToolSummary(tool_name="Bash", raw_refs=())
@@ -818,7 +712,7 @@ def test_claim_models_reject_missing_raw_refs() -> None:
     with pytest.raises(ValidationError):
         RunStateSummary(raw_refs=())
     with pytest.raises(ValidationError):
-        RecoveryEvent(kind="test_passed", summary="1 tests passed", raw_refs=())
+        RecoveryEvent(kind="test_passed", summary="pytest passed (exit 0)", raw_refs=())
     with pytest.raises(ValidationError):
         ForensicIndexEntry(
             evidence_id="session::m1",
@@ -836,9 +730,12 @@ def test_raw_refs_include_message_and_block_preview() -> None:
     assert tool_ref.block_index == 0
     assert tool_ref.preview == "devtools verify --quick"
 
-    event_ref = next(event for event in digest.events if event.summary == "Issue #1818 closed").raw_refs[0]
+    # The structured outcome event points at the tool_use block, not message prose.
+    [event] = digest.events
+    event_ref = event.raw_refs[0]
+    assert event_ref.ref_kind == "block"
     assert event_ref.message_id == "m2"
-    assert event_ref.preview.startswith("Decision: keep benchmarks")
+    assert event_ref.block_index == 0
 
 
 def test_raw_ref_requires_session_id() -> None:

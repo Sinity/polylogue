@@ -68,7 +68,7 @@ def _projection(
 
 
 def test_wasted_loop_detected_on_repeated_failures() -> None:
-    proj = _projection(events=[_event("test_failed"), _event("check_failed"), _event("test_failed")])
+    proj = _projection(events=[_event("test_failed"), _event("command_failed"), _event("test_failed")])
     findings = [f for f in detect_session_pathologies(proj) if f.kind == "wasted_loop"]
     assert len(findings) == 1
     assert findings[0].occurrence_count == 3
@@ -82,29 +82,9 @@ def test_wasted_loop_not_flagged_on_single_failure() -> None:
 
 def test_wasted_loop_severity_scales_with_count() -> None:
     low = _projection(events=[_event("test_failed")] * 2)
-    high = _projection(events=[_event("check_failed")] * 8)
+    high = _projection(events=[_event("command_failed")] * 8)
     assert next(f for f in detect_session_pathologies(low) if f.kind == "wasted_loop").severity == "low"
     assert next(f for f in detect_session_pathologies(high) if f.kind == "wasted_loop").severity == "high"
-
-
-# ── missed_review ────────────────────────────────────────────────────
-
-
-def test_missed_review_detected_when_unaddressed() -> None:
-    proj = _projection(events=[_event("review_posted"), _event("review_seen_by_tool")])
-    findings = [f for f in detect_session_pathologies(proj) if f.kind == "missed_review"]
-    assert len(findings) == 1
-    assert findings[0].severity == "high"
-
-
-def test_missed_review_cleared_by_explicit_action_event() -> None:
-    proj = _projection(events=[_event("review_posted"), _event("review_acted_on")])
-    assert [f for f in detect_session_pathologies(proj) if f.kind == "missed_review"] == []
-
-
-def test_missed_review_cleared_by_delivery_state() -> None:
-    proj = _projection(events=[_event("review_posted", delivery="acted_on")])
-    assert [f for f in detect_session_pathologies(proj) if f.kind == "missed_review"] == []
 
 
 # ── stale_context ────────────────────────────────────────────────────
@@ -133,16 +113,16 @@ def test_stale_context_excludes_normal_subagent_dispatch() -> None:
 
 def test_compile_report_counts_and_versions() -> None:
     a = _projection("s1", events=[_event("test_failed", session_id="s1")] * 2)
-    b = _projection("s2", events=[_event("review_posted", session_id="s2")])
+    b = _projection("s2", snapshots=[_snapshot("resume", "summary", session_id="s2")])
     report = compile_pathology_report([a, b])
     assert report.session_count == 2
-    assert report.counts_by_kind == {"missed_review": 1, "wasted_loop": 1}
+    assert report.counts_by_kind == {"stale_context": 1, "wasted_loop": 1}
     assert report.detector_version == PATHOLOGY_DETECTOR_VERSION
 
 
 def test_compile_report_is_deterministic() -> None:
     projs = [
-        _projection("s2", events=[_event("review_posted", session_id="s2")]),
+        _projection("s2", snapshots=[_snapshot("resume", "summary", session_id="s2")]),
         _projection("s1", events=[_event("test_failed", session_id="s1")] * 3),
     ]
     first = compile_pathology_report(projs).model_dump(mode="json")
