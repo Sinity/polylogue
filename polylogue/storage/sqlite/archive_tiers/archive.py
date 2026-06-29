@@ -4450,7 +4450,9 @@ def _summary_from_row(row: sqlite3.Row) -> ArchiveSessionSummary:
         working_directories=working_directories,
         git_branch=str(row["git_branch"]) if row["git_branch"] is not None else None,
         git_repository_url=str(row["git_repository_url"]) if row["git_repository_url"] is not None else None,
-        provider_project_ref=(str(row["provider_project_ref"]) if row["provider_project_ref"] is not None else None),
+        provider_project_ref=(
+            str(row["provider_project_ref"]) if row["provider_project_ref"] is not None else None
+        ),
     )
 
 
