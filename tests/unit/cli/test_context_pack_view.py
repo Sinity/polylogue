@@ -16,7 +16,7 @@ import pytest
 
 from polylogue import Polylogue
 from polylogue.archive.message.roles import Role
-from polylogue.context.compiler import ContextImage
+from polylogue.context.compiler import ContextImage, ContextSpec
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -63,6 +63,38 @@ async def test_context_pack_payload_compiles_context_image(tmp_path: Path) -> No
     assert message_segments, "expected a messages segment for the selected session"
     assert "hello archive pack" in (message_segments[0].markdown or "")
     assert image.spec.read_views == ("messages",)
+
+
+@pytest.mark.asyncio
+async def test_max_tokens_bounds_output_with_omission_accounting(tmp_path: Path) -> None:
+    """A tiny --max-tokens budget drops over-budget segments as explicit omissions."""
+    archive_root = tmp_path / "archive"
+    _seed(archive_root, provider_session_id="budget-a", text="alpha budget body that has several words")
+    _seed(archive_root, provider_session_id="budget-b", text="beta budget body that also has several words")
+
+    async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
+        unbounded = await poly.compile_context(
+            ContextSpec(
+                seed_refs=("session:codex-session:budget-a", "session:codex-session:budget-b"),
+                read_views=("messages",),
+            )
+        )
+        bounded = await poly.compile_context(
+            ContextSpec(
+                seed_refs=("session:codex-session:budget-a", "session:codex-session:budget-b"),
+                read_views=("messages",),
+                max_tokens=1,
+            )
+        )
+
+    assert len(unbounded.segments) == 2
+    # The budget bounds accumulation: fewer segments survive, and every drop is
+    # reported as a budget omission rather than silently truncated.
+    assert len(bounded.segments) < len(unbounded.segments)
+    assert bounded.token_estimate <= unbounded.token_estimate
+    budget_omissions = [omission for omission in bounded.omitted if omission.reason == "budget"]
+    assert budget_omissions
+    assert len(bounded.segments) + len(budget_omissions) == len(unbounded.segments)
 
 
 @pytest.mark.asyncio
