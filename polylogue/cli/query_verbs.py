@@ -812,6 +812,21 @@ def read_verb(
                 request = request.with_param_updates(fields=fields)
             _execute_query_verb(ctx, request)
             return
+        projection_spec = _build_read_projection_spec(
+            request,
+            views=tuple(view_tokens),
+            output_format=output_format,
+            destination=destination,
+            out_path=out_path,
+            max_tokens=max_tokens,
+            selection_limit=spec_selection_limit,
+            render_layout=_read_render_layout(tuple(view_tokens)),
+            edge_limit=projection_edge_limit,
+            body_limit=projection_body_limit,
+            body_offset=projection_body_offset,
+            neighbor_limit=projection_neighbor_limit,
+            neighbor_window_hours=projection_neighbor_window_hours,
+        )
         run_query_set_read_view(
             env,
             request,
@@ -820,6 +835,7 @@ def read_verb(
             fields=fields,
             destination=destination,
             out_path=out_path,
+            projection_spec=projection_spec,
         )
         return
 
@@ -827,7 +843,10 @@ def read_verb(
     # accumulation, assertion inclusion, and the context-image lens all collapse
     # onto the shared compile_context engine rather than parallel assemblers.
     needs_context_image = (
-        len(view_tokens) > 1 or primary_view == "context-image" or max_tokens is not None or include_assertions
+        len(view_tokens) > 1
+        or primary_view == "context-image"
+        or (max_tokens is not None and primary_view != "dialogue")
+        or include_assertions
     )
     if needs_context_image and destination != "browser":
         projection_spec = _build_read_projection_spec(
@@ -901,6 +920,7 @@ def read_verb(
             fields=fields,
             destination=destination,
             out_path=out_path,
+            projection_spec=projection_spec,
         )
         return
     if destination == "browser":

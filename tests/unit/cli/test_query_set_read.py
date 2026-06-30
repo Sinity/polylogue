@@ -19,6 +19,7 @@ from polylogue.cli.read_view_handlers import ReadViewInvocation
 from polylogue.cli.read_views.query_set import run_query_set_read_view
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
+from polylogue.surfaces.projection_spec import projection_from_views
 from tests.infra.builders import make_conv, make_msg
 
 
@@ -108,6 +109,43 @@ def test_dialogue_query_set_view_uses_prose_projection() -> None:
     assert isinstance(projection, ContentProjectionSpec)
     assert projection.filters_content()
     assert kwargs["renderer"] is not None
+
+
+def test_dialogue_query_set_renderer_applies_projection_spec() -> None:
+    captured: dict[str, object] = {}
+    session = make_conv(
+        id="session-1",
+        messages=[
+            make_msg(id="user-1", role="user", text="one two", material_origin="human_authored"),
+            make_msg(id="assistant-1", role="assistant", text="three four", material_origin="assistant_authored"),
+        ],
+    )
+
+    def _capture(*args: object, **kwargs: object) -> None:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+    with patch("polylogue.cli.query_set_read.run_query_set_read", side_effect=_capture):
+        runner = CliRunner()
+        with runner.isolation():
+            run_query_set_read_view(
+                _stub_env([session]),
+                _request(limit=1),
+                view="dialogue",
+                output_format="json",
+                fields=None,
+                destination="terminal",
+                out_path=None,
+                projection_spec=projection_from_views(("dialogue",), max_tokens=3),
+            )
+
+    renderer = cast(dict[str, object], captured["kwargs"])["renderer"]
+    assert callable(renderer)
+    payload = json.loads(renderer(session, "json", None))
+    assert payload["message_count"] == 2
+    assert payload["rendered_message_count"] == 1
+    assert payload["projection"]["max_tokens"] == 3
+    assert [message["id"] for message in payload["messages"]] == ["user-1"]
 
 
 def test_read_all_registered_and_dispatches_via_root_cli() -> None:
