@@ -144,6 +144,30 @@ def _family_for_row(row: dict[str, object]) -> str:
     return tool_family
 
 
+def _normalized_tool_name(row: dict[str, object]) -> str:
+    raw = str(row.get("tool_name") or "").lower()
+    family = _family_for_row(row)
+    if raw.startswith("mcp__"):
+        parts = [part for part in raw.split("__") if part and part != "mcp"]
+        if not parts:
+            return "mcp/unknown"
+        namespace = parts[0].removeprefix("plugin_")
+        tool_parts = parts[1:]
+        if namespace.startswith(f"{family}_"):
+            namespace = family
+        if tool_parts and tool_parts[0] == family:
+            tool_parts = tool_parts[1:]
+        tool = "__".join(tool_parts) if tool_parts else namespace
+        return f"{family}/{tool}"
+    if family in GENERIC_DETAIL_TOOL_FAMILIES:
+        return raw or "unknown"
+    if _family_for_text(_row_detail_text(row)) == family and raw in GENERIC_DETAIL_TOOL_FAMILIES:
+        return f"{family}/command-detail"
+    if family != raw and _family_for_text(raw) == family:
+        return f"{family}/{raw}"
+    return raw or "unknown"
+
+
 def _clean_patterns(patterns: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(pattern.strip().lower() for pattern in patterns if pattern.strip())
 
@@ -208,6 +232,7 @@ def _annotate_rows(
             {
                 **public_row,
                 "family": _family_for_row(row),
+                "normalized_tool": _normalized_tool_name(row),
                 "evidence_kind": _evidence_kind(row),
                 "matched_by": _matched_by(row, tool_patterns, detail_patterns),
             }
@@ -286,8 +311,9 @@ def _aggregate_tool_counts(action_rows: list[dict[str, object]]) -> list[dict[st
     buckets: dict[tuple[str, str, str], dict[str, object]] = {}
     sessions: dict[tuple[str, str, str], set[str]] = {}
     failures: dict[tuple[str, str, str], int] = {}
+    raw_names: dict[tuple[str, str, str], set[str]] = {}
     for row in action_rows:
-        tool_name = str(row["tool_name"])
+        tool_name = str(row["normalized_tool"])
         family = str(row["family"])
         evidence_kind = str(row["evidence_kind"])
         key = (family, tool_name, evidence_kind)
@@ -297,6 +323,8 @@ def _aggregate_tool_counts(action_rows: list[dict[str, object]]) -> list[dict[st
                 "tool_name": tool_name,
                 "family": family,
                 "evidence_kind": evidence_kind,
+                "raw_tool_names": "",
+                "raw_tool_name_count": 0,
                 "sessions": 0,
                 "actions": 0,
                 "errors": 0,
@@ -305,6 +333,7 @@ def _aggregate_tool_counts(action_rows: list[dict[str, object]]) -> list[dict[st
             },
         )
         sessions.setdefault(key, set()).add(str(row["session_id"]))
+        raw_names.setdefault(key, set()).add(str(row.get("tool_name") or ""))
         bucket["actions"] = _int(bucket["actions"]) + 1
         bucket["errors"] = _int(bucket["errors"]) + (_int(row.get("is_error")) == 1)
         bucket["nonzero_exits"] = _int(bucket["nonzero_exits"]) + (
@@ -314,6 +343,9 @@ def _aggregate_tool_counts(action_rows: list[dict[str, object]]) -> list[dict[st
     for key, bucket in buckets.items():
         actions = _int(bucket["actions"])
         bucket["sessions"] = len(sessions.get(key, set()))
+        raw_tool_names = sorted(raw_names.get(key, set()))
+        bucket["raw_tool_names"] = ";".join(raw_tool_names)
+        bucket["raw_tool_name_count"] = len(raw_tool_names)
         bucket["failure_rate"] = round(failures.get(key, 0) / actions, 3) if actions else 0.0
     return sorted(
         buckets.values(),
@@ -345,9 +377,10 @@ def _aggregate_family_counts(
 
 def _aggregate_tool_by_origin(action_rows: list[dict[str, object]]) -> list[dict[str, object]]:
     buckets: dict[tuple[str, str, str, str], dict[str, object]] = {}
+    raw_names: dict[tuple[str, str, str, str], set[str]] = {}
     for row in action_rows:
         origin = str(row["origin"])
-        tool_name = str(row["tool_name"])
+        tool_name = str(row["normalized_tool"])
         family = str(row["family"])
         evidence_kind = str(row["evidence_kind"])
         bucket = buckets.setdefault(
@@ -357,10 +390,17 @@ def _aggregate_tool_by_origin(action_rows: list[dict[str, object]]) -> list[dict
                 "tool_name": tool_name,
                 "family": family,
                 "evidence_kind": evidence_kind,
+                "raw_tool_names": "",
+                "raw_tool_name_count": 0,
                 "actions": 0,
             },
         )
+        raw_names.setdefault((origin, family, tool_name, evidence_kind), set()).add(str(row.get("tool_name") or ""))
         bucket["actions"] = _int(bucket["actions"]) + 1
+    for key, bucket in buckets.items():
+        raw_tool_names = sorted(raw_names.get(key, set()))
+        bucket["raw_tool_names"] = ";".join(raw_tool_names)
+        bucket["raw_tool_name_count"] = len(raw_tool_names)
     return sorted(
         buckets.values(),
         key=lambda row: (

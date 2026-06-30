@@ -54,7 +54,8 @@ def _make_index_db(root: Path) -> Path:
                 ('s2', 'm2', 'tool_result', NULL, 't3', '', '', '', 1, NULL),
                 ('s2', 'm3', 'tool_use', 'mcp__cclsp__find_definition', 't4', '', '/repo/lib.rs', '', NULL, NULL),
                 ('s1', 'm1', 'tool_use', 'functions.exec_command', 't5', 'codebase-memory-mcp cli search_code', '', '', NULL, NULL),
-                ('s1', 'm1', 'tool_use', 'functions.exec_command', 't6', 'codebase-memory-mcp cli search code', '', '', NULL, NULL);
+                ('s1', 'm1', 'tool_use', 'functions.exec_command', 't6', 'codebase-memory-mcp cli search code', '', '', NULL, NULL),
+                ('s1', 'm1', 'tool_use', 'search_code', 't7', '', '', 'search_code query', NULL, NULL);
             """
         )
         conn.commit()
@@ -86,6 +87,9 @@ def test_affordance_usage_report_and_files(tmp_path: Path) -> None:
     assert families["context7"]["actions"] == 2
     assert families["context7"]["errors"] == 1
     assert families["serena"]["actions"] == 1
+    tool_counts = {row["tool_name"]: row for row in report["tool_counts"]}
+    assert tool_counts["context7/query-docs"]["actions"] == 2
+    assert tool_counts["context7/query-docs"]["raw_tool_name_count"] == 2
     evidence = {(row["family"], row["evidence_kind"]): row for row in report["evidence_kind_counts"]}
     assert evidence[("serena", "mcp_tool_call")]["actions"] == 1
     assert evidence[("context7", "mcp_tool_call")]["actions"] == 2
@@ -142,9 +146,11 @@ def test_affordance_usage_can_match_shell_command_details(tmp_path: Path) -> Non
 
     families = {row["family"]: row for row in report["family_counts"]}
     assert families["codebase-memory"]["actions"] == 2
-    assert report["tool_counts"][0]["tool_name"] == "functions.exec_command"
+    assert report["tool_counts"][0]["tool_name"] == "codebase-memory/command-detail"
+    assert report["tool_counts"][0]["raw_tool_names"] == "functions.exec_command"
     assert report["tool_counts"][0]["evidence_kind"] == "command_detail"
     assert report["samples"][0]["matched_by"] == "detail"
+    assert report["samples"][0]["normalized_tool"] == "codebase-memory/command-detail"
     assert report["detail_patterns"] == ["codebase-memory"]
 
 
@@ -164,6 +170,9 @@ def test_affordance_usage_treats_like_wildcards_as_literals(tmp_path: Path) -> N
 
     report = affordance_usage.build_report(args)
 
-    assert report["family_counts"][0]["actions"] == 1
-    assert "search_code" in report["samples"][0]["detail"]
-    assert "search code" not in report["samples"][0]["detail"]
+    assert report["family_counts"][0]["actions"] == 2
+    tool_counts = {row["tool_name"]: row for row in report["tool_counts"]}
+    assert tool_counts["codebase-memory/search_code"]["raw_tool_names"] == "search_code"
+    assert tool_counts["codebase-memory/command-detail"]["raw_tool_names"] == "functions.exec_command"
+    assert any("search_code" in str(row["detail"]) for row in report["samples"])
+    assert all("search code" not in str(row["detail"]) for row in report["samples"])
