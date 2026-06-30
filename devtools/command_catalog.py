@@ -441,6 +441,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace affordance-usage",
+        "workspace",
+        "Analyze agent affordance/tool usage from archive tool-use rows.",
+        "devtools.affordance_usage",
+        use_when=(
+            "Dogfood agent-tool usage analysis without hand-written SQL: summarize tool families, raw tool names, "
+            "origin splits, recent adoption windows, structured failure rates, and representative samples."
+        ),
+        examples=(
+            "devtools workspace affordance-usage --days 7 --json",
+            "devtools workspace affordance-usage --out-dir .agent/demos/agent-affordance-usage",
+        ),
+    ),
+    CommandSpec(
         "workspace demo-shelf",
         "workspace",
         "Refresh or verify a current demo shelf manifest, readable bundle, and summary index.",
