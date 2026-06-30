@@ -434,6 +434,7 @@ def test_read_verb_context_image_invokes_pack_view() -> None:
     assert "- Body policy: authored-dialogue" in delivered
     assert "- Render: markdown to terminal" in delivered
     assert "- Render layout: context-image" in delivered
+    assert "- Render timestamps: include-available" in delivered
 
 
 def test_read_verb_context_image_projection_spec_records_resolved_refs() -> None:
@@ -549,6 +550,7 @@ def test_context_image_markdown_renderer_adds_document_structure() -> None:
     assert "- Projection redact paths: true" in rendered
     assert "- Render: json to stdout" in rendered
     assert "- Render layout: standard" in rendered
+    assert "- Render timestamps: include-available" in rendered
     assert "- Segments: 1" in rendered
     assert "- Omissions: 1" in rendered
     assert "## 1. Temporal Evidence" in rendered

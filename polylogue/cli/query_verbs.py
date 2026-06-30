@@ -2051,6 +2051,7 @@ def _render_context_image_markdown(image: object) -> str:
         render_format = getattr(render, "format", None)
         render_destination = getattr(render, "destination", None)
         render_layout = getattr(render, "layout", None)
+        render_timestamps = getattr(render, "timestamps", None)
         if query:
             lines.append(f"- Selection query: {query}")
         if selection_origin:
@@ -2094,6 +2095,8 @@ def _render_context_image_markdown(image: object) -> str:
             lines.append(f"- Render: {render_format.value} to {render_destination.value}")
         if render_layout:
             lines.append(f"- Render layout: {render_layout}")
+        if render_timestamps is not None:
+            lines.append(f"- Render timestamps: {render_timestamps.value}")
     if caveats:
         lines.append(f"- Caveats: {', '.join(str(caveat) for caveat in caveats)}")
     parts: list[str] = ["\n".join(lines)]

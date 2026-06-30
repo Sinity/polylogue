@@ -64,6 +64,14 @@ class RenderDestination(str, Enum):
     FILE = "file"
 
 
+class RenderTimestampPolicy(str, Enum):
+    """How rendering should treat source timestamps when the projection carries them."""
+
+    RENDERER_DEFAULT = "renderer-default"
+    INCLUDE_AVAILABLE = "include-available"
+    OMIT = "omit"
+
+
 class SelectionSpec(SurfacePayloadModel):
     """Evidence selection independent of projection and rendering."""
 
@@ -112,6 +120,7 @@ class RenderSpec(SurfacePayloadModel):
     format: RenderFormat = RenderFormat.MARKDOWN
     destination: RenderDestination = RenderDestination.TERMINAL
     layout: str = "standard"
+    timestamps: RenderTimestampPolicy = RenderTimestampPolicy.RENDERER_DEFAULT
     out: str | None = None
 
     @model_validator(mode="after")
@@ -201,6 +210,7 @@ def projection_from_views(
         views = ("summary",)
     families_list: list[EvidenceFamily] = []
     body_policy = BodyPolicy.FULL
+    timestamp_policy = RenderTimestampPolicy.RENDERER_DEFAULT
     for view in views:
         try:
             view_families = NAMED_PROJECTION_FAMILIES[view]
@@ -211,6 +221,8 @@ def projection_from_views(
                 families_list.append(family)
         if view in {"chronicle", "context-image"}:
             body_policy = BodyPolicy.AUTHORED_DIALOGUE
+        if view in {"chronicle", "context-image", "temporal"}:
+            timestamp_policy = RenderTimestampPolicy.INCLUDE_AVAILABLE
     return QueryProjectionSpec(
         selection=SelectionSpec(
             query=query,
@@ -232,7 +244,11 @@ def projection_from_views(
             neighbor_window_hours=neighbor_window_hours,
         ),
         render=RenderSpec(
-            format=RenderFormat(format), destination=RenderDestination(destination), layout=layout, out=out
+            format=RenderFormat(format),
+            destination=RenderDestination(destination),
+            layout=layout,
+            timestamps=timestamp_policy,
+            out=out,
         ),
     )
 
@@ -247,6 +263,7 @@ __all__ = [
     "RenderDestination",
     "RenderFormat",
     "RenderSpec",
+    "RenderTimestampPolicy",
     "SelectionSpec",
     "projection_from_view",
     "projection_from_views",
