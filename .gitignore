@@ -68,11 +68,8 @@ dist/
 # Generated agent surface
 AGENTS.md
 
-# Agent scratch notes (local, not tracked)
-.agent/scratch/
-
-# Agent task history (local, not tracked)
-.agent/task-history/
+# Agent workspace (local, not tracked)
+.agent/
 
 # Build metadata embedded into release artifacts
 polylogue/_build_info.py
