@@ -7,10 +7,12 @@ import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 DEFAULT_ROOT = Path("/realm/inbox/demos_polylogue")
 DEFAULT_MANIFEST = "MANIFEST.readable.json"
 DEFAULT_BUNDLE = "CONCATENATED_READABLE.md"
+DEFAULT_SUMMARY_INDEX = "SUMMARY_INDEX.json"
 READABLE_SUFFIXES = frozenset({".md", ".json", ".jsonl", ".csv", ".txt", ".yaml", ".yml"})
 
 
@@ -18,14 +20,108 @@ READABLE_SUFFIXES = frozenset({".md", ".json", ".jsonl", ".csv", ".txt", ".yaml"
 class ShelfRender:
     manifest_path: Path
     bundle_path: Path
+    summary_index_path: Path
     manifest_text: str
     bundle_text: str
+    summary_index_text: str
     file_count: int
     readable_count: int
+    summary_count: int
 
 
 def _is_readable_artifact(path: Path) -> bool:
     return path.suffix.lower() in READABLE_SUFFIXES
+
+
+def _nonempty_string(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _summary_timestamp(payload: dict[str, Any]) -> object:
+    for key in ("updated_at", "generated_at", "created_at"):
+        value = payload.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _summary_record(root: Path, path: Path) -> dict[str, Any]:
+    rel = path.relative_to(root).as_posix()
+    demo = path.parent.relative_to(root).as_posix()
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "demo": demo,
+            "summary_path": rel,
+            "parse_error": str(exc),
+            "coverage": {
+                "claim": False,
+                "non_claim": False,
+                "proof_fields": False,
+                "caveat_fields": False,
+            },
+        }
+    if not isinstance(payload, dict):
+        return {
+            "demo": demo,
+            "summary_path": rel,
+            "parse_error": "summary root is not a JSON object",
+            "coverage": {
+                "claim": False,
+                "non_claim": False,
+                "proof_fields": False,
+                "caveat_fields": False,
+            },
+        }
+
+    proof_fields = sorted(key for key in payload if "proof" in key.lower())
+    caveat_fields = sorted(key for key in payload if "caveat" in key.lower())
+    claim = payload.get("claim")
+    non_claim = payload.get("non_claim")
+    record: dict[str, Any] = {
+        "demo": demo,
+        "summary_path": rel,
+        "artifact": payload.get("artifact", demo),
+        "claim": claim if _nonempty_string(claim) else None,
+        "non_claim": non_claim if _nonempty_string(non_claim) else None,
+        "proof_fields": proof_fields,
+        "caveat_fields": caveat_fields,
+        "archive_root": payload.get("archive_root"),
+        "index_schema_version": payload.get("index_schema_version", payload.get("index_schema")),
+        "timestamp": _summary_timestamp(payload),
+        "coverage": {
+            "claim": _nonempty_string(claim),
+            "non_claim": _nonempty_string(non_claim),
+            "proof_fields": bool(proof_fields),
+            "caveat_fields": bool(caveat_fields),
+        },
+    }
+    return record
+
+
+def _build_summary_index(root: Path, generated: set[Path]) -> tuple[str, int]:
+    records = []
+    for path in sorted(root.rglob("*summary.json")):
+        if not path.is_file() or path.resolve() in generated:
+            continue
+        records.append(_summary_record(root, path))
+    summary_index = {
+        "root": str(root),
+        "summary_count": len(records),
+        "coverage": {
+            "without_claim": [record["summary_path"] for record in records if not record["coverage"]["claim"]],
+            "without_non_claim": [record["summary_path"] for record in records if not record["coverage"]["non_claim"]],
+            "without_proof_fields": [
+                record["summary_path"] for record in records if not record["coverage"]["proof_fields"]
+            ],
+            "without_caveat_fields": [
+                record["summary_path"] for record in records if not record["coverage"]["caveat_fields"]
+            ],
+        },
+        "records": records,
+    }
+    return json.dumps(summary_index, indent=2) + "\n", len(records)
 
 
 def render_demo_shelf(
@@ -33,13 +129,15 @@ def render_demo_shelf(
     *,
     manifest_name: str = DEFAULT_MANIFEST,
     bundle_name: str = DEFAULT_BUNDLE,
+    summary_index_name: str = DEFAULT_SUMMARY_INDEX,
 ) -> ShelfRender:
     """Build the deterministic manifest and concatenated readable bundle."""
 
     root = root.expanduser().resolve()
     manifest_path = root / manifest_name
     bundle_path = root / bundle_name
-    generated = {manifest_path.resolve(), bundle_path.resolve()}
+    summary_index_path = root / summary_index_name
+    generated = {manifest_path.resolve(), bundle_path.resolve(), summary_index_path.resolve()}
     files: list[dict[str, object]] = []
     for path in sorted(root.rglob("*")):
         if not path.is_file():
@@ -79,13 +177,17 @@ def render_demo_shelf(
             text = f"[unreadable: {exc}]"
         parts.extend([f"## {item['path']}", "", text, ""])
     bundle_text = "\n".join(parts).rstrip() + "\n"
+    summary_index_text, summary_count = _build_summary_index(root, generated)
     return ShelfRender(
         manifest_path=manifest_path,
         bundle_path=bundle_path,
+        summary_index_path=summary_index_path,
         manifest_text=manifest_text,
         bundle_text=bundle_text,
+        summary_index_text=summary_index_text,
         file_count=len(files),
         readable_count=sum(1 for item in files if item["readable"]),
+        summary_count=summary_count,
     )
 
 
@@ -104,30 +206,44 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT, help=f"Demo shelf root (default: {DEFAULT_ROOT})")
     parser.add_argument("--manifest", default=DEFAULT_MANIFEST, help=f"Manifest filename (default: {DEFAULT_MANIFEST})")
     parser.add_argument("--bundle", default=DEFAULT_BUNDLE, help=f"Bundle filename (default: {DEFAULT_BUNDLE})")
+    parser.add_argument(
+        "--summary-index",
+        default=DEFAULT_SUMMARY_INDEX,
+        help=f"Summary index filename (default: {DEFAULT_SUMMARY_INDEX})",
+    )
     parser.add_argument("--check", action="store_true", help="Verify files are current without writing.")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     args = parser.parse_args(argv)
 
-    rendered = render_demo_shelf(args.root, manifest_name=args.manifest, bundle_name=args.bundle)
+    rendered = render_demo_shelf(
+        args.root,
+        manifest_name=args.manifest,
+        bundle_name=args.bundle,
+        summary_index_name=args.summary_index,
+    )
     changed = {
         "manifest": _changed(rendered.manifest_path, rendered.manifest_text),
         "bundle": _changed(rendered.bundle_path, rendered.bundle_text),
+        "summary_index": _changed(rendered.summary_index_path, rendered.summary_index_text),
     }
     ok = not any(changed.values())
     if not args.check:
         rendered.manifest_path.parent.mkdir(parents=True, exist_ok=True)
         rendered.manifest_path.write_text(rendered.manifest_text)
         rendered.bundle_path.write_text(rendered.bundle_text)
+        rendered.summary_index_path.write_text(rendered.summary_index_text)
         ok = True
-        changed = {"manifest": False, "bundle": False}
+        changed = {"manifest": False, "bundle": False, "summary_index": False}
 
     payload = {
         "ok": ok,
         "root": str(args.root.expanduser().resolve()),
         "manifest": str(rendered.manifest_path),
         "bundle": str(rendered.bundle_path),
+        "summary_index": str(rendered.summary_index_path),
         "file_count": rendered.file_count,
         "readable_count": rendered.readable_count,
+        "summary_count": rendered.summary_count,
         "changed": changed,
         "mode": "check" if args.check else "write",
     }
@@ -137,7 +253,8 @@ def main(argv: list[str] | None = None) -> int:
     elif ok:
         print(
             f"demo shelf {'current' if args.check else 'refreshed'}: "
-            f"{rendered.file_count} files, {rendered.readable_count} readable"
+            f"{rendered.file_count} files, {rendered.readable_count} readable, "
+            f"{rendered.summary_count} summaries"
         )
     else:
         print("demo shelf drift:", ", ".join(name for name, value in changed.items() if value), file=sys.stderr)

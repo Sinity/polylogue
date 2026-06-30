@@ -13,6 +13,18 @@ def test_demo_shelf_writes_manifest_and_readable_bundle(tmp_path: Path, capsys: 
     (root / "01-demo").mkdir(parents=True)
     (root / "01-demo" / "README.md").write_text("# Demo\n\nReadable.\n")
     (root / "01-demo" / "payload.bin").write_bytes(b"\x00\x01")
+    (root / "01-demo" / "summary.json").write_text(
+        json.dumps(
+            {
+                "artifact": "01-demo",
+                "claim": "Readable artifact exists.",
+                "non_claim": "Binary payload is not included in readable bundle.",
+                "proofs": ["README.md included"],
+                "caveats": ["Synthetic fixture"],
+                "index_schema_version": 18,
+            }
+        )
+    )
 
     exit_code = demo_shelf.main(["--root", str(root)])
 
@@ -20,17 +32,26 @@ def test_demo_shelf_writes_manifest_and_readable_bundle(tmp_path: Path, capsys: 
     output = capsys.readouterr().out
     assert "demo shelf refreshed" in output
     manifest = json.loads((root / "MANIFEST.readable.json").read_text())
-    assert manifest["file_count"] == 2
-    assert manifest["readable_count"] == 1
+    assert manifest["file_count"] == 3
+    assert manifest["readable_count"] == 2
     paths = {item["path"]: item for item in manifest["files"]}
     assert paths["01-demo/README.md"]["readable"] is True
+    assert paths["01-demo/summary.json"]["readable"] is True
     assert paths["01-demo/payload.bin"]["readable"] is False
     assert "MANIFEST.readable.json" not in paths
     assert "CONCATENATED_READABLE.md" not in paths
+    assert "SUMMARY_INDEX.json" not in paths
     bundle = (root / "CONCATENATED_READABLE.md").read_text()
     assert "## 01-demo/README.md" in bundle
+    assert "## 01-demo/summary.json" in bundle
     assert "Readable." in bundle
     assert "payload.bin" not in bundle
+    summary_index = json.loads((root / "SUMMARY_INDEX.json").read_text())
+    assert summary_index["summary_count"] == 1
+    assert summary_index["coverage"]["without_claim"] == []
+    assert summary_index["coverage"]["without_non_claim"] == []
+    assert summary_index["records"][0]["proof_fields"] == ["proofs"]
+    assert summary_index["records"][0]["caveat_fields"] == ["caveats"]
 
 
 def test_demo_shelf_check_reports_drift(tmp_path: Path) -> None:
@@ -59,3 +80,19 @@ def test_demo_shelf_check_json_reports_current_state(tmp_path: Path, capsys: pyt
     assert payload["mode"] == "check"
     assert payload["file_count"] == 1
     assert payload["readable_count"] == 1
+    assert payload["summary_count"] == 0
+
+
+def test_demo_shelf_summary_index_reports_coverage_gaps(tmp_path: Path) -> None:
+    root = tmp_path / "demos"
+    (root / "01-demo").mkdir(parents=True)
+    (root / "01-demo" / "summary.json").write_text(json.dumps({"artifact": "01-demo"}))
+
+    assert demo_shelf.main(["--root", str(root)]) == 0
+
+    summary_index = json.loads((root / "SUMMARY_INDEX.json").read_text())
+    assert summary_index["summary_count"] == 1
+    assert summary_index["coverage"]["without_claim"] == ["01-demo/summary.json"]
+    assert summary_index["coverage"]["without_non_claim"] == ["01-demo/summary.json"]
+    assert summary_index["coverage"]["without_proof_fields"] == ["01-demo/summary.json"]
+    assert summary_index["coverage"]["without_caveat_fields"] == ["01-demo/summary.json"]

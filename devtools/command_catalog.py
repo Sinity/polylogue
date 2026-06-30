@@ -428,12 +428,12 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "workspace demo-shelf",
         "workspace",
-        "Refresh or verify a demo shelf readable manifest and concatenated bundle.",
+        "Refresh or verify a demo shelf manifest, readable bundle, and summary index.",
         "devtools.demo_shelf",
         use_when=(
             "After updating /realm/inbox/demos_polylogue or another demo shelf, regenerate "
-            "MANIFEST.readable.json and CONCATENATED_READABLE.md from one deterministic helper "
-            "instead of hand-rolled local snippets."
+            "MANIFEST.readable.json, CONCATENATED_READABLE.md, and SUMMARY_INDEX.json from one "
+            "deterministic helper instead of hand-rolled local snippets."
         ),
         examples=(
             "devtools workspace demo-shelf",
