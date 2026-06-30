@@ -426,6 +426,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace demo-shelf",
+        "workspace",
+        "Refresh or verify a demo shelf readable manifest and concatenated bundle.",
+        "devtools.demo_shelf",
+        use_when=(
+            "After updating /realm/inbox/demos_polylogue or another demo shelf, regenerate "
+            "MANIFEST.readable.json and CONCATENATED_READABLE.md from one deterministic helper "
+            "instead of hand-rolled local snippets."
+        ),
+        examples=(
+            "devtools workspace demo-shelf",
+            "devtools workspace demo-shelf --check",
+            "devtools workspace demo-shelf --root /realm/inbox/demos_sinex --json",
+        ),
+    ),
+    CommandSpec(
         "lab projections",
         "verification lab",
         "Render the authored scenario-bearing verification projections.",
