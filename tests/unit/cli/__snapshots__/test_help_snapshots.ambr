@@ -96,9 +96,9 @@
     --has-tool-use                  Only sessions with tool use (SQL pushdown)
     --has-thinking                  Only sessions with thinking blocks (SQL
                                     pushdown)
-    --has-paste                     Only sessions with pasted content (SQL
+    --has-paste                     Only sessions with paste evidence (SQL
                                     pushdown)
-    --typed-only                    Only sessions without pasted content (typed
+    --typed-only                    Only sessions without paste evidence (typed
                                     prose only)
     --min-messages INTEGER          Minimum message count
     --max-messages INTEGER          Maximum message count

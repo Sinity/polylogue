@@ -498,7 +498,7 @@ can resolve deliberately when the operator wants to inspect source evidence.
 | `--has-tool-use` | Only sessions with tool calls |
 | `--has-thinking` | Only sessions with reasoning/thinking blocks |
 | `--has-paste` | Only sessions with paste evidence |
-| `--typed-only` | Only typed (non-pasted) content |
+| `--typed-only` | Only sessions without paste evidence |
 | `--has`, `--has-type` | Filter by content type: `thinking`, `tools`, `summary`, `attachments` |
 
 ### Message stats

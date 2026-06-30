@@ -108,7 +108,7 @@ Options:
                                   pushdown)
   --has-paste                     Only sessions with paste evidence (SQL
                                   pushdown)
-  --typed-only                    Only sessions without pasted content (typed
+  --typed-only                    Only sessions without paste evidence (typed
                                   prose only)
   --min-messages INTEGER          Minimum message count
   --max-messages INTEGER          Maximum message count
