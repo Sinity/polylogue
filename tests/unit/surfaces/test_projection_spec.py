@@ -60,6 +60,21 @@ def test_neighbors_view_maps_to_neighbor_projection_policy() -> None:
     assert spec.projection.neighbor_window_hours == 12
 
 
+def test_context_image_view_maps_to_authored_dialogue_projection() -> None:
+    spec = projection_from_views(("context-image",), max_tokens=1200)
+
+    assert spec.projection.families == (
+        EvidenceFamily.CONTEXT,
+        EvidenceFamily.MESSAGES,
+        EvidenceFamily.ASSERTIONS,
+    )
+    assert spec.projection.body_policy is BodyPolicy.AUTHORED_DIALOGUE
+    assert spec.projection.max_tokens == 1200
+    assert {"tool_use", "tool_result", "function_call", "function_call_output"} <= set(
+        spec.projection.exclude_block_kinds
+    )
+
+
 def test_multi_view_projection_dedupes_families_and_preserves_body_policy() -> None:
     spec = projection_from_views(
         ("temporal", "chronicle"),

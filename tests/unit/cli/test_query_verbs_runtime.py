@@ -431,7 +431,7 @@ def test_read_verb_context_image_invokes_pack_view() -> None:
     assert "- Selection query: cost" in delivered
     assert "- Selection limit: 3" in delivered
     assert "- Projection families: context, messages, assertions" in delivered
-    assert "- Body policy: full" in delivered
+    assert "- Body policy: authored-dialogue" in delivered
     assert "- Render: markdown to terminal" in delivered
     assert "- Render layout: context-image" in delivered
 

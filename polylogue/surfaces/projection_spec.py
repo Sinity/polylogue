@@ -209,7 +209,7 @@ def projection_from_views(
         for family in view_families:
             if family not in families_list:
                 families_list.append(family)
-        if view == "chronicle":
+        if view in {"chronicle", "context-image"}:
             body_policy = BodyPolicy.AUTHORED_DIALOGUE
     return QueryProjectionSpec(
         selection=SelectionSpec(

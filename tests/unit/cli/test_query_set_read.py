@@ -279,6 +279,10 @@ def test_read_spec_records_context_image_selector_fields() -> None:
         "limit": 3,
     }
     assert payload["projection"]["families"] == ["context", "messages", "assertions"]
+    assert payload["projection"]["body_policy"] == "authored-dialogue"
+    assert {"tool_use", "tool_result", "function_call", "function_call_output"} <= set(
+        payload["projection"]["exclude_block_kinds"]
+    )
     assert payload["render"]["layout"] == "context-image"
 
 
