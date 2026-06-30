@@ -32,6 +32,8 @@ def test_demo_shelf_writes_manifest_and_readable_bundle(tmp_path: Path, capsys: 
     output = capsys.readouterr().out
     assert "demo shelf refreshed" in output
     manifest = json.loads((root / "MANIFEST.readable.json").read_text())
+    assert manifest["contract"] == "current-curated-demo-set"
+    assert "append-only" in manifest["curation_policy"]
     assert manifest["file_count"] == 3
     assert manifest["readable_count"] == 2
     paths = {item["path"]: item for item in manifest["files"]}
@@ -42,6 +44,7 @@ def test_demo_shelf_writes_manifest_and_readable_bundle(tmp_path: Path, capsys: 
     assert "CONCATENATED_READABLE.md" not in paths
     assert "SUMMARY_INDEX.json" not in paths
     bundle = (root / "CONCATENATED_READABLE.md").read_text()
+    assert "curated current demo set" in bundle
     assert "## 01-demo/README.md" in bundle
     assert "## 01-demo/summary.json" in bundle
     assert "Readable." in bundle

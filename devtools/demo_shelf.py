@@ -1,4 +1,4 @@
-"""Refresh or verify a local demo shelf manifest and readable bundle."""
+"""Refresh or verify a curated current demo shelf."""
 
 from __future__ import annotations
 
@@ -9,10 +9,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-DEFAULT_ROOT = Path("/realm/inbox/demos_polylogue")
+DEFAULT_ROOT = Path(".agent/demos")
 DEFAULT_MANIFEST = "MANIFEST.readable.json"
 DEFAULT_BUNDLE = "CONCATENATED_READABLE.md"
 DEFAULT_SUMMARY_INDEX = "SUMMARY_INDEX.json"
+DEMO_SET_CONTRACT = "current-curated-demo-set"
 READABLE_SUFFIXES = frozenset({".md", ".json", ".jsonl", ".csv", ".txt", ".yaml", ".yml"})
 SUMMARY_COVERAGE_FIELDS = frozenset({"claim", "non_claim", "proof_fields", "caveat_fields"})
 
@@ -178,17 +179,23 @@ def render_demo_shelf(
             }
         )
     manifest = {
+        "contract": DEMO_SET_CONTRACT,
         "root": str(root),
         "bundle": str(bundle_path),
+        "curation_policy": (
+            "This is not append-only. Keep the best current demos here; replace, consolidate, or move stale demos out."
+        ),
         "file_count": len(files),
         "readable_count": sum(1 for item in files if item["readable"]),
         "files": files,
     }
     manifest_text = json.dumps(manifest, indent=2) + "\n"
     parts = [
-        "# Demo Shelf - Concatenated Readable Artifacts",
+        "# Demo Shelf - Current Readable Artifacts",
         "",
         f"Generated from `{manifest_path}`.",
+        "",
+        "This is a curated current demo set, not an append-only archive.",
         "",
     ]
     for item in files:
@@ -226,7 +233,7 @@ def _changed(path: Path, expected: str) -> bool:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="devtools workspace demo-shelf",
-        description="Refresh or verify a demo shelf readable manifest and concatenated bundle.",
+        description="Refresh or verify a curated current demo shelf manifest and readable bundle.",
     )
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT, help=f"Demo shelf root (default: {DEFAULT_ROOT})")
     parser.add_argument("--manifest", default=DEFAULT_MANIFEST, help=f"Manifest filename (default: {DEFAULT_MANIFEST})")

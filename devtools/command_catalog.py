@@ -422,7 +422,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
         examples=(
             "devtools workspace temporal-devloop --since 2026-06-30T00:00:00+02:00 --json",
-            "devtools workspace temporal-devloop --out /realm/inbox/demos_polylogue/14-devloop-temporal-dogfood/devloop-events.json",
+            "devtools workspace temporal-devloop --out .agent/demos/14-devloop-temporal-dogfood/devloop-events.json",
         ),
     ),
     CommandSpec(
@@ -437,23 +437,23 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
         examples=(
             "devtools workspace temporal-archive-aggregates --json",
-            "devtools workspace temporal-archive-aggregates --out-dir /realm/inbox/demos_polylogue/01-real-archive-temporal-devloops",
+            "devtools workspace temporal-archive-aggregates --out-dir .agent/demos/01-real-archive-temporal-devloops",
         ),
     ),
     CommandSpec(
         "workspace demo-shelf",
         "workspace",
-        "Refresh or verify a demo shelf manifest, readable bundle, and summary index.",
+        "Refresh or verify a current demo shelf manifest, readable bundle, and summary index.",
         "devtools.demo_shelf",
         use_when=(
-            "After updating /realm/inbox/demos_polylogue or another demo shelf, regenerate "
+            "After curating .agent/demos or another explicit current demo shelf, regenerate "
             "MANIFEST.readable.json, CONCATENATED_READABLE.md, and SUMMARY_INDEX.json from one "
-            "deterministic helper instead of hand-rolled local snippets."
+            "deterministic helper. The shelf is the best current set, not an append-only archive."
         ),
         examples=(
             "devtools workspace demo-shelf",
             "devtools workspace demo-shelf --check",
-            "devtools workspace demo-shelf --root /realm/inbox/demos_sinex --json",
+            "devtools workspace demo-shelf --root /realm/project/sinex/.agent/demos --json",
         ),
     ),
     CommandSpec(

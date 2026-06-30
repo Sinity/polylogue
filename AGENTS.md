@@ -1914,7 +1914,7 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
-| `devtools workspace demo-shelf` | Refresh or verify a demo shelf manifest, readable bundle, and summary index. |
+| `devtools workspace demo-shelf` | Refresh or verify a current demo shelf manifest, readable bundle, and summary index. |
 | `devtools workspace deployment-smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
 | `devtools workspace dev-loop` | Preflight branch-local daemon, web-shell, and browser-capture development loops. |
 | `devtools workspace failure-context` | Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope. |
