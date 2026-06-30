@@ -63,6 +63,7 @@ def test_read_package_dry_run_emits_summary_without_writing(
         json.dumps(
             {
                 "version": 1,
+                "prune": ["stale.md"],
                 "artifacts": [
                     {"name": "dialogue", "view": "dialogue", "format": "json", "path": "dialogue.json"},
                 ],
@@ -86,6 +87,8 @@ def test_read_package_dry_run_emits_summary_without_writing(
     assert result == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["dry_run"] is True
+    assert payload["prune"] == ["stale.md"]
+    assert payload["pruned"] == []
     assert payload["artifacts"][0]["view"] == "dialogue"
     assert not (tmp_path / "out").exists()
 
@@ -135,3 +138,50 @@ def test_read_package_json_keeps_child_output_off_stdout(
     assert "child progress line" in captured.err
     payload = json.loads(captured.out)
     assert payload["artifacts"][0]["bytes"] == 2
+
+
+def test_read_package_json_reports_pruned_files(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = tmp_path / "package.json"
+    spec_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "prune": ["stale.md", "missing.md"],
+                "artifacts": [
+                    {"name": "dialogue", "view": "dialogue", "format": "json", "path": "dialogue.json"},
+                ],
+            }
+        )
+    )
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    (out_dir / "stale.md").write_text("old", encoding="utf-8")
+
+    def fake_run(argv: tuple[str, ...], **_: Any) -> subprocess.CompletedProcess[tuple[str, ...]]:
+        out_index = argv.index("--out") + 1
+        Path(argv[out_index]).write_text("{}", encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = main(
+        [
+            "--spec",
+            str(spec_path),
+            "--session-id",
+            "019f",
+            "--out-dir",
+            str(out_dir),
+            "--json",
+        ]
+    )
+
+    assert result == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["prune"] == ["stale.md", "missing.md"]
+    assert payload["pruned"] == [str(out_dir / "stale.md")]
+    assert not (out_dir / "stale.md").exists()

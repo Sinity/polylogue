@@ -157,6 +157,7 @@ def _summary(
         "out_dir": str(out_dir),
         "version": spec.version,
         "dry_run": dry_run,
+        "prune": list(spec.prune),
         "pruned": pruned,
         "artifacts": [
             {
