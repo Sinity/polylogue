@@ -96,3 +96,66 @@ def test_demo_shelf_summary_index_reports_coverage_gaps(tmp_path: Path) -> None:
     assert summary_index["coverage"]["without_non_claim"] == ["01-demo/summary.json"]
     assert summary_index["coverage"]["without_proof_fields"] == ["01-demo/summary.json"]
     assert summary_index["coverage"]["without_caveat_fields"] == ["01-demo/summary.json"]
+
+
+def test_demo_shelf_require_summary_coverage_fails_check(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root = tmp_path / "demos"
+    (root / "01-demo").mkdir(parents=True)
+    (root / "01-demo" / "summary.json").write_text(json.dumps({"artifact": "01-demo"}))
+    assert demo_shelf.main(["--root", str(root)]) == 0
+    capsys.readouterr()
+
+    exit_code = demo_shelf.main(
+        [
+            "--root",
+            str(root),
+            "--check",
+            "--json",
+            "--require-summary-coverage",
+            "claim,non_claim,proof_fields,caveat_fields",
+        ]
+    )
+
+    assert exit_code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["summary_coverage_failures"] == {
+        "caveat_fields": ["01-demo/summary.json"],
+        "claim": ["01-demo/summary.json"],
+        "non_claim": ["01-demo/summary.json"],
+        "proof_fields": ["01-demo/summary.json"],
+    }
+
+
+def test_demo_shelf_require_summary_coverage_passes_check(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root = tmp_path / "demos"
+    (root / "01-demo").mkdir(parents=True)
+    (root / "01-demo" / "summary.json").write_text(
+        json.dumps(
+            {
+                "artifact": "01-demo",
+                "claim": "Claim.",
+                "non_claim": "Non-claim.",
+                "proofs": ["proof"],
+                "caveats": ["caveat"],
+            }
+        )
+    )
+    assert demo_shelf.main(["--root", str(root)]) == 0
+    capsys.readouterr()
+
+    exit_code = demo_shelf.main(
+        [
+            "--root",
+            str(root),
+            "--check",
+            "--json",
+            "--require-summary-coverage",
+            "claim,non_claim,proof_fields,caveat_fields",
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["summary_coverage_failures"] == {}

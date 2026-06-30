@@ -14,6 +14,7 @@ DEFAULT_MANIFEST = "MANIFEST.readable.json"
 DEFAULT_BUNDLE = "CONCATENATED_READABLE.md"
 DEFAULT_SUMMARY_INDEX = "SUMMARY_INDEX.json"
 READABLE_SUFFIXES = frozenset({".md", ".json", ".jsonl", ".csv", ".txt", ".yaml", ".yml"})
+SUMMARY_COVERAGE_FIELDS = frozenset({"claim", "non_claim", "proof_fields", "caveat_fields"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +28,7 @@ class ShelfRender:
     file_count: int
     readable_count: int
     summary_count: int
+    summary_coverage: dict[str, list[str]]
 
 
 def _is_readable_artifact(path: Path) -> bool:
@@ -100,28 +102,50 @@ def _summary_record(root: Path, path: Path) -> dict[str, Any]:
     return record
 
 
-def _build_summary_index(root: Path, generated: set[Path]) -> tuple[str, int]:
+def _build_summary_index(root: Path, generated: set[Path]) -> tuple[str, int, dict[str, list[str]]]:
     records = []
     for path in sorted(root.rglob("*summary.json")):
         if not path.is_file() or path.resolve() in generated:
             continue
         records.append(_summary_record(root, path))
+    coverage = {
+        "without_claim": [record["summary_path"] for record in records if not record["coverage"]["claim"]],
+        "without_non_claim": [record["summary_path"] for record in records if not record["coverage"]["non_claim"]],
+        "without_proof_fields": [
+            record["summary_path"] for record in records if not record["coverage"]["proof_fields"]
+        ],
+        "without_caveat_fields": [
+            record["summary_path"] for record in records if not record["coverage"]["caveat_fields"]
+        ],
+    }
     summary_index = {
         "root": str(root),
         "summary_count": len(records),
-        "coverage": {
-            "without_claim": [record["summary_path"] for record in records if not record["coverage"]["claim"]],
-            "without_non_claim": [record["summary_path"] for record in records if not record["coverage"]["non_claim"]],
-            "without_proof_fields": [
-                record["summary_path"] for record in records if not record["coverage"]["proof_fields"]
-            ],
-            "without_caveat_fields": [
-                record["summary_path"] for record in records if not record["coverage"]["caveat_fields"]
-            ],
-        },
+        "coverage": coverage,
         "records": records,
     }
-    return json.dumps(summary_index, indent=2) + "\n", len(records)
+    return json.dumps(summary_index, indent=2) + "\n", len(records), coverage
+
+
+def _parse_required_summary_coverage(value: str) -> set[str]:
+    if not value:
+        return set()
+    fields = {item.strip() for item in value.split(",") if item.strip()}
+    unknown = fields - SUMMARY_COVERAGE_FIELDS
+    if unknown:
+        expected = ", ".join(sorted(SUMMARY_COVERAGE_FIELDS))
+        raise argparse.ArgumentTypeError(
+            f"unknown coverage field(s): {', '.join(sorted(unknown))}; expected {expected}"
+        )
+    return fields
+
+
+def _coverage_failures(summary_coverage: dict[str, list[str]], required: set[str]) -> dict[str, list[str]]:
+    return {
+        field: summary_coverage.get(f"without_{field}", [])
+        for field in sorted(required)
+        if summary_coverage.get(f"without_{field}", [])
+    }
 
 
 def render_demo_shelf(
@@ -177,7 +201,7 @@ def render_demo_shelf(
             text = f"[unreadable: {exc}]"
         parts.extend([f"## {item['path']}", "", text, ""])
     bundle_text = "\n".join(parts).rstrip() + "\n"
-    summary_index_text, summary_count = _build_summary_index(root, generated)
+    summary_index_text, summary_count, summary_coverage = _build_summary_index(root, generated)
     return ShelfRender(
         manifest_path=manifest_path,
         bundle_path=bundle_path,
@@ -188,6 +212,7 @@ def render_demo_shelf(
         file_count=len(files),
         readable_count=sum(1 for item in files if item["readable"]),
         summary_count=summary_count,
+        summary_coverage=summary_coverage,
     )
 
 
@@ -211,6 +236,13 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_SUMMARY_INDEX,
         help=f"Summary index filename (default: {DEFAULT_SUMMARY_INDEX})",
     )
+    parser.add_argument(
+        "--require-summary-coverage",
+        type=_parse_required_summary_coverage,
+        default=set(),
+        metavar="FIELDS",
+        help="In check mode, fail when summaries lack comma-separated fields: claim, non_claim, proof_fields, caveat_fields.",
+    )
     parser.add_argument("--check", action="store_true", help="Verify files are current without writing.")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     args = parser.parse_args(argv)
@@ -226,7 +258,8 @@ def main(argv: list[str] | None = None) -> int:
         "bundle": _changed(rendered.bundle_path, rendered.bundle_text),
         "summary_index": _changed(rendered.summary_index_path, rendered.summary_index_text),
     }
-    ok = not any(changed.values())
+    coverage_failures = _coverage_failures(rendered.summary_coverage, args.require_summary_coverage)
+    ok = not any(changed.values()) and not coverage_failures
     if not args.check:
         rendered.manifest_path.parent.mkdir(parents=True, exist_ok=True)
         rendered.manifest_path.write_text(rendered.manifest_text)
@@ -234,6 +267,7 @@ def main(argv: list[str] | None = None) -> int:
         rendered.summary_index_path.write_text(rendered.summary_index_text)
         ok = True
         changed = {"manifest": False, "bundle": False, "summary_index": False}
+        coverage_failures = {}
 
     payload = {
         "ok": ok,
@@ -244,6 +278,8 @@ def main(argv: list[str] | None = None) -> int:
         "file_count": rendered.file_count,
         "readable_count": rendered.readable_count,
         "summary_count": rendered.summary_count,
+        "required_summary_coverage": sorted(args.require_summary_coverage),
+        "summary_coverage_failures": coverage_failures,
         "changed": changed,
         "mode": "check" if args.check else "write",
     }
@@ -257,7 +293,9 @@ def main(argv: list[str] | None = None) -> int:
             f"{rendered.summary_count} summaries"
         )
     else:
-        print("demo shelf drift:", ", ".join(name for name, value in changed.items() if value), file=sys.stderr)
+        reasons = [name for name, value in changed.items() if value]
+        reasons.extend(f"summary coverage {field}" for field in coverage_failures)
+        print("demo shelf drift:", ", ".join(reasons), file=sys.stderr)
     return 0 if ok else 1
 
 
