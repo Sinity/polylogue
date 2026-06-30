@@ -331,6 +331,22 @@ def test_query_action_read_explain_json_outputs_terminal_action(cli_runner: CliR
     }
     lowering_plan = cast(dict[str, Any], payload["lowering_plan"])
     assert lowering_plan["terminal_action"] == terminal_action
+    pipeline = cast(dict[str, Any], payload["pipeline"])
+    assert pipeline["source"]["unit"] == "sessions"
+    assert pipeline["stages"] == [
+        {
+            "kind": "terminal",
+            "action": "read",
+            "args": {
+                "all": False,
+                "destination": "terminal",
+                "first": False,
+                "format": "default",
+                "view": "messages",
+            },
+        }
+    ]
+    assert lowering_plan["pipeline"] == pipeline
     assert payload["plan_description"][-1] == "terminal action: read"
 
 

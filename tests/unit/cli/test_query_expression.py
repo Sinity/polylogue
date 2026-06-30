@@ -32,12 +32,14 @@ from polylogue.archive.query.expression import (
     QueryUnitPipeline,
     QueryUnitSessionScopeStage,
     QueryUnitSource,
+    UnsupportedSessionTerminalActionError,
     _CountRangeToken,
     _CountToken,
     _DateComparisonToken,
     _DateRangeToken,
     _FieldToken,
     _TextToken,
+    build_session_terminal_pipeline,
     compile_expression,
     compile_expression_into,
     explain_expression,
@@ -80,6 +82,29 @@ def _materialize_run_projection(index_db: Path) -> None:
 def _spec(**kwargs: Any) -> SessionQuerySpec:
     """Build a SessionQuerySpec with only the given fields set, rest default."""
     return SessionQuerySpec(**kwargs)
+
+
+def test_build_session_terminal_pipeline_payload() -> None:
+    pipeline = build_session_terminal_pipeline(
+        "read",
+        args=(("view", "messages"), ("format", "markdown")),
+    )
+
+    assert pipeline.to_payload() == {
+        "source": {"unit": "sessions"},
+        "stages": [
+            {
+                "kind": "terminal",
+                "action": "read",
+                "args": {"view": "messages", "format": "markdown"},
+            }
+        ],
+    }
+
+
+def test_build_session_terminal_pipeline_rejects_unknown_action() -> None:
+    with pytest.raises(UnsupportedSessionTerminalActionError):
+        build_session_terminal_pipeline("recover")
 
 
 def _clauses(expression: str) -> list[object]:

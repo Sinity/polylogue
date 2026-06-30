@@ -8,7 +8,7 @@ from typing import cast
 
 import click
 
-from polylogue.archive.query.expression import explain_expression
+from polylogue.archive.query.expression import build_session_terminal_pipeline, explain_expression
 
 
 def explain_query_expression(
@@ -22,12 +22,21 @@ def explain_query_expression(
     explanation = explain_expression(source)
     payload = explanation.to_payload()
     if terminal_action is not None:
-        payload["terminal_action"] = dict(terminal_action)
-        lowering_plan = payload.get("lowering_plan")
-        if isinstance(lowering_plan, dict):
-            lowering_plan["terminal_action"] = dict(terminal_action)
+        terminal_payload = dict(terminal_action)
+        action_name = str(terminal_payload.get("action") or "action")
+        terminal_args = tuple((str(key), value) for key, value in terminal_payload.items() if key != "action")
+        pipeline = build_session_terminal_pipeline(
+            action_name,
+            args=terminal_args,
+            predicate=explanation.predicate,
+        ).to_payload()
+        payload["pipeline"] = pipeline
+        payload["terminal_action"] = terminal_payload
+        plan_payload = payload.get("lowering_plan")
+        if isinstance(plan_payload, dict):
+            plan_payload["pipeline"] = pipeline
+            plan_payload["terminal_action"] = terminal_payload
         plan_description = payload.get("plan_description")
-        action_name = str(terminal_action.get("action") or "action")
         if isinstance(plan_description, list):
             plan_description.append(f"terminal action: {action_name}")
     if output_format == "json":
@@ -42,6 +51,7 @@ def explain_query_expression(
     execution_legs = cast(list[str], payload["execution_legs"])
     plan_description = cast(list[str], payload["plan_description"])
     lowering_plan = cast(dict[str, object] | None, payload["lowering_plan"])
+    pipeline_payload = cast(dict[str, object] | None, payload.get("pipeline"))
     terminal_action_payload = cast(dict[str, object] | None, payload.get("terminal_action"))
     unsupported_nodes = cast(list[str], payload["unsupported_nodes"])
     if selected_units:
@@ -58,6 +68,9 @@ def explain_query_expression(
     if lowering_plan is not None:
         click.echo("lowering plan:")
         click.echo(json.dumps(lowering_plan, indent=2, sort_keys=True))
+    if pipeline_payload is not None and (lowering_plan is None or "pipeline" not in lowering_plan):
+        click.echo("pipeline:")
+        click.echo(json.dumps(pipeline_payload, indent=2, sort_keys=True))
     if terminal_action_payload is not None and (lowering_plan is None or "terminal_action" not in lowering_plan):
         click.echo("terminal action:")
         click.echo(json.dumps(terminal_action_payload, indent=2, sort_keys=True))
