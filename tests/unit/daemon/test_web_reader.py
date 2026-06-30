@@ -2057,6 +2057,17 @@ class TestReaderViewProfiles:
         context_spec = cast(dict[str, object], context_payload["spec"])
         assert context_spec["seed_refs"] == [f"session:{C1}"]
         assert "messages" in cast(list[str], context_spec["read_views"])
+        projection_spec = cast(dict[str, object], context_payload["projection_spec"])
+        projection_selection = cast(dict[str, object], projection_spec["selection"])
+        projection = cast(dict[str, object], projection_spec["projection"])
+        render = cast(dict[str, object], projection_spec["render"])
+        assert projection_selection["refs"] == [f"session:{C1}"]
+        assert projection["families"] == ["context", "messages", "assertions"]
+        assert projection["body_policy"] == "authored-dialogue"
+        assert {"tool_use", "tool_result", "function_call", "function_call_output"} <= set(
+            cast(list[str], projection["exclude_block_kinds"])
+        )
+        assert render["layout"] == "context-image"
         segments = cast(list[dict[str, object]], context_payload["segments"])
         assert any(segment.get("payload_kind") == "messages" for segment in segments)
         assert isinstance(context_payload["token_estimate"], int)

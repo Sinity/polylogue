@@ -20,6 +20,7 @@ from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.context.compiler import ContextImage, ContextOmission, ContextSegment, ContextSpec
 from polylogue.context.selection import select_context_image_sessions
 from polylogue.core.enums import Provider
+from polylogue.surfaces.projection_spec import projection_from_views
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import (
     EXPECTED_TOOL_NAMES,
@@ -44,8 +45,12 @@ def _context_image(*, with_messages: bool = True) -> ContextImage:
             ),
         )
     spec = ContextSpec(purpose="handoff", seed_refs=("session:codex-session:ctx-1",), read_views=("messages",))
+    projection_spec = projection_from_views(
+        ("context-image",), format="json", destination="stdout", layout="context-image"
+    )
     return ContextImage(
         spec=spec,
+        projection_spec=projection_spec,
         segments=segments,
         evidence_refs=(),
         omitted=()
@@ -160,6 +165,7 @@ class TestBuildContextImageDelegation:
 
         payload = json.loads(raw)
         assert "segments" in payload
+        assert payload["projection_spec"]["projection"]["body_policy"] == "authored-dialogue"
         assert payload["segments"][0]["payload_kind"] == "messages"
         assert payload["token_estimate"] == 2
         # Delegated to the shared engine with messages included by default.

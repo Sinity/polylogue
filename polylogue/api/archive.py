@@ -2456,6 +2456,7 @@ class PolylogueArchiveMixin:
         delegated to :meth:`compile_context`.
         """
         from polylogue.context.compiler import ContextSpec
+        from polylogue.surfaces.projection_spec import projection_from_views
 
         views: tuple[str, ...] = ("messages",) if include_messages else ()
         redaction: Literal["default", "raw-opt-in"] = "raw-opt-in" if not redact_paths else "default"
@@ -2480,7 +2481,25 @@ class PolylogueArchiveMixin:
             include_assertions=include_assertions,
             redaction_policy=redaction,
         )
-        return await self.compile_context(spec)
+        image = await self.compile_context(spec)
+        projection_spec = projection_from_views(
+            ("context-image",),
+            format="json",
+            destination="stdout",
+            layout="context-image",
+            max_tokens=max_tokens,
+            query=query,
+            origin=origin,
+            since=since,
+            until=until,
+            project_path=project_path,
+            project_repo=project_repo,
+            limit=limit,
+        )
+        if seed_session_id is not None:
+            selection = projection_spec.selection.model_copy(update={"refs": (f"session:{seed_session_id}",)})
+            projection_spec = projection_spec.model_copy(update={"selection": selection})
+        return image.model_copy(update={"projection_spec": projection_spec})
 
     async def context_preamble_payload(
         self,
