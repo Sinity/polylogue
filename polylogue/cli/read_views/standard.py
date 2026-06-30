@@ -9,9 +9,11 @@ from collections.abc import Callable, Mapping
 from dataclasses import replace
 from urllib.parse import quote
 
+import yaml
+
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
-from polylogue.archive.session.domain_models import SessionSummary
+from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.cli.read_views.base import ReadViewInvocation, deliver_content, execute_query_request
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
@@ -94,8 +96,38 @@ def run_read_dialogue(env: AppEnv, request: RootModeRequest, invocation: ReadVie
         env.ui.error(f"Session not found: {invocation.session_id}")
         return
     fmt = invocation.output_format or "markdown"
-    content = format_session(session, fmt, None)
+    content = _format_dialogue_session(session, fmt)
     deliver_content(env, content, destination=invocation.destination, out_path=invocation.out_path)
+
+
+def _format_dialogue_session(session: Session, output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(_dialogue_payload(session), indent=2)
+    if output_format == "yaml":
+        return str(yaml.dump(_dialogue_payload(session), default_flow_style=False, allow_unicode=True, sort_keys=False))
+    return format_session(session, output_format, None)
+
+
+def _dialogue_payload(session: Session) -> dict[str, object]:
+    return {
+        "id": str(session.id),
+        "origin": session.origin.value,
+        "title": session.title,
+        "created_at": session.created_at.isoformat() if session.created_at else None,
+        "updated_at": session.updated_at.isoformat() if session.updated_at else None,
+        "message_count": len(session.messages),
+        "messages": [
+            {
+                "id": message.id,
+                "role": message.role.value,
+                "timestamp": message.timestamp.isoformat() if message.timestamp else None,
+                "material_origin": message.material_origin.value,
+                "text": message.text,
+            }
+            for message in session.messages
+            if message.text
+        ],
+    }
 
 
 def _session_scope_for_summaries(summaries: list[SessionSummary]) -> str:
@@ -279,7 +311,6 @@ def run_read_browser(env: AppEnv, request: RootModeRequest, invocation: ReadView
     """Open the first matched session in the daemon web reader."""
 
     from polylogue.api.sync.bridge import run_coroutine_sync
-    from polylogue.archive.session.domain_models import Session
     from polylogue.cli.query import _create_query_vector_provider
     from polylogue.paths import archive_file_set_root_for_paths
 

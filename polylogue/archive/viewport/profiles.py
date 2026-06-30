@@ -114,7 +114,7 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
         evidence_policy="required",
         privacy_policy="omits tool calls, tool outputs, reasoning, attachments, and system/protocol rows",
         formats=("markdown", "json", "yaml", "plaintext", "obsidian", "org"),
-        machine_payload="projected SessionDetailPayload",
+        machine_payload="compact dialogue payload",
         degraded_states=("missing session", "session without authored dialogue"),
         successor_handoff=True,
     ),

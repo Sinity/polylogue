@@ -309,6 +309,60 @@ def test_dialogue_read_view_renders_projected_authored_prose(capsys: pytest.Capt
     assert "tool output body" not in rendered
 
 
+def test_dialogue_json_uses_compact_payload(capsys: pytest.CaptureFixture[str]) -> None:
+    session = make_conv(
+        id="session-1",
+        title="Mixed transcript",
+        messages=[
+            make_msg(id="user", role="user", text="operator question", material_origin="human_authored"),
+            make_msg(id="assistant", role="assistant", text="agent answer"),
+        ],
+    )
+
+    class _FakePolylogue:
+        async def get_session(self, session_id: str, *, content_projection: object | None = None) -> object | None:
+            assert session_id == "session-1"
+            if content_projection is None:
+                return session
+            return session.with_content_projection(content_projection)  # type: ignore[arg-type]
+
+    env = cast(AppEnv, SimpleNamespace(polylogue=_FakePolylogue(), ui=MagicMock()))
+
+    read_view_handlers.run_read_view(
+        env,
+        RootModeRequest.from_params({}),
+        ReadViewInvocation(
+            view="dialogue",
+            session_id="session-1",
+            output_format="json",
+            destination="stdout",
+            out_path=None,
+        ),
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["id"] == "session-1"
+    assert payload["message_count"] == 2
+    assert payload["messages"] == [
+        {
+            "id": "user",
+            "role": "user",
+            "timestamp": None,
+            "material_origin": "human_authored",
+            "text": "operator question",
+        },
+        {
+            "id": "assistant",
+            "role": "assistant",
+            "timestamp": None,
+            "material_origin": "assistant_authored",
+            "text": "agent answer",
+        },
+    ]
+    assert "target_ref" not in payload
+    assert "actions" not in payload
+
+
 def _read_verb_kwargs(**overrides: object) -> dict[str, object]:
     """Full default kwargs for the read_verb callback (keyword-robust to signature growth)."""
     defaults: dict[str, object] = {
