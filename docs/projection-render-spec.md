@@ -13,7 +13,7 @@ analysis can share the same vocabulary.
 
 ## Why This Exists
 
-The legacy cleanup work removed public recovery/dialogue/tool-output flags, but
+Recent cleanup removed public recovery/dialogue/tool-output flags, but
 `read --view` still mixes several concepts in one option namespace:
 
 - view selection;
