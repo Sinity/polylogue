@@ -4,9 +4,9 @@ Every top-level entry has a reason.
 
 | Entry | Purpose | Managed by |
 |-------|---------|------------|
-| `.agent/` | Ignored agent workspace: conductor notes, current demos, scratch/research, helper scripts, and task logs | agents |
+| `.agent/` | Agent scaffold plus local state: tracked devloop scripts/docs; ignored current loop state, demos, scratch, and task history | agents |
 | `.cache/` | Disposable tool state (hypothesis, pytest/testmon, verify runs, mypy, ruff, rendered site) | tools |
-| `.claude/` | Claude Code project config (commands, agents, skills) | user |
+| `.claude/` | Claude Code project config; `settings.json`/`setup.sh` tracked, local settings and agent worktrees ignored | user |
 | `.coderabbit.yaml` | CodeRabbit review bot configuration | repo |
 | `.direnv/` | direnv layout (devshell activation) | direnv |
 | `.dockerignore` | Container build exclusion rules | repo |
