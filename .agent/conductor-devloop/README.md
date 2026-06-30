@@ -203,6 +203,98 @@ Open design questions:
 - How do machine-readable JSON/YAML outputs preserve enough projection/render
   metadata without bloating dialogue/export artifacts?
 
+Working answer until contradicted by implementation evidence:
+
+- Keep **selection** in the query DSL: origin, repo, time, text, lineage,
+  session ids, query-unit predicates, sort, and selected-session cardinality.
+- Keep **projection policy** in a typed projection expression/spec: attached
+  units, body/window/edge limits, token budgets, omission policy, evidence
+  families, and per-view computation knobs.
+- Keep **rendering** in `RenderSpec`: layout, output format, timestamp policy,
+  redaction, destination, and machine-vs-readable shape.
+- Allow CLI flags only as ergonomic shorthands that compile into those typed
+  contracts. A flag that cannot be represented in the spec is either a real
+  substrate gap or compatibility debt.
+
+Suggested conceptual grammar:
+
+```text
+<query> then read --projection "<projection-expr>" --render "<render-expr>"
+
+projection:
+  with assertions
+  with actions where tool:bash
+  with messages window around matches limit tokens 4000
+  with temporal buckets hour families session,git,devloop
+
+render:
+  layout context-image
+  format markdown
+  timestamps include-available
+  redact paths
+  destination browser
+```
+
+This does not require the first implementation to add literal
+`--projection`/`--render` flags. It does require every new read capability to
+be explainable as:
+
+```text
+SelectionSpec + ProjectionSpec + RenderSpec -> payload + readable rendering
+```
+
+### Projection/Render Workload Map
+
+Use these vertical slices to turn the model into product behavior:
+
+1. **Inventory and classify current read controls.**
+   - Input: live `read --help`, `read --views --format json`, representative
+     `read --spec` outputs.
+   - Output: table classifying each option as selection, projection, render,
+     delivery, or compatibility debt.
+   - Proof: artifact under `.agent/demos` plus a small test or verifier that
+     `read --views` still exposes ownership metadata.
+
+2. **Attach one related unit through projection substrate.**
+   - Candidate: `with assertions` first, then `with actions`.
+   - Required shape: selected sessions carry `attached_units` or equivalent
+     query-unit envelopes; fetching is page-batched, not per-session bespoke
+     loops.
+   - Proof: live command showing the same session selection with attached
+     assertions/actions in JSON and readable Markdown.
+
+3. **Unify query-set read cardinality.**
+   - Clarify when `limit` means selected sessions versus projection body/edge
+     count.
+   - Ensure `read --spec` reports the distinction.
+   - Proof: focused tests plus live examples for `dialogue`, `temporal`,
+     `chronicle`, `context-image`, and `messages`.
+
+4. **Make render layout explicit everywhere.**
+   - Ensure context-image, temporal+chronicle handoff, dialogue, and raw
+     outputs carry stable `render.layout`, format, timestamp, and redaction
+     policy where applicable.
+   - Proof: generated JSON/YAML stays compact enough for large sessions while
+     Markdown remains inspectable.
+
+5. **Remove obsolete compatibility surfaces.**
+   - Recovery/export/context-pack/read flags should disappear when their
+     behavior is represented by query + projection + render specs.
+   - Proof: source search for old public tokens, regenerated docs, and one live
+     replacement command.
+
+### Acceptance Criteria For A Good Slice
+
+A projection/render slice is good only if it satisfies all of these:
+
+- It uses the canonical active archive or a clearly named fixture.
+- It states root, schema version, and relevant counts when quoting data.
+- It can be inspected outside chat.
+- It improves or removes a user-facing command, spec, payload, doc, or demo.
+- It avoids new one-off DTOs unless the DTO is the general projection/render
+  contract.
+- It records what the proof does not show.
+
 Useful next slices:
 
 1. Audit current `read --help`, `read --views`, and `read --spec` output to

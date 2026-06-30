@@ -47,6 +47,12 @@ Velocity, and Meta.
 1. **Direction**
    - Select one capability slice.
    - Brainstorm candidate demos or demo improvements before narrowing.
+   - Check the workload radar: `ACTIVE-LOOP.md`, `DEMO-RADAR.md`, recent
+     `OPERATING-LOG.md` next decisions, and any relevant audit note in
+     `INDEX.md`.
+   - Rank candidates by evidence urgency, user-visible truthfulness, substrate
+     leverage, demo value, and velocity impact. Prefer the slice that improves
+     the most categories without broadening into vague cleanup.
    - State out-of-scope items.
    - Write the slice contract before editing: demo value, reusable substrate,
      proof ladder, non-goals, and first concrete action.
@@ -102,6 +108,33 @@ Velocity, and Meta.
      apology prose.
    - Ask whether demo generation lagged; if yes, run `devloop-demo` and improve
      the tripwire.
+
+## Workload Radar
+
+The devloop backlog is evidence-shaped, not a static ticket queue. Maintain it
+as a radar during Direction and at substantial checkpoints:
+
+1. `ACTIVE-LOOP.md` says what is live now.
+2. `DEMO-RADAR.md` says which demos are current, missing, stale, or next.
+3. `OPERATING-LOG.md` carries recent "next decision" lines and proof caveats.
+4. `INDEX.md` routes larger audit/debt notes.
+
+Use this scoring order when choosing between candidates:
+
+- **Truthfulness risk:** Will leaving this alone cause the CLI, docs, demos, or
+  reports to lie about source evidence, archive counts, fields, or semantics?
+- **Substrate leverage:** Does the slice collapse a recovery/export/demo/report
+  silo into query, acquisition, projection, rendering, or insight substrate?
+- **Demo value:** Will the slice produce or improve an artifact that a future
+  operator or agent can inspect without chat context?
+- **Velocity impact:** Does the slice remove repeated latency, root confusion,
+  daemon confusion, test friction, or scaffold drift?
+- **Scope discipline:** Can the slice be proven with a narrow command and a
+  live artifact without turning into an unbounded refactor?
+
+If the current active slice is vague, do a Meta transition and repair the radar:
+write a sharper `ACTIVE-LOOP.md` next action, add a `DEMO-RADAR.md` entry, or
+turn a recurring friction into an executable review/velocity check.
 
 ## Heavy Work
 
