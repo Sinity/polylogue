@@ -484,11 +484,26 @@ def _structured_failure_followups(conn: sqlite3.Connection, *, sample_limit: int
     by_tool: dict[str, dict[str, int]] = {}
     by_model: dict[str, dict[str, int]] = {}
     samples: list[dict[str, object]] = []
+    samples_by_classification: dict[str, list[dict[str, object]]] = {
+        "acknowledged": [],
+        "silent_proceed": [],
+        "ambiguous": [],
+    }
     totals = {"failed_outcomes": 0, "acknowledged": 0, "silent_proceed": 0, "ambiguous": 0}
     for row in rows:
         classification = _classify_failed_followup(row["next_text"])
         tool = str(row["tool_name"] or "unknown")
         model = str(row["model_name"] or "unknown")
+        sample = {
+            "classification": classification,
+            "session_ref": f"session:{row['session_id']}",
+            "tool_message_ref": f"message:{row['message_id']}",
+            "next_message_ref": f"message:{row['next_message_id']}" if row["next_message_id"] else None,
+            "tool_name": tool,
+            "exit_code": row["exit_code"],
+            "is_error": row["is_error"],
+            "tool_command_preview": str(row["tool_command"] or "")[:160],
+        }
         totals["failed_outcomes"] += 1
         totals[classification] += 1
         by_tool.setdefault(tool, {"failed_outcomes": 0, "acknowledged": 0, "silent_proceed": 0, "ambiguous": 0})
@@ -498,33 +513,31 @@ def _structured_failure_followups(conn: sqlite3.Connection, *, sample_limit: int
         by_model[model]["failed_outcomes"] += 1
         by_model[model][classification] += 1
         if len(samples) < sample_limit:
-            samples.append(
-                {
-                    "classification": classification,
-                    "session_ref": f"session:{row['session_id']}",
-                    "tool_message_ref": f"message:{row['message_id']}",
-                    "next_message_ref": f"message:{row['next_message_id']}" if row["next_message_id"] else None,
-                    "tool_name": tool,
-                    "exit_code": row["exit_code"],
-                    "is_error": row["is_error"],
-                    "tool_command_preview": str(row["tool_command"] or "")[:160],
-                }
-            )
+            samples.append(sample)
+        bucket = samples_by_classification[classification]
+        if len(bucket) < sample_limit:
+            bucket.append(sample)
 
     def ranked(mapping: dict[str, dict[str, int]]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for key, counts in mapping.items():
             failed = counts["failed_outcomes"]
             silent = counts["silent_proceed"]
+            classified = counts["acknowledged"] + silent
             out.append(
                 {
                     "name": key,
                     **counts,
+                    "classified_outcomes": classified,
+                    # Compatibility field: this is the conservative rate over
+                    # all failed outcomes, including ambiguous follow-ups.
                     "silent_rate": (silent / failed) if failed else 0.0,
+                    "silent_rate_among_classified": (silent / classified) if classified else 0.0,
                 }
             )
         return sorted(out, key=lambda item: (-int(item["failed_outcomes"]), str(item["name"])))
 
+    totals["classified_outcomes"] = totals["acknowledged"] + totals["silent_proceed"]
     return {
         "definition": (
             "failed tool outcomes are structured rows where is_error=1 or exit_code!=0; "
@@ -534,6 +547,7 @@ def _structured_failure_followups(conn: sqlite3.Connection, *, sample_limit: int
         "by_tool": ranked(by_tool),
         "by_model": ranked(by_model),
         "samples": samples,
+        "samples_by_classification": samples_by_classification,
     }
 
 
@@ -855,41 +869,53 @@ def build_report(f: dict[str, Any], out_dir: Path, *, archive_label: str) -> str
                 "outcomes, not prose-mined success claims. A failed outcome is any action row "
                 "with `is_error=1` or non-zero `exit_code`. The next assistant turn is then "
                 "classified as `acknowledged`, `silent_proceed`, or `ambiguous` by a small, "
-                "auditable acknowledgment-marker rule. Treat this as the structured core plus "
-                "a lexical acknowledgment heuristic, not an LLM judgment."
+                "auditable acknowledgment-marker rule. The primary silent rate below is a "
+                "conservative lower bound over all failed outcomes; `ambiguous` rows stay in "
+                "the denominator instead of being forced into either class. Treat this as the "
+                "structured core plus a lexical acknowledgment heuristic, not an LLM judgment."
             )
             md.append("")
             ack = int(totals.get("acknowledged", 0)) if isinstance(totals, dict) else 0
             silent = int(totals.get("silent_proceed", 0)) if isinstance(totals, dict) else 0
             amb = int(totals.get("ambiguous", 0)) if isinstance(totals, dict) else 0
+            classified = (
+                int(totals.get("classified_outcomes", ack + silent)) if isinstance(totals, dict) else ack + silent
+            )
             md.append(
                 f"Failed structured outcomes: **{_fmt_int(failed_total)}**. "
                 f"Acknowledged: **{_fmt_int(ack)}**; silent-proceed: **{_fmt_int(silent)}** "
-                f"({silent / failed_total:.1%}); ambiguous: **{_fmt_int(amb)}**."
+                f"({silent / failed_total:.1%} lower bound over all failures; "
+                f"{silent / classified:.1%} among classified follow-ups); ambiguous: **{_fmt_int(amb)}**."
             )
             md.append("")
             by_tool = [item for item in followups.get("by_tool", []) if isinstance(item, dict)]
             if by_tool:
-                md.append("| tool | failed outcomes | acknowledged | silent-proceed | ambiguous | silent rate |")
-                md.append("|---|---:|---:|---:|---:|---:|")
+                md.append(
+                    "| tool | failed outcomes | acknowledged | silent-proceed | ambiguous | silent lower bound | silent among classified |"
+                )
+                md.append("|---|---:|---:|---:|---:|---:|---:|")
                 for item in by_tool[:12]:
                     failed = int(item["failed_outcomes"])
                     md.append(
                         f"| {_esc(str(item['name']))} | {_fmt_int(failed)} | "
                         f"{_fmt_int(int(item['acknowledged']))} | {_fmt_int(int(item['silent_proceed']))} | "
-                        f"{_fmt_int(int(item['ambiguous']))} | {float(item['silent_rate']):.1%} |"
+                        f"{_fmt_int(int(item['ambiguous']))} | {float(item['silent_rate']):.1%} | "
+                        f"{float(item['silent_rate_among_classified']):.1%} |"
                     )
                 md.append("")
             by_model = [item for item in followups.get("by_model", []) if isinstance(item, dict)]
             if by_model:
-                md.append("| model | failed outcomes | acknowledged | silent-proceed | ambiguous | silent rate |")
-                md.append("|---|---:|---:|---:|---:|---:|")
+                md.append(
+                    "| model | failed outcomes | acknowledged | silent-proceed | ambiguous | silent lower bound | silent among classified |"
+                )
+                md.append("|---|---:|---:|---:|---:|---:|---:|")
                 for item in by_model[:12]:
                     failed = int(item["failed_outcomes"])
                     md.append(
                         f"| {_esc(str(item['name']))} | {_fmt_int(failed)} | "
                         f"{_fmt_int(int(item['acknowledged']))} | {_fmt_int(int(item['silent_proceed']))} | "
-                        f"{_fmt_int(int(item['ambiguous']))} | {float(item['silent_rate']):.1%} |"
+                        f"{_fmt_int(int(item['ambiguous']))} | {float(item['silent_rate']):.1%} | "
+                        f"{float(item['silent_rate_among_classified']):.1%} |"
                     )
                 md.append("")
             samples = [item for item in followups.get("samples", []) if isinstance(item, dict)]
@@ -905,6 +931,24 @@ def build_report(f: dict[str, Any], out_dir: Path, *, archive_label: str) -> str
                         f"[{item.get('tool_message_ref')}] -> [{next_ref}]"
                         + (f" — `{_esc(command)}`" if command else "")
                     )
+                md.append("")
+            stratified = followups.get("samples_by_classification")
+            if isinstance(stratified, dict):
+                md.append("Stratified audit samples:")
+                md.append("")
+                for classification in ("acknowledged", "silent_proceed", "ambiguous"):
+                    bucket = [item for item in stratified.get(classification, []) if isinstance(item, dict)]
+                    if not bucket:
+                        continue
+                    md.append(f"- `{classification}`")
+                    for item in bucket[:3]:
+                        next_ref = item.get("next_message_ref") or "no-next-assistant-turn"
+                        command = str(item.get("tool_command_preview") or "").replace("\n", " ")
+                        md.append(
+                            f"  - `{item.get('tool_name')}` exit=`{item.get('exit_code')}` "
+                            f"error=`{item.get('is_error')}` [{item.get('tool_message_ref')}] -> "
+                            f"[{next_ref}]" + (f" — `{_esc(command)}`" if command else "")
+                        )
                 md.append("")
 
     md.append("---")
