@@ -1761,7 +1761,7 @@ class PolylogueArchiveMixin:
         """Compile a distilled postmortem bundle over a matched session scope (#2380).
 
         Resolves the matched session set from ``spec`` (the same summary path
-        ``facets`` uses), batch-fetches profiles, fetches per-session recovery
+        ``facets`` uses), batch-fetches profiles, compiles per-session
         digests for a bounded set, and delegates aggregation to the pure
         :func:`compile_postmortem_bundle`. The analysis cap defaults to 200
         sessions; when more match, the bundle is marked ``truncated`` and the
