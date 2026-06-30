@@ -12,9 +12,11 @@ from click.testing import CliRunner
 
 from polylogue.archive.models import Session
 from polylogue.archive.query.spec import SessionQuerySpec
+from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.cli import query_set_read, query_verbs
 from polylogue.cli.click_app import cli
 from polylogue.cli.read_view_handlers import ReadViewInvocation
+from polylogue.cli.read_views.query_set import run_query_set_read_view
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from tests.infra.builders import make_conv, make_msg
@@ -80,13 +82,48 @@ def test_run_query_set_read_separates_markdown_with_horizontal_rule() -> None:
     assert text.count("\n---\n") == 1
 
 
+def test_dialogue_query_set_view_uses_prose_projection() -> None:
+    captured: dict[str, object] = {}
+
+    def _capture(*args: object, **kwargs: object) -> None:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+    with patch("polylogue.cli.query_set_read.run_query_set_read", side_effect=_capture):
+        runner = CliRunner()
+        with runner.isolation():
+            run_query_set_read_view(
+                _stub_env([]),
+                _request(limit=1),
+                view="dialogue",
+                output_format=None,
+                fields=None,
+                destination="terminal",
+                out_path=None,
+            )
+
+    kwargs = cast(dict[str, object], captured["kwargs"])
+    projection = kwargs["content_projection"]
+    assert kwargs["output_format"] == "markdown"
+    assert isinstance(projection, ContentProjectionSpec)
+    assert projection.filters_content()
+    assert kwargs["renderer"] is not None
+
+
 def test_read_all_registered_and_dispatches_via_root_cli() -> None:
     """Smoke: ``read --all`` routes to query-set read via the read verb."""
     convs = [make_conv(id="a", title="Smoke", messages=[make_msg(text="hi")])]
 
     captured: dict[str, object] = {}
 
-    def _capture(env: object, request: RootModeRequest, *, output_format: str, fields: str | None) -> None:
+    def _capture(
+        env: object,
+        request: RootModeRequest,
+        *,
+        output_format: str,
+        fields: str | None,
+        **_: object,
+    ) -> None:
         captured["env"] = env
         captured["request"] = request
         captured["output_format"] = output_format

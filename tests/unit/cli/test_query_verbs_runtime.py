@@ -481,6 +481,26 @@ def test_read_verb_all_non_summary_invokes_query_set_read_view() -> None:
     assert run_read_set.call_args.kwargs["output_format"] == "json"
 
 
+def test_read_verb_dialogue_query_set_uses_selection_limit() -> None:
+    _, child = _context_pair(params={"origin": "claude-code-session"}, query_terms=("alpha",))
+    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+
+    with (
+        patch("polylogue.cli.query_verbs.run_coroutine_sync") as run_sync,
+        patch("polylogue.cli.query_verbs.run_query_set_read_view") as run_read_set,
+    ):
+        wrapped(child, **_read_verb_kwargs(view="dialogue", output_format="json", limit=1))
+
+    run_sync.assert_not_called()
+    run_read_set.assert_called_once()
+    request = run_read_set.call_args.args[1]
+    assert isinstance(request, RootModeRequest)
+    assert request.query_params()["limit"] == 1
+    assert run_read_set.call_args.kwargs["view"] == "dialogue"
+    assert run_read_set.call_args.kwargs["output_format"] == "json"
+
+
 def test_read_verb_context_composes_preamble_not_passthrough() -> None:
     """read --view context routes to the context preamble composer."""
     _, child = _context_pair(params={"conv_id": "claude-code:abc123"}, query_terms=())

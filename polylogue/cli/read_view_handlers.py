@@ -75,6 +75,7 @@ READ_VIEW_HANDLERS: dict[str, ReadViewHandler] = {
         "required",
         run_read_dialogue,
         default_format="markdown",
+        accepts_query_set=True,
     ),
     "messages": ReadViewHandler(
         "messages",

@@ -813,7 +813,13 @@ def read_verb(
             _execute_query_verb(ctx, request)
             return
         run_query_set_read_view(
-            env, request, output_format=output_format, fields=fields, destination=destination, out_path=out_path
+            env,
+            request,
+            view=primary_view,
+            output_format=output_format,
+            fields=fields,
+            destination=destination,
+            out_path=out_path,
         )
         return
 
@@ -884,6 +890,19 @@ def read_verb(
         neighbor_window_hours=projection_neighbor_window_hours,
     )
     explicit_options = _explicit_read_view_options(ctx)
+    if primary_view == "dialogue" and session_id is None:
+        if limit is not None:
+            request = request.with_param_updates(limit=limit)
+        run_query_set_read_view(
+            env,
+            request,
+            view=primary_view,
+            output_format=effective_format,
+            fields=fields,
+            destination=destination,
+            out_path=out_path,
+        )
+        return
     if destination == "browser":
         run_read_view(
             env,

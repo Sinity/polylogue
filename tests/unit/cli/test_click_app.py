@@ -568,6 +568,7 @@ def test_read_views_json_outputs_profile_payload(cli_runner: CliRunner) -> None:
     assert views["context-image"]["successor_handoff"] is True
     assert views["raw"]["cli_options"] == ["limit", "offset"]
     assert views["raw"]["session_policy"] == "required"
+    assert views["dialogue"]["accepts_query_set"] is True
     assert views["chronicle"]["accepts_query_set"] is True
 
 
