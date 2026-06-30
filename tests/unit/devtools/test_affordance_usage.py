@@ -53,7 +53,8 @@ def _make_index_db(root: Path) -> Path:
                 ('s2', 'm2', 'tool_use', 'mcp__plugin_context7_context7__query-docs', 't3', '', '', 'sqlite', NULL, NULL),
                 ('s2', 'm2', 'tool_result', NULL, 't3', '', '', '', 1, NULL),
                 ('s2', 'm3', 'tool_use', 'mcp__cclsp__find_definition', 't4', '', '/repo/lib.rs', '', NULL, NULL),
-                ('s1', 'm1', 'tool_use', 'functions.exec_command', 't5', 'codebase-memory-mcp cli search_code', '', '', NULL, NULL);
+                ('s1', 'm1', 'tool_use', 'functions.exec_command', 't5', 'codebase-memory-mcp cli search_code', '', '', NULL, NULL),
+                ('s1', 'm1', 'tool_use', 'functions.exec_command', 't6', 'codebase-memory-mcp cli search code', '', '', NULL, NULL);
             """
         )
         conn.commit()
@@ -85,11 +86,17 @@ def test_affordance_usage_report_and_files(tmp_path: Path) -> None:
     assert families["context7"]["actions"] == 2
     assert families["context7"]["errors"] == 1
     assert families["serena"]["actions"] == 1
+    evidence = {(row["family"], row["evidence_kind"]): row for row in report["evidence_kind_counts"]}
+    assert evidence[("serena", "mcp_tool_call")]["actions"] == 1
+    assert evidence[("context7", "mcp_tool_call")]["actions"] == 2
     assert report["recent_tool_counts"][0]["family"] in {"context7", "serena", "cclsp"}
 
     with (out_dir / "family-counts.csv").open(encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
     assert {row["family"] for row in rows} == {"cclsp", "context7", "serena"}
+    with (out_dir / "evidence-kind-counts.csv").open(encoding="utf-8", newline="") as handle:
+        evidence_rows = list(csv.DictReader(handle))
+    assert {row["evidence_kind"] for row in evidence_rows} == {"mcp_tool_call"}
     written_report = json.loads((out_dir / "affordance-usage.report.json").read_text(encoding="utf-8"))
     assert written_report["family_counts"] == report["family_counts"]
     assert "recent" in (out_dir / "README.md").read_text(encoding="utf-8").lower()
@@ -134,6 +141,29 @@ def test_affordance_usage_can_match_shell_command_details(tmp_path: Path) -> Non
     report = affordance_usage.build_report(args)
 
     families = {row["family"]: row for row in report["family_counts"]}
-    assert families["codebase-memory"]["actions"] == 1
+    assert families["codebase-memory"]["actions"] == 2
     assert report["tool_counts"][0]["tool_name"] == "functions.exec_command"
+    assert report["tool_counts"][0]["evidence_kind"] == "command_detail"
+    assert report["samples"][0]["matched_by"] == "detail"
     assert report["detail_patterns"] == ["codebase-memory"]
+
+
+def test_affordance_usage_treats_like_wildcards_as_literals(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    _make_index_db(archive_root)
+    args = affordance_usage.AffordanceUsageArgs(
+        archive_root=archive_root,
+        out_dir=None,
+        days=36500,
+        family=(),
+        detail_pattern=("search_code",),
+        sample_limit=10,
+        json=True,
+        all_time=False,
+    )
+
+    report = affordance_usage.build_report(args)
+
+    assert report["family_counts"][0]["actions"] == 1
+    assert "search_code" in report["samples"][0]["detail"]
+    assert "search code" not in report["samples"][0]["detail"]

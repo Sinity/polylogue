@@ -34,6 +34,10 @@ FAMILY_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("lynchpin", ("lynchpin",)),
 )
 
+GENERIC_DETAIL_TOOL_FAMILIES: frozenset[str] = frozenset(
+    {"exec_command", "functions", "functions.exec_command", "bash", "shell", "client"}
+)
+
 
 @dataclass(frozen=True, slots=True)
 class AffordanceUsageArgs:
@@ -135,13 +139,80 @@ def _family_for_tool(tool_name: object) -> str:
 
 def _family_for_row(row: dict[str, object]) -> str:
     tool_family = _family_for_tool(row.get("tool_name"))
-    if tool_family in {"exec_command", "functions", "functions.exec_command", "bash", "shell", "client"}:
-        return _family_for_text(row.get("detail")) or tool_family
+    if tool_family in GENERIC_DETAIL_TOOL_FAMILIES:
+        return _family_for_text(_row_detail_text(row)) or tool_family
     return tool_family
 
 
-def _with_family(rows: list[dict[str, object]]) -> list[dict[str, object]]:
-    return [{**row, "family": _family_for_row(row)} for row in rows]
+def _clean_patterns(patterns: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(pattern.strip().lower() for pattern in patterns if pattern.strip())
+
+
+def _row_text(row: dict[str, object], key: str) -> str:
+    return str(row.get(key) or "").lower()
+
+
+def _row_detail_text(row: dict[str, object]) -> str:
+    return _row_text(row, "match_detail") or _row_text(row, "detail")
+
+
+def _matches_any(value: str, patterns: tuple[str, ...]) -> bool:
+    return bool(patterns) and any(pattern in value for pattern in patterns)
+
+
+def _like_param(pattern: str) -> str:
+    escaped = pattern.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def _evidence_kind(row: dict[str, object]) -> str:
+    tool_name = _row_text(row, "tool_name")
+    tool_family = _family_for_tool(tool_name)
+    if tool_name.startswith("mcp__"):
+        return "mcp_tool_call"
+    if tool_family in GENERIC_DETAIL_TOOL_FAMILIES:
+        return "command_detail"
+    if tool_family in {"apply_patch", "edit"}:
+        return "edit_content"
+    if tool_family in {"agent"}:
+        return "subagent"
+    if tool_family in {"update_plan"}:
+        return "agent_planning"
+    if tool_family in {"web_search_call"}:
+        return "web_search"
+    return "tool_call"
+
+
+def _matched_by(row: dict[str, object], tool_patterns: tuple[str, ...], detail_patterns: tuple[str, ...]) -> str:
+    tool_match = _matches_any(_row_text(row, "tool_name"), tool_patterns)
+    detail_match = _matches_any(_row_detail_text(row), detail_patterns)
+    if tool_match and detail_match:
+        return "tool_name+detail"
+    if detail_match:
+        return "detail"
+    if tool_match:
+        return "tool_name"
+    return "implicit-default"
+
+
+def _annotate_rows(
+    rows: list[dict[str, object]],
+    *,
+    tool_patterns: tuple[str, ...],
+    detail_patterns: tuple[str, ...],
+) -> list[dict[str, object]]:
+    annotated: list[dict[str, object]] = []
+    for row in rows:
+        public_row = {key: value for key, value in row.items() if key != "match_detail"}
+        annotated.append(
+            {
+                **public_row,
+                "family": _family_for_row(row),
+                "evidence_kind": _evidence_kind(row),
+                "matched_by": _matched_by(row, tool_patterns, detail_patterns),
+            }
+        )
+    return annotated
 
 
 def _where_for_filters(
@@ -150,18 +221,18 @@ def _where_for_filters(
     *,
     alias: str = "a",
 ) -> tuple[str, list[object]]:
-    cleaned_tools = tuple(pattern.strip().lower() for pattern in tool_patterns if pattern.strip())
-    cleaned_details = tuple(pattern.strip().lower() for pattern in detail_patterns if pattern.strip())
+    cleaned_tools = _clean_patterns(tool_patterns)
+    cleaned_details = _clean_patterns(detail_patterns)
     if not cleaned_tools and not cleaned_details:
         cleaned_tools = DEFAULT_FAMILY_PATTERNS
-    clauses = [f"lower({alias}.tool_name) LIKE ?" for _ in cleaned_tools]
-    params: list[object] = [f"%{pattern}%" for pattern in cleaned_tools]
+    clauses = [f"lower({alias}.tool_name) LIKE ? ESCAPE '\\'" for _ in cleaned_tools]
+    params: list[object] = [_like_param(pattern) for pattern in cleaned_tools]
     detail_expr = (
         f"lower(coalesce({alias}.tool_command, '') || ' ' || "
         f"coalesce({alias}.tool_path, '') || ' ' || coalesce({alias}.tool_input, ''))"
     )
-    clauses.extend(f"{detail_expr} LIKE ?" for _ in cleaned_details)
-    params.extend(f"%{pattern}%" for pattern in cleaned_details)
+    clauses.extend(f"{detail_expr} LIKE ? ESCAPE '\\'" for _ in cleaned_details)
+    params.extend(_like_param(pattern) for pattern in cleaned_details)
     return " OR ".join(clauses), params
 
 
@@ -212,16 +283,20 @@ def _failed_action(row: dict[str, object]) -> bool:
 
 
 def _aggregate_tool_counts(action_rows: list[dict[str, object]]) -> list[dict[str, object]]:
-    buckets: dict[str, dict[str, object]] = {}
-    sessions: dict[str, set[str]] = {}
-    failures: dict[str, int] = {}
+    buckets: dict[tuple[str, str, str], dict[str, object]] = {}
+    sessions: dict[tuple[str, str, str], set[str]] = {}
+    failures: dict[tuple[str, str, str], int] = {}
     for row in action_rows:
         tool_name = str(row["tool_name"])
+        family = str(row["family"])
+        evidence_kind = str(row["evidence_kind"])
+        key = (family, tool_name, evidence_kind)
         bucket = buckets.setdefault(
-            tool_name,
+            key,
             {
                 "tool_name": tool_name,
-                "family": row["family"],
+                "family": family,
+                "evidence_kind": evidence_kind,
                 "sessions": 0,
                 "actions": 0,
                 "errors": 0,
@@ -229,18 +304,21 @@ def _aggregate_tool_counts(action_rows: list[dict[str, object]]) -> list[dict[st
                 "failure_rate": 0.0,
             },
         )
-        sessions.setdefault(tool_name, set()).add(str(row["session_id"]))
+        sessions.setdefault(key, set()).add(str(row["session_id"]))
         bucket["actions"] = _int(bucket["actions"]) + 1
         bucket["errors"] = _int(bucket["errors"]) + (_int(row.get("is_error")) == 1)
         bucket["nonzero_exits"] = _int(bucket["nonzero_exits"]) + (
             row.get("exit_code") is not None and _int(row["exit_code"]) != 0
         )
-        failures[tool_name] = failures.get(tool_name, 0) + _failed_action(row)
-    for tool_name, bucket in buckets.items():
+        failures[key] = failures.get(key, 0) + _failed_action(row)
+    for key, bucket in buckets.items():
         actions = _int(bucket["actions"])
-        bucket["sessions"] = len(sessions.get(tool_name, set()))
-        bucket["failure_rate"] = round(failures.get(tool_name, 0) / actions, 3) if actions else 0.0
-    return sorted(buckets.values(), key=lambda row: (-_int(row["actions"]), str(row["tool_name"])))
+        bucket["sessions"] = len(sessions.get(key, set()))
+        bucket["failure_rate"] = round(failures.get(key, 0) / actions, 3) if actions else 0.0
+    return sorted(
+        buckets.values(),
+        key=lambda row: (-_int(row["actions"]), str(row["family"]), str(row["tool_name"]), str(row["evidence_kind"])),
+    )
 
 
 def _aggregate_family_counts(
@@ -266,16 +344,53 @@ def _aggregate_family_counts(
 
 
 def _aggregate_tool_by_origin(action_rows: list[dict[str, object]]) -> list[dict[str, object]]:
-    buckets: dict[tuple[str, str], dict[str, object]] = {}
+    buckets: dict[tuple[str, str, str, str], dict[str, object]] = {}
     for row in action_rows:
         origin = str(row["origin"])
         tool_name = str(row["tool_name"])
+        family = str(row["family"])
+        evidence_kind = str(row["evidence_kind"])
         bucket = buckets.setdefault(
-            (origin, tool_name),
-            {"origin": origin, "tool_name": tool_name, "family": row["family"], "actions": 0},
+            (origin, family, tool_name, evidence_kind),
+            {
+                "origin": origin,
+                "tool_name": tool_name,
+                "family": family,
+                "evidence_kind": evidence_kind,
+                "actions": 0,
+            },
         )
         bucket["actions"] = _int(bucket["actions"]) + 1
-    return sorted(buckets.values(), key=lambda row: (-_int(row["actions"]), str(row["origin"]), str(row["tool_name"])))
+    return sorted(
+        buckets.values(),
+        key=lambda row: (
+            -_int(row["actions"]),
+            str(row["origin"]),
+            str(row["family"]),
+            str(row["tool_name"]),
+            str(row["evidence_kind"]),
+        ),
+    )
+
+
+def _aggregate_evidence_kind_counts(action_rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    buckets: dict[tuple[str, str], dict[str, object]] = {}
+    sessions: dict[tuple[str, str], set[str]] = {}
+    for row in action_rows:
+        family = str(row["family"])
+        evidence_kind = str(row["evidence_kind"])
+        key = (family, evidence_kind)
+        bucket = buckets.setdefault(
+            key,
+            {"family": family, "evidence_kind": evidence_kind, "sessions": 0, "actions": 0},
+        )
+        sessions.setdefault(key, set()).add(str(row["session_id"]))
+        bucket["actions"] = _int(bucket["actions"]) + 1
+    for key, bucket in buckets.items():
+        bucket["sessions"] = len(sessions.get(key, set()))
+    return sorted(
+        buckets.values(), key=lambda row: (-_int(row["actions"]), str(row["family"]), str(row["evidence_kind"]))
+    )
 
 
 def _recent_session_rows(conn: Connection, cutoff_ms: int) -> list[dict[str, object]]:
@@ -317,6 +432,9 @@ def _recent_action_rows(
                 u.session_id,
                 u.message_id,
                 m.occurred_at_ms,
+                coalesce(u.tool_command, '') || ' ' ||
+                    coalesce(u.tool_path, '') || ' ' ||
+                    coalesce(u.tool_input, '') AS match_detail,
                 substr(coalesce(u.tool_command, u.tool_path, u.tool_input, ''), 1, 240) AS detail,
                 r.tool_result_is_error AS is_error,
                 r.tool_result_exit_code AS exit_code
@@ -355,6 +473,9 @@ def _all_time_action_rows(
             s.title,
             u.message_id,
             m.occurred_at_ms,
+            coalesce(u.tool_command, '') || ' ' ||
+                coalesce(u.tool_path, '') || ' ' ||
+                coalesce(u.tool_input, '') AS match_detail,
             substr(coalesce(u.tool_command, u.tool_path, u.tool_input, ''), 1, 240) AS detail,
             r.tool_result_is_error AS is_error,
             r.tool_result_exit_code AS exit_code
@@ -377,6 +498,8 @@ def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
     config = _config_with_archive_root(get_config(), args.archive_root)
     index_db = config.db_path
     where_sql, where_params = _where_for_filters(args.family, args.detail_pattern, alias="u")
+    effective_tool_patterns = _clean_patterns(args.family or (() if args.detail_pattern else DEFAULT_FAMILY_PATTERNS))
+    effective_detail_patterns = _clean_patterns(args.detail_pattern)
     recent_cutoff_ms = _recent_cutoff_ms(args.days)
     conn = open_readonly_connection(index_db)
     try:
@@ -386,16 +509,23 @@ def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
         )
         if args.all_time:
             action_scope = "all-time"
-            action_rows = _with_family(_all_time_action_rows(conn, where_sql=where_sql, where_params=where_params))
+            action_rows = _annotate_rows(
+                _all_time_action_rows(conn, where_sql=where_sql, where_params=where_params),
+                tool_patterns=effective_tool_patterns,
+                detail_patterns=effective_detail_patterns,
+            )
         else:
             action_scope = "recent-session-window"
             session_rows = _recent_session_rows(conn, recent_cutoff_ms)
-            action_rows = _with_family(
-                _recent_action_rows(conn, session_rows=session_rows, where_sql=where_sql, where_params=where_params)
+            action_rows = _annotate_rows(
+                _recent_action_rows(conn, session_rows=session_rows, where_sql=where_sql, where_params=where_params),
+                tool_patterns=effective_tool_patterns,
+                detail_patterns=effective_detail_patterns,
             )
         tool_counts = _aggregate_tool_counts(action_rows)
         family_rows = _aggregate_family_counts(tool_counts, action_rows)
         tool_by_origin = _aggregate_tool_by_origin(action_rows)
+        evidence_kind_counts = _aggregate_evidence_kind_counts(action_rows)
         recent_counts = _aggregate_tool_counts(
             [
                 row
@@ -417,6 +547,7 @@ def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
             "recent_window_days": args.days,
             "origin_counts": origin_counts,
             "family_counts": family_rows,
+            "evidence_kind_counts": evidence_kind_counts,
             "tool_counts": tool_counts,
             "tool_by_origin": tool_by_origin,
             "recent_tool_counts": recent_counts,
@@ -430,6 +561,7 @@ def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
         out_dir.mkdir(parents=True, exist_ok=True)
         _write_csv(out_dir / "archive-origin-counts.csv", origin_counts)
         _write_csv(out_dir / "family-counts.csv", family_rows)
+        _write_csv(out_dir / "evidence-kind-counts.csv", evidence_kind_counts)
         _write_csv(out_dir / "tool-counts.csv", tool_counts)
         _write_csv(out_dir / "tool-by-origin.csv", tool_by_origin)
         _write_csv(out_dir / f"recent-{args.days}d-tool-counts.csv", recent_counts)
@@ -477,6 +609,7 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
             "## Files",
             "",
             "- `family-counts.csv`",
+            "- `evidence-kind-counts.csv`",
             "- `tool-counts.csv`",
             "- `tool-by-origin.csv`",
             f"- `recent-{report['recent_window_days']}d-tool-counts.csv`",
