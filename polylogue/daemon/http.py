@@ -1992,7 +1992,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "has_types": has_types,
             "has_tool_use": has_tool_use,
             "has_thinking": has_thinking,
-            "has_paste": has_paste,
+            "has_paste_evidence": has_paste,
             "tool_terms": tool_terms,
             "excluded_tool_terms": excluded_tool_terms,
             "action_terms": action_terms,
