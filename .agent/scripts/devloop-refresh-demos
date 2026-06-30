@@ -21,9 +21,13 @@ root.mkdir(parents=True, exist_ok=True)
 ignored_dirs = {".git", "__pycache__"}
 readable_suffixes = {
     ".csv",
+    ".err",
     ".json",
     ".jsonl",
     ".md",
+    ".out",
+    ".stderr",
+    ".stdout",
     ".txt",
     ".yaml",
     ".yml",
@@ -67,7 +71,11 @@ for path in sorted(root.rglob("*")):
 records: list[dict[str, object]] = []
 for entry in sorted(path for path in root.iterdir() if path.is_dir() and not path.name.startswith(".")):
     readme = entry / "README.md"
+    if not readme.exists():
+        readme = entry / "current" / "README.md"
     analysis = entry / "ANALYSIS.md"
+    if not analysis.exists():
+        analysis = entry / "current" / "ANALYSIS.md"
     title = first_heading(readme) or first_heading(analysis) or entry.name.replace("-", " ").title()
     entry_files = [record for record in files if str(record["path"]).startswith(f"{entry.name}/")]
     readable_count = sum(1 for record in entry_files if record["readable"])
@@ -75,8 +83,8 @@ for entry in sorted(path for path in root.iterdir() if path.is_dir() and not pat
         {
             "id": entry.name,
             "title": title,
-            "readme": f"{entry.name}/README.md" if readme.exists() else None,
-            "analysis": f"{entry.name}/ANALYSIS.md" if analysis.exists() else None,
+            "readme": readme.relative_to(root).as_posix() if readme.exists() else None,
+            "analysis": analysis.relative_to(root).as_posix() if analysis.exists() else None,
             "file_count": len(entry_files),
             "readable_count": readable_count,
         }
