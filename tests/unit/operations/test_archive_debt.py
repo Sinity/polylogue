@@ -606,6 +606,79 @@ def test_archive_debt_ignores_fully_materialized_embedded_claude_code_aggregates
     assert "debt:raw-materialization:codex-session:missing-blob" in refs
 
 
+def test_archive_debt_reports_partial_embedded_claude_code_aggregates(tmp_path: Path) -> None:
+    _source_db, index_db, _source_file = _init_raw_materialization_fixture(tmp_path)
+    source_path = tmp_path / "drive-cache" / "gemini" / "aggregate.jsonl.txt.json"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text(
+        "\n".join(
+            (
+                '{"type":"user","sessionId":"materialized-session","uuid":"u1"}',
+                '{"type":"assistant","sessionId":"missing-session","uuid":"u2"}',
+            )
+        ),
+        encoding="utf-8",
+    )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            "UPDATE raw_sessions SET origin = ?, source_path = ? WHERE raw_id = ?",
+            ("claude-code-session", str(source_path), "raw-parsed-no-session"),
+        )
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(
+            "INSERT INTO sessions (session_id, origin, native_id, raw_id) VALUES (?, ?, ?, ?)",
+            (
+                "claude-code-session:materialized-session",
+                "claude-code-session",
+                "materialized-session",
+                "older-raw",
+            ),
+        )
+
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
+
+    refs = {row.debt_ref: row for row in payload.rows}
+    debt = refs["debt:raw-materialization:claude-code-session:aggregate-partial-materialization"]
+    assert "partially materialized" in debt.summary
+    assert "1/2 embedded session id(s) materialized" in (debt.details or "")
+    assert "debt:raw-materialization:claude-code-session:parsed-without-session" not in refs
+
+
+def test_archive_debt_ignores_fully_materialized_embedded_claude_code_aggregates(tmp_path: Path) -> None:
+    _source_db, index_db, _source_file = _init_raw_materialization_fixture(tmp_path)
+    source_path = tmp_path / "drive-cache" / "gemini" / "aggregate.jsonl.txt.json"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text(
+        "\n".join(
+            (
+                '{"type":"user","sessionId":"first-session","uuid":"u1"}',
+                '{"type":"assistant","sessionId":"second-session","uuid":"u2"}',
+            )
+        ),
+        encoding="utf-8",
+    )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            "UPDATE raw_sessions SET origin = ?, source_path = ? WHERE raw_id = ?",
+            ("claude-code-session", str(source_path), "raw-parsed-no-session"),
+        )
+    with sqlite3.connect(index_db) as conn:
+        conn.executemany(
+            "INSERT INTO sessions (session_id, origin, native_id, raw_id) VALUES (?, ?, ?, ?)",
+            (
+                ("claude-code-session:first-session", "claude-code-session", "first-session", "raw-1"),
+                ("claude-code-session:second-session", "claude-code-session", "second-session", "raw-2"),
+            ),
+        )
+
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
+
+    refs = {row.debt_ref for row in payload.rows}
+    assert "debt:raw-materialization:claude-code-session:aggregate-partial-materialization" not in refs
+    assert "debt:raw-materialization:claude-code-session:parsed-without-session" not in refs
+    assert "debt:raw-materialization:codex-session:missing-blob" in refs
+
+
 def test_archive_debt_source_path_aliases_do_not_hide_parse_failures(tmp_path: Path) -> None:
     _source_db, index_db, _source_file = _init_raw_materialization_fixture(tmp_path)
     source_path = tmp_path / "drive-cache" / "codex-native.jsonl.txt.json"

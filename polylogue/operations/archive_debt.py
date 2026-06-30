@@ -437,8 +437,6 @@ def _raw_jsonl_leading_objects(path: Path, *, limit: int) -> tuple[dict[str, Any
     except OSError:
         return ()
     return tuple(objects)
-
-
 def _embedded_source_path_session_ids(row: sqlite3.Row) -> tuple[str, ...]:
     if row["parse_error"] or row["parsed_at_ms"] is None:
         return ()
