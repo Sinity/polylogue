@@ -257,9 +257,10 @@ def _raw_materialization_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]
             elif (
                 _raw_materialized_by_native_id(conn, row)
                 or _raw_materialized_by_source_path_native(conn, row)
-                or _raw_materialized_by_embedded_session_ids(conn, row)
             ):
                 category = "materialized-alias"
+            elif _raw_materialized_by_embedded_session_ids(conn, row):
+                continue
             else:
                 category = _raw_materialization_category(conn, row, archive_root)
             if category == "aggregate-partial-materialization":
