@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+title="${1:?usage: devloop-start <slice-title>}"
+root="${POLYLOGUE_AGENT_LOG_ROOT:-/realm/project/polylogue/.agent/conductor-devloop}"
+"$(dirname "$0")/devloop-log" "$title" "Focus: Direction -> Evidence
+Trigger: $title
+Primary aim:
+Evidence touched:
+Action taken:
+Artifact/proof:
+Velocity note:
+Next decision:"
+
+if [ -f "$root/ACTIVE-LOOP.md" ]; then
+  python3 - "$root/ACTIVE-LOOP.md" "$title" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+title = sys.argv[2]
+text = path.read_text()
+replacements = {
+    "Current Slice": f"Current Slice\n\n{title}",
+    "Current Focus": "Current Focus\n\nFocus: Direction -> Evidence",
+    "Next Action": "Next Action\n\nFill the new OPERATING-LOG entry, gather live evidence, and choose the narrow proof.",
+}
+for heading, body in replacements.items():
+    marker = f"## {heading.splitlines()[0]}"
+    start = text.find(marker)
+    if start == -1:
+        continue
+    next_start = text.find("\n## ", start + 1)
+    if next_start == -1:
+        next_start = len(text)
+    text = text[:start] + "## " + body + "\n" + text[next_start:]
+path.write_text(text)
+PY
+fi
+
+"$(dirname "$0")/devloop-sync" >/dev/null

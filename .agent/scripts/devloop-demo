@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || "$#" -lt 6 ]]; then
+  cat <<'EOF'
+Usage: .agent/scripts/devloop-demo <trigger> <candidates> <selected> <artifact-action> <proof-caveat> <next-question>
+
+Record the live Polylogue demo radar: candidate artifacts, selected artifact
+move, proof/caveat, and next demo question. Use at loop start, after surprising
+evidence, after proof, and before handoff for substantial demo-facing work.
+EOF
+  exit 0
+fi
+
+trigger="$1"
+candidates="$2"
+selected="$3"
+artifact_action="$4"
+proof_caveat="$5"
+next_question="$6"
+
+repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
+current="${POLYLOGUE_AGENT_CURRENT:-$repo/.agent/conductor-devloop}"
+cd "$repo"
+
+radar="$current/DEMO-RADAR.md"
+log="$current/OPERATING-LOG.md"
+timestamp="$(date --iso-8601=seconds)"
+mkdir -p "$current"
+
+if [[ ! -f "$radar" ]]; then
+  cat >"$radar" <<'EOF'
+# Demo Radar
+
+Recurring demo-generation checkpoint for the Polylogue conductor loop. Keep it
+current enough that the next agent can see what artifact should exist next,
+what was selected, and what proof/caveat makes the artifact honest.
+EOF
+fi
+
+cat >>"$radar" <<EOF
+
+## $timestamp
+
+Trigger: $trigger
+Candidate demos: $candidates
+Selected/improved demo: $selected
+Artifact action: $artifact_action
+Proof/caveat: $proof_caveat
+Next demo question: $next_question
+EOF
+
+cat >>"$log" <<EOF
+
+## $timestamp — demo radar
+
+Loop phase: choose | artifact | reflect
+Focus: Direction -> Artifact
+Trigger: $trigger
+Candidate demos: $candidates
+Selected/improved demo: $selected
+Artifact action: $artifact_action
+Proof/caveat: $proof_caveat
+Velocity note: demo brainstorming is now an explicit checkpoint, not an implicit memory burden.
+Next decision: $next_question
+EOF
+
+.agent/scripts/devloop-sync >/dev/null
+printf '%s\n' "$radar"

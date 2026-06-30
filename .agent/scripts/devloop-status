@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
+archive_root="${POLYLOGUE_ARCHIVE_ROOT:-/home/sinity/.local/share/polylogue}"
+current="${POLYLOGUE_AGENT_CURRENT:-$repo/.agent/conductor-devloop}"
+format="${1:-text}"
+
+if [ "$format" = "--json" ]; then
+  index_version=""
+  sessions=""
+  messages=""
+  source_version=""
+  raw_rows=""
+  if [ -f "$archive_root/index.db" ]; then
+    index_version="$(sqlite3 "$archive_root/index.db" 'PRAGMA user_version;' 2>/dev/null || true)"
+    sessions="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM sessions;' 2>/dev/null || true)"
+    messages="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM messages;' 2>/dev/null || true)"
+  fi
+  if [ -f "$archive_root/source.db" ]; then
+    source_version="$(sqlite3 "$archive_root/source.db" 'PRAGMA user_version;' 2>/dev/null || true)"
+    raw_rows="$(sqlite3 "$archive_root/source.db" 'SELECT COUNT(*) FROM raw_sessions;' 2>/dev/null || true)"
+  fi
+  prod_state="$(systemctl --user show polylogued.service -p ActiveState --value 2>/dev/null || true)"
+  prod_sub_state="$(systemctl --user show polylogued.service -p SubState --value 2>/dev/null || true)"
+  devloop_state="$(systemctl --user show polylogued-devloop.service -p ActiveState --value 2>/dev/null || true)"
+  devloop_sub_state="$(systemctl --user show polylogued-devloop.service -p SubState --value 2>/dev/null || true)"
+  polylogued_rows="$(pgrep -af 'polylogued run' || true)"
+  python3 - "$repo" "$current" "$archive_root" "$index_version" "$sessions" "$messages" "$source_version" "$raw_rows" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" <<'PY'
+import json
+import sys
+
+repo, current, archive_root, index_version, sessions, messages, source_version, raw_rows, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows = sys.argv[1:]
+
+def int_or_none(value: str):
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+print(json.dumps({
+    "repo": repo,
+    "current": current,
+    "archive_root": archive_root,
+    "index": {
+        "schema_version": int_or_none(index_version),
+        "sessions": int_or_none(sessions),
+        "messages": int_or_none(messages),
+    },
+    "source": {
+        "schema_version": int_or_none(source_version),
+        "raw_sessions": int_or_none(raw_rows),
+    },
+    "daemon": {
+        "prod_state": prod_state,
+        "prod_sub_state": prod_sub_state,
+        "devloop_state": devloop_state,
+        "devloop_sub_state": devloop_sub_state,
+        "polylogued": [line for line in polylogued_rows.splitlines() if line],
+    },
+}, indent=2, sort_keys=True))
+PY
+  exit 0
+fi
+
+printf '== polylogue devloop status ==\n'
+printf 'repo: %s\n' "$repo"
+printf 'current: %s\n' "$current"
+printf 'archive_root: %s\n' "$archive_root"
+
+if [ -f "$archive_root/index.db" ]; then
+  version="$(sqlite3 "$archive_root/index.db" 'PRAGMA user_version;' 2>/dev/null || true)"
+  sessions="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM sessions;' 2>/dev/null || true)"
+  messages="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM messages;' 2>/dev/null || true)"
+  printf 'index: v%s sessions=%s messages=%s\n' "${version:-?}" "${sessions:-?}" "${messages:-?}"
+else
+  printf 'index: missing\n'
+fi
+
+if [ -f "$archive_root/source.db" ]; then
+  source_version="$(sqlite3 "$archive_root/source.db" 'PRAGMA user_version;' 2>/dev/null || true)"
+  raw_rows="$(sqlite3 "$archive_root/source.db" 'SELECT COUNT(*) FROM raw_sessions;' 2>/dev/null || true)"
+  printf 'source: v%s raw_sessions=%s\n' "${source_version:-?}" "${raw_rows:-?}"
+fi
+
+printf '\n== daemon ==\n'
+prod_active_state="$(systemctl --user show polylogued.service -p ActiveState --value 2>/dev/null || true)"
+prod_sub_state="$(systemctl --user show polylogued.service -p SubState --value 2>/dev/null || true)"
+devloop_active_state="$(systemctl --user show polylogued-devloop.service -p ActiveState --value 2>/dev/null || true)"
+devloop_sub_state="$(systemctl --user show polylogued-devloop.service -p SubState --value 2>/dev/null || true)"
+printf 'prod polylogued.service: %s/%s\n' "${prod_active_state:-unknown}" "${prod_sub_state:-unknown}"
+printf 'devloop polylogued-devloop.service: %s/%s\n' "${devloop_active_state:-unknown}" "${devloop_sub_state:-unknown}"
+pgrep -af 'polylogued run' || true
+
+printf '\n== active loop ==\n'
+if [ -f "$current/ACTIVE-LOOP.md" ]; then
+  sed -n '1,90p' "$current/ACTIVE-LOOP.md"
+else
+  printf 'missing ACTIVE-LOOP.md\n'
+fi

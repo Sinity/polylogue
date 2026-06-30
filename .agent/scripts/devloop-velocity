@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+Usage: .agent/scripts/devloop-velocity [--top N]
+
+Summarize devloop speed from existing scaffold evidence: archive state, active
+focus, recent elapsed log gaps, longest logged gaps, and currently active
+heavy-ish processes. This is a velocity diagnostic, not a product proof.
+EOF
+  exit 0
+fi
+
+top=8
+if [[ "${1:-}" == "--top" ]]; then
+  top="${2:-8}"
+fi
+
+repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
+current="${POLYLOGUE_AGENT_CURRENT:-$repo/.agent/conductor-devloop}"
+log="$current/OPERATING-LOG.md"
+
+cd "$repo"
+
+printf '== archive ==\n'
+status_json="$(".agent/scripts/devloop-status" --json 2>/dev/null)"
+STATUS_JSON="$status_json" python3 - <<'PY'
+import json, sys
+import os
+try:
+    data = json.loads(os.environ["STATUS_JSON"])
+except json.JSONDecodeError:
+    sys.exit(1)
+print(f"root={data.get('archive_root')}")
+idx = data.get("index", {})
+src = data.get("source", {})
+daemon = data.get("daemon", {})
+print("index=" f"v{idx.get('schema_version')} " f"sessions={idx.get('sessions')} " f"messages={idx.get('messages')}")
+print(f"source=v{src.get('schema_version')} raw_sessions={src.get('raw_sessions')}")
+print(f"daemon={daemon.get('devloop_state')} prod={daemon.get('prod_state')}")
+PY
+
+printf '\n== active focus ==\n'
+if [ -f "$current/ACTIVE-LOOP.md" ]; then
+  rg -n '^(Focus|Trigger|Decision|Next Action):' "$current/ACTIVE-LOOP.md" || true
+else
+  printf 'missing ACTIVE-LOOP.md\n'
+fi
+
+printf '\n== recent elapsed gaps ==\n'
+if [ -f "$log" ]; then
+  rg '^(## [0-9]{4}-|Elapsed:|Elapsed since previous entry:)' "$log" \
+    | tail -40 \
+    | python3 -c '
+import re, sys
+entries = []
+current = None
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if line.startswith("## "):
+        current = line[3:]
+    elif line.startswith("Elapsed") and current:
+        entries.append((current, line))
+for title, elapsed in entries[-12:]:
+    print(f"{elapsed} :: {title}")
+'
+else
+  printf 'missing OPERATING-LOG.md\n'
+fi
+
+printf '\n== longest logged minute gaps ==\n'
+if [ -f "$log" ]; then
+  python3 - "$log" "$top" <<'PY'
+import re
+import sys
+
+path = sys.argv[1]
+top = int(sys.argv[2])
+entries: list[tuple[int, str, str]] = []
+current = ""
+
+def minutes(line: str) -> int | None:
+    m = re.search(r"Elapsed(?: since previous entry)?:\s*(?:(\d+)h\s*)?(\d+)m", line)
+    if not m:
+        return None
+    return int(m.group(1) or 0) * 60 + int(m.group(2))
+
+with open(path, encoding="utf-8") as handle:
+    for raw in handle:
+        line = raw.rstrip("\n")
+        if line.startswith("## "):
+            current = line[3:]
+        elif line.startswith("Elapsed"):
+            mins = minutes(line)
+            if mins is not None and current:
+                entries.append((mins, line, current))
+
+for mins, elapsed, title in sorted(entries, reverse=True)[:top]:
+    print(f"{mins:4d}m | {elapsed} :: {title}")
+PY
+else
+  printf 'missing OPERATING-LOG.md\n'
+fi
+
+printf '\n== focus transition audit ==\n'
+if [ -f "$log" ]; then
+  python3 - "$log" <<'PY'
+import re
+import sys
+from collections import Counter
+
+path = sys.argv[1]
+transitions: list[tuple[str, str, str]] = []
+title = ""
+with open(path, encoding="utf-8") as handle:
+    for raw in handle:
+        line = raw.rstrip("\n")
+        if line.startswith("## "):
+            title = line[3:]
+        match = re.match(r"Focus: ([A-Za-z]+) -> ([A-Za-z]+)$", line)
+        if match:
+            transitions.append((title, match.group(1), match.group(2)))
+
+expected_edges = {
+    ("Direction", "Evidence"),
+    ("Direction", "Construction"),
+    ("Direction", "Artifact"),
+    ("Direction", "Proof"),
+    ("Evidence", "Construction"),
+    ("Evidence", "Proof"),
+    ("Evidence", "Velocity"),
+    ("Construction", "Proof"),
+    ("Construction", "Meta"),
+    ("Proof", "Artifact"),
+    ("Proof", "Velocity"),
+    ("Proof", "Evidence"),
+    ("Proof", "Direction"),
+    ("Proof", "Meta"),
+    ("Artifact", "Velocity"),
+    ("Artifact", "Direction"),
+    ("Velocity", "Direction"),
+    ("Velocity", "Evidence"),
+    ("Velocity", "Artifact"),
+    ("Meta", "Velocity"),
+    ("Meta", "Direction"),
+}
+edge_counts = Counter((src, dst) for _, src, dst in transitions)
+print(f"transitions={len(transitions)}")
+for (src, dst), count in edge_counts.most_common():
+    print(f"{src}->{dst}: {count}")
+
+skips = [
+    (title, src, dst)
+    for title, src, dst in transitions
+    if (src, dst) not in expected_edges
+]
+if skips:
+    print("unexpected_edges:")
+    for item_title, src, dst in skips[-8:]:
+        print(f"  {src}->{dst} :: {item_title}")
+
+proof_exits = Counter(dst for _, src, dst in transitions if src == "Proof")
+if proof_exits:
+    print("proof_exits=" + ", ".join(f"{dst}:{count}" for dst, count in proof_exits.most_common()))
+    non_artifact = sum(count for dst, count in proof_exits.items() if dst != "Artifact")
+    if non_artifact:
+        print(f"proof_non_artifact_exits={non_artifact} (audit whether proof claims skipped artifact/velocity closure)")
+
+recent = transitions[-8:]
+if recent:
+    print("recent:")
+    for item_title, src, dst in recent:
+        print(f"  {src}->{dst} :: {item_title}")
+PY
+else
+  printf 'missing OPERATING-LOG.md\n'
+fi
+
+printf '\n== active heavy-ish processes ==\n'
+pgrep -af 'devtools verify|devtools test|pytest|polylogue import|polylogued run|nix build|nix develop --command|borg create' || true

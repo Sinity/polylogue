@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="${POLYLOGUE_AGENT_LOG_ROOT:-/realm/project/polylogue/.agent/conductor-devloop}"
+log="$root/OPERATING-LOG.md"
+events="$root/EVENTS.jsonl"
+title="${1:-entry}"
+ts="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+epoch="$(date '+%s')"
+
+elapsed_note="first timestamped entry"
+if [ -f "$log" ]; then
+  last_line="$(grep -E '^## [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} ' "$log" | tail -1 || true)"
+  if [ -n "$last_line" ]; then
+    last_stamp="${last_line#'## '}"
+    last_stamp="${last_stamp%% -- *}"
+    last_stamp="${last_stamp%% — *}"
+    if last_epoch="$(date -d "$last_stamp" '+%s' 2>/dev/null)"; then
+      elapsed_s=$((epoch - last_epoch))
+      if [ "$elapsed_s" -ge 3600 ]; then
+        elapsed_note="$((elapsed_s / 3600))h $(((elapsed_s % 3600) / 60))m since previous entry"
+      elif [ "$elapsed_s" -ge 60 ]; then
+        elapsed_note="$((elapsed_s / 60))m $((elapsed_s % 60))s since previous entry"
+      else
+        elapsed_note="${elapsed_s}s since previous entry"
+      fi
+    fi
+  fi
+fi
+
+mkdir -p "$root"
+body=""
+if [ $# -gt 1 ]; then
+  shift
+  body="$*"
+fi
+{
+  printf '\n## %s — %s\n\n' "$ts" "$title"
+  printf 'Elapsed: %s\n\n' "$elapsed_note"
+  if [ -n "$body" ]; then
+    printf '%s\n' "$body"
+  fi
+} >> "$log"
+
+python3 - "$events" "$ts" "$epoch" "$title" "$elapsed_note" "$body" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+record = {
+    "schema_version": 1,
+    "occurred_at": sys.argv[2],
+    "epoch_s": int(sys.argv[3]),
+    "title": sys.argv[4],
+    "elapsed": sys.argv[5],
+    "body": sys.argv[6],
+    "source": "devloop-log",
+}
+with path.open("a", encoding="utf-8") as fh:
+    fh.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+PY

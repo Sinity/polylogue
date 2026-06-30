@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cat <<'EOF'
+Useful foreground work while a long Polylogue command runs:
+- inspect the exact slow stage call sites and note whether it is global or local work;
+- update the repo-local .agent/demos shelf with a readable artifact and manifest entry;
+- run .agent/scripts/devloop-status and record archive root/schema/counts;
+- run .agent/scripts/devloop-baseline "short-label" before/after runtime or resource-sensitive work;
+- update ignored .agent/conductor-devloop/DEMO-RADAR.md via .agent/scripts/devloop-demo;
+- run .agent/scripts/devloop-meta when operator corrections or repeated friction expose a process failure;
+- draft the proof claim and caveats for the current slice;
+- sync conductor notes with .agent/scripts/devloop-sync;
+- prepare the next narrow verification command;
+- inspect public flags/endpoints for compatibility trash related to the current slice.
+EOF

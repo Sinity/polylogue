@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
+current="${POLYLOGUE_AGENT_CURRENT:-$repo/.agent/conductor-devloop}"
+packet="$current"
+archive_root="${POLYLOGUE_ARCHIVE_ROOT:-/home/sinity/.local/share/polylogue}"
+
+status=0
+warn() {
+  printf 'WARN: %s\n' "$*"
+  status=1
+}
+ok() {
+  printf 'OK: %s\n' "$*"
+}
+
+required_scaffold=(
+  "$repo/.agent/README.md"
+  "$current/README.md"
+  "$current/VELOCITY.md"
+  "$current/PROCESS.md"
+  "$current/TACTICS.md"
+  "$current/ADVERSARIAL-REVIEW.md"
+  "$current/RUNBOOK.md"
+  "$current/SELF-PROMPTS.md"
+  "$repo/.agent/scripts/devloop-log"
+  "$repo/.agent/scripts/devloop-sync"
+  "$repo/.agent/scripts/devloop-review"
+  "$repo/.agent/scripts/devloop-status"
+  "$repo/.agent/scripts/devloop-start"
+  "$repo/.agent/scripts/devloop-checkpoint"
+  "$repo/.agent/scripts/devloop-handoff"
+  "$repo/.agent/scripts/devloop-ahead"
+  "$repo/.agent/scripts/devloop-refresh-events"
+  "$repo/.agent/scripts/devloop-focus"
+  "$repo/.agent/scripts/devloop-baseline"
+  "$repo/.agent/scripts/devloop-demo"
+  "$repo/.agent/scripts/devloop-meta"
+  "$repo/.agent/scripts/devloop-wait"
+  "$repo/.agent/scripts/devloop-velocity"
+)
+
+missing=0
+for path in "${required_scaffold[@]}"; do
+  if [ ! -e "$path" ]; then
+    warn "missing scaffold file: $path"
+    missing=1
+  fi
+done
+[ "$missing" -eq 0 ] && ok "required scaffold files present"
+
+state_files=(
+  "$current/ACTIVE-LOOP.md"
+  "$current/OPERATING-LOG.md"
+  "$current/EVENTS.jsonl"
+  "$current/DEMO-RADAR.md"
+)
+missing_state=0
+for path in "${state_files[@]}"; do
+  if [ ! -e "$path" ]; then
+    missing_state=1
+  fi
+done
+if [ "$missing_state" -eq 1 ]; then
+  warn "local devloop state is incomplete; initialize/resume with .agent/scripts/devloop-start"
+else
+  ok "local devloop state files present"
+fi
+
+if [ -f "$current/OPERATING-LOG.md" ]; then
+  latest="$(awk '/^## [0-9]{4}-[0-9]{2}-[0-9]{2} /{start=NR} {lines[NR]=$0} END{if(start){for(i=start;i<=NR;i++) print lines[i]}}' "$current/OPERATING-LOG.md")"
+  if grep -Eq '^(Primary aim|Evidence touched|Action taken|Artifact/proof|Velocity note|Next decision):[[:space:]]*$' "$current/OPERATING-LOG.md"; then
+    warn "OPERATING-LOG.md contains empty required fields"
+  elif printf '%s\n' "$latest" | grep -Eiq '\\b(TODO:|TBD:|FIXME:|\\?\\?\\?)'; then
+    warn "latest OPERATING-LOG entry contains unresolved TODO/TBD/FIXME markers"
+  elif printf '%s\n' "$latest" | grep -Eq '^(Primary aim|Evidence touched|Action taken|Artifact/proof|Velocity note|Next decision):[[:space:]]*$'; then
+    warn "latest OPERATING-LOG entry has empty required fields"
+  else
+    ok "latest OPERATING-LOG entry has no TODO/TBD/FIXME markers"
+  fi
+else
+  warn "OPERATING-LOG.md missing"
+fi
+
+if [ -f "$current/EVENTS.jsonl" ]; then
+  if python3 - "$current/EVENTS.jsonl" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    if not line.strip():
+        continue
+    record = json.loads(line)
+    if record.get("schema_version") != 1:
+        raise SystemExit(f"line {line_no}: unsupported schema_version")
+    if not record.get("occurred_at") or not record.get("title"):
+        raise SystemExit(f"line {line_no}: missing occurred_at/title")
+PY
+  then
+    ok "EVENTS.jsonl is valid"
+  else
+    warn "EVENTS.jsonl is invalid"
+  fi
+  if ! python3 - "$current/OPERATING-LOG.md" "$current/EVENTS.jsonl" <<'PY'
+from __future__ import annotations
+
+import json
+import re
+import sys
+from pathlib import Path
+
+log_path = Path(sys.argv[1])
+events_path = Path(sys.argv[2])
+heading_re = re.compile(r"^## \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z]+ [—-] (?P<title>.+)$")
+
+latest_title = ""
+latest_body_lines: list[str] = []
+in_latest = False
+for line in log_path.read_text(encoding="utf-8").splitlines():
+    match = heading_re.match(line)
+    if match is not None:
+        latest_title = match.group("title").strip()
+        latest_body_lines = []
+        in_latest = True
+        continue
+    if in_latest:
+        latest_body_lines.append(line)
+
+latest_body = "\n".join(latest_body_lines).strip()
+events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+if not latest_title or not events:
+    raise SystemExit("missing latest log title or events")
+event = events[-1]
+if event.get("title") != latest_title:
+    raise SystemExit("latest event title does not match operating log")
+if event.get("body") != latest_body:
+    raise SystemExit("latest event body does not match operating log")
+PY
+  then
+    warn "EVENTS.jsonl is stale relative to OPERATING-LOG.md; run .agent/scripts/devloop-sync"
+  else
+    ok "EVENTS.jsonl matches latest operating-log entry"
+  fi
+else
+  warn "EVENTS.jsonl missing"
+fi
+
+if [ -f "$current/DEMO-RADAR.md" ]; then
+  latest_demo="$(awk '/^## [0-9]{4}-[0-9]{2}-[0-9]{2}T/{start=NR} {lines[NR]=$0} END{if(start){for(i=start;i<=NR;i++) print lines[i]}}' "$current/DEMO-RADAR.md")"
+  if [ -z "$latest_demo" ]; then
+    warn "DEMO-RADAR.md exists but has no timestamped entries"
+  elif printf '%s\n' "$latest_demo" | grep -Eiq '\\b(TODO:|TBD:|FIXME:|\\?\\?\\?)'; then
+    warn "latest DEMO-RADAR entry contains unresolved TODO/TBD/FIXME markers"
+  else
+    ok "latest DEMO-RADAR entry has no TODO/TBD/FIXME markers"
+  fi
+else
+  warn "DEMO-RADAR.md missing"
+fi
+
+if [ -d "$packet" ]; then
+  ok "conductor packet is canonical at $packet"
+else
+  warn "missing conductor packet: $packet"
+fi
+
+if [ -f "$current/ACTIVE-LOOP.md" ]; then
+  if grep -Eq '^Focus: (Direction|Evidence|Construction|Proof|Artifact|Velocity|Meta) -> (Direction|Evidence|Construction|Proof|Artifact|Velocity|Meta)$' "$current/ACTIVE-LOOP.md"; then
+    ok "ACTIVE-LOOP focus transition is valid"
+  else
+    warn "ACTIVE-LOOP.md lacks a valid Focus transition"
+  fi
+fi
+
+polylogued_pids="$(pgrep -af 'polylogued run' || true)"
+if [ -z "$polylogued_pids" ]; then
+  warn "polylogued is not running; acceptable only between convergence restarts"
+else
+  count="$(printf '%s\n' "$polylogued_pids" | wc -l)"
+  if [ "$count" -eq 1 ]; then
+    ok "one polylogued run process"
+  else
+    warn "multiple polylogued run processes detected: $count"
+    printf '%s\n' "$polylogued_pids"
+  fi
+fi
+
+prod_active_state="$(
+  systemctl --user show polylogued.service -p ActiveState --value 2>/dev/null || true
+)"
+prod_sub_state="$(
+  systemctl --user show polylogued.service -p SubState --value 2>/dev/null || true
+)"
+prod_active_state="${prod_active_state:-unknown}"
+prod_sub_state="${prod_sub_state:-unknown}"
+if [ "$prod_active_state" = "inactive" ] && { [ "$prod_sub_state" = "dead" ] || [ "$prod_sub_state" = "unknown" ]; }; then
+  ok "prod polylogued.service inactive"
+elif [ "$prod_active_state" = "unknown" ]; then
+  ok "prod polylogued.service unavailable/inactive"
+else
+  warn "prod polylogued.service state is $prod_active_state/$prod_sub_state; devloop expects inactive/dead"
+fi
+
+if [ -f "$archive_root/index.db" ]; then
+  version="$(sqlite3 "$archive_root/index.db" 'PRAGMA user_version;' 2>/dev/null || true)"
+  sessions="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM sessions;' 2>/dev/null || true)"
+  messages="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM messages;' 2>/dev/null || true)"
+  if [ "$version" = "18" ]; then
+    ok "active archive root $archive_root schema v$version sessions=${sessions:-?} messages=${messages:-?}"
+  else
+    warn "active archive root $archive_root schema v${version:-unknown}, expected v18"
+  fi
+else
+  warn "active archive root has no index.db: $archive_root"
+fi
+
+if [ -e /realm/tmp/polylogue-dev/archive/index.db ]; then
+  warn "/realm/tmp/polylogue-dev/archive/index.db exists; archive roots are split again"
+else
+  ok "no second dev archive at /realm/tmp/polylogue-dev/archive"
+fi
+
+if ! "$repo/.agent/scripts/devloop-status" --json >/dev/null; then
+  warn "devloop-status --json failed"
+else
+  ok "devloop-status --json works"
+fi
+
+heavy="$(pgrep -af 'devtools verify|devtools test|pytest|polylogue import|polylogued run|nix build|nix develop --command' || true)"
+if [ -n "$heavy" ]; then
+  printf 'INFO: active heavy-ish processes:\n%s\n' "$heavy"
+else
+  ok "no heavy test/import/build processes detected"
+fi
+
+exit "$status"

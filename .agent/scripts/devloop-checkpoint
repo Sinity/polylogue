@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+title="${1:-checkpoint}"
+"$(dirname "$0")/devloop-log" "checkpoint: $title" "Focus: checkpoint
+Trigger: $title
+Decision: record current state and sync the conductor packet
+Proof/artifact: see preceding focus entries and current devloop-review output
+Next action: continue from ACTIVE-LOOP.md"
+"$(dirname "$0")/devloop-sync" >/dev/null

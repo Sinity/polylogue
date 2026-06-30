@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="${POLYLOGUE_AGENT_LOG_ROOT:-/realm/project/polylogue/.agent/conductor-devloop}"
+out="$root/HANDOFF-LATEST.md"
+{
+  printf '# Polylogue Devloop Handoff\n\n'
+  printf 'Generated: %s\n\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+  printf '## Status\n\n'
+  "$(dirname "$0")/devloop-status" || true
+  printf '\n## Latest Operating Log\n\n'
+  tail -80 "$root/OPERATING-LOG.md" 2>/dev/null || true
+} > "$out"
+"$(dirname "$0")/devloop-sync" >/dev/null
+printf '%s\n' "$out"

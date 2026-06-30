@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+Usage: .agent/scripts/devloop-meta [trigger] [failure-hypothesis] [evidence] [change-considered] [change-made] [change-deferred] [next-tripwire]
+
+Append a self-audit template for agent/process failure modes. Use when the
+operator corrects process behavior, a loop stalls, repeated friction appears,
+or before a handoff after substantial work.
+EOF
+  exit 0
+fi
+
+trigger="${1:-scheduled meta-audit}"
+failure_hypothesis="${2:-TODO}"
+evidence="${3:-TODO}"
+change_considered="${4:-TODO}"
+change_made="${5:-TODO}"
+change_deferred="${6:-TODO}"
+next_tripwire="${7:-TODO}"
+
+repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
+current="${POLYLOGUE_AGENT_CURRENT:-$repo/.agent/conductor-devloop}"
+cd "$repo"
+
+path="$current/OPERATING-LOG.md"
+timestamp="$(date --iso-8601=seconds)"
+mkdir -p "$current"
+
+cat >>"$path" <<EOF
+
+## $timestamp — meta-audit
+
+Loop phase: reflect | velocity
+Focus: Meta -> Velocity
+Trigger: $trigger
+Failure hypothesis: $failure_hypothesis
+Evidence for/against: $evidence
+Process/tooling change considered: $change_considered
+Change made now: $change_made
+Change deferred: $change_deferred
+Next tripwire: $next_tripwire
+EOF
+
+printf '%s\n' "$path"

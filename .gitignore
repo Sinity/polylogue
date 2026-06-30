@@ -68,8 +68,25 @@ dist/
 # Generated agent surface
 AGENTS.md
 
-# Agent workspace (local, not tracked)
-.agent/
+# Agent workspace: track reusable scaffold, ignore live state/artifacts
+.agent/*
+!.agent/README.md
+!.agent/scripts/
+!.agent/scripts/**
+!.agent/tools/
+!.agent/tools/**
+!.agent/conductor-devloop/
+.agent/conductor-devloop/*
+!.agent/conductor-devloop/README.md
+!.agent/conductor-devloop/RUNBOOK.md
+!.agent/conductor-devloop/PROCESS.md
+!.agent/conductor-devloop/TACTICS.md
+!.agent/conductor-devloop/VELOCITY.md
+!.agent/conductor-devloop/SELF-PROMPTS.md
+!.agent/conductor-devloop/ADVERSARIAL-REVIEW.md
+!.agent/scratch/
+.agent/scratch/*
+!.agent/scratch/README.md
 
 # Build metadata embedded into release artifacts
 polylogue/_build_info.py

@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$#" -lt 3 ]; then
+  cat >&2 <<'EOF'
+usage: devloop-focus <from> <to> <trigger> [decision]
+
+Example:
+  devloop-focus Evidence Construction "stage timings prove global attachment ref-count refresh" "Patch write path and add focused regression"
+EOF
+  exit 2
+fi
+
+from="$1"
+to="$2"
+trigger="$3"
+decision="${4:-}"
+root="${POLYLOGUE_AGENT_LOG_ROOT:-/realm/project/polylogue/.agent/conductor-devloop}"
+active="$root/ACTIVE-LOOP.md"
+
+case "$from:$to" in
+  Direction:*|Evidence:*|Construction:*|Proof:*|Artifact:*|Velocity:*|Meta:*) ;;
+  *)
+    printf 'invalid source focus mode: %s\n' "$from" >&2
+    exit 2
+    ;;
+esac
+
+case "$to" in
+  Direction|Evidence|Construction|Proof|Artifact|Velocity|Meta) ;;
+  *)
+    printf 'invalid target focus mode: %s\n' "$to" >&2
+    exit 2
+    ;;
+esac
+
+"$(dirname "$0")/devloop-log" "focus: $from -> $to" "Focus: $from -> $to
+Trigger: $trigger
+Decision: $decision"
+
+if [ -f "$active" ]; then
+  python3 - "$active" "$from" "$to" "$trigger" "$decision" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+from_focus, to_focus, trigger, decision = sys.argv[2:]
+text = path.read_text()
+
+updates = {
+    "Current Focus": f"Current Focus\n\nFocus: {from_focus} -> {to_focus}\n\nTrigger: {trigger}\n\nDecision: {decision or 'Continue with the focus transition recorded in the operating log.'}",
+    "Next Action": f"Next Action\n\nOperate in `{to_focus}` mode; record the next material focus switch with `.agent/scripts/devloop-focus`.",
+}
+
+for heading, body in updates.items():
+    marker = f"## {heading}"
+    start = text.find(marker)
+    if start == -1:
+        continue
+    next_start = text.find("\n## ", start + 1)
+    if next_start == -1:
+        next_start = len(text)
+    text = text[:start] + "## " + body + "\n" + text[next_start:]
+
+path.write_text(text)
+PY
+fi
+
+"$(dirname "$0")/devloop-sync" >/dev/null
