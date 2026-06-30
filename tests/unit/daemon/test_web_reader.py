@@ -778,6 +778,24 @@ class TestReaderSearchState:
         # the expensive-family timeout.
         assert cast(list[object], facets["origins"])
 
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/api/sessions?has_paste_evidence=1",
+            "/api/sessions?query=Hello&has_paste_evidence=1",
+        ],
+    )
+    def test_paste_filter_uses_storage_keyword(self, workspace_env: dict[str, Path], path: str) -> None:
+        """The public paste-evidence HTTP filter must compile to storage's has_paste keyword."""
+
+        with _running_server(workspace_env) as (_, base_url):
+            status, payload = _get_json_ex(base_url, path)
+
+        route_state = cast(dict[str, object], payload["route_state"])
+        assert status == 200
+        assert payload["total"] == 0
+        assert route_state["state"] == "no_results"
+
     @pytest.mark.parametrize("path", ["/api/sessions", "/api/facets"])
     def test_archive_busy_routes_return_typed_503(
         self,
