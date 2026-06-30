@@ -171,6 +171,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace deployment-smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
 | `devtools workspace dev-loop` | Preflight branch-local daemon, web-shell, and browser-capture development loops. |
 | `devtools workspace failure-context` | Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope. |
+| `devtools workspace read-package` | Render a declarative package of Polylogue read artifacts. |
 | `devtools workspace tasks` | Record and query local agent task execution history. |
 | `devtools workspace temporal-archive-aggregates` | Build run-projection aggregate artifacts from the active archive. |
 | `devtools workspace temporal-devloop` | Compose git and operating-log events into a temporal evidence window. |

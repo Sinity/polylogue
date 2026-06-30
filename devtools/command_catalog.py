@@ -457,6 +457,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace read-package",
+        "workspace",
+        "Render a declarative package of Polylogue read artifacts.",
+        "devtools.read_package",
+        use_when=(
+            "Generate local demo/export packages from a JSON/YAML spec that names ordinary "
+            "read views, formats, and output paths, instead of hand-rolling repeated "
+            "`polylogue read --view ... --to file` shell snippets."
+        ),
+        examples=(
+            "devtools workspace read-package --spec package.json --session-id 019f... --out-dir product-read",
+            "devtools workspace read-package --spec package.yaml --session-id 019f... --out-dir product-read --dry-run --json",
+        ),
+    ),
+    CommandSpec(
         "lab projections",
         "verification lab",
         "Render the authored scenario-bearing verification projections.",
