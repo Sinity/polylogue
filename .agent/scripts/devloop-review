@@ -57,6 +57,7 @@ done
 
 state_files=(
   "$current/ACTIVE-LOOP.md"
+  "$current/INDEX.md"
   "$current/OPERATING-LOG.md"
   "$current/EVENTS.jsonl"
   "$current/DEMO-RADAR.md"
@@ -182,6 +183,37 @@ if [ -f "$current/agent.README.md" ] || [ -f "$current/scratch.README.md" ]; the
   warn "conductor packet contains duplicated README snapshots; run .agent/scripts/devloop-sync"
 else
   ok "no duplicated README snapshots in conductor packet"
+fi
+
+allowed_packet_files=(
+  ACTIVE-LOOP.md
+  ADVERSARIAL-REVIEW.md
+  DEMO-RADAR.md
+  EVENTS.jsonl
+  HANDOFF-LATEST.md
+  INDEX.md
+  MANIFEST.md
+  OPERATING-LOG.md
+  PROCESS.md
+  README.md
+  RUNBOOK.md
+  SELF-PROMPTS.md
+  TACTICS.md
+  VELOCITY.md
+  devloop-script-hashes.tsv
+)
+if [ -d "$current" ]; then
+  unexpected="$(
+    find "$current" -maxdepth 1 -type f -printf '%f\n' \
+      | sort \
+      | comm -23 - <(printf '%s\n' "${allowed_packet_files[@]}" | sort)
+  )"
+  if [ -n "$unexpected" ]; then
+    warn "conductor packet has loose non-active files; move them to .agent/archive or .agent/scratch/research"
+    printf '%s\n' "$unexpected"
+  else
+    ok "conductor packet root contains only active/protocol/generated files"
+  fi
 fi
 
 if [ -f "$repo/.agent/demos/MANIFEST.readable.json" ] && [ -f "$repo/.agent/demos/SUMMARY_INDEX.json" ]; then

@@ -117,7 +117,9 @@ as a radar during Direction and at substantial checkpoints:
 1. `ACTIVE-LOOP.md` says what is live now.
 2. `DEMO-RADAR.md` says which demos are current, missing, stale, or next.
 3. `OPERATING-LOG.md` carries recent "next decision" lines and proof caveats.
-4. `INDEX.md` routes larger audit/debt notes.
+4. `.agent/includes/` carries durable conventions and architecture direction.
+5. `.agent/archive/conductor-history/` carries older audit/debt notes for
+   archaeology only.
 
 Use this scoring order when choosing between candidates:
 
@@ -229,6 +231,6 @@ Before ending:
 The reusable scaffold under `.agent/` is tracked. Current devloop state under
 `.agent/conductor-devloop/` is ignored unless explicitly unignored in
 `.gitignore`; this includes `ACTIVE-LOOP.md`, logs, generated manifests, and
-script snapshots. Treat tracked docs plus ignored local state together as the
+event sidecars. Treat tracked docs plus ignored local state together as the
 source of truth for contextless resumption; publish or copy the local packet
 elsewhere only on an explicit task.

@@ -102,8 +102,8 @@ The proof ladder is:
 - `SELF-PROMPTS.md` — durable goal, primary self-prompt, adversarial prompt,
   and tactical prompt.
 - `ADVERSARIAL-REVIEW.md` — known failure modes and mitigations.
-- `INDEX.md` — routing guide for the historical notes and audit files in this
-  packet.
+- `INDEX.md` — routing guide for the active packet and archived-context
+  boundary.
 
 Current local state is intentionally ignored by git. The tracked scaffold tells
 a future agent how to resume; the ignored state tells it where this exact loop
@@ -120,8 +120,10 @@ rather than a static ticket queue. The current priority comes from:
 1. `ACTIVE-LOOP.md` — immediate slice and next action.
 2. `DEMO-RADAR.md` — current demo pressure and the next demo question.
 3. `OPERATING-LOG.md` — recent findings and next decisions.
-4. `INDEX.md` plus the audit notes — larger known debt and architectural
-   threads.
+4. `.agent/includes/` — durable cross-loop conventions and architectural
+   direction.
+5. `.agent/archive/conductor-history/` — archaeology only, when older audit
+   notes are specifically relevant.
 
 Prioritize work in this order unless fresh evidence contradicts it:
 
