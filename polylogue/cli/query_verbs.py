@@ -769,7 +769,12 @@ def read_verb(
             neighbor_limit=projection_neighbor_limit,
             neighbor_window_hours=projection_neighbor_window_hours,
         )
-        click.echo(serialize_surface_payload(spec, exclude_none=True))
+        deliver_content(
+            env,
+            serialize_surface_payload(spec, exclude_none=True) + "\n",
+            destination=destination,
+            out_path=out_path,
+        )
         return
     if _explain_terminal_action(
         request,

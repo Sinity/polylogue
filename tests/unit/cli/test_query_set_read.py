@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import patch
@@ -146,7 +147,42 @@ def test_read_spec_emits_composed_projection_contract() -> None:
         "format": "json",
         "destination": "stdout",
         "layout": "context-image",
+        "timestamps": "include-available",
     }
+
+
+def test_read_spec_to_file_writes_composed_projection_contract(tmp_path: Path) -> None:
+    out_path = tmp_path / "projection-spec.json"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--plain",
+            "--origin",
+            "claude-code-session",
+            "repo:polylogue",
+            "read",
+            "--view",
+            "temporal,chronicle",
+            "--format",
+            "json",
+            "--to",
+            "file",
+            "--out",
+            str(out_path),
+            "--limit",
+            "8",
+            "--spec",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Wrote to" in result.output
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert payload["selection"]["query"] == "repo:polylogue"
+    assert payload["render"]["destination"] == "file"
+    assert payload["render"]["out"] == str(out_path)
 
 
 def test_read_spec_moves_standalone_chronicle_limit_to_projection_policy() -> None:

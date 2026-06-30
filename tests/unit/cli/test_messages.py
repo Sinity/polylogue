@@ -232,7 +232,7 @@ def test_run_messages_markdown_and_not_found_paths(tmp_path: Path) -> None:
     _ui_error(missing_env).assert_called_once_with("Session not found: missing")
 
 
-def test_run_raw_emits_json_yaml_and_empty_error(tmp_path: Path) -> None:
+def test_run_raw_emits_json_yaml_and_empty_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     api = _FakeApi(
         raw_result=(
             [
@@ -251,14 +251,16 @@ def test_run_raw_emits_json_yaml_and_empty_error(tmp_path: Path) -> None:
     with patch("polylogue.api.Polylogue.open", return_value=api):
         run_raw(env, _request(tmp_path), session_id="conv-raw", limit=3, offset=1)
 
-    payload = json.loads(_ui_print(env).call_args.args[0])
+    payload = json.loads(capsys.readouterr().out)
     assert payload["artifacts"][0]["raw_id"] == "raw-1"
     assert api.raw_kwargs == {"session_id": "conv-raw", "limit": 3, "offset": 1}
+    _ui_print(env).assert_not_called()
 
     yaml_env = _env()
     with patch("polylogue.api.Polylogue.open", return_value=api):
         run_raw(yaml_env, _request(tmp_path), session_id="conv-raw", output_format="yaml")
-    assert "raw-1" in _ui_print(yaml_env).call_args.args[0]
+    assert "raw-1" in capsys.readouterr().out
+    _ui_print(yaml_env).assert_not_called()
 
     empty_env = _env()
     with patch("polylogue.api.Polylogue.open", return_value=_FakeApi(raw_result=([], 0))):
