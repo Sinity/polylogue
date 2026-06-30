@@ -299,7 +299,7 @@ def test_root_query_explain_json_outputs_terminal_pipeline_stages(cli_runner: Cl
     assert lowering_plan["pipeline_stages"] == expected_stages
 
 
-def test_query_action_read_explain_json_outputs_terminal_action(cli_runner: CliRunner) -> None:
+def test_query_action_read_explain_json_outputs_terminal_stage(cli_runner: CliRunner) -> None:
     result = cli_runner.invoke(
         click_cli,
         [
@@ -320,17 +320,9 @@ def test_query_action_read_explain_json_outputs_terminal_action(cli_runner: CliR
 
     assert result.exit_code == 0, result.output
     payload = cast(dict[str, Any], json.loads(result.output))
-    terminal_action = cast(dict[str, Any], payload["terminal_action"])
-    assert terminal_action == {
-        "action": "read",
-        "all": False,
-        "destination": "terminal",
-        "first": False,
-        "format": "default",
-        "view": "messages",
-    }
+    assert "terminal_action" not in payload
     lowering_plan = cast(dict[str, Any], payload["lowering_plan"])
-    assert lowering_plan["terminal_action"] == terminal_action
+    assert "terminal_action" not in lowering_plan
     pipeline = cast(dict[str, Any], payload["pipeline"])
     assert pipeline["source"]["unit"] == "sessions"
     assert pipeline["stages"] == [
@@ -347,7 +339,7 @@ def test_query_action_read_explain_json_outputs_terminal_action(cli_runner: CliR
         }
     ]
     assert lowering_plan["pipeline"] == pipeline
-    assert payload["plan_description"][-1] == "terminal action: read"
+    assert payload["plan_description"][-1] == "terminal stage: read"
 
 
 def test_query_action_read_explain_uses_default_read_format(cli_runner: CliRunner) -> None:
@@ -369,7 +361,9 @@ def test_query_action_read_explain_uses_default_read_format(cli_runner: CliRunne
 
     assert result.exit_code == 0, result.output
     payload = cast(dict[str, Any], json.loads(result.output))
-    assert cast(dict[str, Any], payload["terminal_action"])["format"] == "default"
+    pipeline = cast(dict[str, Any], payload["pipeline"])
+    stage = cast(dict[str, Any], pipeline["stages"][-1])
+    assert cast(dict[str, Any], stage["args"])["format"] == "default"
 
 
 def test_query_action_read_explain_uses_local_read_format(cli_runner: CliRunner) -> None:
@@ -393,7 +387,9 @@ def test_query_action_read_explain_uses_local_read_format(cli_runner: CliRunner)
 
     assert result.exit_code == 0, result.output
     payload = cast(dict[str, Any], json.loads(result.output))
-    assert cast(dict[str, Any], payload["terminal_action"])["format"] == "json"
+    pipeline = cast(dict[str, Any], payload["pipeline"])
+    stage = cast(dict[str, Any], pipeline["stages"][-1])
+    assert cast(dict[str, Any], stage["args"])["format"] == "json"
 
 
 @pytest.mark.parametrize(
@@ -444,7 +440,7 @@ def test_query_action_read_explain_uses_local_read_format(cli_runner: CliRunner)
         ),
     ],
 )
-def test_query_action_explain_json_outputs_terminal_action_floor(
+def test_query_action_explain_json_outputs_terminal_stage_floor(
     cli_runner: CliRunner,
     action_args: list[str],
     expected: dict[str, object],
@@ -465,9 +461,15 @@ def test_query_action_explain_json_outputs_terminal_action_floor(
 
     assert result.exit_code == 0, result.output
     payload = cast(dict[str, Any], json.loads(result.output))
-    assert payload["terminal_action"] == expected
-    assert cast(dict[str, Any], payload["lowering_plan"])["terminal_action"] == expected
-    assert payload["plan_description"][-1] == f"terminal action: {expected['action']}"
+    assert "terminal_action" not in payload
+    lowering_plan = cast(dict[str, Any], payload["lowering_plan"])
+    assert "terminal_action" not in lowering_plan
+    pipeline = cast(dict[str, Any], payload["pipeline"])
+    stage = cast(dict[str, Any], pipeline["stages"][-1])
+    assert stage["action"] == expected["action"]
+    assert stage["args"] == {key: value for key, value in expected.items() if key != "action"}
+    assert lowering_plan["pipeline"] == pipeline
+    assert payload["plan_description"][-1] == f"terminal stage: {expected['action']}"
 
 
 def test_root_query_explain_json_marks_sql_unit_payload(cli_runner: CliRunner) -> None:

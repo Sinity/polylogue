@@ -31,14 +31,12 @@ def explain_query_expression(
             predicate=explanation.predicate,
         ).to_payload()
         payload["pipeline"] = pipeline
-        payload["terminal_action"] = terminal_payload
         plan_payload = payload.get("lowering_plan")
         if isinstance(plan_payload, dict):
             plan_payload["pipeline"] = pipeline
-            plan_payload["terminal_action"] = terminal_payload
         plan_description = payload.get("plan_description")
         if isinstance(plan_description, list):
-            plan_description.append(f"terminal action: {action_name}")
+            plan_description.append(f"terminal stage: {action_name}")
     if output_format == "json":
         click.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
@@ -52,7 +50,6 @@ def explain_query_expression(
     plan_description = cast(list[str], payload["plan_description"])
     lowering_plan = cast(dict[str, object] | None, payload["lowering_plan"])
     pipeline_payload = cast(dict[str, object] | None, payload.get("pipeline"))
-    terminal_action_payload = cast(dict[str, object] | None, payload.get("terminal_action"))
     unsupported_nodes = cast(list[str], payload["unsupported_nodes"])
     if selected_units:
         click.echo("units: " + ", ".join(selected_units))
@@ -71,9 +68,6 @@ def explain_query_expression(
     if pipeline_payload is not None and (lowering_plan is None or "pipeline" not in lowering_plan):
         click.echo("pipeline:")
         click.echo(json.dumps(pipeline_payload, indent=2, sort_keys=True))
-    if terminal_action_payload is not None and (lowering_plan is None or "terminal_action" not in lowering_plan):
-        click.echo("terminal action:")
-        click.echo(json.dumps(terminal_action_payload, indent=2, sort_keys=True))
     if plan_description:
         click.echo("plan:")
         for line in plan_description:
