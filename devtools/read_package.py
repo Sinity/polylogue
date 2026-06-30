@@ -21,6 +21,7 @@ class ReadPackageArtifact:
     output_format: str
     path: str
     spec: bool = False
+    max_tokens: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +50,14 @@ def _expect_string(value: object, label: str) -> str:
     return value
 
 
+def _expect_optional_positive_int(value: object, label: str) -> int | None:
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ValueError(f"{label} must be a positive integer")
+    return value
+
+
 def load_read_package_spec(path: Path) -> ReadPackageSpec:
     """Load a JSON/YAML read-package spec from disk."""
 
@@ -72,6 +81,7 @@ def load_read_package_spec(path: Path) -> ReadPackageSpec:
             output_format=_expect_string(artifact_data.get("format"), f"artifacts[{index}].format"),
             path=_expect_string(artifact_data.get("path"), f"artifacts[{index}].path"),
             spec=bool(artifact_data.get("spec", False)),
+            max_tokens=_expect_optional_positive_int(artifact_data.get("max_tokens"), f"artifacts[{index}].max_tokens"),
         )
         if artifact.name in seen_names:
             raise ValueError(f"duplicate artifact name: {artifact.name}")
@@ -118,6 +128,7 @@ def build_read_package_plan(
             "--format",
             artifact.output_format,
             *(("--spec",) if artifact.spec else ()),
+            *(("--max-tokens", str(artifact.max_tokens)) if artifact.max_tokens is not None else ()),
             "--to",
             "file",
             "--out",
@@ -165,6 +176,7 @@ def _summary(
                 "view": item.artifact.view,
                 "format": item.artifact.output_format,
                 "spec": item.artifact.spec,
+                "max_tokens": item.artifact.max_tokens,
                 "path": str(item.out_path),
                 "argv": list(item.argv),
                 "bytes": item.out_path.stat().st_size if item.out_path.exists() else None,

@@ -18,7 +18,13 @@ def test_load_read_package_spec_validates_and_builds_plan(tmp_path: Path) -> Non
                 "version": 1,
                 "prune": ["transcript.md"],
                 "artifacts": [
-                    {"name": "dialogue", "view": "dialogue", "format": "markdown", "path": "dialogue.md"},
+                    {
+                        "name": "dialogue",
+                        "view": "dialogue",
+                        "format": "markdown",
+                        "path": "dialogue.md",
+                        "max_tokens": 120,
+                    },
                     {
                         "name": "spec",
                         "view": "temporal,chronicle",
@@ -36,6 +42,7 @@ def test_load_read_package_spec_validates_and_builds_plan(tmp_path: Path) -> Non
 
     assert spec.prune == ("transcript.md",)
     assert [item.artifact.name for item in plan] == ["dialogue", "spec"]
+    assert plan[0].artifact.max_tokens == 120
     assert plan[1].artifact.spec is True
     assert "--spec" in plan[1].argv
     assert plan[0].argv == (
@@ -47,6 +54,8 @@ def test_load_read_package_spec_validates_and_builds_plan(tmp_path: Path) -> Non
         "dialogue",
         "--format",
         "markdown",
+        "--max-tokens",
+        "120",
         "--to",
         "file",
         "--out",
@@ -90,7 +99,32 @@ def test_read_package_dry_run_emits_summary_without_writing(
     assert payload["prune"] == ["stale.md"]
     assert payload["pruned"] == []
     assert payload["artifacts"][0]["view"] == "dialogue"
+    assert payload["artifacts"][0]["max_tokens"] is None
     assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("value", [0, -1, "120", True])
+def test_read_package_rejects_invalid_max_tokens(tmp_path: Path, value: object) -> None:
+    spec_path = tmp_path / "package.json"
+    spec_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "artifacts": [
+                    {
+                        "name": "dialogue",
+                        "view": "dialogue",
+                        "format": "json",
+                        "path": "dialogue.json",
+                        "max_tokens": value,
+                    },
+                ],
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match=r"artifacts\[0\]\.max_tokens must be a positive integer"):
+        load_read_package_spec(spec_path)
 
 
 def test_read_package_json_keeps_child_output_off_stdout(
