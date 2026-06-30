@@ -16,10 +16,12 @@ from polylogue.archive.filter.filters import SessionFilter
 from polylogue.archive.query.expression import compile_expression
 from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.archive.query.spec import query_spec_to_plan
+from polylogue.storage.sqlite.queries.project_refs import expand_project_refs
 from tests.infra.archive_scenarios import native_session_id_for
 from tests.infra.storage_records import SessionBuilder, db_setup
 
 _PROJECT_REF = "g-p-6a40343a"
+_VISIBLE_PROJECT_REF = "g-p-6a40343a-a"
 
 
 def _seed(db_path: Path) -> None:
@@ -50,6 +52,16 @@ def test_project_field_compiles_into_spec() -> None:
     assert spec.project_refs == (_PROJECT_REF,)
 
 
+def test_project_ref_expansion_accepts_chatgpt_visible_url_suffix() -> None:
+    assert expand_project_refs((_VISIBLE_PROJECT_REF,)) == (_VISIBLE_PROJECT_REF, _PROJECT_REF)
+
+
+def test_project_ref_expansion_accepts_chatgpt_project_url() -> None:
+    url = f"https://chatgpt.com/g/{_VISIBLE_PROJECT_REF}/c/conv-123"
+
+    assert expand_project_refs((url,)) == (_VISIBLE_PROJECT_REF, _PROJECT_REF)
+
+
 @pytest.mark.asyncio
 async def test_project_plan_selects_by_provider_project_ref(workspace_env: dict[str, Path]) -> None:
     db_path = db_setup(workspace_env)
@@ -59,11 +71,21 @@ async def test_project_plan_selects_by_provider_project_ref(workspace_env: dict[
     plan = SessionQueryPlan(project_refs=(_PROJECT_REF,), limit=10)
     summaries = await SessionFilter(archive_root=archive_root, query_plan=plan).list_summaries()
 
-    assert [str(summary.id) for summary in summaries] == [
-        native_session_id_for("chatgpt", "conv-in-project")
-    ]
+    assert [str(summary.id) for summary in summaries] == [native_session_id_for("chatgpt", "conv-in-project")]
     # The matched summary also exposes the project ref on the read model.
     assert summaries[0].provider_project_ref == _PROJECT_REF
+
+
+@pytest.mark.asyncio
+async def test_project_plan_selects_by_visible_chatgpt_project_ref(workspace_env: dict[str, Path]) -> None:
+    db_path = db_setup(workspace_env)
+    archive_root = workspace_env["archive_root"]
+    _seed(db_path)
+
+    plan = SessionQueryPlan(project_refs=(_VISIBLE_PROJECT_REF,), limit=10)
+    summaries = await SessionFilter(archive_root=archive_root, query_plan=plan).list_summaries()
+
+    assert [str(summary.id) for summary in summaries] == [native_session_id_for("chatgpt", "conv-in-project")]
 
 
 @pytest.mark.asyncio
@@ -75,6 +97,4 @@ async def test_project_dsl_roundtrip_selects_session(workspace_env: dict[str, Pa
     plan = query_spec_to_plan(compile_expression(f"project:{_PROJECT_REF}"))
     summaries = await SessionFilter(archive_root=archive_root, query_plan=plan).list_summaries()
 
-    assert [str(summary.id) for summary in summaries] == [
-        native_session_id_for("chatgpt", "conv-in-project")
-    ]
+    assert [str(summary.id) for summary in summaries] == [native_session_id_for("chatgpt", "conv-in-project")]

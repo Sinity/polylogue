@@ -145,6 +145,7 @@ from polylogue.storage.sqlite.connection_profile import (
     READ_CONNECTION_PRAGMA_STATEMENTS,
     WRITE_CONNECTION_PRAGMA_STATEMENTS,
 )
+from polylogue.storage.sqlite.queries.project_refs import expand_project_refs
 from polylogue.storage.sqlite.queries.sessions_identity import session_id_prefix_bounds
 from polylogue.storage.sqlite.queries.tool_usage import ToolUsageProviderCoverageRow, ToolUsageRow
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
@@ -4504,9 +4505,7 @@ def _summary_from_row(row: sqlite3.Row) -> ArchiveSessionSummary:
         working_directories=working_directories,
         git_branch=str(row["git_branch"]) if row["git_branch"] is not None else None,
         git_repository_url=str(row["git_repository_url"]) if row["git_repository_url"] is not None else None,
-        provider_project_ref=(
-            str(row["provider_project_ref"]) if row["provider_project_ref"] is not None else None
-        ),
+        provider_project_ref=(str(row["provider_project_ref"]) if row["provider_project_ref"] is not None else None),
     )
 
 
@@ -6096,6 +6095,7 @@ def _session_filter_clause(
         )
         params.extend(repo_names)
     if project_refs:
+        project_refs = expand_project_refs(project_refs)
         placeholders = ", ".join("?" for _ in project_refs)
         clauses.append(f"{table_alias}.provider_project_ref IN ({placeholders})")
         params.extend(project_refs)
