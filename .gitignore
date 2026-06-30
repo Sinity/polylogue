@@ -71,6 +71,9 @@ AGENTS.md
 # Agent workspace: track reusable scaffold, ignore live state/artifacts
 .agent/*
 !.agent/README.md
+!.agent/DEVLOOP.md
+!.agent/includes/
+!.agent/includes/**
 !.agent/scripts/
 !.agent/scripts/**
 !.agent/tools/

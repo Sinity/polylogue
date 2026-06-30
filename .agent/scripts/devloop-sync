@@ -5,30 +5,27 @@ repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
 packet="${POLYLOGUE_CONDUCTOR_PACKET:-$repo/.agent/conductor-devloop}"
 
 mkdir -p "$packet"
-mkdir -p "$packet/scripts"
 
 "$repo/.agent/scripts/devloop-refresh-events" >/dev/null
+"$repo/.agent/scripts/devloop-refresh-demos" >/dev/null
 
-if [ -f "$repo/.agent/README.md" ]; then
-  cp -p "$repo/.agent/README.md" "$packet/agent.README.md"
-fi
-if [ -f "$repo/.agent/scratch/README.md" ]; then
-  cp -p "$repo/.agent/scratch/README.md" "$packet/scratch.README.md"
-fi
-for script in "$repo"/.agent/scripts/devloop-*; do
-  if [ -f "$script" ]; then
-    cp -p "$script" "$packet/scripts/$(basename "$script")"
-  fi
-done
+rm -rf "$packet/scripts"
+rm -f "$packet/agent.README.md" "$packet/scratch.README.md"
+
+script_manifest="$packet/devloop-script-hashes.tsv"
+find "$repo/.agent/scripts" -maxdepth 1 -type f -name 'devloop-*' -print0 \
+  | sort -z \
+  | xargs -0 sha256sum \
+  | awk -v repo="$repo/" '{sub(repo, "", $2); print $2 "\t" $1}' \
+  > "$script_manifest"
 
 {
   printf '# Polylogue Conductor Packet\n\n'
   printf 'Synced: %s\n\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')"
   printf 'Canonical dir: `%s`\n\n' "$packet"
-  printf 'Included files:\n\n'
+  printf 'Generated files:\n\n'
   find "$packet" -maxdepth 1 -type f -printf '- %f\n' | sort
-  printf '\nIncluded scripts:\n\n'
-  find "$packet/scripts" -maxdepth 1 -type f -printf '- scripts/%f\n' | sort
+  printf '\nTracked script hashes are listed in `devloop-script-hashes.tsv`.\n'
 } > "$packet/MANIFEST.md"
 
 printf 'refreshed conductor packet at %s\n' "$packet"

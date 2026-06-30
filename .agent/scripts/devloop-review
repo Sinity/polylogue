@@ -17,6 +17,10 @@ ok() {
 
 required_scaffold=(
   "$repo/.agent/README.md"
+  "$repo/.agent/DEVLOOP.md"
+  "$repo/.agent/includes/README.md"
+  "$repo/.agent/includes/devloop-conventions.md"
+  "$repo/.agent/includes/projection-render-direction.md"
   "$current/README.md"
   "$current/VELOCITY.md"
   "$current/PROCESS.md"
@@ -33,6 +37,7 @@ required_scaffold=(
   "$repo/.agent/scripts/devloop-handoff"
   "$repo/.agent/scripts/devloop-ahead"
   "$repo/.agent/scripts/devloop-refresh-events"
+  "$repo/.agent/scripts/devloop-refresh-demos"
   "$repo/.agent/scripts/devloop-focus"
   "$repo/.agent/scripts/devloop-baseline"
   "$repo/.agent/scripts/devloop-demo"
@@ -167,6 +172,24 @@ if [ -d "$packet" ]; then
   ok "conductor packet is canonical at $packet"
 else
   warn "missing conductor packet: $packet"
+fi
+
+if [ -d "$current/scripts" ]; then
+  warn "conductor packet contains duplicated script snapshots; run .agent/scripts/devloop-sync"
+else
+  ok "no duplicated script snapshots in conductor packet"
+fi
+
+if [ -f "$current/agent.README.md" ] || [ -f "$current/scratch.README.md" ]; then
+  warn "conductor packet contains duplicated README snapshots; run .agent/scripts/devloop-sync"
+else
+  ok "no duplicated README snapshots in conductor packet"
+fi
+
+if [ -f "$repo/.agent/demos/MANIFEST.readable.json" ] && [ -f "$repo/.agent/demos/SUMMARY_INDEX.json" ]; then
+  ok "demo shelf indexes present"
+else
+  warn "demo shelf indexes missing; run .agent/scripts/devloop-refresh-demos"
 fi
 
 if [ -f "$current/ACTIVE-LOOP.md" ]; then
