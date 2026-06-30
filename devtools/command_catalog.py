@@ -426,6 +426,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace temporal-archive-aggregates",
+        "workspace",
+        "Build run-projection aggregate artifacts from the active archive.",
+        "devtools.temporal_archive_aggregates",
+        use_when=(
+            "Refresh private longitudinal run/observed-event/context-snapshot demo artifacts from "
+            "the canonical archive through one reusable command instead of copying raw sqlite3 "
+            "queries into README files."
+        ),
+        examples=(
+            "devtools workspace temporal-archive-aggregates --json",
+            "devtools workspace temporal-archive-aggregates --out-dir /realm/inbox/demos_polylogue/01-real-archive-temporal-devloops",
+        ),
+    ),
+    CommandSpec(
         "workspace demo-shelf",
         "workspace",
         "Refresh or verify a demo shelf manifest, readable bundle, and summary index.",
