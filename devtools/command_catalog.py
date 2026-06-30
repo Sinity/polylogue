@@ -458,12 +458,13 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "workspace demo-shelf",
         "workspace",
-        "Refresh or verify a current demo shelf manifest, readable bundle, and summary index.",
+        "Refresh or verify current demo shelf indexes.",
         "devtools.demo_shelf",
         use_when=(
             "After curating .agent/demos or another explicit current demo shelf, regenerate "
-            "MANIFEST.readable.json, CONCATENATED_READABLE.md, and SUMMARY_INDEX.json from one "
-            "deterministic helper. The shelf is the best current set, not an append-only archive."
+            "MANIFEST.readable.json and SUMMARY_INDEX.json from one deterministic helper. "
+            "Declarative read packages own portable readable bundles; the shelf is the best current set, "
+            "not an append-only archive."
         ),
         examples=(
             "devtools workspace demo-shelf",

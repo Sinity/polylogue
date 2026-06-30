@@ -8,7 +8,7 @@ import pytest
 from devtools import demo_shelf
 
 
-def test_demo_shelf_writes_manifest_and_readable_bundle(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_demo_shelf_writes_manifest_and_summary_index(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     root = tmp_path / "demos"
     (root / "01-demo").mkdir(parents=True)
     (root / "01-demo" / "README.md").write_text("# Demo\n\nReadable.\n")
@@ -18,7 +18,7 @@ def test_demo_shelf_writes_manifest_and_readable_bundle(tmp_path: Path, capsys: 
             {
                 "artifact": "01-demo",
                 "claim": "Readable artifact exists.",
-                "non_claim": "Binary payload is not included in readable bundle.",
+                "non_claim": "Binary payload is not included in generated indexes.",
                 "proofs": ["README.md included"],
                 "caveats": ["Synthetic fixture"],
                 "index_schema_version": 18,
@@ -34,6 +34,7 @@ def test_demo_shelf_writes_manifest_and_readable_bundle(tmp_path: Path, capsys: 
     manifest = json.loads((root / "MANIFEST.readable.json").read_text())
     assert manifest["contract"] == "current-curated-demo-set"
     assert "append-only" in manifest["curation_policy"]
+    assert "read-package" in manifest["packaging"]
     assert manifest["file_count"] == 3
     assert manifest["readable_count"] == 2
     paths = {item["path"]: item for item in manifest["files"]}
@@ -43,12 +44,7 @@ def test_demo_shelf_writes_manifest_and_readable_bundle(tmp_path: Path, capsys: 
     assert "MANIFEST.readable.json" not in paths
     assert "CONCATENATED_READABLE.md" not in paths
     assert "SUMMARY_INDEX.json" not in paths
-    bundle = (root / "CONCATENATED_READABLE.md").read_text()
-    assert "curated current demo set" in bundle
-    assert "## 01-demo/README.md" in bundle
-    assert "## 01-demo/summary.json" in bundle
-    assert "Readable." in bundle
-    assert "payload.bin" not in bundle
+    assert not (root / "CONCATENATED_READABLE.md").exists()
     summary_index = json.loads((root / "SUMMARY_INDEX.json").read_text())
     assert summary_index["summary_count"] == 1
     assert summary_index["coverage"]["without_claim"] == []
