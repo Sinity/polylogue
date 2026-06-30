@@ -65,6 +65,15 @@ class TemporalPhaseSpan(SurfacePayloadModel):
     end_event_id: str
 
 
+class TemporalActivityBand(SurfacePayloadModel):
+    """Dense activity bucket with compositional family/kind counts."""
+
+    bucket_start: datetime
+    event_count: int = Field(ge=0)
+    family_counts: dict[str, int] = Field(default_factory=dict)
+    kind_counts: dict[str, int] = Field(default_factory=dict)
+
+
 class TemporalEvidenceWindow(SurfacePayloadModel):
     """Composable temporal projection over selected evidence events."""
 
@@ -76,6 +85,7 @@ class TemporalEvidenceWindow(SurfacePayloadModel):
     family_counts: dict[str, int] = Field(default_factory=dict)
     kind_counts: dict[str, int] = Field(default_factory=dict)
     buckets: tuple[TemporalCountBucket, ...] = ()
+    activity_bands: tuple[TemporalActivityBand, ...] = ()
     phase_spans: tuple[TemporalPhaseSpan, ...] = ()
     caveats: tuple[str, ...] = ()
 
@@ -112,6 +122,7 @@ def build_temporal_evidence_window(
         family_counts=dict(sorted(family_counts.items())),
         kind_counts=dict(sorted(kind_counts.items())),
         buckets=_count_buckets(selected, bucket=bucket),
+        activity_bands=_activity_bands(selected, bucket=bucket),
         phase_spans=_phase_spans(selected),
         caveats=tuple(dict.fromkeys(caveat_list)),
     )
@@ -232,6 +243,27 @@ def _count_buckets(
     )
 
 
+def _activity_bands(
+    events: tuple[TemporalEvidenceEvent, ...],
+    *,
+    bucket: TemporalBucket,
+    limit: int = 5,
+) -> tuple[TemporalActivityBand, ...]:
+    grouped: dict[datetime, list[TemporalEvidenceEvent]] = {}
+    for event in events:
+        grouped.setdefault(_bucket_start(event.occurred_at, bucket), []).append(event)
+    ranked = sorted(grouped.items(), key=lambda item: (-len(item[1]), item[0]))[:limit]
+    return tuple(
+        TemporalActivityBand(
+            bucket_start=start,
+            event_count=len(bucket_events),
+            family_counts=dict(sorted(Counter(event.family for event in bucket_events).items())),
+            kind_counts=dict(sorted(Counter(event.kind for event in bucket_events).items())),
+        )
+        for start, bucket_events in ranked
+    )
+
+
 def _phase_spans(events: tuple[TemporalEvidenceEvent, ...]) -> tuple[TemporalPhaseSpan, ...]:
     phase_events = [event for event in events if event.phase]
     spans: list[TemporalPhaseSpan] = []
@@ -254,6 +286,7 @@ def _phase_spans(events: tuple[TemporalEvidenceEvent, ...]) -> tuple[TemporalPha
 
 
 __all__ = [
+    "TemporalActivityBand",
     "TemporalBucket",
     "TemporalCountBucket",
     "TemporalEvidenceEvent",
