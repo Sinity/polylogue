@@ -48,7 +48,7 @@ from polylogue.cli.read_views.neighbors import (
     run_read_neighbors,
 )
 from polylogue.cli.read_views.query_set import run_query_set_read_view
-from polylogue.cli.read_views.standard import run_read_summary_or_transcript, run_read_temporal
+from polylogue.cli.read_views.standard import run_read_dialogue, run_read_summary_or_transcript, run_read_temporal
 from polylogue.cli.shared.types import AppEnv
 
 if TYPE_CHECKING:
@@ -69,6 +69,12 @@ READ_VIEW_HANDLERS: dict[str, ReadViewHandler] = {
         run_read_summary_or_transcript,
         default_format="markdown",
         accepts_query_set=True,
+    ),
+    "dialogue": ReadViewHandler(
+        "dialogue",
+        "required",
+        run_read_dialogue,
+        default_format="markdown",
     ),
     "messages": ReadViewHandler(
         "messages",

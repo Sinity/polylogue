@@ -212,6 +212,31 @@ def test_read_spec_moves_standalone_chronicle_limit_to_projection_policy() -> No
     assert payload["projection"]["body_policy"] == "authored-dialogue"
 
 
+def test_read_spec_maps_dialogue_to_authored_dialogue_projection() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--plain",
+            "--id",
+            "codex-session:abc",
+            "read",
+            "--view",
+            "dialogue",
+            "--format",
+            "markdown",
+            "--spec",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["projection"]["families"] == ["messages", "blocks"]
+    assert payload["projection"]["body_policy"] == "authored-dialogue"
+    assert payload["render"]["timestamps"] == "include-available"
+
+
 def test_read_spec_moves_standalone_message_window_to_projection_policy() -> None:
     runner = CliRunner()
     result = runner.invoke(

@@ -271,8 +271,8 @@ Usage: polylogue read [OPTIONS] [REF]
       polylogue read session:abc123 --format json
 
 Projection:
-  -v, --view VIEW[,VIEW...]  What to render (summary, transcript, messages,
-                             raw, context, context-image, neighbors,
+  -v, --view VIEW[,VIEW...]  What to render (summary, transcript, dialogue,
+                             messages, raw, context, context-image, neighbors,
                              correlation, temporal, chronicle).  [default:
                              summary]
   --views                    List executable read-view profiles, formats, and

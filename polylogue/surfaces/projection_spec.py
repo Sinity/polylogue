@@ -141,6 +141,7 @@ class QueryProjectionSpec(SurfacePayloadModel):
 READ_VIEW_PROJECTION_FAMILIES: dict[str, tuple[EvidenceFamily, ...]] = {
     "summary": (EvidenceFamily.SESSIONS,),
     "transcript": (EvidenceFamily.MESSAGES, EvidenceFamily.BLOCKS),
+    "dialogue": (EvidenceFamily.MESSAGES, EvidenceFamily.BLOCKS),
     "messages": (EvidenceFamily.MESSAGES, EvidenceFamily.BLOCKS),
     "raw": (EvidenceFamily.RAW,),
     "context": (EvidenceFamily.CONTEXT, EvidenceFamily.MESSAGES),
@@ -219,9 +220,9 @@ def projection_from_views(
         for family in view_families:
             if family not in families_list:
                 families_list.append(family)
-        if view in {"chronicle", "context-image"}:
+        if view in {"dialogue", "chronicle", "context-image"}:
             body_policy = BodyPolicy.AUTHORED_DIALOGUE
-        if view in {"chronicle", "context-image", "temporal"}:
+        if view in {"dialogue", "chronicle", "context-image", "temporal"}:
             timestamp_policy = RenderTimestampPolicy.INCLUDE_AVAILABLE
     return QueryProjectionSpec(
         selection=SelectionSpec(

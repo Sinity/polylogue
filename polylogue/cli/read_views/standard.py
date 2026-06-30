@@ -9,11 +9,14 @@ from collections.abc import Callable, Mapping
 from dataclasses import replace
 from urllib.parse import quote
 
+from polylogue.api.sync.bridge import run_coroutine_sync
+from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.cli.read_views.base import ReadViewInvocation, deliver_content, execute_query_request
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
+from polylogue.rendering.formatting import format_session
 from polylogue.surfaces.temporal_evidence import (
     TemporalEvidenceEvent,
     TemporalEvidenceWindow,
@@ -77,6 +80,22 @@ def run_read_summary_or_transcript(env: AppEnv, request: RootModeRequest, invoca
         execute_query_request(env, updated.with_param_updates(output=invocation.out_path))
     else:
         execute_query_request(env, updated)
+
+
+def run_read_dialogue(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
+    """Render one session as authored dialogue using the shared content projection."""
+
+    del request
+    assert invocation.session_id is not None
+    session = run_coroutine_sync(
+        env.polylogue.get_session(invocation.session_id, content_projection=ContentProjectionSpec.prose_only())
+    )
+    if session is None:
+        env.ui.error(f"Session not found: {invocation.session_id}")
+        return
+    fmt = invocation.output_format or "markdown"
+    content = format_session(session, fmt, None)
+    deliver_content(env, content, destination=invocation.destination, out_path=invocation.out_path)
 
 
 def _session_scope_for_summaries(summaries: list[SessionSummary]) -> str:
@@ -304,6 +323,7 @@ def run_read_browser(env: AppEnv, request: RootModeRequest, invocation: ReadView
 __all__ = [
     "TemporalPhaseRecorder",
     "build_read_temporal_window",
+    "run_read_dialogue",
     "run_read_browser",
     "run_read_summary_or_transcript",
     "run_read_temporal",

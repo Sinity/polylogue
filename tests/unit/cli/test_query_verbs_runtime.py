@@ -21,6 +21,7 @@ from polylogue.config import Config
 from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec
 from polylogue.surfaces.payloads import PublicRefResolutionPayload
 from polylogue.surfaces.projection_spec import projection_from_views
+from tests.infra.builders import make_conv, make_msg
 
 
 def _context_pair(
@@ -266,6 +267,46 @@ def test_read_format_completion_comes_from_selected_view_profile() -> None:
 
     assert [item.value for item in items] == list(READ_VIEW_PROFILE_BY_ID["raw"].formats)
     assert items[0].help == "Supported by read --view raw"
+
+
+def test_dialogue_read_view_renders_projected_authored_prose(capsys: pytest.CaptureFixture[str]) -> None:
+    session = make_conv(
+        id="session-1",
+        title="Mixed transcript",
+        messages=[
+            make_msg(id="sys", role="system", text="system prompt"),
+            make_msg(id="user", role="user", text="operator question", material_origin="human_authored"),
+            make_msg(id="tool", role="tool", text="tool output body"),
+            make_msg(id="assistant", role="assistant", text="agent answer"),
+        ],
+    )
+
+    class _FakePolylogue:
+        async def get_session(self, session_id: str, *, content_projection: object | None = None) -> object | None:
+            assert session_id == "session-1"
+            if content_projection is None:
+                return session
+            return session.with_content_projection(content_projection)  # type: ignore[arg-type]
+
+    env = cast(AppEnv, SimpleNamespace(polylogue=_FakePolylogue(), ui=MagicMock()))
+
+    read_view_handlers.run_read_view(
+        env,
+        RootModeRequest.from_params({}),
+        ReadViewInvocation(
+            view="dialogue",
+            session_id="session-1",
+            output_format="markdown",
+            destination="stdout",
+            out_path=None,
+        ),
+    )
+
+    rendered = capsys.readouterr().out
+    assert "operator question" in rendered
+    assert "agent answer" in rendered
+    assert "system prompt" not in rendered
+    assert "tool output body" not in rendered
 
 
 def _read_verb_kwargs(**overrides: object) -> dict[str, object]:
