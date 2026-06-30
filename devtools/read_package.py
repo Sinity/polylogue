@@ -15,13 +15,54 @@ import yaml
 
 
 @dataclass(frozen=True, slots=True)
+class ReadPackageProjection:
+    max_tokens: int | None = None
+    body_limit: int | None = None
+    body_offset: int | None = None
+    edge_limit: int | None = None
+    neighbor_limit: int | None = None
+    neighbor_window_hours: int | None = None
+
+    def as_payload(self) -> dict[str, int]:
+        return {
+            key: value
+            for key, value in {
+                "max_tokens": self.max_tokens,
+                "body_limit": self.body_limit,
+                "body_offset": self.body_offset,
+                "edge_limit": self.edge_limit,
+                "neighbor_limit": self.neighbor_limit,
+                "neighbor_window_hours": self.neighbor_window_hours,
+            }.items()
+            if value is not None
+        }
+
+    def cli_args(self) -> tuple[str, ...]:
+        limit_values = tuple(
+            value for value in (self.body_limit, self.edge_limit, self.neighbor_limit) if value is not None
+        )
+        if len(limit_values) > 1:
+            raise ValueError("projection may set only one of body_limit, edge_limit, or neighbor_limit")
+        args: list[str] = []
+        if self.max_tokens is not None:
+            args.extend(("--max-tokens", str(self.max_tokens)))
+        if limit_values:
+            args.extend(("--limit", str(limit_values[0])))
+        if self.body_offset is not None:
+            args.extend(("--offset", str(self.body_offset)))
+        if self.neighbor_window_hours is not None:
+            args.extend(("--window-hours", str(self.neighbor_window_hours)))
+        return tuple(args)
+
+
+@dataclass(frozen=True, slots=True)
 class ReadPackageArtifact:
     name: str
     view: str
     output_format: str
     path: str
     spec: bool = False
-    max_tokens: int | None = None
+    projection: ReadPackageProjection = ReadPackageProjection()
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +99,38 @@ def _expect_optional_positive_int(value: object, label: str) -> int | None:
     return value
 
 
+def _read_projection(data: dict[str, Any], label: str) -> ReadPackageProjection:
+    if "max_tokens" in data:
+        raise ValueError(f"{label}.max_tokens moved under {label}.projection.max_tokens")
+    raw = data.get("projection", {})
+    projection = _expect_mapping(raw, f"{label}.projection")
+    allowed = {
+        "max_tokens",
+        "body_limit",
+        "body_offset",
+        "edge_limit",
+        "neighbor_limit",
+        "neighbor_window_hours",
+    }
+    unknown = sorted(set(projection) - allowed)
+    if unknown:
+        raise ValueError(f"{label}.projection has unsupported key(s): {', '.join(unknown)}")
+    result = ReadPackageProjection(
+        max_tokens=_expect_optional_positive_int(projection.get("max_tokens"), f"{label}.projection.max_tokens"),
+        body_limit=_expect_optional_positive_int(projection.get("body_limit"), f"{label}.projection.body_limit"),
+        body_offset=_expect_optional_positive_int(projection.get("body_offset"), f"{label}.projection.body_offset"),
+        edge_limit=_expect_optional_positive_int(projection.get("edge_limit"), f"{label}.projection.edge_limit"),
+        neighbor_limit=_expect_optional_positive_int(
+            projection.get("neighbor_limit"), f"{label}.projection.neighbor_limit"
+        ),
+        neighbor_window_hours=_expect_optional_positive_int(
+            projection.get("neighbor_window_hours"), f"{label}.projection.neighbor_window_hours"
+        ),
+    )
+    result.cli_args()
+    return result
+
+
 def load_read_package_spec(path: Path) -> ReadPackageSpec:
     """Load a JSON/YAML read-package spec from disk."""
 
@@ -81,7 +154,7 @@ def load_read_package_spec(path: Path) -> ReadPackageSpec:
             output_format=_expect_string(artifact_data.get("format"), f"artifacts[{index}].format"),
             path=_expect_string(artifact_data.get("path"), f"artifacts[{index}].path"),
             spec=bool(artifact_data.get("spec", False)),
-            max_tokens=_expect_optional_positive_int(artifact_data.get("max_tokens"), f"artifacts[{index}].max_tokens"),
+            projection=_read_projection(artifact_data, f"artifacts[{index}]"),
         )
         if artifact.name in seen_names:
             raise ValueError(f"duplicate artifact name: {artifact.name}")
@@ -128,7 +201,7 @@ def build_read_package_plan(
             "--format",
             artifact.output_format,
             *(("--spec",) if artifact.spec else ()),
-            *(("--max-tokens", str(artifact.max_tokens)) if artifact.max_tokens is not None else ()),
+            *artifact.projection.cli_args(),
             "--to",
             "file",
             "--out",
@@ -176,7 +249,7 @@ def _summary(
                 "view": item.artifact.view,
                 "format": item.artifact.output_format,
                 "spec": item.artifact.spec,
-                "max_tokens": item.artifact.max_tokens,
+                "projection": item.artifact.projection.as_payload(),
                 "path": str(item.out_path),
                 "argv": list(item.argv),
                 "bytes": item.out_path.stat().st_size if item.out_path.exists() else None,
