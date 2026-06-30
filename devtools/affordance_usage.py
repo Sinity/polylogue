@@ -27,7 +27,7 @@ DEFAULT_FAMILY_PATTERNS: tuple[str, ...] = (
 
 FAMILY_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("serena", ("serena",)),
-    ("codebase-memory", ("codebase-memory", "codebase_memory", "codebasememory")),
+    ("codebase-memory", ("codebase-memory", "codebase_memory", "codebasememory", "search_code")),
     ("cclsp", ("cclsp",)),
     ("context7", ("context7",)),
     ("polylogue", ("polylogue",)),
@@ -41,6 +41,7 @@ class AffordanceUsageArgs:
     out_dir: Path | None
     days: int
     family: tuple[str, ...]
+    detail_pattern: tuple[str, ...]
     sample_limit: int
     json: bool
     all_time: bool
@@ -64,6 +65,12 @@ def _parser() -> argparse.ArgumentParser:
         action="append",
         default=None,
         help="Case-insensitive raw tool-name substring to include. Repeatable. Defaults to key agent affordance families.",
+    )
+    parser.add_argument(
+        "--detail-pattern",
+        action="append",
+        default=None,
+        help="Case-insensitive substring to match in tool command/path/input details. Repeatable.",
     )
     parser.add_argument("--sample-limit", type=int, default=120, help="Maximum representative sample rows.")
     parser.add_argument("--json", action="store_true", help="Emit JSON report to stdout.")
@@ -107,11 +114,18 @@ def _int(value: object) -> int:
     raise TypeError(f"expected numeric SQLite value, got {type(value).__name__}")
 
 
-def _family_for_tool(tool_name: object) -> str:
-    normalized = str(tool_name or "").lower()
+def _family_for_text(text: object) -> str | None:
+    normalized = str(text or "").lower()
     for family, needles in FAMILY_ALIASES:
         if any(needle in normalized for needle in needles):
             return family
+    return None
+
+
+def _family_for_tool(tool_name: object) -> str:
+    normalized = str(tool_name or "").lower()
+    if family := _family_for_text(normalized):
+        return family
     if normalized.startswith("mcp__"):
         parts = normalized.split("__")
         if len(parts) > 1 and parts[1]:
@@ -119,16 +133,36 @@ def _family_for_tool(tool_name: object) -> str:
     return normalized or "unknown"
 
 
+def _family_for_row(row: dict[str, object]) -> str:
+    tool_family = _family_for_tool(row.get("tool_name"))
+    if tool_family in {"exec_command", "functions", "functions.exec_command", "bash", "shell", "client"}:
+        return _family_for_text(row.get("detail")) or tool_family
+    return tool_family
+
+
 def _with_family(rows: list[dict[str, object]]) -> list[dict[str, object]]:
-    return [{**row, "family": _family_for_tool(row.get("tool_name"))} for row in rows]
+    return [{**row, "family": _family_for_row(row)} for row in rows]
 
 
-def _where_for_patterns(patterns: tuple[str, ...], *, alias: str = "a") -> tuple[str, list[object]]:
-    cleaned = tuple(pattern.strip().lower() for pattern in patterns if pattern.strip())
-    if not cleaned:
-        cleaned = DEFAULT_FAMILY_PATTERNS
-    clauses = [f"lower({alias}.tool_name) LIKE ?" for _ in cleaned]
-    return " OR ".join(clauses), [f"%{pattern}%" for pattern in cleaned]
+def _where_for_filters(
+    tool_patterns: tuple[str, ...],
+    detail_patterns: tuple[str, ...],
+    *,
+    alias: str = "a",
+) -> tuple[str, list[object]]:
+    cleaned_tools = tuple(pattern.strip().lower() for pattern in tool_patterns if pattern.strip())
+    cleaned_details = tuple(pattern.strip().lower() for pattern in detail_patterns if pattern.strip())
+    if not cleaned_tools and not cleaned_details:
+        cleaned_tools = DEFAULT_FAMILY_PATTERNS
+    clauses = [f"lower({alias}.tool_name) LIKE ?" for _ in cleaned_tools]
+    params: list[object] = [f"%{pattern}%" for pattern in cleaned_tools]
+    detail_expr = (
+        f"lower(coalesce({alias}.tool_command, '') || ' ' || "
+        f"coalesce({alias}.tool_path, '') || ' ' || coalesce({alias}.tool_input, ''))"
+    )
+    clauses.extend(f"{detail_expr} LIKE ?" for _ in cleaned_details)
+    params.extend(f"%{pattern}%" for pattern in cleaned_details)
+    return " OR ".join(clauses), params
 
 
 def _recent_cutoff_ms(days: int) -> int:
@@ -342,7 +376,7 @@ def _all_time_action_rows(
 def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
     config = _config_with_archive_root(get_config(), args.archive_root)
     index_db = config.db_path
-    where_sql, where_params = _where_for_patterns(args.family, alias="u")
+    where_sql, where_params = _where_for_filters(args.family, args.detail_pattern, alias="u")
     recent_cutoff_ms = _recent_cutoff_ms(args.days)
     conn = open_readonly_connection(index_db)
     try:
@@ -377,7 +411,8 @@ def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
             "archive_root": str(config.archive_root),
             "index_db": str(index_db),
             "index_schema_version": _user_version(conn),
-            "patterns": list(args.family),
+            "patterns": list(args.family or (() if args.detail_pattern else DEFAULT_FAMILY_PATTERNS)),
+            "detail_patterns": list(args.detail_pattern),
             "action_scope": action_scope,
             "recent_window_days": args.days,
             "origin_counts": origin_counts,
@@ -461,7 +496,8 @@ def main(argv: list[str] | None = None) -> int:
                 archive_root=parsed.archive_root,
                 out_dir=parsed.out_dir,
                 days=parsed.days,
-                family=tuple(parsed.family or DEFAULT_FAMILY_PATTERNS),
+                family=tuple(parsed.family or ()),
+                detail_pattern=tuple(parsed.detail_pattern or ()),
                 sample_limit=parsed.sample_limit,
                 json=parsed.json,
                 all_time=parsed.all_time,

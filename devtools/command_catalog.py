@@ -451,6 +451,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
         examples=(
             "devtools workspace affordance-usage --days 7 --json",
+            "devtools workspace affordance-usage --detail-pattern codebase-memory --detail-pattern search_code --days 30",
             "devtools workspace affordance-usage --out-dir .agent/demos/agent-affordance-usage",
         ),
     ),

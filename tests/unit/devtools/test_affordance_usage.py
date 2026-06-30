@@ -52,7 +52,8 @@ def _make_index_db(root: Path) -> Path:
                 ('s1', 'm1', 'tool_use', 'mcp__context7__query-docs', 't2', '', '', 'react', NULL, NULL),
                 ('s2', 'm2', 'tool_use', 'mcp__plugin_context7_context7__query-docs', 't3', '', '', 'sqlite', NULL, NULL),
                 ('s2', 'm2', 'tool_result', NULL, 't3', '', '', '', 1, NULL),
-                ('s2', 'm3', 'tool_use', 'mcp__cclsp__find_definition', 't4', '', '/repo/lib.rs', '', NULL, NULL);
+                ('s2', 'm3', 'tool_use', 'mcp__cclsp__find_definition', 't4', '', '/repo/lib.rs', '', NULL, NULL),
+                ('s1', 'm1', 'tool_use', 'functions.exec_command', 't5', 'codebase-memory-mcp cli search_code', '', '', NULL, NULL);
             """
         )
         conn.commit()
@@ -70,6 +71,7 @@ def test_affordance_usage_report_and_files(tmp_path: Path) -> None:
         out_dir=out_dir,
         days=36500,
         family=("serena", "context7", "cclsp"),
+        detail_pattern=(),
         sample_limit=10,
         json=True,
         all_time=False,
@@ -101,6 +103,7 @@ def test_affordance_usage_rejects_nonpositive_recent_window(tmp_path: Path) -> N
         out_dir=None,
         days=0,
         family=("serena",),
+        detail_pattern=(),
         sample_limit=10,
         json=True,
         all_time=False,
@@ -112,3 +115,25 @@ def test_affordance_usage_rejects_nonpositive_recent_window(tmp_path: Path) -> N
         assert "--days must be positive" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("expected ValueError")
+
+
+def test_affordance_usage_can_match_shell_command_details(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    _make_index_db(archive_root)
+    args = affordance_usage.AffordanceUsageArgs(
+        archive_root=archive_root,
+        out_dir=None,
+        days=36500,
+        family=(),
+        detail_pattern=("codebase-memory",),
+        sample_limit=10,
+        json=True,
+        all_time=False,
+    )
+
+    report = affordance_usage.build_report(args)
+
+    families = {row["family"]: row for row in report["family_counts"]}
+    assert families["codebase-memory"]["actions"] == 1
+    assert report["tool_counts"][0]["tool_name"] == "functions.exec_command"
+    assert report["detail_patterns"] == ["codebase-memory"]
