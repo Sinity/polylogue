@@ -20,6 +20,7 @@ from polylogue.cli.select import (
     async_run_select,
     choose_select_row,
     render_select_row,
+    render_select_rows,
     select_row_from_result,
 )
 from polylogue.cli.shared.types import AppEnv
@@ -103,6 +104,16 @@ def test_choose_select_row_returns_singleton_when_not_interactive() -> None:
     ui.choose.assert_not_called()
 
 
+def test_render_select_rows_emits_one_row_per_line() -> None:
+    rows = [_row(1), _row(2)]
+
+    assert render_select_rows(rows, "id") == "conv-1\nconv-2"
+    assert render_select_rows(rows, "json").splitlines() == [
+        '{"id":"conv-1","origin":"claude-code-session","title":"Session 1","date":"2026-05-02"}',
+        '{"id":"conv-2","origin":"claude-code-session","title":"Session 2","date":"2026-05-02"}',
+    ]
+
+
 def test_choose_select_row_prefers_fzf_then_falls_back_to_ui() -> None:
     ui = MagicMock()
     env = cast(AppEnv, SimpleNamespace(ui=ui))
@@ -182,18 +193,20 @@ async def test_select_session_rows_compiles_query_terms_before_filtering(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_async_run_select_distinguishes_empty_results_from_cancel(capsys: pytest.CaptureFixture[str]) -> None:
+async def test_async_run_select_prints_candidates_when_selection_is_ambiguous(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     env = cast(AppEnv, SimpleNamespace(ui=MagicMock()))
     request = RootModeRequest.from_params({})
 
     with (
-        patch("polylogue.cli.select.select_session_rows", AsyncMock(return_value=[_row()])),
+        patch("polylogue.cli.select.select_session_rows", AsyncMock(return_value=[_row(1), _row(2)])),
         patch("polylogue.cli.select.choose_select_row", return_value=None),
     ):
-        with pytest.raises(SystemExit) as exc_info:
-            await async_run_select(env, request, limit=10, print_field="id")
-    assert exc_info.value.code == 1
-    assert "Selection required for multiple sessions" in capsys.readouterr().err
+        await async_run_select(env, request, limit=10, print_field="id")
+    captured = capsys.readouterr()
+    assert captured.out == "conv-1\nconv-2\n"
+    assert captured.err == ""
 
     with patch("polylogue.cli.select.select_session_rows", AsyncMock(return_value=[])):
         with pytest.raises(SystemExit) as exc_info:

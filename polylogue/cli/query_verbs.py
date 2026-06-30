@@ -509,12 +509,12 @@ def _summary_all_output_param(destination: str, out_path: str | None) -> str | N
     type=click.Choice(["id", "title", "origin"]),
     default="id",
     show_default=True,
-    help="Field to print for the selected session.",
+    help="Field to print for selected or candidate sessions.",
 )
-@click.option("--json", "json_output", is_flag=True, help="Print the selected session as one JSON object.")
+@click.option("--json", "json_output", is_flag=True, help="Print selected or candidate sessions as JSON.")
 @click.pass_context
 def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: bool) -> None:
-    """Select one matched session with fzf/prompt fallback."""
+    """Select one matched session or print bounded candidate identities."""
     from polylogue.cli.select import run_select
 
     field: SelectPrintField = "json" if json_output else cast("SelectPrintField", print_field)

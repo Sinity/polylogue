@@ -341,13 +341,13 @@ Other options:
 ```text
 Usage: polylogue select [OPTIONS]
 
-  Select one matched session with fzf/prompt fallback.
+  Select one matched session or print bounded candidate identities.
 
 Options:
   -n, --limit INTEGER RANGE  Max candidate sessions.  [default: 20; x>=1]
-  --print [id|title|origin]  Field to print for the selected session.
-                             [default: id]
-  --json                     Print the selected session as one JSON object.
+  --print [id|title|origin]  Field to print for selected or candidate
+                             sessions.  [default: id]
+  --json                     Print selected or candidate sessions as JSON.
   --help                     Show this message and exit.
 ```
 
