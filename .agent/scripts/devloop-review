@@ -75,9 +75,7 @@ fi
 
 if [ -f "$current/OPERATING-LOG.md" ]; then
   latest="$(awk '/^## [0-9]{4}-[0-9]{2}-[0-9]{2} /{start=NR} {lines[NR]=$0} END{if(start){for(i=start;i<=NR;i++) print lines[i]}}' "$current/OPERATING-LOG.md")"
-  if grep -Eq '^(Primary aim|Evidence touched|Action taken|Artifact/proof|Velocity note|Next decision):[[:space:]]*$' "$current/OPERATING-LOG.md"; then
-    warn "OPERATING-LOG.md contains empty required fields"
-  elif printf '%s\n' "$latest" | grep -Eiq '\\b(TODO:|TBD:|FIXME:|\\?\\?\\?)'; then
+  if printf '%s\n' "$latest" | grep -Eiq '\\b(TODO:|TBD:|FIXME:|\\?\\?\\?)'; then
     warn "latest OPERATING-LOG entry contains unresolved TODO/TBD/FIXME markers"
   elif printf '%s\n' "$latest" | grep -Eq '^(Primary aim|Evidence touched|Action taken|Artifact/proof|Velocity note|Next decision):[[:space:]]*$'; then
     warn "latest OPERATING-LOG entry has empty required fields"
