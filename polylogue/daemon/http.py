@@ -1633,14 +1633,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _handle_health_check(self) -> None:
         """CI-facing health check with deterministic exit semantics.
 
-        Returns 200 when all FAST health checks pass, 503 when any
-        non-OK health alert is present.  Suitable for health check
-        endpoints in Docker, systemd, and CI pipelines.
+        Returns 200 when the configured health-check tiers pass, 503 when any
+        non-OK health alert is present. Suitable for health check endpoints in
+        Docker, systemd, and CI pipelines. The default config runs FAST only.
         """
         try:
-            from polylogue.daemon.health import HealthTier, check_health
+            from polylogue.config import load_polylogue_config
+            from polylogue.daemon.health import check_health, resolve_health_tiers
 
-            health = check_health(tiers={HealthTier.FAST, HealthTier.MEDIUM})
+            cfg = load_polylogue_config()
+            health = check_health(tiers=resolve_health_tiers(cfg.health_check_tiers))
             if health.overall_status == "ok":
                 self._send_json(HTTPStatus.OK, {"ok": True, "status": "healthy"})
             else:
