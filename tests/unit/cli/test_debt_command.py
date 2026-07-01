@@ -29,7 +29,15 @@ def _payload(root: Path) -> ArchiveDebtListPayload:
                 summary="3 session(s) pending embedding catch-up",
             ),
         ),
-        totals=ArchiveDebtTotalsPayload(total=1, warning=1, actionable=1),
+        totals=ArchiveDebtTotalsPayload(
+            total=1,
+            warning=1,
+            actionable=1,
+            affected_total=3,
+            affected_warning=3,
+            affected_actionable=3,
+            affected_open=3,
+        ),
     )
 
 
@@ -73,4 +81,5 @@ def test_debt_list_text_renders_actionable_summary(
 
     assert result.exit_code == 0, result.output
     assert "Archive debt: 1 row(s)" in result.output
+    assert "affected=3 affected_warning=3 affected_actionable=3 affected_open=3 affected_blocked=0" in result.output
     assert "3 session(s) pending embedding catch-up" in result.output

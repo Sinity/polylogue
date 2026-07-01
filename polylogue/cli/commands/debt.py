@@ -63,6 +63,14 @@ def _render_text(payload: ArchiveDebtListPayload) -> None:
         f"  critical={payload.totals.critical} warning={payload.totals.warning} "
         f"actionable={payload.totals.actionable} blocked={payload.totals.blocked}"
     )
+    if payload.totals.affected_total:
+        click.echo(
+            f"  affected={payload.totals.affected_total} "
+            f"affected_warning={payload.totals.affected_warning} "
+            f"affected_actionable={payload.totals.affected_actionable} "
+            f"affected_open={payload.totals.affected_open} "
+            f"affected_blocked={payload.totals.affected_blocked}"
+        )
     if not payload.rows:
         click.echo("  No archive debt detected.")
         return
