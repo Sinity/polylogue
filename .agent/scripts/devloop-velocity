@@ -180,9 +180,12 @@ if skips:
 proof_exits = Counter(dst for _, src, dst in transitions if src == "Proof")
 if proof_exits:
     print("proof_exits=" + ", ".join(f"{dst}:{count}" for dst, count in proof_exits.most_common()))
-    non_artifact = sum(count for dst, count in proof_exits.items() if dst != "Artifact")
-    if non_artifact:
-        print(f"proof_non_artifact_exits={non_artifact} (audit whether proof claims skipped artifact/velocity closure)")
+    direct_skips = sum(count for dst, count in proof_exits.items() if dst not in {"Artifact", "Velocity"})
+    if direct_skips:
+        print(
+            f"proof_direct_skips={direct_skips} "
+            "(audit whether proof claims skipped artifact or velocity closure)"
+        )
 
 recent = transitions[-8:]
 if recent:
