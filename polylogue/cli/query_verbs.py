@@ -202,6 +202,7 @@ _READ_VIEWS = read_view_choices()
 _READ_VIEW_HELP = "What to render (" + ", ".join(_READ_VIEWS) + ")."
 _READ_DESTINATIONS = ("terminal", "stdout", "browser", "clipboard", "file")
 _READ_FORMATS = tuple(sorted({fmt for profile in READ_VIEW_PROFILES for fmt in profile.formats}))
+_READ_RENDER_LAYOUTS = ("standard", "context-image")
 
 
 def _explicit_read_view_options(ctx: click.Context) -> frozenset[str]:
@@ -486,9 +487,11 @@ def _read_projection_limits(
     return limit, None, None, None, None
 
 
-def _read_render_layout(views: tuple[str, ...]) -> str:
+def _read_render_layout(views: tuple[str, ...], *, override: str | None = None) -> str:
     """Return the render layout family for read output."""
 
+    if override is not None:
+        return override
     if len(views) > 1 or "context-image" in views:
         return "context-image"
     return "standard"
@@ -508,7 +511,7 @@ def _projection_spec_with_resolved_session_refs(
 
 
 _READ_HELP_OPTION_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
-    ("Projection", frozenset({"view", "show_views", "show_spec"})),
+    ("Projection", frozenset({"view", "show_views", "show_spec", "render_layout"})),
     ("Delivery and format", frozenset({"destination", "output_format", "out_path", "fields"})),
     ("Cardinality and pagination", frozenset({"all_matches", "first_only", "limit", "offset"})),
     (
@@ -636,6 +639,12 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: b
     shell_complete=_complete_read_format,
     help="Output format (where applicable).",
 )
+@click.option(
+    "--render-layout",
+    type=click.Choice(_READ_RENDER_LAYOUTS),
+    default=None,
+    help="Render layout for the composed projection spec; defaults from --view.",
+)
 @click.option("--out", "out_path", type=click.Path(), default=None, help="File path for --to file.")
 @click.option("--all", "all_matches", is_flag=True, help="Read all matched sessions.")
 @click.option("--limit", "-l", "-n", type=int, default=None, help="Max items to return.")
@@ -717,6 +726,7 @@ def read_verb(
     view: str,
     destination: str,
     output_format: str | None,
+    render_layout: str | None,
     out_path: str | None,
     all_matches: bool,
     limit: int | None,
@@ -828,7 +838,7 @@ def read_verb(
             out_path=out_path,
             max_tokens=max_tokens,
             selection_limit=spec_selection_limit,
-            render_layout=_read_render_layout(tuple(view_tokens)),
+            render_layout=_read_render_layout(tuple(view_tokens), override=render_layout),
             selection_query=spec_selection_query,
             selection_origin=spec_selection_origin,
             selection_since=spec_selection_since,
@@ -894,7 +904,7 @@ def read_verb(
             out_path=out_path,
             max_tokens=max_tokens,
             selection_limit=spec_selection_limit,
-            render_layout=_read_render_layout(tuple(view_tokens)),
+            render_layout=_read_render_layout(tuple(view_tokens), override=render_layout),
             edge_limit=projection_edge_limit,
             body_limit=projection_body_limit,
             body_offset=projection_body_offset,
@@ -933,7 +943,7 @@ def read_verb(
             out_path=out_path,
             max_tokens=max_tokens,
             selection_limit=spec_selection_limit if uses_context_image_selector else limit,
-            render_layout=_read_render_layout(tuple(view_tokens)),
+            render_layout=_read_render_layout(tuple(view_tokens), override=render_layout),
             selection_query=spec_selection_query,
             selection_origin=spec_selection_origin,
             selection_since=spec_selection_since,
@@ -979,7 +989,7 @@ def read_verb(
         out_path=out_path,
         max_tokens=max_tokens,
         selection_limit=selection_limit,
-        render_layout=_read_render_layout(tuple(view_tokens)),
+        render_layout=_read_render_layout(tuple(view_tokens), override=render_layout),
         edge_limit=projection_edge_limit,
         body_limit=projection_body_limit,
         body_offset=projection_body_offset,
