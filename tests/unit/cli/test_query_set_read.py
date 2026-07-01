@@ -249,6 +249,29 @@ def test_read_spec_accepts_explicit_render_layout() -> None:
     assert payload["projection"]["families"] == ["temporal", "sessions", "chronicle", "messages"]
 
 
+def test_read_spec_accepts_explicit_timestamp_policy() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--plain",
+            "repo:polylogue",
+            "read",
+            "--view",
+            "temporal",
+            "--timestamps",
+            "omit",
+            "--spec",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["render"]["timestamps"] == "omit"
+    assert payload["projection"]["families"] == ["temporal", "sessions"]
+
+
 def test_read_spec_to_file_writes_composed_projection_contract(tmp_path: Path) -> None:
     out_path = tmp_path / "projection-spec.json"
     runner = CliRunner()

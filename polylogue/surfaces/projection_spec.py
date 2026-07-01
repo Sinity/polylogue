@@ -185,6 +185,7 @@ def projection_from_views(
     format: str = "markdown",
     destination: str = "terminal",
     layout: str = "standard",
+    timestamps: str | None = None,
     max_tokens: int | None = None,
     out: str | None = None,
     query: str | None = None,
@@ -229,6 +230,7 @@ def projection_from_views(
             timestamp_policy = RenderTimestampPolicy.INCLUDE_AVAILABLE
     if include_assertions and EvidenceFamily.ASSERTIONS not in families_list:
         families_list.append(EvidenceFamily.ASSERTIONS)
+    render_timestamps = RenderTimestampPolicy(timestamps) if timestamps is not None else timestamp_policy
     return QueryProjectionSpec(
         selection=SelectionSpec(
             query=query,
@@ -255,7 +257,7 @@ def projection_from_views(
             format=RenderFormat(format),
             destination=RenderDestination(destination),
             layout=layout,
-            timestamps=timestamp_policy,
+            timestamps=render_timestamps,
             out=out,
         ),
     )

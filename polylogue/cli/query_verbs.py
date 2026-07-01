@@ -203,6 +203,7 @@ _READ_VIEW_HELP = "What to render (" + ", ".join(_READ_VIEWS) + ")."
 _READ_DESTINATIONS = ("terminal", "stdout", "browser", "clipboard", "file")
 _READ_FORMATS = tuple(sorted({fmt for profile in READ_VIEW_PROFILES for fmt in profile.formats}))
 _READ_RENDER_LAYOUTS = ("standard", "context-image")
+_READ_TIMESTAMP_POLICIES = ("renderer-default", "include-available", "omit")
 
 
 def _explicit_read_view_options(ctx: click.Context) -> frozenset[str]:
@@ -423,6 +424,7 @@ def _build_read_projection_spec(
     max_tokens: int | None,
     selection_limit: int | None,
     render_layout: str = "standard",
+    timestamp_policy: str | None = None,
     selection_query: str | None = None,
     selection_origin: str | None = None,
     selection_since: str | None = None,
@@ -452,6 +454,7 @@ def _build_read_projection_spec(
         format=effective_format,
         destination=destination,
         layout=render_layout,
+        timestamps=timestamp_policy,
         max_tokens=max_tokens,
         out=out_path,
         query=selection_query if selection_query is not None else _read_query_text(request),
@@ -511,7 +514,7 @@ def _projection_spec_with_resolved_session_refs(
 
 
 _READ_HELP_OPTION_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
-    ("Projection", frozenset({"view", "show_views", "show_spec", "render_layout"})),
+    ("Projection", frozenset({"view", "show_views", "show_spec", "render_layout", "timestamp_policy"})),
     ("Delivery and format", frozenset({"destination", "output_format", "out_path", "fields"})),
     ("Cardinality and pagination", frozenset({"all_matches", "first_only", "limit", "offset"})),
     (
@@ -645,6 +648,13 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: b
     default=None,
     help="Render layout for the composed projection spec; defaults from --view.",
 )
+@click.option(
+    "--timestamps",
+    "timestamp_policy",
+    type=click.Choice(_READ_TIMESTAMP_POLICIES),
+    default=None,
+    help="Timestamp rendering policy for the composed projection spec; defaults from --view.",
+)
 @click.option("--out", "out_path", type=click.Path(), default=None, help="File path for --to file.")
 @click.option("--all", "all_matches", is_flag=True, help="Read all matched sessions.")
 @click.option("--limit", "-l", "-n", type=int, default=None, help="Max items to return.")
@@ -727,6 +737,7 @@ def read_verb(
     destination: str,
     output_format: str | None,
     render_layout: str | None,
+    timestamp_policy: str | None,
     out_path: str | None,
     all_matches: bool,
     limit: int | None,
@@ -839,6 +850,7 @@ def read_verb(
             max_tokens=max_tokens,
             selection_limit=spec_selection_limit,
             render_layout=_read_render_layout(tuple(view_tokens), override=render_layout),
+            timestamp_policy=timestamp_policy,
             selection_query=spec_selection_query,
             selection_origin=spec_selection_origin,
             selection_since=spec_selection_since,
@@ -905,6 +917,7 @@ def read_verb(
             max_tokens=max_tokens,
             selection_limit=spec_selection_limit,
             render_layout=_read_render_layout(tuple(view_tokens), override=render_layout),
+            timestamp_policy=timestamp_policy,
             edge_limit=projection_edge_limit,
             body_limit=projection_body_limit,
             body_offset=projection_body_offset,
@@ -944,6 +957,7 @@ def read_verb(
             max_tokens=max_tokens,
             selection_limit=spec_selection_limit if uses_context_image_selector else limit,
             render_layout=_read_render_layout(tuple(view_tokens), override=render_layout),
+            timestamp_policy=timestamp_policy,
             selection_query=spec_selection_query,
             selection_origin=spec_selection_origin,
             selection_since=spec_selection_since,
@@ -990,6 +1004,7 @@ def read_verb(
         max_tokens=max_tokens,
         selection_limit=selection_limit,
         render_layout=_read_render_layout(tuple(view_tokens), override=render_layout),
+        timestamp_policy=timestamp_policy,
         edge_limit=projection_edge_limit,
         body_limit=projection_body_limit,
         body_offset=projection_body_offset,

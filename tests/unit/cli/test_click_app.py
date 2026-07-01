@@ -559,6 +559,7 @@ def test_read_help_groups_options_by_ownership(cli_runner: CliRunner) -> None:
     assert "Other options:" in result.output
     assert "--views" in result.output
     assert "--render-layout" in result.output
+    assert "--timestamps" in result.output
     assert "--max-tokens" in result.output
     assert "--repo-path" in result.output
 
