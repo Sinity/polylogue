@@ -272,7 +272,7 @@ CHATGPT_PARENT_BRANCH_CASES: list[ParentBranchCase] = [
             "node1": make_chatgpt_node("msg1", "user", ["Hello"], children=["msg2"]),
             "node2": make_chatgpt_node("msg2", "assistant", ["Hi"], parent="node1"),
         },
-        [None, "node1"],
+        [None, "msg1"],
         [0, 0],
         "linear chain parent references",
     ),
@@ -283,7 +283,7 @@ CHATGPT_PARENT_BRANCH_CASES: list[ParentBranchCase] = [
             "node2": make_chatgpt_node("msg2", "assistant", ["Answer 1"], parent="node1"),
             "node3": make_chatgpt_node("msg3", "assistant", ["Answer 2"], parent="node1"),
         },
-        [None, "node1", "node1"],
+        [None, "msg1", "msg1"],
         [0, 0, 1],
         "branching with branch indexes",
     ),
@@ -295,18 +295,19 @@ CHATGPT_PARENT_BRANCH_CASES: list[ParentBranchCase] = [
             "node3": make_chatgpt_node("msg3", "assistant", ["A2"], parent="node1"),
             "node4": make_chatgpt_node("msg4", "assistant", ["A3"], parent="node1"),
         },
-        [None, "node1", "node1", "node1"],
+        [None, "msg1", "msg1", "msg1"],
         [0, 0, 1, 2],
         "three-way branch indexes",
     ),
     # No parent field in node
     ({"node1": make_chatgpt_node("msg1", "user", ["Hello"])}, [None], [0], "missing parent field defaults to None"),
-    # Parent node missing from mapping (orphaned node)
+    # Parent node missing from the emitted message set: keep the message, drop
+    # the dangling parent edge so storage does not reject the session.
     (
         {"node2": make_chatgpt_node("msg2", "assistant", ["Hi"], parent="node1")},
-        ["node1"],
+        [None],
         [0],
-        "orphaned node with missing parent",
+        "orphaned node drops missing parent",
     ),
     # Mixed chain and branch
     (
@@ -316,7 +317,7 @@ CHATGPT_PARENT_BRANCH_CASES: list[ParentBranchCase] = [
             "node3": make_chatgpt_node("msg3", "user", ["Follow 1"], parent="node2"),
             "node4": make_chatgpt_node("msg4", "user", ["Follow 2"], parent="node2"),
         },
-        [None, "node1", "node2", "node2"],
+        [None, "msg1", "msg2", "msg2"],
         [0, 0, 0, 1],
         "mixed chain and branch structure",
     ),
@@ -349,6 +350,22 @@ def test_chatgpt_extract_parent_and_branch_index(
             f"Failed {desc}: message {msg.provider_message_id} expected branch_index {expected_index}, "
             f"got {msg.branch_index}"
         )
+
+
+def test_chatgpt_drops_parent_links_to_filtered_messages() -> None:
+    messages, _ = extract_messages_from_mapping(
+        {
+            "empty-parent": make_chatgpt_node("parent-msg", "user", [], children=["child"]),
+            "child": make_chatgpt_node("child-msg", "assistant", ["survives"], parent="parent-msg"),
+            "root": make_chatgpt_node("root-msg", "user", ["root"], children=["valid-child-msg"]),
+            "valid-child": make_chatgpt_node("valid-child-msg", "assistant", ["valid"], parent="root-msg"),
+        }
+    )
+
+    parents = {message.provider_message_id: message.parent_message_provider_id for message in messages}
+
+    assert parents["child-msg"] is None
+    assert parents["valid-child-msg"] == "root-msg"
 
 
 # -----------------------------------------------------------------------------
@@ -812,8 +829,8 @@ def test_regeneration_preserves_all_branches_and_marks_active_leaf() -> None:
     assert conv.active_leaf_message_provider_id == "a_new"
 
 
-def test_active_path_position_uses_parent_chain_rank_not_timestamp_or_mapping_order() -> None:
-    """Readable transcript order follows the active path, not provider timestamps."""
+def test_chatgpt_position_stays_mapping_order_when_active_path_timestamps_are_scrambled() -> None:
+    """Archive row positions remain unique while active-path membership stays explicit."""
     root = _branch_node("root", "system", "", parent=None, children=["u1"])
     user = _branch_node("u1", "user", "first active", parent="root", children=["a1"])
     assistant = _branch_node("a1", "assistant", "second active", parent="u1", children=["u2"])
@@ -830,13 +847,12 @@ def test_active_path_position_uses_parent_chain_rank_not_timestamp_or_mapping_or
     conv = chatgpt_parse(payload, "fallback-id")
     by_id = {m.provider_message_id: m for m in conv.messages}
 
-    u1_position = by_id["u1"].position
-    a1_position = by_id["a1"].position
-    u2_position = by_id["u2"].position
-    assert u1_position is not None
-    assert a1_position is not None
-    assert u2_position is not None
-    assert u1_position < a1_position < u2_position
+    assert by_id["a1"].position == 0
+    assert by_id["u2"].position == 1
+    assert by_id["u1"].position == 3
+    assert by_id["a1"].is_active_path is True
+    assert by_id["u2"].is_active_path is True
+    assert by_id["u1"].is_active_path is True
     assert [(m.provider_message_id, m.timestamp) for m in conv.messages] == [
         ("a1", "100.0"),
         ("u2", "200.0"),
@@ -934,7 +950,7 @@ def test_chatgpt_archive_contract_fields() -> None:
 
     conv = chatgpt_parse(payload, "fallback-id")
 
-    assert [m.position for m in conv.messages] == [0, 2, 1]
+    assert [m.position for m in conv.messages] == [0, 1, 2]
     assert [m.variant_index for m in conv.messages] == [0, 0, 1]
     active = next(m for m in conv.messages if m.provider_message_id == "a_new")
     assert active.model_name == "gpt-4o"

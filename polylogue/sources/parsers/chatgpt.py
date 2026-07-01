@@ -281,9 +281,7 @@ def extract_messages_from_mapping(
     attachments: list[ParsedAttachment] = []
     active_path_ids = _active_path_node_ids(mapping, current_node)
     active_path_id_set = set(active_path_ids)
-    active_path_rank = {node_id: rank for rank, node_id in enumerate(active_path_ids)}
     emitted_by_node_id: dict[str, str] = {}
-    inactive_position = 0
     for idx, node_id in enumerate(mapping.keys(), start=1):
         node = mapping.get(node_id)
         if not isinstance(node, dict):
@@ -445,14 +443,6 @@ def extract_messages_from_mapping(
         end_turn_val = msg.get("end_turn")
         user_context_val = msg_metadata.get("user_context_message_data") if isinstance(msg_metadata, Mapping) else None
         message_type = classify_text_message_type(text) or MessageType.MESSAGE
-        if active_path_rank:
-            position = active_path_rank.get(node_id)
-            if position is None:
-                position = len(active_path_rank) + inactive_position
-                inactive_position += 1
-        else:
-            position = idx - 1
-
         parsed = ParsedMessage(
             provider_message_id=str(msg_id),
             role=role,
@@ -467,7 +457,7 @@ def extract_messages_from_mapping(
                 block_types=tuple(block.type for block in content_blocks),
             ),
             parent_message_provider_id=parent_message_provider_id,
-            position=position,
+            position=idx - 1,
             branch_index=branch_index,
             variant_index=branch_index,
             is_active_path=node_id in active_path_id_set if active_path_ids else None,
@@ -491,6 +481,24 @@ def extract_messages_from_mapping(
         # Use explicit None check instead of `or` to handle zero/negative timestamps correctly
         entries.sort(key=lambda item: (item[0] is None, item[0] if item[0] is not None else 0.0, item[1]))
     messages = [entry[2] for entry in entries]
+    emitted_message_ids = {message.provider_message_id for message in messages}
+    messages = [
+        message.model_copy(
+            update={
+                "parent_message_provider_id": (
+                    emitted_by_node_id.get(
+                        message.parent_message_provider_id,
+                        message.parent_message_provider_id
+                        if message.parent_message_provider_id in emitted_message_ids
+                        else None,
+                    )
+                )
+            }
+        )
+        if message.parent_message_provider_id is not None
+        else message
+        for message in messages
+    ]
     active_leaf_message_provider_id = next(
         (emitted_by_node_id[node_id] for node_id in reversed(active_path_ids) if node_id in emitted_by_node_id),
         None,
