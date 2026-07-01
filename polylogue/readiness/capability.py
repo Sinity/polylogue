@@ -160,9 +160,11 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
     warning = int(payload.get("warning") or 0)
     actionable = int(payload.get("actionable") or 0)
     blocked = int(payload.get("blocked") or 0)
+    classified = int(payload.get("classified") or 0)
     affected_total = int(payload.get("affected_total") or 0)
     affected_actionable = int(payload.get("affected_actionable") or 0)
     affected_open = int(payload.get("affected_open") or 0)
+    affected_classified = int(payload.get("affected_classified") or 0)
     if not available:
         state = CapabilityReadinessState.UNKNOWN
         summary = "unknown"
@@ -178,11 +180,16 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
     elif warning > 0 or actionable > 0 or affected_actionable > 0:
         state = CapabilityReadinessState.STALE
         summary = "raw evidence pending materialization"
+    elif classified > 0 or affected_classified > 0:
+        state = CapabilityReadinessState.READY
+        summary = "raw evidence classified; no materialization debt"
     else:
         state = CapabilityReadinessState.DEGRADED
         summary = "raw evidence classified as non-actionable"
     caveats: tuple[str, ...]
-    if state is CapabilityReadinessState.DEGRADED:
+    if state is CapabilityReadinessState.READY and (classified > 0 or affected_classified > 0):
+        caveats = ("raw_index_join_gaps_classified_not_materialization_debt",)
+    elif state is CapabilityReadinessState.DEGRADED:
         caveats = ("raw_index_join_gaps_classified_not_replayable",)
     elif state is CapabilityReadinessState.BLOCKED:
         caveats = ("raw_materialization_blocked",)
@@ -201,9 +208,11 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
             "warning": warning,
             "actionable": actionable,
             "blocked": blocked,
+            "classified": classified,
             "affected_total": affected_total,
             "affected_actionable": affected_actionable,
             "affected_open": affected_open,
+            "affected_classified": affected_classified,
         },
         caveats=caveats,
         metadata={

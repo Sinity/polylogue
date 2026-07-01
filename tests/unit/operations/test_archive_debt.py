@@ -431,7 +431,9 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
     assert payload.totals.affected_warning == 4
     assert payload.totals.affected_info == 4
     assert payload.totals.affected_actionable == 2
-    assert payload.totals.affected_open == 7
+    assert payload.totals.classified == 2
+    assert payload.totals.affected_open == 3
+    assert payload.totals.affected_classified == 4
 
     by_ref = {row.debt_ref: row for row in payload.rows}
     missing_blob = by_ref["debt:raw-materialization:codex-session:missing-blob"]
@@ -505,7 +507,7 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
 
     sidecars = by_ref["debt:raw-materialization:claude-code-session:parsed-non-session-artifact"]
     assert sidecars.severity == "info"
-    assert sidecars.status == "open"
+    assert sidecars.status == "classified"
     assert sidecars.category == "parsed-non-session-artifact"
     assert sidecars.affected_count == 3
     assert "parsed as non-session artifacts" in sidecars.summary
@@ -514,6 +516,7 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
 
     metadata_only = by_ref["debt:raw-materialization:codex-session:parsed-non-session-artifact"]
     assert metadata_only.severity == "info"
+    assert metadata_only.status == "classified"
     assert metadata_only.affected_count == 1
     assert "metadata-only" in (metadata_only.details or "") or "non-session artifacts" in metadata_only.summary
 
@@ -706,7 +709,7 @@ def test_archive_debt_raw_materialization_reports_native_id_aliases(tmp_path: Pa
     assert "debt:raw-materialization:aistudio-drive:parsed-without-session" not in refs
     alias = refs["debt:raw-materialization:aistudio-drive:materialized-alias"]
     assert alias.severity == "info"
-    assert alias.status == "open"
+    assert alias.status == "classified"
     assert "materialized through native/source aliases" in alias.summary
     assert alias.actions == ()
     assert "debt:raw-materialization:codex-session:missing-blob" in refs
@@ -734,7 +737,7 @@ def test_archive_debt_raw_materialization_reports_source_path_native_aliases(tmp
     assert "debt:raw-materialization:claude-code-session:parsed-without-session" not in refs
     alias = refs["debt:raw-materialization:claude-code-session:materialized-alias"]
     assert alias.severity == "info"
-    assert alias.status == "open"
+    assert alias.status == "classified"
     assert "should not be replayed blindly" in (alias.details or "")
     assert "debt:raw-materialization:codex-session:missing-blob" in refs
 

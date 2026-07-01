@@ -145,7 +145,7 @@ def test_raw_materialization_readiness_maps_actionable_debt_to_stale() -> None:
     assert component.repair_hint == "polylogue ops debt list --kind raw-materialization"
 
 
-def test_raw_materialization_readiness_maps_classified_info_debt_to_degraded() -> None:
+def test_raw_materialization_readiness_maps_classified_info_debt_to_ready_with_caveat() -> None:
     component = component_from_raw_materialization_readiness(
         {
             "available": True,
@@ -154,20 +154,22 @@ def test_raw_materialization_readiness_maps_classified_info_debt_to_degraded() -
             "warning": 0,
             "actionable": 0,
             "blocked": 0,
+            "classified": 2,
             "affected_total": 276,
             "affected_actionable": 0,
-            "affected_open": 276,
+            "affected_open": 0,
+            "affected_classified": 276,
             "category_counts": {"materialized-alias": 47, "parsed-non-session-artifact": 229},
             "source_family_counts": {"claude-code-session": 272, "codex-session": 4},
         }
     )
 
-    assert component.state is CapabilityReadinessState.DEGRADED
-    assert component.summary == "raw evidence classified as non-actionable"
-    assert component.counts["affected_open"] == 276
-    assert component.caveats == ("raw_index_join_gaps_classified_not_replayable",)
+    assert component.state is CapabilityReadinessState.READY
+    assert component.summary == "raw evidence classified; no materialization debt"
+    assert component.counts["affected_classified"] == 276
+    assert component.caveats == ("raw_index_join_gaps_classified_not_materialization_debt",)
     assert component.metadata["category_counts"] == {"materialized-alias": 47, "parsed-non-session-artifact": 229}
-    assert component.repair_hint == "polylogue ops debt list --kind raw-materialization"
+    assert component.repair_hint is None
 
 
 def test_embedding_payload_maps_missing_blocked_stale_and_ready() -> None:

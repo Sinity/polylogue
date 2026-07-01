@@ -37,7 +37,7 @@
     },
     "ArchiveDebtRowPayload": {
       "additionalProperties": false,
-      "description": "One actionable archive debt row from an operational readiness provider.",
+      "description": "One archive debt/readiness row from an operational provider.",
       "properties": {
         "actions": {
           "default": [],
@@ -174,7 +174,8 @@
           "enum": [
             "open",
             "actionable",
-            "blocked"
+            "blocked",
+            "classified"
           ],
           "title": "Status",
           "type": "string"
@@ -219,6 +220,11 @@
           "title": "Affected Blocked",
           "type": "integer"
         },
+        "affected_classified": {
+          "default": 0,
+          "title": "Affected Classified",
+          "type": "integer"
+        },
         "affected_critical": {
           "default": 0,
           "title": "Affected Critical",
@@ -247,6 +253,11 @@
         "blocked": {
           "default": 0,
           "title": "Blocked",
+          "type": "integer"
+        },
+        "classified": {
+          "default": 0,
+          "title": "Classified",
           "type": "integer"
         },
         "critical": {

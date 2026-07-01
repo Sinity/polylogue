@@ -305,7 +305,7 @@ ArchiveDebtKind = Literal[
     "raw-materialization",
 ]
 ArchiveDebtSeverity = Literal["info", "warning", "critical"]
-ArchiveDebtStatus = Literal["open", "actionable", "blocked"]
+ArchiveDebtStatus = Literal["open", "actionable", "blocked", "classified"]
 
 
 class ArchiveDebtActionPayload(SurfacePayloadModel):
@@ -317,7 +317,7 @@ class ArchiveDebtActionPayload(SurfacePayloadModel):
 
 
 class ArchiveDebtRowPayload(SurfacePayloadModel):
-    """One actionable archive debt row from an operational readiness provider."""
+    """One archive debt/readiness row from an operational provider."""
 
     debt_ref: str
     kind: ArchiveDebtKind
@@ -347,6 +347,7 @@ class ArchiveDebtTotalsPayload(SurfacePayloadModel):
     info: int = 0
     actionable: int = 0
     blocked: int = 0
+    classified: int = 0
     affected_total: int = 0
     affected_critical: int = 0
     affected_warning: int = 0
@@ -354,6 +355,7 @@ class ArchiveDebtTotalsPayload(SurfacePayloadModel):
     affected_actionable: int = 0
     affected_blocked: int = 0
     affected_open: int = 0
+    affected_classified: int = 0
 
 
 class ArchiveDebtListPayload(SurfacePayloadModel):

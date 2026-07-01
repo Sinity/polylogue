@@ -193,6 +193,8 @@ except json.JSONDecodeError:
     ops_status = {}
 raw_readiness = ops_status.get("raw_materialization_readiness") or {}
 raw_component = (ops_status.get("component_readiness") or {}).get("raw_materialization") or {}
+raw_materialization_join_gaps = int_or_none(raw_materialization_debt)
+raw_materialization_debt_count = raw_materialization_join_gaps
 try:
     raw_debt = json.loads(raw_debt_json) if raw_debt_json else {}
 except json.JSONDecodeError:
@@ -208,6 +210,10 @@ if raw_debt:
         source_family = row.get("source_family") or "unspecified"
         category_counts[category] = category_counts.get(category, 0) + affected
         source_family_counts[source_family] = source_family_counts.get(source_family, 0) + affected
+    raw_materialization_debt_count = sum(
+        int(totals.get(key) or 0)
+        for key in ("affected_actionable", "affected_blocked", "affected_open")
+    )
     raw_readiness = {
         "available": True,
         "total": totals.get("total"),
@@ -215,10 +221,12 @@ if raw_debt:
         "warning": totals.get("warning"),
         "actionable": totals.get("actionable"),
         "blocked": totals.get("blocked"),
+        "classified": totals.get("classified"),
         "affected_total": totals.get("affected_total"),
         "affected_actionable": totals.get("affected_actionable"),
         "affected_open": totals.get("affected_open"),
         "affected_blocked": totals.get("affected_blocked"),
+        "affected_classified": totals.get("affected_classified"),
         "category_counts": dict(sorted(category_counts.items())),
         "source_family_counts": dict(sorted(source_family_counts.items())),
         "sampled_rows": rows[:5],
@@ -227,16 +235,21 @@ if raw_debt:
         raw_state = "ready"
     elif (totals.get("blocked") or 0) and not (totals.get("actionable") or 0):
         raw_state = "blocked"
+    elif (totals.get("classified") or 0) and not (totals.get("affected_open") or 0) and not (totals.get("affected_actionable") or 0):
+        raw_state = "ready"
     elif not (totals.get("affected_actionable") or 0) and not (totals.get("critical") or 0) and not (totals.get("warning") or 0):
         raw_state = "degraded"
     else:
         raw_state = "stale"
-    raw_summary = {
-        "ready": "ready",
-        "blocked": "raw evidence blocked",
-        "degraded": "raw evidence classified as non-actionable",
-        "stale": "raw evidence pending materialization",
-    }[raw_state]
+    if raw_state == "ready" and (totals.get("classified") or 0):
+        raw_summary = "raw evidence classified; no materialization debt"
+    else:
+        raw_summary = {
+            "ready": "ready",
+            "blocked": "raw evidence blocked",
+            "degraded": "raw evidence classified as non-actionable",
+            "stale": "raw evidence pending materialization",
+        }[raw_state]
     raw_component = {
         "component": "raw_materialization",
         "scope": "archive",
@@ -251,17 +264,19 @@ if raw_debt:
                 "warning",
                 "actionable",
                 "blocked",
+                "classified",
                 "affected_total",
                 "affected_actionable",
                 "affected_open",
                 "affected_blocked",
+                "affected_classified",
             }
         },
         "metadata": {
             "category_counts": dict(sorted(category_counts.items())),
             "source_family_counts": dict(sorted(source_family_counts.items())),
         },
-        "repair_hint": "polylogue ops debt list --kind raw-materialization",
+        "repair_hint": None if raw_state == "ready" else "polylogue ops debt list --kind raw-materialization",
     }
 
 def active_section(text: str, heading: str) -> str | None:
@@ -313,7 +328,8 @@ print(json.dumps({
         "raw_sessions": int_or_none(raw_rows),
     },
     "convergence": {
-        "raw_materialization_debt": int_or_none(raw_materialization_debt),
+        "raw_materialization_join_gaps": raw_materialization_join_gaps,
+        "raw_materialization_debt": raw_materialization_debt_count,
         "raw_materialization_replayable": int_or_none(raw_materialization_replayable),
         "raw_materialization_readiness": raw_readiness or None,
         "raw_materialization_component": raw_component or None,
@@ -431,7 +447,7 @@ if [ -f "$archive_root/source.db" ] && [ -f "$archive_root/index.db" ]; then
         AND r.parsed_at_ms IS NULL;
     " 2>/dev/null || true
   )"
-  printf 'convergence: raw_materialization_debt=%s replayable_acquired_unparsed=%s\n' \
+  printf 'convergence: raw_materialization_join_gaps=%s replayable_acquired_unparsed=%s\n' \
     "${raw_materialization_debt:-?}" "${raw_materialization_replayable:-?}"
   raw_debt_json="$(raw_materialization_debt_payload)"
   if [ -n "$raw_debt_json" ]; then
@@ -462,6 +478,8 @@ if (totals.get("affected_total") or 0) == 0:
     state = "ready"
 elif (totals.get("blocked") or 0) and not (totals.get("actionable") or 0):
     state = "blocked"
+elif (totals.get("classified") or 0) and not (totals.get("affected_open") or 0) and not (totals.get("affected_actionable") or 0):
+    state = "ready"
 elif not (totals.get("affected_actionable") or 0) and not (totals.get("critical") or 0) and not (totals.get("warning") or 0):
     state = "degraded"
 else:
@@ -472,6 +490,7 @@ print(
     f"affected={totals.get('affected_total')} "
     f"actionable={totals.get('affected_actionable')} "
     f"blocked={totals.get('affected_blocked')} "
+    f"classified={totals.get('affected_classified')} "
     f"open={totals.get('affected_open')} "
     f"state={state}"
 )

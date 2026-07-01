@@ -190,15 +190,18 @@ task-history are local current state.
 - A matching active index schema means the index tier can be opened; it is not
   proof that all acquired source rows are materialized.
 - `devloop-status --json` must expose archive convergence signals needed for
-  live claims. In Polylogue that includes `convergence.raw_materialization_debt`
-  and core read-model counts such as `index.observed_events`.
-- Treat `convergence.raw_materialization_debt` as the broad raw/index join-gap
-  count and `convergence.raw_materialization_replayable` as the narrower
-  acquired-but-unparsed replay queue. The latter is a repair actuator hint; the
-  former still needs debt classification before claiming convergence.
+  live claims. In Polylogue that includes raw/index join gaps, unresolved raw
+  materialization debt, replayable raw rows, and core read-model counts such as
+  `index.observed_events`.
+- Treat `convergence.raw_materialization_join_gaps` as the broad raw/index
+  join-gap count and `convergence.raw_materialization_replayable` as the
+  narrower acquired-but-unparsed replay queue. Join gaps are not automatically
+  repair debt: `convergence.raw_materialization_debt` is the unresolved
+  actionable/open/blocked materialization count after classification.
 - If raw materialization debt is nonzero, demos may still be valid for the rows
   they query, but agents must not claim full archive convergence until the debt
-  is repaired or classified.
+  is repaired or classified. Classified join gaps should be quoted separately
+  rather than hidden or called pending materialization.
 
 ## Polylogue Migration Target
 

@@ -109,9 +109,12 @@ class RawMaterializationReadiness(BaseModel):
     warning: int = 0
     actionable: int = 0
     blocked: int = 0
+    classified: int = 0
     affected_total: int = 0
     affected_actionable: int = 0
+    affected_blocked: int = 0
     affected_open: int = 0
+    affected_classified: int = 0
     category_counts: dict[str, int] = Field(default_factory=dict)
     source_family_counts: dict[str, int] = Field(default_factory=dict)
     sampled_rows: list[dict[str, object]] = Field(default_factory=list)
@@ -1793,13 +1796,19 @@ def _raw_materialization_readiness_info() -> RawMaterializationReadiness:
     category_counts: Counter[str] = Counter()
     source_family_counts: Counter[str] = Counter()
     affected_actionable = 0
+    affected_blocked = 0
     affected_open = 0
+    affected_classified = 0
     for row, affected_count in zip(rows, affected_counts, strict=True):
         category_counts[row.category or "unspecified"] += affected_count
         source_family_counts[row.source_family or "unspecified"] += affected_count
         if row.status == "actionable":
             affected_actionable += affected_count
-        if row.status == "open":
+        elif row.status == "blocked":
+            affected_blocked += affected_count
+        elif row.status == "classified":
+            affected_classified += affected_count
+        elif row.status == "open":
             affected_open += affected_count
     return RawMaterializationReadiness(
         available=True,
@@ -1808,9 +1817,12 @@ def _raw_materialization_readiness_info() -> RawMaterializationReadiness:
         warning=sum(1 for row in rows if row.severity == "warning"),
         actionable=sum(1 for row in rows if row.status == "actionable"),
         blocked=sum(1 for row in rows if row.status == "blocked"),
+        classified=sum(1 for row in rows if row.status == "classified"),
         affected_total=sum(affected_counts),
         affected_actionable=affected_actionable,
+        affected_blocked=affected_blocked,
         affected_open=affected_open,
+        affected_classified=affected_classified,
         category_counts=dict(sorted(category_counts.items())),
         source_family_counts=dict(sorted(source_family_counts.items())),
         sampled_rows=[row.model_dump(mode="json", exclude_none=True) for row in rows[:5]],

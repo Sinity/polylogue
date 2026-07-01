@@ -751,7 +751,7 @@ def _raw_materialization_debt_row(
         )
     elif category == "materialized-alias":
         severity = "info"
-        status = "open"
+        status = "classified"
         stage = "parse"
         summary = f"{count} {origin} raw artifact(s) materialized through native/source aliases"
         details = (
@@ -762,7 +762,7 @@ def _raw_materialization_debt_row(
         actions = ()
     elif category == "parsed-non-session-artifact":
         severity = "info"
-        status = "open"
+        status = "classified"
         stage = "parse"
         summary = f"{count} {origin} raw artifact(s) parsed as non-session artifacts"
         details = (
@@ -1175,6 +1175,7 @@ def _totals(rows: list[ArchiveDebtRowPayload]) -> ArchiveDebtTotalsPayload:
         info=sum(1 for row in rows if row.severity == "info"),
         actionable=sum(1 for row in rows if row.status == "actionable"),
         blocked=sum(1 for row in rows if row.status == "blocked"),
+        classified=sum(1 for row in rows if row.status == "classified"),
         affected_total=sum(affected_count(row) for row in rows),
         affected_critical=sum(affected_count(row) for row in rows if row.severity == "critical"),
         affected_warning=sum(affected_count(row) for row in rows if row.severity == "warning"),
@@ -1182,12 +1183,13 @@ def _totals(rows: list[ArchiveDebtRowPayload]) -> ArchiveDebtTotalsPayload:
         affected_actionable=sum(affected_count(row) for row in rows if row.status == "actionable"),
         affected_blocked=sum(affected_count(row) for row in rows if row.status == "blocked"),
         affected_open=sum(affected_count(row) for row in rows if row.status == "open"),
+        affected_classified=sum(affected_count(row) for row in rows if row.status == "classified"),
     )
 
 
 def _row_sort_key(row: ArchiveDebtRowPayload) -> tuple[int, int, str, str]:
     severity_order = {"critical": 0, "warning": 1, "info": 2}
-    status_order = {"actionable": 0, "blocked": 1, "open": 2}
+    status_order = {"actionable": 0, "blocked": 1, "open": 2, "classified": 3}
     return (
         severity_order[row.severity],
         status_order[row.status],

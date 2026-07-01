@@ -136,9 +136,12 @@ or live capture, maintain logs and handoffs, and reprioritize by evidence.
   live archive facts.
 - Treat `devloop-status` convergence fields as claim guards. A matching
   `index.schema_version` means the index can be opened; it does not mean the
-  archive is fully converged. If `convergence.raw_materialization_debt` is
-  nonzero, do not claim full archive convergence until the missing raw rows are
-  repaired or classified.
+  archive is fully converged. `convergence.raw_materialization_join_gaps`
+  counts raw rows that do not join to index rows by `raw_id`; those gaps may be
+  classified aliases or non-session artifacts. `convergence.raw_materialization_debt`
+  counts unresolved actionable/open/blocked materialization work. Do not claim
+  full archive convergence while materialization debt is nonzero, and quote
+  classified join gaps separately when they remain.
 - Treat `devloop-status` git fields as part of the start gate: branch, HEAD,
   tracked-change count, and untracked-change count tell you whether you are
   resuming a clean branch, local process edit, or product slice.
