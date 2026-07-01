@@ -81,7 +81,10 @@ from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent, Pr
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery, build_tool_usage_insight
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.insights.session.records import SessionProfileRecord
-from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
+from polylogue.storage.insights.session.runtime import (
+    SESSION_INSIGHT_MATERIALIZATION_TYPES,
+    SessionInsightStatusSnapshot,
+)
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.search.query_support import normalize_fts5_query
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
@@ -2568,8 +2571,12 @@ class ArchiveStore:
         """Return readiness for session insight tables."""
         total_sessions = _count_rows(self._conn, "sessions")
         profile_rows = _count_rows(self._conn, "session_profiles")
+        latency_rows = _count_rows(self._conn, "session_latency_profiles")
         work_event_rows = _count_rows(self._conn, "session_work_events")
         phase_rows = _count_rows(self._conn, "session_phases")
+        run_rows = _count_rows(self._conn, "session_runs")
+        observed_event_rows = _count_rows(self._conn, "session_observed_events")
+        context_snapshot_rows = _count_rows(self._conn, "session_context_snapshots")
         thread_rows = _count_rows(self._conn, "threads")
         tag_rows = _count_rows(self._conn, "session_tags")
         root_threads = _count_scalar(
@@ -2655,21 +2662,36 @@ class ArchiveStore:
             total_sessions=total_sessions,
             root_threads=root_threads,
             profile_row_count=profile_rows,
+            latency_profile_row_count=latency_rows,
             work_event_inference_count=work_event_rows,
             phase_inference_count=phase_rows,
+            run_count=run_rows,
+            observed_event_count=observed_event_rows,
+            context_snapshot_count=context_snapshot_rows,
             thread_count=thread_rows,
             tag_rollup_count=tag_rows,
             missing_profile_row_count=missing_profiles,
+            missing_session_profile_materialization_count=missing_materialization["session_profile"],
             orphan_profile_row_count=orphan_profiles,
+            missing_latency_materialization_count=missing_materialization["latency"],
+            missing_work_event_materialization_count=missing_materialization["work_events"],
             expected_work_event_inference_count=expected_work_events,
             stale_work_event_inference_count=stale_work_event_profiles,
             orphan_work_event_inference_count=orphan_work_events,
+            missing_phase_materialization_count=missing_materialization["phases"],
             expected_phase_inference_count=expected_phases,
             stale_phase_inference_count=stale_phase_profiles,
             orphan_phase_inference_count=orphan_phases,
+            missing_run_materialization_count=missing_materialization["runs"],
+            missing_observed_event_materialization_count=missing_materialization["observed_events"],
+            missing_context_snapshot_materialization_count=missing_materialization["context_snapshots"],
+            missing_thread_materialization_count=missing_materialization["thread"],
             stale_thread_count=missing_materialization["thread"],
             expected_tag_rollup_count=tag_rows,
-            profile_rows_ready=missing_profiles == 0 and orphan_profiles == 0,
+            profile_rows_ready=(
+                missing_profiles == 0 and orphan_profiles == 0 and missing_materialization["session_profile"] == 0
+            ),
+            latency_profile_rows_ready=missing_materialization["latency"] == 0 and latency_rows == profile_rows,
             work_event_inference_rows_ready=(
                 missing_materialization["work_events"] == 0
                 and stale_work_event_profiles == 0
@@ -2678,6 +2700,9 @@ class ArchiveStore:
             phase_inference_rows_ready=(
                 missing_materialization["phases"] == 0 and stale_phase_profiles == 0 and orphan_phases == 0
             ),
+            run_rows_ready=missing_materialization["runs"] == 0,
+            observed_event_rows_ready=missing_materialization["observed_events"] == 0,
+            context_snapshot_rows_ready=missing_materialization["context_snapshots"] == 0,
             threads_ready=missing_materialization["thread"] == 0 and thread_rows == root_threads,
             tag_rollups_ready=tag_rows > 0 or total_sessions == 0,
         )
@@ -6930,7 +6955,6 @@ def _coverage_provider_breakdown(
 
 
 def _archive_missing_materialization_counts(conn: sqlite3.Connection) -> dict[str, int]:
-    insight_types = ("session_profile", "work_events", "phases", "latency", "thread")
     return {
         insight_type: _count_scalar(
             conn,
@@ -6945,7 +6969,7 @@ def _archive_missing_materialization_counts(conn: sqlite3.Connection) -> dict[st
             """,
             (insight_type,),
         )
-        for insight_type in insight_types
+        for insight_type in SESSION_INSIGHT_MATERIALIZATION_TYPES
     }
 
 

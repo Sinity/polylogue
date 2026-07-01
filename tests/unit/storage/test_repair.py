@@ -13,6 +13,7 @@ from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.storage import repair as repair_mod
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.fts.dangling_repair import DanglingFtsRepairOutcome
+from polylogue.storage.insights.session.repair_assessment import assess_session_insight_repairs
 from polylogue.storage.insights.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -259,6 +260,9 @@ def _ready_session_insight_status() -> SessionInsightStatusSnapshot:
         work_event_inference_rows_ready=True,
         work_event_inference_fts_ready=True,
         phase_inference_rows_ready=True,
+        run_rows_ready=True,
+        observed_event_rows_ready=True,
+        context_snapshot_rows_ready=True,
         threads_ready=True,
         threads_fts_ready=True,
         tag_rollups_ready=True,
@@ -419,6 +423,9 @@ def test_repair_session_insights_uses_candidate_session_ids(monkeypatch: pytest.
             ("work_events",),
             ("phases",),
             ("thread",),
+            ("runs",),
+            ("observed_events",),
+            ("context_snapshots",),
         ),
     )
 
@@ -468,6 +475,29 @@ def test_repair_session_insights_uses_candidate_session_ids(monkeypatch: pytest.
     assert result.success is True
     assert result.repaired_count == 1
     assert calls == [("missing",)]
+
+
+def test_repair_assessment_counts_missing_run_projection_materialization() -> None:
+    status = SessionInsightStatusSnapshot(
+        total_sessions=1,
+        profile_rows_ready=True,
+        latency_profile_rows_ready=True,
+        work_event_inference_rows_ready=True,
+        work_event_inference_fts_ready=True,
+        phase_inference_rows_ready=True,
+        run_rows_ready=False,
+        observed_event_rows_ready=True,
+        context_snapshot_rows_ready=False,
+        threads_ready=True,
+        threads_fts_ready=True,
+        tag_rollups_ready=True,
+        missing_run_materialization_count=1,
+        missing_context_snapshot_materialization_count=1,
+    )
+
+    assessment = assess_session_insight_repairs(status)
+
+    assert assessment.row_debt == 2
 
 
 def test_repair_session_insights_uses_stale_profile_candidates(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

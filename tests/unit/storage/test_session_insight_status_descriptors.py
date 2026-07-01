@@ -273,6 +273,10 @@ def test_session_insight_status_requires_latency_rows_for_ready_profiles() -> No
                 materializer_version INTEGER NOT NULL,
                 source_sort_key REAL
             );
+            CREATE TABLE insight_materialization (
+                insight_type TEXT NOT NULL,
+                session_id TEXT NOT NULL
+            );
 
             INSERT INTO sessions (session_id, parent_session_id, sort_key_ms, updated_at_ms)
             VALUES ('ready', NULL, 1000, 1777636800000);
@@ -306,6 +310,15 @@ def test_session_insight_status_requires_latency_rows_for_ready_profiles() -> No
             VALUES
                 ('ready', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 1.0),
                 ('stale-latency', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 2.5);
+
+            INSERT INTO insight_materialization (insight_type, session_id)
+            VALUES
+                ('session_profile', 'ready'),
+                ('session_profile', 'missing-latency'),
+                ('session_profile', 'stale-latency'),
+                ('latency', 'ready'),
+                ('latency', 'missing-latency'),
+                ('latency', 'stale-latency');
             """
         )
 
@@ -316,6 +329,51 @@ def test_session_insight_status_requires_latency_rows_for_ready_profiles() -> No
     assert status.latency_profile_row_count == 2
     assert status.missing_latency_profile_row_count == 1
     assert status.stale_latency_profile_row_count == 1
+
+
+def test_status_tracks_run_projection_materialization_ledger() -> None:
+    with sqlite3.connect(":memory:") as conn:
+        conn.executescript(
+            """
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                parent_session_id TEXT,
+                sort_key_ms INTEGER,
+                updated_at_ms INTEGER
+            );
+            CREATE TABLE session_runs (session_id TEXT NOT NULL);
+            CREATE TABLE session_observed_events (session_id TEXT NOT NULL);
+            CREATE TABLE session_context_snapshots (session_id TEXT NOT NULL);
+            CREATE TABLE insight_materialization (
+                insight_type TEXT NOT NULL,
+                session_id TEXT NOT NULL
+            );
+
+            INSERT INTO sessions (session_id, parent_session_id, sort_key_ms, updated_at_ms)
+            VALUES ('ready', NULL, 1000, 1777636800000);
+            INSERT INTO session_runs (session_id) VALUES ('ready');
+            INSERT INTO session_observed_events (session_id) VALUES ('ready');
+            INSERT INTO session_context_snapshots (session_id) VALUES ('ready');
+            INSERT INTO insight_materialization (insight_type, session_id)
+            VALUES
+                ('runs', 'ready'),
+                ('observed_events', 'ready'),
+                ('context_snapshots', 'ready');
+            """
+        )
+
+        ready = session_insight_status_sync(conn)
+        conn.execute("DELETE FROM insight_materialization WHERE insight_type = 'runs'")
+        stale = session_insight_status_sync(conn)
+
+    assert ready.run_count == 1
+    assert ready.observed_event_count == 1
+    assert ready.context_snapshot_count == 1
+    assert ready.run_rows_ready is True
+    assert ready.observed_event_rows_ready is True
+    assert ready.context_snapshot_rows_ready is True
+    assert stale.missing_run_materialization_count == 1
+    assert stale.run_rows_ready is False
 
 
 async def test_status_sync_and_async_match_when_product_tables_are_absent(tmp_path: Path) -> None:

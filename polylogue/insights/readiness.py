@@ -115,6 +115,7 @@ class InsightReadinessSpec:
     row_count_attr: str
     expected_count_attr: str | None = None
     missing_count_attr: str | None = None
+    missing_count_attrs: tuple[str, ...] = ()
     stale_count_attr: str | None = None
     orphan_count_attr: str | None = None
     ready_flags: tuple[str, ...] = ()
@@ -136,6 +137,7 @@ _SPECS: tuple[InsightReadinessSpec, ...] = (
         row_count_attr="profile_row_count",
         expected_count_attr="total_sessions",
         missing_count_attr="missing_profile_row_count",
+        missing_count_attrs=("missing_session_profile_materialization_count",),
         stale_count_attr="stale_profile_row_count",
         orphan_count_attr="orphan_profile_row_count",
         ready_flags=("profile_rows_ready",),
@@ -147,6 +149,7 @@ _SPECS: tuple[InsightReadinessSpec, ...] = (
         table_name="session_work_events",
         row_count_attr="work_event_inference_count",
         expected_count_attr="expected_work_event_inference_count",
+        missing_count_attr="missing_work_event_materialization_count",
         stale_count_attr="stale_work_event_inference_count",
         orphan_count_attr="orphan_work_event_inference_count",
         ready_flags=("work_event_inference_rows_ready",),
@@ -166,11 +169,39 @@ _SPECS: tuple[InsightReadinessSpec, ...] = (
         artifacts=("session_phases",),
     ),
     InsightReadinessSpec(
+        insight_name="session_runs",
+        display_name="Session Runs",
+        table_name="session_runs",
+        row_count_attr="run_count",
+        missing_count_attr="missing_run_materialization_count",
+        ready_flags=("run_rows_ready",),
+        artifacts=("session_runs",),
+    ),
+    InsightReadinessSpec(
+        insight_name="session_observed_events",
+        display_name="Observed Events",
+        table_name="session_observed_events",
+        row_count_attr="observed_event_count",
+        missing_count_attr="missing_observed_event_materialization_count",
+        ready_flags=("observed_event_rows_ready",),
+        artifacts=("session_observed_events",),
+    ),
+    InsightReadinessSpec(
+        insight_name="session_context_snapshots",
+        display_name="Context Snapshots",
+        table_name="session_context_snapshots",
+        row_count_attr="context_snapshot_count",
+        missing_count_attr="missing_context_snapshot_materialization_count",
+        ready_flags=("context_snapshot_rows_ready",),
+        artifacts=("session_context_snapshots",),
+    ),
+    InsightReadinessSpec(
         insight_name="threads",
         display_name="Work Threads",
         table_name="threads",
         row_count_attr="thread_count",
         expected_count_attr="root_threads",
+        missing_count_attr="missing_thread_materialization_count",
         stale_count_attr="stale_thread_count",
         orphan_count_attr="orphan_thread_count",
         ready_flags=("threads_ready",),
@@ -203,6 +234,10 @@ _ALIASES = {
     "profiles": "session_profiles",
     "work-events": "session_work_events",
     "phases": "session_phases",
+    "runs": "session_runs",
+    "run-projection": "session_runs",
+    "observed-events": "session_observed_events",
+    "context-snapshots": "session_context_snapshots",
     "threads": "threads",
     "tags": "session_tag_rollups",
     "coverage": "archive_coverage",
@@ -227,6 +262,10 @@ def _count(status: SessionInsightStatusSnapshot, attr: str | None) -> int:
     if attr is None:
         return 0
     return int(getattr(status, attr))
+
+
+def _missing_count(status: SessionInsightStatusSnapshot, spec: InsightReadinessSpec) -> int:
+    return _count(status, spec.missing_count_attr) + sum(_count(status, attr) for attr in spec.missing_count_attrs)
 
 
 def _artifact_ready(status: SessionInsightStatusSnapshot, artifact_name: str) -> bool | None:
@@ -466,7 +505,7 @@ async def _entry(
     table_present = bool(spec.table_name and await _table_exists(conn, spec.table_name))
     row_count = _count(status, spec.row_count_attr)
     expected_row_count = _count(status, spec.expected_count_attr) if spec.expected_count_attr is not None else None
-    missing_count = _count(status, spec.missing_count_attr)
+    missing_count = _missing_count(status, spec)
     stale_count = _count(status, spec.stale_count_attr)
     orphan_count = _count(status, spec.orphan_count_attr)
     ready_flags = {flag: bool(getattr(status, flag)) for flag in spec.ready_flags}

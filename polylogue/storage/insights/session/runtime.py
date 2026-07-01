@@ -27,6 +27,17 @@ SessionInsightReadyFlag: TypeAlias = Literal[
     "tag_rollups_ready",
 ]
 
+SESSION_INSIGHT_MATERIALIZATION_TYPES: tuple[str, ...] = (
+    "session_profile",
+    "latency",
+    "work_events",
+    "phases",
+    "thread",
+    "runs",
+    "observed_events",
+    "context_snapshots",
+)
+
 
 class SessionInsightRefreshChunkPayload(TypedDict):
     session_count: int
@@ -98,23 +109,34 @@ class SessionInsightStatusSnapshot:
     work_event_inference_fts_count: int = 0
     work_event_inference_fts_duplicate_count: int = 0
     phase_inference_count: int = 0
+    run_count: int = 0
+    observed_event_count: int = 0
+    context_snapshot_count: int = 0
     thread_count: int = 0
     thread_fts_count: int = 0
     thread_fts_duplicate_count: int = 0
     tag_rollup_count: int = 0
     day_summary_count: int = 0
     missing_profile_row_count: int = 0
+    missing_session_profile_materialization_count: int = 0
     stale_profile_row_count: int = 0
     orphan_profile_row_count: int = 0
     missing_latency_profile_row_count: int = 0
+    missing_latency_materialization_count: int = 0
     stale_latency_profile_row_count: int = 0
     orphan_latency_profile_row_count: int = 0
+    missing_work_event_materialization_count: int = 0
     expected_work_event_inference_count: int = 0
     stale_work_event_inference_count: int = 0
     orphan_work_event_inference_count: int = 0
+    missing_phase_materialization_count: int = 0
     expected_phase_inference_count: int = 0
     stale_phase_inference_count: int = 0
     orphan_phase_inference_count: int = 0
+    missing_run_materialization_count: int = 0
+    missing_observed_event_materialization_count: int = 0
+    missing_context_snapshot_materialization_count: int = 0
+    missing_thread_materialization_count: int = 0
     stale_thread_count: int = 0
     orphan_thread_count: int = 0
     expected_tag_rollup_count: int = 0
@@ -138,6 +160,9 @@ class SessionInsightStatusSnapshot:
     work_event_inference_rows_ready: bool = False
     work_event_inference_fts_ready: bool = False
     phase_inference_rows_ready: bool = False
+    run_rows_ready: bool = False
+    observed_event_rows_ready: bool = False
+    context_snapshot_rows_ready: bool = False
     threads_ready: bool = False
     threads_fts_ready: bool = False
     tag_rollups_ready: bool = False

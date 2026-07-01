@@ -26,6 +26,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.insights.session.repair_assessment import (
     assess_session_insight_repairs,
 )
+from polylogue.storage.insights.session.runtime import SESSION_INSIGHT_MATERIALIZATION_TYPES
 from polylogue.storage.message_type_backfill import (
     BackfillResult,
     count_messages_by_type_sync,
@@ -35,13 +36,6 @@ from polylogue.storage.message_type_backfill import (
 logger = get_logger(__name__)
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 _PROBE_ONLY_EXACT_MESSAGE_ROW_LIMIT = 100_000
-_SESSION_INSIGHT_MATERIALIZATION_TYPES = (
-    "session_profile",
-    "latency",
-    "work_events",
-    "phases",
-    "thread",
-)
 
 
 def _raw_materialization_candidate_ids(config: Config) -> tuple[list[str], int]:
@@ -219,7 +213,7 @@ def _targeted_session_insight_rebuild_ids(
               AND m.session_id = s.session_id
         )
         """
-        for _insight_type in _SESSION_INSIGHT_MATERIALIZATION_TYPES
+        for _insight_type in SESSION_INSIGHT_MATERIALIZATION_TYPES
     )
     materializer_version = _session_insight_materializer_version()
     rows = conn.execute(
@@ -270,7 +264,7 @@ def _targeted_session_insight_rebuild_ids(
         (
             materializer_version,
             materializer_version,
-            *_SESSION_INSIGHT_MATERIALIZATION_TYPES,
+            *SESSION_INSIGHT_MATERIALIZATION_TYPES,
         ),
     ).fetchall()
     return tuple(str(row["session_id"] if isinstance(row, sqlite3.Row) else row[0]) for row in rows)
