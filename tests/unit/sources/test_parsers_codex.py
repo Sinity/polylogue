@@ -256,6 +256,28 @@ class TestMessageParsing:
         assert len(result.messages) == 1
         assert result.messages[0].role == "assistant"
 
+    def test_function_call_output_captures_structured_exit_code(self) -> None:
+        payload = [
+            {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2026-01-01T00:00:00Z"}},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "call-1",
+                    "output": '{"output": "failed", "metadata": {"exit_code": 2}}',
+                },
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        assert len(result.messages) == 1
+        block = result.messages[0].blocks[0]
+        assert block.type == "tool_result"
+        assert block.tool_id == "call-1"
+        assert block.is_error is True
+        assert block.exit_code == 2
+
     def test_state_records_skipped(self) -> None:
         payload = [
             {"record_type": "state"},
