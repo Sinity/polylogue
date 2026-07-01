@@ -67,6 +67,23 @@ Current next grouping bias:
   ready PR, inspect substantive automated feedback when it appears, and keep
   classifying/replaying the next group instead of idling.
 
+Active fat replay branch:
+
+- Branch: `feature/fix/archive-evidence-readiness`
+- Worktree: `/realm/tmp/worktrees/polylogue-integration-fat/archive-evidence-readiness`
+- Current replay commits:
+  - `3e61b6b48 fix(archive): classify runtime transcript evidence`
+  - `421659f4d fix(readiness): expose projection materialization debt`
+  - `c5a9652fd fix(archive): report evidence and convergence honestly`
+- Source group: 59 selected workbench commits, excluding WIP parallel parse and
+  recovery-vocabulary cleanup. The group covers archive evidence honesty,
+  parser/runtime provenance, status/readiness/debt reporting, raw
+  materialization classification, maintenance replay scope, and dev-loop
+  archive diagnostics.
+- Current proof command:
+  `devtools test tests/unit/operations/test_archive_debt.py tests/unit/devtools/test_daemon_workload_probe.py tests/unit/sources/test_parsers_codex.py tests/unit/cli/commands/test_status.py tests/unit/devtools/test_dev_loop.py -q`
+- Proof result: `192 passed in 64.42s` (`ok` in 73.6s wall time).
+
 ## Required Command
 
 Use the integration report before publication decisions:
