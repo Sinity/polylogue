@@ -292,6 +292,8 @@ def test_daemon_workload_probe_reports_ops_tier_from_db_anchor(tmp_path: Path) -
     assert payload["convergence_stage_timings"]["per_stage_s"]["full.index.full_replace.fts_insert"]["mean"] == 4.25
     assert payload["daemon_resource_signal"] == {"available": True, "rss_current_mb": 42.0}
     assert payload["convergence_debt"]["failed_count"] == 1
+    assert payload["convergence_debt"]["deferred_count"] == 0
+    assert payload["convergence_debt"]["unresolved_count"] == 1
     assert payload["cursor_lag_baselines"]["total_sample_count"] == 1
     assert payload["archive_tiers"]["present"] is True
     assert payload["archive_tiers"]["tiers"]["ops"]["exists"] is True
@@ -779,7 +781,51 @@ def test_probe_reads_ops_convergence_debt(tmp_path: Path) -> None:
 
     assert payload["convergence_debt"] == {
         "failed_count": 2,
-        "by_stage": [{"stage": "session_profile", "failed_count": 2}],
+        "deferred_count": 0,
+        "unresolved_count": 2,
+        "by_stage": [
+            {
+                "stage": "session_profile",
+                "failed_count": 2,
+                "deferred_count": 0,
+                "unresolved_count": 2,
+            }
+        ],
+    }
+
+
+def test_probe_does_not_count_ops_deferred_convergence_debt_as_failed(tmp_path: Path) -> None:
+    db = tmp_path / "archive.sqlite"
+    _seed_minimal_archive(db, tmp_path / "session.jsonl")
+    ops_db = db.with_name("ops.db")
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    with sqlite3.connect(ops_db) as conn:
+        add_convergence_debt(
+            conn,
+            stage="insights",
+            target_type="session_id",
+            target_id="codex-session:hot",
+            status="deferred",
+            attempts=1,
+            last_error="insights deferred until source quiet",
+            next_retry_at="2026-06-30T15:52:22+00:00",
+            created_at_ms=1_770_000_000_000,
+        )
+
+    payload = probe(db)
+
+    assert payload["convergence_debt"] == {
+        "failed_count": 0,
+        "deferred_count": 1,
+        "unresolved_count": 1,
+        "by_stage": [
+            {
+                "stage": "insights",
+                "failed_count": 0,
+                "deferred_count": 1,
+                "unresolved_count": 1,
+            }
+        ],
     }
 
 

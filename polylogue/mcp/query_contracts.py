@@ -24,7 +24,7 @@ MCPCountBound: TypeAlias = Annotated[int, Field(ge=0)] | None
 _QUERY_PARAM_ALIASES = {
     "has_tool_use": "filter_has_tool_use",
     "has_thinking": "filter_has_thinking",
-    "has_paste": "filter_has_paste",
+    "has_paste_evidence": "filter_has_paste",
 }
 
 
@@ -95,7 +95,7 @@ class MCPSessionQueryRequest:
     latest: bool = False
     has_tool_use: bool = False
     has_thinking: bool = False
-    has_paste: bool = False
+    has_paste_evidence: bool = False
     typed_only: bool = False
     min_messages: MCPCountBound = None
     max_messages: MCPCountBound = None
@@ -142,7 +142,7 @@ class MCPSessionQueryRequest:
             limit=clamp_limit(self.limit),
             has_tool_use=self.has_tool_use,
             has_thinking=self.has_thinking,
-            has_paste=self.has_paste,
+            has_paste_evidence=self.has_paste_evidence,
             typed_only=self.typed_only,
             min_messages=self.min_messages,
             max_messages=self.max_messages,

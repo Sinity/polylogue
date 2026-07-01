@@ -177,7 +177,7 @@ text terms.
 | `cwd` | Working-directory prefix | `cwd:/realm/project` |
 | `tool` | Tool name used in the session | `tool:bash` |
 | `action` | Semantic action category | `action:file_edit` |
-| `has` | Content presence (`paste`, `tools`, `thinking`, or stored type) | `has:paste` |
+| `has` | Content/evidence presence (`paste` evidence, `tools`, `thinking`, or stored type) | `has:paste` |
 | `id` | Session id or prefix | `id:codex-session:abc` |
 | `session` | Exact session ref alias for `id` | `session:codex-session:abc` |
 | `title` | Session title substring | `title:refactor` |
@@ -497,7 +497,7 @@ can resolve deliberately when the operator wants to inspect source evidence.
 |------|-------------|
 | `--has-tool-use` | Only sessions with tool calls |
 | `--has-thinking` | Only sessions with reasoning/thinking blocks |
-| `--has-paste` | Only sessions with pasted content |
+| `--has-paste` | Only sessions with paste evidence |
 | `--typed-only` | Only typed (non-pasted) content |
 | `--has`, `--has-type` | Filter by content type: `thinking`, `tools`, `summary`, `attachments` |
 

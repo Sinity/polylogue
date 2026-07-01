@@ -40,7 +40,10 @@ def run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVie
 
     assert invocation.session_id is not None
     options = cast(ReadViewMessageOptions, invocation.options or ReadViewMessageOptions())
-    limit = options.limit if options.limit is not None else 50
+    projection = invocation.projection_spec.projection if invocation.projection_spec is not None else None
+    limit = projection.body_limit if projection is not None and projection.body_limit is not None else options.limit
+    limit = limit if limit is not None else 50
+    offset = projection.body_offset if projection is not None and projection.body_offset is not None else options.offset
 
     if invocation.destination in ("file", "clipboard"):
         buf = io.StringIO()
@@ -56,7 +59,7 @@ def run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVie
                 request,
                 session_id=invocation.session_id,
                 limit=limit,
-                offset=options.offset,
+                offset=offset,
                 output_format=invocation.output_format,
             )
         finally:
@@ -69,7 +72,7 @@ def run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVie
         request,
         session_id=invocation.session_id,
         limit=limit,
-        offset=options.offset,
+        offset=offset,
         output_format=invocation.output_format,
     )
 
@@ -81,7 +84,10 @@ def run_read_raw(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvo
 
     assert invocation.session_id is not None
     options = cast(ReadViewMessageOptions, invocation.options or ReadViewMessageOptions())
-    limit = options.limit if options.limit is not None else 50
+    projection = invocation.projection_spec.projection if invocation.projection_spec is not None else None
+    limit = projection.body_limit if projection is not None and projection.body_limit is not None else options.limit
+    limit = limit if limit is not None else 50
+    offset = projection.body_offset if projection is not None and projection.body_offset is not None else options.offset
     output_format = invocation.output_format or "json"
 
     if invocation.destination in ("file", "clipboard", "stdout"):
@@ -98,7 +104,7 @@ def run_read_raw(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvo
                 request,
                 session_id=invocation.session_id,
                 limit=limit,
-                offset=options.offset,
+                offset=offset,
                 output_format=output_format,
             )
         finally:
@@ -111,7 +117,7 @@ def run_read_raw(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvo
         request,
         session_id=invocation.session_id,
         limit=limit,
-        offset=options.offset,
+        offset=offset,
         output_format=output_format,
     )
 

@@ -19,6 +19,7 @@ from pydantic import Field, model_validator
 from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.insights.archive_models import ArchiveInsightModel
 from polylogue.surfaces.chronicle import ChronicleProjectionPayload, render_chronicle_markdown
+from polylogue.surfaces.projection_spec import QueryProjectionSpec
 from polylogue.surfaces.temporal_evidence import TemporalEvidenceWindow
 
 ContextPurpose = Literal["continue", "review", "handoff", "debug", "export"]
@@ -103,6 +104,7 @@ class ContextImage(ArchiveInsightModel):
     """Compiled, storage-free context payload over archive refs and views."""
 
     spec: ContextSpec
+    projection_spec: QueryProjectionSpec | None = None
     selection_strategy: str = "context_spec_v1"
     redaction_policy: str = "default"
     segments: tuple[ContextSegment, ...]

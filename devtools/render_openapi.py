@@ -494,7 +494,7 @@ def _build_openapi_document() -> dict[str, Any]:
                             "schema": {"type": "boolean", "default": False},
                         },
                         {
-                            "name": "has_paste",
+                            "name": "has_paste_evidence",
                             "in": "query",
                             "description": "Restrict terminal rows to sessions with paste evidence.",
                             "required": False,

@@ -10,7 +10,7 @@ The executable language is the Lark-backed query grammar in this module. It
 currently accepts the compact session query form:
 
     repo:polylogue since:7d "json envelope"
-    origin:(codex-session|claude-code-session) has:paste
+    origin:(codex-session|claude-code-session) has:paste  # paste evidence
     path:polylogue/cli tool:bash action:file_edit
     near:"semantic search prompt"
     -id:bad tag:review

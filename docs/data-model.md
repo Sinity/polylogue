@@ -85,7 +85,7 @@ protocol envelopes through `role=user`. Use `material_origin` for authoredness
 accounting and prose projection.
 | `parent_id` | `str?` | Parent message, for branching |
 | `branch_index` | `int` | Branch position among sibling variants |
-| `has_tool_use` / `has_thinking` / `has_paste` | `bool` | Precomputed content flags projected from storage |
+| `has_tool_use` / `has_thinking` / `has_paste_evidence` | `bool` | Precomputed content/evidence flags projected from storage |
 | `input_tokens` / `output_tokens` | `int` | Token counts, when reported |
 | `cache_read_tokens` / `cache_write_tokens` | `int` | Cache token counts, when reported |
 | `duration_ms` | `int` | Reported generation duration |

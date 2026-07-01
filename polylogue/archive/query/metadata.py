@@ -108,7 +108,7 @@ EXPRESSION_FIELD_REGISTRY: dict[str, dict[str, str]] = {
         "example": "action:file_edit",
     },
     "has": {
-        "description": "Filter by session content presence (paste, tools, thinking)",
+        "description": "Filter by session content/evidence presence (paste evidence, tools, thinking)",
         "spec_field": "filter_has_paste/filter_has_tool_use/filter_has_thinking/has_types",
         "negatable": "no",
         "example": "has:paste",

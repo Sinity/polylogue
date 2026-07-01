@@ -224,7 +224,7 @@ paths:
         schema:
           type: boolean
           default: false
-      - name: has_paste
+      - name: has_paste_evidence
         in: query
         description: Restrict terminal rows to sessions with paste evidence.
         required: false
@@ -2235,9 +2235,9 @@ components:
           default: false
           title: Has Thinking
           type: boolean
-        has_paste:
+        has_paste_evidence:
           default: false
-          title: Has Paste
+          title: Has Paste Evidence
           type: boolean
       title: SessionFlagsPayload
       type: object

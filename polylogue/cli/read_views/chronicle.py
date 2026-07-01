@@ -100,7 +100,13 @@ def run_read_chronicle(env: AppEnv, request: RootModeRequest, invocation: ReadVi
     """Run the chronicle read view and deliver markdown/json output."""
 
     options = invocation.options if isinstance(invocation.options, ReadViewChronicleOptions) else None
-    edge_limit = options.edge_limit if options is not None else DEFAULT_CHRONICLE_EDGE_LIMIT
+    projection = invocation.projection_spec.projection if invocation.projection_spec is not None else None
+    if projection is not None and projection.edge_limit is not None:
+        edge_limit = projection.edge_limit
+    elif options is not None:
+        edge_limit = options.edge_limit
+    else:
+        edge_limit = DEFAULT_CHRONICLE_EDGE_LIMIT
     payload = build_read_chronicle_payload(env.config, request, edge_limit=edge_limit)
     fmt = invocation.output_format or "markdown"
     if fmt == "json":

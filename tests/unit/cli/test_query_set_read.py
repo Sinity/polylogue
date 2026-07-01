@@ -13,6 +13,7 @@ from polylogue.archive.models import Session
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.cli import query_set_read, query_verbs
 from polylogue.cli.click_app import cli
+from polylogue.cli.read_view_handlers import ReadViewInvocation
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from tests.infra.builders import make_conv, make_msg
@@ -105,6 +106,226 @@ def test_read_all_registered_and_dispatches_via_root_cli() -> None:
     assert isinstance(captured["request"], RootModeRequest)
     assert captured["request"].query_params()["origin"] == "claude-code-session"
     assert convs
+
+
+def test_read_spec_emits_composed_projection_contract() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--plain",
+            "--origin",
+            "claude-code-session",
+            "repo:polylogue",
+            "read",
+            "--view",
+            "temporal,chronicle",
+            "--format",
+            "json",
+            "--to",
+            "stdout",
+            "--max-tokens",
+            "2000",
+            "--limit",
+            "8",
+            "--spec",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["selection"]["refs"] == []
+    assert payload["selection"]["query"] == "repo:polylogue"
+    assert payload["selection"]["origin"] == "claude-code-session"
+    assert payload["selection"]["limit"] == 8
+    assert payload["projection"]["families"] == ["temporal", "sessions", "chronicle", "messages"]
+    assert payload["projection"]["body_policy"] == "authored-dialogue"
+    assert payload["projection"]["max_tokens"] == 2000
+    assert payload["render"] == {
+        "format": "json",
+        "destination": "stdout",
+        "layout": "context-image",
+    }
+
+
+def test_read_spec_moves_standalone_chronicle_limit_to_projection_policy() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--plain",
+            "repo:polylogue",
+            "read",
+            "--view",
+            "chronicle",
+            "--format",
+            "json",
+            "--limit",
+            "3",
+            "--spec",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["selection"]["query"] == "repo:polylogue"
+    assert "limit" not in payload["selection"]
+    assert payload["projection"]["edge_limit"] == 3
+    assert payload["projection"]["body_policy"] == "authored-dialogue"
+
+
+def test_read_spec_moves_standalone_message_window_to_projection_policy() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--plain",
+            "session:abc",
+            "read",
+            "--view",
+            "messages",
+            "--format",
+            "json",
+            "--limit",
+            "7",
+            "--offset",
+            "2",
+            "--spec",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["selection"]["query"] == "session:abc"
+    assert "limit" not in payload["selection"]
+    assert payload["projection"]["body_limit"] == 7
+    assert payload["projection"]["body_offset"] == 2
+    assert payload["projection"]["families"] == ["messages", "blocks"]
+
+
+def test_read_spec_moves_standalone_neighbor_options_to_projection_policy() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--plain",
+            "session:abc",
+            "read",
+            "--view",
+            "neighbors",
+            "--format",
+            "json",
+            "--limit",
+            "4",
+            "--window-hours",
+            "12",
+            "--spec",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["selection"]["query"] == "session:abc"
+    assert "limit" not in payload["selection"]
+    assert payload["projection"]["neighbor_limit"] == 4
+    assert payload["projection"]["neighbor_window_hours"] == 12
+    assert payload["projection"]["families"] == ["neighbors", "sessions"]
+
+
+def test_read_spec_records_context_image_selector_fields() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--plain",
+            "read",
+            "--view",
+            "context-image",
+            "--format",
+            "json",
+            "--project-path",
+            "/workspace/polylogue",
+            "--project-repo",
+            "github.com/Sinity/polylogue",
+            "--query",
+            "route contracts",
+            "--context-origin",
+            "claude-code-session",
+            "--since",
+            "2026-06-01",
+            "--until",
+            "2026-06-30",
+            "--max-sessions",
+            "3",
+            "--spec",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["selection"] == {
+        "refs": [],
+        "query": "route contracts",
+        "origin": "claude-code-session",
+        "since": "2026-06-01",
+        "until": "2026-06-30",
+        "project_path": "/workspace/polylogue",
+        "project_repo": "github.com/Sinity/polylogue",
+        "limit": 3,
+    }
+    assert payload["projection"]["families"] == ["context", "messages", "assertions"]
+    assert payload["render"]["layout"] == "context-image"
+
+
+def test_read_handler_invocation_carries_projection_spec() -> None:
+    captured: dict[str, object] = {}
+
+    def _capture(env: object, request: RootModeRequest, invocation: object) -> None:
+        captured["env"] = env
+        captured["request"] = request
+        captured["invocation"] = invocation
+
+    with patch("polylogue.cli.query_verbs.run_read_view", side_effect=_capture):
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "--plain",
+                "--origin",
+                "claude-code-session",
+                "repo:polylogue",
+                "read",
+                "--view",
+                "temporal",
+                "--format",
+                "json",
+                "--to",
+                "stdout",
+                "--limit",
+                "8",
+            ],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0, result.output
+    invocation = cast(ReadViewInvocation, captured["invocation"])
+    spec = invocation.projection_spec
+    assert invocation.view == "temporal"
+    assert invocation.output_format == "json"
+    assert spec is not None
+    assert spec.selection.query == "repo:polylogue"
+    assert spec.selection.origin == "claude-code-session"
+    assert spec.selection.limit == 8
+    assert spec.projection.families == ("temporal", "sessions")
+    assert spec.projection.body_policy.value == "full"
+    assert spec.render.format == "json"
+    assert spec.render.destination == "stdout"
+    assert spec.render.layout == "standard"
 
 
 def test_read_verb_in_verb_names() -> None:

@@ -237,7 +237,7 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         "--has-paste",
         "filter_has_paste",
         is_flag=True,
-        help="Only sessions with pasted content (SQL pushdown)",
+        help="Only sessions with paste evidence (SQL pushdown)",
     ),
     click.option(
         "--typed-only",

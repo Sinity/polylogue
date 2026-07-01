@@ -20,6 +20,7 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec
 from polylogue.surfaces.payloads import PublicRefResolutionPayload
+from polylogue.surfaces.projection_spec import projection_from_views
 
 
 def _context_pair(
@@ -426,14 +427,83 @@ def test_read_verb_context_image_invokes_pack_view() -> None:
     assert kwargs["query"] == "cost"
     assert kwargs["max_sessions"] == 3
     deliver.assert_called_once()
+    delivered = deliver.call_args.args[1]
+    assert "- Selection query: cost" in delivered
+    assert "- Selection limit: 3" in delivered
+    assert "- Projection families: context, messages, assertions" in delivered
+    assert "- Body policy: full" in delivered
+    assert "- Render: markdown to terminal" in delivered
+    assert "- Render layout: context-image" in delivered
+
+
+def test_read_verb_context_image_projection_spec_records_resolved_refs() -> None:
+    """Multi-view context images should expose resolved archive refs in the projection spec."""
+    _, child = _context_pair(query_terms=("repo:polylogue",))
+    child.obj.config = SimpleNamespace()
+    child.obj.polylogue = SimpleNamespace(compile_context=MagicMock(name="compile_context"))
+    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+
+    image = ContextImage(
+        spec=ContextSpec(seed_refs=("session:codex-session:abc123",), read_views=("temporal", "chronicle")),
+        segments=(),
+    )
+
+    with (
+        patch(
+            "polylogue.cli.query_verbs._resolve_query_action_session_ids",
+            return_value=["codex-session:abc123"],
+        ) as resolve_session_ids,
+        patch("polylogue.cli.query_verbs.run_coroutine_sync", return_value=image),
+        patch("polylogue.cli.read_views.base.deliver_content") as deliver,
+    ):
+        wrapped(child, **_read_verb_kwargs(view="temporal,chronicle", output_format="json", limit=2))
+
+    assert resolve_session_ids.call_args.kwargs["limit"] == 2
+    payload = json.loads(deliver.call_args.args[1])
+    assert payload["projection_spec"]["selection"]["query"] == "repo:polylogue"
+    assert payload["projection_spec"]["selection"]["limit"] == 2
+    assert payload["projection_spec"]["selection"]["refs"] == ["session:codex-session:abc123"]
+    assert payload["projection_spec"]["projection"]["families"] == [
+        "temporal",
+        "sessions",
+        "chronicle",
+        "messages",
+    ]
 
 
 def test_context_image_markdown_renderer_adds_document_structure() -> None:
     """Context-image Markdown should be readable as one composed packet."""
     from polylogue.context.compiler import ContextImage, ContextOmission, ContextSegment, ContextSpec
 
+    projection_spec = projection_from_views(
+        ("temporal", "chronicle"),
+        format="json",
+        destination="stdout",
+        max_tokens=2000,
+        query="repo:polylogue",
+        origin="claude-code-session",
+        since="2026-06-01",
+        until="2026-06-30",
+        project_path="/workspace/polylogue",
+        project_repo="github.com/Sinity/polylogue",
+        limit=2,
+        edge_limit=3,
+        body_limit=7,
+        body_offset=2,
+        neighbor_limit=4,
+        neighbor_window_hours=12,
+    )
+    projection_spec = projection_spec.model_copy(
+        update={
+            "selection": projection_spec.selection.model_copy(
+                update={"refs": ("session:codex-session:abc123", "session:codex-session:def456")}
+            )
+        }
+    )
     image = ContextImage(
         spec=ContextSpec(purpose="handoff", seed_refs=("session:abc",), read_views=("temporal", "chronicle")),
+        projection_spec=projection_spec,
         segments=(
             ContextSegment(
                 segment_id="read-view:abc:temporal",
@@ -460,6 +530,25 @@ def test_context_image_markdown_renderer_adds_document_structure() -> None:
     assert rendered.startswith("# Context Image\n")
     assert "- Purpose: handoff" in rendered
     assert "- Views: temporal, chronicle" in rendered
+    assert "- Selection query: repo:polylogue" in rendered
+    assert "- Selection origin: claude-code-session" in rendered
+    assert "- Selection since: 2026-06-01" in rendered
+    assert "- Selection until: 2026-06-30" in rendered
+    assert "- Selection project path: /workspace/polylogue" in rendered
+    assert "- Selection project repo: github.com/Sinity/polylogue" in rendered
+    assert "- Selection limit: 2" in rendered
+    assert "- Selection refs: session:codex-session:abc123, session:codex-session:def456" in rendered
+    assert "- Projection families: temporal, sessions, chronicle, messages" in rendered
+    assert "- Body policy: authored-dialogue" in rendered
+    assert "- Projection max tokens: 2000" in rendered
+    assert "- Projection edge limit: 3" in rendered
+    assert "- Projection body limit: 7" in rendered
+    assert "- Projection body offset: 2" in rendered
+    assert "- Projection neighbor limit: 4" in rendered
+    assert "- Projection neighbor window hours: 12" in rendered
+    assert "- Projection redact paths: true" in rendered
+    assert "- Render: json to stdout" in rendered
+    assert "- Render layout: standard" in rendered
     assert "- Segments: 1" in rendered
     assert "- Omissions: 1" in rendered
     assert "## 1. Temporal Evidence" in rendered
@@ -913,6 +1002,79 @@ def test_read_view_registry_builds_chronicle_edge_limit() -> None:
 
     assert isinstance(options, read_view_handlers.ReadViewChronicleOptions)
     assert options.edge_limit == 3
+
+
+def test_read_chronicle_uses_projection_spec_edge_limit() -> None:
+    projection_spec = projection_from_views(("chronicle",), edge_limit=3)
+
+    with (
+        patch("polylogue.cli.read_views.chronicle.build_read_chronicle_payload") as build_payload,
+        patch("polylogue.cli.read_views.chronicle.render_chronicle_markdown", return_value="chronicle\n"),
+        patch("polylogue.cli.read_views.chronicle.deliver_content") as deliver,
+    ):
+        read_view_handlers.run_read_view(
+            cast(AppEnv, SimpleNamespace(config=SimpleNamespace())),
+            RootModeRequest.from_params({}),
+            ReadViewInvocation(
+                view="chronicle",
+                session_id=None,
+                output_format="markdown",
+                destination="terminal",
+                out_path=None,
+                projection_spec=projection_spec,
+            ),
+        )
+
+    assert build_payload.call_args.kwargs["edge_limit"] == 3
+    deliver.assert_called_once()
+
+
+def test_read_messages_uses_projection_spec_body_window() -> None:
+    projection_spec = projection_from_views(("messages",), body_limit=7, body_offset=2)
+
+    with patch("polylogue.cli.messages.run_messages") as run_messages:
+        read_view_handlers.run_read_view(
+            cast(AppEnv, SimpleNamespace(config=SimpleNamespace())),
+            RootModeRequest.from_params({}),
+            ReadViewInvocation(
+                view="messages",
+                session_id="session-1",
+                output_format="json",
+                destination="terminal",
+                out_path=None,
+                projection_spec=projection_spec,
+            ),
+        )
+
+    assert run_messages.call_args.kwargs["session_id"] == "session-1"
+    assert run_messages.call_args.kwargs["limit"] == 7
+    assert run_messages.call_args.kwargs["offset"] == 2
+
+
+def test_read_neighbors_uses_projection_spec_neighbor_policy() -> None:
+    projection_spec = projection_from_views(("neighbors",), neighbor_limit=4, neighbor_window_hours=12)
+    polylogue = SimpleNamespace(neighbor_candidates=MagicMock(name="neighbor_candidates"))
+
+    with (
+        patch("polylogue.api.sync.bridge.run_coroutine_sync", return_value=[]),
+        patch("polylogue.cli.read_views.neighbors.deliver_content"),
+    ):
+        read_view_handlers.run_read_view(
+            cast(AppEnv, SimpleNamespace(polylogue=polylogue)),
+            RootModeRequest.from_params({}),
+            ReadViewInvocation(
+                view="neighbors",
+                session_id="session-1",
+                output_format="text",
+                destination="terminal",
+                out_path=None,
+                projection_spec=projection_spec,
+            ),
+        )
+
+    assert polylogue.neighbor_candidates.call_args.kwargs["session_id"] == "session-1"
+    assert polylogue.neighbor_candidates.call_args.kwargs["limit"] == 4
+    assert polylogue.neighbor_candidates.call_args.kwargs["window_hours"] == 12
 
 
 def test_explicit_read_view_options_reports_command_line_values_only() -> None:

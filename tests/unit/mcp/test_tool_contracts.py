@@ -931,7 +931,7 @@ class TestGetSessionTool:
         assert body["branch_index"] == 3
         assert body["message_type"] == "tool_result"
         assert body["material_origin"] == "agent_authored"
-        assert body["has_paste"] is True
+        assert body["has_paste_evidence"] is True
         assert body["has_tool_use"] is True
         assert body["has_thinking"] is True
         assert body["attachment_refs"] == ["att-1"]

@@ -106,7 +106,7 @@ Options:
   --has-tool-use                  Only sessions with tool use (SQL pushdown)
   --has-thinking                  Only sessions with thinking blocks (SQL
                                   pushdown)
-  --has-paste                     Only sessions with pasted content (SQL
+  --has-paste                     Only sessions with paste evidence (SQL
                                   pushdown)
   --typed-only                    Only sessions without pasted content (typed
                                   prose only)
@@ -263,6 +263,7 @@ Usage: polylogue read [OPTIONS] [REF]
       polylogue read --view context-image --project-repo github.com/Sinity/polylogue --since 2026-01-01
       polylogue read --views
       polylogue read --views --format json
+      polylogue find 'repo:polylogue' then read --view temporal,chronicle --spec
       polylogue find id:abc then read --view neighbors --window-hours 48
       polylogue --latest read --view neighbors --format json
       polylogue find id:abc then read --view correlation --since-hours 4
@@ -276,6 +277,8 @@ Projection:
                              summary]
   --views                    List executable read-view profiles, formats, and
                              options.
+  --spec                     Print the composed selection/projection/render
+                             spec as JSON.
 
 Delivery and format:
   --to [terminal|stdout|browser|clipboard|file]

@@ -1483,7 +1483,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         offset: int,
     ) -> object:
         # Walk all session summaries and emit one entry per
-        # paste-flagged message. The message-level ``has_paste`` flag
+        # paste-evidence message. The message-level storage flag
         # is the load-bearing signal — we deliberately do not pre-
         # filter on the session-level flag; direct message writes in
         # fixtures or replay paths may be visible before aggregate
@@ -1949,7 +1949,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # stable HTTP query parameters accepted by the shared query builder.
         # The split-archive fast path does not construct a SessionQuerySpec
         # directly, so it must mirror those public params here.
-        has_paste = (spec.filter_has_paste if spec else False) or self._get_bool(params, "has_paste")
+        has_paste = (spec.filter_has_paste if spec else False) or self._get_bool(params, "has_paste_evidence")
         has_tool_use = (spec.filter_has_tool_use if spec else False) or self._get_bool(params, "has_tool_use")
         has_thinking = (spec.filter_has_thinking if spec else False) or self._get_bool(params, "has_thinking")
         repo_names = tuple(dict.fromkeys((spec.repo_names if spec else ()) + _csv_values(params, "repo")))
@@ -1992,7 +1992,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "has_types": has_types,
             "has_tool_use": has_tool_use,
             "has_thinking": has_thinking,
-            "has_paste": has_paste,
+            "has_paste_evidence": has_paste,
             "tool_terms": tool_terms,
             "excluded_tool_terms": excluded_tool_terms,
             "action_terms": action_terms,
@@ -2319,7 +2319,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "word_count": msg.word_count,
                     "has_tool_use": bool(msg.has_tool_use) if hasattr(msg, "has_tool_use") else False,
                     "has_thinking": bool(msg.has_thinking) if hasattr(msg, "has_thinking") else False,
-                    "has_paste": bool(msg.has_paste) if hasattr(msg, "has_paste") else False,
+                    "has_paste_evidence": bool(msg.has_paste) if hasattr(msg, "has_paste") else False,
                     "paste_spans": envelope_paste_spans(
                         msg.text,
                         has_paste=bool(msg.has_paste) if hasattr(msg, "has_paste") else False,
@@ -2433,7 +2433,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "word_count": message.word_count,
             "has_tool_use": bool(message.has_tool_use),
             "has_thinking": bool(message.has_thinking),
-            "has_paste": has_paste,
+            "has_paste_evidence": has_paste,
             "paste_spans": envelope_paste_spans(text, has_paste=has_paste),
             "attachments": self._archive_message_attachments(session_id, message),
         }
@@ -2786,7 +2786,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 until=self._get_param(params, "until"),
                 has_tool_use=self._get_bool(params, "has_tool_use"),
                 has_thinking=self._get_bool(params, "has_thinking"),
-                has_paste=self._get_bool(params, "has_paste"),
+                has_paste=self._get_bool(params, "has_paste_evidence"),
                 typed_only=self._get_bool(params, "typed_only"),
                 min_messages=self._get_param(params, "min_messages"),
                 max_messages=self._get_param(params, "max_messages"),

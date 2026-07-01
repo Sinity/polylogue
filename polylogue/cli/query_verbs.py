@@ -41,6 +41,7 @@ from polylogue.surfaces.payloads import (
     AssertionClaimListPayload,
     serialize_surface_payload,
 )
+from polylogue.surfaces.projection_spec import QueryProjectionSpec, projection_from_views
 
 _FACET_TERMINAL_BUCKET_LIMIT = 12
 _FACET_TERMINAL_IDF_LIMIT = 12
@@ -339,8 +340,103 @@ def _emit_read_view_profiles(output_format: str | None) -> None:
     click.echo(_render_read_view_profiles_plain())
 
 
+def _read_query_text(request: RootModeRequest) -> str | None:
+    if not request.query_terms:
+        return None
+    return " ".join(str(term) for term in request.query_terms)
+
+
+def _build_read_projection_spec(
+    request: RootModeRequest,
+    *,
+    views: tuple[str, ...],
+    output_format: str | None,
+    destination: str,
+    out_path: str | None,
+    max_tokens: int | None,
+    selection_limit: int | None,
+    render_layout: str = "standard",
+    selection_query: str | None = None,
+    selection_origin: str | None = None,
+    selection_since: str | None = None,
+    selection_until: str | None = None,
+    selection_project_path: str | None = None,
+    selection_project_repo: str | None = None,
+    edge_limit: int | None = None,
+    body_limit: int | None = None,
+    body_offset: int | None = None,
+    neighbor_limit: int | None = None,
+    neighbor_window_hours: int | None = None,
+) -> QueryProjectionSpec:
+    """Build the typed selection/projection/render contract for read options."""
+
+    primary_view = views[0] if views else "summary"
+    effective_format = (
+        _effective_read_output_format(request, view=primary_view, output_format=output_format) or "markdown"
+    )
+    query_spec = request.query_spec()
+    origin = query_spec.origins[0] if len(query_spec.origins) == 1 else None
+    return projection_from_views(
+        views,
+        format=effective_format,
+        destination=destination,
+        layout=render_layout,
+        max_tokens=max_tokens,
+        out=out_path,
+        query=selection_query if selection_query is not None else _read_query_text(request),
+        origin=selection_origin if selection_origin is not None else origin,
+        since=selection_since if selection_since is not None else query_spec.since,
+        until=selection_until if selection_until is not None else query_spec.until,
+        project_path=selection_project_path,
+        project_repo=selection_project_repo,
+        limit=selection_limit,
+        edge_limit=edge_limit,
+        body_limit=body_limit,
+        body_offset=body_offset,
+        neighbor_limit=neighbor_limit,
+        neighbor_window_hours=neighbor_window_hours,
+    )
+
+
+def _read_projection_limits(
+    views: tuple[str, ...],
+    limit: int | None,
+    offset: int,
+) -> tuple[int | None, int | None, int | None, int | None, int | None]:
+    """Split read --limit between selection cardinality and projection policy."""
+
+    if len(views) == 1 and views[0] == "chronicle":
+        return None, limit, None, None, None
+    if len(views) == 1 and views[0] in {"messages", "raw"}:
+        return None, None, limit, offset if offset else None, None
+    if len(views) == 1 and views[0] == "neighbors":
+        return None, None, None, None, limit
+    return limit, None, None, None, None
+
+
+def _read_render_layout(views: tuple[str, ...]) -> str:
+    """Return the render layout family for read output."""
+
+    if len(views) > 1 or "context-image" in views:
+        return "context-image"
+    return "standard"
+
+
+def _projection_spec_with_resolved_session_refs(
+    projection_spec: QueryProjectionSpec | None,
+    session_ids: tuple[str, ...],
+) -> QueryProjectionSpec | None:
+    """Return a projection spec that records resolved archive session refs."""
+
+    if projection_spec is None or not session_ids:
+        return projection_spec
+    refs = tuple(f"session:{session_id}" for session_id in session_ids)
+    selection = projection_spec.selection.model_copy(update={"refs": refs})
+    return projection_spec.model_copy(update={"selection": selection})
+
+
 _READ_HELP_OPTION_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
-    ("Projection", frozenset({"view", "show_views"})),
+    ("Projection", frozenset({"view", "show_views", "show_spec"})),
     ("Delivery and format", frozenset({"destination", "output_format", "out_path", "fields"})),
     ("Cardinality and pagination", frozenset({"all_matches", "first_only", "limit", "offset"})),
     (
@@ -540,6 +636,7 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: b
 @click.option("--no-redact", is_flag=True, default=False, help="Do not redact filesystem paths (--view context-image).")
 @click.option("--fields", help="Fields for JSON/YAML outputs (--all).")
 @click.option("--views", "show_views", is_flag=True, help="List executable read-view profiles, formats, and options.")
+@click.option("--spec", "show_spec", is_flag=True, help="Print the composed selection/projection/render spec as JSON.")
 @click.option("--first", "first_only", is_flag=True, help="Read the first matched session only.")
 @click.argument("ref", required=False)
 @click.pass_context
@@ -571,6 +668,7 @@ def read_verb(
     no_redact: bool,
     fields: str | None,
     first_only: bool,
+    show_spec: bool = False,
     show_views: bool = False,
     ref: str | None = None,
 ) -> None:
@@ -593,6 +691,7 @@ def read_verb(
         polylogue read --view context-image --project-repo github.com/Sinity/polylogue --since 2026-01-01
         polylogue read --views
         polylogue read --views --format json
+        polylogue find 'repo:polylogue' then read --view temporal,chronicle --spec
         polylogue find id:abc then read --view neighbors --window-hours 48
         polylogue --latest read --view neighbors --format json
         polylogue find id:abc then read --view correlation --since-hours 4
@@ -615,6 +714,63 @@ def read_verb(
         raise click.UsageError("read --all and --first are mutually exclusive.")
     if destination == "file" and not out_path:
         raise click.UsageError("read --to file requires --out.")
+    (
+        selection_limit,
+        projection_edge_limit,
+        projection_body_limit,
+        projection_body_offset,
+        projection_neighbor_limit,
+    ) = _read_projection_limits(tuple(view_tokens), limit, offset)
+    projection_neighbor_window_hours = window_hours if len(view_tokens) == 1 and view_tokens[0] == "neighbors" else None
+    uses_context_image_selector = "context-image" in view_tokens
+    context_image_max_sessions = min(max_sessions, limit) if limit is not None else max_sessions
+    spec_selection_limit: int | None
+    spec_selection_query: str | None
+    spec_selection_origin: str | None
+    spec_selection_since: str | None
+    spec_selection_until: str | None
+    spec_selection_project_path: str | None
+    spec_selection_project_repo: str | None
+    if uses_context_image_selector:
+        spec_selection_limit = context_image_max_sessions
+        spec_selection_query = context_query
+        spec_selection_origin = context_origin
+        spec_selection_since = since
+        spec_selection_until = until
+        spec_selection_project_path = project_path
+        spec_selection_project_repo = project_repo
+    else:
+        spec_selection_limit = selection_limit
+        spec_selection_query = None
+        spec_selection_origin = None
+        spec_selection_since = None
+        spec_selection_until = None
+        spec_selection_project_path = None
+        spec_selection_project_repo = None
+    if show_spec:
+        spec = _build_read_projection_spec(
+            request,
+            views=tuple(view_tokens),
+            output_format=output_format,
+            destination=destination,
+            out_path=out_path,
+            max_tokens=max_tokens,
+            selection_limit=spec_selection_limit,
+            render_layout=_read_render_layout(tuple(view_tokens)),
+            selection_query=spec_selection_query,
+            selection_origin=spec_selection_origin,
+            selection_since=spec_selection_since,
+            selection_until=spec_selection_until,
+            selection_project_path=spec_selection_project_path,
+            selection_project_repo=spec_selection_project_repo,
+            edge_limit=projection_edge_limit,
+            body_limit=projection_body_limit,
+            body_offset=projection_body_offset,
+            neighbor_limit=projection_neighbor_limit,
+            neighbor_window_hours=projection_neighbor_window_hours,
+        )
+        click.echo(serialize_surface_payload(spec, exclude_none=True))
+        return
     if _explain_terminal_action(
         request,
         action="read",
@@ -663,13 +819,29 @@ def read_verb(
         len(view_tokens) > 1 or primary_view == "context-image" or max_tokens is not None or include_assertions
     )
     if needs_context_image and destination != "browser":
+        projection_spec = _build_read_projection_spec(
+            request,
+            views=tuple(view_tokens),
+            output_format=output_format,
+            destination=destination,
+            out_path=out_path,
+            max_tokens=max_tokens,
+            selection_limit=spec_selection_limit if uses_context_image_selector else limit,
+            render_layout=_read_render_layout(tuple(view_tokens)),
+            selection_query=spec_selection_query,
+            selection_origin=spec_selection_origin,
+            selection_since=spec_selection_since,
+            selection_until=spec_selection_until,
+            selection_project_path=spec_selection_project_path,
+            selection_project_repo=spec_selection_project_repo,
+        )
         run_read_context_image(
             env,
             request,
             views=tuple(view_tokens),
             max_tokens=max_tokens,
             include_assertions=include_assertions,
-            max_sessions=max_sessions,
+            max_sessions=context_image_max_sessions,
             project_path=project_path,
             project_repo=project_repo,
             since=since,
@@ -681,6 +853,7 @@ def read_verb(
             destination=destination,
             out_path=out_path,
             first_only=first_only,
+            projection_spec=projection_spec,
         )
         return
 
@@ -690,6 +863,21 @@ def read_verb(
     if destination == "browser" or first_only or exact_session_ref or not handler.accepts_query_set:
         session_id = _resolve_query_action_session_id(env, request, operation="read", first_only=first_only)
     effective_format = _effective_read_output_format(request, view=primary_view, output_format=output_format)
+    projection_spec = _build_read_projection_spec(
+        request,
+        views=tuple(view_tokens),
+        output_format=output_format,
+        destination=destination,
+        out_path=out_path,
+        max_tokens=max_tokens,
+        selection_limit=selection_limit,
+        render_layout=_read_render_layout(tuple(view_tokens)),
+        edge_limit=projection_edge_limit,
+        body_limit=projection_body_limit,
+        body_offset=projection_body_offset,
+        neighbor_limit=projection_neighbor_limit,
+        neighbor_window_hours=projection_neighbor_window_hours,
+    )
     explicit_options = _explicit_read_view_options(ctx)
     if destination == "browser":
         run_read_view(
@@ -702,6 +890,7 @@ def read_verb(
                 destination=destination,
                 out_path=out_path,
                 explicit_options=explicit_options,
+                projection_spec=projection_spec,
             ),
         )
         return
@@ -738,6 +927,7 @@ def read_verb(
                 ),
             ),
             explicit_options=explicit_options,
+            projection_spec=projection_spec,
         ),
     )
 
@@ -1825,6 +2015,7 @@ def _render_context_image_markdown(image: object) -> str:
     caveats = tuple(getattr(image, "caveats", ()))
     purpose = getattr(spec, "purpose", None) or "context"
     read_views = tuple(getattr(spec, "read_views", ()) or ())
+    projection_spec = getattr(image, "projection_spec", None)
     token_estimate = getattr(image, "token_estimate", None)
     lines: list[str] = [
         "# Context Image",
@@ -1836,6 +2027,73 @@ def _render_context_image_markdown(image: object) -> str:
     ]
     if token_estimate is not None:
         lines.append(f"- Token estimate: {token_estimate}")
+    if projection_spec is not None:
+        selection = getattr(projection_spec, "selection", None)
+        projection = getattr(projection_spec, "projection", None)
+        render = getattr(projection_spec, "render", None)
+        query = getattr(selection, "query", None)
+        refs = tuple(getattr(selection, "refs", ()) or ())
+        selection_origin = getattr(selection, "origin", None)
+        selection_since = getattr(selection, "since", None)
+        selection_until = getattr(selection, "until", None)
+        selection_project_path = getattr(selection, "project_path", None)
+        selection_project_repo = getattr(selection, "project_repo", None)
+        selection_limit = getattr(selection, "limit", None)
+        families = tuple(getattr(projection, "families", ()) or ())
+        body_policy = getattr(projection, "body_policy", None)
+        max_tokens = getattr(projection, "max_tokens", None)
+        edge_limit = getattr(projection, "edge_limit", None)
+        body_limit = getattr(projection, "body_limit", None)
+        body_offset = getattr(projection, "body_offset", None)
+        neighbor_limit = getattr(projection, "neighbor_limit", None)
+        neighbor_window_hours = getattr(projection, "neighbor_window_hours", None)
+        redact_paths = getattr(projection, "redact_paths", None)
+        render_format = getattr(render, "format", None)
+        render_destination = getattr(render, "destination", None)
+        render_layout = getattr(render, "layout", None)
+        if query:
+            lines.append(f"- Selection query: {query}")
+        if selection_origin:
+            lines.append(f"- Selection origin: {selection_origin}")
+        if selection_since:
+            lines.append(f"- Selection since: {selection_since}")
+        if selection_until:
+            lines.append(f"- Selection until: {selection_until}")
+        if selection_project_path:
+            lines.append(f"- Selection project path: {selection_project_path}")
+        if selection_project_repo:
+            lines.append(f"- Selection project repo: {selection_project_repo}")
+        if selection_limit is not None:
+            lines.append(f"- Selection limit: {selection_limit}")
+        if refs:
+            shown_refs = refs[:3]
+            refs_text = ", ".join(str(ref) for ref in shown_refs)
+            remaining = len(refs) - len(shown_refs)
+            if remaining:
+                refs_text = f"{refs_text}, ... {remaining} more"
+            lines.append(f"- Selection refs: {refs_text}")
+        if families:
+            lines.append(f"- Projection families: {', '.join(str(family.value) for family in families)}")
+        if body_policy is not None:
+            lines.append(f"- Body policy: {body_policy.value}")
+        if max_tokens is not None:
+            lines.append(f"- Projection max tokens: {max_tokens}")
+        if edge_limit is not None:
+            lines.append(f"- Projection edge limit: {edge_limit}")
+        if body_limit is not None:
+            lines.append(f"- Projection body limit: {body_limit}")
+        if body_offset is not None:
+            lines.append(f"- Projection body offset: {body_offset}")
+        if neighbor_limit is not None:
+            lines.append(f"- Projection neighbor limit: {neighbor_limit}")
+        if neighbor_window_hours is not None:
+            lines.append(f"- Projection neighbor window hours: {neighbor_window_hours}")
+        if redact_paths is not None:
+            lines.append(f"- Projection redact paths: {str(bool(redact_paths)).lower()}")
+        if render_format is not None and render_destination is not None:
+            lines.append(f"- Render: {render_format.value} to {render_destination.value}")
+        if render_layout:
+            lines.append(f"- Render layout: {render_layout}")
     if caveats:
         lines.append(f"- Caveats: {', '.join(str(caveat) for caveat in caveats)}")
     parts: list[str] = ["\n".join(lines)]
@@ -1882,6 +2140,7 @@ def run_read_context_image(
     destination: str,
     out_path: str | None,
     first_only: bool,
+    projection_spec: QueryProjectionSpec | None = None,
 ) -> None:
     """Compile and emit a bounded context image over the matched selection.
 
@@ -1901,6 +2160,7 @@ def run_read_context_image(
     redact = not no_redact
     limit = max(1, min(max_sessions, 20))
     session_ids = _resolve_query_action_session_ids(env, request, limit=limit, first_only=first_only)
+    projection_spec = _projection_spec_with_resolved_session_refs(projection_spec, tuple(session_ids))
 
     # compile_context handles read views and query-unit context; the context-image
     # token maps to the message transcript view. Other tokens become honest
@@ -1945,6 +2205,9 @@ def run_read_context_image(
             "read with --max-tokens, --include-assertions, or multiple --view values "
             "requires a seed (use --id, --latest, id:prefix, or a query)."
         )
+
+    if projection_spec is not None:
+        image = image.model_copy(update={"projection_spec": projection_spec})
 
     if output_format == "json":
         content = serialize_surface_payload(image, exclude_none=True) + "\n"

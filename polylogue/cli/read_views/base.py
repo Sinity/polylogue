@@ -14,6 +14,7 @@ from polylogue.cli.shared.types import AppEnv
 
 if TYPE_CHECKING:
     from polylogue.cli.root_request import RootModeRequest
+    from polylogue.surfaces.projection_spec import QueryProjectionSpec
 
 
 ReadViewSessionPolicy = Literal["optional", "required", "query_or_session", "none"]
@@ -98,6 +99,7 @@ class ReadViewInvocation:
     out_path: str | None
     options: ReadViewOptions | None = None
     explicit_options: frozenset[ReadViewOptionName] = frozenset()
+    projection_spec: QueryProjectionSpec | None = None
 
 
 ReadViewHandlerFunc = Callable[[AppEnv, "RootModeRequest", ReadViewInvocation], None]

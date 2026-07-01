@@ -11,21 +11,21 @@ Owns:
   ``/api/paste-browser`` and renders a grouped list of paste messages
   with anchor links back to the source session.
 
-The substrate exposes ``has_paste`` per message (#1313) but does not yet
+The substrate exposes paste evidence per message (#1313) but does not yet
 expose per-character paste-span offsets (those land in #839/#864). This
-slice ships **whole-message fallback** driven by ``has_paste`` plus
+slice ships **whole-message fallback** driven by ``has_paste_evidence`` plus
 **heuristic diff-span detection** (unified-diff format), so the visual
 acceptance criteria can be met today without waiting on substrate work.
 
 Per-message envelope contract (in ``daemon/http.py:_do_get_session``):
 
-- ``has_paste`` — already present, bool.
+- ``has_paste_evidence`` — true when the message carries paste evidence.
 - ``paste_spans`` — new list of ``{kind, start, end, confidence}``
   records. Empty unless the server-side heuristic detects a diff
   embedded in the message text; see ``detect_paste_spans``.
 
 The renderer treats the envelope as the source of truth: when
-``paste_spans`` is empty but ``has_paste`` is true, the whole message
+``paste_spans`` is empty but ``has_paste_evidence`` is true, the whole message
 gets a paste banner; when ``paste_spans`` contains entries, those
 ranges are highlighted inline and (for diffs) folded with syntax color.
 """
@@ -159,7 +159,8 @@ def envelope_paste_spans(text: str | None, *, has_paste: bool) -> list[dict[str,
     """Compute the ``paste_spans`` value for a message envelope.
 
     Returns an empty list when no spans are detected — the renderer
-    falls back to whole-message paste banner whenever ``has_paste`` is
+    falls back to whole-message paste banner whenever the internal
+    ``has_paste`` storage flag is
     set and ``paste_spans`` is empty.
     """
 
@@ -350,7 +351,7 @@ function _polyEffectivePasteSpans(m) {
   // Prefer server envelope; fall back to client detection so old
   // payloads still render correctly.
   if (m && Array.isArray(m.paste_spans) && m.paste_spans.length) return m.paste_spans;
-  if (m && m.has_paste) {
+  if (m && m.has_paste_evidence) {
     var detected = _polyDetectDiffSpans(m.text || '');
     if (detected.length) return detected;
   }
@@ -426,12 +427,12 @@ function _polyRenderPasteBody(m) {
 }
 
 function _polyHasPaste(m) {
-  if (m && m.has_paste) return true;
+  if (m && m.has_paste_evidence) return true;
   return _polyEffectivePasteSpans(m).length > 0;
 }
 
 function _polyPasteBannerHtml(m) {
-  // Whole-message indication: used when ``has_paste`` is set but no
+  // Whole-message indication: used when paste evidence is set but no
   // per-span data was produced (substrate-only signal).
   var spans = _polyEffectivePasteSpans(m);
   if (spans.length) return '';
@@ -495,7 +496,7 @@ function copyPasteOnly(messageId) {
 
 function _polyCopyActionRailHtml(m) {
   // Extra copy-menu actions appended to the per-message rail when
-  // paste spans are present (or has_paste is set with whole-message
+  // paste spans are present (or paste evidence is set with whole-message
   // fallback). When spans are absent the actions render disabled so
   // the contract surface is stable.
   var hasSpans = _polyEffectivePasteSpans(m).length > 0;

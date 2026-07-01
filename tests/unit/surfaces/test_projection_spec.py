@@ -13,20 +13,32 @@ from polylogue.surfaces.projection_spec import (
     RenderFormat,
     RenderSpec,
     projection_from_view,
+    projection_from_views,
 )
 
 
 def test_messages_view_maps_to_message_block_projection() -> None:
-    spec = projection_from_view("messages", format="json", destination="stdout", max_tokens=1200)
+    spec = projection_from_views(
+        ("messages",),
+        format="json",
+        destination="stdout",
+        layout="compact",
+        max_tokens=1200,
+        body_limit=7,
+        body_offset=2,
+    )
 
     assert spec.projection.families == (EvidenceFamily.MESSAGES, EvidenceFamily.BLOCKS)
     assert spec.projection.max_tokens == 1200
+    assert spec.projection.body_limit == 7
+    assert spec.projection.body_offset == 2
     assert spec.render.format is RenderFormat.JSON
     assert spec.render.destination is RenderDestination.STDOUT
+    assert spec.render.layout == "compact"
 
 
 def test_chronicle_view_maps_to_authored_dialogue_projection() -> None:
-    spec = projection_from_view("chronicle")
+    spec = projection_from_views(("chronicle",), edge_limit=3)
 
     assert spec.projection.families == (
         EvidenceFamily.CHRONICLE,
@@ -34,9 +46,44 @@ def test_chronicle_view_maps_to_authored_dialogue_projection() -> None:
         EvidenceFamily.MESSAGES,
     )
     assert spec.projection.body_policy is BodyPolicy.AUTHORED_DIALOGUE
+    assert spec.projection.edge_limit == 3
     assert {"tool_use", "tool_result", "function_call", "function_call_output"} <= set(
         spec.projection.exclude_block_kinds
     )
+
+
+def test_neighbors_view_maps_to_neighbor_projection_policy() -> None:
+    spec = projection_from_views(("neighbors",), neighbor_limit=4, neighbor_window_hours=12)
+
+    assert spec.projection.families == (EvidenceFamily.NEIGHBORS, EvidenceFamily.SESSIONS)
+    assert spec.projection.neighbor_limit == 4
+    assert spec.projection.neighbor_window_hours == 12
+
+
+def test_multi_view_projection_dedupes_families_and_preserves_body_policy() -> None:
+    spec = projection_from_views(
+        ("temporal", "chronicle"),
+        format="json",
+        destination="stdout",
+        query="repo:polylogue",
+        origin="claude-code-session",
+        max_tokens=2000,
+        limit=8,
+    )
+
+    assert spec.selection.query == "repo:polylogue"
+    assert spec.selection.origin == "claude-code-session"
+    assert spec.selection.limit == 8
+    assert spec.projection.families == (
+        EvidenceFamily.TEMPORAL,
+        EvidenceFamily.SESSIONS,
+        EvidenceFamily.CHRONICLE,
+        EvidenceFamily.MESSAGES,
+    )
+    assert spec.projection.body_policy is BodyPolicy.AUTHORED_DIALOGUE
+    assert spec.projection.max_tokens == 2000
+    assert spec.render.format is RenderFormat.JSON
+    assert spec.render.destination is RenderDestination.STDOUT
 
 
 def test_tool_output_omission_is_projection_policy_not_cli_flag() -> None:

@@ -45,7 +45,7 @@ provider-reported zero.
 | Origin | Provider | Declared coverage | Event stream | Token semantics |
 | --- | --- | --- | --- | --- |
 | `claude-code-session` | `claude-code` | exact where `message.usage` exists | `message_usage` | per-message/request usage; cache read and cache creation are separate lanes |
-| `codex-session` | `codex` | exact where `token_count` exists | `token_count` | `last_token_usage` is current/request-window telemetry; `total_token_usage` is cumulative and rollups take the latest total per session/model |
+| `codex-session` | `codex` | exact where `token_count` exists | `token_count` | `last_token_usage` is current/request-window telemetry; `total_token_usage` is cumulative and session-global, so rollups take the latest total per session |
 | `chatgpt-export` | `chatgpt` | estimate-only | transcript text | exports do not carry reliable per-request provider token counters |
 | `claude-ai-export` | `claude-ai` | estimate-only | transcript text | exports preserve conversation text, not exact provider usage counters |
 | `aistudio-drive` | `gemini` | partial | message token fields | some records may carry output `tokenCount`; input/cache/cumulative semantics are unavailable |

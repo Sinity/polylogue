@@ -171,7 +171,7 @@ def test_session_list_row_payload_validates_against_schema() -> None:
         words=1234,
         repo="polylogue",
         cwd_display="/realm/project/polylogue",
-        flags=SessionFlagsPayload(has_thinking=True, has_tool_use=True, has_paste=False),
+        flags=SessionFlagsPayload(has_thinking=True, has_tool_use=True, has_paste_evidence=False),
     )
     instance = payload.model_dump(mode="json", exclude_none=True)
     jsonschema.validate(instance=instance, schema=schema)

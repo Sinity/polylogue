@@ -543,7 +543,7 @@ class SessionMessagePayload(SurfacePayloadModel):
     # #1487 envelope: per-message content flags. Surface what the storage
     # layer already projects (#1201/#1583) so the reader does not have
     # to re-derive them from the rendered text.
-    has_paste: bool = False
+    has_paste_evidence: bool = False
     has_tool_use: bool = False
     has_thinking: bool = False
     # #1487 envelope: usage/cost metadata. Carries through from parsers
@@ -615,7 +615,7 @@ class SessionMessagePayload(SurfacePayloadModel):
             content_blocks=message.blocks,
             parent_id=message.parent_id,
             branch_index=int(getattr(message, "branch_index", 0) or 0),
-            has_paste=bool(getattr(message, "has_paste", False)),
+            has_paste_evidence=bool(getattr(message, "has_paste", False)),
             paste_boundary_state=getattr(message, "paste_boundary_state", None),
             has_tool_use=bool(getattr(message, "has_tool_use", False)),
             has_thinking=bool(getattr(message, "has_thinking", False)),
@@ -675,7 +675,7 @@ class SessionMessagePayload(SurfacePayloadModel):
             content_blocks=content_blocks,
             parent_id=getattr(message, "parent_message_id", None),
             branch_index=int(getattr(message, "variant_index", 0) or 0),
-            has_paste=bool(getattr(message, "has_paste", False)),
+            has_paste_evidence=bool(getattr(message, "has_paste", False)),
             paste_boundary_state=getattr(message, "paste_boundary_state", None),
             has_tool_use=bool(getattr(message, "has_tool_use", False)),
             has_thinking=bool(getattr(message, "has_thinking", False)),
@@ -782,7 +782,7 @@ class SessionFlagsPayload(SurfacePayloadModel):
 
     has_tool_use: bool = False
     has_thinking: bool = False
-    has_paste: bool = False
+    has_paste_evidence: bool = False
 
 
 class SessionListRowPayload(SurfacePayloadModel):
@@ -2693,10 +2693,14 @@ def _session_cwd(session: object) -> str | None:
 def _build_flags_from_session(session: object) -> SessionFlagsPayload | None:
     has_tool = bool(getattr(session, "has_tool_use", None))
     has_thinking = bool(getattr(session, "has_thinking", None))
-    has_paste = bool(getattr(session, "has_paste", None))
-    if not has_tool and not has_thinking and not has_paste:
+    has_paste_evidence = bool(getattr(session, "has_paste", None))
+    if not has_tool and not has_thinking and not has_paste_evidence:
         return None
-    return SessionFlagsPayload(has_tool_use=has_tool, has_thinking=has_thinking, has_paste=has_paste)
+    return SessionFlagsPayload(
+        has_tool_use=has_tool,
+        has_thinking=has_thinking,
+        has_paste_evidence=has_paste_evidence,
+    )
 
 
 METADATA_KEY_MAX_LENGTH = 200

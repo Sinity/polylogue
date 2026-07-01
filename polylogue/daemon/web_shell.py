@@ -1070,7 +1070,7 @@ function renderSessions() {
     if (c.flags) {
       if (c.flags.has_tool_use) flagsHtml += '<span class="flag tool">T</span>';
       if (c.flags.has_thinking) flagsHtml += '<span class="flag think">R</span>';
-      if (c.flags.has_paste) flagsHtml += '<span class="flag">P</span>';
+      if (c.flags.has_paste_evidence) flagsHtml += '<span class="flag">P</span>';
     }
     if (hasMark(c.id, 'star')) flagsHtml += '<span class="flag mark" title="Starred">*</span>';
     if (hasMark(c.id, 'pin')) flagsHtml += '<span class="flag mark" title="Pinned">P</span>';
@@ -1285,7 +1285,7 @@ function renderMain() {
   if (c.flags) {
     if (c.flags.has_tool_use) headerHtml += '<span class="chip accent">tool use</span>';
     if (c.flags.has_thinking) headerHtml += '<span class="chip accent">thinking</span>';
-    if (c.flags.has_paste) headerHtml += '<span class="chip accent">paste</span>';
+    if (c.flags.has_paste_evidence) headerHtml += '<span class="chip accent">paste</span>';
   }
   // 5. cost/tokens (surface when present; estimated → q-estimated quality)
   if (c.cost_usd !== undefined && c.cost_usd !== null) {

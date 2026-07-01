@@ -72,6 +72,8 @@ class SelectionSpec(SurfacePayloadModel):
     origin: str | None = None
     since: str | None = None
     until: str | None = None
+    project_path: str | None = None
+    project_repo: str | None = None
     limit: int | None = Field(default=None, ge=1)
 
 
@@ -84,6 +86,11 @@ class ProjectionSpec(SurfacePayloadModel):
     include_roles: tuple[str, ...] = ()
     exclude_block_kinds: tuple[str, ...] = ()
     max_tokens: int | None = Field(default=None, ge=1)
+    edge_limit: int | None = Field(default=None, ge=1)
+    body_limit: int | None = Field(default=None, ge=1)
+    body_offset: int | None = Field(default=None, ge=0)
+    neighbor_limit: int | None = Field(default=None, ge=1)
+    neighbor_window_hours: int | None = Field(default=None, ge=1)
     redact_paths: bool = True
 
     @model_validator(mode="after")
@@ -154,17 +161,79 @@ def projection_from_view(
     format: str = "markdown",
     destination: str = "terminal",
     max_tokens: int | None = None,
+    layout: str = "standard",
 ) -> QueryProjectionSpec:
     """Map executable projection/read-view names into the shared vocabulary."""
 
-    try:
-        families = NAMED_PROJECTION_FAMILIES[view]
-    except KeyError as exc:
-        raise ValueError(f"unknown projection view: {view}") from exc
-    body_policy = BodyPolicy.AUTHORED_DIALOGUE if view == "chronicle" else BodyPolicy.FULL
+    return projection_from_views((view,), format=format, destination=destination, max_tokens=max_tokens, layout=layout)
+
+
+def projection_from_views(
+    views: tuple[str, ...],
+    *,
+    format: str = "markdown",
+    destination: str = "terminal",
+    layout: str = "standard",
+    max_tokens: int | None = None,
+    out: str | None = None,
+    query: str | None = None,
+    origin: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    project_path: str | None = None,
+    project_repo: str | None = None,
+    limit: int | None = None,
+    edge_limit: int | None = None,
+    body_limit: int | None = None,
+    body_offset: int | None = None,
+    neighbor_limit: int | None = None,
+    neighbor_window_hours: int | None = None,
+) -> QueryProjectionSpec:
+    """Map one or more read/projection names into a composed spec.
+
+    The result keeps evidence-family order stable while deduplicating families.
+    It is intentionally a contract builder, not an executor: existing handlers
+    can keep running while surfaces and demos inspect the same composition
+    vocabulary.
+    """
+
+    if not views:
+        views = ("summary",)
+    families_list: list[EvidenceFamily] = []
+    body_policy = BodyPolicy.FULL
+    for view in views:
+        try:
+            view_families = NAMED_PROJECTION_FAMILIES[view]
+        except KeyError as exc:
+            raise ValueError(f"unknown projection view: {view}") from exc
+        for family in view_families:
+            if family not in families_list:
+                families_list.append(family)
+        if view == "chronicle":
+            body_policy = BodyPolicy.AUTHORED_DIALOGUE
     return QueryProjectionSpec(
-        projection=ProjectionSpec(families=families, body_policy=body_policy, max_tokens=max_tokens),
-        render=RenderSpec(format=RenderFormat(format), destination=RenderDestination(destination)),
+        selection=SelectionSpec(
+            query=query,
+            origin=origin,
+            since=since,
+            until=until,
+            project_path=project_path,
+            project_repo=project_repo,
+            limit=limit,
+        ),
+        projection=ProjectionSpec(
+            families=tuple(families_list),
+            body_policy=body_policy,
+            max_tokens=max_tokens,
+            edge_limit=edge_limit,
+            body_limit=body_limit,
+            body_offset=body_offset,
+            neighbor_limit=neighbor_limit,
+            neighbor_window_hours=neighbor_window_hours,
+        ),
+        render=RenderSpec(
+            format=RenderFormat(format), destination=RenderDestination(destination), layout=layout, out=out
+        ),
     )
 
 
@@ -180,4 +249,5 @@ __all__ = [
     "RenderSpec",
     "SelectionSpec",
     "projection_from_view",
+    "projection_from_views",
 ]

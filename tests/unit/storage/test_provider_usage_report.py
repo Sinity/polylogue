@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from pathlib import Path
 
@@ -36,6 +37,15 @@ def _insert_raw_session(
         """,
         (raw_id, origin, native_id, f"{native_id}.jsonl", 0, bytes(32), 2, 1, parse_error),
     )
+
+
+def _write_blob(archive_root: Path, payload: str) -> bytes:
+    content = payload.encode()
+    digest = hashlib.sha256(content).digest()
+    blob_path = archive_root / "blob" / digest.hex()[:2] / digest.hex()[2:]
+    blob_path.parent.mkdir(parents=True, exist_ok=True)
+    blob_path.write_bytes(content)
+    return digest
 
 
 def test_provider_usage_report_keeps_events_cumulative_and_rollups_separate(tmp_path: Path) -> None:
@@ -203,6 +213,96 @@ def test_provider_usage_report_exposes_source_debt_and_stale_rollups(tmp_path: P
     assert row.sample_stale_rollup_sessions == ("codex-session:provider-usage-report",)
     assert "acquired but not materialized" in " ".join(row.caveats)
     assert "stale relative to provider usage events" in " ".join(row.caveats)
+
+
+def test_provider_usage_report_treats_codex_cumulative_as_session_global(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="provider-usage-model-switch",
+        title="provider usage model switch",
+        models_used=["gpt-5-codex", "o4-mini"],
+        messages=[],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-5-codex",
+                    "total_token_usage": {"input_tokens": 100, "output_tokens": 20},
+                },
+            ),
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "model": "o4-mini",
+                    "total_token_usage": {"input_tokens": 50, "output_tokens": 10},
+                },
+            ),
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "type": "token_count",
+                    "total_token_usage": {"input_tokens": 999, "output_tokens": 999},
+                },
+            ),
+        ],
+    )
+
+    write_parsed_session_to_archive(conn, session)
+    report = provider_usage_report_from_connection(conn, archive_root=tmp_path)
+
+    row = report.origins[0]
+    assert row.stale_rollup_session_count == 0
+    assert row.sample_stale_rollup_sessions == ()
+    assert row.model_rollup_usage.to_dict() == {
+        "input_tokens": 50,
+        "output_tokens": 10,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 60,
+    }
+
+
+def test_provider_usage_report_ignores_codex_metadata_only_raw_rows(tmp_path: Path) -> None:
+    index_conn = _connect(tmp_path / "index.db")
+    source_conn = _connect(tmp_path / "source.db", ArchiveTier.SOURCE)
+    blob_hash = _write_blob(
+        tmp_path,
+        '{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"id":"meta-only"}}\n',
+    )
+    source_conn.execute(
+        """
+        INSERT INTO raw_sessions (
+            raw_id, origin, native_id, source_path, source_index, blob_hash,
+            blob_size, acquired_at_ms, parsed_at_ms, validation_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "raw-codex-meta-only",
+            "codex-session",
+            "meta-only",
+            "rollout-meta-only.jsonl",
+            0,
+            blob_hash,
+            91,
+            1,
+            2,
+            "passed",
+        ),
+    )
+    source_conn.commit()
+    source_conn.close()
+
+    report = provider_usage_report_from_connection(index_conn, archive_root=tmp_path, origin="codex-session")
+
+    row = report.origins[0]
+    assert row.raw_session_count == 1
+    assert row.acquired_not_materialized_count == 0
+    assert row.sample_acquired_not_materialized_raw_ids == ()
+    assert row.coverage_state == "no_sessions"
 
 
 def test_provider_usage_coverage_matrix_marks_estimate_only_exports(tmp_path: Path) -> None:

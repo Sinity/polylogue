@@ -811,27 +811,52 @@ def _convergence_debt(conn: sqlite3.Connection, *, ops_db: Path | None = None) -
     ops_rows = _ops_convergence_debt_rows(ops_db)
     if ops_rows:
         return {
-            "failed_count": sum(count for _stage, count in ops_rows),
-            "by_stage": [{"stage": stage, "failed_count": count} for stage, count in ops_rows],
+            "failed_count": sum(failed_count for _stage, failed_count, _deferred_count, _unresolved_count in ops_rows),
+            "deferred_count": sum(
+                deferred_count for _stage, _failed_count, deferred_count, _unresolved_count in ops_rows
+            ),
+            "unresolved_count": sum(
+                unresolved_count for _stage, _failed_count, _deferred_count, unresolved_count in ops_rows
+            ),
+            "by_stage": [
+                {
+                    "stage": stage,
+                    "failed_count": failed_count,
+                    "deferred_count": deferred_count,
+                    "unresolved_count": unresolved_count,
+                }
+                for stage, failed_count, deferred_count, unresolved_count in ops_rows
+            ],
         }
     if not _table_exists(conn, "live_convergence_debt"):
-        return {"failed_count": 0, "by_stage": []}
+        return {"failed_count": 0, "deferred_count": 0, "unresolved_count": 0, "by_stage": []}
     rows = conn.execute(
         """
-        SELECT stage, COUNT(*) AS failed_count
+        SELECT stage, COUNT(*) AS unresolved_count
         FROM live_convergence_debt
         WHERE status != 'resolved'
         GROUP BY stage
-        ORDER BY failed_count DESC, stage
+        ORDER BY unresolved_count DESC, stage
         """
     ).fetchall()
+    unresolved_count = sum(int(row[1] or 0) for row in rows)
     return {
-        "failed_count": sum(int(row[1] or 0) for row in rows),
-        "by_stage": [{"stage": row[0], "failed_count": int(row[1] or 0)} for row in rows],
+        "failed_count": unresolved_count,
+        "deferred_count": 0,
+        "unresolved_count": unresolved_count,
+        "by_stage": [
+            {
+                "stage": row[0],
+                "failed_count": int(row[1] or 0),
+                "deferred_count": 0,
+                "unresolved_count": int(row[1] or 0),
+            }
+            for row in rows
+        ],
     }
 
 
-def _ops_convergence_debt_rows(ops_db: Path | None) -> list[tuple[str, int]]:
+def _ops_convergence_debt_rows(ops_db: Path | None) -> list[tuple[str, int, int, int]]:
     if ops_db is None or not ops_db.exists():
         return []
     try:
@@ -841,17 +866,21 @@ def _ops_convergence_debt_rows(ops_db: Path | None) -> list[tuple[str, int]]:
                 return []
             rows = conn.execute(
                 """
-                SELECT stage, COUNT(*) AS failed_count
+                SELECT
+                    stage,
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+                    SUM(CASE WHEN status = 'deferred' THEN 1 ELSE 0 END) AS deferred_count,
+                    COUNT(*) AS unresolved_count
                 FROM convergence_debt
                 GROUP BY stage
-                ORDER BY failed_count DESC, stage
+                ORDER BY failed_count DESC, deferred_count DESC, stage
                 """
             ).fetchall()
         finally:
             conn.close()
     except sqlite3.Error:
         return []
-    return [(str(row[0] or "unknown"), int(row[1] or 0)) for row in rows]
+    return [(str(row[0] or "unknown"), int(row[1] or 0), int(row[2] or 0), int(row[3] or 0)) for row in rows]
 
 
 def _boundary_table_counts(
@@ -2298,7 +2327,18 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
             "before": int(before_debt.get("failed_count") or 0),
             "after": int(after_debt.get("failed_count") or 0),
             "delta": int(after_debt.get("failed_count") or 0) - int(before_debt.get("failed_count") or 0),
-        }
+        },
+        "deferred_count": {
+            "before": int(before_debt.get("deferred_count") or 0),
+            "after": int(after_debt.get("deferred_count") or 0),
+            "delta": int(after_debt.get("deferred_count") or 0) - int(before_debt.get("deferred_count") or 0),
+        },
+        "unresolved_count": {
+            "before": int(before_debt.get("unresolved_count") or before_debt.get("failed_count") or 0),
+            "after": int(after_debt.get("unresolved_count") or after_debt.get("failed_count") or 0),
+            "delta": int(after_debt.get("unresolved_count") or after_debt.get("failed_count") or 0)
+            - int(before_debt.get("unresolved_count") or before_debt.get("failed_count") or 0),
+        },
     }
 
     before_timings = before.get("convergence_stage_timings") or {}
@@ -2647,9 +2687,23 @@ def _format_compare_human(diff: dict[str, Any]) -> str:
         lines.append(f"  restored: {', '.join(fts['restored'])}")
     if not fts["regressed"] and not fts["restored"]:
         lines.append("  no trigger drift")
-    debt = diff["convergence_debt"]["failed_count"]
+    debt = diff["convergence_debt"]
     lines.append("")
-    lines.append(f"Convergence debt failed_count: {debt['before']} -> {debt['after']} (Δ {debt['delta']:+d})")
+    failed_debt = debt["failed_count"]
+    deferred_debt = debt["deferred_count"]
+    unresolved_debt = debt["unresolved_count"]
+    lines.append(
+        "Convergence debt failed_count: "
+        f"{failed_debt['before']} -> {failed_debt['after']} (Δ {failed_debt['delta']:+d})"
+    )
+    lines.append(
+        "Convergence debt deferred_count: "
+        f"{deferred_debt['before']} -> {deferred_debt['after']} (Δ {deferred_debt['delta']:+d})"
+    )
+    lines.append(
+        "Convergence debt unresolved_count: "
+        f"{unresolved_debt['before']} -> {unresolved_debt['after']} (Δ {unresolved_debt['delta']:+d})"
+    )
     timings = diff["convergence_stage_timings"]
     lines.append("")
     lines.append(
@@ -2858,7 +2912,12 @@ def main(argv: list[str] | None = None) -> int:
         f"convergence mean {timings.get('convergence_time_s', {}).get('mean', 0.0):.3f}s"
     )
     debt = payload["convergence_debt"]
-    print(f"  convergence debt: {debt['failed_count']} unresolved")
+    print(
+        "  convergence debt: "
+        f"{debt['failed_count']} failed, "
+        f"{debt.get('deferred_count', 0)} deferred, "
+        f"{debt.get('unresolved_count', debt['failed_count'])} unresolved"
+    )
     churn = payload.get("source_path_churn") or []
     if churn:
         worst = churn[0]

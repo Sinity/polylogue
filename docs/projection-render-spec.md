@@ -44,17 +44,22 @@ Body policies replace ad hoc flags:
 and is tested against the CLI read-view registry. Additional named projections,
 such as `timeline`, live in `NAMED_PROJECTION_FAMILIES` so non-read projections
 do not weaken read-view parity. The projection bridge
-`projection_from_view()` accepts the named projection set and rejects
-`recovery`; recovery remains an operational failure-recovery concept, not a
-read view.
+`projection_from_view()` accepts one named projection, while
+`projection_from_views()` composes multiple projections with stable family
+deduplication. Both reject `recovery`; recovery remains an operational
+failure-recovery concept, not a read view.
+
+`polylogue read --spec` exposes the current command as a
+`QueryProjectionSpec` JSON document. It is an introspection/proof surface: it
+does not execute the read, and it makes the selection/projection/render split
+visible before deeper handler wiring.
 
 ## Next Wiring
 
 The next implementation steps should route existing `read --view` behavior
 through this spec incrementally:
 
-1. build a spec from current read CLI options;
-2. pass the spec to existing handlers without changing their output;
-3. move view-specific option clusters into projection/render fields;
-4. express export as query + projection + render rather than as a separate
+1. pass the spec to existing handlers without changing their output;
+2. move view-specific option clusters into projection/render fields;
+3. express export as query + projection + render rather than as a separate
    command family.
