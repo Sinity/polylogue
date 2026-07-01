@@ -39,6 +39,11 @@ This is the cadence rubric for the indefinite Polylogue conductor loop.
   useful signal is not "more mode switches"; it is whether Proof closes through
   Artifact/Velocity, whether dwell times are explained by useful work, and
   whether heavy archive commands are being stacked under host I/O pressure.
+- During wait windows, grow the backlog deliberately but cheaply. Useful ahead
+  work includes ranking demo/product slices, drafting narrow audit prompts,
+  identifying likely schema simplifications, and preparing proof commands. Stop
+  when the next few high-impact slices are clear; do not spend quota building a
+  giant backlog that will be stale before execution.
 - `Direction -> Proof` is valid for very small test/regression slices where
   evidence and construction are already trivial from the selected diff.
   `Velocity -> Artifact` is valid for shelf/presentation polish that directly

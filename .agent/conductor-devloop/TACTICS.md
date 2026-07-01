@@ -2,10 +2,21 @@
 
 ## If A Command Runs Long
 
-Do not idle. While a daemon/import/test is running, do one useful foreground
-task: inspect adjacent call sites, update a demo manifest, write the proof
-claim, summarize the latest artifact, check archive-root drift, or improve the
-scaffold.
+Do not idle, and do not pretend contention is progress. While a
+daemon/import/test is running, pick one foreground lane from
+`.agent/scripts/devloop-ahead`:
+
+- adjacent source audit;
+- artifact/demo update;
+- backlog/radar sharpening;
+- subagent/audit prompt for a non-overlapping read-heavy lane;
+- next verification command preparation;
+- velocity/meta friction capture.
+
+The output must be concrete: patch candidate, refreshed artifact, ranked next
+slice, narrow audit prompt, proof command, or tripwire. Avoid starting another
+heavy command against the same checkout/archive while the current proof is
+pending.
 
 ## If Convergence Is Slow
 

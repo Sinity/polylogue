@@ -191,10 +191,24 @@ If a command may run longer than a minute, record an active wait state:
 .agent/scripts/devloop-wait "<job-or-command>" "<proof-claim>" "<poll-in>" "<mode-task>"
 ```
 
-Waiting is active loop time. Rotate focus deliberately: Proof -> Velocity for
-resource/tool friction, Proof -> Artifact for artifact writing, Proof ->
-Evidence for adjacent source/runtime inspection, or Proof -> Direction when the
-pending result is likely to close the slice.
+Waiting is active loop time. Immediately pick one foreground lane from
+`.agent/scripts/devloop-ahead`: adjacent source audit, artifact/demo, backlog
+radar, subagent/audit prompt, next verification, or velocity/meta. Rotate focus
+deliberately: Proof -> Velocity for resource/tool friction, Proof -> Artifact
+for artifact writing, Proof -> Evidence for adjacent source/runtime inspection,
+or Proof -> Direction when the pending result is likely to close the slice.
+
+Ahead work must not create hidden contention. Do not start another heavy
+archive/test/build job against the same checkout/archive while a proof is
+running. Prefer light reads, demo writing, prompt/backlog shaping, source review,
+or a non-overlapping subagent audit with explicit owned files and expected
+artifact.
+
+Subagents are useful for backlog growth and independent audits, not for
+unbounded parallel churn. Use them when the work is read-heavy, separable, and
+can return a concrete artifact: schema construct-validity audit, CLI surface
+audit, route/contract drift audit, provider-field harmonization audit, or demo
+candidate ranking. Do not spawn one just because a command is pending.
 
 ## Runtime Baselines
 
