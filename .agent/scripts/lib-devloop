@@ -10,3 +10,16 @@ polylogued_process_rows() {
     ' \
     || true
 }
+
+devloop_focus_edge_allowed() {
+  case "${1:-}:${2:-}" in
+    Direction:Evidence|Direction:Construction|Direction:Artifact|Direction:Proof|Direction:Meta) return 0 ;;
+    Evidence:Construction|Evidence:Proof|Evidence:Artifact|Evidence:Velocity|Evidence:Meta) return 0 ;;
+    Construction:Proof|Construction:Meta) return 0 ;;
+    Proof:Artifact|Proof:Velocity|Proof:Evidence|Proof:Direction|Proof:Meta) return 0 ;;
+    Artifact:Velocity|Artifact:Direction|Artifact:Meta|Artifact:Proof) return 0 ;;
+    Velocity:Direction|Velocity:Evidence|Velocity:Artifact|Velocity:Meta) return 0 ;;
+    Meta:Meta|Meta:Evidence|Meta:Construction|Meta:Proof|Meta:Artifact|Meta:Velocity|Meta:Direction) return 0 ;;
+    *) return 1 ;;
+  esac
+}

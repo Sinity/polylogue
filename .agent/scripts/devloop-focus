@@ -4,6 +4,7 @@ set -euo pipefail
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   cat <<'EOF'
 Usage: .agent/scripts/devloop-focus <from> <to> <trigger> [decision]
+       .agent/scripts/devloop-focus --force <from> <to> <trigger> [decision]
 
 Record a material focus transition using the shared modes:
 Direction, Evidence, Construction, Proof, Artifact, Velocity, Meta.
@@ -14,9 +15,15 @@ EOF
   exit 0
 fi
 
+force=0
+if [ "${1:-}" = "--force" ]; then
+  force=1
+  shift
+fi
+
 if [ "$#" -lt 3 ]; then
   cat >&2 <<'EOF'
-usage: devloop-focus <from> <to> <trigger> [decision]
+usage: devloop-focus [--force] <from> <to> <trigger> [decision]
 
 Example:
   devloop-focus Evidence Construction "stage timings prove global attachment ref-count refresh" "Patch write path and add focused regression"
@@ -30,6 +37,9 @@ trigger="$3"
 decision="${4:-}"
 root="${POLYLOGUE_AGENT_LOG_ROOT:-/realm/project/polylogue/.agent/conductor-devloop}"
 active="$root/ACTIVE-LOOP.md"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=.agent/scripts/lib-devloop
+source "$script_dir/lib-devloop"
 
 case "$from:$to" in
   Direction:*|Evidence:*|Construction:*|Proof:*|Artifact:*|Velocity:*|Meta:*) ;;
@@ -46,6 +56,12 @@ case "$to" in
     exit 2
     ;;
 esac
+
+if [ "$force" -eq 0 ] && ! devloop_focus_edge_allowed "$from" "$to"; then
+  printf 'invalid focus transition: %s -> %s\n' "$from" "$to" >&2
+  printf 'use --force only when the operating log explains why this rare edge is correct\n' >&2
+  exit 2
+fi
 
 "$(dirname "$0")/devloop-log" "focus: $from -> $to" "Focus: $from -> $to
 Trigger: $trigger
