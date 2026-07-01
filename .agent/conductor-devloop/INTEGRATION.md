@@ -88,6 +88,49 @@ Active fat replay branch:
   pre-push quick gate `20260701T223350Z-quick-3645757-c8532222` passed in
   24.82s.
 
+Active fat replay branch 2:
+
+- Branch: `feature/feat/read-projection-render-specs`
+- PR: `https://github.com/Sinity/polylogue/pull/2503`
+- Worktree: `/realm/tmp/worktrees/polylogue-integration-fat/read-projection-render-specs`
+- Source group: 58 selected workbench commits covering projection render specs,
+  recovery/context-pack collapse, temporal evidence windows, chronicle reads,
+  query-set read naming, context-image policy rendering, and related CLI/MCP/web
+  surfaces.
+- Deliberately skipped from this PR: `bd937e7bc fix(forensics): distinguish
+  ambiguous follow-ups`, because it depends on the `agent_forensics.py` work
+  already published in #2502.
+- Current replay commits:
+  - `0b2eed261 refactor(read): collapse recovery read surfaces`
+  - `e1abda683 refactor(insights): rename recovery digest to session digest`
+  - `3bf835371 feat(read): add temporal projection views`
+  - `8ad09ebc5 perf(read): batch temporal evidence reads`
+  - `7bf865f86 feat(read): add bounded chronicle projection`
+  - `3aefc96af fix(chatgpt): classify transport rows as protocol`
+  - `0d1f274b6 refactor(cli): rename bulk export to query-set read`
+  - `044f973f4 fix(read): preserve paste boundary state`
+  - `c800668a2 fix(topology): keep unclassified Codex parent links generic`
+  - `a15d1296c feat(read): render projection specs in context images`
+  - `d8a4eca09 fix(daemon): route paste filters to archive storage`
+  - `73a15ffdf fix(read): align replay branch with current contracts`
+- Current proof command:
+  `devtools test tests/unit/surfaces/test_projection_spec.py tests/unit/surfaces/test_temporal_evidence.py tests/unit/surfaces/test_chronicle.py tests/unit/cli/test_query_set_read.py tests/unit/cli/test_context_image_view.py tests/unit/mcp/test_context_image.py tests/unit/daemon/test_web_reader.py -q`
+- Proof result: `176 passed in 380.03s` (`ok` in 382.8s wall time).
+- Publication proof: branch pushed to `origin/feature/feat/read-projection-render-specs`;
+  pre-push quick gate `20260701T230355Z-quick-3705645-9dfc152d` passed in
+  12.54s.
+
+Next fat replay candidates:
+
+- Demo/read-package/affordance analytics: current/demo shelf refresh,
+  declarative read packages, dialogue transcript projection, temporal aggregate
+  artifacts, and affordance usage analysis.
+- Agent/devloop scaffold convergence: `.agent` scaffold tracking, devloop
+  primitive conventions, demo index verification, pressure/status surfaces, and
+  current state boundary cleanup.
+- Query/observed-event tooling: filtered tool-call counts, observed-event tool
+  outcome basis, grouped observed-event aggregates, and supporting schemas.
+
 ## Required Command
 
 Use the integration report before publication decisions:
