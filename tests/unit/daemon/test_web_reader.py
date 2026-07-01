@@ -2335,7 +2335,7 @@ class TestReaderPrivacy:
     """
 
     def test_web_shell_does_not_leak_absolute_local_paths(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         for prefix in POLYLOGUE_LOCAL_PATH_PREFIXES:
             assert prefix not in body, f"web shell leaked absolute local path with prefix {prefix!r}"
@@ -2780,7 +2780,7 @@ class TestReaderInformability:
         classes the renderer can apply. Without these the rest of the
         informability story is just text.
         """
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         for quality in (
             "q-canonical",
@@ -2803,7 +2803,7 @@ class TestReaderInformability:
         legacy daemon fields. Legacy FTS rendering remains as fallback for
         old/status-snapshot payloads.
         """
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         assert "var readiness = s.component_readiness || {};" in body
         assert "renderFtsChip(readiness.search || null, s.fts_readiness || {})" in body
@@ -2816,7 +2816,7 @@ class TestReaderInformability:
         assert "function renderBrowserCaptureChip(" in body
 
     def test_status_strip_starts_with_unknown_counts_not_zero(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
 
         assert "convs checking" in body
@@ -2828,7 +2828,7 @@ class TestReaderInformability:
         assert "s.total_messages != null" in body
 
     def test_web_shell_models_failed_route_panels_and_retries(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
 
         assert "routeStates" in body
@@ -2846,7 +2846,7 @@ class TestReaderInformability:
         assert "/api/sessions/" in body
 
     def test_facets_loader_cancels_previous_request(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
 
         assert "AbortController" in body
@@ -2859,7 +2859,7 @@ class TestReaderInformability:
         assert "budget_ms" in body
 
     def test_missing_read_view_profiles_route_has_retry_fallback(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
 
         assert "setRouteState('readViewProfiles'" in body
@@ -2868,7 +2868,7 @@ class TestReaderInformability:
         assert "curl -fsS http://127.0.0.1:8766" in body
 
     def test_session_detail_failure_does_not_leave_bare_loading(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
 
         assert "selectedLoadError" in body
@@ -2881,7 +2881,7 @@ class TestReaderInformability:
         """``renderFtsChip`` must still distinguish ok / partial /
         unavailable when an older payload lacks ``component_readiness``.
         """
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         assert "function renderFtsChip(" in body
         assert "component && component.state !== 'unknown'" in body
@@ -2894,7 +2894,7 @@ class TestReaderInformability:
         by ``component_readiness.embeddings`` and
         ``component_readiness.daemon_ingest``.
         """
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         assert 'id="status-semantic"' in body
         assert 'id="status-ingest"' in body
@@ -2910,7 +2910,7 @@ class TestReaderInformability:
         """The web workbench displays browser-capture readiness from the
         daemon status envelope without learning the receiver's local spool path.
         """
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
             status = cast(dict[str, object], _get_json(base_url, "/api/status"))
 
@@ -2929,7 +2929,7 @@ class TestReaderInformability:
     def test_dev_loop_chip_consumes_branch_local_metadata(self, workspace_env: dict[str, Path]) -> None:
         """The web shell can surface branch-local run metadata when present."""
 
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
 
         assert 'id="status-dev-loop"' in body
@@ -2939,7 +2939,7 @@ class TestReaderInformability:
     def test_web_shell_surfaces_latest_api_request_diagnostics(self, workspace_env: dict[str, Path]) -> None:
         """The web shell has local request diagnostics for UI/API failures."""
 
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
 
         assert 'id="status-api-debug"' in body
@@ -2953,7 +2953,7 @@ class TestReaderInformability:
         """Session insight freshness gets its own status-strip chip. It now
         prefers ``component_readiness.session_profiles`` and keeps the
         previous freshness-payload fallback for old status snapshots."""
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         assert "function renderInsightChip(" in body
         assert 'id="status-insights"' in body
@@ -2965,7 +2965,7 @@ class TestReaderInformability:
         """The empty/no-results branches must include filter context and
         a concrete next action — the MK3 state matrix calls out that an
         empty archive and a filtered no-results are different states."""
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         assert "No sessions in archive. Run `polylogued run`" in body
         assert "No results for query=" in body
@@ -2976,7 +2976,7 @@ class TestReaderInformability:
         """Stack/Compare/Save/Recall workspace buttons must expose a
         disabled state with explanatory tooltips when context is
         insufficient — disabled actions are part of the MK3 design."""
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         assert "Stack needs a selected session" in body
         assert "Compare needs two sessions" in body
@@ -2988,7 +2988,7 @@ class TestReaderInformability:
         repo/cwd/branch, counts, cost/tokens, derived/insight, marks.
         Pin the comment marker so a future reorder is a deliberate change
         rather than accidental drift."""
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         assert "MK3 header chip order" in body
         # The origin chip should be tagged canonical (it identifies the
@@ -3007,7 +3007,7 @@ class TestReaderSavedViewsUI:
     """
 
     def test_workspace_toolbar_exposes_saved_view_entry(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         # Dedicated toolbar entry-point so saved views are reachable without
         # opening the Notes inspector tab (mirrors the Restore workspace
@@ -3023,7 +3023,7 @@ class TestReaderSavedViewsUI:
         assert "Saved views (" in body
 
     def test_save_current_view_handles_naming_conflict(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         # Naming conflict UX: detect locally against state.savedViews, prompt
         # for overwrite confirmation, replace via DELETE+POST. Empty/whitespace
@@ -3033,7 +3033,7 @@ class TestReaderSavedViewsUI:
         assert "Failed to replace existing view" in body
 
     def test_saved_view_list_exposes_delete_action(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         # The inspector list must render a Delete button per saved view; the
         # JS handler is reachable so the operator can prune stale views.
@@ -3042,7 +3042,7 @@ class TestReaderSavedViewsUI:
         assert 'onclick="deleteSavedView(' in body
 
     def test_saved_view_empty_state_is_actionable(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         # Empty state must point the operator at the action that resolves it
         # (per MK3 state matrix: each empty state names the next step).
@@ -3152,7 +3152,7 @@ class TestReaderBulkOperations:
         bulk envelope contract uses (succeeded/failed/skipped + dryRun + action).
         These are the field names the UI surfaces to the operator after a bulk
         op; renaming any of them silently would break the rendered status."""
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         for key in ("succeeded", "failed", "skipped", "dryRun", "action"):
             assert key in body, f"bulk envelope key {key!r} missing from shell"

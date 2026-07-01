@@ -77,8 +77,6 @@ Options:
   --origin TEXT                   Include origins (comma = OR)
   --exclude-origin TEXT           Exclude origins
   -r, --repo TEXT                 Filter by repository name (comma = OR)
-  --project TEXT                  Filter by provider project ref, e.g. ChatGPT
-                                  g-p-<id> (comma = OR)
   -t, --tag TEXT                  Include tags (comma = OR, supports
                                   key:value)
   --exclude-tag TEXT              Exclude tags
