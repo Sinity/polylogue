@@ -412,8 +412,7 @@ def _parsed_session_shape_reason(archive_root: Path, row: sqlite3.Row) -> str | 
         if (
             isinstance(payload, dict)
             and isinstance(payload.get("sessionId"), str)
-            and isinstance(payload.get("messages"), list)
-            and payload.get("hasUserOrAssistantMessage") is True
+            and _gemini_messages_are_session_shaped(payload.get("messages"))
         ):
             return "Gemini CLI chat session"
     if origin == "chatgpt-export":
@@ -434,6 +433,15 @@ def _raw_json_document(path: Path) -> Any:
             return json.load(handle)
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def _gemini_messages_are_session_shaped(messages: object) -> bool:
+    if not isinstance(messages, list):
+        return False
+    seen_types = {
+        value for item in messages[:200] if isinstance(item, dict) and isinstance((value := item.get("type")), str)
+    }
+    return bool(seen_types & {"user", "gemini"})
 
 
 def _source_path_is_known_sidecar(source_path: str) -> bool:

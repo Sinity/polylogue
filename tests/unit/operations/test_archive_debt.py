@@ -346,6 +346,18 @@ def _init_raw_materialization_fixture(root: Path) -> tuple[Path, Path, Path]:
                     123,
                     "passed",
                 ),
+                (
+                    "raw-gemini-session-shaped",
+                    "gemini-cli-session",
+                    "gemini-session-shaped",
+                    str(root / "gemini-session.json"),
+                    bytes.fromhex("12" * 32),
+                    4096,
+                    123,
+                    None,
+                    123,
+                    "passed",
+                ),
             ),
         )
     (blob_root / "bb").mkdir()
@@ -377,6 +389,11 @@ def _init_raw_materialization_fixture(root: Path) -> tuple[Path, Path, Path]:
         '{"type":"response_item","payload":{"type":"message","role":"user"}}\n',
         encoding="utf-8",
     )
+    (blob_root / "12").mkdir()
+    (blob_root / "12" / ("12" * 31)).write_text(
+        '{"sessionId":"gemini-session-shaped","messages":[{"type":"user"},{"type":"gemini"}],"kind":"main"}',
+        encoding="utf-8",
+    )
 
     with sqlite3.connect(index_db) as conn:
         conn.execute("CREATE TABLE sessions (session_id TEXT, origin TEXT, native_id TEXT, raw_id TEXT)")
@@ -389,13 +406,13 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
 
     payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
 
-    assert payload.totals.total == 5
-    assert payload.totals.affected_total == 7
+    assert payload.totals.total == 6
+    assert payload.totals.affected_total == 8
     assert payload.totals.affected_critical == 1
-    assert payload.totals.affected_warning == 2
+    assert payload.totals.affected_warning == 3
     assert payload.totals.affected_info == 4
     assert payload.totals.affected_actionable == 1
-    assert payload.totals.affected_open == 6
+    assert payload.totals.affected_open == 7
 
     by_ref = {row.debt_ref: row for row in payload.rows}
     missing_blob = by_ref["debt:raw-materialization:codex-session:missing-blob"]
@@ -424,6 +441,13 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
     assert session_shaped.affected_count == 1
     assert "Codex session event stream" in (session_shaped.details or "")
     assert session_shaped.actions == ()
+
+    gemini_session = by_ref["debt:raw-materialization:gemini-cli-session:parsed-session-unmaterialized"]
+    assert gemini_session.severity == "warning"
+    assert gemini_session.status == "open"
+    assert gemini_session.category == "parsed-session-unmaterialized"
+    assert "Gemini CLI chat session" in (gemini_session.details or "")
+    assert gemini_session.actions == ()
 
     sidecars = by_ref["debt:raw-materialization:claude-code-session:parsed-non-session-artifact"]
     assert sidecars.severity == "info"
