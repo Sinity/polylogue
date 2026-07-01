@@ -197,7 +197,9 @@ For a faster speed read without creating a baseline artifact:
 ```
 
 Use it to spot long logged gaps, stale focus, archive-root drift, and active
-heavy processes before starting another archive-heavy command.
+heavy processes before starting another archive-heavy command. It also prints
+active packet size and event/log sidecar sizes so conductor growth is visible
+instead of becoming hidden ignored-state clutter.
 
 The focus transition audit in `devloop-velocity` is a tripwire. Treat repeated
 `Proof -> Direction` exits, long unlabeled dwell, or stale ACTIVE-LOOP focus as

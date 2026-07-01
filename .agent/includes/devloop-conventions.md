@@ -56,6 +56,11 @@ should remain stable across projects.
 - Ignored scratch is supporting research, not active loop state.
 - Generated manifests are acceptable; duplicated script/readme snapshots are
   not.
+- The active conductor packet may contain ignored logs and generated sidecars,
+  but growth must be visible. `devloop-status --json` exposes
+  `agent_packet.bytes`, root file counts, `OPERATING-LOG.md` bytes, and
+  `EVENTS.jsonl` bytes; `devloop-review` warns only when the active packet
+  crosses a soft clutter budget.
 
 ## Archive Claim Discipline
 

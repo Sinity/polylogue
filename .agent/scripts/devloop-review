@@ -327,6 +327,15 @@ allowed_packet_files=(
   devloop-script-hashes.tsv
 )
 if [ -d "$current" ]; then
+  packet_bytes="$(du -sb "$current" 2>/dev/null | awk '{print $1}' || printf 0)"
+  packet_files="$(find "$current" -maxdepth 1 -type f 2>/dev/null | wc -l | tr -d ' ')"
+  printf 'INFO: conductor packet size=%s bytes files=%s\n' "$packet_bytes" "$packet_files"
+  if [ "${packet_bytes:-0}" -gt 5242880 ]; then
+    warn "conductor packet exceeds 5 MiB; consolidate logs/artifacts or explain the current need"
+  fi
+  if [ "${packet_files:-0}" -gt 32 ]; then
+    warn "conductor packet has more than 32 root files; move non-startup material to includes, demos, or scratch/research"
+  fi
   unexpected="$(
     find "$current" -maxdepth 1 -type f -printf '%f\n' \
       | sort \

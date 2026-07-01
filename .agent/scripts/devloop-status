@@ -5,6 +5,11 @@ repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
 archive_root="${POLYLOGUE_ARCHIVE_ROOT:-/home/sinity/.local/share/polylogue}"
 current="${POLYLOGUE_AGENT_CURRENT:-$repo/.agent/conductor-devloop}"
 format="${1:-text}"
+packet_bytes="$(du -sb "$current" 2>/dev/null | awk '{print $1}' || printf '')"
+packet_files="$(find "$current" -maxdepth 1 -type f 2>/dev/null | wc -l | tr -d ' ')"
+packet_dirs="$(find "$current" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"
+operating_log_bytes="$(wc -c <"$current/OPERATING-LOG.md" 2>/dev/null || printf '')"
+events_bytes="$(wc -c <"$current/EVENTS.jsonl" 2>/dev/null || printf '')"
 
 git_branch="$(git -C "$repo" branch --show-current 2>/dev/null || true)"
 git_head="$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || true)"
@@ -79,11 +84,11 @@ if [ "$format" = "--json" ]; then
   devloop_sub_state="$(systemctl --user show polylogued-devloop.service -p SubState --value 2>/dev/null || true)"
   polylogued_rows="$(ps -eo pid=,args= | awk '$3 ~ /\/polylogued$/ && $4 == "run" {print}' || true)"
   worktree_gc_json="$(devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"
-  python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$observed_events" "$source_version" "$raw_rows" "$raw_materialization_debt" "$raw_materialization_replayable" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$worktree_gc_json" "$pressure_rows" "$performance_blocked" <<'PY'
+  python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$observed_events" "$source_version" "$raw_rows" "$raw_materialization_debt" "$raw_materialization_replayable" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$worktree_gc_json" "$pressure_rows" "$performance_blocked" "$packet_bytes" "$packet_files" "$packet_dirs" "$operating_log_bytes" "$events_bytes" <<'PY'
 import json
 import sys
 
-repo, current, archive_root, git_branch, git_head, git_tracked_changes, git_untracked_changes, index_version, sessions, messages, observed_events, source_version, raw_rows, raw_materialization_debt, raw_materialization_replayable, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows, worktree_gc_json, pressure_rows, performance_blocked = sys.argv[1:]
+repo, current, archive_root, git_branch, git_head, git_tracked_changes, git_untracked_changes, index_version, sessions, messages, observed_events, source_version, raw_rows, raw_materialization_debt, raw_materialization_replayable, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows, worktree_gc_json, pressure_rows, performance_blocked, packet_bytes, packet_files, packet_dirs, operating_log_bytes, events_bytes = sys.argv[1:]
 
 def int_or_none(value: str):
     try:
@@ -127,6 +132,14 @@ print(json.dumps({
         "devloop_sub_state": devloop_sub_state,
         "polylogued": [line for line in polylogued_rows.splitlines() if line],
     },
+    "agent_packet": {
+        "path": current,
+        "bytes": int_or_none(packet_bytes),
+        "files": int_or_none(packet_files),
+        "dirs": int_or_none(packet_dirs),
+        "operating_log_bytes": int_or_none(operating_log_bytes),
+        "events_jsonl_bytes": int_or_none(events_bytes),
+    },
     "worktrees": {
         "total_count": int_or_none(str(worktree_gc.get("total_count", ""))),
         "safe_count": int_or_none(str(worktree_gc.get("safe_count", ""))),
@@ -147,6 +160,8 @@ printf 'current: %s\n' "$current"
 printf 'archive_root: %s\n' "$archive_root"
 printf 'git: branch=%s head=%s tracked_changes=%s untracked_changes=%s\n' \
   "${git_branch:-unknown}" "${git_head:-unknown}" "$git_tracked_changes" "$git_untracked_changes"
+printf 'agent_packet: bytes=%s files=%s dirs=%s operating_log_bytes=%s events_jsonl_bytes=%s\n' \
+  "${packet_bytes:-?}" "${packet_files:-?}" "${packet_dirs:-?}" "${operating_log_bytes:-?}" "${events_bytes:-?}"
 
 if [ -f "$archive_root/index.db" ]; then
   version="$(sqlite3 "$archive_root/index.db" 'PRAGMA user_version;' 2>/dev/null || true)"

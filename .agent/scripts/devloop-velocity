@@ -39,6 +39,13 @@ daemon = data.get("daemon", {})
 print("index=" f"v{idx.get('schema_version')} " f"sessions={idx.get('sessions')} " f"messages={idx.get('messages')}")
 print(f"source=v{src.get('schema_version')} raw_sessions={src.get('raw_sessions')}")
 print(f"daemon={daemon.get('devloop_state')} prod={daemon.get('prod_state')}")
+packet = data.get("agent_packet", {})
+print(
+    "agent_packet="
+    f"bytes={packet.get('bytes')} files={packet.get('files')} "
+    f"log_bytes={packet.get('operating_log_bytes')} "
+    f"events_bytes={packet.get('events_jsonl_bytes')}"
+)
 PY
 
 printf '\n== active focus ==\n'
