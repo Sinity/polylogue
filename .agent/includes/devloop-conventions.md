@@ -57,6 +57,17 @@ should remain stable across projects.
 - Generated manifests are acceptable; duplicated script/readme snapshots are
   not.
 
+## Archive Claim Discipline
+
+- A matching active index schema means the index tier can be opened; it is not
+  proof that all acquired source rows are materialized.
+- `devloop-status --json` must expose archive convergence signals needed for
+  live claims. In Polylogue that includes `convergence.raw_materialization_debt`
+  and core read-model counts such as `index.observed_events`.
+- If raw materialization debt is nonzero, demos may still be valid for the rows
+  they query, but agents must not claim full archive convergence until the debt
+  is repaired or classified.
+
 ## Polylogue Migration Target
 
 - Keep `.agent/conductor-devloop/` as active state.

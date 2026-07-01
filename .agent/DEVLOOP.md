@@ -80,6 +80,11 @@ or live capture, maintain logs and handoffs, and reprioritize by evidence.
 - The intended daemon is `polylogued-devloop.service`.
 - Always state archive root, schema version, and relevant counts when quoting
   live archive facts.
+- Treat `devloop-status` convergence fields as claim guards. A matching
+  `index.schema_version` means the index can be opened; it does not mean the
+  archive is fully converged. If `convergence.raw_materialization_debt` is
+  nonzero, do not claim full archive convergence until the missing raw rows are
+  repaired or classified.
 - Treat `devloop-status` git fields as part of the start gate: branch, HEAD,
   tracked-change count, and untracked-change count tell you whether you are
   resuming a clean branch, local process edit, or product slice.
