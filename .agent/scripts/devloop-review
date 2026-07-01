@@ -6,6 +6,25 @@ current="${POLYLOGUE_AGENT_CURRENT:-$repo/.agent/conductor-devloop}"
 packet="$current"
 archive_root="${POLYLOGUE_ARCHIVE_ROOT:-/home/sinity/.local/share/polylogue}"
 
+canonical_devloop_scripts=(
+  devloop-ahead
+  devloop-baseline
+  devloop-checkpoint
+  devloop-demo
+  devloop-focus
+  devloop-handoff
+  devloop-log
+  devloop-meta
+  devloop-refresh-demos
+  devloop-refresh-events
+  devloop-review
+  devloop-start
+  devloop-status
+  devloop-sync
+  devloop-velocity
+  devloop-wait
+)
+
 status=0
 warn() {
   printf 'WARN: %s\n' "$*"
@@ -82,6 +101,32 @@ if [ "${#non_executable_scripts[@]}" -gt 0 ]; then
   printf '%s\n' "${non_executable_scripts[@]}"
 else
   ok "devloop scripts are executable"
+fi
+
+script_name_diff="$(
+  {
+    find "$repo/.agent/scripts" -maxdepth 1 -type f -name 'devloop-*' -printf '%f\n' | sort
+    printf -- '---\n'
+    printf '%s\n' "${canonical_devloop_scripts[@]}" | sort
+  } | awk '
+    $0 == "---" {section = 1; next}
+    section == 0 {actual[$0] = 1; next}
+    {expected[$0] = 1}
+    END {
+      for (name in actual) {
+        if (!(name in expected)) print "extra " name
+      }
+      for (name in expected) {
+        if (!(name in actual)) print "missing " name
+      }
+    }
+  ' | sort
+)"
+if [ -n "$script_name_diff" ]; then
+  warn "devloop primitive names drifted from the canonical set"
+  printf '%s\n' "$script_name_diff"
+else
+  ok "devloop primitive names match canonical set"
 fi
 
 state_files=(
@@ -242,6 +287,27 @@ if [ -d "$current" ]; then
   else
     ok "conductor packet root contains only active/protocol/generated files"
   fi
+  unexpected_dirs="$(
+    find "$current" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
+  )"
+  if [ -n "$unexpected_dirs" ]; then
+    warn "conductor packet contains subdirectories; active packet must not mirror scripts/demos/scratch"
+    printf '%s\n' "$unexpected_dirs"
+  else
+    ok "conductor packet has no subdirectory mirrors"
+  fi
+fi
+
+if [ -d "$repo/.agent/scratch/current" ]; then
+  warn ".agent/scratch/current exists; active loop state belongs in .agent/conductor-devloop"
+else
+  ok "no scratch/current active-state mirror"
+fi
+
+if [ -d "$repo/.agent/handoff" ]; then
+  warn ".agent/handoff exists; handoff state belongs in the conductor packet, not a mirror"
+else
+  ok "no handoff mirror"
 fi
 
 if [ -f "$repo/.agent/demos/MANIFEST.readable.json" ] && [ -f "$repo/.agent/demos/SUMMARY_INDEX.json" ]; then
