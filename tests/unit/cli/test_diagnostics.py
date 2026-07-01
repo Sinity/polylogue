@@ -8,6 +8,7 @@ from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
+from click.testing import CliRunner
 
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.cli.commands import diagnostics
@@ -157,6 +158,17 @@ def _patch_tool_count_store(
     store = _FakeToolCountStore(call_rows, event_rows)
     monkeypatch.setattr(ArchiveStore, "open_existing", classmethod(lambda cls, archive_root: store))
     return store
+
+
+def test_tools_help_explains_basis_and_mcp_server_filters() -> None:
+    result = CliRunner().invoke(diagnostics.tools_command, ["--help"])
+    output = " ".join(result.output.split())
+
+    assert result.exit_code == 0
+    assert "observed-events counts finished tool outcomes" in output
+    assert "tool-use-blocks counts calls" in output
+    assert "serena -> mcp__serena__*" in output
+    assert "mcp__serena__find_symbol" in output
 
 
 @pytest.mark.asyncio

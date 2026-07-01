@@ -339,15 +339,15 @@ def _usage_counter_line(counters: object) -> str:
 
 @click.command("tools")
 @click.option("--origin", help="Filter by origin or provider token")
-@click.option("--tool", help="Only entries for this normalized tool name")
-@click.option("--mcp-server", help="Only entries for this MCP server prefix")
+@click.option("--tool", help="Only entries for this exact normalized tool name, e.g. mcp__serena__find_symbol")
+@click.option("--mcp-server", help="Only MCP tools with this server prefix, e.g. serena -> mcp__serena__*")
 @click.option("--action-kind", help="Only entries for this action kind")
 @click.option(
     "--basis",
     type=click.Choice(["tool-use-blocks", "observed-events"]),
     default="tool-use-blocks",
     show_default=True,
-    help="Underlying projection for the rollup.",
+    help="Underlying projection: tool-use-blocks counts calls; observed-events counts finished tool outcomes.",
 )
 @click.option("--limit", "-l", "-n", type=int, default=20, help="Max tools to show")
 @click.option(
