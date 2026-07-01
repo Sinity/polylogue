@@ -19,7 +19,7 @@ then do this:
 1. From `/realm/project/polylogue`, read `.agent/DEVLOOP.md`.
 2. Run `.agent/scripts/devloop-status`.
 3. Run `.agent/scripts/devloop-review`.
-4. Read `RUNBOOK.md` and `INDEX.md`.
+4. Read `RUNBOOK.md`, `INTEGRATION.md`, and `INDEX.md`.
 5. If local `ACTIVE-LOOP.md` exists, read it and continue that slice.
 6. If local state is absent, start in `Direction`: choose a slice from the goal,
    current repo state, and any available archive/daemon evidence.
@@ -98,6 +98,8 @@ The proof ladder is:
 - `DEMO-RADAR.md` — demo candidates, selected artifact, proof/caveat, and next
   demo question.
 - `RUNBOOK.md` — operational protocol and focus-mode rules.
+- `INTEGRATION.md` — PR-shaped replay and publication protocol for the
+  long-running workbench branch.
 - `PROCESS.md`, `TACTICS.md`, `VELOCITY.md` — compact process, tactical, and
   speed rules.
 - `SELF-PROMPTS.md` — durable goal, primary self-prompt, adversarial prompt,

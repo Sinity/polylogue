@@ -9,14 +9,15 @@ only. Historical audits and old backlog notes belong under `.agent/archive/` or
 
 1. `README.md`
 2. `RUNBOOK.md`
-3. `ACTIVE-LOOP.md`
-4. `OPERATING-LOG.md` tail
-5. `DEMO-RADAR.md` tail
-6. `VELOCITY.md`
-7. `PROCESS.md`
-8. `TACTICS.md`
-9. `ADVERSARIAL-REVIEW.md`
-10. `SELF-PROMPTS.md`
+3. `INTEGRATION.md`
+4. `ACTIVE-LOOP.md`
+5. `OPERATING-LOG.md` tail
+6. `DEMO-RADAR.md` tail
+7. `VELOCITY.md`
+8. `PROCESS.md`
+9. `TACTICS.md`
+10. `ADVERSARIAL-REVIEW.md`
+11. `SELF-PROMPTS.md`
 
 Then run:
 
@@ -29,6 +30,8 @@ Then run:
 
 - `README.md` — contextless resume guide.
 - `RUNBOOK.md` — loop protocol, proof ladder, git/runtime discipline.
+- `INTEGRATION.md` — PR-shaped replay and publication protocol for the
+  long-lived workbench branch.
 - `ACTIVE-LOOP.md` — current slice, focus transition, accepted warnings, next
   action.
 - `OPERATING-LOG.md` — timestamped operating history.

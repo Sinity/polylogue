@@ -28,6 +28,8 @@ should follow the bootstrap below without needing chat context.
   current slice, focus, warnings, and next action.
 - `conductor-devloop/RUNBOOK.md` — exact loop protocol, focus modes, proof
   ladder, heavy-work rules, git protocol, and inbox routing.
+- `conductor-devloop/INTEGRATION.md` — PR-shaped replay and publication
+  protocol for the long-running workbench branch.
 - `conductor-devloop/OPERATING-LOG.md` — timestamped loop entries.
 - `conductor-devloop/VELOCITY.md` — cadence and acceleration rules.
 - `conductor-devloop/SELF-PROMPTS.md` — long-form self-prompts and process goal.

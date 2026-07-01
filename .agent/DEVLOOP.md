@@ -22,14 +22,15 @@ Then read, in order:
 
 1. `.agent/conductor-devloop/README.md`
 2. `.agent/conductor-devloop/RUNBOOK.md`
-3. `.agent/conductor-devloop/PROCESS.md`
-4. `.agent/conductor-devloop/VELOCITY.md`
-5. `.agent/conductor-devloop/TACTICS.md`
-6. `.agent/conductor-devloop/INDEX.md`
-7. `.agent/conductor-devloop/ACTIVE-LOOP.md` when present
-8. `.agent/conductor-devloop/OPERATING-LOG.md` tail
-9. `.agent/conductor-devloop/DEMO-RADAR.md`
-10. `.agent/includes/README.md`
+3. `.agent/conductor-devloop/INTEGRATION.md`
+4. `.agent/conductor-devloop/PROCESS.md`
+5. `.agent/conductor-devloop/VELOCITY.md`
+6. `.agent/conductor-devloop/TACTICS.md`
+7. `.agent/conductor-devloop/INDEX.md`
+8. `.agent/conductor-devloop/ACTIVE-LOOP.md` when present
+9. `.agent/conductor-devloop/OPERATING-LOG.md` tail
+10. `.agent/conductor-devloop/DEMO-RADAR.md`
+11. `.agent/includes/README.md`
 
 If `devloop-review` warns, fix the warning or record the conscious exception in
 the active loop state before broad work.
@@ -195,5 +196,6 @@ The intended flow is:
    exact residual diff/dependency.
 
 The clustering/planning part is a good read-heavy subagent lane. Final replay,
-verification, push, and PR creation stay with the main devloop unless the
-operator explicitly delegates them.
+verification, push, and draft PR creation are normal authorized devloop actions;
+the main devloop owns them unless the operator explicitly delegates that write
+authority to another agent.

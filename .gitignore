@@ -82,6 +82,7 @@ AGENTS.md
 .agent/conductor-devloop/*
 !.agent/conductor-devloop/README.md
 !.agent/conductor-devloop/INDEX.md
+!.agent/conductor-devloop/INTEGRATION.md
 !.agent/conductor-devloop/RUNBOOK.md
 !.agent/conductor-devloop/PROCESS.md
 !.agent/conductor-devloop/TACTICS.md

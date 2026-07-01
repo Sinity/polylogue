@@ -65,6 +65,7 @@ required_scaffold=(
   "$repo/.agent/includes/projection-render-direction.md"
   "$current/README.md"
   "$current/INDEX.md"
+  "$current/INTEGRATION.md"
   "$current/VELOCITY.md"
   "$current/PROCESS.md"
   "$current/TACTICS.md"
@@ -120,6 +121,7 @@ force_included_paths=(
   ".agent/includes/README.md"
   ".agent/scripts/devloop-status"
   ".agent/conductor-devloop/RUNBOOK.md"
+  ".agent/conductor-devloop/INTEGRATION.md"
 )
 ignored_force_included=()
 for rel in "${force_included_paths[@]}"; do
@@ -450,6 +452,7 @@ allowed_packet_files=(
   EVENTS.jsonl
   HANDOFF-LATEST.md
   INDEX.md
+  INTEGRATION.md
   MANIFEST.md
   OPERATING-LOG.md
   PROCESS.md
