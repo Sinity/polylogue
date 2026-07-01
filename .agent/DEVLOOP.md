@@ -116,7 +116,22 @@ or live capture, maintain logs and handoffs, and reprioritize by evidence.
 
 - Default archive root: `/home/sinity/.local/share/polylogue`.
 - Production `polylogued.service` should stay inactive during this devloop.
-- The intended daemon is `polylogued-devloop.service`.
+- The intended daemon is the branch-local `devtools workspace dev-loop`
+  launcher on the canonical archive. Start/restart it with an explicit archive
+  root and ports, for example:
+
+  ```bash
+  devtools workspace dev-loop \
+    --archive-root /home/sinity/.local/share/polylogue \
+    --api-port 8766 \
+    --browser-capture-port 8765 \
+    --prepare \
+    --launch-daemon \
+    --json
+  ```
+
+  `devloop-status` prints the daemon run directory and spool path; `devloop-review`
+  warns if the daemon still points at a stale commit's run directory.
 - Always state archive root, schema version, and relevant counts when quoting
   live archive facts.
 - Treat `devloop-status` convergence fields as claim guards. A matching

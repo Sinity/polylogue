@@ -846,6 +846,41 @@ else
       printf 'non-devloop polylogued rows:\n%s\n' "$polylogued_non_devloop_pids"
     fi
   fi
+  current_head="$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || true)"
+  if [ -n "$polylogued_devloop_pids" ] && [ -n "$current_head" ]; then
+    if python3 - "$polylogued_devloop_pids" "$current_head" <<'PY'
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+rows, current_head = sys.argv[1:]
+bad: list[str] = []
+for line in rows.splitlines():
+    parts = line.split(None, 5)
+    args = parts[5] if len(parts) >= 6 else line
+    tokens = args.split()
+    spool = None
+    for index, token in enumerate(tokens):
+        if token == "--spool" and index + 1 < len(tokens):
+            spool = Path(tokens[index + 1])
+            break
+    if spool is None:
+        bad.append(f"missing --spool :: {line}")
+        continue
+    run_dir = spool.parent
+    if current_head not in run_dir.name:
+        bad.append(f"stale run_dir={run_dir} current_head={current_head}")
+if bad:
+    print("\n".join(bad))
+    raise SystemExit(1)
+PY
+    then
+      ok "devloop daemon run directory matches current HEAD"
+    else
+      warn "devloop daemon run directory is stale; relaunch with devtools workspace dev-loop --launch-daemon"
+    fi
+  fi
 fi
 
 prod_active_state="$(
