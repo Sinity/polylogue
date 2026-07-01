@@ -219,7 +219,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </head>
 <body>
     <header class="site-header">
-        <a href="/polylogue/" class="logo">poly<span>logue</span></a>
+        <a href="../../" class="logo">poly<span>logue</span></a>
         <div class="search-bar">
             <input type="search" placeholder="Search docs..." id="search-input">
         </div>
@@ -234,27 +234,27 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Documentation</div>
                 
-                <a href="/polylogue/docs/getting-started/" >
+                <a href="../getting-started/" >
                     Getting Started
                 </a>
                 
-                <a href="/polylogue/docs/search/" >
+                <a href="../search/" >
                     Search
                 </a>
                 
-                <a href="/polylogue/docs/providers/" class="active">
+                <a href="./" class="active">
                     Providers
                 </a>
                 
-                <a href="/polylogue/docs/insights/" >
+                <a href="../insights/" >
                     Insights
                 </a>
                 
-                <a href="/polylogue/docs/export/" >
+                <a href="../export/" >
                     Export
                 </a>
                 
-                <a href="/polylogue/docs/daemon/" >
+                <a href="../daemon/" >
                     Daemon
                 </a>
                 
@@ -263,19 +263,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Reference</div>
                 
-                <a href="/polylogue/reference/cli/" >
+                <a href="../../reference/cli/" >
                     CLI
                 </a>
                 
-                <a href="/polylogue/reference/mcp/" >
+                <a href="../../reference/mcp/" >
                     MCP
                 </a>
                 
-                <a href="/polylogue/reference/api/" >
+                <a href="../../reference/api/" >
                     API
                 </a>
                 
-                <a href="/polylogue/reference/config/" >
+                <a href="../../reference/config/" >
                     Config
                 </a>
                 
@@ -284,19 +284,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Architecture</div>
                 
-                <a href="/polylogue/architecture/rings/" >
+                <a href="../../architecture/rings/" >
                     Rings
                 </a>
                 
-                <a href="/polylogue/architecture/internals/" >
+                <a href="../../architecture/internals/" >
                     Internals
                 </a>
                 
-                <a href="/polylogue/architecture/schema/" >
+                <a href="../../architecture/schema/" >
                     Schema
                 </a>
                 
-                <a href="/polylogue/architecture/contributing/" >
+                <a href="../../architecture/contributing/" >
                     Contributing
                 </a>
                 
@@ -305,23 +305,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Verifiability</div>
                 
-                <a href="/polylogue/verifiability/catalog/" >
-                    Catalog
-                </a>
-                
-                <a href="/polylogue/verifiability/coverage/" >
+                <a href="../../verifiability/coverage/" >
                     Coverage
                 </a>
                 
-                <a href="/polylogue/verifiability/mutation/" >
+                <a href="../../verifiability/mutation/" >
                     Mutation
                 </a>
                 
-                <a href="/polylogue/verifiability/freshness/" >
+                <a href="../../verifiability/freshness/" >
                     Freshness
                 </a>
                 
-                <a href="/polylogue/verifiability/drift/" >
+                <a href="../../verifiability/drift/" >
                     Drift
                 </a>
                 
@@ -330,27 +326,27 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Design</div>
                 
-                <a href="/polylogue/design/second-brain/" >
+                <a href="../../design/second-brain/" >
                     Second Brain
                 </a>
                 
-                <a href="/polylogue/design/time-machine/" >
+                <a href="../../design/time-machine/" >
                     Time Machine
                 </a>
                 
-                <a href="/polylogue/design/project-memory/" >
+                <a href="../../design/project-memory/" >
                     Project Memory
                 </a>
                 
-                <a href="/polylogue/design/agent-first-mcp/" >
+                <a href="../../design/agent-first-mcp/" >
                     Agent-First MCP
                 </a>
                 
-                <a href="/polylogue/design/archive-storytelling/" >
+                <a href="../../design/archive-storytelling/" >
                     Archive Storytelling
                 </a>
                 
-                <a href="/polylogue/design/whole-product/" >
+                <a href="../../design/whole-product/" >
                     Whole Product
                 </a>
                 
@@ -359,7 +355,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
         </nav>
         <main class="content">
             
-<p><a href="../README.md">← Back to Docs</a></p>
+<p><a href="https://github.com/Sinity/polylogue/blob/master/docs/README.md">← Back to Docs</a></p>
 <h1>Providers</h1>
 <p>Polylogue detects and parses six known AI chat providers plus an unknown
 fallback.</p>
@@ -381,7 +377,7 @@ fallback.</p>
 <td><code>sources/parsers/chatgpt.py</code></td>
 </tr>
 <tr>
-<td><a href="http://Claude.ai">Claude.ai</a></td>
+<td>Claude.ai</td>
 <td><code>claude-ai</code></td>
 <td><code>chat_messages</code> list (bundle record)</td>
 <td><code>sources/parsers/claude.py</code></td>
@@ -444,7 +440,7 @@ function in priority order. Detection is shape-based, not filename-based.</p>
 <tbody>
 <tr>
 <td>Bundle record</td>
-<td>ChatGPT, <a href="http://Claude.ai">Claude.ai</a></td>
+<td>ChatGPT, Claude.ai</td>
 <td>Single JSON object containing a complete session</td>
 </tr>
 <tr>
@@ -464,8 +460,8 @@ function in priority order. Detection is shape-based, not filename-based.</p>
 <p>Parses the ChatGPT export format: <code>mapping</code> dictionary with message nodes,
 parent/children graph, and author roles. Extracts session title from the
 first user message or the export metadata.</p>
-<h3><a href="http://Claude.ai">Claude.ai</a> / Claude Code</h3>
-<p><a href="http://Claude.ai">Claude.ai</a> exports use a <code>chat_messages</code> array with structured content blocks
+<h3>Claude.ai / Claude Code</h3>
+<p>Claude.ai exports use a <code>chat_messages</code> array with structured content blocks
 (text, tool_use, tool_result, thinking). Claude Code exports use a record array
 with <code>parentUuid</code> / <code>sessionId</code> fields to group messages into sessions. Both
 paths go through the same parser with a branch point.</p>
@@ -497,8 +493,8 @@ block types or message structures</li>
 
 <hr style="margin: 3rem 0 1rem; border-color: var(--border);">
 <nav style="display: flex; justify-content: space-between; font-size: 0.9rem;">
-    <a href="/polylogue/docs/search/">← Search</a>
-    <a href="/polylogue/docs/providers/claude-code/">Claude Code →</a>
+    <a href="../search/">← Search</a>
+    <a href="claude-code/">Claude Code →</a>
 </nav>
 
         </main>

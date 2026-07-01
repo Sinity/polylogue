@@ -219,7 +219,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </head>
 <body>
     <header class="site-header">
-        <a href="/polylogue/" class="logo">poly<span>logue</span></a>
+        <a href="../../" class="logo">poly<span>logue</span></a>
         <div class="search-bar">
             <input type="search" placeholder="Search docs..." id="search-input">
         </div>
@@ -234,27 +234,27 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Documentation</div>
                 
-                <a href="/polylogue/docs/getting-started/" >
+                <a href="../../docs/getting-started/" >
                     Getting Started
                 </a>
                 
-                <a href="/polylogue/docs/search/" >
+                <a href="../../docs/search/" >
                     Search
                 </a>
                 
-                <a href="/polylogue/docs/providers/" >
+                <a href="../../docs/providers/" >
                     Providers
                 </a>
                 
-                <a href="/polylogue/docs/insights/" >
+                <a href="../../docs/insights/" >
                     Insights
                 </a>
                 
-                <a href="/polylogue/docs/export/" >
+                <a href="../../docs/export/" >
                     Export
                 </a>
                 
-                <a href="/polylogue/docs/daemon/" >
+                <a href="../../docs/daemon/" >
                     Daemon
                 </a>
                 
@@ -263,19 +263,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Reference</div>
                 
-                <a href="/polylogue/reference/cli/" >
+                <a href="../../reference/cli/" >
                     CLI
                 </a>
                 
-                <a href="/polylogue/reference/mcp/" >
+                <a href="../../reference/mcp/" >
                     MCP
                 </a>
                 
-                <a href="/polylogue/reference/api/" >
+                <a href="../../reference/api/" >
                     API
                 </a>
                 
-                <a href="/polylogue/reference/config/" >
+                <a href="../../reference/config/" >
                     Config
                 </a>
                 
@@ -284,19 +284,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Architecture</div>
                 
-                <a href="/polylogue/architecture/rings/" >
+                <a href="../rings/" >
                     Rings
                 </a>
                 
-                <a href="/polylogue/architecture/internals/" >
+                <a href="../internals/" >
                     Internals
                 </a>
                 
-                <a href="/polylogue/architecture/schema/" class="active">
+                <a href="./" class="active">
                     Schema
                 </a>
                 
-                <a href="/polylogue/architecture/contributing/" >
+                <a href="../contributing/" >
                     Contributing
                 </a>
                 
@@ -305,23 +305,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Verifiability</div>
                 
-                <a href="/polylogue/verifiability/catalog/" >
-                    Catalog
-                </a>
-                
-                <a href="/polylogue/verifiability/coverage/" >
+                <a href="../../verifiability/coverage/" >
                     Coverage
                 </a>
                 
-                <a href="/polylogue/verifiability/mutation/" >
+                <a href="../../verifiability/mutation/" >
                     Mutation
                 </a>
                 
-                <a href="/polylogue/verifiability/freshness/" >
+                <a href="../../verifiability/freshness/" >
                     Freshness
                 </a>
                 
-                <a href="/polylogue/verifiability/drift/" >
+                <a href="../../verifiability/drift/" >
                     Drift
                 </a>
                 
@@ -330,27 +326,27 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Design</div>
                 
-                <a href="/polylogue/design/second-brain/" >
+                <a href="../../design/second-brain/" >
                     Second Brain
                 </a>
                 
-                <a href="/polylogue/design/time-machine/" >
+                <a href="../../design/time-machine/" >
                     Time Machine
                 </a>
                 
-                <a href="/polylogue/design/project-memory/" >
+                <a href="../../design/project-memory/" >
                     Project Memory
                 </a>
                 
-                <a href="/polylogue/design/agent-first-mcp/" >
+                <a href="../../design/agent-first-mcp/" >
                     Agent-First MCP
                 </a>
                 
-                <a href="/polylogue/design/archive-storytelling/" >
+                <a href="../../design/archive-storytelling/" >
                     Archive Storytelling
                 </a>
                 
-                <a href="/polylogue/design/whole-product/" >
+                <a href="../../design/whole-product/" >
                     Whole Product
                 </a>
                 
@@ -359,17 +355,17 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
         </nav>
         <main class="content">
             
-<p><a href="README.md">← Back to Docs</a></p>
+<p><a href="https://github.com/Sinity/polylogue/blob/master/docs/README.md">← Back to Docs</a></p>
 <h1>Database Schema</h1>
 <p>Polylogue does not store the archive in one SQLite file. The archive is a <strong>set
 of SQLite files split by durability class</strong>, all in WAL mode. Each file (a
 &quot;tier&quot;) owns a distinct kind of data and carries its own independent schema
 version. This page describes the conceptual shape and points at the canonical
-DDL; for the deeper invariant detail see <a href="internals.md">Internals</a> and
-<a href="architecture.md">Architecture</a>.</p>
+DDL; for the deeper invariant detail see <a href="../internals/">Internals</a> and
+<a href="../rings/">Architecture</a>.</p>
 <h2>Authoritative source</h2>
 <p>The DDL under
-<a href="../polylogue/storage/sqlite/archive_tiers/"><code>polylogue/storage/sqlite/archive_tiers/</code></a>
+<a href="https://github.com/Sinity/polylogue/blob/master/polylogue/storage/sqlite/archive_tiers"><code>polylogue/storage/sqlite/archive_tiers/</code></a>
 is the <strong>single source of truth</strong> for tables, columns, CHECK constraints, and
 indexes. This document deliberately does not re-list every column, because an
 exhaustive column table drifts from the DDL and goes stale. When you need an
@@ -425,7 +421,7 @@ carrying <code>origin</code>, <code>native_id</code>, <code>blob_hash</code>, an
 <code>raw_artifacts</code> (artifact-taxonomy classification per acquired file),
 <code>blob_refs</code> / <code>pending_blob_refs</code> / <code>gc_generations</code> (content-addressed blob
 references and the lease/GC bookkeeping described in
-<a href="internals.md#blob-store-model">Internals § Blob Store Model</a>),
+<a href="../internals/#blob-store-model">Internals § Blob Store Model</a>),
 <code>raw_hook_events</code>, and <code>history_sidecars</code>.</p>
 <h3><code>index.db</code> — parsed tree, search, and insights (rebuildable)</h3>
 <p>The parsed session/message/block tree, full-text search indexes, cross-session
@@ -443,7 +439,7 @@ read models (<code>session_profiles</code>, <code>session_work_events</code>, <c
 <p><code>message_embeddings</code> (a <code>vec0</code> virtual table, 1024-dimensional float
 embeddings), <code>message_embeddings_meta</code>, and <code>embedding_status</code>. Populated only
 when embedding is enabled with a valid Voyage key (see
-<a href="architecture.md#embedding-pipeline">Architecture § Embedding Pipeline</a>).
+<a href="../rings/#embedding-pipeline">Architecture § Embedding Pipeline</a>).
 Rebuildable, but re-embedding costs Voyage API calls.</p>
 <h3><code>user.db</code> — irreplaceable human input (back up this one)</h3>
 <p>The only tier that is not rebuildable from source. Its canonical table is
@@ -571,7 +567,7 @@ parsing/schema boundary.</p>
 SHA-256 over the NFC-normalized session payload — title, timestamps,
 messages, attachments, and blocks. User metadata (tags, summaries, notes) is
 <strong>excluded</strong> from the hash, so editing it does not trigger re-import. See
-<a href="internals.md#content-hash-model">Internals § Content Hash Model</a>.</li>
+<a href="../internals/#content-hash-model">Internals § Content Hash Model</a>.</li>
 <li>Tables use SQLite <code>STRICT</code> mode and closed-enum <code>CHECK</code> constraints generated
 from the <code>StrEnum</code> vocabularies in <code>polylogue/core/enums.py</code>.</li>
 </ul>
@@ -613,7 +609,7 @@ tokenizer (no porter stemmer in this SQLite build):</p>
 </table>
 <p><code>messages_fts</code> is kept in sync with <code>blocks</code> by the <code>messages_fts_ai/ad/au</code>
 triggers. During bulk ingest these triggers are suspended for performance and
-restored before commit; see <a href="internals.md#fts5-model">Internals § FTS5 Model</a>
+restored before commit; see <a href="../internals/#fts5-model">Internals § FTS5 Model</a>
 for the drift-detection and repair behavior.</p>
 <h2>Schema Versioning — fresh-only, no upgrade chain</h2>
 <p>Polylogue has <strong>no in-place schema upgrade chain</strong>. On startup each tier's
@@ -631,8 +627,8 @@ file in place. The operator moves the archive aside and re-ingests:</p>
 deltas. The bootstrap branching that decides fresh-init vs. open vs. reject is
 shared across sync and async backends in
 <code>storage/sqlite/schema_bootstrap.py</code>. See
-<a href="internals.md#schema-versioning-model">Internals § Schema Versioning Model</a> and
-<a href="../CONTRIBUTING.md#schema-touching-changes">CONTRIBUTING § Schema-Touching Changes</a>.</p>
+<a href="../internals/#schema-versioning-model">Internals § Schema Versioning Model</a> and
+<a href="../contributing/#schema-touching-changes">CONTRIBUTING § Schema-Touching Changes</a>.</p>
 <h2>Inspecting an archive</h2>
 <pre><code class="language-bash">polylogue ops status                    # daemon/archive snapshot, including per-tier row counts
 polylogue ops maintenance archive-plan  # planned archive file set
@@ -642,12 +638,12 @@ polylogue ops doctor --schemas           # provider-schema conformance over raw 
 <p>The <code>devtools lab schema roundtrip</code> command verifies committed provider
 schema packages reload and roundtrip cleanly through typed models.</p>
 <hr />
-<p><strong>See also:</strong> <a href="architecture.md">Architecture</a> · <a href="internals.md">Internals</a> · <a href="data-model.md">Data Model</a> · <a href="configuration.md">Configuration</a></p>
+<p><strong>See also:</strong> <a href="../rings/">Architecture</a> · <a href="../internals/">Internals</a> · <a href="https://github.com/Sinity/polylogue/blob/master/docs/data-model.md">Data Model</a> · <a href="../../reference/config/">Configuration</a></p>
 
 <hr style="margin: 3rem 0 1rem; border-color: var(--border);">
 <nav style="display: flex; justify-content: space-between; font-size: 0.9rem;">
-    <a href="/polylogue/architecture/internals/">← Internals</a>
-    <a href="/polylogue/architecture/contributing/">Contributing →</a>
+    <a href="../internals/">← Internals</a>
+    <a href="../contributing/">Contributing →</a>
 </nav>
 
         </main>

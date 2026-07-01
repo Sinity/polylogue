@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Time Machine — Polylogue</title>
+    <title>Library API — Polylogue</title>
     <style>
 
         :root {
@@ -263,19 +263,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Reference</div>
                 
-                <a href="../../reference/cli/" >
+                <a href="../cli/" >
                     CLI
                 </a>
                 
-                <a href="../../reference/mcp/" >
+                <a href="../mcp/" >
                     MCP
                 </a>
                 
-                <a href="../../reference/api/" >
+                <a href="./" class="active">
                     API
                 </a>
                 
-                <a href="../../reference/config/" >
+                <a href="../config/" >
                     Config
                 </a>
                 
@@ -326,27 +326,27 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Design</div>
                 
-                <a href="../second-brain/" >
+                <a href="../../design/second-brain/" >
                     Second Brain
                 </a>
                 
-                <a href="./" class="active">
+                <a href="../../design/time-machine/" >
                     Time Machine
                 </a>
                 
-                <a href="../project-memory/" >
+                <a href="../../design/project-memory/" >
                     Project Memory
                 </a>
                 
-                <a href="../agent-first-mcp/" >
+                <a href="../../design/agent-first-mcp/" >
                     Agent-First MCP
                 </a>
                 
-                <a href="../archive-storytelling/" >
+                <a href="../../design/archive-storytelling/" >
                     Archive Storytelling
                 </a>
                 
-                <a href="../whole-product/" >
+                <a href="../../design/whole-product/" >
                     Whole Product
                 </a>
                 
@@ -355,295 +355,508 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
         </nav>
         <main class="content">
             
-<h1>Time Machine</h1>
-<p>Chronological browsing of AI session archives. &quot;What was I working on in
-March 2025?&quot; — answered by navigating the archive as a temporal document, not
-a query language.</p>
-<h2>Problem</h2>
-<p>Answer &quot;what was I doing then&quot; without constructing a search query. The user
-knows <em>when</em> but not <em>what</em>. Existing search tools require filtering on
-content; time-based navigation should require only a date or month.</p>
-<p>The data is already there — <code>created_at</code> and <code>updated_at</code> on sessions,
-<code>canonical_session_date</code> on session profiles, timestamps on messages. The
-missing piece is temporal presentation surfaces that let the user pan and zoom
-through their own history.</p>
-<h2>Surfaces</h2>
-<h3>Calendar Heatmap</h3>
-<p>A GitHub-style contribution grid showing AI usage intensity per day over the
-full archive range. Each cell is a day; color intensity maps to session count,
-message volume, or cost.</p>
-<pre><code>       Jan              Feb              Mar
-   M  T  W  T  F     M  T  W  T  F     M  T  W  T  F
-   1  2  3  4  5     3  4  5  6  7     3  4  5  6  7
-   6  7  8  9 10     8  9 10 11 12     8  9 10 11 12
-  ...
-</code></pre>
-<p>The grid answers &quot;when was I active&quot; in one glance. High-activity weeks jump
-out. Gaps are visible. The eye catches patterns — weekend work, crunch weeks,
-quiet months — that would be invisible in a list or table.</p>
-<p>The heatmap can show three different metrics, toggled with a flag:</p>
-<table>
-<thead>
-<tr>
-<th>Metric</th>
-<th>SQL source</th>
-<th>Use</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Session count</td>
-<td><code>COUNT(*)</code> from <code>session_profiles</code> per day</td>
-<td>Activity volume</td>
-</tr>
-<tr>
-<td>Message volume</td>
-<td><code>SUM(word_count)</code> from <code>messages</code> grouped by <code>canonical_session_date</code></td>
-<td>Output intensity</td>
-</tr>
-<tr>
-<td>Cost</td>
-<td><code>SUM(total_cost_usd)</code> from <code>session_profiles</code> per day</td>
-<td>Spending awareness</td>
-</tr>
-</tbody>
-</table>
-<p>Default metric: session count (fastest, most intuitive).</p>
-<p>Implementation is a single aggregation query:</p>
-<pre><code class="language-sql">SELECT
-    canonical_session_date,
-    COUNT(*) AS session_count,
-    SUM(word_count) AS total_words,
-    SUM(total_cost_usd) AS total_cost
-FROM session_profiles
-WHERE canonical_session_date BETWEEN :start AND :end
-GROUP BY canonical_session_date
-ORDER BY canonical_session_date;
-</code></pre>
-<h3>Era Detection</h3>
-<p>An <em>era</em> is a contiguous period with a stable activity signature. Polylogue
-detects eras automatically from session density and project focus.</p>
-<p>Eras answer &quot;what phase of my AI usage was I in&quot; without manual tagging:</p>
-<table>
-<thead>
-<tr>
-<th>Era</th>
-<th>Detection signal</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>&quot;Exploration&quot;</td>
-<td>Low density (&lt;3 sessions/week), many different providers, no dominant repo</td>
-</tr>
-<tr>
-<td>&quot;Settled usage&quot;</td>
-<td>Medium density (3-10/week), one dominant provider, one primary repo</td>
-</tr>
-<tr>
-<td>&quot;Intensive phase&quot;</td>
-<td>High density (10+/week), single provider, single repo</td>
-</tr>
-<tr>
-<td>&quot;Multi-project&quot;</td>
-<td>High density but diverse repos, possibly multiple providers</td>
-</tr>
-<tr>
-<td>&quot;Dormant&quot;</td>
-<td>&lt;1 session/week for 3+ consecutive weeks</td>
-</tr>
-<tr>
-<td>&quot;Claude Code adoption&quot;</td>
-<td>Transition from claude-ai to claude-code as dominant provider</td>
-</tr>
-</tbody>
-</table>
-<p>Era boundaries are recalculated on pipeline runs. No manual labeling needed.
-The user sees named eras in the timeline, can rename them, and can jump to era
-boundaries.</p>
-<p>Detection algorithm (Python, ~80 LOC):</p>
-<ol>
-<li>Pull daily session counts and provider distribution from <code>session_profiles</code>.</li>
-<li>Apply a 7-day rolling window for density classification.</li>
-<li>Detect provider transitions (e.g., <code>claude-ai</code> share drops below 20% while
-<code>claude-code</code> share rises above 50%) — mark as era boundary.</li>
-<li>Detect density plateaus by looking for 14+ day runs at a consistent tier.</li>
-<li>Name eras heuristically; user can rename.</li>
-</ol>
-<h3>This Day in History</h3>
-<p>&quot;What was I doing on this day last year?&quot; A view that surfaces sessions from
-the same calendar day in previous years.</p>
-<p>The query:</p>
-<pre><code class="language-sql">SELECT
-    sp.session_id,
-    sp.title,
-    sp.canonical_session_date,
-    sp.provider_name,
-    sp.word_count,
-    sp.repo_names_json
-FROM session_profiles sp
-WHERE CAST(strftime('%m', sp.canonical_session_date) AS INTEGER) = :month
-  AND CAST(strftime('%d', sp.canonical_session_date) AS INTEGER) = :day
-  AND sp.canonical_session_date &lt;= date('now', :lookback)
-ORDER BY sp.canonical_session_date DESC
-LIMIT 10;
-</code></pre>
-<p>The <code>--lookback</code> flag controls how far back to exclude (default <code>-1 year</code>, so
-&quot;this day last year or earlier&quot;). The presentation groups results by year,
-showing a descending list of anniversaries.</p>
-<p>Bonus: &quot;this week in history&quot; variant that groups by ISO week and shows
-the top sessions from that week across all past years.</p>
-<h3>Session Filmstrip</h3>
-<p>A horizontal chronological view of sessions as a scrollable strip. Each session
-is a card (title, date, duration, repo, cost). The user pans left and right
-through time; clicking a card shows the full session.</p>
-<p>The filmstrip is the &quot;zoom in&quot; companion to the heatmap's &quot;pan out.&quot; The
-heatmap shows the year at a glance; the filmstrip shows a month or week in
-detail.</p>
-<p>Implementation: paginated query over <code>session_profiles</code> ordered by
-<code>canonical_session_date</code>. Each page returns 20 sessions. The UI renders them
-as a horizontal strip with Prev/Next pagination.</p>
-<pre><code class="language-sql">SELECT
-    session_id, title, canonical_session_date,
-    provider_name, word_count, tool_use_count,
-    total_cost_usd, total_duration_ms,
-    repo_names_json, tags_json
-FROM session_profiles
-WHERE canonical_session_date BETWEEN :start AND :end
-ORDER BY canonical_session_date ASC, first_message_at ASC
-LIMIT :limit OFFSET :offset;
-</code></pre>
-<h2>CLI Surface</h2>
-<p>Four commands, all read-only:</p>
-<pre><code>polylogue calendar [--metric sessions|words|cost] [--year 2025] [--output grid|json]
-polylogue eras [--list | --rename ERA NAME]
-polylogue this-day [--lookback &quot;1 year&quot;] [--week]
-polylogue timeline [--from DATE] [--to DATE] [--page N] [--limit 20]
-</code></pre>
-<h3><code>polylogue calendar</code></h3>
-<p>Prints the heatmap grid to the terminal. Uses Unicode block characters for
-color intensity (no terminal color library dependency needed for the first
-cut, though truecolor would be nice). JSON output for programmatic consumers.</p>
-<pre><code>polylogue calendar --year 2025
-
-2025
-    Jan  ░░█░░░█░░░░░░░░░█░░░░░░░█░░  4 sessions, 8,234 words
-    Feb  ░░░░░█░████░░░░░░██░░░░█░░░  7 sessions, 18,412 words
-    Mar  ███░█░████░░░██░░░█░░█░██░░  12 sessions, 45,011 words
-    Apr  ░░░░░░████░░░░░░░██░░░░░░░░  5 sessions, 12,345 words
-    ...
-</code></pre>
-<h3><code>polylogue eras</code></h3>
-<p>Lists detected eras with date ranges, labels, and session counts. Accepts
-<code>--rename</code> to assign a custom name to an era (stored in session metadata
-and honored on subsequent pipeline runs).</p>
-<h3><code>polylogue this-day</code></h3>
-<p>Shows sessions from this calendar day in previous years, ordered by recency.
-The <code>--week</code> variant shows the whole ISO week. If today is May 4 and the
-lookback is &quot;1 year&quot;, it shows May 4 sessions from 2025 and earlier.</p>
-<h3><code>polylogue timeline</code></h3>
-<p>The filmstrip in CLI form. Prints a paginated list of sessions in date order,
-each with title, date, repo context, and cost. Accepts <code>--from</code> and <code>--to</code>
-for date range, <code>--page</code> / <code>--limit</code> for pagination.</p>
-<h2>Data Sources</h2>
-<p>All queries run over existing tables. Zero new collection, zero new tables.</p>
-<table>
-<thead>
-<tr>
-<th>Surface</th>
-<th>Primary table</th>
-<th>Secondary table</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Calendar heatmap</td>
-<td><code>session_profiles</code></td>
-<td><code>session_stats</code> (for word counts)</td>
-</tr>
-<tr>
-<td>Era detection</td>
-<td><code>session_profiles</code></td>
-<td><code>sessions</code> (for provider distribution)</td>
-</tr>
-<tr>
-<td>This day in history</td>
-<td><code>session_profiles</code></td>
-<td>—</td>
-</tr>
-<tr>
-<td>Session filmstrip</td>
-<td><code>session_profiles</code></td>
-<td>—</td>
-</tr>
-</tbody>
-</table>
-<h2>Performance Budget</h2>
-<table>
-<thead>
-<tr>
-<th>Surface</th>
-<th>Target latency</th>
-<th>Data touched</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Calendar heatmap</td>
-<td>&lt;50ms</td>
-<td>Full scan of session_profiles (indexed on date)</td>
-</tr>
-<tr>
-<td>Era detection</td>
-<td>&lt;100ms (recompute)</td>
-<td>Full scan with grouping</td>
-</tr>
-<tr>
-<td>This day in history</td>
-<td>&lt;10ms</td>
-<td>Indexed point lookup on month+day</td>
-</tr>
-<tr>
-<td>Session filmstrip</td>
-<td>&lt;30ms per page</td>
-<td>Indexed range scan with LIMIT</td>
-</tr>
-</tbody>
-</table>
-<p>All within SQLite coprolite tier — single read-only connection, no background
-tasks, no caching layer needed for archive sizes under 50K sessions.</p>
-<h2>Presentation Tier</h2>
-<p>The CLI surfaces are the first delivery. Two presentation targets follow:</p>
-<ol>
-<li><strong>Web dashboard panel</strong>: the heatmap renders as an SVG or Canvas grid in the
-web UI. Clicking a day opens the filmstrip for that day.</li>
-<li><strong>MCP tools</strong>: <code>polylogue_calendar</code> and <code>polylogue_timeline</code> tools that
-return structured JSON, enabling agents to answer &quot;what was I doing&quot; queries.</li>
-</ol>
-<h2>Non-Goals</h2>
+<p><a href="https://github.com/Sinity/polylogue/blob/master/README.md">← Back to README</a></p>
+<h1>Library API</h1>
+<p>Polylogue is designed library-first. The CLI wraps the Python API.</p>
+<p>The public Python surface is split into:</p>
 <ul>
-<li>Not a full analytics dashboard. The heatmap is a single visualization, not
-a charting library. More complex analytics (cost trends, model comparisons)
-belong in a separate analytics surface.</li>
-<li>Not real-time. Era detection runs during pipeline execution, not on every
-query.</li>
-<li>Not a replacement for the search surface. Time-based browsing complements
-query-based search; it does not replace it.</li>
+<li><code>polylogue</code>: archive-core access (<code>Polylogue</code>, <code>SyncPolylogue</code>, <code>ArchiveStats</code>,
+<code>Session</code>, <code>Message</code>, <code>SearchResult</code>)</li>
+<li><code>polylogue.archive</code>: domain-model, query, projection, and semantic helpers</li>
+<li>precise modules for higher-order semantic analysis, storage, and reporting</li>
 </ul>
-<h2>Build Order</h2>
-<ol>
-<li><code>polylogue calendar</code> — heatmap query + terminal output (Unicode grid)</li>
-<li><code>polylogue timeline</code> — filmstrip query + paginated CLI output</li>
-<li><code>polylogue this-day</code> — anniversary query</li>
-<li><code>polylogue eras</code> — era detection algorithm + CLI listing + rename</li>
-<li>Web dashboard heatmap panel</li>
-<li>MCP tool equivalents</li>
-</ol>
+<h2>Basic Usage</h2>
+<pre><code class="language-python">import asyncio
+
+from polylogue import Polylogue
+
+
+async def main() -&gt; None:
+    async with Polylogue.open() as archive:
+        # Full-text search (returns list[Session])
+        results = await archive.repository.search(&quot;error&quot;, limit=10)
+        for session in results:
+            print(f&quot;{session.id}: {session.display_title}&quot;)
+
+        # Fluent filter by origin (lazy; terminals are async)
+        recent = await archive.filter().origin(&quot;claude-ai-export&quot;).limit(10).list_summaries()
+        for summary in recent:
+            print(f&quot;{summary.id}: {summary.display_title}&quot;)
+
+        # Single session by id prefix
+        session = await archive.get_session(&quot;abc123&quot;)
+
+
+asyncio.run(main())
+</code></pre>
+<p><code>Polylogue.open()</code> is the async context manager; <code>archive.repository</code> is a
+<code>SessionRepository</code> and <code>archive.filter()</code> returns a <code>SessionFilter</code> already
+bound to the active archive — never construct <code>SessionFilter</code> directly.</p>
+<h2>Precise Module Imports</h2>
+<p>Semantic-analysis/reporting helpers are still public, but they are no longer
+re-exported from package roots. Import them from their actual modules:</p>
+<pre><code class="language-python">from polylogue.archive.session.session_profile import build_session_profile, infer_auto_tags
+from polylogue.archive.session.threads import build_session_threads
+</code></pre>
+<p>Durable archive insights are public too:</p>
+<pre><code class="language-python">from polylogue import Polylogue
+from polylogue.insights.archive import (
+    ArchiveCoverageInsightQuery,
+    ArchiveDebtInsightQuery,
+    SessionLatencyProfileInsightQuery,
+    SessionPhaseInsightQuery,
+    SessionProfileInsightQuery,
+    SessionTagRollupQuery,
+)
+
+async with Polylogue() as archive:
+    status = await archive.get_session_insight_status()
+    profiles = await archive.list_session_profile_insights(
+        SessionProfileInsightQuery(
+            provider=&quot;claude-code&quot;,
+            session_date_since=&quot;2026-03-16&quot;,
+            session_date_until=&quot;2026-03-16&quot;,
+            limit=25,
+        )
+    )
+    phases = await archive.list_session_phase_insights(
+        SessionPhaseInsightQuery(provider=&quot;claude-code&quot;, limit=25)
+    )
+    latency = await archive.list_session_latency_profile_insights(
+        SessionLatencyProfileInsightQuery(provider=&quot;claude-code&quot;, only_stuck=False, limit=25)
+    )
+    tags = await archive.list_session_tag_rollup_insights(
+        SessionTagRollupQuery(provider=&quot;claude-code&quot;, since=&quot;2026-01-01&quot;)
+    )
+    coverage = await archive.list_archive_coverage_insights(
+        ArchiveCoverageInsightQuery(provider=&quot;claude-code&quot;, group_by=&quot;day&quot;, since=&quot;2026-01-01&quot;)
+    )
+    debt = await archive.list_archive_debt_insights(
+        ArchiveDebtInsightQuery(only_actionable=True)
+    )
+</code></pre>
+<p><code>SessionProfileInsight</code> exposes stable session semantics directly:</p>
+<ul>
+<li><code>inferred_topic</code></li>
+<li><code>first_message_at</code></li>
+<li><code>canonical_session_date</code></li>
+<li><code>timestamp_source</code></li>
+<li><code>engaged_duration_ms</code></li>
+<li><code>engaged_minutes</code></li>
+<li><code>tool_active_duration_ms</code></li>
+<li><code>workflow_shape</code></li>
+<li><code>workflow_shape_confidence</code></li>
+<li><code>terminal_state</code></li>
+<li><code>terminal_state_confidence</code></li>
+<li><code>enrichment</code></li>
+<li><code>enrichment_provenance</code></li>
+<li><code>repo_names</code></li>
+<li><code>repo_paths</code></li>
+</ul>
+<p><code>SessionWorkEventInsight</code> and <code>SessionPhaseInsight</code> expose timestamped timeline
+rows that can be queried directly.</p>
+<p><code>SessionLatencyProfileInsight</code> exposes per-session runtime-shape signals:</p>
+<ul>
+<li><code>median_tool_call_ms</code></li>
+<li><code>p90_tool_call_ms</code></li>
+<li><code>max_tool_call_ms</code></li>
+<li><code>stuck_tool_count</code></li>
+<li><code>median_agent_response_ms</code></li>
+<li><code>median_user_response_ms</code></li>
+<li><code>tool_call_count_by_category</code></li>
+</ul>
+<p>The latency payload includes a construct-boundary string because these are
+archive-observed timing aggregates. They do not measure correctness, human
+attention, or total wall-clock productivity.</p>
+<p>The merged <code>SessionProfileInsight</code> tier exposes probabilistic enrichment:</p>
+<ul>
+<li><code>intent_summary</code></li>
+<li><code>outcome_summary</code></li>
+<li><code>blockers</code></li>
+<li><code>confidence</code></li>
+<li><code>support_level</code></li>
+<li><code>support_signals</code></li>
+<li><code>provenance</code></li>
+</ul>
+<p>The enrichment payload is intentionally folded into session profiles because it
+is derived from the same per-session materialization row. Request
+<code>SessionProfileInsightQuery(tier=&quot;merged&quot;)</code> when callers need both grounded
+profile evidence and probabilistic enrichment in one payload.</p>
+<p>Archive coverage and archive debt are public insights too:</p>
+<ul>
+<li><code>ArchiveCoverageInsight</code>: provider/day/week session, message, cost, and activity coverage rollups</li>
+<li><code>ArchiveDebtInsight</code>: governed cleanup/repair debt with maintenance targets plus preview/apply/validation lineage</li>
+</ul>
+<h2>Filter Chain API</h2>
+<p>All examples below assume an open archive, where <code>archive.filter()</code> yields a
+fresh <code>SessionFilter</code> bound to the active archive:</p>
+<pre><code class="language-python">async with Polylogue.open() as archive:
+    # Chainable, lazy evaluation (terminals are async)
+    results = await (archive.filter()
+        .contains(&quot;error&quot;)
+        .contains(&quot;python&quot;)                          # AND
+        .origin(&quot;claude-ai-export&quot;, &quot;chatgpt-export&quot;)  # OR
+        .since(&quot;2025-01-01&quot;)
+        .has(&quot;thinking&quot;)
+        .limit(10)
+        .list())                        # Terminal: await list(), first(), count(), delete()
+
+    # Exclusion filters
+    results = await (archive.filter()
+        .contains(&quot;error&quot;)
+        .exclude_text(&quot;warning&quot;)
+        .exclude_origin(&quot;gemini-cli-session&quot;)
+        .exclude_tag(&quot;archived&quot;)
+        .list())
+
+    # Lightweight summaries (no message loading)
+    summaries = await (archive.filter()
+        .origin(&quot;claude-ai-export&quot;)
+        .since(&quot;2025-01-01&quot;)
+        .list_summaries())              # Returns SessionSummary (no messages)
+
+    # Check if summaries are sufficient
+    f = archive.filter().origin(&quot;claude-ai-export&quot;)
+    if f.can_use_summaries():
+        results = await f.list_summaries()  # Fast path
+    else:
+        results = await f.list()            # Loads full sessions
+
+    # Custom predicates
+    results = await (archive.filter()
+        .where(lambda c: len(c.messages) &gt; 50)
+        .list())
+
+    # Sorting and sampling
+    results = await (archive.filter()
+        .sort(&quot;tokens&quot;)
+        .reverse()
+        .sample(10)
+        .list())
+
+    # Session structure filters
+    roots = await archive.filter().is_root().list()
+    continuations = await archive.filter().is_continuation().list()
+</code></pre>
+<h2>Available Filter Methods</h2>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.contains(text)</code></td>
+<td>FTS term (chainable = AND)</td>
+</tr>
+<tr>
+<td><code>.exclude_text(text)</code></td>
+<td>Exclude FTS term</td>
+</tr>
+<tr>
+<td><code>.origin(*names)</code></td>
+<td>Include origins (e.g. <code>claude-ai-export</code>, <code>chatgpt-export</code>)</td>
+</tr>
+<tr>
+<td><code>.exclude_origin(*names)</code></td>
+<td>Exclude origins</td>
+</tr>
+<tr>
+<td><code>.repo(*names)</code></td>
+<td>Require repository names</td>
+</tr>
+<tr>
+<td><code>.tag(*tags)</code></td>
+<td>Include tags</td>
+</tr>
+<tr>
+<td><code>.exclude_tag(*tags)</code></td>
+<td>Exclude tags</td>
+</tr>
+<tr>
+<td><code>.referenced_path(pattern)</code></td>
+<td>Require a touched-path substring</td>
+</tr>
+<tr>
+<td><code>.cwd_prefix(prefix)</code></td>
+<td>Require a working-directory prefix</td>
+</tr>
+<tr>
+<td><code>.action(*kinds)</code></td>
+<td>Require semantic action kinds</td>
+</tr>
+<tr>
+<td><code>.exclude_action(*kinds)</code></td>
+<td>Exclude semantic action kinds</td>
+</tr>
+<tr>
+<td><code>.tool(*names)</code></td>
+<td>Require normalized tool names</td>
+</tr>
+<tr>
+<td><code>.exclude_tool(*names)</code></td>
+<td>Exclude normalized tool names</td>
+</tr>
+<tr>
+<td><code>.has(*types)</code></td>
+<td>Content types: <code>thinking</code>, <code>tools</code>, <code>summary</code>, <code>attachments</code></td>
+</tr>
+<tr>
+<td><code>.title(pattern)</code></td>
+<td>Title contains pattern</td>
+</tr>
+<tr>
+<td><code>.id(prefix)</code></td>
+<td>ID prefix match</td>
+</tr>
+<tr>
+<td><code>.since(date)</code></td>
+<td>After date (str or datetime)</td>
+</tr>
+<tr>
+<td><code>.until(date)</code></td>
+<td>Before date (str or datetime)</td>
+</tr>
+<tr>
+<td><code>.similar(text)</code></td>
+<td>Semantic similarity (requires vector index)</td>
+</tr>
+<tr>
+<td><code>.sort(field)</code></td>
+<td>Sort: <code>date</code>, <code>tokens</code>, <code>messages</code>, <code>words</code>, <code>longest</code>, <code>random</code></td>
+</tr>
+<tr>
+<td><code>.reverse()</code></td>
+<td>Reverse sort order</td>
+</tr>
+<tr>
+<td><code>.limit(n)</code></td>
+<td>Max results</td>
+</tr>
+<tr>
+<td><code>.sample(n)</code></td>
+<td>Random sample</td>
+</tr>
+<tr>
+<td><code>.where(predicate)</code></td>
+<td>Custom filter predicate</td>
+</tr>
+<tr>
+<td><code>.is_root()</code></td>
+<td>Root sessions only</td>
+</tr>
+<tr>
+<td><code>.is_continuation()</code></td>
+<td>Continuation sessions only</td>
+</tr>
+<tr>
+<td><code>.is_sidechain()</code></td>
+<td>Sidechain sessions only</td>
+</tr>
+<tr>
+<td><code>.has_branches()</code></td>
+<td>Sessions with branching messages</td>
+</tr>
+<tr>
+<td><code>.parent(id)</code></td>
+<td>Children of a given parent</td>
+</tr>
+</tbody>
+</table>
+<h2>Terminal Methods</h2>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.list()</code></td>
+<td>Execute and return <code>list[Session]</code></td>
+</tr>
+<tr>
+<td><code>.list_summaries()</code></td>
+<td>Execute and return <code>list[SessionSummary]</code> (lightweight, no messages)</td>
+</tr>
+<tr>
+<td><code>.first()</code></td>
+<td>Execute and return first match or <code>None</code></td>
+</tr>
+<tr>
+<td><code>.count()</code></td>
+<td>Execute and return count (uses SQL fast path when possible)</td>
+</tr>
+<tr>
+<td><code>.delete()</code></td>
+<td>Delete matching sessions (returns count deleted)</td>
+</tr>
+<tr>
+<td><code>.can_use_summaries()</code></td>
+<td>Check if <code>list_summaries()</code> is valid for current filters</td>
+</tr>
+</tbody>
+</table>
+<h2>Ingestion</h2>
+<pre><code class="language-python">import asyncio
+from polylogue import Polylogue
+
+async def main():
+    async with Polylogue() as archive:
+        result = await archive.parse_sources()
+        return result.counts
+
+counts = asyncio.run(main())
+</code></pre>
+<h2>Async API</h2>
+<p>Polylogue provides a full async/await facade with concurrent operations:</p>
+<pre><code class="language-python">import asyncio
+from polylogue import Polylogue
+
+async def main():
+    async with Polylogue() as archive:
+        # Concurrent queries
+        stats, recent, claude = await asyncio.gather(
+            archive.stats(),
+            archive.list_sessions(limit=10),
+            archive.list_sessions(origin=&quot;claude-ai-export&quot;),
+        )
+
+        print(f&quot;Total: {stats.session_count} sessions&quot;)
+
+        # Parallel batch retrieval (5-10x faster than sequential)
+        ids = [c.id for c in recent]
+        convs = await archive.get_sessions(ids)
+
+        # Search with evidence snippets
+        results = await archive.search(&quot;error handling&quot;, limit=20)
+        for hit in results.hits:
+            print(f&quot;{hit.title}: {hit.snippet}&quot;)
+
+        # Parse files
+        result = await archive.parse_file(&quot;chatgpt_export.json&quot;)
+
+        # Explain import decisions without writing archive rows
+        explain = await archive.explain_import(&quot;chatgpt_export.json&quot;, source_name=&quot;chatgpt&quot;)
+        print(explain.produced.sessions, explain.entries[0].provider)
+
+        # Fluent filter (terminals are async)
+        convs = await archive.filter().origin(&quot;claude-ai-export&quot;).contains(&quot;error&quot;).limit(10).list()
+
+        # Rebuild search index
+        await archive.rebuild_index()
+
+asyncio.run(main())
+</code></pre>
+<h3>Async Methods</h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_session(id)</code></td>
+<td>Get single session by ID</td>
+</tr>
+<tr>
+<td><code>get_sessions(ids)</code></td>
+<td>Parallel batch fetch (5-10x faster)</td>
+</tr>
+<tr>
+<td><code>list_sessions(origin, limit)</code></td>
+<td>List with optional filtering</td>
+</tr>
+<tr>
+<td><code>search(query, limit, source, since)</code></td>
+<td>Search returning evidence snippets; text matches report message evidence and Drive/Gemini <code>provider_id</code> / <code>id</code> / <code>fileId</code> / <code>driveId</code> attachment-id matches report attachment evidence</td>
+</tr>
+<tr>
+<td><code>parse_file(path, source_name)</code></td>
+<td>Parse a single export file</td>
+</tr>
+<tr>
+<td><code>parse_sources(sources, download_assets)</code></td>
+<td>Parse from configured sources</td>
+</tr>
+<tr>
+<td><code>explain_import(path, source_name, limit)</code></td>
+<td>Explain provider detection, artifact classification, parser mode, produced row counts, skips, and caveats without writing archive rows</td>
+</tr>
+<tr>
+<td><code>rebuild_index()</code></td>
+<td>Rebuild FTS5 search index</td>
+</tr>
+<tr>
+<td><code>stats()</code></td>
+<td>Archive statistics (returns <code>ArchiveStats</code>)</td>
+</tr>
+<tr>
+<td><code>filter()</code></td>
+<td>Fluent filter builder (sync, reuses <code>SessionFilter</code>)</td>
+</tr>
+<tr>
+<td><code>get_session_insight_status()</code></td>
+<td>Durable insight readiness/freshness summary</td>
+</tr>
+<tr>
+<td><code>get_session_profile_insight(id)</code></td>
+<td>Get one durable session-profile insight</td>
+</tr>
+<tr>
+<td><code>list_session_profile_insights(query)</code></td>
+<td>List durable session-profile insights</td>
+</tr>
+<tr>
+<td><code>get_session_latency_profile_insight(id)</code></td>
+<td>Get one durable session-latency insight</td>
+</tr>
+<tr>
+<td><code>list_session_latency_profile_insights(query)</code></td>
+<td>List durable session-latency insights</td>
+</tr>
+<tr>
+<td><code>find_stuck_session_latency_profile_insights(query)</code></td>
+<td>List sessions with stuck tool starts</td>
+</tr>
+<tr>
+<td><code>list_session_work_event_insights(query)</code></td>
+<td>List durable work-event insights</td>
+</tr>
+<tr>
+<td><code>list_thread_insights(query)</code></td>
+<td>List durable work-thread insights</td>
+</tr>
+<tr>
+<td><code>list_session_tag_rollup_insights(query)</code></td>
+<td>List durable tag-rollup insights</td>
+</tr>
+<tr>
+<td><code>list_archive_coverage_insights(query)</code></td>
+<td>List provider, day, or week archive coverage insights</td>
+</tr>
+<tr>
+<td><code>list_tool_usage_insights(query)</code></td>
+<td>Per-provider tool usage with explicit coverage gaps</td>
+</tr>
+<tr>
+<td><code>list_archive_debt_insights(query)</code></td>
+<td>List governed archive-debt insights</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<p><strong>See also:</strong> <a href="../cli/">CLI Reference</a> · <a href="https://github.com/Sinity/polylogue/blob/master/docs/data-model.md">Data Model</a> · <a href="../config/">Configuration</a></p>
 
 <hr style="margin: 3rem 0 1rem; border-color: var(--border);">
 <nav style="display: flex; justify-content: space-between; font-size: 0.9rem;">
-    <a href="../second-brain/">← Second Brain</a>
-    <a href="../project-memory/">Project Memory →</a>
+    <a href="../mcp/">← MCP Reference</a>
+    <a href="../config/">Configuration →</a>
 </nav>
 
         </main>

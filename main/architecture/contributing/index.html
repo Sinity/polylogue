@@ -219,7 +219,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </head>
 <body>
     <header class="site-header">
-        <a href="/polylogue/" class="logo">poly<span>logue</span></a>
+        <a href="../../" class="logo">poly<span>logue</span></a>
         <div class="search-bar">
             <input type="search" placeholder="Search docs..." id="search-input">
         </div>
@@ -234,27 +234,27 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Documentation</div>
                 
-                <a href="/polylogue/docs/getting-started/" >
+                <a href="../../docs/getting-started/" >
                     Getting Started
                 </a>
                 
-                <a href="/polylogue/docs/search/" >
+                <a href="../../docs/search/" >
                     Search
                 </a>
                 
-                <a href="/polylogue/docs/providers/" >
+                <a href="../../docs/providers/" >
                     Providers
                 </a>
                 
-                <a href="/polylogue/docs/insights/" >
+                <a href="../../docs/insights/" >
                     Insights
                 </a>
                 
-                <a href="/polylogue/docs/export/" >
+                <a href="../../docs/export/" >
                     Export
                 </a>
                 
-                <a href="/polylogue/docs/daemon/" >
+                <a href="../../docs/daemon/" >
                     Daemon
                 </a>
                 
@@ -263,19 +263,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Reference</div>
                 
-                <a href="/polylogue/reference/cli/" >
+                <a href="../../reference/cli/" >
                     CLI
                 </a>
                 
-                <a href="/polylogue/reference/mcp/" >
+                <a href="../../reference/mcp/" >
                     MCP
                 </a>
                 
-                <a href="/polylogue/reference/api/" >
+                <a href="../../reference/api/" >
                     API
                 </a>
                 
-                <a href="/polylogue/reference/config/" >
+                <a href="../../reference/config/" >
                     Config
                 </a>
                 
@@ -284,19 +284,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Architecture</div>
                 
-                <a href="/polylogue/architecture/rings/" >
+                <a href="../rings/" >
                     Rings
                 </a>
                 
-                <a href="/polylogue/architecture/internals/" >
+                <a href="../internals/" >
                     Internals
                 </a>
                 
-                <a href="/polylogue/architecture/schema/" >
+                <a href="../schema/" >
                     Schema
                 </a>
                 
-                <a href="/polylogue/architecture/contributing/" class="active">
+                <a href="./" class="active">
                     Contributing
                 </a>
                 
@@ -305,23 +305,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Verifiability</div>
                 
-                <a href="/polylogue/verifiability/catalog/" >
-                    Catalog
-                </a>
-                
-                <a href="/polylogue/verifiability/coverage/" >
+                <a href="../../verifiability/coverage/" >
                     Coverage
                 </a>
                 
-                <a href="/polylogue/verifiability/mutation/" >
+                <a href="../../verifiability/mutation/" >
                     Mutation
                 </a>
                 
-                <a href="/polylogue/verifiability/freshness/" >
+                <a href="../../verifiability/freshness/" >
                     Freshness
                 </a>
                 
-                <a href="/polylogue/verifiability/drift/" >
+                <a href="../../verifiability/drift/" >
                     Drift
                 </a>
                 
@@ -330,27 +326,27 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Design</div>
                 
-                <a href="/polylogue/design/second-brain/" >
+                <a href="../../design/second-brain/" >
                     Second Brain
                 </a>
                 
-                <a href="/polylogue/design/time-machine/" >
+                <a href="../../design/time-machine/" >
                     Time Machine
                 </a>
                 
-                <a href="/polylogue/design/project-memory/" >
+                <a href="../../design/project-memory/" >
                     Project Memory
                 </a>
                 
-                <a href="/polylogue/design/agent-first-mcp/" >
+                <a href="../../design/agent-first-mcp/" >
                     Agent-First MCP
                 </a>
                 
-                <a href="/polylogue/design/archive-storytelling/" >
+                <a href="../../design/archive-storytelling/" >
                     Archive Storytelling
                 </a>
                 
-                <a href="/polylogue/design/whole-product/" >
+                <a href="../../design/whole-product/" >
                     Whole Product
                 </a>
                 
@@ -370,7 +366,7 @@ direnv allow   # one-time setup; afterward the devshell loads automatically on c
 </code></pre>
 <p>All commands below assume you are already inside that environment. If not, use
 <code>nix develop -c &lt;command&gt;</code>.</p>
-<p>The devshell regenerates <code>AGENTS.md</code> from <a href="CLAUDE.md">CLAUDE.md</a> on entry.
+<p>The devshell regenerates <code>AGENTS.md</code> from <a href="https://github.com/Sinity/polylogue/blob/master/CLAUDE.md">CLAUDE.md</a> on entry.
 It is gitignored.</p>
 <p>For repository maintenance, use <code>devtools</code>:</p>
 <pre><code class="language-bash">devtools --help
@@ -454,7 +450,7 @@ hash plus the dirty marker when applicable.</p>
 <p>Routine PRs do not touch <code>version = &quot;X.Y.Z&quot;</code> or <code>CHANGELOG.md</code>. Both are
 maintained by <a href="https://github.com/googleapis/release-please">release-please</a>
 from conventional commit subjects on <code>master</code> — see
-<a href="docs/release.md">docs/release.md</a> for the full flow.</p>
+<a href="https://github.com/Sinity/polylogue/blob/master/docs/release.md">docs/release.md</a> for the full flow.</p>
 <p>What this means in practice for normal PRs:</p>
 <ul>
 <li>Use conventional commit subjects (<code>feat:</code>, <code>fix:</code>, <code>perf:</code>, <code>refactor:</code>,
@@ -472,7 +468,7 @@ in the commit body, exactly as conventional-commits specifies.</li>
 bumps the version, rolls <code>Unreleased → [X.Y.Z]</code>, and pushes the signed
 <code>vX.Y.Z</code> tag. The downstream <code>release.yml</code> workflow handles PyPI + GHCR
 publish from the tag. The manual procedure is retained in
-<a href="docs/release.md#manual-fallback">docs/release.md</a> as a fallback only.</p>
+<a href="https://github.com/Sinity/polylogue/blob/master/docs/release.md#manual-fallback">docs/release.md</a> as a fallback only.</p>
 <h2>Issues</h2>
 <p>Issues are optional. Use them when they improve planning or future traceability:</p>
 <ul>
@@ -587,7 +583,7 @@ paths; use <code>devtools verify --seed-testmon</code> when you intentionally wa
 refresh the dependency database and <code>devtools verify --all</code> for an explicit full
 diagnostic.</p>
 <p>Add <code>devtools release build-package</code> or <code>nix flake check</code> when touching packaging or
-Nix expressions. See <a href="TESTING.md">TESTING.md</a> and <a href="docs/devtools.md">docs/devtools.md</a>
+Nix expressions. See <a href="https://github.com/Sinity/polylogue/blob/master/TESTING.md">TESTING.md</a> and <a href="https://github.com/Sinity/polylogue/blob/master/docs/devtools.md">docs/devtools.md</a>
 for details.</p>
 <h2>PR Body Discipline</h2>
 <p>The PR template requires four sections:</p>
@@ -607,8 +603,8 @@ for details.</p>
 
 <hr style="margin: 3rem 0 1rem; border-color: var(--border);">
 <nav style="display: flex; justify-content: space-between; font-size: 0.9rem;">
-    <a href="/polylogue/architecture/schema/">← Schema</a>
-    <a href="/polylogue/design/second-brain/">Second Brain →</a>
+    <a href="../schema/">← Schema</a>
+    <a href="../../design/second-brain/">Second Brain →</a>
 </nav>
 
         </main>

@@ -219,7 +219,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </head>
 <body>
     <header class="site-header">
-        <a href="/polylogue/" class="logo">poly<span>logue</span></a>
+        <a href="../../" class="logo">poly<span>logue</span></a>
         <div class="search-bar">
             <input type="search" placeholder="Search docs..." id="search-input">
         </div>
@@ -234,27 +234,27 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Documentation</div>
                 
-                <a href="/polylogue/docs/getting-started/" >
+                <a href="../../docs/getting-started/" >
                     Getting Started
                 </a>
                 
-                <a href="/polylogue/docs/search/" >
+                <a href="../../docs/search/" >
                     Search
                 </a>
                 
-                <a href="/polylogue/docs/providers/" >
+                <a href="../../docs/providers/" >
                     Providers
                 </a>
                 
-                <a href="/polylogue/docs/insights/" >
+                <a href="../../docs/insights/" >
                     Insights
                 </a>
                 
-                <a href="/polylogue/docs/export/" >
+                <a href="../../docs/export/" >
                     Export
                 </a>
                 
-                <a href="/polylogue/docs/daemon/" >
+                <a href="../../docs/daemon/" >
                     Daemon
                 </a>
                 
@@ -263,19 +263,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Reference</div>
                 
-                <a href="/polylogue/reference/cli/" >
+                <a href="../../reference/cli/" >
                     CLI
                 </a>
                 
-                <a href="/polylogue/reference/mcp/" >
+                <a href="../../reference/mcp/" >
                     MCP
                 </a>
                 
-                <a href="/polylogue/reference/api/" >
+                <a href="../../reference/api/" >
                     API
                 </a>
                 
-                <a href="/polylogue/reference/config/" >
+                <a href="../../reference/config/" >
                     Config
                 </a>
                 
@@ -284,19 +284,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Architecture</div>
                 
-                <a href="/polylogue/architecture/rings/" >
+                <a href="../../architecture/rings/" >
                     Rings
                 </a>
                 
-                <a href="/polylogue/architecture/internals/" >
+                <a href="../../architecture/internals/" >
                     Internals
                 </a>
                 
-                <a href="/polylogue/architecture/schema/" >
+                <a href="../../architecture/schema/" >
                     Schema
                 </a>
                 
-                <a href="/polylogue/architecture/contributing/" >
+                <a href="../../architecture/contributing/" >
                     Contributing
                 </a>
                 
@@ -305,23 +305,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Verifiability</div>
                 
-                <a href="/polylogue/verifiability/catalog/" >
-                    Catalog
-                </a>
-                
-                <a href="/polylogue/verifiability/coverage/" >
+                <a href="../../verifiability/coverage/" >
                     Coverage
                 </a>
                 
-                <a href="/polylogue/verifiability/mutation/" >
+                <a href="../../verifiability/mutation/" >
                     Mutation
                 </a>
                 
-                <a href="/polylogue/verifiability/freshness/" >
+                <a href="../../verifiability/freshness/" >
                     Freshness
                 </a>
                 
-                <a href="/polylogue/verifiability/drift/" >
+                <a href="../../verifiability/drift/" >
                     Drift
                 </a>
                 
@@ -330,27 +326,27 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Design</div>
                 
-                <a href="/polylogue/design/second-brain/" class="active">
+                <a href="./" class="active">
                     Second Brain
                 </a>
                 
-                <a href="/polylogue/design/time-machine/" >
+                <a href="../time-machine/" >
                     Time Machine
                 </a>
                 
-                <a href="/polylogue/design/project-memory/" >
+                <a href="../project-memory/" >
                     Project Memory
                 </a>
                 
-                <a href="/polylogue/design/agent-first-mcp/" >
+                <a href="../agent-first-mcp/" >
                     Agent-First MCP
                 </a>
                 
-                <a href="/polylogue/design/archive-storytelling/" >
+                <a href="../archive-storytelling/" >
                     Archive Storytelling
                 </a>
                 
-                <a href="/polylogue/design/whole-product/" >
+                <a href="../whole-product/" >
                     Whole Product
                 </a>
                 
@@ -365,7 +361,7 @@ without them having to ask for it.</p>
 <h2>The Problem</h2>
 <p>Agents start every session cold. They don't know what you worked on yesterday,
 what decisions were made, what patterns were established, or what errors were
-hit. <a href="http://CLAUDE.md">CLAUDE.md</a> provides static context, but the dynamic context — what actually
+hit. CLAUDE.md provides static context, but the dynamic context — what actually
 happened in recent sessions — is locked in the archive.</p>
 <p>Agents can query polylogue for this context, but they have to know what to ask.
 The archive has 7,767 sessions and 3.3M messages. An agent can't search
@@ -389,7 +385,7 @@ everything at session start.</p>
 in the current working directory.</p>
 <h3>3. Recurring Errors (50 tokens)</h3>
 <p>If any error pattern appears in 3+ recent sessions, surface it. Example:
-&quot;<a href="http://conftest.py">conftest.py</a> fixture teardown fails on Python 3.11 (3 occurrences, last: 2 days ago)&quot;</p>
+&quot;conftest.py fixture teardown fails on Python 3.11 (3 occurrences, last: 2 days ago)&quot;</p>
 <h2>Ranking Formula</h2>
 <pre><code>score = file_match(4.0) + recency_decay(0.9^days) + event_match(2.0)
 </code></pre>
@@ -430,7 +426,7 @@ threshold are excluded (avoid noise from barely-relevant sessions).</p>
 </tr>
 <tr>
 <td>Project memory entries</td>
-<td><code>project_memory</code> table (see <a href="http://project-memory.md">project-memory.md</a>)</td>
+<td><code>project_memory</code> table (see project-memory.md)</td>
 </tr>
 </tbody>
 </table>
@@ -465,7 +461,7 @@ ingestion), it completes in &lt;100ms.</p>
 <ul>
 <li>Not a full sessional search. The agent can use MCP search tools for
 deeper queries — this is just the &quot;while you were away&quot; summary.</li>
-<li>Not a replacement for <a href="http://CLAUDE.md">CLAUDE.md</a>. Static conventions belong in <a href="http://CLAUDE.md">CLAUDE.md</a>;
+<li>Not a replacement for CLAUDE.md. Static conventions belong in CLAUDE.md;
 dynamic context belongs here.</li>
 <li>Not cross-project by default. Sessions are filtered to the current project
 root. Cross-project queries are available via MCP tools.</li>
@@ -473,8 +469,8 @@ root. Cross-project queries are available via MCP tools.</li>
 
 <hr style="margin: 3rem 0 1rem; border-color: var(--border);">
 <nav style="display: flex; justify-content: space-between; font-size: 0.9rem;">
-    <a href="/polylogue/architecture/contributing/">← Contributing</a>
-    <a href="/polylogue/design/time-machine/">Time Machine →</a>
+    <a href="../../architecture/contributing/">← Contributing</a>
+    <a href="../time-machine/">Time Machine →</a>
 </nav>
 
         </main>

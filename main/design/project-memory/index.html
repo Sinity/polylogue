@@ -219,7 +219,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </head>
 <body>
     <header class="site-header">
-        <a href="/polylogue/" class="logo">poly<span>logue</span></a>
+        <a href="../../" class="logo">poly<span>logue</span></a>
         <div class="search-bar">
             <input type="search" placeholder="Search docs..." id="search-input">
         </div>
@@ -234,27 +234,27 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Documentation</div>
                 
-                <a href="/polylogue/docs/getting-started/" >
+                <a href="../../docs/getting-started/" >
                     Getting Started
                 </a>
                 
-                <a href="/polylogue/docs/search/" >
+                <a href="../../docs/search/" >
                     Search
                 </a>
                 
-                <a href="/polylogue/docs/providers/" >
+                <a href="../../docs/providers/" >
                     Providers
                 </a>
                 
-                <a href="/polylogue/docs/insights/" >
+                <a href="../../docs/insights/" >
                     Insights
                 </a>
                 
-                <a href="/polylogue/docs/export/" >
+                <a href="../../docs/export/" >
                     Export
                 </a>
                 
-                <a href="/polylogue/docs/daemon/" >
+                <a href="../../docs/daemon/" >
                     Daemon
                 </a>
                 
@@ -263,19 +263,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Reference</div>
                 
-                <a href="/polylogue/reference/cli/" >
+                <a href="../../reference/cli/" >
                     CLI
                 </a>
                 
-                <a href="/polylogue/reference/mcp/" >
+                <a href="../../reference/mcp/" >
                     MCP
                 </a>
                 
-                <a href="/polylogue/reference/api/" >
+                <a href="../../reference/api/" >
                     API
                 </a>
                 
-                <a href="/polylogue/reference/config/" >
+                <a href="../../reference/config/" >
                     Config
                 </a>
                 
@@ -284,19 +284,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Architecture</div>
                 
-                <a href="/polylogue/architecture/rings/" >
+                <a href="../../architecture/rings/" >
                     Rings
                 </a>
                 
-                <a href="/polylogue/architecture/internals/" >
+                <a href="../../architecture/internals/" >
                     Internals
                 </a>
                 
-                <a href="/polylogue/architecture/schema/" >
+                <a href="../../architecture/schema/" >
                     Schema
                 </a>
                 
-                <a href="/polylogue/architecture/contributing/" >
+                <a href="../../architecture/contributing/" >
                     Contributing
                 </a>
                 
@@ -305,23 +305,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Verifiability</div>
                 
-                <a href="/polylogue/verifiability/catalog/" >
-                    Catalog
-                </a>
-                
-                <a href="/polylogue/verifiability/coverage/" >
+                <a href="../../verifiability/coverage/" >
                     Coverage
                 </a>
                 
-                <a href="/polylogue/verifiability/mutation/" >
+                <a href="../../verifiability/mutation/" >
                     Mutation
                 </a>
                 
-                <a href="/polylogue/verifiability/freshness/" >
+                <a href="../../verifiability/freshness/" >
                     Freshness
                 </a>
                 
-                <a href="/polylogue/verifiability/drift/" >
+                <a href="../../verifiability/drift/" >
                     Drift
                 </a>
                 
@@ -330,27 +326,27 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             <div class="nav-section">
                 <div class="nav-section-title">Design</div>
                 
-                <a href="/polylogue/design/second-brain/" >
+                <a href="../second-brain/" >
                     Second Brain
                 </a>
                 
-                <a href="/polylogue/design/time-machine/" >
+                <a href="../time-machine/" >
                     Time Machine
                 </a>
                 
-                <a href="/polylogue/design/project-memory/" class="active">
+                <a href="./" class="active">
                     Project Memory
                 </a>
                 
-                <a href="/polylogue/design/agent-first-mcp/" >
+                <a href="../agent-first-mcp/" >
                     Agent-First MCP
                 </a>
                 
-                <a href="/polylogue/design/archive-storytelling/" >
+                <a href="../archive-storytelling/" >
                     Archive Storytelling
                 </a>
                 
-                <a href="/polylogue/design/whole-product/" >
+                <a href="../whole-product/" >
                     Whole Product
                 </a>
                 
@@ -361,7 +357,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             
 <h1>Project Memory</h1>
 <p>Machine-observed knowledge about a project, accumulated from AI coding sessions.
-Complements <a href="http://CLAUDE.md">CLAUDE.md</a> — <a href="http://CLAUDE.md">CLAUDE.md</a> is what humans declare; project memory is what
+Complements CLAUDE.md — CLAUDE.md is what humans declare; project memory is what
 agents actually do.</p>
 <h2>Design Properties</h2>
 <p>Four properties guide the design:</p>
@@ -496,14 +492,14 @@ the existing query infrastructure.</p>
 <li><code>search_project_memory(query, project_path)</code> — FTS5 search across summaries and details</li>
 <li><code>record_project_memory(kind, summary, detail, file_refs)</code> — agent-initiated recording (requires write role)</li>
 </ul>
-<h2>Relationship to <a href="http://CLAUDE.md">CLAUDE.md</a></h2>
-<p><a href="http://CLAUDE.md">CLAUDE.md</a> is human-curated and checked into the repo. Project memory is
+<h2>Relationship to CLAUDE.md</h2>
+<p>CLAUDE.md is human-curated and checked into the repo. Project memory is
 machine-observed and stored in the archive. They serve different needs:</p>
 <table>
 <thead>
 <tr>
 <th></th>
-<th><a href="http://CLAUDE.md">CLAUDE.md</a></th>
+<th>CLAUDE.md</th>
 <th>Project Memory</th>
 </tr>
 </thead>
@@ -535,7 +531,7 @@ machine-observed and stored in the archive. They serve different needs:</p>
 </tr>
 </tbody>
 </table>
-<p>Neither replaces the other. <a href="http://CLAUDE.md">CLAUDE.md</a> says &quot;we use WAL mode.&quot; Project memory
+<p>Neither replaces the other. CLAUDE.md says &quot;we use WAL mode.&quot; Project memory
 says &quot;we tried switching to rollback journal in session X and it caused Y.&quot;</p>
 <h2>Build Order</h2>
 <ol>
@@ -549,8 +545,8 @@ says &quot;we tried switching to rollback journal in session X and it caused Y.&
 
 <hr style="margin: 3rem 0 1rem; border-color: var(--border);">
 <nav style="display: flex; justify-content: space-between; font-size: 0.9rem;">
-    <a href="/polylogue/design/time-machine/">← Time Machine</a>
-    <a href="/polylogue/design/agent-first-mcp/">Agent-First MCP →</a>
+    <a href="../time-machine/">← Time Machine</a>
+    <a href="../agent-first-mcp/">Agent-First MCP →</a>
 </nav>
 
         </main>
