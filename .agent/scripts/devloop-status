@@ -16,6 +16,9 @@ repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
 archive_root="${POLYLOGUE_ARCHIVE_ROOT:-/home/sinity/.local/share/polylogue}"
 current="${POLYLOGUE_AGENT_CURRENT:-$repo/.agent/conductor-devloop}"
 format="${1:-text}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=.agent/scripts/lib-devloop
+source "$script_dir/lib-devloop"
 packet_bytes="$(du -sb "$current" 2>/dev/null | awk '{print $1}' || printf '')"
 packet_files="$(find "$current" -maxdepth 1 -type f 2>/dev/null | wc -l | tr -d ' ')"
 packet_dirs="$(find "$current" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"
@@ -40,16 +43,6 @@ performance_blocked="false"
 if printf '%s\n' "$pressure_rows" | grep -Eq 'borg create|lynchpin.analysis materialize'; then
   performance_blocked="true"
 fi
-
-polylogued_process_rows() {
-  ps -eo pid=,comm=,args= \
-    | awk '
-      $2 ~ /^(awk|grep|rg|sed|zsh|bash)$/ {next}
-      /\/polylogued run( |$)/ {print; next}
-      /polylogue[.]daemon[.]cli/ && /main[;]/ && / run( |$)/ {print; next}
-    ' \
-    || true
-}
 
 if [ "$format" = "--json" ]; then
   index_version=""

@@ -51,6 +51,8 @@ should follow the bootstrap below without needing chat context.
 - `scripts/devloop-status`, `devloop-start`, `devloop-checkpoint`,
   `devloop-handoff`, `devloop-ahead`, and `devloop-velocity` — executable loop
   gates, speed diagnostics, and foreground work prompts.
+- `scripts/lib-devloop` — sourced helper functions shared by the executable
+  primitives; it is tracked scaffold, not a user-facing command.
 - `scratch/README.md` — tracked routing rules for ignored scratch material.
 - `archive/` — ignored archaeology only. It is not a startup surface and should
   not receive current state, generated proofs, or demos.

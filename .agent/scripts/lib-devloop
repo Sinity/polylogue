@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Shared helpers for Polylogue devloop scripts. Source this file; do not run it.
+
+polylogued_process_rows() {
+  ps -eo pid=,comm=,args= \
+    | awk '
+      $2 ~ /^(awk|grep|rg|sed|zsh|bash)$/ {next}
+      /\/polylogued run( |$)/ {print; next}
+      /polylogue[.]daemon[.]cli/ && /main[;]/ && / run( |$)/ {print; next}
+    ' \
+    || true
+}
