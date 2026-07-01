@@ -70,7 +70,7 @@ replacements = {
         "record only current-slice exceptions here; historical proofs and completed slices belong "
         "in `OPERATING-LOG.md` or `DEMO-RADAR.md`."
     ),
-    "Next Action": f"Next Action\n\nFill the new OPERATING-LOG entry, {next_decision}.",
+    "Next Action": f"Next Action\n\nContinue in `{next_focus}` mode: {next_decision}.",
     "Do Not Drift": (
         "Do Not Drift\n\n"
         "- Do not reintroduce `/realm/tmp/polylogue-dev/archive` as a live database root.\n"
