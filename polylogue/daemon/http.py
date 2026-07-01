@@ -782,7 +782,7 @@ def _provenance_dict(prov: Any) -> dict[str, object]:
 def _optional_model_dump(value: Any) -> dict[str, object] | None:
     if value is None:
         return None
-    return value.model_dump(mode="json")
+    return cast(dict[str, object], value.model_dump(mode="json"))
 
 
 def _profile_staleness(record: Any, session_updated_at: str | None) -> dict[str, object] | None:
