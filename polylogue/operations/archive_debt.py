@@ -370,6 +370,8 @@ def _raw_materialization_category(conn: sqlite3.Connection, row: sqlite3.Row, ar
             total, materialized = _embedded_session_materialization_counts(conn, str(row["origin"] or ""), embedded_ids)
             if materialized and materialized < total:
                 return "aggregate-partial-materialization"
+        if _parsed_session_shape_reason(archive_root, row) is not None:
+            return "parsed-session-unmaterialized"
         return "parsed-without-session"
     return "parse-pending"
 
@@ -394,6 +396,44 @@ def _parsed_non_session_artifact_reason(archive_root: Path, row: sqlite3.Row) ->
     if origin == "codex-session" and set(first_types) == {"session_meta"}:
         return "Codex metadata-only session file"
     return None
+
+
+def _parsed_session_shape_reason(archive_root: Path, row: sqlite3.Row) -> str | None:
+    origin = str(row["origin"] or "")
+    blob_path = _raw_blob_path(archive_root, row)
+    if origin == "codex-session":
+        first_types = _raw_jsonl_leading_types(blob_path, limit=200)
+        if "session_meta" in first_types and (
+            "response_item" in first_types or "event_msg" in first_types or "turn_context" in first_types
+        ):
+            return "Codex session event stream"
+    if origin == "gemini-cli-session":
+        payload = _raw_json_document(blob_path)
+        if (
+            isinstance(payload, dict)
+            and isinstance(payload.get("sessionId"), str)
+            and isinstance(payload.get("messages"), list)
+            and payload.get("hasUserOrAssistantMessage") is True
+        ):
+            return "Gemini CLI chat session"
+    if origin == "chatgpt-export":
+        payload = _raw_json_document(blob_path)
+        if (
+            isinstance(payload, dict)
+            and payload.get("polylogue_capture_kind") == "browser_llm_session"
+            and isinstance(payload.get("session"), dict)
+            and isinstance(payload.get("raw_provider_payload"), dict)
+        ):
+            return "ChatGPT browser-capture session"
+    return None
+
+
+def _raw_json_document(path: Path) -> Any:
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            return json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
 
 
 def _source_path_is_known_sidecar(source_path: str) -> bool:
@@ -571,6 +611,20 @@ def _raw_materialization_debt_row(
             f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size} bytes. "
             "These rows already passed parsing, so blind replay is not the primary repair. They need an auditable "
             "skip reason or parser/materialization classification."
+        )
+        actions = ()
+    elif category == "parsed-session-unmaterialized":
+        severity = "warning"
+        status = "open"
+        stage = "parse"
+        shape_reasons = sorted(
+            {reason for row in sample_rows if (reason := _parsed_session_shape_reason(archive_root, row)) is not None}
+        )
+        shape_text = "; ".join(shape_reasons) if shape_reasons else "session-shaped source payload"
+        summary = f"{count} {origin} session-shaped raw artifact(s) parsed without materialized sessions"
+        details = (
+            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size} bytes. "
+            f"Sample source shapes: {shape_text}. These rows need parser/materialization classification, not blind replay."
         )
         actions = ()
     elif category == "materialized-alias":

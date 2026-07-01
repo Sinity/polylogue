@@ -334,6 +334,18 @@ def _init_raw_materialization_fixture(root: Path) -> tuple[Path, Path, Path]:
                     123,
                     "passed",
                 ),
+                (
+                    "raw-codex-session-shaped",
+                    "codex-session",
+                    "codex-session-shaped",
+                    str(root / "rollout-session.jsonl"),
+                    bytes.fromhex("ff" * 32),
+                    4096,
+                    123,
+                    None,
+                    123,
+                    "passed",
+                ),
             ),
         )
     (blob_root / "bb").mkdir()
@@ -359,6 +371,12 @@ def _init_raw_materialization_fixture(root: Path) -> tuple[Path, Path, Path]:
         '{"type":"session_meta","timestamp":"2026-06-30T00:00:00Z"}\n',
         encoding="utf-8",
     )
+    (blob_root / "ff").mkdir()
+    (blob_root / "ff" / ("ff" * 31)).write_text(
+        '{"type":"session_meta","timestamp":"2026-06-30T00:00:00Z"}\n'
+        '{"type":"response_item","payload":{"type":"message","role":"user"}}\n',
+        encoding="utf-8",
+    )
 
     with sqlite3.connect(index_db) as conn:
         conn.execute("CREATE TABLE sessions (session_id TEXT, origin TEXT, native_id TEXT, raw_id TEXT)")
@@ -371,13 +389,13 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
 
     payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
 
-    assert payload.totals.total == 4
-    assert payload.totals.affected_total == 6
+    assert payload.totals.total == 5
+    assert payload.totals.affected_total == 7
     assert payload.totals.affected_critical == 1
-    assert payload.totals.affected_warning == 1
+    assert payload.totals.affected_warning == 2
     assert payload.totals.affected_info == 4
     assert payload.totals.affected_actionable == 1
-    assert payload.totals.affected_open == 5
+    assert payload.totals.affected_open == 6
 
     by_ref = {row.debt_ref: row for row in payload.rows}
     missing_blob = by_ref["debt:raw-materialization:codex-session:missing-blob"]
@@ -398,6 +416,14 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
     assert "blind replay is not the primary repair" in (parsed_gap.details or "")
     assert "passed=1" in (parsed_gap.details or "")
     assert parsed_gap.actions == ()
+
+    session_shaped = by_ref["debt:raw-materialization:codex-session:parsed-session-unmaterialized"]
+    assert session_shaped.severity == "warning"
+    assert session_shaped.status == "open"
+    assert session_shaped.category == "parsed-session-unmaterialized"
+    assert session_shaped.affected_count == 1
+    assert "Codex session event stream" in (session_shaped.details or "")
+    assert session_shaped.actions == ()
 
     sidecars = by_ref["debt:raw-materialization:claude-code-session:parsed-non-session-artifact"]
     assert sidecars.severity == "info"
