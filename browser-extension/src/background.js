@@ -1,7 +1,13 @@
 const DEFAULT_RECEIVER = "http://127.0.0.1:8765";
 const BACKGROUND_CAPTURE_MIN_INTERVAL_MS = 30000;
 const CAPTURE_LOG_LIMIT = 80;
+const POST_POLL_INTERVAL_MS = 5000;
 const recentBackgroundCaptures = new Map();
+// command_id -> true once dispatched to a content script this SW lifetime, so a
+// fast poll cannot deliver the same command twice before its ack lands.
+const inFlightPostCommands = new Set();
+const pendingPostCommandAcks = new Map();
+let postPollTimer = 0;
 
 function injectionPlanForUrl(url) {
   try {
@@ -242,6 +248,164 @@ async function captureSupportedTabs(reason) {
   await Promise.allSettled(tabs.map((tab) => captureTab(tab, reason)));
 }
 
+// ---- Outbound posting (reverse channel) ---------------------------------
+//
+// Disabled by default. The local receiver only serves post commands when its
+// own POLYLOGUE_BROWSER_POST_ENABLED=1 guard is set; the extension adds a second
+// independent guard (`postingEnabled`, default false) so a misconfigured
+// receiver still cannot drive the page without an explicit opt-in here.
+
+async function postingSettings() {
+  const stored = await chrome.storage.local.get({ postingEnabled: false });
+  return { postingEnabled: Boolean(stored.postingEnabled) };
+}
+
+async function savePostingSettings(postingEnabled) {
+  await chrome.storage.local.set({ postingEnabled: Boolean(postingEnabled) });
+  return postingSettings();
+}
+
+function providerTokenForUrl(url) {
+  try {
+    const parsed = new URL(url || "");
+    if (parsed.hostname === "chatgpt.com" || parsed.hostname.endsWith(".chatgpt.com")) return "chatgpt";
+    if (parsed.hostname === "claude.ai" || parsed.hostname.endsWith(".claude.ai")) return "claude";
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function conversationIdForUrl(url) {
+  try {
+    const parsed = new URL(url || "");
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    const provider = providerTokenForUrl(url);
+    if (provider === "chatgpt") {
+      const marker = parts.indexOf("c");
+      return marker >= 0 && parts[marker + 1] ? parts[marker + 1] : null;
+    }
+    if (provider === "claude") {
+      return parts[0] === "chat" && parts[1] ? parts[1] : null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function ackPostCommand(commandId, result) {
+  try {
+    await postJson(`/v1/post-commands/${encodeURIComponent(commandId)}/ack`, result);
+    pendingPostCommandAcks.delete(commandId);
+    inFlightPostCommands.delete(commandId);
+    return true;
+  } catch (error) {
+    await appendCaptureLog({ ok: false, reason: "post_ack", command_id: commandId, error: String(error.message || error) });
+    pendingPostCommandAcks.set(commandId, result);
+    return false;
+  }
+}
+
+async function retryPendingPostCommandAcks() {
+  for (const [commandId, result] of [...pendingPostCommandAcks.entries()]) {
+    await ackPostCommand(commandId, result);
+  }
+}
+
+async function findTabForCommand(command) {
+  if (!chrome.tabs?.query) return null;
+  const tabs = await chrome.tabs.query({});
+  const provider = command.provider;
+  const target = command.target || {};
+  const wantNew = !target.conversation_id || target.conversation_id === "new";
+  let fallback = null;
+  for (const tab of tabs) {
+    const url = tab.url || tab.pendingUrl || "";
+    if (providerTokenForUrl(url) !== provider) continue;
+    if (wantNew) {
+      if (conversationIdForUrl(url)) continue;
+      if (tab.active) return tab;
+      fallback = fallback || tab;
+      continue;
+    }
+    if (conversationIdForUrl(url) === target.conversation_id) return tab;
+  }
+  return wantNew ? fallback : null;
+}
+
+async function dispatchPostCommand(command) {
+  if (!command || !command.command_id || inFlightPostCommands.has(command.command_id)) return;
+  inFlightPostCommands.add(command.command_id);
+  let terminalAckRecorded = false;
+  try {
+    const tab = await findTabForCommand(command);
+    if (!tab?.id) {
+      terminalAckRecorded = await ackPostCommand(command.command_id, { status: "failed", detail: "no_matching_tab" });
+      return;
+    }
+    await ensureCaptureScripts(tab);
+    let result;
+    try {
+      result = await chrome.tabs.sendMessage(tab.id, { type: "polylogue.postReply", command });
+    } catch (error) {
+      terminalAckRecorded = await ackPostCommand(command.command_id, {
+        status: "failed",
+        detail: String(error.message || error),
+        observed_url: tab.url || null,
+      });
+      return;
+    }
+    terminalAckRecorded = await ackPostCommand(command.command_id, {
+      status: result?.status === "submitted" ? "submitted" : "failed",
+      detail: result?.detail || null,
+      observed_url: result?.observed_url || tab.url || null,
+    });
+  } finally {
+    if (terminalAckRecorded) inFlightPostCommands.delete(command.command_id);
+  }
+}
+
+async function pollPostCommands() {
+  const { postingEnabled } = await postingSettings();
+  if (!postingEnabled) return;
+  await retryPendingPostCommandAcks();
+  for (const provider of ["chatgpt", "claude"]) {
+    let body;
+    try {
+      body = await getJson(`/v1/post-commands?provider=${provider}`);
+    } catch {
+      continue;
+    }
+    if (!body?.post_enabled || !Array.isArray(body.commands)) continue;
+    for (const command of body.commands) {
+      await dispatchPostCommand(command);
+    }
+  }
+}
+
+async function startPostPolling() {
+  const { postingEnabled } = await postingSettings();
+  if (!postingEnabled) {
+    stopPostPolling();
+    return;
+  }
+  if (postPollTimer) return;
+  postPollTimer = globalThis.setInterval(() => {
+    void pollPostCommands();
+  }, POST_POLL_INTERVAL_MS);
+  void pollPostCommands();
+}
+
+function stopPostPolling() {
+  if (postPollTimer) {
+    globalThis.clearInterval(postPollTimer);
+    postPollTimer = 0;
+  }
+}
+
+void startPostPolling();
+
 chrome.runtime.onInstalled?.addListener(() => {
   void captureSupportedTabs("extension_installed_or_updated");
 });
@@ -336,6 +500,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }
     if (message.type === "polylogue.captureSupportedTabs") {
       await captureSupportedTabs(message.reason || "popup_sync_open_tabs");
+      sendResponse({ ok: true });
+      return;
+    }
+    if (message.type === "polylogue.configurePosting") {
+      const settings = await savePostingSettings(message.postingEnabled);
+      await startPostPolling();
+      sendResponse({ ok: true, postingEnabled: settings.postingEnabled });
+      return;
+    }
+    if (message.type === "polylogue.pollPostCommands") {
+      await pollPostCommands();
       sendResponse({ ok: true });
       return;
     }

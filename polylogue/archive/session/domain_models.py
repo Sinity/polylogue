@@ -50,6 +50,10 @@ class SessionSummary(SessionSummaryRuntimeMixin, BaseModel):
     # hydrated through the repository. Empty by default so that legacy
     # constructors keep working.
     tags_m2m: tuple[str, ...] = ()
+    # ``with <units>`` projection rows attached post-selection, keyed by unit
+    # name → JSON-ready row payloads. Empty unless the query carried a
+    # ``with`` clause (#2492).
+    attached_units: dict[str, tuple[dict[str, object], ...]] = Field(default_factory=dict)
 
     @field_validator("origin", mode="before")
     @classmethod
@@ -90,6 +94,10 @@ class Session(SessionRuntimeMixin, BaseModel):
     tags_m2m: tuple[str, ...] = ()
     # Session-level attachments not linked to a specific message (orphans).
     attachments: list[Attachment] = Field(default_factory=list)
+    # ``with <units>`` projection rows attached post-selection, keyed by unit
+    # name → JSON-ready row payloads. Empty unless the query carried a
+    # ``with`` clause (#2492).
+    attached_units: dict[str, tuple[dict[str, object], ...]] = Field(default_factory=dict)
 
     @field_validator("origin", mode="before")
     @classmethod

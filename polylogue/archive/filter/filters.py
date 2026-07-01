@@ -42,10 +42,14 @@ class SessionFilter(SessionFilterBuilderMixin):
         config: Config | None = None,
         vector_provider: VectorProvider | None = None,
         query_plan: SessionQueryPlan | None = None,
+        with_units: tuple[str, ...] = (),
     ) -> None:
         self._archive_root = archive_root
         self._config = config
         self._plan = query_plan or SessionQueryPlan(vector_provider=vector_provider)
+        #: ``with <units>`` projection (#2492). Carried alongside the plan
+        #: because it is a post-selection projection, not a filter/sort/limit.
+        self._with_units = with_units
 
     @classmethod
     def from_query_plan(
@@ -54,8 +58,9 @@ class SessionFilter(SessionFilterBuilderMixin):
         *,
         archive_root: Path,
         config: Config | None = None,
+        with_units: tuple[str, ...] = (),
     ) -> SessionFilter:
-        return cls(archive_root=archive_root, config=config, query_plan=query_plan)
+        return cls(archive_root=archive_root, config=config, query_plan=query_plan, with_units=with_units)
 
     @property
     def _since_date(self) -> datetime | None:
@@ -96,10 +101,20 @@ class SessionFilter(SessionFilterBuilderMixin):
         return self._plan.describe()
 
     async def list(self) -> builtins.list[Session]:
-        return await list_archive(self._plan, archive_root=self._archive_root, config=self._config)
+        return await list_archive(
+            self._plan,
+            archive_root=self._archive_root,
+            config=self._config,
+            with_units=self._with_units,
+        )
 
     async def list_summaries(self) -> builtins.list[SessionSummary]:
-        return await list_summaries_archive(self._plan, archive_root=self._archive_root, config=self._config)
+        return await list_summaries_archive(
+            self._plan,
+            archive_root=self._archive_root,
+            config=self._config,
+            with_units=self._with_units,
+        )
 
     async def list_all_summaries(self) -> builtins.list[SessionSummary]:
         """Resolve every matching summary (unbounded), not a single page.
@@ -113,6 +128,7 @@ class SessionFilter(SessionFilterBuilderMixin):
             archive_root=self._archive_root,
             config=self._config,
             default_limit=1_000_000,
+            with_units=self._with_units,
         )
 
     async def list_all(self) -> builtins.list[Session]:
@@ -122,6 +138,7 @@ class SessionFilter(SessionFilterBuilderMixin):
             archive_root=self._archive_root,
             config=self._config,
             default_limit=1_000_000,
+            with_units=self._with_units,
         )
 
     async def first(self) -> Session | None:

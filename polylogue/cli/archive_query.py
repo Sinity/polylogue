@@ -19,7 +19,12 @@ from typing_extensions import TypedDict
 
 from polylogue.archive.message.roles import MessageRoleFilter, Role, normalize_message_roles
 from polylogue.archive.message.types import validate_message_type_filter
-from polylogue.archive.query.expression import QueryUnitSource, parse_unit_source_expression
+from polylogue.archive.query.attached_units import fetch_attached_units
+from polylogue.archive.query.expression import (
+    QueryUnitSource,
+    parse_unit_source_expression,
+    split_with_clause,
+)
 from polylogue.archive.query.metadata import query_unit_descriptor
 from polylogue.archive.query.spec import (
     QuerySpecError,
@@ -159,6 +164,11 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     output_format = str(params.get("output_format") or "markdown")
     fields = _optional_str(params.get("fields"))
     query = _query_text(request.query_terms, params)
+    # Split a trailing ``with <units>`` projection clause off the FTS text so it
+    # is not searched literally; the units drive the attached-unit projection.
+    with_units: tuple[str, ...] = ()
+    if query and not (query.startswith("{") or query.startswith("[")):
+        query, with_units = split_with_clause(query)
     if not index_db_path.exists():
         if _emit_missing_archive_empty_read(
             params,
@@ -471,6 +481,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                         origin=origin,
                         fields=fields,
                         typo_hint=typo_hint,
+                        with_units=with_units,
                     )
                     return
                 if stream:
@@ -586,6 +597,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 origin=origin,
                 fields=fields,
                 typo_hint=typo_hint,
+                with_units=with_units,
             )
             return
         if params.get("latest"):
@@ -678,6 +690,8 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             output_format=output_format,
             origin=origin,
             fields=fields,
+            archive=archive,
+            with_units=with_units,
         )
 
 
@@ -1307,6 +1321,27 @@ def _emit_delete(
     )
 
 
+def _inject_attached_units(
+    items: list[dict[str, object]],
+    session_ids: Sequence[str],
+    *,
+    archive: ArchiveStore | None,
+    with_units: tuple[str, ...],
+) -> None:
+    """Attach ``with <units>`` projection rows to each rendered row payload.
+
+    Each item gains an ``attached_units`` key mapping every requested unit to a
+    list of JSON-ready row payloads for that session (empty list when the
+    session has no rows for the unit), keeping the output shape predictable.
+    """
+
+    if not with_units or archive is None or not items:
+        return
+    attached = fetch_attached_units(archive, session_ids, with_units)
+    for item, session_id in zip(items, session_ids, strict=False):
+        item["attached_units"] = {unit: list(by_session.get(session_id, ())) for unit, by_session in attached.items()}
+
+
 def _emit_list(
     summaries: list[ArchiveSessionSummary],
     *,
@@ -1316,8 +1351,16 @@ def _emit_list(
     output_format: str,
     origin: str | None,
     fields: str | None,
+    archive: ArchiveStore | None = None,
+    with_units: tuple[str, ...] = (),
 ) -> None:
     items = [_summary_payload(summary) for summary in summaries]
+    _inject_attached_units(
+        items,
+        [summary.session_id for summary in summaries],
+        archive=archive,
+        with_units=with_units,
+    )
     envelope: dict[str, object] = {
         "mode": "list",
         "origin": origin,
@@ -1347,6 +1390,7 @@ def _emit_search(
     origin: str | None,
     fields: str | None,
     typo_hint: str | None = None,
+    with_units: tuple[str, ...] = (),
 ) -> None:
     items = [
         _hit_payload(
@@ -1356,6 +1400,12 @@ def _emit_search(
         )
         for hit in hits
     ]
+    _inject_attached_units(
+        items,
+        [hit.session_id for hit in hits],
+        archive=archive,
+        with_units=with_units,
+    )
     envelope: dict[str, object] = {
         "mode": "search",
         "origin": origin,
@@ -1902,7 +1952,18 @@ def _summary_line(item: dict[str, object]) -> str:
     date = str(item.get("updated_at") or item.get("created_at") or "unknown")[:10]
     origin = str(item["origin"])
     message_count = item.get("message_count") or 0
-    return f"{session_id[:24]:24s}  {date:10s}  {origin:24s}  {title} ({message_count} msgs)"
+    line = f"{session_id[:24]:24s}  {date:10s}  {origin:24s}  {title} ({message_count} msgs)"
+    return line + _attached_units_suffix(item)
+
+
+def _attached_units_suffix(item: dict[str, object]) -> str:
+    """Render a compact ``[+unit:N]`` summary of attached projection units."""
+
+    attached = item.get("attached_units")
+    if not isinstance(attached, dict) or not attached:
+        return ""
+    parts = [f"{unit}:{len(rows)}" for unit, rows in attached.items() if isinstance(rows, list)]
+    return f"  [+{' '.join(parts)}]" if parts else ""
 
 
 def _hit_line(item: dict[str, object]) -> str:
@@ -1911,7 +1972,8 @@ def _hit_line(item: dict[str, object]) -> str:
     if not isinstance(session, dict) or not isinstance(match, dict):
         return str(item)
     title = session.get("title") or session.get("id")
-    return f"{match['rank']}. {session['origin']}  {title}  {match.get('snippet') or ''}"
+    line = f"{match['rank']}. {session['origin']}  {title}  {match.get('snippet') or ''}"
+    return line + _attached_units_suffix(item)
 
 
 def _stats_by_line(item: dict[str, object]) -> str:
