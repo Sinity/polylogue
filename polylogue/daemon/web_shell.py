@@ -1413,22 +1413,25 @@ function renderContextReadView(payload) {
 }
 
 function renderContextPackReadView(payload) {
-  var query = payload.query_context || {};
-  var sessions = payload.sessions || [];
-  var provenance = payload.provenance || {};
-  var html = '<div class="read-view-panel"><h3>Context pack</h3>'
-    + '<p class="muted">Read through /api/sessions/:id/read using the shared context-pack DTO.</p>'
-    + '<div class="inspector-field"><span class="label">sessions</span><span class="value">' + esc(String(payload.total_sessions || sessions.length || 0)) + '</span></div>'
-    + '<div class="inspector-field"><span class="label">messages</span><span class="value">' + esc(String(payload.total_messages || 0)) + '</span></div>'
-    + '<div class="inspector-field"><span class="label">strategy</span><span class="value">' + esc(query.match_strategy || 'session-id') + '</span></div>'
-    + '<div class="inspector-field"><span class="label">redacted</span><span class="value">' + esc(String(provenance.redacted !== false)) + '</span></div>';
-  sessions.slice(0, 5).forEach(function(session) {
-    var messages = session.messages || [];
-    html += '<div class="annotation-item"><div class="meta">' + esc(session.origin || 'origin') + ' / ' + esc(session.session_id || 'session') + '</div>'
-      + '<div class="note"><strong>' + esc(session.title || 'Untitled') + '</strong><br>'
-      + esc(String(messages.length)) + ' messages included</div></div>';
+  var segments = payload.segments || [];
+  var omitted = payload.omitted || [];
+  var spec = payload.spec || {};
+  var html = '<div class="read-view-panel"><h3>Context image</h3>'
+    + '<p class="muted">Read through /api/sessions/:id/read using the shared ContextImage payload (compile_context).</p>'
+    + '<div class="inspector-field"><span class="label">segments</span><span class="value">' + esc(String(segments.length)) + '</span></div>'
+    + '<div class="inspector-field"><span class="label">tokens</span><span class="value">' + esc(String(payload.token_estimate || 0)) + '</span></div>'
+    + '<div class="inspector-field"><span class="label">views</span><span class="value">' + esc((spec.read_views || []).join(', ') || 'recovery') + '</span></div>'
+    + '<div class="inspector-field"><span class="label">strategy</span><span class="value">' + esc(payload.selection_strategy || 'single_session_recovery_digest_v0') + '</span></div>';
+  segments.slice(0, 8).forEach(function(segment) {
+    html += '<div class="annotation-item"><div class="meta">' + esc(segment.kind || 'segment') + ' / ' + esc(String(segment.token_estimate || 0)) + ' tokens</div>'
+      + '<div class="note"><strong>' + esc(segment.title || segment.segment_id || 'Segment') + '</strong></div></div>';
   });
-  if (!sessions.length) html += '<div class="inspector-empty">No context-pack sessions surfaced for this selection.</div>';
+  omitted.slice(0, 8).forEach(function(omission) {
+    var target = omission.ref || omission.query || omission.view || '?';
+    html += '<div class="annotation-item"><div class="meta">omitted / ' + esc(omission.reason || 'unknown') + '</div>'
+      + '<div class="note"><strong>' + esc(target) + '</strong><br><span class="muted">' + esc(omission.detail || '') + '</span></div></div>';
+  });
+  if (!segments.length && !omitted.length) html += '<div class="inspector-empty">No context segments surfaced for this selection.</div>';
   html += '</div>';
   return html;
 }

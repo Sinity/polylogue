@@ -403,7 +403,7 @@ def test_reader_evidence_panel_endpoint_and_shell_smoke(reader_workspace: Reader
         )
         context_pack = cast(
             dict[str, object],
-            get_json(base_url, f"/api/sessions/{READER_C1}/read?view=context-pack&max_messages=5"),
+            get_json(base_url, f"/api/sessions/{READER_C1}/read?view=context-pack&max_tokens=500"),
         )
 
     assert status == 200
@@ -437,10 +437,14 @@ def test_reader_evidence_panel_endpoint_and_shell_smoke(reader_workspace: Reader
     assert context_payload["preamble_version"] == "1.0"
     assert context_pack["view"] == "context-pack"
     context_pack_payload = cast(dict[str, object], context_pack["payload"])
-    context_sessions = cast(list[dict[str, object]], context_pack_payload["sessions"])
-    assert context_sessions[0]["session_id"] == READER_C1
-    context_provenance = cast(dict[str, object], context_pack_payload["provenance"])
-    assert context_provenance["redacted"] is True
+    context_spec = cast(dict[str, object], context_pack_payload["spec"])
+    assert context_spec["seed_refs"] == [f"session:{READER_C1}"]
+    assert context_spec["read_views"] == ["messages"]
+    assert context_pack_payload["redaction_policy"] == "default"
+    context_segments = cast(list[dict[str, object]], context_pack_payload["segments"])
+    assert context_segments[0]["payload_kind"] == "messages"
+    assert context_segments[0]["object_refs"]
+    assert cast(int, context_pack_payload["token_estimate"]) > 0
 
     write_evidence_manifest(
         tmp_path / "reader-evidence-panel-dom-evidence.json",
@@ -452,7 +456,7 @@ def test_reader_evidence_panel_endpoint_and_shell_smoke(reader_workspace: Reader
             "recovery_report": recovery["report"],
             "work_packet_evidence_refs": len(cast(list[object], packet["evidence_refs"])),
             "assertion_count": assertions["total"],
-            "context_pack_sessions": context_pack_payload["total_sessions"],
+            "context_pack_segments": len(context_segments),
             "raw_artifacts_absent_from_recovery": True,
             "private_path_safe": True,
         },

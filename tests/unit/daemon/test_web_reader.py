@@ -2042,7 +2042,7 @@ class TestReaderViewProfiles:
         assert recovery_http["formats"] == ["json", "markdown"]
         assert "report" in cast(list[str], recovery_http["query_params"])
         context_pack_http = cast(dict[str, object], profiles["context-pack"]["http"])
-        assert "max_messages" in cast(list[str], context_pack_http["query_params"])
+        assert "max_tokens" in cast(list[str], context_pack_http["query_params"])
 
     def test_read_view_execution_route_returns_messages_recovery_raw_context_and_context_pack(
         self,
@@ -2061,7 +2061,7 @@ class TestReaderViewProfiles:
             context = cast(dict[str, object], _get_json(base_url, f"/api/sessions/{C1}/read?view=context"))
             context_pack = cast(
                 dict[str, object],
-                _get_json(base_url, f"/api/sessions/{C1}/read?view=context-pack&max_messages=5"),
+                _get_json(base_url, f"/api/sessions/{C1}/read?view=context-pack"),
             )
             neighbors = cast(
                 dict[str, object],
@@ -2097,30 +2097,16 @@ class TestReaderViewProfiles:
         assert context_payload["preamble_version"] == "1.0"
         assert context_pack["view"] == "context-pack"
         context_payload = cast(dict[str, object], context_pack["payload"])
-        assert context_payload["total_sessions"] == 1
-        assert context_payload["selection_strategy"] == "session-id"
-        assert context_payload["redaction_policy"] == "public_refs_and_redacted_paths"
-        assert context_payload["evidence_refs"] == [C1]
+        # Context pack now returns the shared ContextImage payload compiled from
+        # the seed session through compile_context.
+        context_spec = cast(dict[str, object], context_payload["spec"])
+        assert context_spec["seed_refs"] == [f"session:{C1}"]
+        assert "messages" in cast(list[str], context_spec["read_views"])
+        segments = cast(list[dict[str, object]], context_payload["segments"])
+        assert any(segment.get("payload_kind") == "messages" for segment in segments)
         assert isinstance(context_payload["token_estimate"], int)
         assert context_payload["token_estimate"] > 0
-        context_size_estimate = cast(dict[str, object], context_payload["size_estimate"])
-        assert isinstance(context_size_estimate["json_bytes"], int)
-        assert isinstance(context_size_estimate["message_text_bytes"], int)
-        assert context_size_estimate["json_bytes"] > 0
-        assert context_size_estimate["message_text_bytes"] > 0
-        context_scope = cast(dict[str, object], context_payload["scope"])
-        assert context_scope["seed_refs"] == [f"session:{C1}"]
-        context_provenance = cast(dict[str, object], context_payload["provenance"])
-        assert context_provenance["redacted"] is True
-        assert "archive_root" not in context_provenance
-        assert "active_db_path" not in context_provenance
-        assert any(
-            omission["reason"] == "redacted" for omission in cast(list[dict[str, object]], context_payload["omissions"])
-        )
-        context_query = cast(dict[str, object], context_payload["query_context"])
-        assert context_query["query_matched"] == 1
-        context_sessions = cast(list[dict[str, object]], context_payload["sessions"])
-        assert context_sessions[0]["session_id"] == C1
+        assert isinstance(context_payload["omitted"], list)
         assert neighbors["view"] == "neighbors"
         neighbor_payload = cast(dict[str, object], neighbors["payload"])
         neighbor_rows = cast(list[dict[str, object]], neighbor_payload["neighbors"])
@@ -2349,7 +2335,7 @@ class TestReaderPrivacy:
     """
 
     def test_web_shell_does_not_leak_absolute_local_paths(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         for prefix in POLYLOGUE_LOCAL_PATH_PREFIXES:
             assert prefix not in body, f"web shell leaked absolute local path with prefix {prefix!r}"
@@ -2794,7 +2780,7 @@ class TestReaderInformability:
         classes the renderer can apply. Without these the rest of the
         informability story is just text.
         """
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         for quality in (
             "q-canonical",
@@ -2817,7 +2803,7 @@ class TestReaderInformability:
         legacy daemon fields. Legacy FTS rendering remains as fallback for
         old/status-snapshot payloads.
         """
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         assert "var readiness = s.component_readiness || {};" in body
         assert "renderFtsChip(readiness.search || null, s.fts_readiness || {})" in body
@@ -2830,7 +2816,7 @@ class TestReaderInformability:
         assert "function renderBrowserCaptureChip(" in body
 
     def test_status_strip_starts_with_unknown_counts_not_zero(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
 
         assert "convs checking" in body
@@ -2842,7 +2828,7 @@ class TestReaderInformability:
         assert "s.total_messages != null" in body
 
     def test_web_shell_models_failed_route_panels_and_retries(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
 
         assert "routeStates" in body
@@ -2860,7 +2846,7 @@ class TestReaderInformability:
         assert "/api/sessions/" in body
 
     def test_facets_loader_cancels_previous_request(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
 
         assert "AbortController" in body
@@ -2873,7 +2859,7 @@ class TestReaderInformability:
         assert "budget_ms" in body
 
     def test_missing_read_view_profiles_route_has_retry_fallback(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
 
         assert "setRouteState('readViewProfiles'" in body
@@ -2882,7 +2868,7 @@ class TestReaderInformability:
         assert "curl -fsS http://127.0.0.1:8766" in body
 
     def test_session_detail_failure_does_not_leave_bare_loading(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
 
         assert "selectedLoadError" in body
@@ -2895,7 +2881,7 @@ class TestReaderInformability:
         """``renderFtsChip`` must still distinguish ok / partial /
         unavailable when an older payload lacks ``component_readiness``.
         """
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         assert "function renderFtsChip(" in body
         assert "component && component.state !== 'unknown'" in body
@@ -2908,7 +2894,7 @@ class TestReaderInformability:
         by ``component_readiness.embeddings`` and
         ``component_readiness.daemon_ingest``.
         """
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         assert 'id="status-semantic"' in body
         assert 'id="status-ingest"' in body
@@ -2924,7 +2910,7 @@ class TestReaderInformability:
         """The web workbench displays browser-capture readiness from the
         daemon status envelope without learning the receiver's local spool path.
         """
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
             status = cast(dict[str, object], _get_json(base_url, "/api/status"))
 
@@ -2943,7 +2929,7 @@ class TestReaderInformability:
     def test_dev_loop_chip_consumes_branch_local_metadata(self, workspace_env: dict[str, Path]) -> None:
         """The web shell can surface branch-local run metadata when present."""
 
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
 
         assert 'id="status-dev-loop"' in body
@@ -2953,7 +2939,7 @@ class TestReaderInformability:
     def test_web_shell_surfaces_latest_api_request_diagnostics(self, workspace_env: dict[str, Path]) -> None:
         """The web shell has local request diagnostics for UI/API failures."""
 
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
 
         assert 'id="status-api-debug"' in body
@@ -2967,7 +2953,7 @@ class TestReaderInformability:
         """Session insight freshness gets its own status-strip chip. It now
         prefers ``component_readiness.session_profiles`` and keeps the
         previous freshness-payload fallback for old status snapshots."""
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         assert "function renderInsightChip(" in body
         assert 'id="status-insights"' in body
@@ -2979,7 +2965,7 @@ class TestReaderInformability:
         """The empty/no-results branches must include filter context and
         a concrete next action — the MK3 state matrix calls out that an
         empty archive and a filtered no-results are different states."""
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         assert "No sessions in archive. Run `polylogued run`" in body
         assert "No results for query=" in body
@@ -2990,7 +2976,7 @@ class TestReaderInformability:
         """Stack/Compare/Save/Recall workspace buttons must expose a
         disabled state with explanatory tooltips when context is
         insufficient — disabled actions are part of the MK3 design."""
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         assert "Stack needs a selected session" in body
         assert "Compare needs two sessions" in body
@@ -3002,7 +2988,7 @@ class TestReaderInformability:
         repo/cwd/branch, counts, cost/tokens, derived/insight, marks.
         Pin the comment marker so a future reorder is a deliberate change
         rather than accidental drift."""
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         assert "MK3 header chip order" in body
         # The origin chip should be tagged canonical (it identifies the
@@ -3021,7 +3007,7 @@ class TestReaderSavedViewsUI:
     """
 
     def test_workspace_toolbar_exposes_saved_view_entry(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         # Dedicated toolbar entry-point so saved views are reachable without
         # opening the Notes inspector tab (mirrors the Restore workspace
@@ -3037,7 +3023,7 @@ class TestReaderSavedViewsUI:
         assert "Saved views (" in body
 
     def test_save_current_view_handles_naming_conflict(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         # Naming conflict UX: detect locally against state.savedViews, prompt
         # for overwrite confirmation, replace via DELETE+POST. Empty/whitespace
@@ -3047,7 +3033,7 @@ class TestReaderSavedViewsUI:
         assert "Failed to replace existing view" in body
 
     def test_saved_view_list_exposes_delete_action(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         # The inspector list must render a Delete button per saved view; the
         # JS handler is reachable so the operator can prune stale views.
@@ -3056,7 +3042,7 @@ class TestReaderSavedViewsUI:
         assert 'onclick="deleteSavedView(' in body
 
     def test_saved_view_empty_state_is_actionable(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         # Empty state must point the operator at the action that resolves it
         # (per MK3 state matrix: each empty state names the next step).
@@ -3166,7 +3152,7 @@ class TestReaderBulkOperations:
         bulk envelope contract uses (succeeded/failed/skipped + dryRun + action).
         These are the field names the UI surfaces to the operator after a bulk
         op; renaming any of them silently would break the rendered status."""
-        with _running_server(workspace_env) as (_, base_url):
+        with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         for key in ("succeeded", "failed", "skipped", "dryRun", "action"):
             assert key in body, f"bulk envelope key {key!r} missing from shell"

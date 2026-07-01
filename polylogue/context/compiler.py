@@ -64,6 +64,7 @@ class ContextSpec(ArchiveInsightModel):
 
     purpose: ContextPurpose = "continue"
     seed_query: str | None = None
+    seed_query_limit: int = Field(default=5, ge=1, le=50)
     seed_refs: tuple[str, ...] = ()
     read_views: tuple[str, ...] = ("recovery",)
     max_tokens: int | None = Field(default=None, ge=1)

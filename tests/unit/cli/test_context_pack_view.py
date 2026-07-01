@@ -1,48 +1,34 @@
-"""Tests for the multi-session ``read --view context-pack`` capability.
+"""Tests for the collapsed ``context-pack`` capability.
 
-The standalone ``context-pack`` command was absorbed into the read-view surface
-(#1842): ``read --view context-pack``. The pack logic lives in
-``polylogue.context.pack.run_context_pack_view``; the MCP
-``build_context_pack`` tool exposes the same capability programmatically.
+The standalone context-pack assembler (``polylogue.context.pack``) and its
+``ContextPack*`` DTO family were removed: the capability is now a thin lens over
+the shared ``compile_context`` engine. ``Polylogue.context_pack_payload`` selects
+sessions through the query algebra and returns the ``ContextImage`` payload that
+the CLI ``read`` modifiers and the MCP ``build_context_pack`` tool both emit.
 """
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
+from polylogue import Polylogue
 from polylogue.archive.message.roles import Role
-from polylogue.cli.shared.types import AppEnv
-from polylogue.context.pack import run_context_pack_view
+from polylogue.context.compiler import ContextImage, ContextSpec
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 
 
-def _archive_env(archive_root: Path) -> AppEnv:
-    services: Any = MagicMock()
-    services.get_config.return_value = SimpleNamespace(
-        archive_root=archive_root,
-        db_path=archive_root / "index.db",
-    )
-    services.get_repository.side_effect = AssertionError("context pack must not open the unsupported repository path")
-    return AppEnv(services=services)
-
-
-def test_context_pack_view_reads_archive_from_archive_tiers(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    archive_root = tmp_path / "archive"
+def _seed(archive_root: Path, *, provider_session_id: str, text: str) -> None:
     with ArchiveStore(archive_root) as archive:
         archive.write_parsed(
             ParsedSession(
                 source_name=Provider.CODEX,
-                provider_session_id="context-pack-v1",
+                provider_session_id=provider_session_id,
                 title="Archive context pack",
                 created_at="2026-01-01T00:00:00+00:00",
                 updated_at="2026-01-01T00:01:00+00:00",
@@ -50,88 +36,72 @@ def test_context_pack_view_reads_archive_from_archive_tiers(tmp_path: Path, caps
                     ParsedMessage(
                         provider_message_id="m1",
                         role=Role.USER,
-                        text="hello archive pack",
-                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hello archive pack")],
+                        text=text,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
                     )
                 ],
             )
         )
 
-    project_path = "/realm/project/polylogue"
-    run_context_pack_view(
-        _archive_env(archive_root),
-        query="hello archive",
-        project_path=project_path,
-        max_sessions=1,
-        max_messages=1,
-    )
 
-    output = capsys.readouterr().out
-    payload = json.loads(output)
-    assert payload["total_sessions"] == 1
-    assert payload["total_messages"] == 1
-    assert payload["selection_strategy"] == "relaxed_project_term_recall"
-    assert payload["scope"]["read_views"] == ["context-pack"]
-    assert payload["scope"]["project_path"] == "<redacted-path>/polylogue"
-    assert payload["evidence_refs"] == ["codex-session:context-pack-v1"]
-    assert payload["redaction_policy"] == "public_refs_and_redacted_paths"
-    assert payload["token_estimate"] > 0
-    assert payload["size_estimate"]["json_bytes"] > 0
-    assert payload["size_estimate"]["message_text_bytes"] > 0
-    assert any(omission["reason"] == "redacted" for omission in payload["omissions"])
-    assert payload["provenance"]["archive_runtime"] == "archive_file_set"
-    assert payload["provenance"]["redacted"] is True
-    assert payload["provenance"]["archive_root"] is None
-    assert payload["provenance"]["active_db_path"] is None
-    assert payload["provenance"]["redaction_policy"] == "public_refs_and_redacted_paths"
-    assert payload["query_context"]["query"] == "hello archive"
-    assert payload["query_context"]["sessions_included"] == 1
-    session = payload["sessions"][0]
-    assert session["session_id"] == "codex-session:context-pack-v1"
-    assert session["origin"] == "codex-session"
-    assert "provider" not in session
-    assert "source" not in session
-    assert session["messages"][0]["role"] == "user"
-    assert session["messages"][0]["text"] == "hello archive pack"
-
-    run_context_pack_view(
-        _archive_env(archive_root),
-        query="hello archive",
-        project_path=project_path,
-        max_sessions=1,
-        max_messages=1,
-        no_redact=True,
-    )
-    raw_payload = json.loads(capsys.readouterr().out)
-    assert raw_payload["redaction_policy"] == "raw_paths_explicit_opt_in"
-    assert raw_payload["provenance"]["redacted"] is False
-    assert raw_payload["scope"]["project_path"] == project_path
-    assert raw_payload["provenance"]["archive_root"] == str(archive_root)
-    assert raw_payload["provenance"]["active_db_path"] == str(archive_root / "index.db")
-
-
-def test_context_pack_view_reads_injectable_assertions_from_user_tier(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+@pytest.mark.asyncio
+async def test_context_pack_payload_compiles_context_image(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
-    with ArchiveStore(archive_root) as archive:
-        archive.write_parsed(
-            ParsedSession(
-                source_name=Provider.CODEX,
-                provider_session_id="context-pack-assertions",
-                title="Archive context pack assertions",
-                created_at="2026-01-01T00:00:00+00:00",
-                updated_at="2026-01-01T00:01:00+00:00",
-                messages=[
-                    ParsedMessage(
-                        provider_message_id="m1",
-                        role=Role.USER,
-                        text="assertion context pack",
-                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="assertion context pack")],
-                    )
-                ],
+    _seed(archive_root, provider_session_id="context-pack-v1", text="hello archive pack")
+
+    async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
+        image = await poly.context_pack_payload(
+            query="hello archive",
+            project_path="/realm/project/polylogue",
+            max_sessions=1,
+        )
+
+    assert isinstance(image, ContextImage)
+    # Selection runs through the query algebra and seeds compile_context; the
+    # message transcript is the compiled segment.
+    message_segments = [segment for segment in image.segments if segment.payload_kind == "messages"]
+    assert message_segments, "expected a messages segment for the selected session"
+    assert "hello archive pack" in (message_segments[0].markdown or "")
+    assert image.spec.read_views == ("messages",)
+
+
+@pytest.mark.asyncio
+async def test_max_tokens_bounds_output_with_omission_accounting(tmp_path: Path) -> None:
+    """A tiny --max-tokens budget drops over-budget segments as explicit omissions."""
+    archive_root = tmp_path / "archive"
+    _seed(archive_root, provider_session_id="budget-a", text="alpha budget body that has several words")
+    _seed(archive_root, provider_session_id="budget-b", text="beta budget body that also has several words")
+
+    async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
+        unbounded = await poly.compile_context(
+            ContextSpec(
+                seed_refs=("session:codex-session:budget-a", "session:codex-session:budget-b"),
+                read_views=("messages",),
             )
         )
+        bounded = await poly.compile_context(
+            ContextSpec(
+                seed_refs=("session:codex-session:budget-a", "session:codex-session:budget-b"),
+                read_views=("messages",),
+                max_tokens=1,
+            )
+        )
+
+    assert len(unbounded.segments) == 2
+    # The budget bounds accumulation: fewer segments survive, and every drop is
+    # reported as a budget omission rather than silently truncated.
+    assert len(bounded.segments) < len(unbounded.segments)
+    assert bounded.token_estimate <= unbounded.token_estimate
+    budget_omissions = [omission for omission in bounded.omitted if omission.reason == "budget"]
+    assert budget_omissions
+    assert len(bounded.segments) + len(budget_omissions) == len(unbounded.segments)
+
+
+@pytest.mark.asyncio
+async def test_context_pack_payload_includes_injectable_assertions_via_recovery(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    _seed(archive_root, provider_session_id="context-pack-assertions", text="assertion context pack")
+    with ArchiveStore(archive_root) as archive:
         with sqlite3.connect(archive.user_db_path) as conn:
             upsert_assertion(
                 conn,
@@ -157,9 +127,14 @@ def test_context_pack_view_reads_injectable_assertions_from_user_tier(
             )
             conn.commit()
 
-    run_context_pack_view(_archive_env(archive_root), query="assertion", max_sessions=1, max_messages=1)
+    async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
+        image = await poly.context_pack_payload(
+            query="assertion",
+            max_sessions=1,
+            include_messages=False,
+            include_assertions=True,
+        )
 
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["decisions"]["items"] == [
-        "decision: Use the shared assertion facade in context surfaces. [session:codex-session:context-pack-assertions]"
-    ]
+    rendered = "\n".join(segment.markdown or "" for segment in image.segments)
+    assert "Use the shared assertion facade in context surfaces." in rendered
+    assert "This private caveat should stay out of context." not in rendered

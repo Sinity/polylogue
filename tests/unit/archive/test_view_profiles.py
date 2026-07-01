@@ -51,14 +51,13 @@ def test_http_read_view_capabilities_are_profile_backed_and_payload_driving() ->
     assert "summary" not in choices
     assert read_view_http_format_choices() == ("json", "markdown")
     assert "report" in read_view_http_query_params()
-    assert "max_messages" in read_view_http_query_params()
+    assert "max_tokens" in read_view_http_query_params()
 
     payloads = read_view_http_capability_payloads()
     assert set(payloads) == set(choices)
     assert payloads["recovery"]["formats"] == ["json", "markdown"]
     assert payloads["context-pack"]["query_params"] == [
         "include_messages",
-        "max_messages",
-        "max_text",
+        "max_tokens",
         "no_redact",
     ]

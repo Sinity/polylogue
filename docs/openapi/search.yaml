@@ -416,21 +416,13 @@ paths:
         schema:
           type: boolean
           default: true
-      - name: max_messages
+      - name: max_tokens
         in: query
         required: false
-        description: Maximum messages per session for context-pack.
+        description: Token budget for the compiled context image; over-budget segments are omitted.
         schema:
           type: integer
           minimum: 1
-      - name: max_text
-        in: query
-        required: false
-        description: Maximum text characters per context-pack message excerpt.
-        schema:
-          type: integer
-          minimum: 1
-          default: 200
       - name: no_redact
         in: query
         required: false

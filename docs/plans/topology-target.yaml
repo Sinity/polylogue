@@ -17,7 +17,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 5073
+    loc: 5115
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -610,7 +610,7 @@ files:
     owner: archive-viewport
     reason: archive-domain semantics
   - path: polylogue/archive/viewport/profiles.py
-    loc: 341
+    loc: 339
     target: polylogue/archive/viewport/profiles.py
     owner: archive-viewport
     reason: archive-domain semantics
@@ -854,7 +854,7 @@ files:
     target: polylogue/cli/query_stats.py
     owner: stable
   - path: polylogue/cli/query_verbs.py
-    loc: 1773
+    loc: 1945
     target: polylogue/cli/query_verbs.py
     owner: stable
   - path: polylogue/cli/read_view_handlers.py
@@ -866,7 +866,7 @@ files:
     target: polylogue/cli/read_views/__init__.py
     owner: stable
   - path: polylogue/cli/read_views/base.py
-    loc: 201
+    loc: 200
     target: polylogue/cli/read_views/base.py
     owner: stable
   - path: polylogue/cli/read_views/bulk.py
@@ -874,7 +874,7 @@ files:
     target: polylogue/cli/read_views/bulk.py
     owner: stable
   - path: polylogue/cli/read_views/context.py
-    loc: 99
+    loc: 111
     target: polylogue/cli/read_views/context.py
     owner: stable
   - path: polylogue/cli/read_views/correlation.py
@@ -1033,7 +1033,7 @@ files:
     owner: kernel
     reason: kernel root rule
   - path: polylogue/context/__init__.py
-    loc: 44
+    loc: 39
     target: polylogue/context/__init__.py
     owner: stable
   - path: polylogue/context/assertion_claims.py
@@ -1041,12 +1041,8 @@ files:
     target: polylogue/context/assertion_claims.py
     owner: stable
   - path: polylogue/context/compiler.py
-    loc: 427
+    loc: 428
     target: polylogue/context/compiler.py
-    owner: stable
-  - path: polylogue/context/pack.py
-    loc: 836
-    target: polylogue/context/pack.py
     owner: stable
   - path: polylogue/context/preamble.py
     loc: 138
@@ -1270,7 +1266,7 @@ files:
     target: polylogue/daemon/healthz.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 4016
+    loc: 4022
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/live_ingest_attempt_models.py
@@ -1359,7 +1355,7 @@ files:
     target: polylogue/daemon/user_state_http.py
     owner: stable
   - path: polylogue/daemon/web_shell.py
-    loc: 2378
+    loc: 2381
     target: polylogue/daemon/web_shell.py
     owner: stable
   - path: polylogue/daemon/web_shell_attachments.py
@@ -1622,7 +1618,7 @@ files:
     target: polylogue/mcp/cli.py
     owner: stable
   - path: polylogue/mcp/context_pack.py
-    loc: 506
+    loc: 297
     target: polylogue/mcp/context_pack.py
     owner: stable
   - path: polylogue/mcp/insight_tool_contracts.py
@@ -1630,7 +1626,7 @@ files:
     target: polylogue/mcp/insight_tool_contracts.py
     owner: stable
   - path: polylogue/mcp/payloads.py
-    loc: 988
+    loc: 952
     target: polylogue/mcp/payloads.py
     owner: stable
   - path: polylogue/mcp/query_contracts.py
@@ -1642,7 +1638,7 @@ files:
     target: polylogue/mcp/server.py
     owner: stable
   - path: polylogue/mcp/server_context_tools.py
-    loc: 169
+    loc: 165
     target: polylogue/mcp/server_context_tools.py
     owner: stable
   - path: polylogue/mcp/server_insight_tools.py

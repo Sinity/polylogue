@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import cast
 
+from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.read_views.base import (
     ReadViewContextOptions,
     ReadViewContextPackOptions,
@@ -13,11 +14,11 @@ from polylogue.cli.read_views.base import (
 )
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
+from polylogue.surfaces.payloads import serialize_surface_payload
 
 CONTEXT_READ_VIEW_OPTION_NAMES = frozenset({"related_limit"})
 CONTEXT_PACK_READ_VIEW_OPTION_NAMES = frozenset(
     {
-        "max_messages",
         "max_sessions",
         "no_redact",
         "pack_origin",
@@ -47,7 +48,6 @@ def build_context_pack_options(values: ReadViewOptionValues) -> ReadViewContextP
         origin=cast(str | None, values.get("pack_origin")),
         query=cast(str | None, values.get("pack_query")),
         max_sessions=cast(int, values.get("max_sessions", 5)),
-        max_messages=cast(int, values.get("max_messages", 20)),
         no_redact=cast(bool, values.get("no_redact", False)),
     )
 
@@ -69,23 +69,35 @@ def run_read_context(env: AppEnv, request: RootModeRequest, invocation: ReadView
 
 
 def run_read_context_pack(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
-    """Render the project/query-scoped context pack."""
+    """Render the project/query-scoped context pack as a compiled context image.
 
-    from polylogue.context.pack import run_context_pack_view
+    The context pack is a thin lens over ``compile_context``: the seed session
+    (when the find selection resolved one) or the context-pack selection filters
+    pick the sessions, and the shared engine compiles the message transcript with
+    omission accounting. The CLI ``read`` verb routes multi-session selections
+    through ``run_read_context_image``; this handler covers the single resolved
+    seed and direct handler invocation.
+    """
 
-    del request
     options = cast(ReadViewContextPackOptions, invocation.options or ReadViewContextPackOptions())
-    run_context_pack_view(
+    image = run_coroutine_sync(
+        env.polylogue.context_pack_payload(
+            seed_session_id=invocation.session_id,
+            project_path=options.project_path,
+            project_repo=options.project_repo,
+            since=options.since,
+            until=options.until,
+            origin=options.origin,
+            query=options.query,
+            max_sessions=options.max_sessions,
+            redact_paths=not options.no_redact,
+        )
+    )
+    deliver_content(
         env,
-        project_path=options.project_path,
-        project_repo=options.project_repo,
-        since=options.since,
-        until=options.until,
-        origin=options.origin,
-        query=options.query,
-        max_sessions=options.max_sessions,
-        max_messages=options.max_messages,
-        no_redact=options.no_redact,
+        serialize_surface_payload(image, exclude_none=True) + "\n",
+        destination=invocation.destination,
+        out_path=invocation.out_path,
     )
 
 

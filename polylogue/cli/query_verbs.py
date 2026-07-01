@@ -213,7 +213,6 @@ def _read_view_option_values(
     pack_origin: str | None,
     pack_query: str | None,
     max_sessions: int,
-    max_messages: int,
     no_redact: bool,
     recovery_report: str | None,
     window_hours: int,
@@ -244,7 +243,6 @@ def _read_view_option_values(
         "pack_origin": pack_origin,
         "pack_query": pack_query,
         "max_sessions": max_sessions,
-        "max_messages": max_messages,
         "no_redact": no_redact,
         "recovery_report": recovery_report,
         "window_hours": window_hours,
@@ -404,9 +402,10 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: b
 @click.option(
     "--view",
     "-v",
-    type=click.Choice(_READ_VIEWS),
+    type=str,
     default="summary",
     show_default=True,
+    metavar="VIEW[,VIEW...]",
     shell_complete=_complete_read_view,
     help=_READ_VIEW_HELP,
 )
@@ -516,11 +515,16 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: b
     "--max-sessions", type=int, default=5, show_default=True, help="Max sessions, 1-20 (--view context-pack)."
 )
 @click.option(
-    "--max-messages",
+    "--max-tokens",
     type=int,
-    default=20,
-    show_default=True,
-    help="Max messages per session, 1-100 (--view context-pack).",
+    default=None,
+    help="Bound accumulated output to a token budget; over-budget segments are reported as omissions.",
+)
+@click.option(
+    "--include-assertions",
+    is_flag=True,
+    default=False,
+    help="Include context-inject assertion claims in the compiled context image.",
 )
 @click.option("--no-redact", is_flag=True, default=False, help="Do not redact filesystem paths (--view context-pack).")
 @click.option("--no-code-blocks", is_flag=True, help="Exclude code blocks (--view messages).")
@@ -560,7 +564,8 @@ def read_verb(
     pack_origin: str | None,
     pack_query: str | None,
     max_sessions: int,
-    max_messages: int,
+    max_tokens: int | None,
+    include_assertions: bool,
     no_redact: bool,
     no_code_blocks: bool,
     no_tool_calls: bool,
@@ -606,6 +611,13 @@ def read_verb(
         _emit_read_view_profiles(output_format)
         return
     request = _parent_request(ctx)
+    view_tokens = [token.strip() for token in view.split(",") if token.strip()] or ["summary"]
+    unknown_views = [token for token in view_tokens if token not in _READ_VIEWS]
+    if unknown_views:
+        raise click.UsageError(
+            f"Unknown read view(s): {', '.join(unknown_views)}. Choose from: {', '.join(_READ_VIEWS)}."
+        )
+    primary_view = view_tokens[0]
     if export_all and first_only:
         raise click.UsageError("read --all and --first are mutually exclusive.")
     if destination == "file" and not out_path:
@@ -635,7 +647,7 @@ def read_verb(
     if export_all:
         if limit is not None:
             request = request.with_param_updates(limit=limit)
-        if view == "summary":
+        if primary_view == "summary":
             request = request.with_param_updates(list_mode=True)
             if output_format:
                 request = request.with_param_updates(output_format=output_format)
@@ -651,8 +663,36 @@ def read_verb(
         )
         return
 
+    # General context-image path: multi-view composition, token-bounded
+    # accumulation, assertion inclusion, and the context-pack lens all collapse
+    # onto the shared compile_context engine rather than parallel assemblers.
+    needs_context_image = (
+        len(view_tokens) > 1 or primary_view == "context-pack" or max_tokens is not None or include_assertions
+    )
+    if needs_context_image and destination != "browser":
+        run_read_context_image(
+            env,
+            request,
+            views=tuple(view_tokens),
+            max_tokens=max_tokens,
+            include_assertions=include_assertions,
+            max_sessions=max_sessions,
+            project_path=project_path,
+            project_repo=project_repo,
+            since=since,
+            until=until,
+            pack_origin=pack_origin,
+            pack_query=pack_query,
+            no_redact=no_redact,
+            output_format=output_format,
+            destination=destination,
+            out_path=out_path,
+            first_only=first_only,
+        )
+        return
+
     session_id = _resolve_query_action_session_id(env, request, operation="read", first_only=first_only)
-    effective_format = _effective_read_output_format(request, view=view, output_format=output_format)
+    effective_format = _effective_read_output_format(request, view=primary_view, output_format=output_format)
     explicit_options = _explicit_read_view_options(ctx)
     if destination == "browser":
         run_read_view(
@@ -673,13 +713,13 @@ def read_verb(
         env,
         request,
         ReadViewInvocation(
-            view=view,
+            view=primary_view,
             session_id=session_id,
             output_format=effective_format,
             destination=destination,
             out_path=out_path,
             options=read_view_options_for_view(
-                view,
+                primary_view,
                 _read_view_option_values(
                     limit=limit,
                     offset=offset,
@@ -699,7 +739,6 @@ def read_verb(
                     pack_origin=pack_origin,
                     pack_query=pack_query,
                     max_sessions=max_sessions,
-                    max_messages=max_messages,
                     no_redact=no_redact,
                     recovery_report=recovery_report,
                     window_hours=window_hours,
@@ -1749,6 +1788,139 @@ def _resolve_query_action_session_id(
         return session_ids[0] if session_ids else None
 
     return _resolve_target_session_id(request)
+
+
+def _resolve_query_action_session_ids(
+    env: AppEnv,
+    request: RootModeRequest,
+    *,
+    limit: int,
+    first_only: bool = False,
+) -> list[str]:
+    """Resolve up to ``limit`` matched sessions for a multi-session read action.
+
+    Honors the find selection (query terms, filters, ``--id``, ``--latest``)
+    rather than discarding it. This is the multi-session counterpart to
+    :func:`_resolve_query_action_session_id`.
+    """
+    if request.query_terms:
+        from dataclasses import replace
+
+        explicit = request.params.get("conv_id")
+        if isinstance(explicit, str) and explicit:
+            return [explicit]
+        spec = request.query_spec()
+        if _spec_is_exact_session_ref(spec):
+            return [cast("str", spec.session_id)]
+        if not spec.latest and not spec.has_filters():
+            return []
+        bounded_spec = replace(spec, limit=1 if first_only else limit)
+
+        async def _resolve() -> list[str]:
+            summaries = await bounded_spec.list_summaries(env.config)
+            return [str(summary.id) for summary in summaries]
+
+        return run_coroutine_sync(_resolve())
+
+    single = _resolve_target_session_id(request)
+    return [single] if single else []
+
+
+def _render_context_image_markdown(image: object) -> str:
+    """Render a compiled ContextImage to markdown for terminal/file delivery."""
+    parts: list[str] = []
+    for segment in getattr(image, "segments", ()):
+        markdown = getattr(segment, "markdown", None)
+        if markdown:
+            parts.append(markdown.rstrip())
+    omitted = getattr(image, "omitted", ())
+    if omitted:
+        parts.append("## Omitted")
+        for omission in omitted:
+            target = omission.ref or omission.query or omission.view or "?"
+            parts.append(f"- {target} [{omission.reason}]: {omission.detail}")
+    if not parts:
+        return "(no context segments)\n"
+    return "\n\n".join(parts).rstrip() + "\n"
+
+
+def run_read_context_image(
+    env: AppEnv,
+    request: RootModeRequest,
+    *,
+    views: tuple[str, ...],
+    max_tokens: int | None,
+    include_assertions: bool,
+    max_sessions: int,
+    project_path: str | None,
+    project_repo: str | None,
+    since: str | None,
+    until: str | None,
+    pack_origin: str | None,
+    pack_query: str | None,
+    no_redact: bool,
+    output_format: str | None,
+    destination: str,
+    out_path: str | None,
+    first_only: bool,
+) -> None:
+    """Compile and emit a bounded context image over the matched selection.
+
+    This is the single general read path for multi-view composition, token
+    budgeting, assertion inclusion, and the context-pack lens. It delegates to
+    ``compile_context`` (seed refs from the resolved selection) or, when only
+    context-pack filters narrow the set, to ``context_pack_payload``.
+    """
+    from polylogue.cli.read_views.base import deliver_content
+    from polylogue.context.compiler import ContextSpec
+
+    poly = env.polylogue
+    redact = not no_redact
+    limit = max(1, min(max_sessions, 20))
+    session_ids = _resolve_query_action_session_ids(env, request, limit=limit, first_only=first_only)
+
+    # compile_context handles messages/recovery/work-packet; the context-pack
+    # token maps to the message transcript view. Other tokens become honest
+    # "unsupported" omissions inside compile_context rather than silent drops.
+    compile_views = tuple("messages" if token == "context-pack" else token for token in views)
+
+    if session_ids:
+        spec = ContextSpec(
+            purpose="continue",
+            seed_refs=tuple(f"session:{session_id}" for session_id in session_ids),
+            read_views=compile_views,
+            max_tokens=max_tokens,
+            include_assertions=include_assertions,
+            redaction_policy="raw-opt-in" if not redact else "default",
+        )
+        image = run_coroutine_sync(poly.compile_context(spec))
+    elif "context-pack" in views:
+        image = run_coroutine_sync(
+            poly.context_pack_payload(
+                project_path=project_path,
+                project_repo=project_repo,
+                since=since,
+                until=until,
+                origin=pack_origin,
+                query=pack_query,
+                max_sessions=limit,
+                max_tokens=max_tokens,
+                include_messages="messages" in compile_views,
+                include_assertions=include_assertions,
+                redact_paths=redact,
+            )
+        )
+    else:
+        raise click.UsageError(
+            "read with --max-tokens, --include-assertions, or multiple --view values "
+            "requires a seed (use --id, --latest, id:prefix, or a query)."
+        )
+
+    if output_format == "json":
+        content = serialize_surface_payload(image, exclude_none=True) + "\n"
+    else:
+        content = _render_context_image_markdown(image)
+    deliver_content(env, content, destination=destination, out_path=out_path)
 
 
 QUERY_VERBS = (

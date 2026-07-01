@@ -149,15 +149,15 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
     SessionViewProfile(
         view_id="context-pack",
         label="Context Pack",
-        owner="polylogue.context.pack.run_context_pack_view",
-        purpose="Project/query-scoped multi-session context bundle.",
-        input_scope="project path, repo, date/origin/query filters",
-        included_kinds=("session excerpts", "messages", "project scope", "redacted paths"),
+        owner="polylogue.api.archive.Polylogue.context_pack_payload",
+        purpose="Project/query-scoped multi-session context image (compile_context lens).",
+        input_scope="project path, repo, date/origin/query filters, token budget",
+        included_kinds=("context segments", "messages", "omissions", "assertions"),
         lossiness="summarized",
         evidence_policy="optional",
         privacy_policy="redacts filesystem paths unless --no-redact is selected",
-        formats=("markdown",),
-        machine_payload=None,
+        formats=("json", "markdown"),
+        machine_payload="ContextImage payload",
         degraded_states=("empty scoped query", "archive unavailable"),
         successor_handoff=True,
     ),
@@ -238,9 +238,7 @@ READ_VIEW_HTTP_CAPABILITIES: dict[str, ReadViewHttpCapability] = {
     "recovery": ReadViewHttpCapability("recovery", ("json", "markdown"), ("report",)),
     "raw": ReadViewHttpCapability("raw", ("json",)),
     "context": ReadViewHttpCapability("context", ("json",), ("related_limit",)),
-    "context-pack": ReadViewHttpCapability(
-        "context-pack", ("json",), ("include_messages", "max_messages", "max_text", "no_redact")
-    ),
+    "context-pack": ReadViewHttpCapability("context-pack", ("json",), ("include_messages", "max_tokens", "no_redact")),
     "neighbors": ReadViewHttpCapability("neighbors", ("json",), ("limit", "window_hours")),
     "correlation": ReadViewHttpCapability(
         "correlation", ("json",), ("confidence_threshold", "repo_path", "since_hours")

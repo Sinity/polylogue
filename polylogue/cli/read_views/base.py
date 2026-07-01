@@ -54,7 +54,6 @@ class ReadViewContextPackOptions:
     origin: str | None = None
     query: str | None = None
     max_sessions: int = 5
-    max_messages: int = 20
     no_redact: bool = False
 
 

@@ -1,15 +1,15 @@
 """Context pack MCP tool registration.
 
-Registers ``build_context_pack`` — the agent-facing context assembly tool
-that produces provenance-rich project/date/query context packs from canonical
-archive tables.
+Registers ``build_context_pack`` — the agent-facing context assembly tool. It is
+a thin lens over the shared ``compile_context`` engine: session selection runs
+through the query algebra, then the bounded ``ContextImage`` payload (segments,
+token-budgeted accumulation, omission accounting, assertions) is compiled by the
+same code path the CLI ``read`` modifiers and the ``compile_context`` tool use.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-
-from polylogue.context.pack import build_archive_context_pack_payload
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -18,16 +18,16 @@ if TYPE_CHECKING:
 
 _DEFAULT_MAX_SESSIONS = 5
 _DEFAULT_MAX_MESSAGES = 20
-_DETAIL_DEFAULTS: dict[str, tuple[int, bool]] = {
-    "summary": (0, False),  # metadata only, no messages
-    "compact": (200, True),  # truncated messages
-    "full": (0, True),  # full messages, untruncated
+_DETAIL_INCLUDES_MESSAGES: dict[str, bool] = {
+    "summary": False,  # metadata/recovery only, no message bodies
+    "compact": True,
+    "full": True,
 }
 
 
-def _get_detail_settings(detail_level: str) -> tuple[int, bool]:
-    """Return (max_text_length, include_messages) for a detail level."""
-    return _DETAIL_DEFAULTS.get(detail_level, _DETAIL_DEFAULTS["compact"])
+def _detail_includes_messages(detail_level: str) -> bool:
+    """Return whether a detail level includes message bodies."""
+    return _DETAIL_INCLUDES_MESSAGES.get(detail_level, True)
 
 
 def register_context_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
@@ -40,14 +40,16 @@ def register_context_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         origin: str | None = None,
         query: str | None = None,
         max_sessions: int = _DEFAULT_MAX_SESSIONS,
-        max_messages_per_session: int = _DEFAULT_MAX_MESSAGES,
+        max_tokens: int | None = None,
         detail_level: str = "compact",
         redact_paths: bool = True,
+        include_assertions: bool = True,
     ) -> str:
-        """Build a provenance-rich context pack for agent analysis.
+        """Build a bounded context image for agent analysis.
 
-        Assembles project context, date range, filtered sessions,
-        action summaries, and unresolved work from the archive.
+        Selects sessions through the query algebra (filters / free-text query)
+        and compiles the requested views into the shared ``ContextImage`` payload
+        with token-budgeted accumulation and explicit omission accounting.
 
         Parameters:
             project_path: Filter sessions by cwd prefix pattern.
@@ -57,32 +59,26 @@ def register_context_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             origin: Source-origin filter.
             query: Free-text query for semantic narrowing.
             max_sessions: Maximum sessions to include (1-20).
-            max_messages_per_session: Max messages per session (1-100).
-            detail_level: 'summary' (metadata only), 'compact' (truncated), 'full'.
+            max_tokens: Optional token budget; segments over budget are omitted
+                with reason 'budget' instead of being silently truncated.
+            detail_level: 'summary' (recovery only), 'compact'/'full' (messages).
             redact_paths: Redact filesystem paths for privacy (default True).
+            include_assertions: Include context-inject assertion claims.
         """
 
         async def run() -> str:
-            conv_limit = max(1, min(max_sessions, 20))
-            msg_limit = max(1, min(max_messages_per_session, 100))
-            valid_detail = detail_level if detail_level in _DETAIL_DEFAULTS else "compact"
-            max_text, include_messages = _get_detail_settings(valid_detail)
-
-            config = hooks.get_config()
-            payload = await build_archive_context_pack_payload(
-                archive_root=config.archive_root,
-                polylogue=hooks.get_polylogue(),
-                clamp_limit=hooks.clamp_limit,
+            include_messages = _detail_includes_messages(detail_level)
+            payload = await hooks.get_polylogue().context_pack_payload(
                 project_path=project_path,
                 project_repo=project_repo,
                 since=since,
                 until=until,
                 origin=origin,
                 query=query,
-                conv_limit=conv_limit,
-                msg_limit=msg_limit,
-                max_text=max_text,
+                max_sessions=hooks.clamp_limit(max_sessions),
+                max_tokens=max_tokens,
                 include_messages=include_messages,
+                include_assertions=include_assertions,
                 redact_paths=redact_paths,
             )
             return hooks.json_payload(payload, exclude_none=True)

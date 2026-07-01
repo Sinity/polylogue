@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from polylogue.archive.actions.actions import Action
 from polylogue.archive.attachment.models import Attachment
@@ -2199,7 +2199,7 @@ class PolylogueArchiveMixin:
                 session_ids.append(session_id)
 
         if spec.seed_query is not None:
-            result = await self.search(spec.seed_query, limit=1)
+            result = await self.search(spec.seed_query, limit=spec.seed_query_limit)
             if not result.hits:
                 omitted.append(
                     ContextOmission(
@@ -2209,10 +2209,10 @@ class PolylogueArchiveMixin:
                     )
                 )
             else:
-                session_id = result.hits[0].session_id
-                if session_id not in seen_sessions:
-                    seen_sessions.add(session_id)
-                    session_ids.append(session_id)
+                for hit in result.hits:
+                    if hit.session_id not in seen_sessions:
+                        seen_sessions.add(hit.session_id)
+                        session_ids.append(hit.session_id)
 
         token_budget = spec.max_tokens
         token_total = 0
@@ -2337,31 +2337,73 @@ class PolylogueArchiveMixin:
         origin: str | None = None,
         query: str | None = None,
         max_sessions: int = 5,
-        max_messages_per_session: int = 20,
-        max_text: int = 200,
+        max_tokens: int | None = None,
         include_messages: bool = True,
+        include_assertions: bool = True,
         redact_paths: bool = True,
         seed_session_id: str | None = None,
-    ) -> Any:
-        """Build the shared archive-backed context-pack payload."""
-        from polylogue.context.pack import build_archive_context_pack_payload
+    ) -> ContextImage:
+        """Compile a multi-session context image through ``compile_context``.
 
-        return await build_archive_context_pack_payload(
-            archive_root=self.config.archive_root,
-            polylogue=self,
-            project_path=project_path,
-            project_repo=project_repo,
-            since=since,
-            until=until,
-            origin=origin,
-            query=query,
-            conv_limit=max(1, min(max_sessions, 20)),
-            msg_limit=max(1, min(max_messages_per_session, 100)),
-            max_text=max_text,
-            include_messages=include_messages,
-            redact_paths=redact_paths,
-            seed_session_id=seed_session_id,
+        This is a thin lens over the shared context engine, not a parallel
+        assembler. Session selection runs through the query algebra (a seed ref
+        or the context-pack selection filters); compilation, token-budgeted
+        accumulation, omission accounting, and assertion inclusion are all
+        delegated to :meth:`compile_context`.
+        """
+        from polylogue.context.compiler import ContextImage, ContextOmission, ContextSpec
+        from polylogue.mcp.context_pack import _clamp_context_pack_limit, select_context_pack_sessions
+
+        views: tuple[str, ...] = ("messages",) if include_messages else ("recovery",)
+        redaction: Literal["default", "raw-opt-in"] = "raw-opt-in" if not redact_paths else "default"
+
+        if seed_session_id is not None:
+            seed_refs: tuple[str, ...] = (f"session:{seed_session_id}",)
+        else:
+            limit = max(1, min(max_sessions, 20))
+            selection = await select_context_pack_sessions(
+                self.list_sessions_for_spec,
+                _clamp_context_pack_limit,
+                project_path=project_path,
+                project_repo=project_repo,
+                since=since,
+                until=until,
+                origin=origin,
+                query=query,
+                limit=limit,
+            )
+            seed_refs = tuple(f"session:{summary.id}" for summary in selection.sessions[:limit])
+
+        if not seed_refs:
+            spec = ContextSpec(
+                purpose="handoff",
+                seed_query=query or "<context-pack>",
+                read_views=views,
+                max_tokens=max_tokens,
+                include_assertions=include_assertions,
+                redaction_policy=redaction,
+            )
+            return ContextImage(
+                spec=spec,
+                segments=(),
+                omitted=(
+                    ContextOmission(
+                        query=query,
+                        reason="not_found",
+                        detail="no sessions matched the context-pack selection",
+                    ),
+                ),
+            )
+
+        spec = ContextSpec(
+            purpose="handoff",
+            seed_refs=seed_refs,
+            read_views=views,
+            max_tokens=max_tokens,
+            include_assertions=include_assertions,
+            redaction_policy=redaction,
         )
+        return await self.compile_context(spec)
 
     async def context_preamble_payload(
         self,

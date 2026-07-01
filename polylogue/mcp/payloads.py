@@ -12,33 +12,6 @@ from polylogue.context.compiler import ContextImage
 from polylogue.core.json import JSONDocument
 from polylogue.core.user_state_targets import TARGET_SESSION
 from polylogue.core.web_urls import canonical_session_url
-from polylogue.mcp.context_pack import (
-    ContextPackActionSummary as MCPContextPackActionSummary,
-)
-from polylogue.mcp.context_pack import (
-    ContextPackDateRange as MCPContextPackDateRange,
-)
-from polylogue.mcp.context_pack import (
-    ContextPackMessage as MCPContextPackMessage,
-)
-from polylogue.mcp.context_pack import (
-    ContextPackPayload as MCPContextPackPayload,
-)
-from polylogue.mcp.context_pack import (
-    ContextPackProject as MCPContextPackProject,
-)
-from polylogue.mcp.context_pack import (
-    ContextPackProvenance as MCPContextPackProvenance,
-)
-from polylogue.mcp.context_pack import (
-    ContextPackQueryContext as MCPContextPackQueryContext,
-)
-from polylogue.mcp.context_pack import (
-    ContextPackSession as MCPContextPackSession,
-)
-from polylogue.mcp.context_pack import (
-    ContextPackUnresolvedWork as MCPContextPackUnresolvedWork,
-)
 from polylogue.readiness import component_from_outcome_check
 from polylogue.surfaces.payloads import (
     AssertionClaimListPayload,
@@ -915,16 +888,7 @@ class MCPReadinessReportPayload(SurfacePayloadModel):
 
 __all__ = [
     "MCPArchiveStatsPayload",
-    "MCPContextPackActionSummary",
-    "MCPContextPackSession",
-    "MCPContextPackDateRange",
-    "MCPContextPackMessage",
-    "MCPContextPackPayload",
     "MCPContextImagePayload",
-    "MCPContextPackProject",
-    "MCPContextPackProvenance",
-    "MCPContextPackQueryContext",
-    "MCPContextPackUnresolvedWork",
     "MCPSessionDetailPayload",
     "MCPSessionNeighborCandidateListPayload",
     "MCPSessionNeighborCandidatePayload",

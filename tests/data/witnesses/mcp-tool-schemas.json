@@ -234,10 +234,22 @@
           "title": "Max Sessions",
           "type": "integer"
         },
-        "max_messages_per_session": {
-          "default": 20,
-          "title": "Max Messages Per Session",
-          "type": "integer"
+        "max_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Tokens"
+        },
+        "include_assertions": {
+          "default": true,
+          "title": "Include Assertions",
+          "type": "boolean"
         },
         "project_path": {
           "anyOf": [

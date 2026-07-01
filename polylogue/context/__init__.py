@@ -12,7 +12,6 @@ __all__ = [
     "compose_context_preamble",
     "context_image_from_recovery",
     "context_snapshot_record_from_image",
-    "run_context_pack_view",
 ]
 
 
@@ -37,8 +36,4 @@ def __getattr__(name: str) -> object:
         from polylogue.context.preamble import compose_context_preamble
 
         return compose_context_preamble
-    if name == "run_context_pack_view":
-        from polylogue.context.pack import run_context_pack_view
-
-        return run_context_pack_view
     raise AttributeError(name)
