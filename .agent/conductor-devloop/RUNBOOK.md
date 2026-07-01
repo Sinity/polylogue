@@ -121,6 +121,10 @@ Velocity, and Meta.
      `.agent/scripts/devloop-start --meta "<slice>"`; this records
      `Meta -> Meta` until a deliberate transition moves the loop back to
      Evidence, Construction, Proof, Artifact, Velocity, or Direction.
+   - Run `.agent/scripts/devloop-velocity --record` near the start of a
+     Meta-focused slice. This records focus cadence, long gaps, packet growth,
+     task-history friction, and active heavy work under `.agent/task-history/`
+     and leaves a compact `velocity-audit` entry in the operating log.
    - Use `.agent/scripts/devloop-meta "<trigger>" "<failure-hypothesis>" "<evidence>" "<change-considered>" "<change-made>" "<change-deferred>" "<next-tripwire>"`.
    - Fill every field; use `none` only when a field is genuinely empty.
    - Prefer one concrete scaffold/tooling/observability change over broad

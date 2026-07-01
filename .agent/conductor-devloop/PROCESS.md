@@ -24,6 +24,9 @@ whether convergence is running.
 5. Prove the exact claim with a focused command or real archive artifact.
 6. Update `.agent/demos` or the conductor packet with useful readable proof.
 7. Run `.agent/scripts/devloop-sync` after changing scaffold/current notes.
+8. During Meta/process slices, run `.agent/scripts/devloop-velocity --record`
+   before choosing the process change. This turns speed/focus reflection into
+   an operating-log artifact instead of an unrecorded chat judgment.
 
 Value and substrate are interleaved, not alternatives. A visible demo/finding is
 the forcing function, but substrate repair is the correct slice when broken
@@ -56,6 +59,8 @@ the conductor packet.
 - Meta/scaffold work must leave an executable consequence: a review check,
   corrected synced packet, sharper stop rule, or materially better next-slice
   choice. Process prose alone is not a completed slice.
+- Meta/scaffold work must record velocity/focus evidence with
+  `devloop-velocity --record`; `devloop-review` treats a missing audit as drift.
 
 ## Proof Ladder
 

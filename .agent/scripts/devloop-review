@@ -527,6 +527,50 @@ PY
   else
     warn "ACTIVE-LOOP slice looks like process/meta work but has no recorded Meta origin; use devloop-start --meta or devloop-focus ... Meta"
   fi
+  if python3 - "$current/ACTIVE-LOOP.md" "$current/OPERATING-LOG.md" <<'PY'
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+log_text = Path(sys.argv[2]).read_text(encoding="utf-8") if Path(sys.argv[2]).exists() else ""
+
+def section(heading: str) -> str:
+    marker = f"## {heading}"
+    start = text.find(marker)
+    if start == -1:
+        return ""
+    next_start = text.find("\n## ", start + 1)
+    if next_start == -1:
+        next_start = len(text)
+    return text[start + len(marker):next_start].strip()
+
+slice_title = section("Current Slice")
+focus_text = section("Current Focus")
+focus_line = next((line.strip() for line in focus_text.splitlines() if line.startswith("Focus: ")), "")
+is_meta_focus = "Meta ->" in focus_line or "-> Meta" in focus_line
+if not is_meta_focus or not slice_title:
+    raise SystemExit(0)
+
+entry_re = re.compile(
+    r"^## \d{4}-\d{2}-\d{2} .* [—-] " + re.escape(slice_title) + r"$",
+    re.M,
+)
+entry_match = entry_re.search(log_text)
+if entry_match is None:
+    raise SystemExit(1)
+tail = log_text[entry_match.end() :]
+if re.search(r"^## \d{4}-\d{2}-\d{2} .* [—-] velocity-audit$", tail, re.M):
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+  then
+    ok "Meta-focused slice has a recorded velocity/focus audit"
+  else
+    warn "Meta-focused slice has no recorded velocity/focus audit; run .agent/scripts/devloop-velocity --record"
+  fi
 fi
 
 polylogued_pids="$(ps -eo pid=,args= | awk '$3 ~ /\/polylogued$/ && $4 == "run" {print}' || true)"

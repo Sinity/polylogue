@@ -3,25 +3,89 @@ set -euo pipefail
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   cat <<'EOF'
-Usage: .agent/scripts/devloop-velocity [--top N]
+Usage: .agent/scripts/devloop-velocity [--record] [--top N]
 
 Summarize devloop speed from existing scaffold evidence: archive state, active
 focus, recent elapsed log gaps, longest logged gaps, and currently active
 heavy-ish processes. This is a velocity diagnostic, not a product proof.
+
+Use --record during Meta/process slices to write the latest report under
+.agent/task-history/velocity-latest.txt and append a concise operating-log
+entry. The report path is local ignored state; it is not a conductor mirror.
 EOF
   exit 0
 fi
 
 top=8
-if [[ "${1:-}" == "--top" ]]; then
-  top="${2:-8}"
-fi
+record=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --record)
+      record=1
+      shift
+      ;;
+    --top)
+      top="${2:-8}"
+      shift 2
+      ;;
+    *)
+      printf 'unknown argument: %s\n' "$1" >&2
+      exit 2
+      ;;
+  esac
+done
 
 repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
 current="${POLYLOGUE_AGENT_CURRENT:-$repo/.agent/conductor-devloop}"
 log="$current/OPERATING-LOG.md"
 
 cd "$repo"
+
+if [ "$record" -eq 1 ]; then
+  report="$repo/.agent/task-history/velocity-latest.txt"
+  mkdir -p "$(dirname "$report")"
+  "$0" --top "$top" > "$report"
+  cat "$report"
+  summary="$(
+    python3 - "$report" <<'PY'
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+interesting_prefixes = (
+    "root=",
+    "index=",
+    "source=",
+    "daemon=",
+    "agent_packet=",
+    "transitions=",
+    "proof_direct_skips=",
+    "rows=",
+    "recent50=",
+)
+lines = [
+    line
+    for line in text.splitlines()
+    if line.startswith(interesting_prefixes)
+]
+print("\n".join(lines[:20]))
+PY
+  )"
+  "$repo/.agent/scripts/devloop-log" "velocity-audit" "Loop phase: reflect
+Focus: Meta -> Velocity
+Trigger: devloop-velocity --record
+Primary aim: make devloop speed, focus-mode cadence, packet growth, and task-history friction inspectable during the Meta slice.
+Evidence touched: $report
+Action taken: recorded the latest velocity report outside the conductor packet and refreshed generated event sidecar.
+Artifact/proof: devloop-velocity completed and wrote $report.
+Velocity note: ${summary:-velocity report recorded; no compact summary lines parsed}
+Next decision: use the audit to choose a small executable process improvement or return to Direction."
+  "$repo/.agent/scripts/devloop-sync" >/dev/null
+  exit 0
+fi
 
 printf '== archive ==\n'
 status_json="$(".agent/scripts/devloop-status" --json 2>/dev/null)"
