@@ -132,6 +132,7 @@ class _ArchiveFilterKwargs(TypedDict):
     tags: tuple[str, ...]
     excluded_tags: tuple[str, ...]
     repo_names: tuple[str, ...]
+    project_refs: tuple[str, ...]
     has_types: tuple[str, ...]
     has_tool_use: bool
     has_thinking: bool
@@ -167,6 +168,7 @@ def _plan_filter_kwargs(plan: SessionQueryPlan) -> _ArchiveFilterKwargs:
         "tags": plan.tags,
         "excluded_tags": plan.excluded_tags,
         "repo_names": plan.repo_names,
+        "project_refs": plan.project_refs,
         "has_types": plan.has_types,
         "has_tool_use": plan.filter_has_tool_use,
         "has_thinking": plan.filter_has_thinking,
@@ -204,6 +206,7 @@ def _summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary:
         working_directories=tuple(summary.working_directories),
         git_branch=summary.git_branch,
         git_repository_url=summary.git_repository_url,
+        provider_project_ref=summary.provider_project_ref,
         message_count=summary.message_count,
         tags_m2m=summary.tags,
     )
@@ -238,6 +241,8 @@ def _message_to_domain(message: ArchiveMessageRow, *, provider: Provider) -> Mes
                 "semantic_type": block.semantic_type,
                 "tool_input": _maybe_parse_json_object(block.tool_input),
                 "metadata": _maybe_parse_json_object(block.metadata),
+                "tool_result_is_error": block.tool_result_is_error,
+                "tool_result_exit_code": block.tool_result_exit_code,
             }.items()
             if value is not None
         }
@@ -277,6 +282,7 @@ def _session_to_session(session: ArchiveSessionEnvelope) -> Session:
         working_directories=tuple(session.working_directories),
         git_branch=session.git_branch,
         git_repository_url=session.git_repository_url,
+        provider_project_ref=session.provider_project_ref,
         parent_id=SessionId(session.parent_session_id) if session.parent_session_id else None,
         branch_type=BranchType(session.branch_type) if session.branch_type else None,
     )

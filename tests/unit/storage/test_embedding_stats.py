@@ -137,6 +137,9 @@ def test_read_embedding_stats_sync_exposes_retrieval_bands_when_archive_tables_e
     assert "pending 2" in str(stats.retrieval_bands["transcript_embeddings"]["detail"])
     assert stats.retrieval_bands["evidence_retrieval"]["ready"] is True
     assert stats.retrieval_bands["inference_retrieval"]["ready"] is True
+    assert stats.retrieval_bands["inference_retrieval"]["source_rows"] == 4
+    assert stats.retrieval_bands["inference_retrieval"]["materialized_rows"] == 4
+    assert "phase" not in str(stats.retrieval_bands["inference_retrieval"]["detail"])
     assert stats.retrieval_bands["enrichment_retrieval"]["ready"] is True
 
 

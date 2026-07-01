@@ -68,6 +68,11 @@ class ParsedContentBlock(BaseModel):
     tool_input: Mapping[str, object] | None = None
     media_type: str | None = None
     metadata: dict[str, object] | None = None
+    # Structured tool-result outcome (keystone): captured from the source's
+    # own outcome fields (Claude toolUseResult.is_error, command exit codes)
+    # so in-session outcomes are readable instead of regex-guessed from text.
+    is_error: bool | None = None
+    exit_code: int | None = None
     web_constructs: list[ParsedWebConstruct] = Field(default_factory=list)
 
     @field_validator("type", mode="before")
@@ -256,6 +261,11 @@ class ParsedSession(BaseModel):
     working_directories: list[str] = Field(default_factory=list)
     git_branch: str | None = None
     git_repository_url: str | None = None
+    # Provider workspace/project grouping (ChatGPT "project": the g-p-<id> token,
+    # surfaced in the backend payload as gizmo_id/conversation_template_id). Lets
+    # web sessions be grouped/enumerated by project and upgrades the canonical URL
+    # to the project-scoped form. None for sessions with no project.
+    provider_project_ref: str | None = None
     # Specific commit the agent session was anchored to (codex records this
     # per-session in their meta.git.commit_hash). Lets downstream attribution
     # pin a session to an exact commit instead of the looser "session_date

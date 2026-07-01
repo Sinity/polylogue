@@ -11,6 +11,7 @@ from typing_extensions import TypedDict
 from polylogue.context.compiler import ContextImage
 from polylogue.core.json import JSONDocument
 from polylogue.core.user_state_targets import TARGET_SESSION
+from polylogue.core.web_urls import canonical_session_url
 from polylogue.mcp.context_pack import (
     ContextPackActionSummary as MCPContextPackActionSummary,
 )
@@ -427,6 +428,7 @@ class MCPArchiveSessionPayload(SurfacePayloadModel):
     origin: str
     source: str
     title: str | None
+    canonical_url: str | None
     active_leaf_message_id: str | None
     messages: tuple[MCPArchiveMessagePayload, ...]
 
@@ -438,6 +440,7 @@ class MCPArchiveSessionPayload(SurfacePayloadModel):
             origin=session.origin,
             source=session.origin,
             title=session.title,
+            canonical_url=canonical_session_url(session.origin, session.native_id),
             active_leaf_message_id=session.active_leaf_message_id,
             messages=tuple(MCPArchiveMessagePayload.from_message(message) for message in session.messages),
         )

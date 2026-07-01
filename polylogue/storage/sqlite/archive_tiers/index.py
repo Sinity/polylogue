@@ -33,7 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 15
+INDEX_SCHEMA_VERSION = 18
 
 INDEX_DDL = f"""
 CREATE TABLE IF NOT EXISTS sessions (
@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     title_source            TEXT CHECK(title_source IN ('origin', 'path', 'heuristic', 'user', 'unknown') OR title_source IS NULL),
     git_branch              TEXT,
     git_repository_url      TEXT,
+    provider_project_ref    TEXT,
     commit_hash             TEXT,
     instructions_text       TEXT,
     reported_duration_ms    INTEGER CHECK(reported_duration_ms IS NULL OR reported_duration_ms >= 0),
@@ -179,6 +180,8 @@ CREATE TABLE IF NOT EXISTS blocks (
     semantic_type   TEXT,
     media_type      TEXT,
     language        TEXT,
+    tool_result_is_error  INTEGER CHECK (tool_result_is_error IN (0, 1)),
+    tool_result_exit_code INTEGER,
     tool_command    TEXT GENERATED ALWAYS AS (json_extract(tool_input, '$.command')) VIRTUAL,
     tool_path       TEXT GENERATED ALWAYS AS (
                         COALESCE(json_extract(tool_input, '$.file_path'), json_extract(tool_input, '$.path'))
@@ -282,6 +285,8 @@ SELECT
     u.tool_path,
     u.tool_input,
     r.text AS output_text,
+    r.tool_result_is_error AS is_error,
+    r.tool_result_exit_code AS exit_code,
     r.block_id AS tool_result_block_id
 FROM blocks u
 LEFT JOIN blocks r
@@ -680,8 +685,6 @@ CREATE TABLE IF NOT EXISTS session_phases (
     phase_id        TEXT GENERATED ALWAYS AS (session_id || ':phase:' || position) STORED UNIQUE,
     session_id      TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     position        INTEGER NOT NULL CHECK(position >= 0),
-    phase_type      TEXT NOT NULL,
-    confidence      REAL NOT NULL DEFAULT 0.0 CHECK(confidence BETWEEN 0 AND 1),
     start_index     INTEGER NOT NULL DEFAULT 0 CHECK(start_index >= 0),
     end_index       INTEGER NOT NULL DEFAULT 0 CHECK(end_index >= start_index),
     started_at_ms   INTEGER,
@@ -699,9 +702,6 @@ CREATE TABLE IF NOT EXISTS session_phases (
 
 CREATE INDEX IF NOT EXISTS idx_session_phases_session
 ON session_phases(session_id, position);
-
-CREATE INDEX IF NOT EXISTS idx_session_phases_type
-ON session_phases(phase_type, session_id);
 
 CREATE TRIGGER IF NOT EXISTS session_work_events_fts_ad
 AFTER DELETE ON session_work_events BEGIN

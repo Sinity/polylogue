@@ -101,6 +101,7 @@ class SessionQueryPlan:
     origins: tuple[str, ...] = ()
     excluded_origins: tuple[str, ...] = ()
     repo_names: tuple[str, ...] = ()
+    project_refs: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
     excluded_tags: tuple[str, ...] = ()
     has_types: tuple[str, ...] = ()

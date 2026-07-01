@@ -99,7 +99,6 @@ def test_archive_tiers_archive_self_verify_envelope_is_stable(tmp_path: Path) ->
         conn,
         session_id=session_id,
         position=0,
-        phase_type="inspect",
         start_index=0,
         end_index=1,
     )

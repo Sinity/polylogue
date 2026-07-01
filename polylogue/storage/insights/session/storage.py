@@ -161,8 +161,6 @@ _TIMELINE_PAYLOAD_COLUMNS = (
 _SESSION_PHASE_BASE_COLUMNS = (
     "session_id",
     "position",
-    "phase_type",
-    "confidence",
     "start_index",
     "end_index",
     "started_at_ms",
@@ -468,8 +466,6 @@ def session_phase_insert_values(
     base_values: list[SqlValue] = [
         record.session_id,
         record.phase_index,
-        record.kind,
-        record.confidence,
         record.start_index,
         record.end_index,
         _epoch_ms_or_none(record.start_time),

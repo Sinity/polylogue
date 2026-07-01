@@ -140,10 +140,11 @@ def test_archive_tiers_index_generates_ids_and_actions_view(tmp_path: Path) -> N
     conn.execute(
         """
         INSERT INTO blocks (
-            message_id, session_id, position, block_type, text, tool_id
-        ) VALUES (?, ?, ?, ?, ?, ?)
+            message_id, session_id, position, block_type, text, tool_id,
+            tool_result_is_error, tool_result_exit_code
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (messages[0]["message_id"], session["session_id"], 2, "tool_result", "passed", "tool-1"),
+        (messages[0]["message_id"], session["session_id"], 2, "tool_result", "passed", "tool-1", 0, 0),
     )
     conn.execute(
         """
@@ -190,14 +191,16 @@ def test_archive_tiers_index_generates_ids_and_actions_view(tmp_path: Path) -> N
 
     actions = conn.execute(
         """
-        SELECT tool_command, output_text
+        SELECT tool_command, output_text, is_error, exit_code
         FROM actions
         WHERE session_id = ?
         ORDER BY output_text
         """,
         (session["session_id"],),
     ).fetchall()
-    assert [dict(row) for row in actions] == [{"tool_command": "pytest -q", "output_text": "passed"}]
+    assert [dict(row) for row in actions] == [
+        {"tool_command": "pytest -q", "output_text": "passed", "is_error": 0, "exit_code": 0}
+    ]
 
     fts_row = conn.execute(
         """

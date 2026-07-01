@@ -2346,6 +2346,7 @@ class _SpecAccumulator:
     origins: list[str] = field(default_factory=list)
     excluded_origins: list[str] = field(default_factory=list)
     repo_names: list[str] = field(default_factory=list)
+    project_refs: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     excluded_tags: list[str] = field(default_factory=list)
     has_types: list[str] = field(default_factory=list)
@@ -2453,6 +2454,11 @@ class _SpecAccumulator:
             if tok.negated:
                 raise ExpressionCompileError("negation is not supported for 'repo'", field=fname)
             self.repo_names.extend(values)
+
+        elif fname == "project":
+            if tok.negated:
+                raise ExpressionCompileError("negation is not supported for 'project'", field=fname)
+            self.project_refs.extend(values)
 
         elif fname == "origin":
             _known_origins = {o.value for o in Origin}
@@ -2611,6 +2617,7 @@ class _SpecAccumulator:
             origins=tuple(self.origins),
             excluded_origins=tuple(self.excluded_origins),
             repo_names=tuple(self.repo_names),
+            project_refs=tuple(self.project_refs),
             tags=tuple(self.tags),
             excluded_tags=tuple(self.excluded_tags),
             has_types=tuple(self.has_types),
@@ -2646,6 +2653,7 @@ class _SpecAccumulator:
         self.origins.extend(other.origins)
         self.excluded_origins.extend(other.excluded_origins)
         self.repo_names.extend(other.repo_names)
+        self.project_refs.extend(other.project_refs)
         self.tags.extend(other.tags)
         self.excluded_tags.extend(other.excluded_tags)
         self.has_types.extend(other.has_types)

@@ -22,6 +22,7 @@ class SessionListQueryKwargs(TypedDict):
     tool_terms: list[str] | None
     excluded_tool_terms: list[str] | None
     repo_names: list[str] | None
+    project_refs: list[str] | None
     limit: int | None
     offset: int
     has_tool_use: bool
@@ -49,6 +50,7 @@ class SessionCountQueryKwargs(TypedDict):
     tool_terms: list[str] | None
     excluded_tool_terms: list[str] | None
     repo_names: list[str] | None
+    project_refs: list[str] | None
     has_tool_use: bool
     has_thinking: bool
     has_paste: bool
@@ -78,6 +80,7 @@ class SessionRecordQuery:
     tool_terms: tuple[str, ...] = ()
     excluded_tool_terms: tuple[str, ...] = ()
     repo_names: tuple[str, ...] = ()
+    project_refs: tuple[str, ...] = ()
     limit: int | None = None
     offset: int = 0
     has_tool_use: bool = False
@@ -131,6 +134,7 @@ class SessionRecordQuery:
             "tool_terms": list(self.tool_terms) or None,
             "excluded_tool_terms": list(self.excluded_tool_terms) or None,
             "repo_names": list(self.repo_names) or None,
+            "project_refs": list(self.project_refs) or None,
             "limit": self.limit,
             "offset": self.offset,
             "has_tool_use": self.has_tool_use,
@@ -159,6 +163,7 @@ class SessionRecordQuery:
             "tool_terms": list(self.tool_terms) or None,
             "excluded_tool_terms": list(self.excluded_tool_terms) or None,
             "repo_names": list(self.repo_names) or None,
+            "project_refs": list(self.project_refs) or None,
             "has_tool_use": self.has_tool_use,
             "has_thinking": self.has_thinking,
             "has_paste": self.has_paste,

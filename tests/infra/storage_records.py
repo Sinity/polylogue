@@ -177,6 +177,8 @@ def _content_block_record(
     media_type: str | None = None,
     metadata: str | None = None,
     semantic_type: str | None = None,
+    tool_result_is_error: int | None = None,
+    tool_result_exit_code: int | None = None,
 ) -> BlockRecord:
     # #1240: media_type is now stored inside the block-metadata JSON.
     merged_metadata = _merge_media_type_into_metadata(metadata, media_type)
@@ -192,6 +194,8 @@ def _content_block_record(
         tool_input=tool_input,
         metadata=merged_metadata,
         semantic_type=None if semantic_type is None else SemanticBlockType.from_string(semantic_type),
+        tool_result_is_error=tool_result_is_error,
+        tool_result_exit_code=tool_result_exit_code,
     )
 
 
@@ -216,6 +220,8 @@ def _content_block_from_mapping(
         media_type=_optional_str(block.get("media_type")),
         metadata=_json_string_or_none(raw_metadata, context="content block metadata"),
         semantic_type=_optional_str(block.get("semantic_type")),
+        tool_result_is_error=_optional_int(block.get("tool_result_is_error")),
+        tool_result_exit_code=_optional_int(block.get("tool_result_exit_code")),
     )
 
 
@@ -346,9 +352,10 @@ def upsert_session(conn: sqlite3.Connection, record: SessionRecord) -> bool:
             raw_id,
             git_branch,
             git_repository_url,
+            provider_project_ref,
             created_at_ms,
             updated_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(origin, native_id) DO UPDATE SET
             title = excluded.title,
             content_hash = excluded.content_hash,
@@ -357,6 +364,7 @@ def upsert_session(conn: sqlite3.Connection, record: SessionRecord) -> bool:
             raw_id = COALESCE(excluded.raw_id, sessions.raw_id),
             git_branch = excluded.git_branch,
             git_repository_url = excluded.git_repository_url,
+            provider_project_ref = excluded.provider_project_ref,
             created_at_ms = COALESCE(sessions.created_at_ms, excluded.created_at_ms),
             updated_at_ms = excluded.updated_at_ms
         WHERE
@@ -367,6 +375,7 @@ def upsert_session(conn: sqlite3.Connection, record: SessionRecord) -> bool:
             OR IFNULL(raw_id, '') != IFNULL(excluded.raw_id, '')
             OR IFNULL(git_branch, '') != IFNULL(excluded.git_branch, '')
             OR IFNULL(git_repository_url, '') != IFNULL(excluded.git_repository_url, '')
+            OR IFNULL(provider_project_ref, '') != IFNULL(excluded.provider_project_ref, '')
             OR IFNULL(updated_at_ms, 0) != IFNULL(excluded.updated_at_ms, 0)
         """,
         (
@@ -379,6 +388,7 @@ def upsert_session(conn: sqlite3.Connection, record: SessionRecord) -> bool:
             record.raw_id,
             record.git_branch,
             record.git_repository_url,
+            record.provider_project_ref,
             _timestamp_ms(record.created_at),
             _timestamp_ms(record.updated_at),
         ),
@@ -513,15 +523,18 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
             """
             INSERT INTO blocks (
                 message_id, session_id, position, block_type,
-                text, tool_name, tool_id, tool_input, semantic_type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                text, tool_name, tool_id, tool_input, semantic_type,
+                tool_result_is_error, tool_result_exit_code
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(message_id, position) DO UPDATE SET
                 block_type = excluded.block_type,
                 text = excluded.text,
                 tool_name = excluded.tool_name,
                 tool_id = excluded.tool_id,
                 tool_input = excluded.tool_input,
-                semantic_type = excluded.semantic_type
+                semantic_type = excluded.semantic_type,
+                tool_result_is_error = excluded.tool_result_is_error,
+                tool_result_exit_code = excluded.tool_result_exit_code
             """,
             (
                 message_id,
@@ -533,6 +546,8 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
                 blk.tool_id,
                 blk.tool_input,
                 blk.semantic_type.value if blk.semantic_type is not None else None,
+                blk.tool_result_is_error,
+                blk.tool_result_exit_code,
             ),
         )
 
@@ -857,6 +872,8 @@ def _record_to_parsed_session(
                 tool_id=block.tool_id,
                 tool_input=_maybe_json_object(block.tool_input),
                 metadata=_maybe_json_object(block.metadata),
+                is_error=None if block.tool_result_is_error is None else bool(block.tool_result_is_error),
+                exit_code=block.tool_result_exit_code,
             )
             for block in (message.blocks or [])
         ]
@@ -916,6 +933,7 @@ def _record_to_parsed_session(
         working_directories=working_directories,
         git_branch=session.git_branch,
         git_repository_url=session.git_repository_url,
+        provider_project_ref=session.provider_project_ref,
     )
 
 
@@ -1036,6 +1054,10 @@ class SessionBuilder:
 
     def git_repository_url(self, repository_url: str | None) -> SessionBuilder:
         self.conv = self.conv.model_copy(update={"git_repository_url": repository_url})
+        return self
+
+    def provider_project_ref(self, project_ref: str | None) -> SessionBuilder:
+        self.conv = self.conv.model_copy(update={"provider_project_ref": project_ref})
         return self
 
     def parent_session(self, parent_id: str) -> SessionBuilder:

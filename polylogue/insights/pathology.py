@@ -5,16 +5,18 @@ the typed run projection (:class:`polylogue.insights.run_projection.RunProjectio
 that the recovery digest already carries. No I/O, no LLM-as-judge — every finding
 is reproducible from the same evidence and drillable through ``EvidenceRef``s.
 
-Three detectors ship in v1, matching the named patterns in #2383:
+Detectors operate over structured run-projection evidence (#2482):
 
-- ``wasted_loop`` — repeated ``test_failed``/``check_failed`` events in a run, the
-  edit→test-fail→edit cycle that burns turns without converging.
-- ``missed_review`` — a review was posted/seen (``review_posted`` /
-  ``review_seen_by_tool`` / ``review_injected_context``) but never reached an
-  acted-on/acknowledged delivery state: an unaddressed-check pattern.
+- ``wasted_loop`` — repeated ``test_failed``/``command_failed`` outcome events in
+  a run, the edit→test-fail→edit cycle that burns turns without converging.
 - ``stale_context`` — a continuation/subagent context boundary inherited context
   in a lossy mode (``summary``/``prefix``), the stale-context-after-compaction
   pattern.
+
+The former ``missed_review`` detector was removed (#2482): its entire basis was
+the prose-mined ``review_*`` events, which fabricated review lifecycle state from
+unverified text patterns. Review/PR/CI state is external truth owned by
+git/GitHub, not synthesizable from transcript prose.
 
 The detectors feed the postmortem report's pathology fields. Emitting
 ``Assertion(kind=pathology)`` candidate rows and the cross-archive distribution
@@ -32,18 +34,13 @@ from polylogue.insights.archive_models import ArchiveInsightModel
 from polylogue.insights.run_projection import ObservedEvent, RunProjection
 
 # Bump when a detector's rule changes so cached/rebuilt output is comparable.
-PATHOLOGY_DETECTOR_VERSION = 1
+PATHOLOGY_DETECTOR_VERSION = 2
 
-PathologyKind = Literal["wasted_loop", "missed_review", "stale_context"]
+PathologyKind = Literal["wasted_loop", "stale_context"]
 PathologySeverity = Literal["low", "medium", "high"]
 
-# Event kinds that mark a failed verification turn.
-_FAILURE_EVENT_KINDS = frozenset({"test_failed", "check_failed"})
-# Review was surfaced to the agent in some form.
-_REVIEW_SURFACED_KINDS = frozenset({"review_posted", "review_seen_by_tool", "review_injected_context"})
-# Review was explicitly addressed.
-_REVIEW_ADDRESSED_KINDS = frozenset({"review_acknowledged", "review_acted_on"})
-_REVIEW_ADDRESSED_DELIVERY = frozenset({"acknowledged", "acted_on"})
+# Event kinds that mark a failed verification turn (structured outcomes, #2482).
+_FAILURE_EVENT_KINDS = frozenset({"test_failed", "command_failed"})
 # Continuation boundaries where a *resumed* run re-inherits prior context. A
 # ``subagent_start`` boundary is intentionally excluded: a subagent receiving a
 # focused summary/prefix is by design, not a stale-context pathology — only a
@@ -101,7 +98,7 @@ def _wasted_loop_severity(count: int) -> PathologySeverity:
 
 
 def _detect_wasted_loops(projection: RunProjection) -> list[PathologyFinding]:
-    """Repeated failed test/check turns — edit→test-fail→edit churn."""
+    """Repeated failed test/command turns — edit→test-fail→edit churn."""
     failures = [event for event in projection.events if event.kind in _FAILURE_EVENT_KINDS]
     if len(failures) < 2:
         return []
@@ -110,32 +107,9 @@ def _detect_wasted_loops(projection: RunProjection) -> list[PathologyFinding]:
             kind="wasted_loop",
             session_id=projection.session_id,
             severity=_wasted_loop_severity(len(failures)),
-            detail=f"{len(failures)} failed test/check turns without a clean pass between them",
+            detail=f"{len(failures)} failed test/command turns without a clean pass between them",
             occurrence_count=len(failures),
             evidence_refs=_evidence_from_events(failures),
-        )
-    ]
-
-
-def _detect_missed_reviews(projection: RunProjection) -> list[PathologyFinding]:
-    """A review was surfaced but never acted on / acknowledged."""
-    surfaced = [event for event in projection.events if event.kind in _REVIEW_SURFACED_KINDS]
-    if not surfaced:
-        return []
-    addressed = any(
-        event.kind in _REVIEW_ADDRESSED_KINDS or event.delivery_state in _REVIEW_ADDRESSED_DELIVERY
-        for event in projection.events
-    )
-    if addressed:
-        return []
-    return [
-        PathologyFinding(
-            kind="missed_review",
-            session_id=projection.session_id,
-            severity="high",
-            detail=f"{len(surfaced)} review signal(s) surfaced but never acted on or acknowledged",
-            occurrence_count=len(surfaced),
-            evidence_refs=_evidence_from_events(surfaced),
         )
     ]
 
@@ -176,7 +150,6 @@ def detect_session_pathologies(projection: RunProjection) -> list[PathologyFindi
     """Run every v1 detector against a single session's run projection."""
     findings: list[PathologyFinding] = []
     findings.extend(_detect_wasted_loops(projection))
-    findings.extend(_detect_missed_reviews(projection))
     findings.extend(_detect_stale_context(projection))
     return findings
 
