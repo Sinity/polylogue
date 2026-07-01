@@ -639,7 +639,7 @@ def test_provider_error_records_error_status_and_clears_retry(tmp_path: Path) ->
 
 def test_archive_pending_window_and_embedding_success(tmp_path: Path) -> None:
     from polylogue.archive.message.roles import Role
-    from polylogue.core.enums import BlockType, Provider
+    from polylogue.core.enums import BlockType, MaterialOrigin, Provider
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -657,6 +657,7 @@ def test_archive_pending_window_and_embedding_success(tmp_path: Path) -> None:
                         role=Role.USER,
                         text=long_text,
                         blocks=[ParsedContentBlock(type=BlockType.TEXT, text=long_text)],
+                        material_origin=MaterialOrigin.HUMAN_AUTHORED,
                     )
                 ],
             )
@@ -702,6 +703,83 @@ def test_archive_pending_window_and_embedding_success(tmp_path: Path) -> None:
     try:
         conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
         assert select_pending_archive_session_window(conn, status_table="embeddings.embedding_status") == []
+    finally:
+        conn.close()
+
+
+def test_archive_embedding_only_sends_authored_prose_to_provider(tmp_path: Path) -> None:
+    from polylogue.archive.message.roles import Role
+    from polylogue.archive.message.types import MessageType
+    from polylogue.core.enums import BlockType, MaterialOrigin, Provider
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    archive_root = tmp_path / "archive"
+    user_text = "This user-authored question is long enough to merit a semantic embedding."
+    assistant_text = "This assistant-authored answer is useful prose for semantic retrieval."
+    tool_text = "This tool output is intentionally long but should not be embedded because it is not prose."
+    context_text = "This runtime context is long enough but should remain outside the paid embedding set."
+    with ArchiveStore(archive_root) as archive:
+        session_id = archive.write_parsed(
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="embed-prose-only",
+                title="prose-only embedding session",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m-user",
+                        role=Role.USER,
+                        text=user_text,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=user_text)],
+                        material_origin=MaterialOrigin.HUMAN_AUTHORED,
+                    ),
+                    ParsedMessage(
+                        provider_message_id="m-assistant",
+                        role=Role.ASSISTANT,
+                        text=assistant_text,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=assistant_text)],
+                        material_origin=MaterialOrigin.ASSISTANT_AUTHORED,
+                    ),
+                    ParsedMessage(
+                        provider_message_id="m-tool",
+                        role=Role.TOOL,
+                        text=tool_text,
+                        blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, text=tool_text)],
+                        message_type=MessageType.TOOL_RESULT,
+                        material_origin=MaterialOrigin.TOOL_RESULT,
+                    ),
+                    ParsedMessage(
+                        provider_message_id="m-context",
+                        role=Role.USER,
+                        text=context_text,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=context_text)],
+                        message_type=MessageType.CONTEXT,
+                        material_origin=MaterialOrigin.RUNTIME_CONTEXT,
+                    ),
+                ],
+            )
+        )
+
+    index_db = archive_root / "index.db"
+    embeddings_db = archive_root / "embeddings.db"
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
+
+    provider = _FakeV1VectorProvider()
+    outcome = embed_archive_session_sync(index_db, provider, session_id)
+
+    assert outcome.status == "embedded"
+    assert outcome.embedded_message_count == 2
+    assert provider.texts == [user_text, assistant_text]
+    conn = sqlite3.connect(embeddings_db)
+    try:
+        from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+
+        try_load_sqlite_vec(conn)
+        assert conn.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 2
     finally:
         conn.close()
 

@@ -209,7 +209,7 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         category=MaintenanceCategory.DERIVED_REPAIR,
         destructive=False,
         description="Rebuild message embeddings and the vector index (dormant until daemon embedding is enabled, see #828).",
-        invalidation_keys=("message_embeddings", "embeddings_meta", "embedding_status"),
+        invalidation_keys=("message_embeddings", "message_embeddings_meta", "embedding_status"),
     ),
     MaintenanceTargetSpec(
         name="wal_checkpoint",

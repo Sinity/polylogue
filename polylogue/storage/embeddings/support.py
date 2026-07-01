@@ -194,7 +194,9 @@ def optional_count_sync(conn: sqlite3.Connection, sql: str) -> int:
 
 
 def embedded_message_count_sync(conn: sqlite3.Connection) -> int:
-    """Count embedded vectors without scanning the sqlite-vec virtual table."""
+    """Count embedded messages from canonical metadata before vector internals."""
+    if table_exists_sync(conn, "message_embeddings_meta"):
+        return optional_count_sync(conn, "SELECT COUNT(*) FROM message_embeddings_meta")
     if table_exists_sync(conn, "message_embeddings_rowids"):
         return optional_count_sync(conn, "SELECT COUNT(*) FROM message_embeddings_rowids")
     return optional_count_sync(conn, "SELECT COUNT(*) FROM message_embeddings")
@@ -230,7 +232,9 @@ async def optional_count_async(conn: aiosqlite.Connection, sql: str) -> int:
 
 
 async def embedded_message_count_async(conn: aiosqlite.Connection) -> int:
-    """Count embedded vectors without scanning the sqlite-vec virtual table."""
+    """Count embedded messages from canonical metadata before vector internals."""
+    if await table_exists_async(conn, "message_embeddings_meta"):
+        return await optional_count_async(conn, "SELECT COUNT(*) FROM message_embeddings_meta")
     if await table_exists_async(conn, "message_embeddings_rowids"):
         return await optional_count_async(conn, "SELECT COUNT(*) FROM message_embeddings_rowids")
     return await optional_count_async(conn, "SELECT COUNT(*) FROM message_embeddings")

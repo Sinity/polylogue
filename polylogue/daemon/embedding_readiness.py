@@ -120,6 +120,16 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     )
 
 
+def _index_exists(conn: sqlite3.Connection, index_name: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ? LIMIT 1",
+            (index_name,),
+        ).fetchone()
+        is not None
+    )
+
+
 def _scalar_int(conn: sqlite3.Connection, sql: str, params: tuple[object, ...] = ()) -> int:
     row = conn.execute(sql, params).fetchone()
     if row is None or row[0] is None:
@@ -154,6 +164,37 @@ def _embedding_status(
     return "complete"
 
 
+def _attached_table_exists(conn: sqlite3.Connection, schema_name: str, table_name: str) -> bool:
+    quoted_schema = '"' + schema_name.replace('"', '""') + '"'
+    return (
+        conn.execute(
+            f"SELECT 1 FROM {quoted_schema}.sqlite_master WHERE type IN ('table', 'view') AND name = ? LIMIT 1",
+            (table_name,),
+        ).fetchone()
+        is not None
+    )
+
+
+def _attached_table_name(conn: sqlite3.Connection, schema_name: str, table_name: str) -> str:
+    if _attached_table_exists(conn, schema_name, table_name):
+        return f"{schema_name}.{table_name}"
+    return ""
+
+
+_EMBEDDABLE_PROSE_WHERE = """
+m.message_type = 'message'
+AND m.role IN ('user', 'assistant')
+AND m.material_origin IN ('human_authored', 'assistant_authored')
+AND m.word_count > 0
+"""
+
+
+def _messages_table_ref(conn: sqlite3.Connection) -> str:
+    if _index_exists(conn, "idx_messages_message_type"):
+        return "messages AS m INDEXED BY idx_messages_message_type"
+    return "messages AS m"
+
+
 def _estimated_cost(message_count: int) -> float:
     estimated_tokens = message_count * ESTIMATED_TOKENS_PER_MESSAGE
     return round(estimated_tokens * VOYAGE_4_COST_PER_1M_TOKENS / 1_000_000, 2)
@@ -177,16 +218,13 @@ def _archive_embedding_readiness_info(
             embeddings_db = index_db.with_name("embeddings.db")
             if embeddings_db.exists():
                 conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
-                status_table = "embeddings.embedding_status"
-                embeddings_table = "embeddings.message_embeddings"
-                meta_table = "embeddings.embeddings_meta"
+                status_table = _attached_table_name(conn, "embeddings", "embedding_status")
+                meta_table = _attached_table_name(conn, "embeddings", "message_embeddings_meta")
             else:
                 status_table = ""
-                embeddings_table = ""
                 meta_table = ""
             has_messages = _table_exists(conn, "messages")
             has_status = bool(status_table)
-            has_embeddings = bool(embeddings_table)
             has_meta = bool(meta_table)
 
             total_sessions = _scalar_int(conn, "SELECT COUNT(*) FROM sessions")
@@ -205,7 +243,16 @@ def _archive_embedding_readiness_info(
                 else 0
             )
             pending_sessions = max(total_sessions - embedded_sessions, 0)
-            embedded_messages = _scalar_int(conn, f"SELECT COUNT(*) FROM {embeddings_table}") if has_embeddings else 0
+            if has_meta:
+                embedded_messages = _scalar_int(
+                    conn,
+                    f"""
+                    SELECT COUNT(*)
+                    FROM {meta_table}
+                    """,
+                )
+            else:
+                embedded_messages = 0
             failure_count = (
                 _scalar_int(conn, f"SELECT COUNT(*) FROM {status_table} WHERE error_message IS NOT NULL")
                 if has_status
@@ -215,34 +262,51 @@ def _archive_embedding_readiness_info(
             stale_messages = 0
             total_messages = 0
             if detail and has_messages:
-                total_messages = _scalar_int(conn, "SELECT COUNT(*) FROM messages")
-                if has_embeddings:
+                messages_ref = _messages_table_ref(conn)
+                total_messages = _scalar_int(
+                    conn, f"SELECT COUNT(*) FROM {messages_ref} WHERE {_EMBEDDABLE_PROSE_WHERE}"
+                )
+                if has_meta and embedded_messages == 0:
+                    pending_messages = total_messages
+                elif has_meta:
+                    meta_join = "ON em.message_id = m.message_id"
+                    meta_missing_column = "em.message_id"
+                    status_join = f"LEFT JOIN {status_table} e ON e.session_id = m.session_id" if has_status else ""
+                    status_reindex_clause = "OR COALESCE(e.needs_reindex, 0) = 1" if has_status else ""
                     pending_messages = _scalar_int(
                         conn,
                         f"""
                         SELECT COUNT(*)
-                        FROM messages m
-                        LEFT JOIN {embeddings_table} me ON me.message_id = m.message_id
-                        LEFT JOIN {status_table} e ON e.session_id = m.session_id
-                        WHERE me.message_id IS NULL
-                           OR e.session_id IS NULL
-                           OR e.needs_reindex = 1
+                        FROM {messages_ref}
+                        LEFT JOIN {meta_table} em {meta_join}
+                        {status_join}
+                        WHERE {_EMBEDDABLE_PROSE_WHERE}
+                          AND (
+                            {meta_missing_column} IS NULL
+                            OR COALESCE(em.needs_reindex, 0) = 1
+                            {status_reindex_clause}
+                          )
                         """,
                     )
                 else:
                     pending_messages = total_messages
-                if has_embeddings and has_meta:
+                if has_meta and embedded_messages == 0:
+                    stale_messages = total_messages
+                elif has_meta:
+                    meta_join = "ON em.message_id = m.message_id"
+                    meta_missing_column = "em.message_id"
                     stale_messages = _scalar_int(
                         conn,
                         f"""
                         SELECT COUNT(*)
-                        FROM {embeddings_table} me
-                        JOIN messages m ON m.message_id = me.message_id
-                        LEFT JOIN {meta_table} em
-                          ON em.target_id = me.message_id
-                         AND em.target_type = 'message'
-                        WHERE em.target_id IS NULL
-                           OR (em.content_hash IS NOT NULL AND em.content_hash != m.content_hash)
+                        FROM {messages_ref}
+                        LEFT JOIN {meta_table} em {meta_join}
+                        WHERE {_EMBEDDABLE_PROSE_WHERE}
+                          AND (
+                            {meta_missing_column} IS NULL
+                            OR COALESCE(em.needs_reindex, 0) = 1
+                            OR (em.content_hash IS NOT NULL AND em.content_hash != m.content_hash)
+                          )
                         """,
                     )
             status = _embedding_status(

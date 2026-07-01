@@ -153,7 +153,7 @@ _ARCHIVE_TIER_TABLES: dict[str, tuple[str, ...]] = {
         "thread_sessions",
         "insight_materialization",
     ),
-    "embeddings": ("embeddings_meta", "embedding_status"),
+    "embeddings": ("message_embeddings_meta", "embedding_status"),
     "user": ("assertions",),
     "ops": (
         "ingest_cursor",

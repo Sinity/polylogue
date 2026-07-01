@@ -120,7 +120,7 @@ def render_embedding_stats(payload: EmbeddingStatusPayload, *, json_output: bool
 def show_embedding_stats(env: object, *, json_output: bool = False, detail: bool = False) -> None:
     """Display embedding statistics."""
     render_embedding_stats(
-        embedding_status_payload(env, include_retrieval_bands=detail, include_detail=detail),  # type: ignore[arg-type]
+        embedding_status_payload(env, include_retrieval_bands=False, include_detail=detail),  # type: ignore[arg-type]
         json_output=json_output,
     )
 
