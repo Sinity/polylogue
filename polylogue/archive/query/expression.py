@@ -1414,6 +1414,129 @@ def _split_pipeline_stages(expression: str) -> tuple[str, ...]:
     return tuple(stages)
 
 
+#: Canonical query units wired for the ``with <units>`` projection clause.
+#: The clause is unit-agnostic by construction (the fetch/attach path drives off
+#: the descriptor registry), but only units listed here are validated as
+#: executable projections. Adding a new unit is a one-line change once its
+#: session-scoping fetch is confirmed (see ``attached_units.py``).
+WITH_PROJECTION_SUPPORTED_UNITS: frozenset[str] = frozenset({"assertion"})
+
+
+def _iter_top_level_with_positions(expression: str) -> list[int]:
+    """Return start indices of every top-level ``with`` keyword token.
+
+    "Top-level" means outside double quotes and outside any paren/bracket/brace
+    nesting, so a quoted FTS phrase such as ``"deploy with caveats"`` or an
+    in-field alternation never registers a ``with`` boundary.
+    """
+
+    positions: list[int] = []
+    in_quote = False
+    escaped = False
+    depth = 0
+    n = len(expression)
+    for idx, char in enumerate(expression):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and in_quote:
+            escaped = True
+            continue
+        if char == '"':
+            in_quote = not in_quote
+            continue
+        if in_quote:
+            continue
+        if char in "([{":
+            depth += 1
+            continue
+        if char in ")]}":
+            depth = max(0, depth - 1)
+            continue
+        if depth != 0:
+            continue
+        if char in "wW" and expression[idx : idx + 4].lower() == "with":
+            prev_char = expression[idx - 1] if idx > 0 else " "
+            next_idx = idx + 4
+            next_char = expression[next_idx] if next_idx < n else " "
+            if (idx == 0 or prev_char.isspace()) and (next_idx >= n or next_char.isspace()):
+                positions.append(idx)
+    return positions
+
+
+def _canonicalize_with_units(tail: str) -> tuple[str, ...]:
+    """Validate and canonicalize the ``with`` clause unit list.
+
+    ``tail`` is the text after the ``with`` keyword (for example
+    ``"assertions"`` or ``"assertions, actions"``). Every token must resolve to
+    a known query unit and be wired for projection; otherwise an
+    :class:`ExpressionCompileError` is raised so an unknown or unsupported unit
+    never silently no-ops.
+    """
+
+    tokens = [token.strip() for token in tail.split(",")]
+    if any(not token for token in tokens):
+        raise ExpressionCompileError(
+            "with clause units must be a comma-separated list of query units (for example: with assertions)",
+            field=None,
+        )
+    canonical: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        descriptor = query_unit_descriptor(token)
+        if descriptor is None:
+            supported = ", ".join(sorted(WITH_PROJECTION_SUPPORTED_UNITS))
+            raise ExpressionCompileError(
+                f"unknown query unit {token!r} in with clause; supported units: {supported}",
+                field=None,
+            )
+        if descriptor.unit not in WITH_PROJECTION_SUPPORTED_UNITS:
+            supported = ", ".join(sorted(WITH_PROJECTION_SUPPORTED_UNITS))
+            raise ExpressionCompileError(
+                f"with {token}: projection is not yet supported; supported units: {supported}",
+                field=None,
+            )
+        if descriptor.unit not in seen:
+            seen.add(descriptor.unit)
+            canonical.append(descriptor.unit)
+    return tuple(canonical)
+
+
+def _split_with_clause(expression: str) -> tuple[str, tuple[str, ...]]:
+    """Split a trailing ``with <unit>[, <unit>]`` projection clause.
+
+    Returns ``(head, units)`` where ``head`` is the selection expression with
+    the clause removed and ``units`` are canonical query-unit names. When no
+    top-level ``with`` keyword is present, returns ``(expression, ())``.
+
+    The split happens outside the Lark grammar — mirroring
+    :func:`_split_pipeline_stages` — so quoting and nesting are honored and a
+    quoted FTS term containing ``with`` is never mis-split.
+    """
+
+    positions = _iter_top_level_with_positions(expression)
+    if not positions:
+        return expression, ()
+    split_at = positions[-1]
+    tail = expression[split_at + 4 :].strip()
+    if not tail:
+        # A bare trailing ``with`` is not a projection clause; leave it intact.
+        return expression, ()
+    units = _canonicalize_with_units(tail)
+    head = expression[:split_at].strip()
+    if not head:
+        raise ExpressionCompileError(
+            "with clause requires a selection expression before it (for example: repo:polylogue with assertions)",
+            field=None,
+        )
+    return head, units
+
+
+#: Public alias for the trailing ``with <units>`` projection-clause splitter,
+#: used by surface adapters (CLI raw path) that strip the clause from FTS text.
+split_with_clause = _split_with_clause
+
+
 def _session_source_predicate(stage: str) -> QueryPredicate:
     lower = stage.lower()
     marker = "sessions where"
@@ -1857,10 +1980,19 @@ def _extract_semantic_seed(predicate: QueryPredicate) -> tuple[str | None, Query
 
 
 def parse_expression_ast(expression: str) -> QueryExpressionAST:
-    """Parse a query expression into the typed AST without lowering it."""
+    """Parse a query expression into the typed AST without lowering it.
+
+    A trailing ``with <units>`` projection clause is stripped before parsing;
+    the AST describes the selection only. Callers that need the projected units
+    use :func:`compile_expression`.
+    """
     expression = expression.strip()
     if not expression:
         return QueryExpressionAST(())
+    if not (expression.startswith("{") or expression.startswith("[")):
+        expression, _with_units = _split_with_clause(expression)
+        if not expression:
+            return QueryExpressionAST(())
     source_where = _parse_source_where_predicate(expression)
     if source_where is not None:
         return QueryExpressionAST((), boolean_predicate=source_where)
@@ -2571,10 +2703,18 @@ def compile_expression(expression: str) -> SessionQuerySpec:
     if expression.startswith("{") or expression.startswith("["):
         return _compile_json_spec(expression)
 
+    # Split a trailing ``with <units>`` projection clause off the selection
+    # expression before parsing it (outside the Lark grammar, like ``|`` stages).
+    expression, with_units = _split_with_clause(expression)
+
     ast = parse_expression_ast(expression)
     if ast.boolean_predicate is not None:
         similar_text, residual_predicate = _extract_semantic_seed(ast.boolean_predicate)
-        return SessionQuerySpec(similar_text=similar_text, boolean_predicate=residual_predicate)
+        return SessionQuerySpec(
+            similar_text=similar_text,
+            boolean_predicate=residual_predicate,
+            with_units=with_units,
+        )
     tokens = list(ast.clauses)
 
     # Check for JSON tokens (should only appear alone; mixed is an error)
@@ -2601,7 +2741,10 @@ def compile_expression(expression: str) -> SessionQuerySpec:
     acc = _SpecAccumulator()
     for tok in tokens:
         acc.apply_token(tok)
-    return acc.to_spec()
+    spec = acc.to_spec()
+    if with_units:
+        spec = replace(spec, with_units=with_units)
+    return spec
 
 
 def compile_expression_into(expression: str, base: SessionQuerySpec) -> SessionQuerySpec:
@@ -2652,6 +2795,7 @@ def compile_expression_into(expression: str, base: SessionQuerySpec) -> SessionQ
         offset=base.offset if base.offset else expr_spec.offset,
         cursor=expr_spec.cursor if expr_spec.cursor is not None else base.cursor,
         boolean_predicate=boolean_predicate,
+        with_units=base.with_units + tuple(u for u in expr_spec.with_units if u not in base.with_units),
     )
 
 
@@ -2709,6 +2853,8 @@ __all__ = [
     "_HAS_BOOL_MAP",
     "parse_unit_source_expression",
     "parse_expression_ast",
+    "split_with_clause",
+    "WITH_PROJECTION_SUPPORTED_UNITS",
     "structural_query_fields",
     "structural_query_units",
 ]
