@@ -54,11 +54,13 @@ def _raw_materialization_candidate_ids(
     source_family: str | None = None,
     source_root: Path | None = None,
 ) -> tuple[list[str], int]:
-    """Return replayable raw ids plus missing-blob debt count.
+    """Return acquired-but-unparsed raw ids plus missing-blob debt count.
 
     Raw evidence is the durable source of truth, but a raw row whose
     content-addressed blob is absent cannot be reparsed without outside
     evidence. Keep those rows as debt instead of mutating or deleting them.
+    Rows that have already been parsed but did not materialize a session are
+    classification debt, not a safe raw replay queue.
     """
     source_db = config.archive_root / "source.db"
     index_db = config.archive_root / "index.db"
@@ -100,6 +102,7 @@ def _raw_materialization_candidate_ids(
             WHERE s_by_raw.raw_id IS NULL
               AND s_by_native.native_id IS NULL
               AND r.parse_error IS NULL
+              AND r.parsed_at_ms IS NULL
               AND NOT (
                 r.validation_status = 'skipped'
                 AND r.parsed_at_ms IS NOT NULL
@@ -1171,7 +1174,7 @@ def repair_raw_materialization(
         source_root=source_root,
     )
     if dry_run:
-        detail = f"Would: replay {len(raw_ids):,} raw rows into index.db"
+        detail = f"Would: replay {len(raw_ids):,} acquired-but-unparsed raw rows into index.db"
         if missing_blobs:
             detail += f"; {missing_blobs:,} raw rows blocked by missing blobs"
         return _repair_result(
@@ -1215,7 +1218,9 @@ def repair_raw_materialization(
             detail=f"Failed to materialize raw evidence: {exc}",
         )
     fts_result = repair_dangling_fts(config, dry_run=False)
-    detail = f"Replayed {len(raw_ids):,} raw rows; {processed:,} sessions changed; {fts_result.detail}"
+    detail = (
+        f"Replayed {len(raw_ids):,} acquired-but-unparsed raw rows; {processed:,} sessions changed; {fts_result.detail}"
+    )
     if missing_blobs:
         detail += f"; {missing_blobs:,} raw rows remain blocked by missing blobs"
     return _repair_result(

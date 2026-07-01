@@ -262,7 +262,55 @@ def test_raw_materialization_raw_artifact_filter_counts_only_target(tmp_path: Pa
 
     assert broad.repaired_count == 2
     assert scoped.repaired_count == 1
-    assert f"replay {1:,} raw rows" in scoped.detail
+    assert f"replay {1:,} acquired-but-unparsed raw rows" in scoped.detail
+
+
+def test_raw_materialization_excludes_already_parsed_non_materialized_rows(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    blob_store = BlobStore(tmp_path / "blob")
+    replayable_raw_id, replayable_size = blob_store.write_from_bytes(b'{"mapping":{"pending":{}}}')
+    parsed_raw_id, parsed_size = blob_store.write_from_bytes(b'{"mapping":{"parsed":{}}}')
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.executemany(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms, parsed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (
+                    replayable_raw_id,
+                    "chatgpt-export",
+                    "native-pending",
+                    "pending.json",
+                    0,
+                    bytes.fromhex(replayable_raw_id),
+                    replayable_size,
+                    1,
+                    None,
+                ),
+                (
+                    parsed_raw_id,
+                    "chatgpt-export",
+                    "native-parsed",
+                    "parsed.json",
+                    0,
+                    bytes.fromhex(parsed_raw_id),
+                    parsed_size,
+                    2,
+                    123,
+                ),
+            ),
+        )
+        source_conn.commit()
+
+    result = repair_mod.repair_raw_materialization(config, dry_run=True)
+
+    assert result.repaired_count == 1
+    assert "acquired-but-unparsed raw rows" in result.detail
 
 
 def test_raw_materialization_scope_filters_count_only_matching_raw_rows(tmp_path: Path) -> None:
@@ -363,8 +411,18 @@ def test_raw_materialization_defers_batch_fts_then_repairs_once(
             detail="repaired 7 FTS rows",
         )
 
-    def fake_candidate_ids(_config: Config, *, raw_artifact_id: str | None = None) -> tuple[list[str], int]:
+    def fake_candidate_ids(
+        _config: Config,
+        *,
+        raw_artifact_id: str | None = None,
+        provider: str | None = None,
+        source_family: str | None = None,
+        source_root: Path | None = None,
+    ) -> tuple[list[str], int]:
         calls["raw_artifact_id"] = raw_artifact_id
+        calls["provider"] = provider
+        calls["source_family"] = source_family
+        calls["source_root"] = source_root
         return ["raw-1"], 0
 
     monkeypatch.setattr(repair_mod, "_raw_materialization_candidate_ids", fake_candidate_ids)
