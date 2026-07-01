@@ -327,6 +327,7 @@ class ArchiveDebtRowPayload(SurfacePayloadModel):
     status: ArchiveDebtStatus = "open"
     owner: str
     summary: str
+    affected_count: int | None = None
     details: str | None = None
     source_family: str | None = None
     observed_at: str | None = None

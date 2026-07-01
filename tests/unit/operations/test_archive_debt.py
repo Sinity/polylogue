@@ -376,23 +376,27 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
     assert missing_blob.severity == "critical"
     assert missing_blob.status == "actionable"
     assert missing_blob.kind == "raw-materialization"
+    assert missing_blob.affected_count == 1
     assert "missing blob payloads" in missing_blob.summary
     assert any(ref.startswith("blob:") for ref in missing_blob.evidence_refs)
 
     parsed_gap = by_ref["debt:raw-materialization:aistudio-drive:parsed-without-session"]
     assert parsed_gap.severity == "warning"
+    assert parsed_gap.affected_count == 1
     assert "parsed but have no materialized session" in parsed_gap.summary
     assert "passed=1" in (parsed_gap.details or "")
 
     sidecars = by_ref["debt:raw-materialization:claude-code-session:parsed-non-session-artifact"]
     assert sidecars.severity == "info"
     assert sidecars.status == "open"
+    assert sidecars.affected_count == 3
     assert "parsed as non-session artifacts" in sidecars.summary
     assert "passed=3" in (sidecars.details or "")
     assert sidecars.actions == ()
 
     metadata_only = by_ref["debt:raw-materialization:codex-session:parsed-non-session-artifact"]
     assert metadata_only.severity == "info"
+    assert metadata_only.affected_count == 1
     assert "metadata-only" in (metadata_only.details or "") or "non-session artifacts" in metadata_only.summary
 
 

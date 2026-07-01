@@ -47,6 +47,18 @@
           "title": "Actions",
           "type": "array"
         },
+        "affected_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Affected Count"
+        },
         "age_seconds": {
           "anyOf": [
             {

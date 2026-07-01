@@ -622,6 +622,7 @@ def _raw_materialization_debt_row(
         status=status,
         owner="daemon",
         summary=summary,
+        affected_count=count,
         details=details,
         source_family=origin,
         evidence_refs=tuple(_raw_materialization_evidence_refs(archive_root, sample_rows)),
