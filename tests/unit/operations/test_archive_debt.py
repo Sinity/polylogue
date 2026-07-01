@@ -42,6 +42,15 @@ def test_archive_debt_reports_missing_required_tiers(tmp_path: Path) -> None:
     assert all(row.kind == "archive-tier" for row in payload.rows)
 
 
+def test_archive_debt_filters_rows_by_status(tmp_path: Path) -> None:
+    actionable = archive_debt_list(archive_root=tmp_path, kinds=("archive-tier",), statuses=("actionable",))
+    blocked = archive_debt_list(archive_root=tmp_path, kinds=("archive-tier",), statuses=("blocked",))
+
+    assert actionable.totals.total > 0
+    assert all(row.status == "actionable" for row in actionable.rows)
+    assert blocked.totals.total == 0
+
+
 def test_archive_debt_reports_candidate_assertions_as_actionable(tmp_path: Path) -> None:
     _write_current_tier_files(tmp_path)
     user_db = tmp_path / "user.db"

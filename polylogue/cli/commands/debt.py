@@ -9,6 +9,7 @@ from polylogue.paths import active_index_db_path
 from polylogue.surfaces.payloads import ArchiveDebtListPayload
 
 _DEBT_KINDS = ("archive-tier", "assertion-candidate", "convergence", "embedding", "fts", "raw-materialization")
+_DEBT_STATUSES = ("open", "actionable", "blocked", "classified")
 
 
 @click.group("debt")
@@ -24,6 +25,13 @@ def debt_command() -> None:
     multiple=True,
     help="Restrict rows to one debt kind. Repeatable.",
 )
+@click.option(
+    "--status",
+    "statuses",
+    type=click.Choice(_DEBT_STATUSES),
+    multiple=True,
+    help="Restrict rows to one debt status. Repeatable.",
+)
 @click.option("--only-actionable", is_flag=True, help="Only show rows with a direct operator action.")
 @click.option("--limit", "-l", type=int, default=None, help="Maximum rows to emit.")
 @click.option("--exact-fts", is_flag=True, help="Run exact FTS reconciliation counts.")
@@ -37,6 +45,7 @@ def debt_command() -> None:
 )
 def debt_list_command(
     kinds: tuple[str, ...],
+    statuses: tuple[str, ...],
     only_actionable: bool,
     limit: int | None,
     exact_fts: bool,
@@ -47,6 +56,7 @@ def debt_list_command(
     payload = archive_debt_list(
         archive_root=archive_root,
         kinds=kinds,
+        statuses=statuses,
         only_actionable=only_actionable,
         limit=limit,
         exact_fts=exact_fts,
@@ -61,7 +71,8 @@ def _render_text(payload: ArchiveDebtListPayload) -> None:
     click.echo(f"Archive debt: {payload.totals.total} row(s)")
     click.echo(
         f"  critical={payload.totals.critical} warning={payload.totals.warning} "
-        f"actionable={payload.totals.actionable} blocked={payload.totals.blocked}"
+        f"actionable={payload.totals.actionable} blocked={payload.totals.blocked} "
+        f"classified={payload.totals.classified}"
     )
     if payload.totals.affected_total:
         click.echo(
@@ -69,7 +80,8 @@ def _render_text(payload: ArchiveDebtListPayload) -> None:
             f"affected_warning={payload.totals.affected_warning} "
             f"affected_actionable={payload.totals.affected_actionable} "
             f"affected_open={payload.totals.affected_open} "
-            f"affected_blocked={payload.totals.affected_blocked}"
+            f"affected_blocked={payload.totals.affected_blocked} "
+            f"affected_classified={payload.totals.affected_classified}"
         )
     if not payload.rows:
         click.echo("  No archive debt detected.")

@@ -43,6 +43,7 @@ def archive_debt_list(
     *,
     archive_root: Path,
     kinds: Iterable[str] | None = None,
+    statuses: Iterable[str] | None = None,
     only_actionable: bool = False,
     limit: int | None = None,
     exact_fts: bool = False,
@@ -50,6 +51,7 @@ def archive_debt_list(
     """Return a unified archive debt report across current readiness providers."""
     generated_at = datetime.now(UTC).isoformat()
     selected_kinds = _selected_kinds(kinds)
+    selected_statuses = _selected_statuses(statuses)
     index_db = archive_root / "index.db"
     rows: list[ArchiveDebtRowPayload] = []
 
@@ -69,6 +71,8 @@ def archive_debt_list(
         rows.extend(_fts_rows(index_db, exact=exact_fts))
 
     rows = sorted(rows, key=_row_sort_key)
+    if selected_statuses is not None:
+        rows = [row for row in rows if row.status in selected_statuses]
     if only_actionable:
         rows = [row for row in rows if row.status == "actionable"]
     if limit is not None:
@@ -90,6 +94,13 @@ def _selected_kinds(kinds: Iterable[str] | None) -> set[str] | None:
     if kinds is None:
         return None
     selected = {kind for kind in kinds if kind}
+    return selected or None
+
+
+def _selected_statuses(statuses: Iterable[str] | None) -> set[str] | None:
+    if statuses is None:
+        return None
+    selected = {status for status in statuses if status}
     return selected or None
 
 
