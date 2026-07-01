@@ -19,6 +19,11 @@ case "$start_focus" in
 esac
 
 title="${1:?usage: devloop-start [--meta|--focus MODE] <slice-title>}"
+case "$start_focus:$title" in
+  Direction:[Mm]eta*|Direction:[Pp]rocess*|Direction:*devloop*|Direction:*scaffold*)
+    start_focus="Meta"
+    ;;
+esac
 root="${POLYLOGUE_AGENT_LOG_ROOT:-/realm/project/polylogue/.agent/conductor-devloop}"
 next_focus="Evidence"
 next_decision="gather current evidence before editing"

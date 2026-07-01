@@ -70,6 +70,10 @@ deliberate transition:
 .agent/scripts/devloop-start --focus Meta "<slice title>"
 ```
 
+`devloop-start` also infers `Meta` for obvious process titles such as
+`meta ...`, `process ...`, `... devloop ...`, and `... scaffold ...`; use
+`--focus` when that inference would be wrong.
+
 Refresh generated local state with:
 
 ```bash

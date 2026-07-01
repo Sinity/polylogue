@@ -68,6 +68,9 @@ Velocity, and Meta.
    - Start the slice with `.agent/scripts/devloop-start "<slice>"`. Use
      `--meta` for process-improvement slices so the first logged
      transition is truthful instead of a synthetic Direction entry.
+     The helper also infers `Meta` for obvious process titles (`meta ...`,
+     `process ...`, titles containing `devloop` or `scaffold`); use
+     `--focus` when you need a different starting mode.
    - Run `.agent/scripts/devloop-demo` when the slice should create, refresh,
      retire, or caveat an artifact.
 
