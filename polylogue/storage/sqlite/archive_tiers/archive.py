@@ -414,6 +414,13 @@ def _query_unit_group_expression(unit: str, row_alias: str, group_by: str | None
             "visibility": f"COALESCE(NULLIF({row_alias}.visibility, ''), '{ASSERTION_DEFAULT_VISIBILITY}')",
             "author_kind": f"COALESCE(NULLIF({row_alias}.author_kind, ''), '{ASSERTION_DEFAULT_AUTHOR_KIND}')",
         },
+        "observed-event": {
+            "kind": f"COALESCE(NULLIF({row_alias}.kind, ''), 'unknown')",
+            "delivery_state": f"COALESCE(NULLIF({row_alias}.delivery_state, ''), 'unknown')",
+            "tool": f"COALESCE(NULLIF(json_extract({row_alias}.payload_json, '$.tool_name'), ''), 'unknown')",
+            "handler": f"COALESCE(NULLIF(json_extract({row_alias}.payload_json, '$.handler_kind'), ''), 'unknown')",
+            "status": f"COALESCE(NULLIF(json_extract({row_alias}.payload_json, '$.status'), ''), 'unknown')",
+        },
     }
     try:
         return unit_fields[unit][group_by]
@@ -3707,6 +3714,7 @@ class ArchiveStore:
             "block": "b",
             "file": "f",
             "assertion": "a",
+            "observed-event": "e",
         }.get(unit)
         if row_alias is None:
             raise ValueError(f"Query unit {unit!r} is not wired to SQL aggregate counts")
@@ -3732,6 +3740,7 @@ class ArchiveStore:
             "action": "actions a JOIN sessions s ON s.session_id = a.session_id",
             "block": "blocks b JOIN sessions s ON s.session_id = b.session_id",
             "assertion": "user_tier.assertions a LEFT JOIN sessions s ON a.target_ref = 'session:' || s.session_id",
+            "observed-event": "session_observed_events e JOIN sessions s ON s.session_id = e.session_id",
         }[unit]
         order_clause = _query_unit_aggregate_order(sort, sort_direction)
         rows = self._conn.execute(
@@ -5832,6 +5841,24 @@ def _observed_event_field_predicate_clause(
     field = predicate.bound_field_name(context="lowering observed-event predicates")
     if field in {"kind", "delivery_state"}:
         return _in_or_equals_clause(f"{event_alias}.{field}", predicate.values, lower=True)
+    if field == "tool":
+        return _in_or_equals_clause(
+            f"json_extract({event_alias}.payload_json, '$.tool_name')",
+            predicate.values,
+            lower=True,
+        )
+    if field == "handler":
+        return _in_or_equals_clause(
+            f"json_extract({event_alias}.payload_json, '$.handler_kind')",
+            predicate.values,
+            lower=True,
+        )
+    if field == "status":
+        return _in_or_equals_clause(
+            f"json_extract({event_alias}.payload_json, '$.status')",
+            predicate.values,
+            lower=True,
+        )
     if field == "summary":
         return _like_clause(f"{event_alias}.summary", predicate.values)
     if field in {"subject", "subject_ref"}:

@@ -20,6 +20,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from typing import Any, cast
 
@@ -2349,6 +2350,94 @@ class TestBooleanQueryExpression:
         assert sorted((item["group_key"], item["count"]) for item in payload["items"]) == [
             ("assistant", 1),
             ("user", 1),
+        ]
+
+    def test_observed_event_tool_outcomes_are_terminal_aggregate_query_units(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.surfaces.payloads import QueryUnitAggregateEnvelope
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "tool-events")
+            .provider("claude-code")
+            .git_repository_url("polylogue")
+            .title("tool events")
+            .add_message("m-user", role="user", text="tool events")
+            .save()
+        )
+        session_id = "claude-code-session:ext-tool-events"
+        with sqlite3.connect(index_db) as conn:
+            conn.executemany(
+                """
+                INSERT INTO session_observed_events (
+                    event_ref, session_id, run_ref, position, kind, summary,
+                    delivery_state, payload_json, search_text
+                ) VALUES (?, ?, ?, ?, 'tool_finished', ?, 'observed', ?, ?)
+                """,
+                [
+                    (
+                        "event:serena-ok",
+                        session_id,
+                        "run:tool-events",
+                        1,
+                        "serena ok",
+                        json.dumps(
+                            {
+                                "tool_name": "mcp__serena__find_symbol",
+                                "handler_kind": "mcp",
+                                "status": "ok",
+                            }
+                        ),
+                        "serena ok",
+                    ),
+                    (
+                        "event:serena-failed",
+                        session_id,
+                        "run:tool-events",
+                        2,
+                        "serena failed",
+                        json.dumps(
+                            {
+                                "tool_name": "mcp__serena__find_symbol",
+                                "handler_kind": "mcp",
+                                "status": "failed",
+                            }
+                        ),
+                        "serena failed",
+                    ),
+                    (
+                        "event:bash-ok",
+                        session_id,
+                        "run:tool-events",
+                        3,
+                        "bash ok",
+                        json.dumps({"tool_name": "Bash", "handler_kind": "shell", "status": "ok"}),
+                        "bash ok",
+                    ),
+                ],
+            )
+
+        source = parse_unit_source_expression(
+            "observed-events where kind:tool_finished AND handler:mcp | group by status | count"
+        )
+        assert source is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            envelope = query_unit_rows(archive, source, query="observed-event-aggregate", limit=20)
+
+        assert isinstance(envelope, QueryUnitAggregateEnvelope)
+        assert envelope.pipeline_stages == (
+            {"kind": "group", "field": "status"},
+            {"kind": "count", "metric": "count"},
+            {"kind": "terminal", "action": "count"},
+        )
+        assert sorted((row.group_by, row.group_key, row.count) for row in envelope.items) == [
+            ("status", "failed", 1),
+            ("status", "ok", 1),
         ]
 
     def test_unknown_terminal_unit_does_not_fall_through_to_block_rows(self) -> None:

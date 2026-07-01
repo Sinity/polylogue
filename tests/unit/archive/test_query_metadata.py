@@ -118,6 +118,8 @@ def test_query_unit_descriptors_own_terminal_aliases() -> None:
     assert tuple(descriptor.unit for descriptor in query_unit_descriptors(lowerer_kind="runtime_transform")) == ()
     assert "boundary" in structural_query_fields("context-snapshot")
     assert "boundary" in terminal_query_fields("context-snapshots")
+    assert {"tool", "handler", "status"}.issubset(terminal_query_fields("observed-events"))
+    assert {"tool", "handler", "status"}.issubset(observed_descriptor.aggregate_group_fields)
     assert "polylogue --format json runs where ..." in terminal_query_cli_surfaces()
     assert "runs where session.repo:polylogue AND role:main" in terminal_query_examples()
 
