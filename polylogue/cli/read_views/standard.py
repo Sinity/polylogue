@@ -3,20 +3,37 @@
 from __future__ import annotations
 
 import json
+import time
 import webbrowser
+from collections.abc import Callable, Mapping
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, datetime
+from typing import Any
 from urllib.parse import quote
 
 from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.cli.read_views.base import ReadViewInvocation, deliver_content, execute_query_request
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
+from polylogue.config import Config
 from polylogue.surfaces.temporal_evidence import (
     TemporalEvidenceEvent,
     TemporalEvidenceWindow,
     build_temporal_evidence_window,
 )
+
+TemporalPhaseRecorder = Callable[[str, float, Mapping[str, object]], None]
+
+
+def _record_temporal_phase(
+    recorder: TemporalPhaseRecorder | None,
+    name: str,
+    started_at: float,
+    details: Mapping[str, object] | None = None,
+) -> None:
+    if recorder is None:
+        return
+    recorder(name, (time.perf_counter() - started_at) * 1000, details or {})
 
 
 def _is_exact_ref_read(request: RootModeRequest, invocation: ReadViewInvocation) -> bool:
@@ -82,6 +99,126 @@ def _summary_to_temporal_event(summary: SessionSummary) -> TemporalEvidenceEvent
     )
 
 
+def _message_row_to_temporal_event(row: Any) -> TemporalEvidenceEvent | None:
+    occurred_at_ms = getattr(row, "occurred_at_ms", None)
+    if occurred_at_ms is None:
+        return None
+    message_id = str(row.message_id)
+    session_id = str(row.session_id)
+    role = str(getattr(row, "role", "unknown") or "unknown")
+    message_type = str(getattr(row, "message_type", "message") or "message")
+    position = int(getattr(row, "position", 0) or 0)
+    text = str(getattr(row, "text", "") or "").replace("\n", " ").strip()
+    label = f"{role} {message_type} #{position}"
+    if text:
+        label = f"{label}: {text[:80]}"
+    source_ref = f"message:{message_id}"
+    return TemporalEvidenceEvent(
+        event_id=f"{source_ref}:message",
+        occurred_at=datetime.fromtimestamp(int(occurred_at_ms) / 1000, UTC),
+        family="archive-message",
+        kind=message_type,
+        label=label,
+        source_ref=source_ref,
+        evidence_refs=(f"session:{session_id}", source_ref),
+        phase=role,
+    )
+
+
+def _action_row_to_temporal_event(row: Any) -> TemporalEvidenceEvent | None:
+    occurred_at_ms = getattr(row, "occurred_at_ms", None)
+    if occurred_at_ms is None:
+        return None
+    session_id = str(row.session_id)
+    message_id = str(row.message_id)
+    tool_use_block_id = str(row.tool_use_block_id)
+    tool_name = str(getattr(row, "tool_name", "") or "tool")
+    semantic_type = str(getattr(row, "semantic_type", "") or "action")
+    command = str(getattr(row, "tool_command", "") or "").replace("\n", " ").strip()
+    path = str(getattr(row, "tool_path", "") or "").replace("\n", " ").strip()
+    label = f"{semantic_type} via {tool_name}"
+    if command:
+        label = f"{label}: {command[:80]}"
+    elif path:
+        label = f"{label}: {path[:80]}"
+    source_ref = f"action:{tool_use_block_id}"
+    return TemporalEvidenceEvent(
+        event_id=f"{source_ref}:action",
+        occurred_at=datetime.fromtimestamp(int(occurred_at_ms) / 1000, UTC),
+        family="archive-action",
+        kind=semantic_type,
+        label=label,
+        source_ref=source_ref,
+        evidence_refs=(f"session:{session_id}", f"message:{message_id}", source_ref),
+        phase=semantic_type,
+    )
+
+
+def _session_scope_for_summaries(summaries: list[SessionSummary]) -> str:
+    return " OR ".join(f"session:{summary.id}" for summary in summaries)
+
+
+def _message_temporal_events_for_summaries(
+    config: Config,
+    summaries: list[SessionSummary],
+    *,
+    per_session_limit: int = 8,
+) -> tuple[list[TemporalEvidenceEvent], tuple[str, ...]]:
+    from polylogue.archive.query.expression import parse_unit_source_expression
+    from polylogue.paths import archive_file_set_root_for_paths
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    if not summaries:
+        return [], ()
+    archive_root = archive_file_set_root_for_paths(
+        archive_root_path=config.archive_root,
+        db_anchor=config.db_path,
+    )
+    events: list[TemporalEvidenceEvent] = []
+    caveats: list[str] = []
+    total_limit = max(per_session_limit * len(summaries), 0)
+    expression = (
+        f"sessions where {_session_scope_for_summaries(summaries)} | "
+        "messages where time >= 1970-01-01T00:00:00+00:00 | sort by time asc"
+    )
+    source = parse_unit_source_expression(expression)
+    if source is None:
+        return [], ("message_temporal_parse_failed",)
+    with ArchiveStore.open_existing(archive_root) as archive:
+        rows = archive.query_messages(source.predicate, limit=total_limit, sort="time", sort_direction="asc")
+    if len(rows) >= total_limit and sum(summary.message_count or 0 for summary in summaries) > total_limit:
+        caveats.append("message_events_capped")
+    events.extend(event for row in rows if (event := _message_row_to_temporal_event(row)) is not None)
+    return events, tuple(caveats)
+
+
+def _action_temporal_events_for_summaries(
+    config: Config,
+    summaries: list[SessionSummary],
+    *,
+    per_session_limit: int = 4,
+) -> tuple[list[TemporalEvidenceEvent], tuple[str, ...]]:
+    from polylogue.paths import archive_file_set_root_for_paths
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    if not summaries:
+        return [], ()
+    archive_root = archive_file_set_root_for_paths(
+        archive_root_path=config.archive_root,
+        db_anchor=config.db_path,
+    )
+    events: list[TemporalEvidenceEvent] = []
+    caveats: list[str] = []
+    total_limit = max(per_session_limit * len(summaries), 0)
+    session_ids = [str(summary.id) for summary in summaries]
+    with ArchiveStore.open_existing(archive_root) as archive:
+        rows = archive.query_session_actions(session_ids, limit=total_limit, sort_direction="asc")
+    if len(rows) >= total_limit:
+        caveats.append("action_events_capped")
+    events.extend(event for row in rows if (event := _action_row_to_temporal_event(row)) is not None)
+    return events, tuple(caveats)
+
+
 def _render_temporal_window_markdown(window: TemporalEvidenceWindow) -> str:
     lines = [
         "# Temporal Evidence Window",
@@ -115,14 +252,19 @@ def _render_temporal_window_markdown(window: TemporalEvidenceWindow) -> str:
     return "\n".join(lines) + "\n"
 
 
-def run_read_temporal(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
+def build_read_temporal_window(
+    config: Config,
+    request: RootModeRequest,
+    *,
+    phase_recorder: TemporalPhaseRecorder | None = None,
+) -> TemporalEvidenceWindow:
     """Project selected session summaries into a temporal evidence window."""
 
     from polylogue.api.sync.bridge import run_coroutine_sync
     from polylogue.cli.query import _create_query_vector_provider
     from polylogue.paths import archive_file_set_root_for_paths
 
-    config = env.config
+    started = time.perf_counter()
     spec = request.query_spec()
     if spec.limit is None:
         spec = replace(spec, limit=50)
@@ -131,9 +273,56 @@ def run_read_temporal(env: AppEnv, request: RootModeRequest, invocation: ReadVie
         db_anchor=config.db_path,
     )
     vector_provider = _create_query_vector_provider(config, db_path=archive_root / "embeddings.db")
+    _record_temporal_phase(
+        phase_recorder,
+        "prepare",
+        started,
+        {"archive_root": str(archive_root), "limit": spec.limit},
+    )
+
+    started = time.perf_counter()
     summaries = run_coroutine_sync(spec.list_summaries(config, vector_provider=vector_provider))
+    _record_temporal_phase(phase_recorder, "select_sessions", started, {"session_count": len(summaries)})
+
+    started = time.perf_counter()
     events = [event for summary in summaries if (event := _summary_to_temporal_event(summary)) is not None]
-    window = build_temporal_evidence_window(events)
+    _record_temporal_phase(phase_recorder, "project_sessions", started, {"event_count": len(events)})
+
+    started = time.perf_counter()
+    message_events, caveats = _message_temporal_events_for_summaries(config, summaries)
+    _record_temporal_phase(
+        phase_recorder,
+        "project_messages",
+        started,
+        {"event_count": len(message_events), "caveats": list(caveats)},
+    )
+
+    started = time.perf_counter()
+    action_events, action_caveats = _action_temporal_events_for_summaries(config, summaries)
+    _record_temporal_phase(
+        phase_recorder,
+        "project_actions",
+        started,
+        {"event_count": len(action_events), "caveats": list(action_caveats)},
+    )
+
+    started = time.perf_counter()
+    window = build_temporal_evidence_window(
+        [*events, *message_events, *action_events], caveats=(*caveats, *action_caveats)
+    )
+    _record_temporal_phase(
+        phase_recorder,
+        "build_window",
+        started,
+        {"event_count": window.event_count, "family_counts": dict(window.family_counts)},
+    )
+    return window
+
+
+def run_read_temporal(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
+    """Project selected session summaries into a temporal evidence window."""
+
+    window = build_read_temporal_window(env.config, request)
     fmt = invocation.output_format or "markdown"
     if fmt == "json":
         content = json.dumps({"temporal_window": window.model_dump(mode="json")}, indent=2) + "\n"
@@ -187,4 +376,10 @@ def run_read_browser(env: AppEnv, request: RootModeRequest, invocation: ReadView
     env.ui.console.print(f"Opened: {web_url}")
 
 
-__all__ = ["run_read_browser", "run_read_summary_or_transcript", "run_read_temporal"]
+__all__ = [
+    "TemporalPhaseRecorder",
+    "build_read_temporal_window",
+    "run_read_browser",
+    "run_read_summary_or_transcript",
+    "run_read_temporal",
+]

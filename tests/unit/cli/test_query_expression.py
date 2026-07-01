@@ -1484,6 +1484,7 @@ class TestBooleanQueryExpression:
             rows = archive.query_messages(source.predicate, limit=100)
 
         assert [(row.message_id, row.text) for row in rows] == [("chatgpt-export:ext-hit:m-new", "new")]
+        assert rows[0].occurred_at_ms is not None
 
     def test_exists_message_predicate_filters_by_row_time(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -2939,6 +2940,7 @@ class TestBooleanQueryExpression:
         assert [(row.message_id, row.tool_path) for row in rows] == [
             ("claude-code-session:ext-hit:m-new", "polylogue/archive/new.py")
         ]
+        assert rows[0].occurred_at_ms is not None
 
     def test_terminal_action_source_accepts_session_scoped_predicate(
         self,

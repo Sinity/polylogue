@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -657,6 +658,14 @@ def test_read_view_temporal_projects_selected_summaries(
             "polylogue.archive.query.spec.SessionQuerySpec.list_summaries",
             new=AsyncMock(return_value=summaries),
         ) as list_summaries,
+        patch(
+            "polylogue.cli.read_views.standard._message_temporal_events_for_summaries",
+            return_value=([], ()),
+        ) as message_events,
+        patch(
+            "polylogue.cli.read_views.standard._action_temporal_events_for_summaries",
+            return_value=([], ()),
+        ) as action_events,
     ):
         read_view_handlers.run_read_view(
             cast(AppEnv, env),
@@ -671,6 +680,8 @@ def test_read_view_temporal_projects_selected_summaries(
         )
 
     list_summaries.assert_awaited_once()
+    message_events.assert_called_once()
+    action_events.assert_called_once()
     payload = json.loads(capsys.readouterr().out)
     window = payload["temporal_window"]
     assert window["event_count"] == 2
@@ -680,6 +691,161 @@ def test_read_view_temporal_projects_selected_summaries(
         "session:codex-session:abc",
         "session:claude-code-session:def",
     ]
+
+
+def test_read_view_temporal_includes_bounded_message_events(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    from polylogue.surfaces.temporal_evidence import TemporalEvidenceEvent
+
+    config = Config(
+        archive_root=tmp_path,
+        db_path=tmp_path / "index.db",
+        render_root=tmp_path / "render",
+        sources=[],
+    )
+    env = SimpleNamespace(config=config)
+    summaries = [
+        SessionSummary.model_validate(
+            {
+                "id": "codex-session:abc",
+                "origin": "codex-session",
+                "title": "Temporal slice",
+                "created_at": datetime(2026, 6, 30, 8, 0, tzinfo=UTC),
+                "message_count": 12,
+            }
+        )
+    ]
+    message_event = TemporalEvidenceEvent(
+        event_id="message:codex-session:abc:m1:message",
+        occurred_at=datetime(2026, 6, 30, 8, 1, tzinfo=UTC),
+        family="archive-message",
+        kind="message",
+        label="user message #1",
+        source_ref="message:codex-session:abc:m1",
+        evidence_refs=("session:codex-session:abc", "message:codex-session:abc:m1"),
+        phase="user",
+    )
+    action_event = TemporalEvidenceEvent(
+        event_id="action:codex-session:abc:m2:tool:action",
+        occurred_at=datetime(2026, 6, 30, 8, 2, tzinfo=UTC),
+        family="archive-action",
+        kind="shell",
+        label="shell via bash",
+        source_ref="action:codex-session:abc:m2:tool",
+        evidence_refs=(
+            "session:codex-session:abc",
+            "message:codex-session:abc:m2",
+            "action:codex-session:abc:m2:tool",
+        ),
+        phase="shell",
+    )
+
+    with (
+        patch("polylogue.cli.query._create_query_vector_provider", return_value=None),
+        patch(
+            "polylogue.archive.query.spec.SessionQuerySpec.list_summaries",
+            new=AsyncMock(return_value=summaries),
+        ),
+        patch(
+            "polylogue.cli.read_views.standard._message_temporal_events_for_summaries",
+            return_value=([message_event], ("message_events_capped",)),
+        ),
+        patch(
+            "polylogue.cli.read_views.standard._action_temporal_events_for_summaries",
+            return_value=([action_event], ("action_events_capped",)),
+        ),
+    ):
+        read_view_handlers.run_read_view(
+            cast(AppEnv, env),
+            RootModeRequest.from_params({"query": ("repo:polylogue",), "limit": 1}),
+            ReadViewInvocation(
+                view="temporal",
+                session_id=None,
+                output_format="json",
+                destination="terminal",
+                out_path=None,
+            ),
+        )
+
+    window = json.loads(capsys.readouterr().out)["temporal_window"]
+    assert window["event_count"] == 3
+    assert window["family_counts"] == {"archive-action": 1, "archive-message": 1, "archive-session": 1}
+    assert window["kind_counts"] == {"message": 1, "session": 1, "shell": 1}
+    assert "message_events_capped" in window["caveats"]
+    assert "action_events_capped" in window["caveats"]
+    assert [event["source_ref"] for event in window["events"][1:]] == [
+        "message:codex-session:abc:m1",
+        "action:codex-session:abc:m2:tool",
+    ]
+
+
+def test_read_view_temporal_batches_session_scope_expression() -> None:
+    from polylogue.cli.read_views.standard import _session_scope_for_summaries
+
+    summaries = [
+        SessionSummary.model_validate({"id": "codex-session:a", "origin": "codex-session"}),
+        SessionSummary.model_validate({"id": "claude-code-session:b", "origin": "claude-code-session"}),
+    ]
+
+    assert _session_scope_for_summaries(summaries) == "session:codex-session:a OR session:claude-code-session:b"
+
+
+def test_read_view_temporal_builder_records_phase_timings(tmp_path: Path) -> None:
+    from polylogue.cli.read_views.standard import build_read_temporal_window
+
+    config = Config(
+        archive_root=tmp_path,
+        db_path=tmp_path / "index.db",
+        render_root=tmp_path / "render",
+        sources=[],
+    )
+    summaries = [
+        SessionSummary.model_validate(
+            {
+                "id": "codex-session:abc",
+                "origin": "codex-session",
+                "title": "Temporal slice",
+                "created_at": datetime(2026, 6, 30, 8, 0, tzinfo=UTC),
+            }
+        )
+    ]
+    phases: list[tuple[str, float, Mapping[str, object]]] = []
+
+    with (
+        patch("polylogue.cli.query._create_query_vector_provider", return_value=None),
+        patch(
+            "polylogue.archive.query.spec.SessionQuerySpec.list_summaries",
+            new=AsyncMock(return_value=summaries),
+        ),
+        patch(
+            "polylogue.cli.read_views.standard._message_temporal_events_for_summaries",
+            return_value=([], ()),
+        ),
+        patch(
+            "polylogue.cli.read_views.standard._action_temporal_events_for_summaries",
+            return_value=([], ()),
+        ),
+    ):
+        window = build_read_temporal_window(
+            config,
+            RootModeRequest.from_params({"query": ("repo:polylogue",), "limit": 1}),
+            phase_recorder=lambda name, elapsed_ms, details: phases.append((name, elapsed_ms, details)),
+        )
+
+    assert window.event_count == 1
+    assert [name for name, _elapsed_ms, _details in phases] == [
+        "prepare",
+        "select_sessions",
+        "project_sessions",
+        "project_messages",
+        "project_actions",
+        "build_window",
+    ]
+    assert all(elapsed_ms >= 0 for _name, elapsed_ms, _details in phases)
+    assert phases[1][2]["session_count"] == 1
+    assert phases[-1][2]["family_counts"] == {"archive-session": 1}
 
 
 def test_read_view_registry_builds_typed_view_options() -> None:

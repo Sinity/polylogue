@@ -50,11 +50,21 @@ def test_temporal_window_filters_sorts_and_counts_events() -> None:
     assert window.event_count == 3
     assert window.family_counts == {"devloop-log": 2, "git": 1}
     assert window.kind_counts == {"commit": 1, "focus": 2}
+    assert window.caveats == ()
     assert [(bucket.bucket_start.hour, bucket.family, bucket.kind, bucket.count) for bucket in window.buckets] == [
         (10, "devloop-log", "focus", 1),
         (10, "git", "commit", 1),
         (11, "devloop-log", "focus", 1),
     ]
+
+
+def test_temporal_window_preserves_explicit_caveats() -> None:
+    window = build_temporal_evidence_window(
+        [_event("a", 9, 0, family="archive-message", kind="message")],
+        caveats=("message_events_capped", "message_events_capped"),
+    )
+
+    assert window.caveats == ("message_events_capped", "window_bound_open")
 
 
 def test_temporal_window_computes_adjacent_phase_spans() -> None:

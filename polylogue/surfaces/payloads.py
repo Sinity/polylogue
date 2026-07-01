@@ -1201,6 +1201,7 @@ class MessageQueryRowPayload(SurfacePayloadModel):
     role: str
     message_type: str
     material_origin: str = "unknown"
+    occurred_at_ms: int | None = None
     position: int
     word_count: int
     text: str
@@ -1215,6 +1216,7 @@ class MessageQueryRowPayload(SurfacePayloadModel):
             role=row.role,
             message_type=row.message_type,
             material_origin=row.material_origin,
+            occurred_at_ms=row.occurred_at_ms,
             position=row.position,
             word_count=row.word_count,
             text=row.text,
@@ -1235,6 +1237,7 @@ class ActionQueryRowPayload(SurfacePayloadModel):
     semantic_type: str | None = None
     tool_command: str | None = None
     tool_path: str | None = None
+    occurred_at_ms: int | None = None
     output_text: str | None = None
 
     @classmethod
@@ -1250,6 +1253,7 @@ class ActionQueryRowPayload(SurfacePayloadModel):
             semantic_type=row.semantic_type,
             tool_command=row.tool_command,
             tool_path=row.tool_path,
+            occurred_at_ms=row.occurred_at_ms,
             output_text=row.output_text,
         )
 

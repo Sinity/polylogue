@@ -85,6 +85,7 @@ def build_temporal_evidence_window(
     since: datetime | None = None,
     until: datetime | None = None,
     bucket: TemporalBucket = TemporalBucket.HOUR,
+    caveats: Iterable[str] = (),
 ) -> TemporalEvidenceWindow:
     """Build a deterministic temporal window from already-selected events."""
 
@@ -98,9 +99,9 @@ def build_temporal_evidence_window(
     )
     family_counts = Counter(event.family for event in selected)
     kind_counts = Counter(event.kind for event in selected)
-    caveats: list[str] = []
+    caveat_list = list(caveats)
     if since is None or until is None:
-        caveats.append("window_bound_open")
+        caveat_list.append("window_bound_open")
     return TemporalEvidenceWindow(
         since=since,
         until=until,
@@ -111,7 +112,7 @@ def build_temporal_evidence_window(
         kind_counts=dict(sorted(kind_counts.items())),
         buckets=_count_buckets(selected, bucket=bucket),
         phase_spans=_phase_spans(selected),
-        caveats=tuple(caveats),
+        caveats=tuple(dict.fromkeys(caveat_list)),
     )
 
 

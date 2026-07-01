@@ -396,6 +396,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace temporal-read-profile",
+        "workspace",
+        "Measure read --view temporal phase timings on the active archive.",
+        "devtools.temporal_read_profile",
+        use_when=(
+            "Profile the shared temporal read-view builder before tuning query, projection, or rendering paths. "
+            "The command emits phase timings plus the temporal window summary and can write the report as a "
+            "dogfood/demo artifact."
+        ),
+        examples=(
+            "devtools workspace temporal-read-profile --query repo:polylogue --limit 1 --json",
+            "devtools workspace temporal-read-profile --query 'repo:polylogue devloop' --limit 3 --out .local/temporal-profile.json",
+        ),
+    ),
+    CommandSpec(
         "lab projections",
         "verification lab",
         "Render the authored scenario-bearing verification projections.",

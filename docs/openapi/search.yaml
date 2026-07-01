@@ -1213,6 +1213,12 @@ components:
           - type: 'null'
           default: null
           title: Tool Path
+        occurred_at_ms:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Occurred At Ms
         output_text:
           anyOf:
           - type: string
@@ -1590,6 +1596,12 @@ components:
           default: unknown
           title: Material Origin
           type: string
+        occurred_at_ms:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Occurred At Ms
         position:
           title: Position
           type: integer
