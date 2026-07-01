@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -440,6 +441,8 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
     assert session_shaped.category == "parsed-session-unmaterialized"
     assert session_shaped.affected_count == 1
     assert "Codex session event stream" in (session_shaped.details or "")
+    assert "Sample parsed session native id(s): codex-session-shaped" in (session_shaped.details or "")
+    assert "parsed-session-native-id:codex-session:codex-session-shaped" in session_shaped.evidence_refs
     assert session_shaped.actions[0].command == ("polylogue", "import", "--explain")
     assert session_shaped.actions[1].command[:6] == (
         "polylogue",
@@ -457,6 +460,8 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
     assert gemini_session.status == "open"
     assert gemini_session.category == "parsed-session-unmaterialized"
     assert "Gemini CLI chat session" in (gemini_session.details or "")
+    assert "Sample parsed session native id(s): gemini-session-shaped" in (gemini_session.details or "")
+    assert "parsed-session-native-id:gemini-cli-session:gemini-session-shaped" in gemini_session.evidence_refs
     assert gemini_session.actions[0].label == "Explain parser output"
     assert gemini_session.actions[1].label == "Preview targeted raw replay"
 
@@ -610,6 +615,60 @@ def test_archive_debt_raw_materialization_reports_source_path_native_aliases(tmp
     assert alias.status == "open"
     assert "should not be replayed blindly" in (alias.details or "")
     assert "debt:raw-materialization:codex-session:missing-blob" in refs
+
+
+def test_archive_debt_reports_chatgpt_browser_capture_session_ids(tmp_path: Path) -> None:
+    _source_db, _index_db, _source_file = _init_raw_materialization_fixture(tmp_path)
+    browser_capture = tmp_path / "browser-capture" / "chatgpt" / "conv-1-capture.json"
+    browser_capture.parent.mkdir(parents=True)
+    browser_capture.write_text(
+        json.dumps(
+            {
+                "polylogue_capture_kind": "browser_llm_session",
+                "session": {
+                    "provider_session_id": "conv-1",
+                    "title": "Captured ChatGPT session",
+                },
+                "raw_provider_payload": {
+                    "conversation_id": "conv-1",
+                    "mapping": {},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                acquired_at_ms, parsed_at_ms, parse_error, validated_at_ms,
+                validation_status
+            ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+            """,
+            (
+                "raw-chatgpt-browser-capture",
+                "chatgpt-export",
+                "conv-1",
+                str(browser_capture),
+                bytes.fromhex("13" * 32),
+                4096,
+                123,
+                None,
+                123,
+                "passed",
+            ),
+        )
+    blob = tmp_path / "blob" / "13" / ("13" * 31)
+    blob.parent.mkdir(exist_ok=True)
+    blob.write_text(browser_capture.read_text(encoding="utf-8"), encoding="utf-8")
+
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
+
+    refs = {row.debt_ref: row for row in payload.rows}
+    debt = refs["debt:raw-materialization:chatgpt-export:parsed-session-unmaterialized"]
+    assert "Sample parsed session native id(s): conv-1" in (debt.details or "")
+    assert "parsed-session-native-id:chatgpt-export:conv-1" in debt.evidence_refs
 
 
 def test_archive_debt_reports_partial_embedded_claude_code_aggregates(tmp_path: Path) -> None:

@@ -427,6 +427,59 @@ def _parsed_session_shape_reason(archive_root: Path, row: sqlite3.Row) -> str | 
     return None
 
 
+def _parsed_session_native_ids(archive_root: Path, row: sqlite3.Row) -> tuple[str, ...]:
+    origin = str(row["origin"] or "")
+    blob_path = _raw_blob_path(archive_root, row)
+    ids: list[str] = []
+
+    def add(value: object) -> None:
+        if isinstance(value, str) and value and value not in ids:
+            ids.append(value)
+
+    if origin == "codex-session":
+        for item in _raw_jsonl_leading_objects(blob_path, limit=200):
+            if item.get("type") != "session_meta":
+                continue
+            payload = item.get("payload")
+            if isinstance(payload, dict):
+                add(payload.get("id"))
+            add(item.get("id"))
+            if ids:
+                break
+    elif origin == "gemini-cli-session":
+        payload = _raw_json_document(blob_path)
+        if isinstance(payload, dict):
+            add(payload.get("id"))
+            add(payload.get("sessionId"))
+    elif origin == "chatgpt-export":
+        payload = _raw_json_document(blob_path)
+        if isinstance(payload, dict):
+            session = payload.get("session")
+            if isinstance(session, dict):
+                add(session.get("provider_session_id"))
+                add(session.get("id"))
+                add(session.get("conversation_id"))
+            raw_provider_payload = payload.get("raw_provider_payload")
+            if isinstance(raw_provider_payload, dict):
+                add(raw_provider_payload.get("conversation_id"))
+            add(payload.get("conversation_id"))
+
+    if not ids and row["native_id"] is not None:
+        add(row["native_id"])
+    return tuple(ids)
+
+
+def _sample_parsed_session_native_ids(archive_root: Path, rows: Iterable[sqlite3.Row]) -> tuple[str, ...]:
+    ids: list[str] = []
+    for row in rows:
+        for native_id in _parsed_session_native_ids(archive_root, row):
+            if native_id not in ids:
+                ids.append(native_id)
+            if len(ids) >= 5:
+                return tuple(ids)
+    return tuple(ids)
+
+
 def _raw_json_document(path: Path) -> Any:
     try:
         with path.open(encoding="utf-8", errors="replace") as handle:
@@ -626,14 +679,19 @@ def _raw_materialization_debt_row(
         status = "open"
         stage = "parse"
         sample_raw_id = str(sample_rows[0]["raw_id"]) if sample_rows else ""
+        sample_session_ids = _sample_parsed_session_native_ids(archive_root, sample_rows)
         shape_reasons = sorted(
             {reason for row in sample_rows if (reason := _parsed_session_shape_reason(archive_root, row)) is not None}
         )
         shape_text = "; ".join(shape_reasons) if shape_reasons else "session-shaped source payload"
+        sample_session_text = (
+            f" Sample parsed session native id(s): {', '.join(sample_session_ids)}." if sample_session_ids else ""
+        )
         summary = f"{count} {origin} session-shaped raw artifact(s) parsed without materialized sessions"
         details = (
             f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size} bytes. "
-            f"Sample source shapes: {shape_text}. These rows need parser/materialization classification, not blind replay."
+            f"Sample source shapes: {shape_text}.{sample_session_text} "
+            "These rows need parser/materialization classification, not blind replay."
         )
         actions = (
             ArchiveDebtActionPayload(
@@ -720,6 +778,7 @@ def _raw_materialization_debt_row(
 def _raw_materialization_evidence_refs(archive_root: Path, rows: list[sqlite3.Row]) -> list[str]:
     refs: list[str] = []
     for row in rows:
+        origin = str(row["origin"] or "")
         raw_id = str(row["raw_id"])
         refs.append(f"raw:{raw_id}")
         source_path = str(row["source_path"] or "")
@@ -727,6 +786,8 @@ def _raw_materialization_evidence_refs(archive_root: Path, rows: list[sqlite3.Ro
             refs.append(f"file:{source_path}")
         blob_path = _raw_blob_path(archive_root, row)
         refs.append(f"blob:{blob_path}")
+        for native_id in _parsed_session_native_ids(archive_root, row):
+            refs.append(f"parsed-session-native-id:{origin}:{native_id}")
     return refs
 
 
