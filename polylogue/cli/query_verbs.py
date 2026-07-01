@@ -410,6 +410,7 @@ def _build_read_projection_spec(
     body_offset: int | None = None,
     neighbor_limit: int | None = None,
     neighbor_window_hours: int | None = None,
+    redact_paths: bool = True,
 ) -> QueryProjectionSpec:
     """Build the typed selection/projection/render contract for read options."""
 
@@ -440,6 +441,7 @@ def _build_read_projection_spec(
         body_offset=body_offset,
         neighbor_limit=neighbor_limit,
         neighbor_window_hours=neighbor_window_hours,
+        redact_paths=redact_paths,
     )
 
 
@@ -813,6 +815,7 @@ def read_verb(
             body_offset=projection_body_offset,
             neighbor_limit=projection_neighbor_limit,
             neighbor_window_hours=projection_neighbor_window_hours,
+            redact_paths=not no_redact,
         )
         _deliver_content(
             env,
@@ -871,6 +874,7 @@ def read_verb(
             body_offset=projection_body_offset,
             neighbor_limit=projection_neighbor_limit,
             neighbor_window_hours=projection_neighbor_window_hours,
+            redact_paths=not no_redact,
         )
         run_query_set_read_view(
             env,
@@ -909,6 +913,7 @@ def read_verb(
             selection_until=spec_selection_until,
             selection_project_path=spec_selection_project_path,
             selection_project_repo=spec_selection_project_repo,
+            redact_paths=not no_redact,
         )
         run_read_context_image(
             env,

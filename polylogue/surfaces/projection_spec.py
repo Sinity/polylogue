@@ -198,6 +198,7 @@ def projection_from_views(
     body_offset: int | None = None,
     neighbor_limit: int | None = None,
     neighbor_window_hours: int | None = None,
+    redact_paths: bool = True,
 ) -> QueryProjectionSpec:
     """Map one or more read/projection names into a composed spec.
 
@@ -243,6 +244,7 @@ def projection_from_views(
             body_offset=body_offset,
             neighbor_limit=neighbor_limit,
             neighbor_window_hours=neighbor_window_hours,
+            redact_paths=redact_paths,
         ),
         render=RenderSpec(
             format=RenderFormat(format),

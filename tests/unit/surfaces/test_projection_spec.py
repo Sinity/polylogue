@@ -64,7 +64,7 @@ def test_neighbors_view_maps_to_neighbor_projection_policy() -> None:
 
 
 def test_context_image_view_maps_to_authored_dialogue_projection() -> None:
-    spec = projection_from_views(("context-image",), max_tokens=1200)
+    spec = projection_from_views(("context-image",), max_tokens=1200, redact_paths=False)
 
     assert spec.projection.families == (
         EvidenceFamily.CONTEXT,
@@ -73,6 +73,7 @@ def test_context_image_view_maps_to_authored_dialogue_projection() -> None:
     )
     assert spec.projection.body_policy is BodyPolicy.AUTHORED_DIALOGUE
     assert spec.projection.max_tokens == 1200
+    assert spec.projection.redact_paths is False
     assert spec.render.timestamps is RenderTimestampPolicy.INCLUDE_AVAILABLE
     assert {"tool_use", "tool_result", "function_call", "function_call_output"} <= set(
         spec.projection.exclude_block_kinds

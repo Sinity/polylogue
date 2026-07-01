@@ -416,10 +416,35 @@ def test_read_spec_records_context_image_selector_fields() -> None:
     }
     assert payload["projection"]["families"] == ["context", "messages", "assertions"]
     assert payload["projection"]["body_policy"] == "authored-dialogue"
+    assert payload["projection"]["redact_paths"] is True
     assert {"tool_use", "tool_result", "function_call", "function_call_output"} <= set(
         payload["projection"]["exclude_block_kinds"]
     )
     assert payload["render"]["layout"] == "context-image"
+
+
+def test_read_spec_records_context_image_redaction_policy() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--plain",
+            "read",
+            "--view",
+            "context-image",
+            "--format",
+            "json",
+            "--query",
+            "route contracts",
+            "--no-redact",
+            "--spec",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["projection"]["redact_paths"] is False
 
 
 def test_read_handler_invocation_carries_projection_spec() -> None:
