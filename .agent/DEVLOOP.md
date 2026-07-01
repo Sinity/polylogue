@@ -71,8 +71,9 @@ deliberate transition:
 ```
 
 `devloop-start` also infers `Meta` for obvious process titles beginning with
-`meta ...`, `process ...`, or `scaffold ...`; use `--meta` or `--focus Meta`
-for other process slices.
+`meta ...`, `process ...`, `scaffold ...`, `devloop ...`, or
+`conductor ...`, and for titles containing `convention`; use `--meta` or
+`--focus Meta` for other process slices.
 
 Refresh generated local state with:
 

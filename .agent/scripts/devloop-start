@@ -19,8 +19,13 @@ case "$start_focus" in
 esac
 
 title="${1:?usage: devloop-start [--meta|--focus MODE] <slice-title>}"
+# Meta inference covers process titles such as meta, process, scaffold,
+# devloop, conductor, and convention slices.
 case "$start_focus:$title" in
   Direction:[Mm]eta*|Direction:[Pp]rocess*|Direction:[Ss]caffold*)
+    start_focus="Meta"
+    ;;
+  Direction:[Dd]evloop*|Direction:[Cc]onductor*|Direction:*[Cc]onvention*)
     start_focus="Meta"
     ;;
 esac
@@ -96,4 +101,4 @@ path.write_text(text)
 PY
 fi
 
-"$(dirname "$0")/devloop-sync" >/dev/null
+POLYLOGUE_CONDUCTOR_PACKET="$root" "$(dirname "$0")/devloop-sync" >/dev/null

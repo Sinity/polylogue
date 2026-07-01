@@ -69,7 +69,8 @@ Velocity, and Meta.
      `--meta` for process-improvement slices so the first logged
      transition is truthful instead of a synthetic Direction entry.
      The helper also infers `Meta` for obvious process titles beginning with
-     `meta ...`, `process ...`, or `scaffold ...`; use `--meta` or
+     `meta ...`, `process ...`, `scaffold ...`, `devloop ...`, or
+     `conductor ...`, and for titles containing `convention`; use `--meta` or
      `--focus Meta` for other process slices.
    - Run `.agent/scripts/devloop-demo` when the slice should create, refresh,
      retire, or caveat an artifact.
