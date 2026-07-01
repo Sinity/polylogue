@@ -78,8 +78,14 @@ def _render_text(payload: ArchiveDebtListPayload) -> None:
         click.echo(f"\n[{row.severity}] {row.debt_ref}")
         click.echo(f"  {row.summary}")
         click.echo(f"  kind={row.kind} stage={row.stage} subject={row.subject_ref} status={row.status}")
+        if row.affected_count is not None:
+            click.echo(f"  affected_count={row.affected_count}")
         if row.details:
             click.echo(f"  detail: {row.details}")
+        for evidence_ref in row.evidence_refs:
+            click.echo(f"  evidence: {evidence_ref}")
+        for caveat in row.caveats:
+            click.echo(f"  caveat: {caveat}")
         for action in row.actions:
             command = " ".join(action.command)
             click.echo(f"  action: {action.label}" + (f" ({command})" if command else ""))

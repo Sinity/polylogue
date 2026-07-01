@@ -27,6 +27,9 @@ def _payload(root: Path) -> ArchiveDebtListPayload:
                 status="actionable",
                 owner="daemon",
                 summary="3 session(s) pending embedding catch-up",
+                affected_count=3,
+                evidence_refs=("session:pending-1", "session:pending-2"),
+                caveats=("Evidence refs are sampled.",),
             ),
         ),
         totals=ArchiveDebtTotalsPayload(
@@ -83,3 +86,7 @@ def test_debt_list_text_renders_actionable_summary(
     assert "Archive debt: 1 row(s)" in result.output
     assert "affected=3 affected_warning=3 affected_actionable=3 affected_open=3 affected_blocked=0" in result.output
     assert "3 session(s) pending embedding catch-up" in result.output
+    assert "affected_count=3" in result.output
+    assert "evidence: session:pending-1" in result.output
+    assert "evidence: session:pending-2" in result.output
+    assert "caveat: Evidence refs are sampled." in result.output
