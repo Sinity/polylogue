@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sqlite3
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, cast
@@ -108,6 +109,11 @@ class RawMaterializationReadiness(BaseModel):
     warning: int = 0
     actionable: int = 0
     blocked: int = 0
+    affected_total: int = 0
+    affected_actionable: int = 0
+    affected_open: int = 0
+    category_counts: dict[str, int] = Field(default_factory=dict)
+    source_family_counts: dict[str, int] = Field(default_factory=dict)
     sampled_rows: list[dict[str, object]] = Field(default_factory=list)
 
 
@@ -1635,6 +1641,13 @@ def _component_from_raw_materialization_readiness(
             "warning": readiness.warning,
             "actionable": readiness.actionable,
             "blocked": readiness.blocked,
+            "affected_total": readiness.affected_total,
+            "affected_actionable": readiness.affected_actionable,
+            "affected_open": readiness.affected_open,
+        },
+        metadata={
+            "category_counts": readiness.category_counts,
+            "source_family_counts": readiness.source_family_counts,
         },
         repair_hint=None
         if state == CapabilityReadinessState.READY
@@ -1811,6 +1824,18 @@ def _raw_materialization_readiness_info() -> RawMaterializationReadiness:
         return RawMaterializationReadiness(available=False)
 
     rows = [row for row in payload.rows if row.kind == "raw-materialization"]
+    affected_counts = [max(1, int(row.affected_count or 1)) for row in rows]
+    category_counts: Counter[str] = Counter()
+    source_family_counts: Counter[str] = Counter()
+    affected_actionable = 0
+    affected_open = 0
+    for row, affected_count in zip(rows, affected_counts, strict=True):
+        category_counts[row.category or "unspecified"] += affected_count
+        source_family_counts[row.source_family or "unspecified"] += affected_count
+        if row.status == "actionable":
+            affected_actionable += affected_count
+        if row.status != "blocked":
+            affected_open += affected_count
     return RawMaterializationReadiness(
         available=True,
         total=len(rows),
@@ -1818,6 +1843,11 @@ def _raw_materialization_readiness_info() -> RawMaterializationReadiness:
         warning=sum(1 for row in rows if row.severity == "warning"),
         actionable=sum(1 for row in rows if row.status == "actionable"),
         blocked=sum(1 for row in rows if row.status == "blocked"),
+        affected_total=sum(affected_counts),
+        affected_actionable=affected_actionable,
+        affected_open=affected_open,
+        category_counts=dict(sorted(category_counts.items())),
+        source_family_counts=dict(sorted(source_family_counts.items())),
         sampled_rows=[row.model_dump(mode="json", exclude_none=True) for row in rows[:5]],
     )
 
