@@ -318,6 +318,45 @@ def test_raw_materialization_excludes_already_parsed_non_materialized_rows(tmp_p
     assert "already parsed but not materialized" in scoped.detail
 
 
+def test_raw_materialization_explicit_scope_includes_already_parsed_rows(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    blob_store = BlobStore(tmp_path / "blob")
+    parsed_raw_id, parsed_size = blob_store.write_from_bytes(b'{"items":[]}')
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
+                acquired_at_ms, parsed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                parsed_raw_id,
+                "gemini-cli-session",
+                "gemini-parsed",
+                "/captures/gemini/session.json",
+                0,
+                bytes.fromhex(parsed_raw_id),
+                parsed_size,
+                1,
+                123,
+            ),
+        )
+        source_conn.commit()
+
+    broad = repair_mod.repair_raw_materialization(config, dry_run=True)
+    by_family = repair_mod.repair_raw_materialization(config, dry_run=True, source_family="gemini-cli-session")
+    by_root = repair_mod.repair_raw_materialization(config, dry_run=True, source_root=Path("/captures/gemini"))
+
+    assert broad.repaired_count == 0
+    assert by_family.repaired_count == 1
+    assert "already parsed but not materialized" in by_family.detail
+    assert by_root.repaired_count == 1
+
+
 def test_raw_materialization_scope_filters_count_only_matching_raw_rows(tmp_path: Path) -> None:
     config = _config(tmp_path)
     initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
@@ -398,6 +437,7 @@ def test_raw_materialization_leaves_fts_to_ingest_or_fts_stage(
 
     class FakeParseResult:
         processed_ids = {"session-1", "session-2"}
+        parse_failures = 0
 
     class FakeParsingService:
         def __init__(self, **_kwargs: object) -> None:
@@ -439,6 +479,52 @@ def test_raw_materialization_leaves_fts_to_ingest_or_fts_stage(
     }
     assert calls["raw_artifact_id"] is None
     assert calls["closed"] is True
+
+
+def test_raw_materialization_reports_parse_write_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+
+    class FakeBackend:
+        def __init__(self, *, db_path: Path) -> None:
+            self.db_path = db_path
+
+    class FakeRepository:
+        def __init__(self, *, backend: FakeBackend, archive_root: Path) -> None:
+            self.backend = backend
+            self.archive_root = archive_root
+
+        async def close(self) -> None:
+            pass
+
+    class FakeParseResult:
+        processed_ids: set[str] = set()
+        parse_failures = 1
+
+    class FakeParsingService:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def parse_from_raw(self, **_kwargs: object) -> FakeParseResult:
+            return FakeParseResult()
+
+    monkeypatch.setattr(
+        repair_mod,
+        "_raw_materialization_candidate_ids",
+        lambda *_args, **_kwargs: repair_mod.RawMaterializationCandidates(["raw-1"], 0, 1),
+    )
+    monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", FakeParsingService)
+    monkeypatch.setattr("polylogue.storage.repository.SessionRepository", FakeRepository)
+    monkeypatch.setattr("polylogue.storage.sqlite.async_sqlite.SQLiteBackend", FakeBackend)
+
+    result = repair_mod.repair_raw_materialization(config, dry_run=False)
+
+    assert result.success is False
+    assert result.repaired_count == 0
+    assert "1 raw rows failed during parse/write" in result.detail
+    assert "already parsed but not materialized" in result.detail
 
 
 def _ready_session_insight_status() -> SessionInsightStatusSnapshot:

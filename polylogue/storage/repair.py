@@ -66,10 +66,10 @@ def _raw_materialization_candidate_ids(
     Raw evidence is the durable source of truth, but a raw row whose
     content-addressed blob is absent cannot be reparsed without outside
     evidence. Keep those rows as debt instead of mutating or deleting them.
-    Broad repair only queues acquired-but-unparsed rows. An exact
-    ``raw_artifact_id`` scope may queue an already-parsed non-materialized row
-    because that is an explicit replay of one named raw artifact, not a blind
-    archive-wide retry.
+    Broad repair only queues acquired-but-unparsed rows. An explicit scope
+    (raw artifact, provider/origin, source family, or source root) may queue
+    already-parsed non-materialized rows because that is a deliberate bounded
+    replay, not a blind archive-wide retry.
     """
     source_db = config.archive_root / "source.db"
     index_db = config.archive_root / "index.db"
@@ -100,7 +100,10 @@ def _raw_materialization_candidate_ids(
             normalized_root = str(source_root).rstrip("/")
             source_root_filter = " AND (r.source_path = ? OR r.source_path LIKE ?)"
             params.extend((normalized_root, f"{normalized_root}/%"))
-        parsed_filter = "AND r.parsed_at_ms IS NULL" if raw_artifact_id is None else ""
+        include_already_parsed = any(
+            value is not None for value in (raw_artifact_id, provider_origin, source_family, source_root)
+        )
+        parsed_filter = "" if include_already_parsed else "AND r.parsed_at_ms IS NULL"
         rows = conn.execute(
             f"""
             SELECT r.raw_id, r.origin, r.native_id, r.source_path, r.blob_hash, r.parsed_at_ms
@@ -1216,7 +1219,7 @@ def repair_raw_materialization(
             detail=detail,
         )
 
-    async def _run() -> int:
+    async def _run() -> tuple[int, int]:
         from polylogue.pipeline.services.parsing import ParsingService
         from polylogue.storage.repository import SessionRepository
         from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
@@ -1224,6 +1227,7 @@ def repair_raw_materialization(
         backend = SQLiteBackend(db_path=config.archive_root / "index.db")
         repository = SessionRepository(backend=backend, archive_root=config.archive_root)
         processed_total = 0
+        failure_total = 0
         try:
             service = ParsingService(repository=repository, archive_root=config.archive_root, config=config)
             total = len(raw_ids)
@@ -1240,6 +1244,7 @@ def repair_raw_materialization(
                     repair_message_fts=False,
                 )
                 processed_total += len(result.processed_ids)
+                failure_total += result.parse_failures
                 if progress_callback is not None:
                     progress_callback(
                         index,
@@ -1247,12 +1252,12 @@ def repair_raw_materialization(
                             f"raw_materialization: parsed raw {index}/{total} {raw_id[:12]} changed={processed_total}"
                         ),
                     )
-            return processed_total
+            return processed_total, failure_total
         finally:
             await repository.close()
 
     try:
-        processed = asyncio.run(_run())
+        processed, failures = asyncio.run(_run())
     except Exception as exc:
         return _repair_result(
             "raw_materialization",
@@ -1273,10 +1278,12 @@ def repair_raw_materialization(
         )
     if missing_blobs:
         detail += f"; {missing_blobs:,} raw rows remain blocked by missing blobs"
+    if failures:
+        detail += f"; {failures:,} raw rows failed during parse/write"
     return _repair_result(
         "raw_materialization",
         repaired_count=processed,
-        success=missing_blobs == 0,
+        success=missing_blobs == 0 and failures == 0,
         detail=detail,
     )
 
