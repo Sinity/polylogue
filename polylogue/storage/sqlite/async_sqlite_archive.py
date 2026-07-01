@@ -85,7 +85,7 @@ from polylogue.storage.sqlite.queries.tool_usage import (
 if TYPE_CHECKING:
     import aiosqlite
 
-    from polylogue.storage.sqlite.queries.messages import MessageTypeName
+    from polylogue.storage.sqlite.queries.messages import MaterialOriginFilter, MessageTypeName
     from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 
 
@@ -153,6 +153,7 @@ class SQLiteArchiveMixin:
         *,
         message_role: MessageRoleFilter = (),
         message_type: MessageTypeName | None = None,
+        material_origin: MaterialOriginFilter | None = None,
         edge_limit: int = 8,
     ) -> tuple[list[MessageRecord], list[MessageRecord], int]:
         """Get first/last transcript-order message windows for bounded reads."""
@@ -160,6 +161,7 @@ class SQLiteArchiveMixin:
             session_id,
             message_role=message_role,
             message_type=message_type,
+            material_origin=material_origin,
             edge_limit=edge_limit,
         )
 

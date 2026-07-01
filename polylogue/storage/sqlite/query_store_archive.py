@@ -25,7 +25,7 @@ from polylogue.storage.sqlite.queries import session_links as session_links_q
 from polylogue.storage.sqlite.queries import sessions as sessions_q
 from polylogue.storage.sqlite.queries import stats as stats_q
 from polylogue.storage.sqlite.queries import tool_usage as tool_usage_q
-from polylogue.storage.sqlite.queries.messages import MessageTypeName
+from polylogue.storage.sqlite.queries.messages import MaterialOriginFilter, MessageTypeName
 from polylogue.storage.sqlite.queries.stats import (
     AggregateMessageStats,
     ProviderMetricsRow,
@@ -183,6 +183,7 @@ class SQLiteQueryStoreArchiveMixin:
         *,
         message_role: MessageRoleFilter = (),
         message_type: MessageTypeName | None = None,
+        material_origin: MaterialOriginFilter | None = None,
         edge_limit: int = 8,
     ) -> tuple[list[MessageRecord], list[MessageRecord], int]:
         async with self._connection_factory() as conn:
@@ -191,6 +192,7 @@ class SQLiteQueryStoreArchiveMixin:
                 session_id,
                 message_role=message_role,
                 message_type=message_type,
+                material_origin=material_origin,
                 edge_limit=edge_limit,
             )
         messages = [*first, *last]

@@ -17,6 +17,7 @@ from polylogue.cli.read_views.base import (
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
+from polylogue.core.enums import MaterialOrigin
 from polylogue.paths import archive_file_set_root_for_paths
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.surfaces.chronicle import (
@@ -76,6 +77,7 @@ def build_read_chronicle_payload(
                     str(summary.id),
                     message_role=(Role.USER, Role.ASSISTANT),
                     message_type="message",
+                    material_origin=(MaterialOrigin.HUMAN_AUTHORED, MaterialOrigin.ASSISTANT_AUTHORED),
                     edge_limit=edge_limit * 5,
                 )
                 session_payloads.append(

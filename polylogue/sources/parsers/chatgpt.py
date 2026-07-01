@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from polylogue.archive.message.artifacts import classify_material_origin, classify_text_message_type
 from polylogue.archive.message.roles import Role
+from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, Provider, SessionKind, WebConstructType
 from polylogue.core.timestamps import parse_timestamp
 
@@ -279,7 +281,9 @@ def extract_messages_from_mapping(
     attachments: list[ParsedAttachment] = []
     active_path_ids = _active_path_node_ids(mapping, current_node)
     active_path_id_set = set(active_path_ids)
+    active_path_rank = {node_id: rank for rank, node_id in enumerate(active_path_ids)}
     emitted_by_node_id: dict[str, str] = {}
+    inactive_position = 0
     for idx, node_id in enumerate(mapping.keys(), start=1):
         node = mapping.get(node_id)
         if not isinstance(node, dict):
@@ -440,6 +444,14 @@ def extract_messages_from_mapping(
         status_val = msg.get("status")
         end_turn_val = msg.get("end_turn")
         user_context_val = msg_metadata.get("user_context_message_data") if isinstance(msg_metadata, Mapping) else None
+        message_type = classify_text_message_type(text) or MessageType.MESSAGE
+        if active_path_rank:
+            position = active_path_rank.get(node_id)
+            if position is None:
+                position = len(active_path_rank) + inactive_position
+                inactive_position += 1
+        else:
+            position = idx - 1
 
         parsed = ParsedMessage(
             provider_message_id=str(msg_id),
@@ -447,8 +459,15 @@ def extract_messages_from_mapping(
             text=text,
             timestamp=str(timestamp) if timestamp is not None else None,
             blocks=content_blocks,
+            message_type=message_type,
+            material_origin=classify_material_origin(
+                role=role,
+                message_type=message_type,
+                text=text,
+                block_types=tuple(block.type for block in content_blocks),
+            ),
             parent_message_provider_id=parent_message_provider_id,
-            position=idx - 1,
+            position=position,
             branch_index=branch_index,
             variant_index=branch_index,
             is_active_path=node_id in active_path_id_set if active_path_ids else None,

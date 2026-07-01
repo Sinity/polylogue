@@ -6,6 +6,7 @@ from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.domain_models import SessionSummary
+from polylogue.core.enums import MaterialOrigin
 from polylogue.surfaces.chronicle import (
     build_chronicle_projection_payload,
     build_chronicle_session_payload,
@@ -14,13 +15,23 @@ from polylogue.surfaces.chronicle import (
 )
 
 
-def _message(message_id: str, text: str, *, role: str = "assistant", minute: int = 0) -> Message:
+def _message(
+    message_id: str,
+    text: str,
+    *,
+    role: str = "assistant",
+    minute: int = 0,
+    material_origin: MaterialOrigin | None = None,
+) -> Message:
+    if material_origin is None:
+        material_origin = MaterialOrigin.HUMAN_AUTHORED if role == "user" else MaterialOrigin.ASSISTANT_AUTHORED
     return Message(
         id=message_id,
         role=Role.normalize(role),
         text=text,
         timestamp=datetime(2026, 6, 30, 8, minute, tzinfo=UTC),
         message_type=MessageType.MESSAGE,
+        material_origin=material_origin,
     )
 
 
@@ -50,7 +61,7 @@ def test_chronicle_session_payload_dedupes_edges_and_counts_omissions() -> None:
     assert "middle_messages_omitted" in payload.caveats
 
 
-def test_chronicle_session_payload_omits_machine_action_like_assistant_rows() -> None:
+def test_chronicle_session_payload_omits_non_authored_rows() -> None:
     summary = SessionSummary.model_validate(
         {
             "id": "chatgpt-export:abc",
@@ -62,17 +73,20 @@ def test_chronicle_session_payload_omits_machine_action_like_assistant_rows() ->
     payload = build_chronicle_session_payload(
         summary,
         first_messages=[
-            _message("m1", '{"queries":["find context"]}'),
+            _message("m1", '{"queries":["find context"]}', material_origin=MaterialOrigin.RUNTIME_PROTOCOL),
             _message("m2", "human-readable assistant prose"),
         ],
-        last_messages=[_message("m3", "bash -lc ls -lah"), _message("m4", "final prose")],
+        last_messages=[
+            _message("m3", "bash -lc ls -lah", material_origin=MaterialOrigin.OPERATOR_COMMAND),
+            _message("m4", "final prose"),
+        ],
         total_matching_messages=4,
         edge_limit=2,
     )
 
     assert [message.message_id for message in payload.first_messages] == ["m2"]
     assert [message.message_id for message in payload.last_messages] == ["m4"]
-    assert "machine_action_like_or_empty_messages_omitted" in payload.caveats
+    assert "non_authored_or_empty_messages_omitted" in payload.caveats
 
 
 def test_chronicle_markdown_and_json_report_body_policy_and_counts() -> None:

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.enums import MaterialOrigin
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
@@ -28,6 +29,7 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
         f"{current_session_id}:msg-summary-2",
         f"{current_session_id}:msg-tool",
         f"{current_session_id}:msg-user",
+        f"{current_session_id}:msg-protocol",
         f"{current_session_id}:msg-assistant",
     ]
     conv = make_session("conv-message-reads", title="Message Reads")
@@ -66,6 +68,16 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
             text="user",
             timestamp="2026-01-01T00:00:03Z",
             message_type="message",
+            material_origin="human_authored",
+        ),
+        make_message(
+            "msg-protocol",
+            "conv-message-reads",
+            role="assistant",
+            text='{"queries":["find context"]}',
+            timestamp="2026-01-01T00:00:03.500000Z",
+            message_type="message",
+            material_origin="runtime_protocol",
         ),
         make_message(
             "msg-assistant",
@@ -74,6 +86,7 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
             text="assistant",
             timestamp="2026-01-01T00:00:04Z",
             message_type="message",
+            material_origin="assistant_authored",
         ),
     ]
 
@@ -99,16 +112,37 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
         assert [message.message_id for message in filtered_messages] == [f"{current_session_id}:msg-user"]
         assert [message.message_id for message in all_messages] == expected_message_ids
 
-        first_edge, last_edge, edge_total = await get_message_edge_windows(
+        traced_sql: list[str] = []
+        await conn.set_trace_callback(traced_sql.append)
+        try:
+            first_edge, last_edge, edge_total = await get_message_edge_windows(
+                conn,
+                current_session_id,
+                message_role=(Role.USER, Role.ASSISTANT),
+                message_type="message",
+                edge_limit=1,
+            )
+        finally:
+            await conn.set_trace_callback(lambda _statement: None)
+        assert edge_total == 3
+        assert [message.message_id for message in first_edge] == [f"{current_session_id}:msg-user"]
+        assert [message.message_id for message in last_edge] == [f"{current_session_id}:msg-assistant"]
+        assert any("COUNT(*) FROM messages INDEXED BY idx_messages_session_position" in sql for sql in traced_sql)
+
+        authored_first, authored_last, authored_total = await get_message_edge_windows(
             conn,
             current_session_id,
             message_role=(Role.USER, Role.ASSISTANT),
             message_type="message",
-            edge_limit=1,
+            material_origin=(MaterialOrigin.HUMAN_AUTHORED, MaterialOrigin.ASSISTANT_AUTHORED),
+            edge_limit=2,
         )
-        assert edge_total == 2
-        assert [message.message_id for message in first_edge] == [f"{current_session_id}:msg-user"]
-        assert [message.message_id for message in last_edge] == [f"{current_session_id}:msg-assistant"]
+        assert authored_total == 2
+        assert [message.message_id for message in authored_first] == [
+            f"{current_session_id}:msg-user",
+            f"{current_session_id}:msg-assistant",
+        ]
+        assert authored_last == []
 
         paginated, total = await get_messages_paginated(
             conn,
@@ -147,9 +181,10 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
             limit=10,
             offset=0,
         )
-        assert user_total == 2
+        assert user_total == 3
         assert [message.message_id for message in user_messages] == [
             f"{current_session_id}:msg-user",
+            f"{current_session_id}:msg-protocol",
             f"{current_session_id}:msg-assistant",
         ]
 
@@ -163,7 +198,7 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
             )
 
         hydrated = await get_messages(conn, current_session_id)
-        assert len(hydrated) == 5
+        assert len(hydrated) == 6
 
         assert [message async for message in iter_messages(conn, current_session_id, limit=0)] == []
         assert [message.message_id async for message in iter_messages(conn, "missing")] == []

@@ -9,10 +9,12 @@ import aiosqlite
 
 from polylogue.archive.message.roles import MessageRoleFilter, Role, message_role_sql_values
 from polylogue.archive.message.types import validate_message_type_filter
+from polylogue.core.enums import MaterialOrigin
 from polylogue.storage.runtime import MessageRecord
 from polylogue.storage.sqlite.queries.mappers import _row_to_message
 
 MessageTypeName = Literal["message", "summary", "tool_use", "tool_result", "thinking", "context", "protocol"]
+MaterialOriginFilter = MaterialOrigin | str | tuple[MaterialOrigin | str, ...] | list[MaterialOrigin | str]
 
 _MESSAGE_RECORD_SELECT = """
     m.message_id,
@@ -144,6 +146,7 @@ def _filter_composed(
     *,
     message_role: MessageRoleFilter = (),
     message_type: MessageTypeName | None = None,
+    material_origin: MaterialOriginFilter | None = None,
     sort_key_since: float | None = None,
     sort_key_until: float | None = None,
 ) -> list[MessageRecord]:
@@ -160,11 +163,14 @@ def _filter_composed(
     """
     role_set = set(message_role) if message_role else None
     type_match = validate_message_type_filter(message_type) if message_type else None
+    material_origin_set = set(_material_origin_values(material_origin))
     out: list[MessageRecord] = []
     for record in records:
         if role_set is not None and record.role not in role_set:
             continue
         if type_match is not None and record.message_type != type_match:
+            continue
+        if material_origin_set and record.material_origin.value not in material_origin_set:
             continue
         if sort_key_since is not None and (record.sort_key is None or record.sort_key < sort_key_since):
             continue
@@ -172,6 +178,16 @@ def _filter_composed(
             continue
         out.append(record)
     return out
+
+
+def _material_origin_values(values: MaterialOriginFilter | None) -> tuple[str, ...]:
+    if values is None:
+        return ()
+    if isinstance(values, (MaterialOrigin, str)):
+        raw_values: tuple[MaterialOrigin | str, ...] = (values,)
+    else:
+        raw_values = tuple(values)
+    return tuple(MaterialOrigin.validate_filter_token(value).value for value in raw_values)
 
 
 async def get_messages_batch(
@@ -327,6 +343,7 @@ async def get_message_edge_windows(
     *,
     message_role: MessageRoleFilter = (),
     message_type: MessageTypeName | None = None,
+    material_origin: MaterialOriginFilter | None = None,
     edge_limit: int = 8,
 ) -> tuple[list[MessageRecord], list[MessageRecord], int]:
     """Return first/last transcript-order message windows for one session.
@@ -343,6 +360,7 @@ async def get_message_edge_windows(
             await get_messages(conn, session_id),
             message_role=message_role,
             message_type=message_type,
+            material_origin=material_origin,
         )
         total = len(composed)
         first = composed[:edge_limit]
@@ -370,7 +388,18 @@ async def get_message_edge_windows(
         params.append(normalized_type)
         count_params.append(normalized_type)
 
-    count_cursor = await conn.execute(f"SELECT COUNT(*) FROM messages {count_where}", tuple(count_params))
+    material_origin_values = _material_origin_values(material_origin)
+    if material_origin_values:
+        origin_placeholders = ",".join("?" for _ in material_origin_values)
+        where += f" AND m.material_origin IN ({origin_placeholders})"
+        count_where += f" AND material_origin IN ({origin_placeholders})"
+        params.extend(material_origin_values)
+        count_params.extend(material_origin_values)
+
+    count_cursor = await conn.execute(
+        f"SELECT COUNT(*) FROM messages INDEXED BY idx_messages_session_position {count_where}",
+        tuple(count_params),
+    )
     count_row = await count_cursor.fetchone()
     total = int(count_row[0]) if count_row is not None else 0
 

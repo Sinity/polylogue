@@ -8,6 +8,8 @@ from typing import Any, TypeAlias
 
 import pytest
 
+from polylogue.archive.message.types import MessageType
+from polylogue.core.enums import MaterialOrigin
 from polylogue.scenarios import CorpusSpec
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.chatgpt import (
@@ -810,6 +812,63 @@ def test_regeneration_preserves_all_branches_and_marks_active_leaf() -> None:
     assert conv.active_leaf_message_provider_id == "a_new"
 
 
+def test_active_path_position_uses_parent_chain_rank_not_timestamp_or_mapping_order() -> None:
+    """Readable transcript order follows the active path, not provider timestamps."""
+    root = _branch_node("root", "system", "", parent=None, children=["u1"])
+    user = _branch_node("u1", "user", "first active", parent="root", children=["a1"])
+    assistant = _branch_node("a1", "assistant", "second active", parent="u1", children=["u2"])
+    followup = _branch_node("u2", "user", "third active", parent="a1", children=[])
+    user["message"]["create_time"] = 300.0
+    assistant["message"]["create_time"] = 100.0
+    followup["message"]["create_time"] = 200.0
+    payload = {
+        "title": "Scrambled active path",
+        "mapping": {n["id"]: n for n in [assistant, followup, root, user]},
+        "current_node": "u2",
+    }
+
+    conv = chatgpt_parse(payload, "fallback-id")
+    by_id = {m.provider_message_id: m for m in conv.messages}
+
+    u1_position = by_id["u1"].position
+    a1_position = by_id["a1"].position
+    u2_position = by_id["u2"].position
+    assert u1_position is not None
+    assert a1_position is not None
+    assert u2_position is not None
+    assert u1_position < a1_position < u2_position
+    assert [(m.provider_message_id, m.timestamp) for m in conv.messages] == [
+        ("a1", "100.0"),
+        ("u2", "200.0"),
+        ("u1", "300.0"),
+    ]
+
+
+def test_chatgpt_transport_rows_are_classified_as_protocol_material() -> None:
+    nodes = [
+        _branch_node("u1", "user", "question", parent=None, children=["q1"]),
+        _branch_node("q1", "assistant", '{"queries":["find context"]}', parent="u1", children=["cmd"]),
+        _branch_node("cmd", "assistant", "bash -lc ls -lah", parent="q1", children=["a1"]),
+        _branch_node("a1", "assistant", "human-readable answer", parent="cmd", children=[]),
+    ]
+    payload = {
+        "title": "Transport rows",
+        "mapping": {n["id"]: n for n in nodes},
+        "current_node": "a1",
+        "create_time": 1700000000.0,
+    }
+
+    conv = chatgpt_parse(payload, "fallback-id")
+    by_id = {m.provider_message_id: m for m in conv.messages}
+
+    assert by_id["q1"].message_type is MessageType.PROTOCOL
+    assert by_id["q1"].material_origin is MaterialOrigin.RUNTIME_PROTOCOL
+    assert by_id["cmd"].message_type is MessageType.PROTOCOL
+    assert by_id["cmd"].material_origin is MaterialOrigin.OPERATOR_COMMAND
+    assert by_id["a1"].message_type is MessageType.MESSAGE
+    assert by_id["a1"].material_origin is MaterialOrigin.ASSISTANT_AUTHORED
+
+
 def test_no_current_node_preserves_all_nodes_losslessly() -> None:
     """Without current_node, every node is preserved (lossless fallback) (#1744).
 
@@ -875,7 +934,7 @@ def test_chatgpt_archive_contract_fields() -> None:
 
     conv = chatgpt_parse(payload, "fallback-id")
 
-    assert [m.position for m in conv.messages] == [0, 1, 2]
+    assert [m.position for m in conv.messages] == [0, 2, 1]
     assert [m.variant_index for m in conv.messages] == [0, 0, 1]
     active = next(m for m in conv.messages if m.provider_message_id == "a_new")
     assert active.model_name == "gpt-4o"

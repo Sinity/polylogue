@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
 from polylogue.archive.session.domain_models import SessionSummary
+from polylogue.core.enums import MaterialOrigin
 from polylogue.surfaces.payloads import SurfacePayloadModel
 
 
@@ -44,6 +44,14 @@ class ChronicleProjectionPayload(SurfacePayloadModel):
     edge_limit: int
     body_policy: str = "authored-dialogue"
     caveats: tuple[str, ...] = ()
+
+
+_AUTHORED_MATERIAL_ORIGINS = frozenset(
+    {
+        MaterialOrigin.HUMAN_AUTHORED.value,
+        MaterialOrigin.ASSISTANT_AUTHORED.value,
+    }
+)
 
 
 def _message_attr(message: object, *names: str) -> Any:
@@ -86,20 +94,9 @@ def _message_payload(message: object) -> ChronicleMessagePayload | None:
     )
 
 
-def _machine_action_like(message: object) -> bool:
-    role = _enum_value(_message_attr(message, "role"), "unknown")
-    if role != "assistant":
-        return False
-    text = str(_message_attr(message, "text") or "").lstrip()
-    if text.startswith(("bash -lc ", "python - <<", "python3 - <<")):
-        return True
-    if text.startswith("{") and text.endswith("}"):
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
-            return False
-        return isinstance(parsed, dict)
-    return False
+def _authored_dialogue_material(message: object) -> bool:
+    material_origin = _enum_value(_message_attr(message, "material_origin"), "unknown")
+    return material_origin in _AUTHORED_MATERIAL_ORIGINS
 
 
 def _message_payloads(
@@ -108,7 +105,7 @@ def _message_payloads(
     payloads: list[ChronicleMessagePayload] = []
     skipped = 0
     for message in messages:
-        if _machine_action_like(message):
+        if not _authored_dialogue_material(message):
             skipped += 1
             continue
         payload = _message_payload(message)
@@ -141,7 +138,7 @@ def build_chronicle_session_payload(
     if omitted_count:
         caveats.append("middle_messages_omitted")
     if first_skipped or last_skipped:
-        caveats.append("machine_action_like_or_empty_messages_omitted")
+        caveats.append("non_authored_or_empty_messages_omitted")
     if included_count < min(total_matching_messages, edge_limit * 2):
         caveats.append("empty_text_messages_omitted")
     return ChronicleSessionPayload(

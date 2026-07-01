@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from polylogue.storage.sqlite.queries.message_query_reads import (
+    MaterialOriginFilter,
     MessageTypeName,
     get_message_edge_windows,
     get_messages,
@@ -24,4 +25,5 @@ __all__ = [
     "get_session_stats",
     "get_message_counts_batch",
     "MessageTypeName",
+    "MaterialOriginFilter",
 ]
