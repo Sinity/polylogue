@@ -376,8 +376,8 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
     assert payload.totals.affected_critical == 1
     assert payload.totals.affected_warning == 1
     assert payload.totals.affected_info == 4
-    assert payload.totals.affected_actionable == 2
-    assert payload.totals.affected_open == 4
+    assert payload.totals.affected_actionable == 1
+    assert payload.totals.affected_open == 5
 
     by_ref = {row.debt_ref: row for row in payload.rows}
     missing_blob = by_ref["debt:raw-materialization:codex-session:missing-blob"]
@@ -391,10 +391,13 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
 
     parsed_gap = by_ref["debt:raw-materialization:aistudio-drive:parsed-without-session"]
     assert parsed_gap.severity == "warning"
+    assert parsed_gap.status == "open"
     assert parsed_gap.category == "parsed-without-session"
     assert parsed_gap.affected_count == 1
     assert "parsed but have no materialized session" in parsed_gap.summary
+    assert "blind replay is not the primary repair" in (parsed_gap.details or "")
     assert "passed=1" in (parsed_gap.details or "")
+    assert parsed_gap.actions == ()
 
     sidecars = by_ref["debt:raw-materialization:claude-code-session:parsed-non-session-artifact"]
     assert sidecars.severity == "info"

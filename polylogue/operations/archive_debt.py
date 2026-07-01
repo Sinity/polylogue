@@ -564,19 +564,15 @@ def _raw_materialization_debt_row(
         )
     elif category == "parsed-without-session":
         severity = "warning"
+        status = "open"
         stage = "parse"
         summary = f"{count} {origin} raw artifact(s) parsed but have no materialized session"
         details = (
             f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size} bytes. "
-            "These may be duplicate/empty exports, but they need an auditable skip reason."
+            "These rows already passed parsing, so blind replay is not the primary repair. They need an auditable "
+            "skip reason or parser/materialization classification."
         )
-        actions = (
-            ArchiveDebtActionPayload(
-                label="Re-import source artifacts",
-                command=("polylogue", "import"),
-                description="Pass one of the sampled source paths to force the normal acquisition/parse path.",
-            ),
-        )
+        actions = ()
     elif category == "materialized-alias":
         severity = "info"
         status = "open"
