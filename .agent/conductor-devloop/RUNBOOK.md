@@ -334,7 +334,9 @@ unless an explicit task names that destination.
   lane, or an experiment that must not perturb the active branch.
 - Use compile/test/daemon wait time for ahead work in this checkout. If a proof
   fails after ahead work, diagnose the whole failure shape and batch the fix.
-- Do not push unless explicitly asked.
+- Push and PR creation are authorized devloop actions for integration/publication
+  slices. Open PRs ready-for-review by default; use draft only with an explicit
+  recorded reason. Do not push directly to `master`.
 
 ## End Gate
 

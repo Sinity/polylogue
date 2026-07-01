@@ -13,9 +13,9 @@ continues.
   chronology alone.
 - Each cluster becomes a PR-shaped replay branch with a durable title, body,
   verification record, and explicit dependency notes.
-- Draft PR creation is normal authorized devloop work. Do not treat push or PR
-  opening as a blocking approval step; keep PRs draft by default unless the
-  slice explicitly promotes them to review-ready.
+- Push and PR creation are normal authorized devloop work. Do not treat either
+  as a blocking approval step. Open PRs ready-for-review by default; use draft
+  only when a concrete reason is recorded in the replay ledger or PR body.
 
 ## Required Command
 
@@ -47,7 +47,7 @@ The report must show both sides of the lane:
 5. Repair generated surfaces in the replay worktree, not on the main workbench.
 6. Run the narrow proof for the group plus generated-surface checks when the
    group touches docs/topology/agent surfaces.
-7. Push the branch and open a draft PR with Summary, Problem, Solution, and
+7. Push the branch and open a PR with Summary, Problem, Solution, and
    Verification.
 8. Record the remote branch, PR URL, head commit, verification, and residual
    dependency in the replay plan or operating log.
@@ -82,7 +82,7 @@ The main devloop normally owns:
 - conflict resolution;
 - final verification;
 - pushing;
-- draft PR creation;
+- PR creation;
 - updating the replay ledger.
 
 The operator may explicitly delegate any of those, but absent that instruction

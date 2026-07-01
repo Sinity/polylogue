@@ -79,9 +79,11 @@ another conflicting heavy command against the same checkout/archive.
 
 Use the long-lived branch unless the operator asks for a new branch. Commit
 logical proven chunks by path when the diff is clearly yours; avoid broad
-staging in this dirty tree. Do not push unless asked. If broad pre-existing
-dirty files overlap your slice, record the caveat and verify behavior instead
-of sweeping unrelated edits into a commit.
+staging in this dirty tree. Push PR branches and open ready-for-review PRs as
+normal integration/publication work; use draft only with a recorded reason and
+never push directly to `master`. If broad pre-existing dirty files overlap your
+slice, record the caveat and verify behavior instead of sweeping unrelated edits
+into a commit.
 
 Before ending a loop, ensure: the active slice log is filled; the conductor
 packet is refreshed; `devloop-review` is clean or warnings are accepted in

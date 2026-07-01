@@ -196,6 +196,7 @@ The intended flow is:
    exact residual diff/dependency.
 
 The clustering/planning part is a good read-heavy subagent lane. Final replay,
-verification, push, and draft PR creation are normal authorized devloop actions;
-the main devloop owns them unless the operator explicitly delegates that write
-authority to another agent.
+verification, push, and PR creation are normal authorized devloop actions; PRs
+open ready-for-review by default unless a concrete draft reason is recorded.
+The main devloop owns publication unless the operator explicitly delegates that
+write authority to another agent.

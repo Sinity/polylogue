@@ -242,6 +242,18 @@ else
   ok "devloop-meta requires explicit audit fields"
 fi
 
+stale_publication_policy="$(
+  rg -n 'draft PR creation|open a draft PR|draft by default|Do not push unless (explicitly )?asked' \
+    "$repo/.agent/DEVLOOP.md" "$repo/.agent/conductor-devloop" \
+    2>/dev/null || true
+)"
+if [ -n "$stale_publication_policy" ]; then
+  warn "stale publication policy found; PR branches may be pushed and PRs should open ready-for-review by default"
+  printf '%s\n' "$stale_publication_policy"
+else
+  ok "publication policy allows push/PR and does not default to drafts"
+fi
+
 if grep -q 'stale focus transition' "$repo/.agent/scripts/devloop-focus"; then
   ok "devloop-focus rejects stale active-mode transitions"
 else
