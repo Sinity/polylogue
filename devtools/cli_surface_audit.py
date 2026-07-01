@@ -37,6 +37,7 @@ class CommandRecord(TypedDict):
     stderr_bytes: int
     stdout_lines: int
     stderr_lines: int
+    json_top_level_bytes: dict[str, int] | None
     notes: str
 
 
@@ -196,6 +197,19 @@ def _line_count(text: str) -> int:
     return text.count("\n") + (1 if text and not text.endswith("\n") else 0)
 
 
+def _json_top_level_bytes(text: str) -> dict[str, int] | None:
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return {
+        key: len(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
+        for key, value in sorted(payload.items())
+    }
+
+
 def _run_commands(commands: tuple[AuditCommand, ...], *, outdir: Path, timeout: int) -> list[CommandRecord]:
     summary: list[CommandRecord] = []
     for command in commands:
@@ -214,10 +228,34 @@ def _run_commands(commands: tuple[AuditCommand, ...], *, outdir: Path, timeout: 
                 "stderr_bytes": len(proc.stderr.encode()),
                 "stdout_lines": _line_count(proc.stdout),
                 "stderr_lines": _line_count(proc.stderr),
+                "json_top_level_bytes": _json_top_level_bytes(proc.stdout),
                 "notes": command.notes,
             }
         )
     return summary
+
+
+def _json_breakdown_section(commands: list[CommandRecord]) -> str:
+    large_json_commands = [
+        command for command in commands if command["json_top_level_bytes"] and command["stdout_bytes"] >= 8192
+    ]
+    if not large_json_commands:
+        return ""
+    sections = ["## Large JSON Payloads", ""]
+    for command in large_json_commands:
+        top = sorted(
+            command["json_top_level_bytes"].items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )[:8]
+        sections.append(f"### `{command['name']}`")
+        sections.append("")
+        sections.append(f"- stdout: {command['stdout_bytes']} bytes")
+        sections.append("- top-level sections:")
+        for name, size in top:
+            sections.append(f"  - `{name}`: {size} bytes")
+        sections.append("")
+    return "\n".join(sections)
 
 
 def _readme(*, generated_at: str, archive_root: Path, archive: ArchiveCounts, commands: list[CommandRecord]) -> str:
@@ -236,6 +274,7 @@ def _readme(*, generated_at: str, archive_root: Path, archive: ArchiveCounts, co
             )
         )
     matrix = "\n".join(rows)
+    json_breakdown = _json_breakdown_section(commands)
     return f"""# CLI Surface Audit
 
 Generated: {generated_at}
@@ -256,6 +295,8 @@ command notes are in `command-matrix.json`.
 ## Command Matrix
 
 {matrix}
+
+{json_breakdown}
 
 ## Current Curation Policy
 

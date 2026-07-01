@@ -39,7 +39,13 @@ def test_cli_surface_audit_prunes_stale_unbounded_output_by_default(
     stale.write_text("large stale payload", encoding="utf-8")
 
     def fake_run(argv: tuple[str, ...], **_: Any) -> subprocess.CompletedProcess[str]:
-        stdout = json.dumps({"argv": list(argv)})
+        stdout = json.dumps(
+            {
+                "argv": list(argv),
+                "large": ["x" * 2000 for _ in range(5)] if "status" in argv else [],
+                "small": {"ok": True},
+            }
+        )
         return subprocess.CompletedProcess(args=" ".join(argv), returncode=0, stdout=stdout, stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -57,7 +63,12 @@ def test_cli_surface_audit_prunes_stale_unbounded_output_by_default(
     assert not stale.exists()
     matrix = json.loads((out_dir / "command-matrix.json").read_text(encoding="utf-8"))
     assert matrix["archive"] == {"messages": 3, "schema_version": 18, "sessions": 2}
-    assert "current demo shelf should prefer bounded dialogue" in (out_dir / "README.md").read_text(encoding="utf-8")
+    status_record = next(record for record in matrix["commands"] if record["name"] == "status_plain")
+    assert status_record["json_top_level_bytes"]["large"] > status_record["json_top_level_bytes"]["small"]
+    readme = (out_dir / "README.md").read_text(encoding="utf-8")
+    assert "current demo shelf should prefer bounded dialogue" in readme
+    assert "## Large JSON Payloads" in readme
+    assert "`status_plain`" in readme
 
 
 def test_cli_surface_audit_can_include_unbounded_diagnostic(
