@@ -238,9 +238,7 @@ READ_VIEW_HTTP_CAPABILITIES: dict[str, ReadViewHttpCapability] = {
     "recovery": ReadViewHttpCapability("recovery", ("json", "markdown"), ("report",)),
     "raw": ReadViewHttpCapability("raw", ("json",)),
     "context": ReadViewHttpCapability("context", ("json",), ("related_limit",)),
-    "context-pack": ReadViewHttpCapability(
-        "context-pack", ("json",), ("include_messages", "max_tokens", "no_redact")
-    ),
+    "context-pack": ReadViewHttpCapability("context-pack", ("json",), ("include_messages", "max_tokens", "no_redact")),
     "neighbors": ReadViewHttpCapability("neighbors", ("json",), ("limit", "window_hours")),
     "correlation": ReadViewHttpCapability(
         "correlation", ("json",), ("confidence_threshold", "repo_path", "since_hours")

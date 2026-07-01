@@ -10,6 +10,7 @@ and compiler test suites.
 from __future__ import annotations
 
 import json
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -26,7 +27,6 @@ from tests.infra.mcp import (
     invoke_surface_async,
     make_polylogue_mock,
 )
-from unittest.mock import AsyncMock, patch
 
 
 def _context_image(*, with_messages: bool = True) -> ContextImage:

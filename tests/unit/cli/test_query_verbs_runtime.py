@@ -238,7 +238,7 @@ def test_read_view_click_choices_come_from_view_profiles() -> None:
     option = next(param for param in query_verbs.read_verb.params if param.name == "view")
 
     assert not isinstance(option.type, click.Choice)
-    assert query_verbs._READ_VIEWS == read_view_choices()
+    assert read_view_choices() == query_verbs._READ_VIEWS
 
 
 def test_read_view_handlers_cover_view_profiles() -> None:
