@@ -36,6 +36,7 @@ from polylogue.archive.stats import ArchiveStats
 from polylogue.core.dates import parse_date
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONValue, require_json_value
+from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.core.sources import origin_from_provider
 from polylogue.insights.affordance_usage import (
     clean_patterns as _clean_affordance_patterns,
@@ -341,7 +342,7 @@ class ArchiveRunQueryRow:
 
 @dataclass(frozen=True, slots=True)
 class ArchiveObservedEventQueryRow:
-    """Terminal query projection over materialized ``session_observed_events`` rows."""
+    """Terminal query projection over observed events from materialized or source rows."""
 
     session_id: str
     origin: str
@@ -367,6 +368,233 @@ class ArchiveQueryUnitAggregateRow:
     group_by: str | None
     group_key: str | None
     count: int
+
+
+_OBSERVED_EVENT_RELATION_SQL = """
+WITH tool_finished_base AS (
+    SELECT
+        'source' AS row_source,
+        'observed-event:' || u.block_id || ':tool_finished' AS event_ref,
+        u.session_id AS session_id,
+        'run:' || u.session_id AS run_ref,
+        u.rowid AS position,
+        NULL AS source_updated_at,
+        'tool_finished' AS kind,
+        COALESCE(NULLIF(u.tool_name, ''), 'unknown') AS tool_name,
+        u.tool_id AS tool_id,
+        u.tool_command AS command,
+        u.message_id AS subject_message_id,
+        u.position AS tool_use_position,
+        r.message_id AS result_message_id,
+        r.position AS result_position,
+        CASE
+            WHEN COALESCE(NULLIF(LOWER(u.tool_name), ''), 'unknown') >= 'mcp__'
+                AND COALESCE(NULLIF(LOWER(u.tool_name), ''), 'unknown') < 'mcp_`'
+                THEN 'mcp'
+            WHEN COALESCE(u.tool_command, '') <> '' THEN 'shell'
+            ELSE COALESCE(NULLIF(u.semantic_type, ''), 'tool_use')
+        END AS handler_kind,
+        CASE
+            WHEN r.tool_result_exit_code IS NOT NULL
+                THEN CASE WHEN r.tool_result_exit_code = 0 THEN 'ok' ELSE 'failed' END
+            WHEN r.tool_result_is_error = 1 THEN 'failed'
+            WHEN r.tool_result_is_error = 0 THEN 'ok'
+            ELSE 'unknown'
+        END AS status,
+        CASE
+            WHEN u.tool_id IS NOT NULL AND u.tool_id <> ''
+                THEN json_array('tool-call:' || u.session_id || ':' || u.tool_id)
+            ELSE '[]'
+        END AS object_refs_json,
+        json_array(
+            u.session_id || '::' || u.message_id || '::' || u.position,
+            r.session_id || '::' || r.message_id || '::' || r.position
+        ) AS evidence_refs_json,
+        trim(COALESCE(u.search_text, '') || ' ' || COALESCE(r.search_text, '')) AS search_text
+    FROM blocks u
+    JOIN blocks r
+        ON r.session_id = u.session_id
+        AND r.tool_id = u.tool_id
+        AND r.block_type = 'tool_result'
+    WHERE u.block_type = 'tool_use'
+        AND u.tool_id IS NOT NULL
+        AND u.tool_id <> ''
+        AND ({source_where})
+),
+source_observed_events AS (
+    SELECT
+        row_source,
+        event_ref,
+        session_id,
+        run_ref,
+        position,
+        source_updated_at,
+        kind,
+        tool_name || ' [' || handler_kind || '] (' || status || ')'
+            || CASE WHEN COALESCE(command, '') <> '' THEN ' - ' || command ELSE '' END AS summary,
+        'observed' AS delivery_state,
+        'message:' || subject_message_id AS subject_ref,
+        object_refs_json,
+        evidence_refs_json,
+        json_object(
+            'tool_name', tool_name,
+            'tool_id', tool_id,
+            'command', command,
+            'handler_kind', handler_kind,
+            'status', status
+        ) AS payload_json,
+        search_text,
+        subject_message_id,
+        tool_use_position,
+        result_message_id,
+        result_position
+    FROM tool_finished_base
+),
+materialized_observed_events AS (
+    SELECT
+        'materialized' AS row_source,
+        e.event_ref,
+        e.session_id,
+        e.run_ref,
+        e.position,
+        e.source_updated_at,
+        e.kind,
+        e.summary,
+        e.delivery_state,
+        e.subject_ref,
+        e.object_refs_json,
+        e.evidence_refs_json,
+        e.payload_json,
+        e.search_text,
+        NULL AS subject_message_id,
+        NULL AS tool_use_position,
+        NULL AS result_message_id,
+        NULL AS result_position
+    FROM session_observed_events e
+    WHERE e.kind <> 'tool_finished'
+        OR NOT EXISTS (
+            SELECT 1
+            FROM source_observed_events source
+            WHERE source.session_id = e.session_id
+        )
+),
+observed_events AS (
+    SELECT * FROM source_observed_events
+    UNION ALL
+    SELECT * FROM materialized_observed_events
+)
+"""
+
+
+def _observed_event_source_pushdown(predicate: QueryPredicate) -> tuple[str, list[object]]:
+    clauses: list[str] = []
+    params: list[object] = []
+    selective = False
+
+    def add_clause(clause: str, clause_params: list[object], *, is_selective: bool) -> None:
+        nonlocal selective
+        if clause:
+            clauses.append(f"({clause})")
+            params.extend(clause_params)
+            selective = selective or is_selective
+
+    def visit(current: QueryPredicate) -> bool:
+        if isinstance(current, QueryBoolPredicate):
+            if current.op != "and":
+                return False
+            return all(visit(child) for child in current.children)
+        if isinstance(current, QueryFieldPredicate):
+            field = current.bound_field_name(context="lowering observed-event source predicates")
+            if field == "kind":
+                add_clause("'tool_finished' = ?", ["tool_finished"], is_selective=False)
+                return "tool_finished" in {value.strip().lower() for value in current.values}
+            if field == "delivery_state":
+                add_clause("'observed' = ?", ["observed"], is_selective=False)
+                return "observed" in {value.strip().lower() for value in current.values}
+            if field == "tool":
+                normalized = tuple(value.strip().lower() for value in current.values if value.strip())
+                if not normalized:
+                    return True
+                if len(normalized) == 1:
+                    add_clause(
+                        "COALESCE(NULLIF(LOWER(u.tool_name), ''), 'unknown') = ?",
+                        [normalized[0]],
+                        is_selective=True,
+                    )
+                else:
+                    placeholders = ", ".join("?" for _ in normalized)
+                    add_clause(
+                        f"COALESCE(NULLIF(LOWER(u.tool_name), ''), 'unknown') IN ({placeholders})",
+                        list(normalized),
+                        is_selective=True,
+                    )
+                return True
+            if field == "handler":
+                normalized = tuple(value.strip().lower() for value in current.values if value.strip())
+                if not normalized:
+                    return True
+                handler_clauses: list[str] = []
+                handler_params: list[object] = []
+                for value in normalized:
+                    if value == "mcp":
+                        handler_clauses.append(
+                            "(COALESCE(NULLIF(LOWER(u.tool_name), ''), 'unknown') >= ? "
+                            "AND COALESCE(NULLIF(LOWER(u.tool_name), ''), 'unknown') < ?)"
+                        )
+                        handler_params.extend(["mcp__", "mcp_`"])
+                    elif value == "shell":
+                        handler_clauses.append("COALESCE(u.tool_command, '') <> ''")
+                    else:
+                        handler_clauses.append("COALESCE(NULLIF(u.semantic_type, ''), 'tool_use') = ?")
+                        handler_params.append(value)
+                add_clause(" OR ".join(handler_clauses), handler_params, is_selective=True)
+                return True
+            if field == "status":
+                status_expr = (
+                    "CASE "
+                    "WHEN r.tool_result_exit_code IS NOT NULL "
+                    "THEN CASE WHEN r.tool_result_exit_code = 0 THEN 'ok' ELSE 'failed' END "
+                    "WHEN r.tool_result_is_error = 1 THEN 'failed' "
+                    "WHEN r.tool_result_is_error = 0 THEN 'ok' "
+                    "ELSE 'unknown' END"
+                )
+                clause, clause_params = _in_or_equals_clause(status_expr, current.values, lower=True)
+                add_clause(clause, clause_params, is_selective=True)
+                return True
+        return True
+
+    supported = visit(predicate)
+    if not supported or not selective:
+        return "0=1", []
+    return " AND ".join(clauses) if clauses else "1=1", params
+
+
+def _tuple_from_json_array(value: object) -> tuple[str, ...]:
+    loaded = json.loads(str(value or "[]"))
+    if not isinstance(loaded, list):
+        return ()
+    return tuple(str(item) for item in loaded if item is not None)
+
+
+def _observed_event_from_query_row(row: sqlite3.Row) -> ObservedEvent:
+    if str(row["row_source"]) == "materialized":
+        return ObservedEvent.model_validate(json.loads(row["payload_json"]))
+    payload = json.loads(str(row["payload_json"] or "{}"))
+    return ObservedEvent(
+        event_ref=ObjectRef.parse(str(row["event_ref"])),
+        kind="tool_finished",
+        run_ref=ObjectRef.parse(str(row["run_ref"])),
+        summary=str(row["summary"]),
+        delivery_state="observed",
+        subject_ref=ObjectRef.parse(str(row["subject_ref"])),
+        object_refs=tuple(ObjectRef.parse(ref) for ref in _tuple_from_json_array(row["object_refs_json"])),
+        evidence_refs=tuple(EvidenceRef.parse(ref) for ref in _tuple_from_json_array(row["evidence_refs_json"])),
+        tool_name=str(payload["tool_name"]) if payload.get("tool_name") is not None else None,
+        tool_id=str(payload["tool_id"]) if payload.get("tool_id") is not None else None,
+        command=str(payload["command"]) if payload.get("command") is not None else None,
+        handler_kind=str(payload["handler_kind"]) if payload.get("handler_kind") is not None else None,
+        status=str(payload["status"]) if payload.get("status") is not None else None,
+    )
 
 
 def _query_unit_order_direction(direction: Literal["asc", "desc"]) -> Literal["ASC", "DESC"]:
@@ -3971,14 +4199,18 @@ class ArchiveStore:
             "action": "actions a JOIN sessions s ON s.session_id = a.session_id",
             "block": "blocks b JOIN sessions s ON s.session_id = b.session_id",
             "assertion": "user_tier.assertions a LEFT JOIN sessions s ON a.target_ref = 'session:' || s.session_id",
-            "observed-event": "session_observed_events e JOIN sessions s ON s.session_id = e.session_id",
+            "observed-event": "observed_events e JOIN sessions s ON s.session_id = e.session_id",
         }
-        from_sql = (
-            "session_observed_events e" if unit == "observed-event" and not needs_session else from_sql_by_unit[unit]
-        )
+        from_sql = "observed_events e" if unit == "observed-event" and not needs_session else from_sql_by_unit[unit]
         order_clause = _query_unit_aggregate_order(sort, sort_direction)
+        source_where = "0=1"
+        source_params: list[object] = []
+        if unit == "observed-event":
+            source_where, source_params = _observed_event_source_pushdown(predicate)
+        prefix_sql = _OBSERVED_EVENT_RELATION_SQL.format(source_where=source_where) if unit == "observed-event" else ""
         rows = self._conn.execute(
             f"""
+            {prefix_sql}
             SELECT {group_expr} AS group_key, COUNT(*) AS count
             FROM {from_sql}
             WHERE {where_clause}
@@ -3987,7 +4219,7 @@ class ArchiveStore:
             ORDER BY {order_clause}
             LIMIT ? OFFSET ?
             """,
-            [*params, *session_params, normalized_limit, normalized_offset],
+            [*source_params, *params, *session_params, normalized_limit, normalized_offset],
         ).fetchall()
         return [
             ArchiveQueryUnitAggregateRow(
@@ -4443,7 +4675,7 @@ class ArchiveStore:
         sort: Literal["time"] | None = None,
         sort_direction: Literal["asc", "desc"] = "asc",
     ) -> list[ArchiveObservedEventQueryRow]:
-        """Return materialized observed-event rows matching a unit-scoped predicate."""
+        """Return observed-event rows matching a unit-scoped predicate."""
 
         normalized_limit = max(int(limit), 0)
         normalized_offset = max(int(offset), 0)
@@ -4455,6 +4687,7 @@ class ArchiveStore:
             )
         else:
             order_by = "e.session_id, e.position, e.event_ref"
+        source_where, source_params = _observed_event_source_pushdown(predicate)
         clause, params = _structural_predicate_clause("observed-event", "e", predicate, session_alias="s")
         session_clause = ""
         session_params: list[object] = []
@@ -4462,22 +4695,23 @@ class ArchiveStore:
             session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
         rows = self._conn.execute(
             f"""
-            SELECT e.session_id, s.origin, s.title, e.payload_json
-            FROM session_observed_events e
+            {_OBSERVED_EVENT_RELATION_SQL.format(source_where=source_where)}
+            SELECT e.*, s.origin, s.title
+            FROM observed_events e
             JOIN sessions s ON e.session_id = s.session_id
             WHERE {clause}
             {session_clause}
             ORDER BY {order_by}
             LIMIT ? OFFSET ?
             """,
-            [*params, *session_params, normalized_limit, normalized_offset],
+            [*source_params, *params, *session_params, normalized_limit, normalized_offset],
         ).fetchall()
         return [
             ArchiveObservedEventQueryRow(
                 session_id=str(row["session_id"]),
                 origin=str(row["origin"]),
                 title=str(row["title"]) if row["title"] is not None else None,
-                event=ObservedEvent.model_validate(json.loads(row["payload_json"])),
+                event=_observed_event_from_query_row(row),
             )
             for row in rows
         ]

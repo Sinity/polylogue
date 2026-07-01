@@ -67,12 +67,7 @@ from polylogue.storage.runtime import MessageRecord
 
 
 def _materialize_run_projection(index_db: Path) -> None:
-    """Rebuild session insights so the materialized run-projection tables exist.
-
-    The ``run`` / ``observed-event`` / ``context-snapshot`` units read the
-    derived ``session_runs`` / ``session_observed_events`` /
-    ``session_context_snapshots`` tables, so tests must materialize after writing.
-    """
+    """Rebuild session insights so materialized run/context projection tables exist."""
     from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
     from polylogue.storage.sqlite.connection import open_connection
 
@@ -2449,7 +2444,7 @@ class TestBooleanQueryExpression:
             ("status", "ok", 1),
         ]
         aggregate_statement = next(statement for statement in statements if "GROUP BY group_key" in statement)
-        assert "FROM session_observed_events e" in aggregate_statement
+        assert "FROM observed_events e" in aggregate_statement
         assert "JOIN sessions" not in aggregate_statement
 
     def test_unknown_terminal_unit_does_not_fall_through_to_block_rows(self) -> None:
@@ -3437,6 +3432,114 @@ class TestBooleanQueryExpression:
         )
         # Structured outcome events synthesize no GitHub/issue object refs.
         assert row.object_refs == ()
+
+    def test_terminal_observed_event_tool_finished_reads_blocks_without_materialization(
+        self, workspace_env: dict[str, Path]
+    ) -> None:
+        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.surfaces.payloads import ObservedEventQueryRowPayload
+        from tests.infra.storage_records import SessionBuilder
+
+        archive_root = workspace_env["archive_root"]
+        index_db = archive_root / "index.db"
+        (
+            SessionBuilder(index_db, "tool-finished")
+            .provider("claude-code")
+            .git_repository_url("polylogue")
+            .title("source-derived tool event")
+            .add_message(
+                "m-tool",
+                role="assistant",
+                text="Inspected symbols.",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "id": "serena-1",
+                        "name": "mcp__serena__find_symbol",
+                        "tool_input": {"name_path": "ArchiveStore/query_observed_events"},
+                    },
+                    {"type": "tool_result", "tool_id": "serena-1", "text": "found"},
+                ],
+            )
+            .save()
+        )
+
+        query = "observed-events where kind:tool_finished AND tool:mcp__serena__find_symbol"
+        source = parse_unit_source_expression(query)
+        assert source is not None
+
+        with sqlite3.connect(index_db) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM session_observed_events").fetchone()[0] == 0
+
+        with ArchiveStore.open_existing(archive_root) as archive:
+            envelope = query_unit_rows(archive, source, query=query, limit=10)
+
+        assert envelope.unit == "observed-event"
+        assert len(envelope.items) == 1
+        row = envelope.items[0]
+        assert isinstance(row, ObservedEventQueryRowPayload)
+        assert row.kind == "tool_finished"
+        assert row.delivery_state == "observed"
+        assert row.session_id == "claude-code-session:ext-tool-finished"
+        assert row.subject_ref == "message:claude-code-session:ext-tool-finished:m-tool"
+        assert row.object_refs == ("tool-call:claude-code-session:ext-tool-finished:serena-1",)
+        assert row.evidence_refs == (
+            "claude-code-session:ext-tool-finished::claude-code-session:ext-tool-finished:m-tool::0",
+            "claude-code-session:ext-tool-finished::claude-code-session:ext-tool-finished:m-tool::1",
+        )
+
+    def test_terminal_observed_event_tool_finished_aggregate_reads_blocks_without_materialization(
+        self, workspace_env: dict[str, Path]
+    ) -> None:
+        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.surfaces.payloads import QueryUnitAggregateEnvelope
+        from tests.infra.storage_records import SessionBuilder
+
+        archive_root = workspace_env["archive_root"]
+        index_db = archive_root / "index.db"
+        (
+            SessionBuilder(index_db, "tool-aggregate")
+            .provider("codex")
+            .git_repository_url("polylogue")
+            .title("source-derived aggregate")
+            .add_message(
+                "m-tool",
+                role="assistant",
+                text="Ran tools.",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "id": "bash-1",
+                        "name": "Bash",
+                        "tool_input": {"command": "pytest tests/unit"},
+                    },
+                    {"type": "tool_result", "tool_id": "bash-1", "text": "passed", "tool_result_exit_code": 0},
+                    {
+                        "type": "tool_use",
+                        "id": "bash-2",
+                        "name": "Bash",
+                        "tool_input": {"command": "pytest tests/integration"},
+                    },
+                    {"type": "tool_result", "tool_id": "bash-2", "text": "failed", "tool_result_exit_code": 1},
+                ],
+            )
+            .save()
+        )
+
+        query = "observed-events where kind:tool_finished AND handler:shell | group by status | count"
+        source = parse_unit_source_expression(query)
+        assert source is not None
+
+        with sqlite3.connect(index_db) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM session_observed_events").fetchone()[0] == 0
+
+        with ArchiveStore.open_existing(archive_root) as archive:
+            envelope = query_unit_rows(archive, source, query=query, limit=10)
+
+        assert isinstance(envelope, QueryUnitAggregateEnvelope)
+        assert sorted((row.group_key, row.count) for row in envelope.items) == [("failed", 1), ("ok", 1)]
 
     def test_terminal_run_source_returns_runtime_rows(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.archive.query.unit_results import query_unit_rows
