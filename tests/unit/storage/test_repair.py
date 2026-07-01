@@ -214,6 +214,8 @@ def test_raw_materialization_preview_counts_replayable_rows_without_erasing_miss
 
     assert result.repaired_count == 1
     assert result.success is True
+    assert "queued raw payload bytes total=" in result.detail
+    assert "largest=" in result.detail
     assert "1 raw rows blocked by missing blobs" in result.detail
 
 
@@ -479,6 +481,60 @@ def test_raw_materialization_leaves_fts_to_ingest_or_fts_stage(
     }
     assert calls["raw_artifact_id"] is None
     assert calls["closed"] is True
+
+
+def test_raw_materialization_progress_reports_raw_payload_size(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    progress: list[str] = []
+
+    class FakeBackend:
+        def __init__(self, *, db_path: Path) -> None:
+            self.db_path = db_path
+
+    class FakeRepository:
+        def __init__(self, *, backend: FakeBackend, archive_root: Path) -> None:
+            self.backend = backend
+            self.archive_root = archive_root
+
+        async def close(self) -> None:
+            pass
+
+    class FakeParseResult:
+        processed_ids = {"session-1"}
+        parse_failures = 0
+
+    class FakeParsingService:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def parse_from_raw(self, **_kwargs: object) -> FakeParseResult:
+            return FakeParseResult()
+
+    monkeypatch.setattr(
+        repair_mod,
+        "_raw_materialization_candidate_ids",
+        lambda *_args, **_kwargs: repair_mod.RawMaterializationCandidates(
+            ["raw-1"],
+            0,
+            0,
+            {"raw-1": 1_610_612_736},
+        ),
+    )
+    monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", FakeParsingService)
+    monkeypatch.setattr("polylogue.storage.repository.SessionRepository", FakeRepository)
+    monkeypatch.setattr("polylogue.storage.sqlite.async_sqlite.SQLiteBackend", FakeBackend)
+
+    result = repair_mod.repair_raw_materialization(
+        config,
+        dry_run=False,
+        progress_callback=lambda _amount, desc=None: progress.append(desc or ""),
+    )
+
+    assert result.success is True
+    assert any("raw_materialization: parsing raw 1/1 raw-1 size=1.5 GiB" in line for line in progress)
 
 
 def test_raw_materialization_reports_parse_write_failures(

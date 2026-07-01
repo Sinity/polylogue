@@ -6,7 +6,7 @@ import asyncio
 import re
 import sqlite3
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from polylogue.config import Config
@@ -40,11 +40,32 @@ _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 _PROBE_ONLY_EXACT_MESSAGE_ROW_LIMIT = 100_000
 
 
+def _format_bytes(value: int) -> str:
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    amount = float(max(value, 0))
+    for unit in units:
+        if amount < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(amount)} B"
+            return f"{amount:.1f} {unit}"
+        amount /= 1024
+    return f"{int(amount)} B"
+
+
 @dataclass(frozen=True)
 class RawMaterializationCandidates:
     raw_ids: list[str]
     missing_blobs: int
     already_parsed: int
+    raw_blob_bytes: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def total_blob_bytes(self) -> int:
+        return sum(self.raw_blob_bytes.get(raw_id, 0) for raw_id in self.raw_ids)
+
+    @property
+    def max_blob_bytes(self) -> int:
+        return max((self.raw_blob_bytes.get(raw_id, 0) for raw_id in self.raw_ids), default=0)
 
 
 def _raw_materialization_origin_from_provider(provider: str | None) -> str | None:
@@ -77,6 +98,7 @@ def _raw_materialization_candidate_ids(
         return RawMaterializationCandidates([], 0, 0)
     blob_store = BlobStore(config.archive_root / "blob")
     raw_ids: list[str] = []
+    raw_blob_bytes: dict[str, int] = {}
     missing_blobs = 0
     already_parsed = 0
     with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
@@ -106,7 +128,7 @@ def _raw_materialization_candidate_ids(
         parsed_filter = "" if include_already_parsed else "AND r.parsed_at_ms IS NULL"
         rows = conn.execute(
             f"""
-            SELECT r.raw_id, r.origin, r.native_id, r.source_path, r.blob_hash, r.parsed_at_ms
+            SELECT r.raw_id, r.origin, r.native_id, r.source_path, r.blob_hash, r.blob_size, r.parsed_at_ms
             FROM raw_sessions AS r
             LEFT JOIN index_tier.sessions AS s_by_raw ON s_by_raw.raw_id = r.raw_id
             LEFT JOIN index_tier.sessions AS s_by_native
@@ -134,12 +156,16 @@ def _raw_materialization_candidate_ids(
                 continue
             blob_hash = row["blob_hash"].hex() if isinstance(row["blob_hash"], bytes) else str(row["blob_hash"])
             if blob_store.exists(blob_hash):
-                raw_ids.append(str(row["raw_id"]))
+                raw_id = str(row["raw_id"])
+                raw_ids.append(raw_id)
+                blob_size = row["blob_size"]
+                if isinstance(blob_size, int):
+                    raw_blob_bytes[raw_id] = blob_size
                 if row["parsed_at_ms"] is not None:
                     already_parsed += 1
             else:
                 missing_blobs += 1
-    return RawMaterializationCandidates(raw_ids, missing_blobs, already_parsed)
+    return RawMaterializationCandidates(raw_ids, missing_blobs, already_parsed, raw_blob_bytes)
 
 
 def _raw_materialized_by_source_path_native(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
@@ -1193,6 +1219,12 @@ def repair_raw_materialization(
     raw_ids = candidates.raw_ids
     missing_blobs = candidates.missing_blobs
     if dry_run:
+        byte_detail = ""
+        if raw_ids:
+            byte_detail = (
+                f"; queued raw payload bytes total={_format_bytes(candidates.total_blob_bytes)}, "
+                f"largest={_format_bytes(candidates.max_blob_bytes)}"
+            )
         if candidates.already_parsed:
             detail = (
                 f"Would: replay {len(raw_ids):,} raw rows into index.db "
@@ -1200,6 +1232,7 @@ def repair_raw_materialization(
             )
         else:
             detail = f"Would: replay {len(raw_ids):,} acquired-but-unparsed raw rows into index.db"
+        detail += byte_detail
         if missing_blobs:
             detail += f"; {missing_blobs:,} raw rows blocked by missing blobs"
         return _repair_result(
@@ -1232,10 +1265,12 @@ def repair_raw_materialization(
             service = ParsingService(repository=repository, archive_root=config.archive_root, config=config)
             total = len(raw_ids)
             for index, raw_id in enumerate(raw_ids, start=1):
+                raw_size = candidates.raw_blob_bytes.get(raw_id, 0)
+                size_suffix = f" size={_format_bytes(raw_size)}" if raw_size else ""
                 if progress_callback is not None:
                     progress_callback(
                         index - 1,
-                        desc=f"raw_materialization: parsing raw {index}/{total} {raw_id[:12]}",
+                        desc=f"raw_materialization: parsing raw {index}/{total} {raw_id[:12]}{size_suffix}",
                     )
                 result = await service.parse_from_raw(
                     raw_ids=[raw_id],
