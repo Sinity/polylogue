@@ -51,7 +51,6 @@ from polylogue.insights.archive import (
     SessionLatencyProfileInsight,
     SessionLatencyProfilePayload,
     SessionPhaseEvidencePayload,
-    SessionPhaseInferencePayload,
     SessionPhaseInsight,
     SessionProfileInsight,
     SessionTagRollupInsight,
@@ -145,6 +144,7 @@ from polylogue.storage.sqlite.connection_profile import (
     READ_CONNECTION_PRAGMA_STATEMENTS,
     WRITE_CONNECTION_PRAGMA_STATEMENTS,
 )
+from polylogue.storage.sqlite.queries.project_refs import expand_project_refs
 from polylogue.storage.sqlite.queries.sessions_identity import session_id_prefix_bounds
 from polylogue.storage.sqlite.queries.tool_usage import ToolUsageProviderCoverageRow, ToolUsageRow
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
@@ -188,6 +188,7 @@ class ArchiveSessionSummary:
     working_directories: tuple[str, ...] = ()
     git_branch: str | None = None
     git_repository_url: str | None = None
+    provider_project_ref: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -795,7 +796,6 @@ class ArchiveStore:
         *,
         session_id: str | None = None,
         provider: str | None = None,
-        kind: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
         limit: int | None = 50,
@@ -811,9 +811,6 @@ class ArchiveStore:
         if origin is not None:
             where.append("s.origin = ?")
             params.append(origin)
-        if kind is not None:
-            where.append("sp.phase_type = ?")
-            params.append(kind)
         if since_ms is not None:
             where.append("COALESCE(sp.started_at_ms, s.sort_key_ms) >= ?")
             params.append(since_ms)
@@ -841,12 +838,11 @@ class ArchiveStore:
             materialization = _read_archive_materialization(self._conn, "phases", phase_session_id)
             session_origin = _session_origin(self._conn, phase_session_id)
             for phase in read_session_phases(self._conn, session_id=phase_session_id).values():
-                if kind is None or phase.phase_type == kind:
-                    indexed[(phase.session_id, phase.position)] = _phase_insight_from_archive_row(
-                        phase,
-                        origin=session_origin,
-                        materialization=materialization,
-                    )
+                indexed[(phase.session_id, phase.position)] = _phase_insight_from_archive_row(
+                    phase,
+                    origin=session_origin,
+                    materialization=materialization,
+                )
         return [indexed[(str(row["session_id"]), int(row["position"]))] for row in rows]
 
     def get_thread_insight(self, thread_id: str) -> ThreadInsight | None:
@@ -1361,7 +1357,7 @@ class ArchiveStore:
                    s.assistant_message_count, s.system_message_count,
                    s.tool_message_count, s.user_word_count, s.authored_user_word_count,
                    s.assistant_word_count,
-                   s.git_branch, s.git_repository_url,
+                   s.git_branch, s.git_repository_url, s.provider_project_ref,
                    COALESCE(
                        (
                            SELECT json_group_array(swd.path)
@@ -2498,6 +2494,7 @@ class ArchiveStore:
         tags: tuple[str, ...] = (),
         excluded_tags: tuple[str, ...] = (),
         repo_names: tuple[str, ...] = (),
+        project_refs: tuple[str, ...] = (),
         has_types: tuple[str, ...] = (),
         has_tool_use: bool = False,
         has_thinking: bool = False,
@@ -2532,6 +2529,7 @@ class ArchiveStore:
             tags=tags,
             excluded_tags=excluded_tags,
             repo_names=repo_names,
+            project_refs=project_refs,
             has_types=has_types,
             has_tool_use=has_tool_use,
             has_thinking=has_thinking,
@@ -2939,12 +2937,12 @@ class ArchiveStore:
             "session_phases": (
                 "Session Phases",
                 "session_phases",
-                status.phase_inference_count,
-                status.expected_phase_inference_count,
+                status.phase_count,
+                status.expected_phase_count,
                 0,
-                status.stale_phase_inference_count,
-                status.orphan_phase_inference_count,
-                {"phase_inference_rows_ready": status.phase_inference_rows_ready},
+                status.stale_phase_count,
+                status.orphan_phase_count,
+                {"phase_rows_ready": status.phase_rows_ready},
                 ("session_phases",),
             ),
             "threads": (
@@ -3081,6 +3079,7 @@ class ArchiveStore:
         tags: tuple[str, ...] = (),
         excluded_tags: tuple[str, ...] = (),
         repo_names: tuple[str, ...] = (),
+        project_refs: tuple[str, ...] = (),
         has_types: tuple[str, ...] = (),
         has_tool_use: bool = False,
         has_thinking: bool = False,
@@ -3118,6 +3117,7 @@ class ArchiveStore:
             tags=tags,
             excluded_tags=excluded_tags,
             repo_names=repo_names,
+            project_refs=project_refs,
             has_types=has_types,
             has_tool_use=has_tool_use,
             has_thinking=has_thinking,
@@ -3162,7 +3162,7 @@ class ArchiveStore:
                    s.assistant_message_count, s.system_message_count,
                    s.tool_message_count, s.user_word_count, s.authored_user_word_count,
                    s.assistant_word_count,
-                   s.git_branch, s.git_repository_url,
+                   s.git_branch, s.git_repository_url, s.provider_project_ref,
                    COALESCE(
                        (
                            SELECT json_group_array(swd.path)
@@ -3204,6 +3204,7 @@ class ArchiveStore:
         tags: tuple[str, ...] = (),
         excluded_tags: tuple[str, ...] = (),
         repo_names: tuple[str, ...] = (),
+        project_refs: tuple[str, ...] = (),
         has_types: tuple[str, ...] = (),
         has_tool_use: bool = False,
         has_thinking: bool = False,
@@ -3247,6 +3248,7 @@ class ArchiveStore:
             tags=tags,
             excluded_tags=excluded_tags,
             repo_names=repo_names,
+            project_refs=project_refs,
             has_types=has_types,
             has_tool_use=has_tool_use,
             has_thinking=has_thinking,
@@ -3331,6 +3333,7 @@ class ArchiveStore:
         tags: tuple[str, ...] = (),
         excluded_tags: tuple[str, ...] = (),
         repo_names: tuple[str, ...] = (),
+        project_refs: tuple[str, ...] = (),
         has_types: tuple[str, ...] = (),
         has_tool_use: bool = False,
         has_thinking: bool = False,
@@ -3367,6 +3370,7 @@ class ArchiveStore:
             tags=tags,
             excluded_tags=excluded_tags,
             repo_names=repo_names,
+            project_refs=project_refs,
             has_types=has_types,
             has_tool_use=has_tool_use,
             has_thinking=has_thinking,
@@ -3429,6 +3433,7 @@ class ArchiveStore:
         tags: tuple[str, ...] = (),
         excluded_tags: tuple[str, ...] = (),
         repo_names: tuple[str, ...] = (),
+        project_refs: tuple[str, ...] = (),
         has_types: tuple[str, ...] = (),
         has_tool_use: bool = False,
         has_thinking: bool = False,
@@ -3465,6 +3470,7 @@ class ArchiveStore:
             tags=tags,
             excluded_tags=excluded_tags,
             repo_names=repo_names,
+            project_refs=project_refs,
             has_types=has_types,
             has_tool_use=has_tool_use,
             has_thinking=has_thinking,
@@ -4194,6 +4200,7 @@ class ArchiveStore:
         tags: tuple[str, ...] = (),
         excluded_tags: tuple[str, ...] = (),
         repo_names: tuple[str, ...] = (),
+        project_refs: tuple[str, ...] = (),
         has_types: tuple[str, ...] = (),
         has_tool_use: bool = False,
         has_thinking: bool = False,
@@ -4227,6 +4234,7 @@ class ArchiveStore:
             tags=tags,
             excluded_tags=excluded_tags,
             repo_names=repo_names,
+            project_refs=project_refs,
             has_types=has_types,
             has_tool_use=has_tool_use,
             has_thinking=has_thinking,
@@ -4373,6 +4381,7 @@ class ArchiveStore:
         tags: tuple[str, ...] = (),
         excluded_tags: tuple[str, ...] = (),
         repo_names: tuple[str, ...] = (),
+        project_refs: tuple[str, ...] = (),
         has_types: tuple[str, ...] = (),
         has_tool_use: bool = False,
         has_thinking: bool = False,
@@ -4406,6 +4415,7 @@ class ArchiveStore:
             tags=tags,
             excluded_tags=excluded_tags,
             repo_names=repo_names,
+            project_refs=project_refs,
             has_types=has_types,
             has_tool_use=has_tool_use,
             has_thinking=has_thinking,
@@ -4489,6 +4499,7 @@ def _summary_from_row(row: sqlite3.Row) -> ArchiveSessionSummary:
         working_directories=working_directories,
         git_branch=str(row["git_branch"]) if row["git_branch"] is not None else None,
         git_repository_url=str(row["git_repository_url"]) if row["git_repository_url"] is not None else None,
+        provider_project_ref=(str(row["provider_project_ref"]) if row["provider_project_ref"] is not None else None),
     )
 
 
@@ -4847,20 +4858,13 @@ def _phase_insight_from_archive_row(
         "tool_counts": phase.tool_counts,
         "word_count": phase.word_count,
     }
-    inference_payload = {
-        **phase.inference,
-        "confidence": phase.confidence,
-        "support_level": confidence_from_score(phase.confidence),
-    }
     return SessionPhaseInsight(
         phase_id=phase.phase_id,
         session_id=phase.session_id,
         source_name=_provider_for_origin(origin).value,
         phase_index=phase.position,
         provenance=_archive_provenance(materialization),
-        inference_provenance=_archive_inference_provenance(materialization),
         evidence=SessionPhaseEvidencePayload.model_validate(evidence_payload),
-        inference=SessionPhaseInferencePayload.model_validate(inference_payload),
     )
 
 
@@ -5312,6 +5316,8 @@ def _field_predicate_clause(
         return f"{table_alias}.session_id = ?", [values[-1]]
     if field == "repo":
         kwargs["repo_names"] = values
+    elif field == "project":
+        kwargs["project_refs"] = values
     elif field == "origin":
         kwargs["origins"] = values
     elif field == "tag":
@@ -5995,6 +6001,7 @@ def _session_filter_clause(
     tags: tuple[str, ...] = (),
     excluded_tags: tuple[str, ...] = (),
     repo_names: tuple[str, ...] = (),
+    project_refs: tuple[str, ...] = (),
     has_types: tuple[str, ...] = (),
     has_tool_use: bool = False,
     has_thinking: bool = False,
@@ -6074,6 +6081,11 @@ def _session_filter_clause(
             """.strip()
         )
         params.extend(repo_names)
+    if project_refs:
+        project_refs = expand_project_refs(project_refs)
+        placeholders = ", ".join("?" for _ in project_refs)
+        clauses.append(f"{table_alias}.provider_project_ref IN ({placeholders})")
+        params.extend(project_refs)
     if has_types:
         placeholders = ", ".join("?" for _ in has_types)
         clauses.append(

@@ -51,6 +51,9 @@ class ArchiveBlockRow:
     tool_input: str | None = None
     metadata: str | None = None
     language: str | None = None
+    # Keystone structured tool-result outcome (schema v16). NULL = unknown.
+    tool_result_is_error: int | None = None
+    tool_result_exit_code: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +148,7 @@ class ArchiveSessionEnvelope:
     working_directories: tuple[str, ...] = ()
     git_branch: str | None = None
     git_repository_url: str | None = None
+    provider_project_ref: str | None = None
     orphan_attachments: tuple[ArchiveAttachmentRow, ...] = ()
 
 
@@ -198,8 +202,6 @@ class ArchiveSessionPhase:
     phase_id: str
     session_id: str
     position: int
-    phase_type: str
-    confidence: float
     start_index: int
     end_index: int
     started_at_ms: int | None
@@ -295,13 +297,13 @@ def write_parsed_session_to_archive(
             INSERT INTO sessions (
                 native_id, origin, raw_id, branch_type, active_leaf_message_id,
                 title, session_kind, title_source, git_branch, git_repository_url, commit_hash,
-                instructions_text, reported_duration_ms,
+                instructions_text, reported_duration_ms, provider_project_ref,
                 message_count, word_count, tool_use_count, thinking_count,
                 paste_count, user_message_count, authored_user_message_count,
                 assistant_message_count, system_message_count,
                 tool_message_count, user_word_count, authored_user_word_count, assistant_word_count,
                 content_hash, created_at_ms, updated_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(origin, native_id) DO UPDATE SET
                 raw_id = excluded.raw_id,
                 branch_type = excluded.branch_type,
@@ -312,6 +314,7 @@ def write_parsed_session_to_archive(
                 git_branch = excluded.git_branch,
                 git_repository_url = excluded.git_repository_url,
                 commit_hash = excluded.commit_hash,
+                provider_project_ref = excluded.provider_project_ref,
                 instructions_text = COALESCE(excluded.instructions_text, sessions.instructions_text),
                 reported_duration_ms = excluded.reported_duration_ms,
                 content_hash = excluded.content_hash,
@@ -332,6 +335,7 @@ def write_parsed_session_to_archive(
                 _sqlite_text(session.git_commit_hash),
                 _sqlite_text(session.instructions_text),
                 session.reported_duration_ms,
+                _sqlite_text(session.provider_project_ref),
                 session_counts["message_count"],
                 session_counts["word_count"],
                 session_counts["tool_use_count"],
@@ -1005,8 +1009,6 @@ def upsert_session_phase(
     *,
     session_id: str,
     position: int,
-    phase_type: str,
-    confidence: float = 0.0,
     start_index: int = 0,
     end_index: int = 0,
     started_at_ms: int | None = None,
@@ -1026,14 +1028,12 @@ def upsert_session_phase(
         conn.execute(
             """
             INSERT INTO session_phases (
-                session_id, position, phase_type, confidence, start_index, end_index,
+                session_id, position, start_index, end_index,
                 started_at_ms, ended_at_ms, duration_ms, tool_counts_json, word_count,
                 input_high_water_mark, input_high_water_mark_source,
                 evidence_json, inference_json, search_text
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id, position) DO UPDATE SET
-                phase_type = excluded.phase_type,
-                confidence = excluded.confidence,
                 start_index = excluded.start_index,
                 end_index = excluded.end_index,
                 started_at_ms = excluded.started_at_ms,
@@ -1050,8 +1050,6 @@ def upsert_session_phase(
             (
                 session_id,
                 position,
-                phase_type,
-                confidence,
                 start_index,
                 end_index,
                 started_at_ms,
@@ -1079,7 +1077,7 @@ def read_session_phases(
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         """
-        SELECT phase_id, session_id, position, phase_type, confidence, start_index, end_index,
+        SELECT phase_id, session_id, position, start_index, end_index,
             started_at_ms, ended_at_ms, duration_ms, tool_counts_json, word_count,
             input_high_water_mark, input_high_water_mark_source,
             evidence_json, inference_json, search_text
@@ -1094,8 +1092,6 @@ def read_session_phases(
             phase_id=row["phase_id"],
             session_id=row["session_id"],
             position=row["position"],
-            phase_type=row["phase_type"],
-            confidence=row["confidence"],
             start_index=row["start_index"],
             end_index=row["end_index"],
             started_at_ms=row["started_at_ms"],
@@ -1129,7 +1125,7 @@ def read_archive_session_envelope(
         SELECT session_id, native_id, origin, title, session_kind, active_leaf_message_id,
                parent_session_id, root_session_id, branch_type,
                title_source, instructions_text,
-               created_at_ms, updated_at_ms, git_branch, git_repository_url
+               created_at_ms, updated_at_ms, git_branch, git_repository_url, provider_project_ref
         FROM sessions
         WHERE session_id = ?
         """,
@@ -1193,7 +1189,7 @@ def read_archive_session_envelope(
         block_rows = conn.execute(
             """
             SELECT block_id, message_id, block_type, text, tool_name, tool_id, semantic_type,
-                   tool_input, language
+                   tool_input, language, tool_result_is_error, tool_result_exit_code
             FROM blocks
             WHERE message_id = ?
             ORDER BY position
@@ -1220,6 +1216,8 @@ def read_archive_session_envelope(
                         semantic_type=block["semantic_type"],
                         tool_input=block["tool_input"],
                         language=block["language"],
+                        tool_result_is_error=block["tool_result_is_error"],
+                        tool_result_exit_code=block["tool_result_exit_code"],
                     )
                     for block in block_rows
                 ),
@@ -1274,6 +1272,7 @@ def read_archive_session_envelope(
         working_directories=working_directories,
         git_branch=session["git_branch"],
         git_repository_url=session["git_repository_url"],
+        provider_project_ref=session["provider_project_ref"],
         orphan_attachments=tuple(attachments_by_message.get(None, ())),
     )
 
@@ -1431,14 +1430,17 @@ def _write_blocks(
                     _sqlite_text(_semantic_type(block)),
                     _sqlite_text(block.media_type),
                     _sqlite_text(_block_language(block)),
+                    _sqlite_bool(getattr(block, "is_error", None)),
+                    getattr(block, "exit_code", None),
                 )
 
     conn.executemany(
         """
         INSERT OR REPLACE INTO blocks (
             message_id, session_id, position, block_type, text, tool_name,
-            tool_id, tool_input, semantic_type, media_type, language
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            tool_id, tool_input, semantic_type, media_type, language,
+            tool_result_is_error, tool_result_exit_code
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows(),
     )
@@ -3494,6 +3496,13 @@ def _sqlite_text(value: str | None) -> str | None:
     if not _SURROGATE_RE.search(value):
         return value
     return _SURROGATE_RE.sub("\ufffd", value)
+
+
+def _sqlite_bool(value: bool | None) -> int | None:
+    """Map an optional bool to SQLite 0/1, preserving None (unknown)."""
+    if value is None:
+        return None
+    return 1 if value else 0
 
 
 def _sqlite_json_value(value: object) -> object:

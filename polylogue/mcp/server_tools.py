@@ -171,6 +171,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         tag: str | None = None,
         exclude_tag: str | None = None,
         repo: str | None = None,
+        project: str | None = None,
         has_type: str | None = None,
         referenced_path: str | None = None,
         cwd_prefix: str | None = None,
@@ -212,6 +213,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                             tag=tag,
                             exclude_tag=exclude_tag,
                             repo=repo,
+                            project=project,
                             has_type=has_type,
                             referenced_path=referenced_path,
                             cwd_prefix=cwd_prefix,
@@ -336,6 +338,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         tag: str | None = None,
         exclude_tag: str | None = None,
         repo: str | None = None,
+        project: str | None = None,
         has_type: str | None = None,
         has_tool_use: bool = False,
         has_thinking: bool = False,
@@ -371,6 +374,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             tags = _split_archive_csv(tag)
             excluded_tags = _split_archive_csv(exclude_tag)
             repo_names = _split_archive_csv(repo)
+            project_refs = _split_archive_csv(project)
             has_types = _split_archive_csv(has_type)
             tool_terms = _split_archive_csv(tool)
             excluded_tool_terms = _split_archive_csv(exclude_tool)
@@ -385,6 +389,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 tags=tags,
                 excluded_tags=excluded_tags,
                 repo_names=repo_names,
+                project_refs=project_refs,
                 has_types=has_types,
                 has_tool_use=has_tool_use,
                 has_thinking=has_thinking,
@@ -416,6 +421,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 tags=tags,
                 excluded_tags=excluded_tags,
                 repo_names=repo_names,
+                project_refs=project_refs,
                 has_types=has_types,
                 has_tool_use=has_tool_use,
                 has_thinking=has_thinking,
@@ -458,6 +464,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         tag: str | None = None,
         exclude_tag: str | None = None,
         repo: str | None = None,
+        project: str | None = None,
         has_type: str | None = None,
         has_tool_use: bool = False,
         has_thinking: bool = False,
@@ -492,6 +499,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 tags=_split_archive_csv(tag),
                 excluded_tags=_split_archive_csv(exclude_tag),
                 repo_names=_split_archive_csv(repo),
+                project_refs=_split_archive_csv(project),
                 has_types=_split_archive_csv(has_type),
                 has_tool_use=has_tool_use,
                 has_thinking=has_thinking,

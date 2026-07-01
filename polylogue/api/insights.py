@@ -378,7 +378,6 @@ class PolylogueInsightsMixin:
             return archive.list_session_phase_insights(
                 session_id=request.session_id,
                 provider=request.provider,
-                kind=request.kind,
                 since_ms=since_ms,
                 until_ms=until_ms,
                 limit=request.limit,

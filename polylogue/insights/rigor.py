@@ -147,14 +147,15 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         insight_name="session_phases",
         display_name="Session Phases",
         evidence_payload=("evidence",),
-        inference_payload=("inference",),
-        fallback_markers=(("inference", "fallback_inference"),),
-        confidence_field=("inference", "confidence"),
+        inference_payload=(),
+        fallback_markers=(),
+        confidence_field=(),
         readiness_semantics=(
             "Evidence payload describes the phase's message-range timing and "
-            "tool counts. Inference payload carries the phase-kind classification "
-            "with a confidence score; ``inference.fallback_inference`` flags "
-            "heuristic fallback rows."
+            "tool counts. Phases are deterministic time-gap intervals, not "
+            "intent labels or probabilistic workflow classifications; consumers "
+            "that need intent should use work-event heuristics or session-level "
+            "workflow fields."
         ),
         consumer_fields=(
             "phase_id",
@@ -162,11 +163,9 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             "source_name",
             "phase_index",
             "evidence",
-            "inference",
         ),
         version_fields=(
             RigorVersionField(name="materializer_version", current_version=SESSION_INSIGHT_MATERIALIZER_VERSION),
-            RigorVersionField(name="inference_version", current_version=SESSION_INFERENCE_VERSION),
         ),
     ),
     RigorContract(

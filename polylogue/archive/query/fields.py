@@ -410,6 +410,18 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         mcp_names=("repo",),
     ),
     QueryFieldDescriptor(
+        name="project_refs",
+        spec_attr="project_refs",
+        plan_attr="project_refs",
+        spec_description=_label("project", _join_comma),
+        plan_description=_label("project", _join_comma),
+        record_attr="project_refs",
+        sql_param="project_refs",
+        sql_value=_list_value,
+        mcp_names=("project",),
+        api_names=("project",),
+    ),
+    QueryFieldDescriptor(
         name="tags",
         spec_attr="tags",
         plan_attr="tags",

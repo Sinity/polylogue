@@ -159,6 +159,8 @@ def test_archive_tiers_writer_materializes_codex_session(tmp_path: Path) -> None
                         type=BlockType.TOOL_RESULT,
                         tool_id="tool-1",
                         text="checks passed",
+                        is_error=False,
+                        exit_code=0,
                     ),
                 ],
             ),
@@ -178,9 +180,16 @@ def test_archive_tiers_writer_materializes_codex_session(tmp_path: Path) -> None
     ]
     assert envelope.messages[1].is_active_leaf is True
     assert [block.block_type for block in envelope.messages[1].blocks] == ["tool_use", "tool_result"]
+    assert envelope.messages[1].blocks[1].tool_result_is_error == 0
+    assert envelope.messages[1].blocks[1].tool_result_exit_code == 0
     assert [message.material_origin for message in envelope.messages] == ["human_authored", "assistant_authored"]
-    action = conn.execute("SELECT tool_command, output_text FROM actions").fetchone()
-    assert dict(action) == {"tool_command": "pytest -q", "output_text": "checks passed"}
+    action = conn.execute("SELECT tool_command, output_text, is_error, exit_code FROM actions").fetchone()
+    assert dict(action) == {
+        "tool_command": "pytest -q",
+        "output_text": "checks passed",
+        "is_error": 0,
+        "exit_code": 0,
+    }
     assert search_archive_blocks(conn, "focused") == ["codex-session:codex-session-1:u1:0"]
 
 
@@ -678,8 +687,6 @@ def test_archive_tiers_timeline_insight_rows_have_deterministic_targets(tmp_path
         conn,
         session_id=session_id,
         position=0,
-        phase_type="build",
-        confidence=0.75,
         start_index=0,
         end_index=1,
         started_at_ms=1_767_225_600_000,
@@ -714,8 +721,6 @@ def test_archive_tiers_timeline_insight_rows_have_deterministic_targets(tmp_path
         phase_id=f"{session_id}:phase:0",
         session_id=session_id,
         position=0,
-        phase_type="build",
-        confidence=0.75,
         start_index=0,
         end_index=1,
         started_at_ms=1_767_225_600_000,

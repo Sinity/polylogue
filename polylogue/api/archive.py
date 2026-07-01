@@ -688,7 +688,7 @@ def _archive_health_report(config: Config) -> ReadinessReport:
             insights_ready = (
                 insight_status.profile_rows_ready
                 and insight_status.work_event_inference_rows_ready
-                and insight_status.phase_inference_rows_ready
+                and insight_status.phase_rows_ready
                 and insight_status.threads_ready
             )
             checks.append(
@@ -986,6 +986,8 @@ def _archive_message_to_domain(message: ArchiveMessageRow, *, provider: Provider
                 "semantic_type": block.semantic_type,
                 "tool_input": _maybe_parse_json_object(block.tool_input),
                 "metadata": _maybe_parse_json_object(block.metadata),
+                "tool_result_is_error": block.tool_result_is_error,
+                "tool_result_exit_code": block.tool_result_exit_code,
             }.items()
             if value is not None
         }
@@ -1030,6 +1032,7 @@ def _archive_session_to_session(session: ArchiveSessionEnvelope) -> Session:
         working_directories=tuple(session.working_directories),
         git_branch=session.git_branch,
         git_repository_url=session.git_repository_url,
+        provider_project_ref=session.provider_project_ref,
         parent_id=SessionId(session.parent_session_id) if session.parent_session_id else None,
         branch_type=BranchType(session.branch_type) if session.branch_type else None,
         attachments=[_archive_attachment_to_domain(att) for att in session.orphan_attachments],
@@ -1046,6 +1049,7 @@ def _archive_summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary
         working_directories=tuple(summary.working_directories),
         git_branch=summary.git_branch,
         git_repository_url=summary.git_repository_url,
+        provider_project_ref=summary.provider_project_ref,
         message_count=summary.message_count,
         tags_m2m=summary.tags,
     )
@@ -2437,6 +2441,8 @@ class PolylogueArchiveMixin:
         excluded_tags: tuple[str, ...] = (),
         repo: str | None = None,
         repo_names: tuple[str, ...] = (),
+        project: str | None = None,
+        project_refs: tuple[str, ...] = (),
         has_types: tuple[str, ...] = (),
         tool_terms: tuple[str, ...] = (),
         excluded_tool_terms: tuple[str, ...] = (),
@@ -2474,6 +2480,8 @@ class PolylogueArchiveMixin:
             excluded_origins=excluded_origins,
             repo=repo,
             repo_names=repo_names,
+            project=project,
+            project_refs=project_refs,
             has_types=has_types,
             tool_terms=tool_terms,
             excluded_tool_terms=excluded_tool_terms,
@@ -3214,6 +3222,7 @@ class PolylogueArchiveMixin:
         tags: Sequence[str] = (),
         excluded_tags: Sequence[str] = (),
         repo_names: Sequence[str] = (),
+        project_refs: Sequence[str] = (),
         has_types: Sequence[str] = (),
         has_tool_use: bool = False,
         has_thinking: bool = False,
@@ -3246,6 +3255,7 @@ class PolylogueArchiveMixin:
                 tags=tuple(tags),
                 excluded_tags=tuple(excluded_tags),
                 repo_names=tuple(repo_names),
+                project_refs=tuple(project_refs),
                 has_types=tuple(has_types),
                 has_tool_use=has_tool_use,
                 has_thinking=has_thinking,
@@ -3277,6 +3287,7 @@ class PolylogueArchiveMixin:
         tags: Sequence[str] = (),
         excluded_tags: Sequence[str] = (),
         repo_names: Sequence[str] = (),
+        project_refs: Sequence[str] = (),
         has_types: Sequence[str] = (),
         has_tool_use: bool = False,
         has_thinking: bool = False,
@@ -3313,6 +3324,7 @@ class PolylogueArchiveMixin:
                     tags=tuple(tags),
                     excluded_tags=tuple(excluded_tags),
                     repo_names=tuple(repo_names),
+                    project_refs=tuple(project_refs),
                     has_types=tuple(has_types),
                     has_tool_use=has_tool_use,
                     has_thinking=has_thinking,
@@ -3349,6 +3361,7 @@ class PolylogueArchiveMixin:
         tags: Sequence[str] = (),
         excluded_tags: Sequence[str] = (),
         repo_names: Sequence[str] = (),
+        project_refs: Sequence[str] = (),
         has_types: Sequence[str] = (),
         has_tool_use: bool = False,
         has_thinking: bool = False,
@@ -3384,6 +3397,7 @@ class PolylogueArchiveMixin:
                     tags=tuple(tags),
                     excluded_tags=tuple(excluded_tags),
                     repo_names=tuple(repo_names),
+                    project_refs=tuple(project_refs),
                     has_types=tuple(has_types),
                     has_tool_use=has_tool_use,
                     has_thinking=has_thinking,

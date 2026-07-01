@@ -458,13 +458,10 @@ register(
         operations_method_name="list_session_phase_insights",
         cli_command_name="phases",
         cli_help="List durable session-phase insights.",
-        cli_options=(
-            CliOption("session_id", ("--session-id",), help="Only phases from one session"),
-            CliOption("kind", ("--kind",), help="Only this session phase kind"),
-        ),
+        cli_options=(CliOption("session_id", ("--session-id",), help="Only phases from one session"),),
         fields=(
             InsightField("", _id_with_origin("phase_id"), group=0),
-            InsightField("kind", _nested("inference", "kind"), group=0),
+            InsightField("phase", _attr("phase_index"), group=0),
             InsightField("conv", _attr("session_id"), group=0),
             InsightField("start", _nested("evidence", "start_time"), group=1),
             InsightField("words", _nested("evidence", "word_count", "0"), group=1),

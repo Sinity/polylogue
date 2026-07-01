@@ -152,7 +152,7 @@ def _phase_entry(insight: SessionPhaseInsight, *, phase_kind: str = "phase") -> 
         duration_ms=evidence.duration_ms,
         fidelity=fidelity_for(evidence.timing_provenance),
         timing_provenance=evidence.timing_provenance,
-        confidence=inference.confidence,
+        confidence=inference.confidence if inference is not None else 0.0,
         word_count=evidence.word_count,
     )
 

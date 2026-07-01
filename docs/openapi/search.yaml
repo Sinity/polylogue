@@ -100,7 +100,7 @@ paths:
           AND text:timeout``; ``actions where session.repo:polylogue AND tool:bash AND text:pytest``; ``blocks where session.origin:codex-session
           AND type:code AND text:timeout``; ``assertions where kind:decision AND status:active AND text:review``; ``files
           where session.repo:polylogue AND action:file_edit AND path:archive/query``; ``runs where session.repo:polylogue
-          AND role:main``; ``observed-events where kind:review_posted AND delivery_state:observed``; ``context-snapshots where
+          AND role:main``; ``observed-events where kind:test_failed AND delivery_state:observed``; ``context-snapshots where
           boundary:session_start``.'
         required: true
         schema:

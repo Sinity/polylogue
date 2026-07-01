@@ -65,6 +65,12 @@ EXPRESSION_FIELD_REGISTRY: dict[str, dict[str, str]] = {
         "negatable": "no",
         "example": "repo:polylogue",
     },
+    "project": {
+        "description": "Filter by provider project ref (ChatGPT g-p-<id>)",
+        "spec_field": "project_refs",
+        "negatable": "no",
+        "example": "project:g-p-6a40343a",
+    },
     "origin": {
         "description": "Filter by session origin",
         "spec_field": "origins",
@@ -496,17 +502,17 @@ _ASSERTION_STRUCTURAL_FIELD_INFO: dict[str, StructuralQueryFieldInfo] = {
 _OBSERVED_EVENT_STRUCTURAL_FIELD_INFO: dict[str, StructuralQueryFieldInfo] = {
     "delivery_state": _field_info(
         "delivery_state",
-        "Observed-event delivery state, such as acted_on or acknowledged.",
-        "delivery_state:acted_on",
+        "Observed-event delivery state (observed or unknown).",
+        "delivery_state:observed",
     ),
     "evidence": _field_info("evidence", "Observed-event evidence ref substring.", "evidence:message:"),
-    "kind": _field_info("kind", "Observed-event kind.", "kind:review_acted_on"),
-    "object": _field_info("object", "Observed-event object ref substring.", "object:#2100"),
-    "object_ref": _field_info("object_ref", "Observed-event object ref substring.", "object_ref:github-review:#2100"),
+    "kind": _field_info("kind", "Observed-event kind.", "kind:test_failed"),
+    "object": _field_info("object", "Observed-event object ref substring.", "object:tool-call"),
+    "object_ref": _field_info("object_ref", "Observed-event object ref substring.", "object_ref:tool-call:"),
     "subject": _field_info("subject", "Observed-event subject ref substring.", "subject:message"),
     "subject_ref": _field_info("subject_ref", "Observed-event subject ref substring.", "subject_ref:message:"),
-    "summary": _field_info("summary", "Observed-event summary substring.", "summary:review"),
-    "text": _field_info("text", "Observed-event summary/ref substring.", "text:review"),
+    "summary": _field_info("summary", "Observed-event summary substring.", "summary:pytest"),
+    "text": _field_info("text", "Observed-event summary/ref substring.", "text:pytest"),
 }
 
 _CONTEXT_SNAPSHOT_STRUCTURAL_FIELD_INFO: dict[str, StructuralQueryFieldInfo] = {
@@ -685,7 +691,7 @@ STRUCTURAL_QUERY_UNIT_REGISTRY: dict[str, StructuralQueryUnitInfo] = {
     "observed-event": StructuralQueryUnitInfo(
         description="Match or return materialized observed events satisfying the child predicate.",
         fields=_observed_event_field_infos(),
-        example="observed-events where kind:review_posted",
+        example="observed-events where kind:test_failed",
     ),
     "context-snapshot": StructuralQueryUnitInfo(
         description="Match or return materialized context snapshots satisfying the child predicate.",
@@ -794,7 +800,7 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         fields=_unit_info("observed-event").fields,
         description=_unit_info("observed-event").description,
         example=_unit_info("observed-event").example,
-        terminal_example="observed-events where kind:review_posted AND delivery_state:observed",
+        terminal_example="observed-events where kind:test_failed AND delivery_state:observed",
     ),
     QueryUnitDescriptor(
         "context-snapshot",

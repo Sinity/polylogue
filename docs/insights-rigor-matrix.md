@@ -78,16 +78,17 @@ API.
 ### `session_phases` — Session Phases
 
 - Evidence payload: `evidence`
-- Inference payload: `inference`
-- Fallback markers: `inference.fallback_inference`
-- Confidence field: `inference.confidence`
-- Versions: `materializer_version`, `inference_version`
+- Inference payload: _(none)_
+- Fallback markers: _(none)_
+- Confidence field: _(none)_
+- Versions: `materializer_version`
 - Readiness: Evidence payload describes the phase's message-range
-  timing and tool counts. Inference payload carries the phase-kind
-  classification with a confidence score; `inference.fallback_inference`
-  flags heuristic fallback rows.
+  timing and tool counts. Phases are deterministic time-gap intervals,
+  not intent labels or probabilistic workflow classifications; consumers
+  that need intent should use work-event heuristics or session-level
+  workflow fields.
 - Consumer-facing fields: `phase_id`, `session_id`,
-  `provider_name`, `phase_index`, `evidence`, `inference`.
+  `provider_name`, `phase_index`, `evidence`.
 
 ### `work_threads` — Work Threads
 

@@ -49,6 +49,7 @@ class SessionRecord(BaseModel):
     working_directories_json: str | None = None
     git_branch: str | None = None
     git_repository_url: str | None = None
+    provider_project_ref: str | None = None
 
     @field_validator("origin", mode="before")
     @classmethod
@@ -101,6 +102,11 @@ class BlockRecord(BaseModel):
     tool_input: str | None = None
     metadata: str | None = None
     semantic_type: SemanticBlockType | None = None
+    # Keystone structured tool-result outcome (schema v16): the paired
+    # tool_result's outcome read from source structure, not regex-guessed from
+    # output text. NULL means unknown — never a fabricated positive.
+    tool_result_is_error: int | None = None
+    tool_result_exit_code: int | None = None
 
     @field_validator("type", mode="before")
     @classmethod

@@ -8,6 +8,7 @@ from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
 from polylogue.archive.viewport.viewports import ToolCategory
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
+from polylogue.storage.sqlite.queries.project_refs import expand_project_refs
 
 _SEMANTIC_ACTION_TYPES = tuple(category.value for category in ToolCategory)
 
@@ -49,6 +50,7 @@ def _build_session_filters(
     tool_terms: list[str] | tuple[str, ...] | None = None,
     excluded_tool_terms: list[str] | tuple[str, ...] | None = None,
     repo_names: list[str] | tuple[str, ...] | None = None,
+    project_refs: list[str] | tuple[str, ...] | None = None,
     has_tool_use: bool = False,
     has_thinking: bool = False,
     has_paste: bool = False,
@@ -196,6 +198,12 @@ def _build_session_filters(
             f"WHERE sp.session_id = {conv_id_col} AND value IN ({placeholders}))"
         )
         params.extend(repo_names)
+    if project_refs:
+        project_refs = expand_project_refs(project_refs)
+        project_column = "c.provider_project_ref" if needs_stats_alias else "provider_project_ref"
+        placeholders = ",".join("?" for _ in project_refs)
+        where_clauses.append(f"{project_column} IN ({placeholders})")
+        params.extend(project_refs)
     if message_type:
         where_clauses.append(
             f"EXISTS (SELECT 1 FROM messages mt WHERE mt.session_id = {conv_id_col} AND mt.message_type = ?)"

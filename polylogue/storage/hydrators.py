@@ -108,6 +108,8 @@ def message_from_record(
                 "media_type": media_type,
                 "metadata": block_metadata,
                 "semantic_type": str(b.semantic_type) if b.semantic_type is not None else None,
+                "tool_result_is_error": b.tool_result_is_error,
+                "tool_result_exit_code": b.tool_result_exit_code,
             }
         )
 
@@ -172,6 +174,7 @@ def session_summary_from_record(
         working_directories=_working_directories_from_record(record),
         git_branch=record.git_branch,
         git_repository_url=record.git_repository_url,
+        provider_project_ref=record.provider_project_ref,
         parent_id=record.parent_session_id,
         branch_type=record.branch_type,
         message_count=message_count,
@@ -228,6 +231,7 @@ def session_from_records(
         working_directories=_working_directories_from_record(session),
         git_branch=session.git_branch,
         git_repository_url=session.git_repository_url,
+        provider_project_ref=session.provider_project_ref,
         session_events=tuple(session_event_from_record(event) for event in (session_events or [])),
         parent_id=session.parent_session_id,
         branch_type=session.branch_type,

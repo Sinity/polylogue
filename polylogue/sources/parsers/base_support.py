@@ -60,11 +60,13 @@ def content_blocks_from_segments(content: object) -> list[ParsedContentBlock]:
                     if isinstance(block, dict) and block.get("type") == "text"
                 ]
                 result_text = "\n".join(part for part in text_parts if part) or None
+            raw_is_error = seg.get("is_error")
             blocks.append(
                 ParsedContentBlock(
                     type=BlockType.TOOL_RESULT,
                     tool_id=seg.get("tool_use_id"),
                     text=result_text,
+                    is_error=raw_is_error if isinstance(raw_is_error, bool) else None,
                 )
             )
         elif seg_type in ("image", "document"):
