@@ -69,6 +69,7 @@ dirty="$(git status --short | wc -l | tr -d ' ')"
 repo="$(git rev-parse --show-toplevel)"
 integration_root="${POLYLOGUE_INTEGRATION_WORKTREE_ROOT:-/realm/tmp/worktrees/polylogue-integration-first-wave}"
 replay_plan="$repo/.agent/task-history/integration-first-wave-replay-plan.md"
+integration_protocol="$repo/.agent/conductor-devloop/INTEGRATION.md"
 
 echo "== integration state =="
 echo "branch: ${branch:-detached}"
@@ -77,6 +78,18 @@ echo "base: $base"
 echo "merge_base: $(git rev-parse --short "$merge_base")"
 echo "commits_ahead: $ahead_count"
 echo "dirty_paths: $dirty"
+echo
+
+echo "== semantic integration ledger =="
+if [[ -f "$integration_protocol" ]]; then
+  awk '
+    /^## Current Semantic Ledger$/ {printing=1; next}
+    /^## / && printing {exit}
+    printing {print}
+  ' "$integration_protocol" | sed '/^[[:space:]]*$/d'
+else
+  echo "missing: $integration_protocol"
+fi
 echo
 
 echo "== local PR-shaped replay state =="
@@ -163,8 +176,11 @@ integration groups. For each group, report:
 Constraints:
 - This is read-heavy planning. Do not modify files, create branches, push, or
   rewrite history.
-- Prefer fewer cohesive PRs over tiny PRs, but do not mix unrelated product,
-  scaffold, and demo-only changes.
+- Prefer fewer cohesive PRs over tiny PRs. Aim for roughly 50 workbench commits
+  per PR-shaped group when dependency boundaries allow it, but do not mix
+  unrelated product, scaffold, and demo-only changes.
+- Do not plan around passive CI waiting. Specify focused local proof and keep the
+  replay lane moving.
 - Flag any commit whose claim is too broad for its diff.
 - The main agent will own final replay, verification, and PR creation.
 EOF
