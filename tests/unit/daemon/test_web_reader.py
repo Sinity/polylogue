@@ -3018,8 +3018,8 @@ class TestReaderBulkOperations:
         ids = sorted(str(item["session_id"]) for item in items)
         assert ids == ["chatgpt-export:c2", "claude-ai-export:c3", "claude-code-session:c1"]
 
-    def test_bulk_export_uses_session_detail_endpoint(self, workspace_env: dict[str, Path]) -> None:
-        """Bulk export concatenates per-session GETs. This pins the
+    def test_query_set_export_uses_session_detail_endpoint(self, workspace_env: dict[str, Path]) -> None:
+        """Query-set export concatenates per-session GETs. This pins the
         contract that ``/api/sessions/{id}`` returns the detail payload
         the export bundle is composed from, for every selected id."""
         with _running_server(workspace_env) as (_, base_url):

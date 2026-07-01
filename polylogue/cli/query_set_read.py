@@ -1,4 +1,4 @@
-"""Bulk export of every session matching the parent filter chain."""
+"""Query-set reading for every session matching the parent filter chain."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def _emit_jsonl(rendered_json: str) -> None:
     click.echo(json.dumps(json.loads(rendered_json), separators=(",", ":")))
 
 
-def run_bulk_export(
+def run_query_set_read(
     env: AppEnv,
     request: RootModeRequest,
     *,
@@ -60,4 +60,4 @@ def run_bulk_export(
         click.echo("]")
 
 
-__all__ = ["run_bulk_export"]
+__all__ = ["run_query_set_read"]

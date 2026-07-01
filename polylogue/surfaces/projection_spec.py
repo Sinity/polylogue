@@ -137,25 +137,25 @@ READ_VIEW_PROJECTION_FAMILIES: dict[str, tuple[EvidenceFamily, ...]] = {
 """Projection mapping for executable read views.
 
 Additional named projections may exist outside this map, but every executable
-read view must be represented here and this map must not carry legacy views that
-are no longer executable.
+read view must be represented here and this map must not carry obsolete views
+that are no longer executable.
 """
 
 NAMED_PROJECTION_FAMILIES: dict[str, tuple[EvidenceFamily, ...]] = {
     **READ_VIEW_PROJECTION_FAMILIES,
     "timeline": (EvidenceFamily.TEMPORAL, EvidenceFamily.SESSIONS, EvidenceFamily.MESSAGES),
 }
-"""All named projection shortcuts accepted by the compatibility bridge."""
+"""All named projection shortcuts accepted by the projection bridge."""
 
 
-def projection_from_legacy_view(
+def projection_from_view(
     view: str,
     *,
     format: str = "markdown",
     destination: str = "terminal",
     max_tokens: int | None = None,
 ) -> QueryProjectionSpec:
-    """Map current read-view names into the shared projection vocabulary."""
+    """Map executable projection/read-view names into the shared vocabulary."""
 
     try:
         families = NAMED_PROJECTION_FAMILIES[view]
@@ -179,5 +179,5 @@ __all__ = [
     "RenderFormat",
     "RenderSpec",
     "SelectionSpec",
-    "projection_from_legacy_view",
+    "projection_from_view",
 ]

@@ -518,6 +518,9 @@ def test_read_views_plain_lists_profile_metadata(cli_runner: CliRunner) -> None:
     assert "recovery" not in result.output
     assert "evidence=required" in result.output
     assert "handoff" in result.output
+    assert "options=--limit, --offset" in result.output
+    assert "options=--confidence-threshold, --github-api, --otlp, --repo-path, --since-hours" in result.output
+    assert "scope=query-set" in result.output
 
 
 def test_read_views_json_outputs_profile_payload(cli_runner: CliRunner) -> None:
@@ -530,6 +533,9 @@ def test_read_views_json_outputs_profile_payload(cli_runner: CliRunner) -> None:
     assert views["raw"]["lossiness"] == "raw"
     assert "recovery" not in views
     assert views["context-image"]["successor_handoff"] is True
+    assert views["raw"]["cli_options"] == ["limit", "offset"]
+    assert views["raw"]["session_policy"] == "required"
+    assert views["chronicle"]["accepts_query_set"] is True
 
 
 def test_read_verb_raw_view_forwards_options(cli_runner: CliRunner) -> None:

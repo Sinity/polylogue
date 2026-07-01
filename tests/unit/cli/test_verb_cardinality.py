@@ -107,7 +107,7 @@ class TestReadVerbCardinality:
         child: click.Context,
         *,
         view: str = "summary",
-        export_all: bool = False,
+        all_matches: bool = False,
         first_only: bool = False,
     ) -> None:
         cb = self._read_callback()
@@ -117,7 +117,7 @@ class TestReadVerbCardinality:
             destination="terminal",
             output_format=None,
             out_path=None,
-            export_all=export_all,
+            all_matches=all_matches,
             limit=None,
             offset=0,
             window_hours=24,
@@ -192,7 +192,7 @@ class TestReadVerbCardinality:
         child.obj = SimpleNamespace(config=MagicMock())
 
         with pytest.raises(click.UsageError, match="mutually exclusive"):
-            self._call_read(child, export_all=True, first_only=True)
+            self._call_read(child, all_matches=True, first_only=True)
 
     def test_read_uses_shared_check_cardinality(self) -> None:
         _, child = _context_pair(query_terms=("needle",))

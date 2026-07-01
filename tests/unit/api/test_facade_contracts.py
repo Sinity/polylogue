@@ -1149,6 +1149,37 @@ async def test_compile_context_builds_message_segments_from_refs_and_query(tmp_p
         await archive.close()
 
 
+async def test_compile_context_composes_temporal_and_chronicle_views(tmp_path: Path) -> None:
+    """Composed context images materialize non-message read views as segments."""
+    from polylogue.context.compiler import ContextSpec
+
+    archive = _archive(tmp_path)
+    await _seed_two_sessions(archive.config.db_path)
+
+    try:
+        image = await archive.compile_context(
+            ContextSpec(
+                seed_refs=("session:claude-ai-export:conv-alpha",),
+                read_views=("temporal", "chronicle"),
+                max_tokens=20_000,
+                include_assertions=False,
+            )
+        )
+
+        assert [segment.payload_kind for segment in image.segments] == ["temporal", "chronicle"]
+        assert image.omitted == ()
+        temporal, chronicle = image.segments
+        assert "Temporal Evidence" in (temporal.markdown or "")
+        assert "Events:" in (temporal.markdown or "")
+        assert "Session Chronicle" in (chronicle.markdown or "")
+        assert "alpha body" in (chronicle.markdown or "")
+        assert "alpha reply" in (chronicle.markdown or "")
+        assert {ref.object_id for ref in image.object_refs if ref.kind == "session"} == {"claude-ai-export:conv-alpha"}
+        assert {ref.session_id for ref in image.evidence_refs} == {"claude-ai-export:conv-alpha"}
+    finally:
+        await archive.close()
+
+
 async def test_compile_context_message_view_can_opt_out_of_assertion_injection(tmp_path: Path) -> None:
     """Plain message context stays message-shaped when assertion injection is off."""
     from polylogue.context.compiler import ContextSpec

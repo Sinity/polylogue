@@ -20,6 +20,7 @@ from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import MessageRoleFilter, Role
 from polylogue.archive.message.types import MessageType, validate_message_type_filter
+from polylogue.archive.query.predicate import QueryFieldPredicate, QueryFieldRef
 from polylogue.archive.query.spec import normalize_action_sequence, normalize_action_terms, parse_query_date
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.archive.session.branch_type import BranchType
@@ -54,6 +55,20 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveSessionEnvelope,
 )
 from polylogue.storage.sqlite.queries.message_query_reads import MessageTypeName
+from polylogue.surfaces.chronicle import (
+    ChronicleProjectionPayload,
+    ChronicleSessionPayload,
+    build_chronicle_projection_payload,
+    build_chronicle_session_payload,
+)
+from polylogue.surfaces.temporal_evidence import (
+    TemporalEvidenceEvent,
+    TemporalEvidenceWindow,
+    action_row_to_temporal_event,
+    build_temporal_evidence_window,
+    message_row_to_temporal_event,
+    summary_to_temporal_event,
+)
 from polylogue.types import SessionId
 
 if TYPE_CHECKING:
@@ -352,6 +367,78 @@ def _dedupe_evidence_refs(refs: Iterable[EvidenceRef]) -> tuple[EvidenceRef, ...
         seen.add(key)
         deduped.append(ref)
     return tuple(deduped)
+
+
+def _archive_context_session_predicate(session_id: str) -> QueryFieldPredicate:
+    """Build a bound exact-session predicate without reparsing public DSL text."""
+
+    return QueryFieldPredicate(field="session.id", values=(session_id,), op="=").with_field_ref(
+        QueryFieldRef(scope="session", name="id", source_name="session.id")
+    )
+
+
+def _archive_context_temporal_window(config: Config, summary: SessionSummary) -> TemporalEvidenceWindow:
+    """Build a bounded temporal context window for one selected session."""
+
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    session_id = str(summary.id)
+    message_limit = 8
+    action_limit = 4
+    events: list[TemporalEvidenceEvent] = []
+    if session_event := summary_to_temporal_event(summary):
+        events.append(session_event)
+    caveats: list[str] = []
+    with ArchiveStore.open_existing(_active_archive_root(config)) as archive:
+        message_rows = archive.query_messages(
+            _archive_context_session_predicate(session_id),
+            limit=message_limit,
+            sort="time",
+            sort_direction="asc",
+        )
+        action_rows = archive.query_session_actions([session_id], limit=action_limit, sort_direction="asc")
+    events.extend(event for row in message_rows if (event := message_row_to_temporal_event(row)) is not None)
+    events.extend(event for row in action_rows if (event := action_row_to_temporal_event(row)) is not None)
+    if len(message_rows) >= message_limit and (summary.message_count or 0) > message_limit:
+        caveats.append("message_events_capped")
+    if len(action_rows) >= action_limit:
+        caveats.append("action_events_capped")
+    return build_temporal_evidence_window(events, caveats=caveats)
+
+
+async def _archive_context_chronicle_payload(
+    config: Config,
+    summary: SessionSummary,
+    *,
+    edge_limit: int = 8,
+) -> ChronicleProjectionPayload:
+    """Build a bounded chronicle projection for one selected session."""
+
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+
+    archive_root = _active_archive_root(config)
+    backend = SQLiteBackend(db_path=archive_root / "index.db")
+    session_payloads: list[ChronicleSessionPayload] = []
+    try:
+        first_messages, last_messages, total = await backend.get_message_edge_windows(
+            str(summary.id),
+            message_role=(Role.USER, Role.ASSISTANT),
+            message_type="message",
+            material_origin=(MaterialOrigin.HUMAN_AUTHORED, MaterialOrigin.ASSISTANT_AUTHORED),
+            edge_limit=edge_limit * 5,
+        )
+        session_payloads.append(
+            build_chronicle_session_payload(
+                summary,
+                first_messages=first_messages,
+                last_messages=last_messages,
+                total_matching_messages=total,
+                edge_limit=edge_limit,
+            )
+        )
+    finally:
+        await backend.close()
+    return build_chronicle_projection_payload(session_payloads, edge_limit=edge_limit)
 
 
 def _parse_archive_datetime(value: str | None) -> datetime | None:
@@ -2125,8 +2212,10 @@ class PolylogueArchiveMixin:
             ContextOmission,
             ContextSegment,
             compile_assertion_context_segment,
+            compile_chronicle_context_segment,
             compile_messages_context_segment,
             compile_query_unit_context_segment,
+            compile_temporal_context_segment,
         )
 
         segments: list[ContextSegment] = []
@@ -2189,6 +2278,7 @@ class PolylogueArchiveMixin:
             segments.append(segment)
         for session_id in session_ids:
             session = await self.get_session(session_id)
+            summary = await self.get_session_summary(session_id)
             for view in requested_views:
                 if view == "messages":
                     if session is None:
@@ -2229,12 +2319,67 @@ class PolylogueArchiveMixin:
                     token_total += segment.token_estimate
                     segments.append(segment)
                     continue
+                if view == "temporal":
+                    if summary is None:
+                        omitted.append(
+                            ContextOmission(
+                                ref=f"session:{session_id}",
+                                view=view,
+                                reason="not_found",
+                                detail="session seed did not resolve to temporal evidence",
+                            )
+                        )
+                        continue
+                    window = _archive_context_temporal_window(self.config, summary)
+                    segment = compile_temporal_context_segment(session_id=session_id, window=window)
+                    if token_budget is not None and token_total + segment.token_estimate > token_budget:
+                        omitted.append(
+                            ContextOmission(
+                                ref=f"session:{session_id}",
+                                view=view,
+                                reason="budget",
+                                detail="segment exceeded the requested context token budget",
+                            )
+                        )
+                        continue
+                    token_total += segment.token_estimate
+                    segments.append(segment)
+                    continue
+                if view == "chronicle":
+                    if summary is None:
+                        omitted.append(
+                            ContextOmission(
+                                ref=f"session:{session_id}",
+                                view=view,
+                                reason="not_found",
+                                detail="session seed did not resolve to chronicle evidence",
+                            )
+                        )
+                        continue
+                    payload = await _archive_context_chronicle_payload(self.config, summary)
+                    segment = compile_chronicle_context_segment(session_id=session_id, payload=payload)
+                    if token_budget is not None and token_total + segment.token_estimate > token_budget:
+                        omitted.append(
+                            ContextOmission(
+                                ref=f"session:{session_id}",
+                                view=view,
+                                reason="budget",
+                                detail="segment exceeded the requested context token budget",
+                            )
+                        )
+                        continue
+                    token_total += segment.token_estimate
+                    segments.append(segment)
+                    continue
                 omitted.append(
                     ContextOmission(
                         ref=f"session:{session_id}",
                         view=view,
                         reason="unsupported",
-                        detail="compile_context supports messages read views and explicit query-unit context",
+                        detail=(
+                            "compile_context supports messages, temporal, chronicle read views "
+                            "and explicit query-unit context"
+                        ),
                     )
                 )
             if spec.include_assertions:

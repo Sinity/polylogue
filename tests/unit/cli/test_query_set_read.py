@@ -1,4 +1,4 @@
-"""Tests for the bulk-export verb implementation."""
+"""Tests for the query-set read implementation."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from click.testing import CliRunner
 
 from polylogue.archive.models import Session
 from polylogue.archive.query.spec import SessionQuerySpec
-from polylogue.cli import bulk_export, query_verbs
+from polylogue.cli import query_set_read, query_verbs
 from polylogue.cli.click_app import cli
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
@@ -44,11 +44,11 @@ def _request(**param_overrides: object) -> RootModeRequest:
 def _capture_run(env: AppEnv, request: RootModeRequest, output_format: str, fields: str | None) -> str:
     runner = CliRunner()
     with runner.isolation() as (out, _err, _term):
-        bulk_export.run_bulk_export(env, request, output_format=output_format, fields=fields)
+        query_set_read.run_query_set_read(env, request, output_format=output_format, fields=fields)
         return out.getvalue().decode("utf-8")
 
 
-def test_run_bulk_export_emits_one_jsonl_line_per_session() -> None:
+def test_run_query_set_read_emits_one_jsonl_line_per_session() -> None:
     convs = [
         make_conv(id="a", title="Alpha", messages=[make_msg(text="hello")]),
         make_conv(id="b", title="Beta", messages=[make_msg(text="world")]),
@@ -61,11 +61,11 @@ def test_run_bulk_export_emits_one_jsonl_line_per_session() -> None:
     assert titles == ["Alpha", "Beta"]
 
 
-def test_run_bulk_export_handles_zero_results() -> None:
+def test_run_query_set_read_handles_zero_results() -> None:
     assert _capture_run(_stub_env([]), _request(), "jsonl", None) == ""
 
 
-def test_run_bulk_export_separates_markdown_with_horizontal_rule() -> None:
+def test_run_query_set_read_separates_markdown_with_horizontal_rule() -> None:
     convs = [
         make_conv(id="a", title="Alpha", messages=[make_msg(text="hello")]),
         make_conv(id="b", title="Beta", messages=[make_msg(text="world")]),
@@ -79,7 +79,7 @@ def test_run_bulk_export_separates_markdown_with_horizontal_rule() -> None:
 
 
 def test_read_all_registered_and_dispatches_via_root_cli() -> None:
-    """Smoke: ``read --all`` routes to run_bulk_export via the read verb."""
+    """Smoke: ``read --all`` routes to query-set read via the read verb."""
     convs = [make_conv(id="a", title="Smoke", messages=[make_msg(text="hi")])]
 
     captured: dict[str, object] = {}
@@ -90,7 +90,7 @@ def test_read_all_registered_and_dispatches_via_root_cli() -> None:
         captured["output_format"] = output_format
         captured["fields"] = fields
 
-    with patch("polylogue.cli.bulk_export.run_bulk_export", side_effect=_capture):
+    with patch("polylogue.cli.query_set_read.run_query_set_read", side_effect=_capture):
         runner = CliRunner()
         result = runner.invoke(
             cli,
@@ -111,7 +111,7 @@ def test_read_verb_in_verb_names() -> None:
     assert "read" in query_verbs.VERB_NAMES
 
 
-def test_authored_content_bulk_export_workflow_filters_user_messages() -> None:
+def test_authored_content_query_set_read_passes_selection_filters_to_query_spec() -> None:
     captured: dict[str, object] = {}
     convs = [
         make_conv(
@@ -129,7 +129,6 @@ def test_authored_content_bulk_export_workflow_filters_user_messages() -> None:
         repo="__thoughtspace",
         filter_has_paste=True,
         typed_only=True,
-        message_role=("user",),
     )
 
     output = _capture_run(_capturing_env(convs, captured), request, "jsonl", None)
@@ -140,5 +139,4 @@ def test_authored_content_bulk_export_workflow_filters_user_messages() -> None:
     assert spec.filter_has_paste is True
     assert spec.typed_only is True
     exported = json.loads(output)
-    assert [message["role"] for message in exported["messages"]] == ["user"]
-    assert exported["messages"][0]["text"] == "typed authored content"
+    assert exported["id"] == "authored"

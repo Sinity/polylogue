@@ -221,7 +221,7 @@ def _project_archive_message(
             continue
         if block.block_type == "tool_result":
             semantic_type = tool_semantics.get(block.tool_id or "", block.semantic_type or "")
-            if semantic_type == "file_read" and not (projection.include_file_reads and projection.include_tool_outputs):
+            if semantic_type == "file_read" and not projection.include_file_reads:
                 continue
             if semantic_type != "file_read" and not projection.include_tool_outputs:
                 continue

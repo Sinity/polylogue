@@ -7,8 +7,6 @@ import time
 import webbrowser
 from collections.abc import Callable, Mapping
 from dataclasses import replace
-from datetime import UTC, datetime
-from typing import Any
 from urllib.parse import quote
 
 from polylogue.archive.session.domain_models import SessionSummary
@@ -19,7 +17,10 @@ from polylogue.config import Config
 from polylogue.surfaces.temporal_evidence import (
     TemporalEvidenceEvent,
     TemporalEvidenceWindow,
+    action_row_to_temporal_event,
     build_temporal_evidence_window,
+    message_row_to_temporal_event,
+    summary_to_temporal_event,
 )
 
 TemporalPhaseRecorder = Callable[[str, float, Mapping[str, object]], None]
@@ -78,82 +79,6 @@ def run_read_summary_or_transcript(env: AppEnv, request: RootModeRequest, invoca
         execute_query_request(env, updated)
 
 
-def _summary_timestamp(summary: SessionSummary) -> datetime | None:
-    return summary.created_at or summary.updated_at
-
-
-def _summary_to_temporal_event(summary: SessionSummary) -> TemporalEvidenceEvent | None:
-    occurred_at = _summary_timestamp(summary)
-    if occurred_at is None:
-        return None
-    session_ref = f"session:{summary.id}"
-    label = summary.title or str(summary.id)
-    return TemporalEvidenceEvent(
-        event_id=f"{session_ref}:session",
-        occurred_at=occurred_at,
-        family="archive-session",
-        kind="session",
-        label=label,
-        source_ref=session_ref,
-        evidence_refs=(session_ref,),
-    )
-
-
-def _message_row_to_temporal_event(row: Any) -> TemporalEvidenceEvent | None:
-    occurred_at_ms = getattr(row, "occurred_at_ms", None)
-    if occurred_at_ms is None:
-        return None
-    message_id = str(row.message_id)
-    session_id = str(row.session_id)
-    role = str(getattr(row, "role", "unknown") or "unknown")
-    message_type = str(getattr(row, "message_type", "message") or "message")
-    position = int(getattr(row, "position", 0) or 0)
-    text = str(getattr(row, "text", "") or "").replace("\n", " ").strip()
-    label = f"{role} {message_type} #{position}"
-    if text:
-        label = f"{label}: {text[:80]}"
-    source_ref = f"message:{message_id}"
-    return TemporalEvidenceEvent(
-        event_id=f"{source_ref}:message",
-        occurred_at=datetime.fromtimestamp(int(occurred_at_ms) / 1000, UTC),
-        family="archive-message",
-        kind=message_type,
-        label=label,
-        source_ref=source_ref,
-        evidence_refs=(f"session:{session_id}", source_ref),
-        phase=role,
-    )
-
-
-def _action_row_to_temporal_event(row: Any) -> TemporalEvidenceEvent | None:
-    occurred_at_ms = getattr(row, "occurred_at_ms", None)
-    if occurred_at_ms is None:
-        return None
-    session_id = str(row.session_id)
-    message_id = str(row.message_id)
-    tool_use_block_id = str(row.tool_use_block_id)
-    tool_name = str(getattr(row, "tool_name", "") or "tool")
-    semantic_type = str(getattr(row, "semantic_type", "") or "action")
-    command = str(getattr(row, "tool_command", "") or "").replace("\n", " ").strip()
-    path = str(getattr(row, "tool_path", "") or "").replace("\n", " ").strip()
-    label = f"{semantic_type} via {tool_name}"
-    if command:
-        label = f"{label}: {command[:80]}"
-    elif path:
-        label = f"{label}: {path[:80]}"
-    source_ref = f"action:{tool_use_block_id}"
-    return TemporalEvidenceEvent(
-        event_id=f"{source_ref}:action",
-        occurred_at=datetime.fromtimestamp(int(occurred_at_ms) / 1000, UTC),
-        family="archive-action",
-        kind=semantic_type,
-        label=label,
-        source_ref=source_ref,
-        evidence_refs=(f"session:{session_id}", f"message:{message_id}", source_ref),
-        phase=semantic_type,
-    )
-
-
 def _session_scope_for_summaries(summaries: list[SessionSummary]) -> str:
     return " OR ".join(f"session:{summary.id}" for summary in summaries)
 
@@ -188,7 +113,7 @@ def _message_temporal_events_for_summaries(
         rows = archive.query_messages(source.predicate, limit=total_limit, sort="time", sort_direction="asc")
     if len(rows) >= total_limit and sum(summary.message_count or 0 for summary in summaries) > total_limit:
         caveats.append("message_events_capped")
-    events.extend(event for row in rows if (event := _message_row_to_temporal_event(row)) is not None)
+    events.extend(event for row in rows if (event := message_row_to_temporal_event(row)) is not None)
     return events, tuple(caveats)
 
 
@@ -215,7 +140,7 @@ def _action_temporal_events_for_summaries(
         rows = archive.query_session_actions(session_ids, limit=total_limit, sort_direction="asc")
     if len(rows) >= total_limit:
         caveats.append("action_events_capped")
-    events.extend(event for row in rows if (event := _action_row_to_temporal_event(row)) is not None)
+    events.extend(event for row in rows if (event := action_row_to_temporal_event(row)) is not None)
     return events, tuple(caveats)
 
 
@@ -285,7 +210,7 @@ def build_read_temporal_window(
     _record_temporal_phase(phase_recorder, "select_sessions", started, {"session_count": len(summaries)})
 
     started = time.perf_counter()
-    events = [event for summary in summaries if (event := _summary_to_temporal_event(summary)) is not None]
+    events = [event for summary in summaries if (event := summary_to_temporal_event(summary)) is not None]
     _record_temporal_phase(phase_recorder, "project_sessions", started, {"event_count": len(events)})
 
     started = time.perf_counter()

@@ -48,4 +48,3 @@ def test_openapi_read_view_route_uses_shared_http_capability_contract() -> None:
     assert "context-image" in read_route["description"]
     assert "max_tokens" in parameters
     assert "message_role" not in parameters
-    assert "no_tool_outputs" not in parameters

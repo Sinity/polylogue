@@ -11,6 +11,7 @@ from collections import Counter
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from enum import Enum
+from typing import Any
 
 from pydantic import Field, model_validator
 
@@ -116,6 +117,88 @@ def build_temporal_evidence_window(
     )
 
 
+def summary_to_temporal_event(summary: Any) -> TemporalEvidenceEvent | None:
+    """Project a session summary-like object into a temporal occurrence event."""
+
+    occurred_at = getattr(summary, "created_at", None) or getattr(summary, "updated_at", None)
+    if occurred_at is None:
+        return None
+    session_id = str(summary.id)
+    label = str(getattr(summary, "title", None) or getattr(summary, "display_title", None) or session_id)
+    return TemporalEvidenceEvent(
+        event_id=f"session:{session_id}:session",
+        occurred_at=_timezone_aware(occurred_at),
+        family="archive-session",
+        kind="session",
+        label=label,
+        source_ref=f"session:{session_id}",
+        evidence_refs=(f"session:{session_id}",),
+    )
+
+
+def message_row_to_temporal_event(row: Any) -> TemporalEvidenceEvent | None:
+    """Project a message query row into a temporal occurrence event."""
+
+    occurred_at_ms = getattr(row, "occurred_at_ms", None)
+    if occurred_at_ms is None:
+        return None
+    message_id = str(row.message_id)
+    session_id = str(row.session_id)
+    role = str(getattr(row, "role", "unknown") or "unknown")
+    message_type = str(getattr(row, "message_type", "message") or "message")
+    position = int(getattr(row, "position", 0) or 0)
+    text = str(getattr(row, "text", "") or "").replace("\n", " ").strip()
+    label = f"{role} {message_type} #{position}"
+    if text:
+        label = f"{label}: {text[:80]}"
+    return TemporalEvidenceEvent(
+        event_id=f"message:{message_id}:message",
+        occurred_at=datetime.fromtimestamp(int(occurred_at_ms) / 1000, UTC),
+        family="archive-message",
+        kind=message_type,
+        label=label,
+        source_ref=f"message:{message_id}",
+        evidence_refs=(f"session:{session_id}", f"message:{message_id}"),
+        phase=role,
+    )
+
+
+def action_row_to_temporal_event(row: Any) -> TemporalEvidenceEvent | None:
+    """Project an action query row into a temporal occurrence event."""
+
+    occurred_at_ms = getattr(row, "occurred_at_ms", None)
+    if occurred_at_ms is None:
+        return None
+    session_id = str(row.session_id)
+    message_id = str(row.message_id)
+    tool_use_block_id = str(row.tool_use_block_id)
+    tool_name = str(getattr(row, "tool_name", "") or "tool")
+    semantic_type = str(getattr(row, "semantic_type", "") or "action")
+    command = str(getattr(row, "tool_command", "") or "").replace("\n", " ").strip()
+    path = str(getattr(row, "tool_path", "") or "").replace("\n", " ").strip()
+    label = f"{semantic_type} via {tool_name}"
+    if command:
+        label = f"{label}: {command[:80]}"
+    elif path:
+        label = f"{label}: {path[:80]}"
+    return TemporalEvidenceEvent(
+        event_id=f"action:{tool_use_block_id}:action",
+        occurred_at=datetime.fromtimestamp(int(occurred_at_ms) / 1000, UTC),
+        family="archive-action",
+        kind=semantic_type,
+        label=label,
+        source_ref=f"action:{tool_use_block_id}",
+        evidence_refs=(f"session:{session_id}", f"message:{message_id}", f"action:{tool_use_block_id}"),
+        phase=semantic_type,
+    )
+
+
+def _timezone_aware(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
+
+
 def _validate_bound(name: str, value: datetime | None) -> None:
     if value is not None and value.tzinfo is None:
         raise ValueError(f"{name} must be timezone-aware")
@@ -176,5 +259,8 @@ __all__ = [
     "TemporalEvidenceEvent",
     "TemporalEvidenceWindow",
     "TemporalPhaseSpan",
+    "action_row_to_temporal_event",
     "build_temporal_evidence_window",
+    "message_row_to_temporal_event",
+    "summary_to_temporal_event",
 ]

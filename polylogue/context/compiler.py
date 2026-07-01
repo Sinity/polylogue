@@ -18,6 +18,8 @@ from pydantic import Field, model_validator
 
 from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.insights.archive_models import ArchiveInsightModel
+from polylogue.surfaces.chronicle import ChronicleProjectionPayload, render_chronicle_markdown
+from polylogue.surfaces.temporal_evidence import TemporalEvidenceWindow
 
 ContextPurpose = Literal["continue", "review", "handoff", "debug", "export"]
 ContextSegmentKind = Literal["read_view", "query_unit", "assertion", "caveat"]
@@ -195,6 +197,85 @@ def compile_query_unit_context_segment(envelope: object) -> ContextSegment:
     )
 
 
+def compile_temporal_context_segment(
+    *,
+    session_id: str,
+    window: TemporalEvidenceWindow,
+) -> ContextSegment:
+    """Compile a temporal evidence window into a context segment."""
+
+    lines = [
+        "# Temporal Evidence",
+        "",
+        f"- Session: `{session_id}`",
+        f"- Events: {window.event_count}",
+        f"- Families: {', '.join(f'{key}={value}' for key, value in window.family_counts.items()) or 'none'}",
+        f"- Kinds: {', '.join(f'{key}={value}' for key, value in window.kind_counts.items()) or 'none'}",
+    ]
+    if window.caveats:
+        lines.append(f"- Caveats: {', '.join(window.caveats)}")
+    lines.extend(["", "## Events"])
+    if window.events:
+        for event in window.events[:50]:
+            label = event.label.replace("\n", " ").strip()
+            lines.append(f"- {event.occurred_at.isoformat()} [{event.family}/{event.kind}] {label}")
+        if len(window.events) > 50:
+            lines.append(f"- ... {len(window.events) - 50} more events omitted from this segment.")
+    else:
+        lines.append("- none")
+    markdown = "\n".join(lines).rstrip() + "\n"
+    evidence_refs: list[EvidenceRef] = [EvidenceRef(session_id=session_id)]
+    for event in window.events:
+        for ref_text in event.evidence_refs:
+            with suppress(ValueError):
+                evidence_refs.append(EvidenceRef.parse(ref_text))
+    caveats = list(window.caveats)
+    if len(window.events) > 50:
+        caveats.append("temporal_events_omitted_after_50")
+    return ContextSegment(
+        segment_id=f"read-view:{session_id}:temporal",
+        kind="read_view",
+        title="Temporal Evidence",
+        markdown=markdown,
+        payload_kind="temporal",
+        object_refs=(ObjectRef(kind="session", object_id=session_id),),
+        evidence_refs=tuple(dict.fromkeys(evidence_refs)),
+        caveats=tuple(dict.fromkeys(caveats)),
+        token_estimate=_estimate_tokens(markdown),
+        lossiness="bounded_temporal_events",
+    )
+
+
+def compile_chronicle_context_segment(
+    *,
+    session_id: str,
+    payload: ChronicleProjectionPayload,
+) -> ContextSegment:
+    """Compile a bounded chronicle projection into a context segment."""
+
+    markdown = render_chronicle_markdown(payload)
+    evidence_refs: list[EvidenceRef] = [EvidenceRef(session_id=session_id)]
+    for session in payload.sessions:
+        evidence_refs.append(EvidenceRef(session_id=session.session_id))
+        for message in (*session.first_messages, *session.last_messages):
+            evidence_refs.append(EvidenceRef(session_id=session.session_id, message_id=message.message_id))
+    caveats = list(payload.caveats)
+    for session in payload.sessions:
+        caveats.extend(session.caveats)
+    return ContextSegment(
+        segment_id=f"read-view:{session_id}:chronicle",
+        kind="read_view",
+        title="Session Chronicle",
+        markdown=markdown,
+        payload_kind="chronicle",
+        object_refs=(ObjectRef(kind="session", object_id=session_id),),
+        evidence_refs=tuple(dict.fromkeys(evidence_refs)),
+        caveats=tuple(dict.fromkeys(caveats)),
+        token_estimate=_estimate_tokens(markdown),
+        lossiness="bounded_first_last_projection",
+    )
+
+
 def compile_assertion_context_segment(
     *,
     assertion_id: str,
@@ -313,16 +394,16 @@ def _query_unit_refs(items: Sequence[dict[str, object]]) -> tuple[tuple[ObjectRe
     seen_objects: set[str] = set()
     seen_evidence: set[str] = set()
     for item in items:
-        for ref in _object_refs_from_query_unit_item(item):
-            key = ref.format()
+        for object_ref in _object_refs_from_query_unit_item(item):
+            key = object_ref.format()
             if key not in seen_objects:
                 seen_objects.add(key)
-                object_refs.append(ref)
-        for ref in _evidence_refs_from_query_unit_item(item):
-            key = ref.format()
+                object_refs.append(object_ref)
+        for evidence_ref in _evidence_refs_from_query_unit_item(item):
+            key = evidence_ref.format()
             if key not in seen_evidence:
                 seen_evidence.add(key)
-                evidence_refs.append(ref)
+                evidence_refs.append(evidence_ref)
     return tuple(object_refs), tuple(evidence_refs)
 
 

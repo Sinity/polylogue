@@ -18,7 +18,6 @@ from polylogue.cli.read_views.base import (
     ReadViewNeighborOptions,
     ReadViewOptions,
 )
-from polylogue.cli.read_views.bulk import run_bulk_export_view
 from polylogue.cli.read_views.chronicle import (
     CHRONICLE_READ_VIEW_OPTION_NAMES,
     build_chronicle_options,
@@ -48,6 +47,7 @@ from polylogue.cli.read_views.neighbors import (
     build_neighbor_options,
     run_read_neighbors,
 )
+from polylogue.cli.read_views.query_set import run_query_set_read_view
 from polylogue.cli.read_views.standard import run_read_summary_or_transcript, run_read_temporal
 from polylogue.cli.shared.types import AppEnv
 
@@ -202,7 +202,7 @@ __all__ = [
     "read_view_handler_ids",
     "read_view_option_names",
     "read_view_options_for_view",
-    "run_bulk_export_view",
+    "run_query_set_read_view",
     "run_read_view",
     "validate_read_view_handler_registry",
 ]

@@ -66,19 +66,19 @@ def test_read_all_and_analyze_count_update_parent_request() -> None:
     wrapped_read = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
     assert callable(wrapped_read)
     with patch("polylogue.cli.query_verbs._execute_query_verb") as execute:
-        with patch("polylogue.cli.query_verbs.run_bulk_export_view") as bulk_export:
+        with patch("polylogue.cli.query_verbs.run_query_set_read_view") as query_set_read:
             wrapped_read(
                 child,
                 **_read_verb_kwargs(
                     view="summary",
                     output_format="json",
-                    export_all=True,
+                    all_matches=True,
                     limit=7,
                     fields="id,title",
                 ),
             )
 
-    bulk_export.assert_not_called()
+    query_set_read.assert_not_called()
     request = execute.call_args.args[1]
     assert isinstance(request, RootModeRequest)
     assert request.query_params()["origin"] == "chatgpt-export"
@@ -89,7 +89,7 @@ def test_read_all_and_analyze_count_update_parent_request() -> None:
 
     out_path = "/tmp/polylogue-sessions.json"
     with patch("polylogue.cli.query_verbs._execute_query_verb") as execute:
-        with patch("polylogue.cli.query_verbs.run_bulk_export_view") as bulk_export:
+        with patch("polylogue.cli.query_verbs.run_query_set_read_view") as query_set_read:
             wrapped_read(
                 child,
                 **_read_verb_kwargs(
@@ -97,11 +97,11 @@ def test_read_all_and_analyze_count_update_parent_request() -> None:
                     destination="file",
                     output_format="json",
                     out_path=out_path,
-                    export_all=True,
+                    all_matches=True,
                 ),
             )
 
-    bulk_export.assert_not_called()
+    query_set_read.assert_not_called()
     file_request = execute.call_args.args[1]
     assert isinstance(file_request, RootModeRequest)
     assert file_request.query_params()["list_mode"] is True
@@ -141,7 +141,7 @@ def test_read_direct_ref_emits_shared_resolution_payload(capsys: pytest.CaptureF
             destination="terminal",
             output_format="json",
             out_path=None,
-            export_all=False,
+            all_matches=False,
             limit=None,
             offset=0,
             window_hours=24,
@@ -274,7 +274,7 @@ def _read_verb_kwargs(**overrides: object) -> dict[str, object]:
         "destination": "terminal",
         "output_format": None,
         "out_path": None,
-        "export_all": False,
+        "all_matches": False,
         "limit": None,
         "offset": 0,
         "window_hours": 24,
@@ -372,17 +372,17 @@ def test_read_verb_summary_preserves_search_within_exact_ref() -> None:
     assert request.params["output_format"] == "json"
 
 
-def test_read_verb_all_non_summary_invokes_bulk_export_view() -> None:
-    """read --all with a concrete non-summary view routes to bulk export."""
+def test_read_verb_all_non_summary_invokes_query_set_read_view() -> None:
+    """read --all with a concrete non-summary view routes to query-set read."""
     _, child = _context_pair(params={"origin": "claude-code-session"}, query_terms=("alpha",))
     wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
-    with patch("polylogue.cli.query_verbs.run_bulk_export_view") as run_export:
-        wrapped(child, **_read_verb_kwargs(view="transcript", output_format="json", export_all=True))
+    with patch("polylogue.cli.query_verbs.run_query_set_read_view") as run_read_set:
+        wrapped(child, **_read_verb_kwargs(view="transcript", output_format="json", all_matches=True))
 
-    run_export.assert_called_once()
-    assert run_export.call_args.kwargs["output_format"] == "json"
+    run_read_set.assert_called_once()
+    assert run_read_set.call_args.kwargs["output_format"] == "json"
 
 
 def test_read_verb_context_composes_preamble_not_passthrough() -> None:
@@ -426,6 +426,46 @@ def test_read_verb_context_image_invokes_pack_view() -> None:
     assert kwargs["query"] == "cost"
     assert kwargs["max_sessions"] == 3
     deliver.assert_called_once()
+
+
+def test_context_image_markdown_renderer_adds_document_structure() -> None:
+    """Context-image Markdown should be readable as one composed packet."""
+    from polylogue.context.compiler import ContextImage, ContextOmission, ContextSegment, ContextSpec
+
+    image = ContextImage(
+        spec=ContextSpec(purpose="handoff", seed_refs=("session:abc",), read_views=("temporal", "chronicle")),
+        segments=(
+            ContextSegment(
+                segment_id="read-view:abc:temporal",
+                kind="read_view",
+                title="Temporal Evidence",
+                markdown="# Temporal Evidence\n\n- Events: 2\n",
+                payload_kind="temporal",
+                token_estimate=5,
+            ),
+        ),
+        omitted=(
+            ContextOmission(
+                ref="session:def",
+                view="chronicle",
+                reason="budget",
+                detail="segment exceeded the requested context token budget",
+            ),
+        ),
+        token_estimate=5,
+    )
+
+    rendered = query_verbs._render_context_image_markdown(image)
+
+    assert rendered.startswith("# Context Image\n")
+    assert "- Purpose: handoff" in rendered
+    assert "- Views: temporal, chronicle" in rendered
+    assert "- Segments: 1" in rendered
+    assert "- Omissions: 1" in rendered
+    assert "## 1. Temporal Evidence" in rendered
+    assert "_(kind=temporal; tokens=5)_" in rendered
+    assert "## Omitted" in rendered
+    assert "session:def [budget]" in rendered
 
 
 def test_continue_verb_compiles_context_from_query_unit_recipe() -> None:

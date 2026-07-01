@@ -116,7 +116,7 @@ polylogue import /path/to/exports
 - [Search reference](search.md) -- query grammar, filters, verbs, output formats
 - [Daemon guide](daemon.md) -- `polylogued`, HTTP API, systemd integration
 - [Insights](insights.md) -- session profiles, work events, phases, costs
-- [Export](export.md) -- markdown, JSONL, batch export, bulk export
+- [Export](export.md) -- markdown, JSONL, and query-set reads
 - [Schema](schema.md) -- database tables, FTS5, embeddings, versioning
 - [Providers](providers/index.md) -- provider detection, parser locations
 - [CLI Reference](cli-reference.md) -- generated command reference

@@ -43,8 +43,8 @@ Body policies replace ad hoc flags:
 `READ_VIEW_PROJECTION_FAMILIES` maps executable read views into this vocabulary
 and is tested against the CLI read-view registry. Additional named projections,
 such as `timeline`, live in `NAMED_PROJECTION_FAMILIES` so non-read projections
-do not weaken read-view parity. The compatibility bridge
-`projection_from_legacy_view()` accepts the named projection set and rejects
+do not weaken read-view parity. The projection bridge
+`projection_from_view()` accepts the named projection set and rejects
 `recovery`; recovery remains an operational failure-recovery concept, not a
 read view.
 

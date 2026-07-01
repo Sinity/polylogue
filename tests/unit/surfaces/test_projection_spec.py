@@ -12,12 +12,12 @@ from polylogue.surfaces.projection_spec import (
     RenderDestination,
     RenderFormat,
     RenderSpec,
-    projection_from_legacy_view,
+    projection_from_view,
 )
 
 
-def test_legacy_messages_view_maps_to_message_block_projection() -> None:
-    spec = projection_from_legacy_view("messages", format="json", destination="stdout", max_tokens=1200)
+def test_messages_view_maps_to_message_block_projection() -> None:
+    spec = projection_from_view("messages", format="json", destination="stdout", max_tokens=1200)
 
     assert spec.projection.families == (EvidenceFamily.MESSAGES, EvidenceFamily.BLOCKS)
     assert spec.projection.max_tokens == 1200
@@ -26,7 +26,7 @@ def test_legacy_messages_view_maps_to_message_block_projection() -> None:
 
 
 def test_chronicle_view_maps_to_authored_dialogue_projection() -> None:
-    spec = projection_from_legacy_view("chronicle")
+    spec = projection_from_view("chronicle")
 
     assert spec.projection.families == (
         EvidenceFamily.CHRONICLE,
@@ -64,13 +64,13 @@ def test_file_render_destination_requires_path() -> None:
     assert spec.out == "artifact.md"
 
 
-def test_unknown_legacy_view_is_rejected() -> None:
+def test_unknown_projection_view_is_rejected() -> None:
     with pytest.raises(ValueError, match="unknown projection view"):
-        projection_from_legacy_view("recovery")
+        projection_from_view("recovery")
 
 
 def test_executable_read_views_have_projection_mapping() -> None:
-    mapped = {view: projection_from_legacy_view(view).projection.families for view in READ_VIEW_HANDLERS}
+    mapped = {view: projection_from_view(view).projection.families for view in READ_VIEW_HANDLERS}
 
     assert set(READ_VIEW_PROJECTION_FAMILIES) == set(READ_VIEW_HANDLERS)
     assert set(mapped) == set(READ_VIEW_HANDLERS)

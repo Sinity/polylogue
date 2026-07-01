@@ -1,7 +1,7 @@
 """``MessageRenderEnvelope`` contract for ``SessionMessagePayload`` (#1487).
 
 Pins the unified envelope every reader path emits — session detail,
-paginated message windows, MCP ``get_messages``, future bulk export. The
+paginated message windows, MCP ``get_messages``, future query-set reads. The
 contract enumerates which fields must be present (with their defaults)
 and asserts that a roundtrip through ``Message`` populates every typed
 slot from the canonical Message model.

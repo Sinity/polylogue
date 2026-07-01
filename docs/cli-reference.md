@@ -250,6 +250,7 @@ Usage: polylogue read [OPTIONS] [REF]
 
   Routes to the appropriate renderer based on --view and delivers the
   output to --to (terminal, stdout, browser, clipboard, or file).
+  Use --views to inspect which options belong to each read view.
 
   Examples:
       polylogue --id abc123 read
@@ -268,9 +269,6 @@ Usage: polylogue read [OPTIONS] [REF]
       polylogue --latest read --view correlation --otlp --format json
       polylogue read session:abc123 --format json
 
-  Reserved views (not yet implemented):
-      timeline, tools, files, metadata, continuation
-
 Options:
   -v, --view VIEW[,VIEW...]       What to render (summary, transcript,
                                   messages, raw, context, context-image,
@@ -282,7 +280,7 @@ Options:
   -f, --format [csv|html|json|markdown|ndjson|obsidian|org|plaintext|text|yaml]
                                   Output format (where applicable).
   --out PATH                      File path for --to file.
-  --all                           Apply to all matched sessions (bulk export).
+  --all                           Read all matched sessions.
   -l, -n, --limit INTEGER         Max items to return.
   --offset INTEGER                Pagination offset.
   --window-hours INTEGER          Neighboring time window around the seed
@@ -319,7 +317,8 @@ Options:
   --no-redact                     Do not redact filesystem paths (--view
                                   context-image).
   --fields TEXT                   Fields for JSON/YAML outputs (--all).
-  --views                         List executable read-view profiles and exit.
+  --views                         List executable read-view profiles, formats,
+                                  and options.
   --first                         Read the first matched session only.
   --help                          Show this message and exit.
 ```

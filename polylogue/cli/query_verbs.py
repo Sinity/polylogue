@@ -29,7 +29,7 @@ from polylogue.cli.read_view_handlers import (
     ReadViewInvocation,
     read_view_option_names,
     read_view_options_for_view,
-    run_bulk_export_view,
+    run_query_set_read_view,
     run_read_view,
 )
 from polylogue.cli.read_views.base import deliver_content
@@ -307,11 +307,15 @@ def _complete_read_format(ctx: click.Context, param: click.Parameter, incomplete
 def _render_read_view_profiles_plain() -> str:
     lines = ["Read views:"]
     for profile in READ_VIEW_PROFILES:
+        handler = READ_VIEW_HANDLERS[profile.view_id]
+        options = ", ".join(f"--{name.replace('_', '-')}" for name in sorted(handler.accepted_options)) or "none"
+        scope = "query-set" if handler.accepts_query_set else handler.session_policy
         handoff = " handoff" if profile.successor_handoff else ""
         lines.append(
             f"  {profile.view_id:<12} {profile.lossiness:<10} evidence={profile.evidence_policy:<10}"
             f" formats={','.join(profile.formats)}{handoff}"
         )
+        lines.append(f"      scope={scope}; options={options}")
         lines.append(f"      {profile.purpose}")
     return "\n".join(lines)
 
@@ -320,7 +324,15 @@ def _emit_read_view_profiles(output_format: str | None) -> None:
     if output_format == "json":
         from polylogue.cli.shared.machine_errors import emit_success
 
-        emit_success({"read_views": read_view_profile_payloads()})
+        payloads: list[dict[str, object]] = []
+        for payload in read_view_profile_payloads():
+            handler = READ_VIEW_HANDLERS[str(payload["view_id"])]
+            augmented: dict[str, object] = dict(payload)
+            augmented["cli_options"] = sorted(handler.accepted_options)
+            augmented["session_policy"] = handler.session_policy
+            augmented["accepts_query_set"] = handler.accepts_query_set
+            payloads.append(augmented)
+        emit_success({"read_views": payloads})
         return
     if output_format is not None:
         raise click.UsageError("`read --views` only supports terminal text or --format json")
@@ -404,7 +416,7 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: b
     help="Output format (where applicable).",
 )
 @click.option("--out", "out_path", type=click.Path(), default=None, help="File path for --to file.")
-@click.option("--all", "export_all", is_flag=True, help="Apply to all matched sessions (bulk export).")
+@click.option("--all", "all_matches", is_flag=True, help="Read all matched sessions.")
 @click.option("--limit", "-l", "-n", type=int, default=None, help="Max items to return.")
 @click.option("--offset", type=int, default=0, help="Pagination offset.")
 @click.option(
@@ -474,7 +486,7 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: b
 )
 @click.option("--no-redact", is_flag=True, default=False, help="Do not redact filesystem paths (--view context-image).")
 @click.option("--fields", help="Fields for JSON/YAML outputs (--all).")
-@click.option("--views", "show_views", is_flag=True, help="List executable read-view profiles and exit.")
+@click.option("--views", "show_views", is_flag=True, help="List executable read-view profiles, formats, and options.")
 @click.option("--first", "first_only", is_flag=True, help="Read the first matched session only.")
 @click.argument("ref", required=False)
 @click.pass_context
@@ -484,7 +496,7 @@ def read_verb(
     destination: str,
     output_format: str | None,
     out_path: str | None,
-    export_all: bool,
+    all_matches: bool,
     limit: int | None,
     offset: int,
     window_hours: int,
@@ -514,6 +526,7 @@ def read_verb(
     \b
     Routes to the appropriate renderer based on --view and delivers the
     output to --to (terminal, stdout, browser, clipboard, or file).
+    Use --views to inspect which options belong to each read view.
 
     \b
     Examples:
@@ -532,10 +545,6 @@ def read_verb(
         polylogue find id:abc then read --view correlation --since-hours 4
         polylogue --latest read --view correlation --otlp --format json
         polylogue read session:abc123 --format json
-
-    \b
-    Reserved views (not yet implemented):
-        timeline, tools, files, metadata, continuation
     """
     env: AppEnv = ctx.obj
     if show_views:
@@ -549,7 +558,7 @@ def read_verb(
             f"Unknown read view(s): {', '.join(unknown_views)}. Choose from: {', '.join(_READ_VIEWS)}."
         )
     primary_view = view_tokens[0]
-    if export_all and first_only:
+    if all_matches and first_only:
         raise click.UsageError("read --all and --first are mutually exclusive.")
     if destination == "file" and not out_path:
         raise click.UsageError("read --to file requires --out.")
@@ -559,7 +568,7 @@ def read_verb(
         view=view,
         destination=destination,
         format=_effective_read_output_format(request, view=view, output_format=output_format) or "default",
-        all=export_all,
+        all=all_matches,
         first=first_only,
     ):
         return
@@ -575,7 +584,7 @@ def read_verb(
     # Summary all-mode is the command-floor replacement for the old list verb:
     # it preserves the summary-list envelope and fields/limit behavior instead
     # of exporting full transcript payloads.
-    if export_all:
+    if all_matches:
         if limit is not None:
             request = request.with_param_updates(limit=limit)
         if primary_view == "summary":
@@ -589,7 +598,7 @@ def read_verb(
                 request = request.with_param_updates(fields=fields)
             _execute_query_verb(ctx, request)
             return
-        run_bulk_export_view(
+        run_query_set_read_view(
             env, request, output_format=output_format, fields=fields, destination=destination, out_path=out_path
         )
         return
@@ -1757,19 +1766,47 @@ def _resolve_query_action_session_ids(
 
 def _render_context_image_markdown(image: object) -> str:
     """Render a compiled ContextImage to markdown for terminal/file delivery."""
-    parts: list[str] = []
-    for segment in getattr(image, "segments", ()):
+    spec = getattr(image, "spec", None)
+    segments = tuple(getattr(image, "segments", ()))
+    omitted = tuple(getattr(image, "omitted", ()))
+    caveats = tuple(getattr(image, "caveats", ()))
+    purpose = getattr(spec, "purpose", None) or "context"
+    read_views = tuple(getattr(spec, "read_views", ()) or ())
+    token_estimate = getattr(image, "token_estimate", None)
+    lines: list[str] = [
+        "# Context Image",
+        "",
+        f"- Purpose: {purpose}",
+        f"- Views: {', '.join(str(view) for view in read_views) or 'none'}",
+        f"- Segments: {len(segments)}",
+        f"- Omissions: {len(omitted)}",
+    ]
+    if token_estimate is not None:
+        lines.append(f"- Token estimate: {token_estimate}")
+    if caveats:
+        lines.append(f"- Caveats: {', '.join(str(caveat) for caveat in caveats)}")
+    parts: list[str] = ["\n".join(lines)]
+    for index, segment in enumerate(segments, start=1):
         markdown = getattr(segment, "markdown", None)
         if markdown:
-            parts.append(markdown.rstrip())
-    omitted = getattr(image, "omitted", ())
+            title = getattr(segment, "title", None) or getattr(segment, "payload_kind", None) or f"Segment {index}"
+            payload_kind = getattr(segment, "payload_kind", None)
+            token_count = getattr(segment, "token_estimate", None)
+            segment_lines = [f"## {index}. {title}", ""]
+            meta: list[str] = []
+            if payload_kind:
+                meta.append(f"kind={payload_kind}")
+            if token_count is not None:
+                meta.append(f"tokens={token_count}")
+            if meta:
+                segment_lines.extend([f"_({'; '.join(meta)})_", ""])
+            segment_lines.append(markdown.rstrip())
+            parts.append("\n".join(segment_lines))
     if omitted:
         parts.append("## Omitted")
         for omission in omitted:
             target = omission.ref or omission.query or omission.view or "?"
             parts.append(f"- {target} [{omission.reason}]: {omission.detail}")
-    if not parts:
-        return "(no context segments)\n"
     return "\n\n".join(parts).rstrip() + "\n"
 
 

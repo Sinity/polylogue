@@ -1278,7 +1278,7 @@ class TestPromptSurfaces:
         assert "0 messages" in result
 
     @pytest.mark.asyncio
-    async def test_extract_code_no_code_blocks(self: object, mcp_server: MCPServerUnderTest) -> None:
+    async def test_extract_code_handles_plain_text_session(self: object, mcp_server: MCPServerUnderTest) -> None:
         conv = make_conv(
             id="nocode",
             provider=Provider.UNKNOWN,
