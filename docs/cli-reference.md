@@ -271,14 +271,25 @@ Usage: polylogue read [OPTIONS] [REF]
       polylogue read session:abc123 --format json
 
 Projection:
-  -v, --view VIEW[,VIEW...]  What to render (summary, transcript, dialogue,
-                             messages, raw, context, context-image, neighbors,
-                             correlation, temporal, chronicle).  [default:
-                             summary]
-  --views                    List executable read-view profiles, formats, and
-                             options.
-  --spec                     Print the composed selection/projection/render
-                             spec as JSON.
+  -v, --view VIEW[,VIEW...]       What to render (summary, transcript,
+                                  dialogue, messages, raw, context, context-
+                                  image, neighbors, correlation, temporal,
+                                  chronicle).  [default: summary]
+  --render TEXT                   Render expression, e.g. layout:context-
+                                  image,timestamps:include-
+                                  available,format:markdown. Known keys:
+                                  layout, timestamps, format, destination/to,
+                                  out.
+  --render-layout [standard|context-image]
+                                  Render layout for the composed projection
+                                  spec; defaults from --view.
+  --timestamps [renderer-default|include-available|omit]
+                                  Timestamp rendering policy for the composed
+                                  projection spec; defaults from --view.
+  --views                         List executable read-view profiles, formats,
+                                  and options.
+  --spec                          Print the composed
+                                  selection/projection/render spec as JSON.
 
 Delivery and format:
   --to [terminal|stdout|browser|clipboard|file]
@@ -756,6 +767,7 @@ The schema files live under `docs/schemas/cli-output/`.
 | `import-explain` | `ImportExplainPayload` | `polylogue import PATH --explain --format json`<br>`polylogue import PATH --explain --format ndjson (entries)` |
 | `archive-debt-list` | `ArchiveDebtListPayload` | `polylogue ops debt list --format json` |
 | `tool-counts` | `ToolCountPayload` | `polylogue analyze tools --format json` |
+| `tool-family-comparison` | `ToolFamilyComparisonPayload` | `polylogue analyze tools --compare-family FAMILY --format json` |
 | `session-neighbor-candidate` | `SessionNeighborCandidatePayload` | `polylogue read --view neighbors --format json` |
 | `mutation-result` | `MutationResultPayload` | `polylogue find <query> then delete --dry-run`<br>`polylogue find <query> then delete --yes`<br>`MCP mutation tools`<br>`daemon mutation endpoints` |
 | `action-affordance-list` | `ActionAffordanceListPayload` | `polylogue config action-affordances`<br>`GET /api/action-affordances`<br>`MCP action_affordances` |

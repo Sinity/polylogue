@@ -272,6 +272,55 @@ def test_read_spec_accepts_explicit_timestamp_policy() -> None:
     assert payload["projection"]["families"] == ["temporal", "sessions"]
 
 
+def test_read_spec_accepts_render_expression() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--plain",
+            "repo:polylogue",
+            "read",
+            "--view",
+            "temporal,chronicle",
+            "--render",
+            "layout:context-image,timestamps:omit,format:json,destination:stdout",
+            "--spec",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["render"]["layout"] == "context-image"
+    assert payload["render"]["timestamps"] == "omit"
+    assert payload["render"]["format"] == "json"
+    assert payload["render"]["destination"] == "stdout"
+    assert payload["projection"]["families"] == ["temporal", "sessions", "chronicle", "messages"]
+
+
+def test_read_spec_rejects_conflicting_render_expression_alias() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--plain",
+            "repo:polylogue",
+            "read",
+            "--view",
+            "temporal",
+            "--render",
+            "timestamps:omit",
+            "--timestamps",
+            "include-available",
+            "--spec",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 2
+    assert "Conflicting render timestamps" in result.output
+
+
 def test_read_spec_to_file_writes_composed_projection_contract(tmp_path: Path) -> None:
     out_path = tmp_path / "projection-spec.json"
     runner = CliRunner()

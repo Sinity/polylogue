@@ -7,6 +7,7 @@ a specific action on the matched sessions.
 from __future__ import annotations
 
 import json
+import shlex
 from collections.abc import Awaitable
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
@@ -204,6 +205,7 @@ _READ_DESTINATIONS = ("terminal", "stdout", "browser", "clipboard", "file")
 _READ_FORMATS = tuple(sorted({fmt for profile in READ_VIEW_PROFILES for fmt in profile.formats}))
 _READ_RENDER_LAYOUTS = ("standard", "context-image")
 _READ_TIMESTAMP_POLICIES = ("renderer-default", "include-available", "omit")
+_READ_RENDER_EXPRESSION_KEYS = ("layout", "timestamps", "format", "destination", "to", "out")
 
 
 def _explicit_read_view_options(ctx: click.Context) -> frozenset[str]:
@@ -213,6 +215,71 @@ def _explicit_read_view_options(ctx: click.Context) -> frozenset[str]:
         name
         for name in read_view_option_names()
         if (source := ctx.get_parameter_source(name)) is not None and source.name == "COMMANDLINE"
+    )
+
+
+def _parse_read_render_expression(expression: str | None) -> dict[str, str]:
+    """Parse a compact render expression into RenderSpec field aliases."""
+
+    if expression is None:
+        return {}
+    result: dict[str, str] = {}
+    try:
+        tokens = shlex.split(expression.replace(",", " "))
+    except ValueError as exc:
+        raise click.UsageError(f"Invalid --render expression: {exc}") from exc
+    for token in tokens:
+        if "=" in token:
+            key, value = token.split("=", 1)
+        elif ":" in token:
+            key, value = token.split(":", 1)
+        else:
+            raise click.UsageError(
+                f"Invalid --render token {token!r}; expected key:value or key=value. "
+                f"Known keys: {', '.join(_READ_RENDER_EXPRESSION_KEYS)}."
+            )
+        key = key.strip().lower()
+        value = value.strip()
+        if key == "to":
+            key = "destination"
+        if key not in {"layout", "timestamps", "format", "destination", "out"}:
+            raise click.UsageError(
+                f"Unknown --render key {key!r}. Known keys: {', '.join(_READ_RENDER_EXPRESSION_KEYS)}."
+            )
+        if not value:
+            raise click.UsageError(f"Empty --render value for {key!r}.")
+        if key in result:
+            raise click.UsageError(f"Duplicate --render key {key!r}.")
+        result[key] = value
+
+    layout = result.get("layout")
+    if layout is not None and layout not in _READ_RENDER_LAYOUTS:
+        raise click.UsageError(f"Invalid --render layout {layout!r}; choose from: {', '.join(_READ_RENDER_LAYOUTS)}.")
+    timestamps = result.get("timestamps")
+    if timestamps is not None and timestamps not in _READ_TIMESTAMP_POLICIES:
+        raise click.UsageError(
+            f"Invalid --render timestamps {timestamps!r}; choose from: {', '.join(_READ_TIMESTAMP_POLICIES)}."
+        )
+    output_format = result.get("format")
+    if output_format is not None and output_format not in _READ_FORMATS:
+        raise click.UsageError(f"Invalid --render format {output_format!r}; choose from: {', '.join(_READ_FORMATS)}.")
+    destination = result.get("destination")
+    if destination is not None and destination not in _READ_DESTINATIONS:
+        raise click.UsageError(
+            f"Invalid --render destination {destination!r}; choose from: {', '.join(_READ_DESTINATIONS)}."
+        )
+    return result
+
+
+def _merge_render_option(field: str, expression_value: str | None, flag_value: str | None) -> str | None:
+    """Merge a render-expression field with its ergonomic CLI alias."""
+
+    if expression_value is None:
+        return flag_value
+    if flag_value is None or flag_value == expression_value:
+        return expression_value
+    raise click.UsageError(
+        f"Conflicting render {field}: --render sets {expression_value!r} but the dedicated flag sets {flag_value!r}."
     )
 
 
@@ -514,7 +581,7 @@ def _projection_spec_with_resolved_session_refs(
 
 
 _READ_HELP_OPTION_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
-    ("Projection", frozenset({"view", "show_views", "show_spec", "render_layout", "timestamp_policy"})),
+    ("Projection", frozenset({"view", "show_views", "show_spec", "render_expr", "render_layout", "timestamp_policy"})),
     ("Delivery and format", frozenset({"destination", "output_format", "out_path", "fields"})),
     ("Cardinality and pagination", frozenset({"all_matches", "first_only", "limit", "offset"})),
     (
@@ -643,6 +710,15 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: b
     help="Output format (where applicable).",
 )
 @click.option(
+    "--render",
+    "render_expr",
+    default=None,
+    help=(
+        "Render expression, e.g. layout:context-image,timestamps:include-available,format:markdown. "
+        "Known keys: layout, timestamps, format, destination/to, out."
+    ),
+)
+@click.option(
     "--render-layout",
     type=click.Choice(_READ_RENDER_LAYOUTS),
     default=None,
@@ -736,6 +812,7 @@ def read_verb(
     view: str,
     destination: str,
     output_format: str | None,
+    render_expr: str | None,
     render_layout: str | None,
     timestamp_policy: str | None,
     out_path: str | None,
@@ -796,6 +873,19 @@ def read_verb(
         _emit_read_view_profiles(output_format)
         return
     request = _parent_request(ctx)
+    render_settings = _parse_read_render_expression(render_expr)
+    destination_alias = (
+        destination
+        if (source := ctx.get_parameter_source("destination")) is not None and source.name == "COMMANDLINE"
+        else None
+    )
+    render_layout = _merge_render_option("layout", render_settings.get("layout"), render_layout)
+    timestamp_policy = _merge_render_option("timestamps", render_settings.get("timestamps"), timestamp_policy)
+    output_format = _merge_render_option("format", render_settings.get("format"), output_format)
+    destination = (
+        _merge_render_option("destination", render_settings.get("destination"), destination_alias) or destination
+    )
+    out_path = _merge_render_option("out", render_settings.get("out"), out_path)
     view_tokens = [token.strip() for token in view.split(",") if token.strip()] or ["summary"]
     unknown_views = [token for token in view_tokens if token not in _READ_VIEWS]
     if unknown_views:
