@@ -58,7 +58,7 @@ instruction. After compaction:
 - `Artifact`: make the result inspectable outside chat.
 - `Velocity`: remove friction or record why it remains.
 - `Meta`: audit agent/process failure modes and convert useful corrections into
-  executable scaffold, observability, or tripwires.
+  executable scaffold, observability, or positive state checks.
 
 Every material switch should name the trigger and decision.
 
@@ -153,12 +153,12 @@ explains why it should not be routed through the normal state machine.
      Meta-focused slice. This records focus cadence, long gaps, packet growth,
      task-history friction, and active heavy work under `.agent/task-history/`
      and leaves a compact `velocity-audit` entry in the operating log.
-   - Use `.agent/scripts/devloop-meta "<trigger>" "<failure-hypothesis>" "<evidence>" "<change-considered>" "<change-made>" "<change-deferred>" "<next-tripwire>"`.
+   - Use `.agent/scripts/devloop-meta "<trigger>" "<failure-hypothesis>" "<evidence>" "<change-considered>" "<change-made>" "<change-deferred>" "<next-safeguard>"`.
    - Fill every field; use `none` only when a field is genuinely empty.
    - Prefer one concrete scaffold/tooling/observability change over broad
      apology prose.
    - Ask whether demo generation lagged; if yes, run `devloop-demo` and improve
-     the tripwire.
+     the default next-loop check.
 
 ## Workload Radar
 
@@ -301,7 +301,7 @@ heavy processes before starting another archive-heavy command. It also prints
 active packet size and event/log sidecar sizes so conductor growth is visible
 instead of becoming hidden ignored-state clutter.
 
-The focus transition audit in `devloop-velocity` is a tripwire. Treat repeated
+The focus transition audit in `devloop-velocity` is a process-health check. Treat repeated
 `Proof -> Direction` exits, long unlabeled dwell, or stale ACTIVE-LOOP focus as
 process debt; fix the scaffold or log the deliberate exception before broadening
 work.

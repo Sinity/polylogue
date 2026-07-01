@@ -161,8 +161,8 @@ Acceptable meta outcomes:
 - a sharper `devloop-status` or `devloop-velocity` signal;
 - a corrected README/RUNBOOK/SELF-PROMPTS instruction;
 - a cleaned scratch/current-state boundary;
-- a new executable tripwire for stale archive roots, duplicate daemons, stale
-  generated state, or empty log entries;
+- a new executable state check for stale archive roots, duplicate daemons,
+  stale generated state, or empty log entries;
 - a better prioritization rule grounded in evidence.
 
 Non-outcomes:

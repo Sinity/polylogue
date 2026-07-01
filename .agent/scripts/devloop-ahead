@@ -45,7 +45,8 @@ Useful foreground lanes while a long Polylogue command runs:
 7. Velocity/meta lane
    Run devloop-status/velocity, inspect pressure, or record a meta-audit when
    repeated friction is visible.
-   Output: smaller future wait, less root/schema/daemon ambiguity, or a tripwire.
+   Output: smaller future wait, less root/schema/daemon ambiguity, or a clearer
+   positive process check.
 
 Pick one lane per wait window. Do not start another heavy archive/test/build
 job against the same checkout or archive just to look busy.

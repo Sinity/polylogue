@@ -14,7 +14,7 @@ daemon/import/test is running, pick one foreground lane from
 - velocity/meta friction capture.
 
 The output must be concrete: patch candidate, refreshed artifact, ranked next
-slice, narrow audit prompt, proof command, or tripwire. Avoid starting another
+slice, narrow audit prompt, proof command, or process-health check. Avoid starting another
 heavy command against the same checkout/archive while the current proof is
 pending.
 
