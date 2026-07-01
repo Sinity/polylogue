@@ -148,6 +148,30 @@ else
   ok "devloop scripts are executable"
 fi
 
+allowed_agent_root_entries=(
+  DEVLOOP.md
+  README.md
+  archive
+  conductor-devloop
+  demos
+  includes
+  scratch
+  scripts
+  task-history
+  tools
+)
+unexpected_agent_root_entries="$(
+  find "$repo/.agent" -mindepth 1 -maxdepth 1 -printf '%f\n' \
+    | sort \
+    | comm -23 - <(printf '%s\n' "${allowed_agent_root_entries[@]}" | sort)
+)"
+if [ -n "$unexpected_agent_root_entries" ]; then
+  warn ".agent root contains noncanonical entries; move them to demos, scratch/research, archive, or tools"
+  printf '%s\n' "$unexpected_agent_root_entries"
+else
+  ok ".agent root entries match the conductor convention"
+fi
+
 if grep -Eq ':-TODO|:-TBD|:-FIXME' "$repo/.agent/scripts/devloop-meta"; then
   warn "devloop-meta still has placeholder defaults; meta audits must require complete fields"
 else

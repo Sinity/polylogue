@@ -54,6 +54,8 @@ should follow the bootstrap below without needing chat context.
 - `scratch/README.md` — tracked routing rules for ignored scratch material.
 - `archive/` — ignored archaeology only. It is not a startup surface and should
   not receive current state, generated proofs, or demos.
+- `task-history/` — ignored devtools execution ledger populated by
+  `devtools`; useful for velocity analysis, not a startup surface.
 - `tools/` — small helper scripts.
 
 ## Rule
