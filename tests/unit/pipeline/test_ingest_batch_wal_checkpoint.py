@@ -16,6 +16,39 @@ from polylogue.storage.sqlite.connection import open_connection
 from polylogue.storage.sqlite.wal_checkpoint import WalCheckpointObservation, maybe_checkpoint_wal
 
 
+def test_format_foreign_key_violations_renders_tuple_rows() -> None:
+    rendered = ingest_batch_core._format_foreign_key_violations(
+        [
+            ("messages", 42, "sessions", 0),
+            ("blocks", 7, "messages", 1),
+        ]
+    )
+
+    assert "sqlite3.Row object" not in rendered
+    assert "'table': 'messages'" in rendered
+    assert "'rowid': 42" in rendered
+    assert "'parent': 'sessions'" in rendered
+    assert "'fkid': 0" in rendered
+
+
+def test_format_foreign_key_violations_renders_sqlite_rows(tmp_path: Path) -> None:
+    db_path = tmp_path / "fk.db"
+    with open_connection(db_path) as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("CREATE TABLE parent (id TEXT PRIMARY KEY)")
+        conn.execute("CREATE TABLE child (id TEXT PRIMARY KEY, parent_id TEXT REFERENCES parent(id))")
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("INSERT INTO child (id, parent_id) VALUES ('child-1', 'missing-parent')")
+        rows = conn.execute("PRAGMA foreign_key_check").fetchall()
+
+    rendered = ingest_batch_core._format_foreign_key_violations(rows)
+
+    assert "sqlite3.Row object" not in rendered
+    assert "'table': 'child'" in rendered
+    assert "'parent': 'parent'" in rendered
+    assert "'fkid': 0" in rendered
+
+
 def test_process_ingest_batch_sync_records_wal_checkpoint_observation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -124,6 +124,18 @@ def _open_sync_connection(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _format_foreign_key_violations(rows: Sequence[sqlite3.Row | tuple[object, ...]]) -> str:
+    """Render PRAGMA foreign_key_check rows without sqlite3.Row object reprs."""
+    formatted: list[dict[str, object | None]] = []
+    columns = ("table", "rowid", "parent", "fkid")
+    for row in rows:
+        if isinstance(row, sqlite3.Row):
+            formatted.append({key: row[key] for key in row.keys()})  # noqa: SIM118 - sqlite3.Row iterates values
+            continue
+        formatted.append({key: row[idx] if idx < len(row) else None for idx, key in enumerate(columns)})
+    return repr(formatted)
+
+
 def _stored_message_count(conn: sqlite3.Connection, session_id: str) -> int:
     row = conn.execute(
         "SELECT COUNT(*) FROM messages WHERE session_id = ?",
@@ -859,7 +871,8 @@ def _process_ingest_batch_sync(
             if suspend_fts_triggers:
                 fk_violations = conn.execute("PRAGMA foreign_key_check").fetchmany(10)
                 if fk_violations:
-                    raise sqlite3.IntegrityError(f"foreign key check failed during bulk ingest: {fk_violations!r}")
+                    detail = _format_foreign_key_violations(fk_violations)
+                    raise sqlite3.IntegrityError(f"foreign key check failed during bulk ingest: {detail}")
             fts_repair_ids = set(summary.fts_repair_session_ids)
             # Side effects run before releasing the connection so data and post-
             # write effects share one transaction. The previous arrangement
