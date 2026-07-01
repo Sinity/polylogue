@@ -72,7 +72,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/insights.py
-    loc: 666
+    loc: 665
     target: polylogue/api/insights.py
     owner: stable
     cross_cut: { api: async }
@@ -1436,7 +1436,7 @@ files:
     target: polylogue/insights/__init__.py
     owner: stable
   - path: polylogue/insights/archive.py
-    loc: 622
+    loc: 620
     target: polylogue/insights/archive.py
     owner: stable
   - path: polylogue/insights/archive_models.py
@@ -1489,7 +1489,7 @@ files:
     target: polylogue/insights/otlp_correlation.py
     owner: stable
   - path: polylogue/insights/pathology.py
-    loc: 219
+    loc: 192
     target: polylogue/insights/pathology.py
     owner: stable
   - path: polylogue/insights/portfolio.py
@@ -1505,11 +1505,11 @@ files:
     target: polylogue/insights/provenance.py
     owner: stable
   - path: polylogue/insights/readiness.py
-    loc: 567
+    loc: 571
     target: polylogue/insights/readiness.py
     owner: stable
   - path: polylogue/insights/registry.py
-    loc: 742
+    loc: 739
     target: polylogue/insights/registry.py
     owner: stable
   - path: polylogue/insights/resume.py
@@ -1517,11 +1517,11 @@ files:
     target: polylogue/insights/resume.py
     owner: stable
   - path: polylogue/insights/rigor.py
-    loc: 263
+    loc: 262
     target: polylogue/insights/rigor.py
     owner: stable
   - path: polylogue/insights/run_projection.py
-    loc: 488
+    loc: 425
     target: polylogue/insights/run_projection.py
     owner: stable
   - path: polylogue/insights/session_commit.py
@@ -1549,7 +1549,7 @@ files:
     target: polylogue/insights/topology.py
     owner: stable
   - path: polylogue/insights/transforms.py
-    loc: 2309
+    loc: 2252
     target: polylogue/insights/transforms.py
     owner: stable
   - path: polylogue/logging.py
@@ -2751,7 +2751,7 @@ files:
     target: polylogue/storage/derived/__init__.py
     owner: stable
   - path: polylogue/storage/derived/derived_status.py
-    loc: 417
+    loc: 405
     target: polylogue/storage/derived/derived_status.py
     owner: stable
   - path: polylogue/storage/derived/insights.py
@@ -2791,7 +2791,7 @@ files:
     target: polylogue/storage/embeddings/status_payload.py
     owner: stable
   - path: polylogue/storage/embeddings/support.py
-    loc: 266
+    loc: 256
     target: polylogue/storage/embeddings/support.py
     owner: stable
   - path: polylogue/storage/fts/__init__.py
@@ -2890,7 +2890,7 @@ files:
     target: polylogue/storage/insights/session/run_projection_rows.py
     owner: stable
   - path: polylogue/storage/insights/session/runtime.py
-    loc: 142
+    loc: 173
     target: polylogue/storage/insights/session/runtime.py
     owner: stable
   - path: polylogue/storage/insights/session/status.py
@@ -2898,7 +2898,7 @@ files:
     target: polylogue/storage/insights/session/status.py
     owner: stable
   - path: polylogue/storage/insights/session/storage.py
-    loc: 1068
+    loc: 1064
     target: polylogue/storage/insights/session/storage.py
     owner: stable
   - path: polylogue/storage/insights/session/threads.py
@@ -3170,7 +3170,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 7096
+    loc: 7083
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py
@@ -3198,7 +3198,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/embeddings.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/index.py
-    loc: 967
+    loc: 962
     target: polylogue/storage/sqlite/archive_tiers/index.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/ops.py
@@ -3246,7 +3246,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/user_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/write.py
-    loc: 3612
+    loc: 3602
     target: polylogue/storage/sqlite/archive_tiers/write.py
     owner: stable
   - path: polylogue/storage/sqlite/async_sqlite.py

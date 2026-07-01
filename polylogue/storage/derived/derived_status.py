@@ -213,7 +213,7 @@ def _session_insight_metrics(session_status: SessionInsightStatusSnapshot) -> Me
         "work_event_rows": session_status.work_event_inference_count,
         "work_event_fts_rows": session_status.work_event_inference_fts_count,
         "work_event_fts_duplicates": session_status.work_event_inference_fts_duplicate_count,
-        "phase_rows": session_status.phase_inference_count,
+        "phase_rows": session_status.phase_count,
         "thread_rows": session_status.thread_count,
         "thread_fts_rows": session_status.thread_fts_count,
         "thread_fts_duplicates": session_status.thread_fts_duplicate_count,
@@ -226,16 +226,16 @@ def _session_insight_metrics(session_status: SessionInsightStatusSnapshot) -> Me
         "expected_work_event_rows": session_status.expected_work_event_inference_count,
         "stale_work_event_rows": session_status.stale_work_event_inference_count,
         "orphan_work_event_rows": session_status.orphan_work_event_inference_count,
-        "expected_phase_rows": session_status.expected_phase_inference_count,
-        "stale_phase_rows": session_status.stale_phase_inference_count,
-        "orphan_phase_rows": session_status.orphan_phase_inference_count,
+        "expected_phase_rows": session_status.expected_phase_count,
+        "stale_phase_rows": session_status.stale_phase_count,
+        "orphan_phase_rows": session_status.orphan_phase_count,
         "stale_thread_rows": session_status.stale_thread_count,
         "orphan_thread_rows": session_status.orphan_thread_count,
         "stale_tag_rollup_rows": session_status.stale_tag_rollup_count,
         "profile_rows_ready": session_status.profile_rows_ready,
         "work_event_rows_ready": session_status.work_event_inference_rows_ready,
         "work_event_fts_ready": session_status.work_event_inference_fts_ready,
-        "phase_rows_ready": session_status.phase_inference_rows_ready,
+        "phase_rows_ready": session_status.phase_rows_ready,
         "threads_ready": session_status.threads_ready,
         "thread_fts_ready": session_status.threads_fts_ready,
         "tag_rollups_ready": session_status.tag_rollups_ready,
@@ -273,18 +273,15 @@ def _retrieval_metrics(
 ) -> Metrics:
     evidence_rows = int(metrics["profile_rows"])
     expected_evidence_rows = int(metrics["profile_rows"])
-    inference_rows = int(metrics["profile_rows"]) + int(metrics["work_event_fts_rows"]) + int(metrics["phase_rows"])
-    expected_inference_rows = (
-        int(metrics["profile_rows"]) + int(metrics["work_event_rows"]) + int(metrics["phase_rows"])
-    )
+    inference_rows = int(metrics["profile_rows"]) + int(metrics["work_event_fts_rows"])
+    expected_inference_rows = int(metrics["profile_rows"]) + int(metrics["work_event_rows"])
     return {
         "evidence_retrieval_rows": evidence_rows,
         "expected_evidence_retrieval_rows": expected_evidence_rows,
         "evidence_retrieval_ready": True,
         "inference_retrieval_rows": inference_rows,
         "expected_inference_retrieval_rows": expected_inference_rows,
-        "inference_retrieval_ready": session_status.work_event_inference_fts_ready
-        and session_status.phase_inference_rows_ready,
+        "inference_retrieval_ready": session_status.work_event_inference_fts_ready,
         "enrichment_retrieval_rows": int(metrics["profile_rows"]),
         "expected_enrichment_retrieval_rows": int(metrics["profile_rows"]),
         "enrichment_retrieval_ready": True,
@@ -372,8 +369,7 @@ def build_retrieval_statuses(metrics: Metrics) -> dict[str, DerivedModelStatus]:
                 if bool(metrics["inference_retrieval_ready"])
                 else (
                     f"Inference retrieval pending ({metrics['inference_retrieval_rows']:,}/{metrics['expected_inference_retrieval_rows']:,} supporting rows; "
-                    f"work_event_fts={metrics['work_event_fts_rows']:,}/{metrics['work_event_rows']:,}, "
-                    f"phases={metrics['phase_rows']:,}/{metrics['expected_phase_rows']:,})"
+                    f"work_event_fts={metrics['work_event_fts_rows']:,}/{metrics['work_event_rows']:,})"
                 )
             ),
             source_documents=int(metrics["profile_rows"]),
@@ -383,16 +379,8 @@ def build_retrieval_statuses(metrics: Metrics) -> dict[str, DerivedModelStatus]:
             pending_rows=pending_rows(
                 int(metrics["expected_inference_retrieval_rows"]), int(metrics["inference_retrieval_rows"])
             ),
-            stale_rows=(
-                int(metrics["work_event_fts_duplicates"])
-                + int(metrics["stale_work_event_rows"])
-                + int(metrics["stale_phase_rows"])
-            ),
-            orphan_rows=(
-                int(metrics["orphan_profile_rows"])
-                + int(metrics["orphan_work_event_rows"])
-                + int(metrics["orphan_phase_rows"])
-            ),
+            stale_rows=(int(metrics["work_event_fts_duplicates"]) + int(metrics["stale_work_event_rows"])),
+            orphan_rows=(int(metrics["orphan_profile_rows"]) + int(metrics["orphan_work_event_rows"])),
         ),
         "retrieval_enrichment": DerivedModelStatus(
             name="retrieval_enrichment",

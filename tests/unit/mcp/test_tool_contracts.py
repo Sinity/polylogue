@@ -620,6 +620,7 @@ class TestArchiveTools:
             tags=("v1", "review"),
             excluded_tags=("archived",),
             repo_names=("polylogue",),
+            project_refs=(),
             has_types=("tool_use", "thinking"),
             has_tool_use=True,
             has_thinking=True,
@@ -651,6 +652,7 @@ class TestArchiveTools:
             tags=("v1", "review"),
             excluded_tags=("archived",),
             repo_names=("polylogue",),
+            project_refs=(),
             has_types=("tool_use", "thinking"),
             has_tool_use=True,
             has_thinking=True,
@@ -1099,7 +1101,6 @@ class TestInsightTools:
             )
             phases_raw = await invoke_surface_async(
                 mcp_server._tool_manager._tools["session_phases"].fn,
-                kind="implementation",
                 limit=5,
             )
             threads_raw = await invoke_surface_async(

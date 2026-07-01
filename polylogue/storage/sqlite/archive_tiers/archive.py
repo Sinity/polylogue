@@ -51,7 +51,6 @@ from polylogue.insights.archive import (
     SessionLatencyProfileInsight,
     SessionLatencyProfilePayload,
     SessionPhaseEvidencePayload,
-    SessionPhaseInferencePayload,
     SessionPhaseInsight,
     SessionProfileInsight,
     SessionTagRollupInsight,
@@ -797,7 +796,6 @@ class ArchiveStore:
         *,
         session_id: str | None = None,
         provider: str | None = None,
-        kind: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
         limit: int | None = 50,
@@ -813,9 +811,6 @@ class ArchiveStore:
         if origin is not None:
             where.append("s.origin = ?")
             params.append(origin)
-        if kind is not None:
-            where.append("sp.phase_type = ?")
-            params.append(kind)
         if since_ms is not None:
             where.append("COALESCE(sp.started_at_ms, s.sort_key_ms) >= ?")
             params.append(since_ms)
@@ -843,12 +838,11 @@ class ArchiveStore:
             materialization = _read_archive_materialization(self._conn, "phases", phase_session_id)
             session_origin = _session_origin(self._conn, phase_session_id)
             for phase in read_session_phases(self._conn, session_id=phase_session_id).values():
-                if kind is None or phase.phase_type == kind:
-                    indexed[(phase.session_id, phase.position)] = _phase_insight_from_archive_row(
-                        phase,
-                        origin=session_origin,
-                        materialization=materialization,
-                    )
+                indexed[(phase.session_id, phase.position)] = _phase_insight_from_archive_row(
+                    phase,
+                    origin=session_origin,
+                    materialization=materialization,
+                )
         return [indexed[(str(row["session_id"]), int(row["position"]))] for row in rows]
 
     def get_thread_insight(self, thread_id: str) -> ThreadInsight | None:
@@ -2943,12 +2937,12 @@ class ArchiveStore:
             "session_phases": (
                 "Session Phases",
                 "session_phases",
-                status.phase_inference_count,
-                status.expected_phase_inference_count,
+                status.phase_count,
+                status.expected_phase_count,
                 0,
-                status.stale_phase_inference_count,
-                status.orphan_phase_inference_count,
-                {"phase_inference_rows_ready": status.phase_inference_rows_ready},
+                status.stale_phase_count,
+                status.orphan_phase_count,
+                {"phase_rows_ready": status.phase_rows_ready},
                 ("session_phases",),
             ),
             "threads": (
@@ -4864,20 +4858,13 @@ def _phase_insight_from_archive_row(
         "tool_counts": phase.tool_counts,
         "word_count": phase.word_count,
     }
-    inference_payload = {
-        **phase.inference,
-        "confidence": phase.confidence,
-        "support_level": confidence_from_score(phase.confidence),
-    }
     return SessionPhaseInsight(
         phase_id=phase.phase_id,
         session_id=phase.session_id,
         source_name=_provider_for_origin(origin).value,
         phase_index=phase.position,
         provenance=_archive_provenance(materialization),
-        inference_provenance=_archive_inference_provenance(materialization),
         evidence=SessionPhaseEvidencePayload.model_validate(evidence_payload),
-        inference=SessionPhaseInferencePayload.model_validate(inference_payload),
     )
 
 

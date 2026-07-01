@@ -80,4 +80,5 @@ def test_build_retrieval_statuses_counts_stale_session_insight_rows() -> None:
     inference = statuses["retrieval_inference"]
     assert inference.ready is True
     assert inference.pending_rows == 0
-    assert inference.stale_rows == 5
+    assert inference.stale_rows == 3
+    assert inference.orphan_rows == 0

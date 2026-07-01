@@ -20,7 +20,6 @@ from polylogue.insights.archive_models import (
     SessionEvidencePayload,
     SessionInferencePayload,
     SessionPhaseEvidencePayload,
-    SessionPhaseInferencePayload,
     WorkEventEvidencePayload,
     WorkEventInferencePayload,
 )
@@ -102,15 +101,14 @@ def _work_event(*, fallback: bool, confidence: float) -> SessionWorkEventInsight
 
 
 def _phase(*, fallback: bool, confidence: float) -> SessionPhaseInsight:
+    _ = (fallback, confidence)
     return SessionPhaseInsight(
         phase_id="p1",
         session_id="c1",
         source_name="claude-code",
         phase_index=0,
         provenance=_provenance(),
-        inference_provenance=_inference_provenance(),
         evidence=SessionPhaseEvidencePayload(),
-        inference=SessionPhaseInferencePayload(confidence=confidence, fallback_inference=fallback),
     )
 
 
@@ -157,6 +155,15 @@ def test_rigor_contract_lookup_round_trips() -> None:
     assert contract.fallback_markers == (("inference", "fallback_inference"),)
     assert contract.confidence_field == ("inference", "confidence")
     assert get_rigor_contract("not-a-real-insight") is None
+
+
+def test_phase_rigor_contract_is_evidence_only() -> None:
+    contract = get_rigor_contract("session_phases")
+    assert contract is not None
+    assert contract.evidence_payload == ("evidence",)
+    assert contract.inference_payload == ()
+    assert contract.fallback_markers == ()
+    assert contract.confidence_field == ()
 
 
 def test_resolve_payload_walks_attributes_and_dicts() -> None:

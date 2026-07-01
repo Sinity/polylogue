@@ -33,7 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 17
+INDEX_SCHEMA_VERSION = 18
 
 INDEX_DDL = f"""
 CREATE TABLE IF NOT EXISTS sessions (
@@ -685,8 +685,6 @@ CREATE TABLE IF NOT EXISTS session_phases (
     phase_id        TEXT GENERATED ALWAYS AS (session_id || ':phase:' || position) STORED UNIQUE,
     session_id      TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     position        INTEGER NOT NULL CHECK(position >= 0),
-    phase_type      TEXT NOT NULL,
-    confidence      REAL NOT NULL DEFAULT 0.0 CHECK(confidence BETWEEN 0 AND 1),
     start_index     INTEGER NOT NULL DEFAULT 0 CHECK(start_index >= 0),
     end_index       INTEGER NOT NULL DEFAULT 0 CHECK(end_index >= start_index),
     started_at_ms   INTEGER,
@@ -704,9 +702,6 @@ CREATE TABLE IF NOT EXISTS session_phases (
 
 CREATE INDEX IF NOT EXISTS idx_session_phases_session
 ON session_phases(session_id, position);
-
-CREATE INDEX IF NOT EXISTS idx_session_phases_type
-ON session_phases(phase_type, session_id);
 
 CREATE TRIGGER IF NOT EXISTS session_work_events_fts_ad
 AFTER DELETE ON session_work_events BEGIN

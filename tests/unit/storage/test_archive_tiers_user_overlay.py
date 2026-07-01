@@ -66,7 +66,6 @@ def test_archive_tiers_user_overlay_orphan_check_resolves_archive_targets(tmp_pa
         archive_conn,
         session_id=session_id,
         position=0,
-        phase_type="build",
     )
 
     for assertion_id, target_ref, kind in [
