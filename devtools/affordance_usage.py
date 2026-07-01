@@ -468,26 +468,21 @@ def _recent_action_rows(
             conn,
             f"""
             SELECT
-                u.tool_name,
-                u.session_id,
-                u.message_id,
+                a.tool_name,
+                a.session_id,
+                a.message_id,
                 m.occurred_at_ms,
-                coalesce(u.tool_command, '') || ' ' ||
-                    coalesce(u.tool_path, '') || ' ' ||
-                    coalesce(u.tool_input, '') AS match_detail,
-                substr(coalesce(u.tool_command, u.tool_path, u.tool_input, ''), 1, 240) AS detail,
-                r.tool_result_is_error AS is_error,
-                r.tool_result_exit_code AS exit_code
-            FROM blocks AS u INDEXED BY idx_blocks_session_position
-            JOIN messages AS m ON m.message_id = u.message_id
-            LEFT JOIN blocks AS r
-                ON r.tool_id = u.tool_id
-               AND r.session_id = u.session_id
-               AND r.block_type = 'tool_result'
-            WHERE u.session_id IN ({placeholders})
-              AND u.block_type = 'tool_use'
+                coalesce(a.tool_command, '') || ' ' ||
+                    coalesce(a.tool_path, '') || ' ' ||
+                    coalesce(a.tool_input, '') AS match_detail,
+                substr(coalesce(a.tool_command, a.tool_path, a.tool_input, ''), 1, 240) AS detail,
+                a.is_error,
+                a.exit_code
+            FROM actions AS a
+            JOIN messages AS m ON m.message_id = a.message_id
+            WHERE a.session_id IN ({placeholders})
               AND ({where_sql})
-            ORDER BY u.tool_name, u.session_id
+            ORDER BY a.tool_name, a.session_id
             """,
             [*session_ids, *where_params],
         )
@@ -507,28 +502,23 @@ def _all_time_action_rows(
         conn,
         f"""
         SELECT
-            u.tool_name,
-            u.session_id,
+            a.tool_name,
+            a.session_id,
             s.origin,
             s.title,
-            u.message_id,
+            a.message_id,
             m.occurred_at_ms,
-            coalesce(u.tool_command, '') || ' ' ||
-                coalesce(u.tool_path, '') || ' ' ||
-                coalesce(u.tool_input, '') AS match_detail,
-            substr(coalesce(u.tool_command, u.tool_path, u.tool_input, ''), 1, 240) AS detail,
-            r.tool_result_is_error AS is_error,
-            r.tool_result_exit_code AS exit_code
-        FROM blocks AS u
-        JOIN sessions AS s ON s.session_id = u.session_id
-        JOIN messages AS m ON m.message_id = u.message_id
-        LEFT JOIN blocks AS r
-            ON r.tool_id = u.tool_id
-           AND r.session_id = u.session_id
-           AND r.block_type = 'tool_result'
-        WHERE u.block_type = 'tool_use'
-          AND ({where_sql})
-        ORDER BY u.tool_name, u.session_id
+            coalesce(a.tool_command, '') || ' ' ||
+                coalesce(a.tool_path, '') || ' ' ||
+                coalesce(a.tool_input, '') AS match_detail,
+            substr(coalesce(a.tool_command, a.tool_path, a.tool_input, ''), 1, 240) AS detail,
+            a.is_error,
+            a.exit_code
+        FROM actions AS a
+        JOIN sessions AS s ON s.session_id = a.session_id
+        JOIN messages AS m ON m.message_id = a.message_id
+        WHERE ({where_sql})
+        ORDER BY a.tool_name, a.session_id
         """,
         where_params,
     )
@@ -537,7 +527,7 @@ def _all_time_action_rows(
 def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
     config = _config_with_archive_root(get_config(), args.archive_root)
     index_db = config.db_path
-    where_sql, where_params = _where_for_filters(args.family, args.detail_pattern, alias="u")
+    where_sql, where_params = _where_for_filters(args.family, args.detail_pattern, alias="a")
     effective_tool_patterns = _clean_patterns(args.family or (() if args.detail_pattern else DEFAULT_FAMILY_PATTERNS))
     effective_detail_patterns = _clean_patterns(args.detail_pattern)
     recent_cutoff_ms = _recent_cutoff_ms(args.days)

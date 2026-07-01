@@ -40,6 +40,26 @@ def _make_index_db(root: Path) -> Path:
                 tool_result_exit_code INTEGER
             );
             CREATE INDEX idx_blocks_session_position ON blocks(session_id, message_id);
+            CREATE VIEW actions AS
+            SELECT
+                u.session_id,
+                u.message_id,
+                NULL AS tool_use_block_id,
+                u.tool_name,
+                NULL AS semantic_type,
+                u.tool_command,
+                u.tool_path,
+                u.tool_input,
+                NULL AS output_text,
+                r.tool_result_is_error AS is_error,
+                r.tool_result_exit_code AS exit_code,
+                NULL AS tool_result_block_id
+            FROM blocks u
+            LEFT JOIN blocks r
+                ON r.tool_id = u.tool_id
+               AND r.session_id = u.session_id
+               AND r.block_type = 'tool_result'
+            WHERE u.block_type = 'tool_use';
             INSERT INTO sessions VALUES
                 ('s1', 'codex-session', 'Codex work', 4102444800000),
                 ('s2', 'claude-code-session', 'Claude work', 4102444800000);
