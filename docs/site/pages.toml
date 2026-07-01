@@ -55,9 +55,6 @@ path = "/architecture/contributing/"
 [[nav]]
 title = "Verifiability"
 [[nav.items]]
-label = "Catalog"
-path = "/verifiability/catalog/"
-[[nav.items]]
 label = "Coverage"
 path = "/verifiability/coverage/"
 [[nav.items]]
@@ -140,6 +137,16 @@ source = "docs/cli-reference.md"
 path = "/reference/mcp/"
 title = "MCP Reference"
 source = "docs/mcp-reference.md"
+
+[[pages]]
+path = "/reference/api/"
+title = "Library API"
+source = "docs/library-api.md"
+
+[[pages]]
+path = "/reference/config/"
+title = "Configuration"
+source = "docs/configuration.md"
 
 [[pages]]
 path = "/architecture/rings/"
