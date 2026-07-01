@@ -779,6 +779,12 @@ def _provenance_dict(prov: Any) -> dict[str, object]:
     }
 
 
+def _optional_model_dump(value: Any) -> dict[str, object] | None:
+    if value is None:
+        return None
+    return value.model_dump(mode="json")
+
+
 def _profile_staleness(record: Any, session_updated_at: str | None) -> dict[str, object] | None:
     """Compare a session-profile record's provenance against its session.
 
@@ -863,7 +869,7 @@ def _phase_panel_payload(phases: list[Any]) -> dict[str, object]:
                 "session_id": ph.session_id,
                 "origin": source_name_to_origin(ph.source_name),
                 "evidence": ph.evidence.model_dump(mode="json"),
-                "inference": ph.inference.model_dump(mode="json"),
+                "inference": _optional_model_dump(ph.inference),
                 "provenance": _provenance_dict(ph.provenance),
             }
         )
