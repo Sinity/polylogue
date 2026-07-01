@@ -264,6 +264,18 @@ def _init_raw_materialization_fixture(root: Path) -> tuple[Path, Path, Path]:
                     None,
                 ),
                 (
+                    "raw-parse-pending",
+                    "codex-session",
+                    "codex-parse-pending",
+                    str(source_file),
+                    bytes.fromhex("13" * 32),
+                    2048,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+                (
                     "raw-parsed-no-session",
                     "aistudio-drive",
                     None,
@@ -395,6 +407,11 @@ def _init_raw_materialization_fixture(root: Path) -> tuple[Path, Path, Path]:
         '{"sessionId":"gemini-session-shaped","messages":[{"type":"user"},{"type":"gemini"}],"kind":"main"}',
         encoding="utf-8",
     )
+    (blob_root / "13").mkdir()
+    (blob_root / "13" / ("13" * 31)).write_text(
+        '{"type":"response_item","payload":{"type":"message","role":"user"}}\n',
+        encoding="utf-8",
+    )
 
     with sqlite3.connect(index_db) as conn:
         conn.execute("CREATE TABLE sessions (session_id TEXT, origin TEXT, native_id TEXT, raw_id TEXT)")
@@ -407,12 +424,12 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
 
     payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
 
-    assert payload.totals.total == 6
-    assert payload.totals.affected_total == 8
+    assert payload.totals.total == 7
+    assert payload.totals.affected_total == 9
     assert payload.totals.affected_critical == 1
-    assert payload.totals.affected_warning == 3
+    assert payload.totals.affected_warning == 4
     assert payload.totals.affected_info == 4
-    assert payload.totals.affected_actionable == 1
+    assert payload.totals.affected_actionable == 2
     assert payload.totals.affected_open == 7
 
     by_ref = {row.debt_ref: row for row in payload.rows}
@@ -424,6 +441,24 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
     assert missing_blob.affected_count == 1
     assert "missing blob payloads" in missing_blob.summary
     assert any(ref.startswith("blob:") for ref in missing_blob.evidence_refs)
+
+    parse_pending = by_ref["debt:raw-materialization:codex-session:parse-pending"]
+    assert parse_pending.severity == "warning"
+    assert parse_pending.status == "actionable"
+    assert parse_pending.category == "parse-pending"
+    assert parse_pending.actions[0].command == ("polylogued", "run")
+    assert parse_pending.actions[1].label == "Preview targeted raw replay"
+    assert parse_pending.actions[1].command == (
+        "polylogue",
+        "ops",
+        "maintenance",
+        "run",
+        "--target",
+        "raw_materialization",
+        "--raw-artifact",
+        "raw-parse-pending",
+        "--dry-run",
+    )
 
     parsed_gap = by_ref["debt:raw-materialization:aistudio-drive:parsed-without-session"]
     assert parsed_gap.severity == "warning"

@@ -747,6 +747,7 @@ def _raw_materialization_debt_row(
     else:
         severity = "warning"
         stage = "parse"
+        sample_raw_id = str(sample_rows[0]["raw_id"]) if sample_rows else ""
         summary = f"{count} {origin} raw artifact(s) are acquired but not yet parsed"
         details = (
             f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size} bytes."
@@ -755,6 +756,21 @@ def _raw_materialization_debt_row(
             ArchiveDebtActionPayload(
                 label="Run daemon ingest",
                 command=("polylogued", "run"),
+            ),
+            ArchiveDebtActionPayload(
+                label="Preview targeted raw replay",
+                command=(
+                    "polylogue",
+                    "ops",
+                    "maintenance",
+                    "run",
+                    "--target",
+                    "raw_materialization",
+                    "--raw-artifact",
+                    sample_raw_id,
+                    "--dry-run",
+                ),
+                description="Preview reparsing one sampled acquired raw artifact before running a broad repair.",
             ),
         )
 
