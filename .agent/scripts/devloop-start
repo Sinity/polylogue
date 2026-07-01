@@ -2,7 +2,10 @@
 set -euo pipefail
 
 start_focus="Direction"
-if [ "${1:-}" = "--focus" ]; then
+if [ "${1:-}" = "--meta" ]; then
+  start_focus="Meta"
+  shift
+elif [ "${1:-}" = "--focus" ]; then
   start_focus="${2:?usage: devloop-start [--focus MODE] <slice-title>}"
   shift 2
 fi
@@ -15,7 +18,7 @@ case "$start_focus" in
     ;;
 esac
 
-title="${1:?usage: devloop-start [--focus MODE] <slice-title>}"
+title="${1:?usage: devloop-start [--meta|--focus MODE] <slice-title>}"
 root="${POLYLOGUE_AGENT_LOG_ROOT:-/realm/project/polylogue/.agent/conductor-devloop}"
 next_focus="Evidence"
 next_decision="gather current evidence before editing"

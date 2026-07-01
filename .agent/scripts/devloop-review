@@ -411,6 +411,42 @@ PY
   else
     warn "ACTIVE-LOOP accepted warnings look like historical ledger; keep history in OPERATING-LOG/DEMO-RADAR"
   fi
+  if python3 - "$current/ACTIVE-LOOP.md" <<'PY'
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+
+def section(heading: str) -> str:
+    marker = f"## {heading}"
+    start = text.find(marker)
+    if start == -1:
+        return ""
+    next_start = text.find("\n## ", start + 1)
+    if next_start == -1:
+        next_start = len(text)
+    return text[start + len(marker):next_start].strip()
+
+slice_text = section("Current Slice").lower()
+focus_text = section("Current Focus")
+focus_line = next((line.strip() for line in focus_text.splitlines() if line.startswith("Focus: ")), "")
+is_meta_slice = bool(
+    re.search(r"\b(meta|scaffold|devloop)\b", slice_text)
+    or re.search(r"\bprocess[- ]?(self|improvement|convention)\b", slice_text)
+    or "self-improvement" in slice_text
+)
+is_meta_focus = "Meta ->" in focus_line or "-> Meta" in focus_line
+if is_meta_slice and not is_meta_focus:
+    raise SystemExit(1)
+PY
+  then
+    ok "process/meta slice focus is explicit when applicable"
+  else
+    warn "ACTIVE-LOOP slice looks like process/meta work but focus is not Meta; use devloop-start --meta or devloop-focus ... Meta"
+  fi
 fi
 
 polylogued_pids="$(ps -eo pid=,args= | awk '$3 ~ /\/polylogued$/ && $4 == "run" {print}' || true)"

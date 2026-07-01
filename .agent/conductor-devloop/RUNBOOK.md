@@ -11,7 +11,7 @@ Before a capability slice:
 5. If review warns, fix it or record the accepted warning in `ACTIVE-LOOP.md`
    when local state exists; otherwise initialize local state first.
 6. Start the slice with `.agent/scripts/devloop-start "<slice>"`, or
-   `.agent/scripts/devloop-start --focus Meta "<slice>"` when the slice itself
+   `.agent/scripts/devloop-start --meta "<slice>"` when the slice itself
    begins as process/self-improvement work.
 
 Use `.agent/scripts/devloop-status --json` when another script or report needs
@@ -66,7 +66,7 @@ Velocity, and Meta.
    - Write the slice contract before editing: demo value, reusable substrate,
      proof ladder, non-goals, and first concrete action.
    - Start the slice with `.agent/scripts/devloop-start "<slice>"`. Use
-     `--focus Meta` for process-improvement slices so the first logged
+     `--meta` for process-improvement slices so the first logged
      transition is truthful instead of a synthetic Direction entry.
    - Run `.agent/scripts/devloop-demo` when the slice should create, refresh,
      retire, or caveat an artifact.
@@ -115,7 +115,7 @@ Velocity, and Meta.
    - Run when the operator corrects process behavior, repeated friction appears,
      or a loop feels vague/stalled.
    - Start pure process/self-improvement slices with
-     `.agent/scripts/devloop-start --focus Meta "<slice>"`; this records
+     `.agent/scripts/devloop-start --meta "<slice>"`; this records
      `Meta -> Meta` until a deliberate transition moves the loop back to
      Evidence, Construction, Proof, Artifact, Velocity, or Direction.
    - Use `.agent/scripts/devloop-meta "<trigger>" "<failure-hypothesis>" "<evidence>" "<change-considered>" "<change-made>" "<change-deferred>" "<next-tripwire>"`.

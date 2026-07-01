@@ -66,6 +66,7 @@ For process/self-improvement work, start in Meta and stay there until a
 deliberate transition:
 
 ```bash
+.agent/scripts/devloop-start --meta "<slice title>"
 .agent/scripts/devloop-start --focus Meta "<slice title>"
 ```
 
