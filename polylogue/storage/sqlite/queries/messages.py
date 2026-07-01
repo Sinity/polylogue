@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from polylogue.storage.sqlite.queries.message_query_reads import (
     MessageTypeName,
+    get_message_edge_windows,
     get_messages,
     get_messages_batch,
     get_messages_paginated,
@@ -16,6 +17,7 @@ from polylogue.storage.sqlite.queries.message_query_stats import (
 
 __all__ = [
     "get_messages",
+    "get_message_edge_windows",
     "get_messages_batch",
     "get_messages_paginated",
     "iter_messages",

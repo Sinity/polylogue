@@ -9,6 +9,7 @@ from polylogue.core.timestamps import parse_timestamp
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.queries.message_query_reads import (
+    get_message_edge_windows,
     get_messages,
     get_messages_batch,
     get_messages_paginated,
@@ -97,6 +98,17 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
         ]
         assert [message.message_id for message in filtered_messages] == [f"{current_session_id}:msg-user"]
         assert [message.message_id for message in all_messages] == expected_message_ids
+
+        first_edge, last_edge, edge_total = await get_message_edge_windows(
+            conn,
+            current_session_id,
+            message_role=(Role.USER, Role.ASSISTANT),
+            message_type="message",
+            edge_limit=1,
+        )
+        assert edge_total == 2
+        assert [message.message_id for message in first_edge] == [f"{current_session_id}:msg-user"]
+        assert [message.message_id for message in last_edge] == [f"{current_session_id}:msg-assistant"]
 
         paginated, total = await get_messages_paginated(
             conn,

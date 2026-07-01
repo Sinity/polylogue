@@ -147,6 +147,22 @@ class SQLiteArchiveMixin:
             offset=offset,
         )
 
+    async def get_message_edge_windows(
+        self,
+        session_id: str,
+        *,
+        message_role: MessageRoleFilter = (),
+        message_type: MessageTypeName | None = None,
+        edge_limit: int = 8,
+    ) -> tuple[list[MessageRecord], list[MessageRecord], int]:
+        """Get first/last transcript-order message windows for bounded reads."""
+        return await self.queries.get_message_edge_windows(
+            session_id,
+            message_role=message_role,
+            message_type=message_type,
+            edge_limit=edge_limit,
+        )
+
     async def get_messages_batch(
         self,
         session_ids: list[str],

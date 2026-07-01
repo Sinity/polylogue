@@ -203,6 +203,21 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
         machine_payload="TemporalEvidenceWindow",
         degraded_states=("empty result set", "sessions without timestamps"),
     ),
+    SessionViewProfile(
+        view_id="chronicle",
+        label="Chronicle",
+        owner="polylogue.cli.read_views.chronicle.run_read_chronicle",
+        purpose="Bounded first/last chronological prose for large-session export and review.",
+        input_scope="query result set or exact session id",
+        included_kinds=("session summaries", "authored prose messages", "timestamps", "omission counts"),
+        lossiness="filtered",
+        evidence_policy="required",
+        privacy_policy="omits tool outputs, tool calls, thinking, protocol rows, and middle prose by default",
+        formats=("markdown", "json"),
+        machine_payload="ChronicleProjectionPayload",
+        degraded_states=("empty result set", "sessions without authored prose"),
+        successor_handoff=True,
+    ),
 )
 
 READ_VIEW_PROFILE_BY_ID: dict[str, SessionViewProfile] = {profile.view_id: profile for profile in READ_VIEW_PROFILES}

@@ -24,6 +24,7 @@ class EvidenceFamily(str, Enum):
     ACTIONS = "actions"
     RAW = "raw"
     CONTEXT = "context"
+    CHRONICLE = "chronicle"
     NEIGHBORS = "neighbors"
     CORRELATION = "correlation"
     TEMPORAL = "temporal"
@@ -128,6 +129,7 @@ READ_VIEW_PROJECTION_FAMILIES: dict[str, tuple[EvidenceFamily, ...]] = {
     "raw": (EvidenceFamily.RAW,),
     "context": (EvidenceFamily.CONTEXT, EvidenceFamily.MESSAGES),
     "context-image": (EvidenceFamily.CONTEXT, EvidenceFamily.MESSAGES, EvidenceFamily.ASSERTIONS),
+    "chronicle": (EvidenceFamily.CHRONICLE, EvidenceFamily.SESSIONS, EvidenceFamily.MESSAGES),
     "neighbors": (EvidenceFamily.NEIGHBORS, EvidenceFamily.SESSIONS),
     "correlation": (EvidenceFamily.CORRELATION, EvidenceFamily.ACTIONS),
     "temporal": (EvidenceFamily.TEMPORAL, EvidenceFamily.SESSIONS),
@@ -159,8 +161,9 @@ def projection_from_legacy_view(
         families = NAMED_PROJECTION_FAMILIES[view]
     except KeyError as exc:
         raise ValueError(f"unknown projection view: {view}") from exc
+    body_policy = BodyPolicy.AUTHORED_DIALOGUE if view == "chronicle" else BodyPolicy.FULL
     return QueryProjectionSpec(
-        projection=ProjectionSpec(families=families, max_tokens=max_tokens),
+        projection=ProjectionSpec(families=families, body_policy=body_policy, max_tokens=max_tokens),
         render=RenderSpec(format=RenderFormat(format), destination=RenderDestination(destination)),
     )
 

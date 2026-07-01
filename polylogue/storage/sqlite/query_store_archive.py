@@ -177,6 +177,31 @@ class SQLiteQueryStoreArchiveMixin:
             _hydrate_message_text_from_blocks(message)
         return messages, total
 
+    async def get_message_edge_windows(
+        self,
+        session_id: str,
+        *,
+        message_role: MessageRoleFilter = (),
+        message_type: MessageTypeName | None = None,
+        edge_limit: int = 8,
+    ) -> tuple[list[MessageRecord], list[MessageRecord], int]:
+        async with self._connection_factory() as conn:
+            first, last, total = await messages_q.get_message_edge_windows(
+                conn,
+                session_id,
+                message_role=message_role,
+                message_type=message_type,
+                edge_limit=edge_limit,
+            )
+        messages = [*first, *last]
+        if not messages:
+            return first, last, total
+        blocks_by_message = await self.get_blocks([message.message_id for message in messages])
+        for message in messages:
+            message.blocks = blocks_by_message.get(message.message_id, [])
+            _hydrate_message_text_from_blocks(message)
+        return first, last, total
+
     async def get_messages_batch(
         self,
         session_ids: list[str],

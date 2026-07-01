@@ -868,6 +868,13 @@ def test_read_view_registry_builds_typed_view_options() -> None:
     assert options.no_redact is True
 
 
+def test_read_view_registry_builds_chronicle_edge_limit() -> None:
+    options = read_view_handlers.read_view_options_for_view("chronicle", {"limit": 3})
+
+    assert isinstance(options, read_view_handlers.ReadViewChronicleOptions)
+    assert options.edge_limit == 3
+
+
 def test_explicit_read_view_options_reports_command_line_values_only() -> None:
     ctx = click.Context(query_verbs.read_verb)
     ctx.set_parameter_source("related_limit", click.core.ParameterSource.COMMANDLINE)

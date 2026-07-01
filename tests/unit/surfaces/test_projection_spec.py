@@ -25,6 +25,20 @@ def test_legacy_messages_view_maps_to_message_block_projection() -> None:
     assert spec.render.destination is RenderDestination.STDOUT
 
 
+def test_chronicle_view_maps_to_authored_dialogue_projection() -> None:
+    spec = projection_from_legacy_view("chronicle")
+
+    assert spec.projection.families == (
+        EvidenceFamily.CHRONICLE,
+        EvidenceFamily.SESSIONS,
+        EvidenceFamily.MESSAGES,
+    )
+    assert spec.projection.body_policy is BodyPolicy.AUTHORED_DIALOGUE
+    assert {"tool_use", "tool_result", "function_call", "function_call_output"} <= set(
+        spec.projection.exclude_block_kinds
+    )
+
+
 def test_tool_output_omission_is_projection_policy_not_cli_flag() -> None:
     spec = ProjectionSpec(body_policy=BodyPolicy.OMIT_TOOL_OUTPUTS)
 

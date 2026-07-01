@@ -411,6 +411,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace temporal-devloop",
+        "workspace",
+        "Compose git and operating-log events into a temporal evidence window.",
+        "devtools.devloop_temporal",
+        use_when=(
+            "Dogfood temporal analysis on the current devloop without inventing a bespoke report shape: "
+            "git commits and OPERATING-LOG headings are normalized as event families and projected through "
+            "the shared TemporalEvidenceWindow."
+        ),
+        examples=(
+            "devtools workspace temporal-devloop --since 2026-06-30T00:00:00+02:00 --json",
+            "devtools workspace temporal-devloop --out /realm/inbox/demos_polylogue/14-devloop-temporal-dogfood/devloop-events.json",
+        ),
+    ),
+    CommandSpec(
         "lab projections",
         "verification lab",
         "Render the authored scenario-bearing verification projections.",

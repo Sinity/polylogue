@@ -37,9 +37,9 @@ def test_every_read_view_profile_declares_contract_fields() -> None:
 def test_successor_handoff_profiles_are_evidence_or_caveat_bearing() -> None:
     handoff_profiles = [profile for profile in READ_VIEW_PROFILES if profile.successor_handoff]
 
-    assert {profile.view_id for profile in handoff_profiles} == {"context", "context-image"}
+    assert {profile.view_id for profile in handoff_profiles} == {"context", "context-image", "chronicle"}
     for profile in handoff_profiles:
-        assert profile.lossiness in {"derived", "summarized"}
+        assert profile.lossiness in {"derived", "summarized", "filtered"}
         assert profile.evidence_policy in {"required", "optional"}
 
 

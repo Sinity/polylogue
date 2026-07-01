@@ -8,6 +8,7 @@ import click
 
 from polylogue.archive.viewport import read_view_choices
 from polylogue.cli.read_views.base import (
+    ReadViewChronicleOptions,
     ReadViewContextImageOptions,
     ReadViewContextOptions,
     ReadViewCorrelationOptions,
@@ -18,6 +19,11 @@ from polylogue.cli.read_views.base import (
     ReadViewOptions,
 )
 from polylogue.cli.read_views.bulk import run_bulk_export_view
+from polylogue.cli.read_views.chronicle import (
+    CHRONICLE_READ_VIEW_OPTION_NAMES,
+    build_chronicle_options,
+    run_read_chronicle,
+)
 from polylogue.cli.read_views.context import (
     CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES,
     CONTEXT_READ_VIEW_OPTION_NAMES,
@@ -119,6 +125,15 @@ READ_VIEW_HANDLERS: dict[str, ReadViewHandler] = {
         default_format="markdown",
         accepts_query_set=True,
     ),
+    "chronicle": ReadViewHandler(
+        "chronicle",
+        "optional",
+        run_read_chronicle,
+        default_format="markdown",
+        accepted_options=CHRONICLE_READ_VIEW_OPTION_NAMES,
+        option_builder=build_chronicle_options,
+        accepts_query_set=True,
+    ),
 }
 
 
@@ -178,6 +193,7 @@ __all__ = [
     "ReadViewContextOptions",
     "ReadViewContextImageOptions",
     "ReadViewCorrelationOptions",
+    "ReadViewChronicleOptions",
     "ReadViewHandler",
     "ReadViewInvocation",
     "ReadViewMessageOptions",

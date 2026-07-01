@@ -321,6 +321,89 @@ async def get_messages_paginated(
     return messages, total
 
 
+async def get_message_edge_windows(
+    conn: aiosqlite.Connection,
+    session_id: str,
+    *,
+    message_role: MessageRoleFilter = (),
+    message_type: MessageTypeName | None = None,
+    edge_limit: int = 8,
+) -> tuple[list[MessageRecord], list[MessageRecord], int]:
+    """Return first/last transcript-order message windows for one session.
+
+    This is for bounded export/review projections: transcript order is the
+    provider position, while timestamps remain evidence displayed on rows.
+    """
+
+    session_id = await _resolve_session_id(conn, session_id)
+    edge_limit = max(edge_limit, 1)
+
+    if await _prefix_sharing_edge(conn, session_id) is not None:
+        composed = _filter_composed(
+            await get_messages(conn, session_id),
+            message_role=message_role,
+            message_type=message_type,
+        )
+        total = len(composed)
+        first = composed[:edge_limit]
+        first_ids = {record.message_id for record in first}
+        last = [record for record in composed[-edge_limit:] if record.message_id not in first_ids]
+        return first, last, total
+
+    where = "WHERE m.session_id = ?"
+    count_where = "WHERE session_id = ?"
+    params: list[str | int] = [session_id]
+    count_params: list[str | int] = [session_id]
+
+    role_values = message_role_sql_values(message_role)
+    if role_values:
+        role_placeholders = ",".join("?" for _ in role_values)
+        where += f" AND m.role IN ({role_placeholders})"
+        count_where += f" AND role IN ({role_placeholders})"
+        params.extend(role_values)
+        count_params.extend(role_values)
+
+    if message_type:
+        normalized_type = validate_message_type_filter(message_type).value
+        where += " AND m.message_type = ?"
+        count_where += " AND message_type = ?"
+        params.append(normalized_type)
+        count_params.append(normalized_type)
+
+    count_cursor = await conn.execute(f"SELECT COUNT(*) FROM messages {count_where}", tuple(count_params))
+    count_row = await count_cursor.fetchone()
+    total = int(count_row[0]) if count_row is not None else 0
+
+    first_cursor = await conn.execute(
+        f"""
+        SELECT {_MESSAGE_RECORD_SELECT}
+        FROM messages m
+        JOIN sessions s ON s.session_id = m.session_id
+        {where}
+        ORDER BY m.position, m.variant_index, m.message_id
+        LIMIT ?
+        """,
+        (*params, edge_limit),
+    )
+    first = [_row_to_message(row) for row in await first_cursor.fetchall()]
+    first_ids = {record.message_id for record in first}
+
+    last_cursor = await conn.execute(
+        f"""
+        SELECT {_MESSAGE_RECORD_SELECT}
+        FROM messages m
+        JOIN sessions s ON s.session_id = m.session_id
+        {where}
+        ORDER BY m.position DESC, m.variant_index DESC, m.message_id DESC
+        LIMIT ?
+        """,
+        (*params, edge_limit),
+    )
+    last_desc = [_row_to_message(row) for row in await last_cursor.fetchall()]
+    last = [record for record in reversed(last_desc) if record.message_id not in first_ids]
+    return first, last, total
+
+
 async def iter_messages(
     conn: aiosqlite.Connection,
     session_id: str,

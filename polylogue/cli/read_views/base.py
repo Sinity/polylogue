@@ -68,12 +68,20 @@ class ReadViewCorrelationOptions:
     otlp: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class ReadViewChronicleOptions:
+    """Options owned by the bounded chronicle read view."""
+
+    edge_limit: int = 8
+
+
 ReadViewOptions = (
     ReadViewMessageOptions
     | ReadViewContextOptions
     | ReadViewContextImageOptions
     | ReadViewNeighborOptions
     | ReadViewCorrelationOptions
+    | ReadViewChronicleOptions
 )
 ReadViewOptionValues = Mapping[str, object]
 ReadViewOptionBuilder = Callable[[ReadViewOptionValues], ReadViewOptions | None]
@@ -169,6 +177,7 @@ __all__ = [
     "ReadViewContextOptions",
     "ReadViewContextImageOptions",
     "ReadViewCorrelationOptions",
+    "ReadViewChronicleOptions",
     "ReadViewHandler",
     "ReadViewHandlerFunc",
     "ReadViewInvocation",
