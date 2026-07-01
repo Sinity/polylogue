@@ -130,6 +130,7 @@ expected_edges = {
     ("Direction", "Meta"),
     ("Evidence", "Construction"),
     ("Evidence", "Proof"),
+    ("Evidence", "Artifact"),
     ("Evidence", "Velocity"),
     ("Evidence", "Meta"),
     ("Construction", "Proof"),
