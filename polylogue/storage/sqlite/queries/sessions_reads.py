@@ -26,7 +26,8 @@ _SESSION_RECORD_SELECT = """
     raw_id,
     (SELECT json_group_array(path) FROM session_working_dirs swd WHERE swd.session_id = sessions.session_id ORDER BY position) AS working_directories_json,
     git_branch,
-    git_repository_url
+    git_repository_url,
+    provider_project_ref
 """
 
 
@@ -54,7 +55,8 @@ def _session_record_select(alias: str | None = None) -> str:
     {prefix}raw_id AS raw_id,
     ({cwd_expr}) AS working_directories_json,
     {prefix}git_branch AS git_branch,
-    {prefix}git_repository_url AS git_repository_url
+    {prefix}git_repository_url AS git_repository_url,
+    {prefix}provider_project_ref AS provider_project_ref
     """
 
 
@@ -140,6 +142,7 @@ async def list_sessions(
     tool_terms: list[str] | None = None,
     excluded_tool_terms: list[str] | None = None,
     repo_names: list[str] | None = None,
+    project_refs: list[str] | None = None,
     limit: int | None = None,
     offset: int = 0,
     has_tool_use: bool = False,
@@ -177,6 +180,7 @@ async def list_sessions(
         tool_terms=tool_terms,
         excluded_tool_terms=excluded_tool_terms,
         repo_names=repo_names,
+        project_refs=project_refs,
         has_tool_use=has_tool_use,
         has_thinking=has_thinking,
         has_paste=has_paste,
@@ -234,6 +238,7 @@ async def list_session_summaries(
     tool_terms: list[str] | None = None,
     excluded_tool_terms: list[str] | None = None,
     repo_names: list[str] | None = None,
+    project_refs: list[str] | None = None,
     limit: int | None = None,
     offset: int = 0,
     has_tool_use: bool = False,
@@ -271,6 +276,7 @@ async def list_session_summaries(
         tool_terms=tool_terms,
         excluded_tool_terms=excluded_tool_terms,
         repo_names=repo_names,
+        project_refs=project_refs,
         has_tool_use=has_tool_use,
         has_thinking=has_thinking,
         has_paste=has_paste,
@@ -327,6 +333,7 @@ async def count_sessions(
     tool_terms: list[str] | None = None,
     excluded_tool_terms: list[str] | None = None,
     repo_names: list[str] | None = None,
+    project_refs: list[str] | None = None,
     has_tool_use: bool = False,
     has_thinking: bool = False,
     has_paste: bool = False,
@@ -361,6 +368,7 @@ async def count_sessions(
         tool_terms=tool_terms,
         excluded_tool_terms=excluded_tool_terms,
         repo_names=repo_names,
+        project_refs=project_refs,
         has_tool_use=has_tool_use,
         has_thinking=has_thinking,
         has_paste=has_paste,

@@ -333,6 +333,7 @@ def build_query_spec_from_params(
         tags=split_csv(params.get("tag")),
         excluded_tags=split_csv(params.get("exclude_tag")),
         repo_names=split_csv(params.get("repo")),
+        project_refs=split_csv(params.get("project")),
         has_types=as_tuple(params.get("has_type")),
         title=optional_text(params.get("title")),
         session_id=optional_text(params.get("conv_id")),
@@ -398,6 +399,7 @@ def query_spec_to_plan(
         tags=spec.tags,
         excluded_tags=spec.excluded_tags,
         repo_names=spec.repo_names,
+        project_refs=spec.project_refs,
         has_types=spec.has_types,
         title=spec.title,
         session_id=spec.session_id,
@@ -453,6 +455,7 @@ class SessionQuerySpec:
     origins: tuple[str, ...] = ()
     excluded_origins: tuple[str, ...] = ()
     repo_names: tuple[str, ...] = ()
+    project_refs: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
     excluded_tags: tuple[str, ...] = ()
     has_types: tuple[str, ...] = ()

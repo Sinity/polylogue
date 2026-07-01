@@ -145,6 +145,7 @@ from polylogue.storage.sqlite.connection_profile import (
     READ_CONNECTION_PRAGMA_STATEMENTS,
     WRITE_CONNECTION_PRAGMA_STATEMENTS,
 )
+from polylogue.storage.sqlite.queries.project_refs import expand_project_refs
 from polylogue.storage.sqlite.queries.sessions_identity import session_id_prefix_bounds
 from polylogue.storage.sqlite.queries.tool_usage import ToolUsageProviderCoverageRow, ToolUsageRow
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
@@ -188,6 +189,7 @@ class ArchiveSessionSummary:
     working_directories: tuple[str, ...] = ()
     git_branch: str | None = None
     git_repository_url: str | None = None
+    provider_project_ref: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1361,7 +1363,7 @@ class ArchiveStore:
                    s.assistant_message_count, s.system_message_count,
                    s.tool_message_count, s.user_word_count, s.authored_user_word_count,
                    s.assistant_word_count,
-                   s.git_branch, s.git_repository_url,
+                   s.git_branch, s.git_repository_url, s.provider_project_ref,
                    COALESCE(
                        (
                            SELECT json_group_array(swd.path)
@@ -2498,6 +2500,7 @@ class ArchiveStore:
         tags: tuple[str, ...] = (),
         excluded_tags: tuple[str, ...] = (),
         repo_names: tuple[str, ...] = (),
+        project_refs: tuple[str, ...] = (),
         has_types: tuple[str, ...] = (),
         has_tool_use: bool = False,
         has_thinking: bool = False,
@@ -2532,6 +2535,7 @@ class ArchiveStore:
             tags=tags,
             excluded_tags=excluded_tags,
             repo_names=repo_names,
+            project_refs=project_refs,
             has_types=has_types,
             has_tool_use=has_tool_use,
             has_thinking=has_thinking,
@@ -3081,6 +3085,7 @@ class ArchiveStore:
         tags: tuple[str, ...] = (),
         excluded_tags: tuple[str, ...] = (),
         repo_names: tuple[str, ...] = (),
+        project_refs: tuple[str, ...] = (),
         has_types: tuple[str, ...] = (),
         has_tool_use: bool = False,
         has_thinking: bool = False,
@@ -3118,6 +3123,7 @@ class ArchiveStore:
             tags=tags,
             excluded_tags=excluded_tags,
             repo_names=repo_names,
+            project_refs=project_refs,
             has_types=has_types,
             has_tool_use=has_tool_use,
             has_thinking=has_thinking,
@@ -3162,7 +3168,7 @@ class ArchiveStore:
                    s.assistant_message_count, s.system_message_count,
                    s.tool_message_count, s.user_word_count, s.authored_user_word_count,
                    s.assistant_word_count,
-                   s.git_branch, s.git_repository_url,
+                   s.git_branch, s.git_repository_url, s.provider_project_ref,
                    COALESCE(
                        (
                            SELECT json_group_array(swd.path)
@@ -3204,6 +3210,7 @@ class ArchiveStore:
         tags: tuple[str, ...] = (),
         excluded_tags: tuple[str, ...] = (),
         repo_names: tuple[str, ...] = (),
+        project_refs: tuple[str, ...] = (),
         has_types: tuple[str, ...] = (),
         has_tool_use: bool = False,
         has_thinking: bool = False,
@@ -3247,6 +3254,7 @@ class ArchiveStore:
             tags=tags,
             excluded_tags=excluded_tags,
             repo_names=repo_names,
+            project_refs=project_refs,
             has_types=has_types,
             has_tool_use=has_tool_use,
             has_thinking=has_thinking,
@@ -3331,6 +3339,7 @@ class ArchiveStore:
         tags: tuple[str, ...] = (),
         excluded_tags: tuple[str, ...] = (),
         repo_names: tuple[str, ...] = (),
+        project_refs: tuple[str, ...] = (),
         has_types: tuple[str, ...] = (),
         has_tool_use: bool = False,
         has_thinking: bool = False,
@@ -3367,6 +3376,7 @@ class ArchiveStore:
             tags=tags,
             excluded_tags=excluded_tags,
             repo_names=repo_names,
+            project_refs=project_refs,
             has_types=has_types,
             has_tool_use=has_tool_use,
             has_thinking=has_thinking,
@@ -3429,6 +3439,7 @@ class ArchiveStore:
         tags: tuple[str, ...] = (),
         excluded_tags: tuple[str, ...] = (),
         repo_names: tuple[str, ...] = (),
+        project_refs: tuple[str, ...] = (),
         has_types: tuple[str, ...] = (),
         has_tool_use: bool = False,
         has_thinking: bool = False,
@@ -3465,6 +3476,7 @@ class ArchiveStore:
             tags=tags,
             excluded_tags=excluded_tags,
             repo_names=repo_names,
+            project_refs=project_refs,
             has_types=has_types,
             has_tool_use=has_tool_use,
             has_thinking=has_thinking,
@@ -4194,6 +4206,7 @@ class ArchiveStore:
         tags: tuple[str, ...] = (),
         excluded_tags: tuple[str, ...] = (),
         repo_names: tuple[str, ...] = (),
+        project_refs: tuple[str, ...] = (),
         has_types: tuple[str, ...] = (),
         has_tool_use: bool = False,
         has_thinking: bool = False,
@@ -4227,6 +4240,7 @@ class ArchiveStore:
             tags=tags,
             excluded_tags=excluded_tags,
             repo_names=repo_names,
+            project_refs=project_refs,
             has_types=has_types,
             has_tool_use=has_tool_use,
             has_thinking=has_thinking,
@@ -4373,6 +4387,7 @@ class ArchiveStore:
         tags: tuple[str, ...] = (),
         excluded_tags: tuple[str, ...] = (),
         repo_names: tuple[str, ...] = (),
+        project_refs: tuple[str, ...] = (),
         has_types: tuple[str, ...] = (),
         has_tool_use: bool = False,
         has_thinking: bool = False,
@@ -4406,6 +4421,7 @@ class ArchiveStore:
             tags=tags,
             excluded_tags=excluded_tags,
             repo_names=repo_names,
+            project_refs=project_refs,
             has_types=has_types,
             has_tool_use=has_tool_use,
             has_thinking=has_thinking,
@@ -4489,6 +4505,7 @@ def _summary_from_row(row: sqlite3.Row) -> ArchiveSessionSummary:
         working_directories=working_directories,
         git_branch=str(row["git_branch"]) if row["git_branch"] is not None else None,
         git_repository_url=str(row["git_repository_url"]) if row["git_repository_url"] is not None else None,
+        provider_project_ref=(str(row["provider_project_ref"]) if row["provider_project_ref"] is not None else None),
     )
 
 
@@ -5312,6 +5329,8 @@ def _field_predicate_clause(
         return f"{table_alias}.session_id = ?", [values[-1]]
     if field == "repo":
         kwargs["repo_names"] = values
+    elif field == "project":
+        kwargs["project_refs"] = values
     elif field == "origin":
         kwargs["origins"] = values
     elif field == "tag":
@@ -5995,6 +6014,7 @@ def _session_filter_clause(
     tags: tuple[str, ...] = (),
     excluded_tags: tuple[str, ...] = (),
     repo_names: tuple[str, ...] = (),
+    project_refs: tuple[str, ...] = (),
     has_types: tuple[str, ...] = (),
     has_tool_use: bool = False,
     has_thinking: bool = False,
@@ -6074,6 +6094,11 @@ def _session_filter_clause(
             """.strip()
         )
         params.extend(repo_names)
+    if project_refs:
+        project_refs = expand_project_refs(project_refs)
+        placeholders = ", ".join("?" for _ in project_refs)
+        clauses.append(f"{table_alias}.provider_project_ref IN ({placeholders})")
+        params.extend(project_refs)
     if has_types:
         placeholders = ", ".join("?" for _ in has_types)
         clauses.append(

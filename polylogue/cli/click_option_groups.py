@@ -185,6 +185,10 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         help="Filter by repository name (comma = OR)",
         shell_complete=_complete_repo,
     ),
+    click.option(
+        "--project",
+        help="Filter by provider project ref, e.g. ChatGPT g-p-<id> (comma = OR)",
+    ),
     click.option("--tag", "-t", help="Include tags (comma = OR, supports key:value)", shell_complete=_complete_tag),
     click.option("--exclude-tag", help="Exclude tags", shell_complete=_complete_tag),
     click.option("--title", help="Title contains"),

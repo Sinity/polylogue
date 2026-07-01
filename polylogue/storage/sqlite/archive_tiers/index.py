@@ -33,7 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 16
+INDEX_SCHEMA_VERSION = 17
 
 INDEX_DDL = f"""
 CREATE TABLE IF NOT EXISTS sessions (
@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     title_source            TEXT CHECK(title_source IN ('origin', 'path', 'heuristic', 'user', 'unknown') OR title_source IS NULL),
     git_branch              TEXT,
     git_repository_url      TEXT,
+    provider_project_ref    TEXT,
     commit_hash             TEXT,
     instructions_text       TEXT,
     reported_duration_ms    INTEGER CHECK(reported_duration_ms IS NULL OR reported_duration_ms >= 0),

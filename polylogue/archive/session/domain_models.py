@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 from polylogue.archive.attachment.models import Attachment
 from polylogue.archive.message.messages import MessageCollection
@@ -14,6 +14,7 @@ from polylogue.archive.session.events import SessionEvent
 from polylogue.archive.session.summary_runtime import SessionSummaryRuntimeMixin
 from polylogue.core.enums import Origin, Provider, SessionKind
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.web_urls import canonical_session_url, native_id_from_session_id
 from polylogue.types import SessionId
 
 
@@ -40,6 +41,7 @@ class SessionSummary(SessionSummaryRuntimeMixin, BaseModel):
     working_directories: tuple[str, ...] = ()
     git_branch: str | None = None
     git_repository_url: str | None = None
+    provider_project_ref: str | None = None
     parent_id: SessionId | None = None
     branch_type: BranchType | None = None
     message_count: int | None = None
@@ -59,6 +61,12 @@ class SessionSummary(SessionSummaryRuntimeMixin, BaseModel):
     def coerce_session_kind(cls, v: object) -> SessionKind:
         return SessionKind.normalize(v)
 
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def canonical_url(self) -> str | None:
+        """Public web URL for web-originated sessions; None for local origins."""
+        return canonical_session_url(self.origin, native_id_from_session_id(self.id), self.provider_project_ref)
+
 
 class Session(SessionRuntimeMixin, BaseModel):
     """Session with eagerly or lazily materialized message collection."""
@@ -74,6 +82,7 @@ class Session(SessionRuntimeMixin, BaseModel):
     working_directories: tuple[str, ...] = ()
     git_branch: str | None = None
     git_repository_url: str | None = None
+    provider_project_ref: str | None = None
     session_events: tuple[SessionEvent, ...] = ()
     parent_id: SessionId | None = None
     branch_type: BranchType | None = None
@@ -91,6 +100,12 @@ class Session(SessionRuntimeMixin, BaseModel):
     @classmethod
     def coerce_session_kind(cls, v: object) -> SessionKind:
         return SessionKind.normalize(v)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def canonical_url(self) -> str | None:
+        """Public web URL for web-originated sessions; None for local origins."""
+        return canonical_session_url(self.origin, native_id_from_session_id(self.id), self.provider_project_ref)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

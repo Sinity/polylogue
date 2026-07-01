@@ -49,6 +49,7 @@ class SessionRecord(BaseModel):
     working_directories_json: str | None = None
     git_branch: str | None = None
     git_repository_url: str | None = None
+    provider_project_ref: str | None = None
 
     @field_validator("origin", mode="before")
     @classmethod

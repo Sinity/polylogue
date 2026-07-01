@@ -58,6 +58,7 @@ def _row_to_session(row: sqlite3.Row) -> SessionRecord:
         working_directories_json=_row_text(row, "working_directories_json"),
         git_branch=_row_text(row, "git_branch"),
         git_repository_url=_row_text(row, "git_repository_url"),
+        provider_project_ref=_row_text(row, "provider_project_ref"),
     )
 
 

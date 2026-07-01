@@ -267,6 +267,7 @@ def cli(
     origin: str | None,
     exclude_origin: str | None,
     repo: str | None,
+    project: str | None,
     tag: str | None,
     exclude_tag: str | None,
     title: str | None,

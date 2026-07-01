@@ -148,6 +148,7 @@ class ArchiveSessionEnvelope:
     working_directories: tuple[str, ...] = ()
     git_branch: str | None = None
     git_repository_url: str | None = None
+    provider_project_ref: str | None = None
     orphan_attachments: tuple[ArchiveAttachmentRow, ...] = ()
 
 
@@ -298,13 +299,13 @@ def write_parsed_session_to_archive(
             INSERT INTO sessions (
                 native_id, origin, raw_id, branch_type, active_leaf_message_id,
                 title, session_kind, title_source, git_branch, git_repository_url, commit_hash,
-                instructions_text, reported_duration_ms,
+                instructions_text, reported_duration_ms, provider_project_ref,
                 message_count, word_count, tool_use_count, thinking_count,
                 paste_count, user_message_count, authored_user_message_count,
                 assistant_message_count, system_message_count,
                 tool_message_count, user_word_count, authored_user_word_count, assistant_word_count,
                 content_hash, created_at_ms, updated_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(origin, native_id) DO UPDATE SET
                 raw_id = excluded.raw_id,
                 branch_type = excluded.branch_type,
@@ -315,6 +316,7 @@ def write_parsed_session_to_archive(
                 git_branch = excluded.git_branch,
                 git_repository_url = excluded.git_repository_url,
                 commit_hash = excluded.commit_hash,
+                provider_project_ref = excluded.provider_project_ref,
                 instructions_text = COALESCE(excluded.instructions_text, sessions.instructions_text),
                 reported_duration_ms = excluded.reported_duration_ms,
                 content_hash = excluded.content_hash,
@@ -335,6 +337,7 @@ def write_parsed_session_to_archive(
                 _sqlite_text(session.git_commit_hash),
                 _sqlite_text(session.instructions_text),
                 session.reported_duration_ms,
+                _sqlite_text(session.provider_project_ref),
                 session_counts["message_count"],
                 session_counts["word_count"],
                 session_counts["tool_use_count"],
@@ -1132,7 +1135,7 @@ def read_archive_session_envelope(
         SELECT session_id, native_id, origin, title, session_kind, active_leaf_message_id,
                parent_session_id, root_session_id, branch_type,
                title_source, instructions_text,
-               created_at_ms, updated_at_ms, git_branch, git_repository_url
+               created_at_ms, updated_at_ms, git_branch, git_repository_url, provider_project_ref
         FROM sessions
         WHERE session_id = ?
         """,
@@ -1279,6 +1282,7 @@ def read_archive_session_envelope(
         working_directories=working_directories,
         git_branch=session["git_branch"],
         git_repository_url=session["git_repository_url"],
+        provider_project_ref=session["provider_project_ref"],
         orphan_attachments=tuple(attachments_by_message.get(None, ())),
     )
 

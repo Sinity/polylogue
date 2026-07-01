@@ -65,6 +65,12 @@ EXPRESSION_FIELD_REGISTRY: dict[str, dict[str, str]] = {
         "negatable": "no",
         "example": "repo:polylogue",
     },
+    "project": {
+        "description": "Filter by provider project ref (ChatGPT g-p-<id>)",
+        "spec_field": "project_refs",
+        "negatable": "no",
+        "example": "project:g-p-6a40343a",
+    },
     "origin": {
         "description": "Filter by session origin",
         "spec_field": "origins",
