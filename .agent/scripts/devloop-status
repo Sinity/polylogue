@@ -33,6 +33,7 @@ if [ "$format" = "--json" ]; then
   source_version=""
   raw_rows=""
   raw_materialization_debt=""
+  raw_materialization_replayable=""
   if [ -f "$archive_root/index.db" ]; then
     index_version="$(sqlite3 "$archive_root/index.db" 'PRAGMA user_version;' 2>/dev/null || true)"
     sessions="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM sessions;' 2>/dev/null || true)"
@@ -54,6 +55,23 @@ if [ "$format" = "--json" ]; then
           AND s.session_id IS NULL;
       " 2>/dev/null || true
     )"
+    raw_materialization_replayable="$(
+      sqlite3 "$archive_root/source.db" "
+        ATTACH '$archive_root/index.db' AS idx;
+        SELECT COUNT(*)
+        FROM raw_sessions r
+        LEFT JOIN idx.sessions s_by_raw ON s_by_raw.raw_id = r.raw_id
+        LEFT JOIN idx.sessions s_by_native
+          ON r.native_id IS NOT NULL
+         AND s_by_native.origin = r.origin
+         AND s_by_native.native_id = r.native_id
+        WHERE s_by_raw.raw_id IS NULL
+          AND s_by_native.native_id IS NULL
+          AND COALESCE(r.validation_status, '') != 'skipped'
+          AND r.parse_error IS NULL
+          AND r.parsed_at_ms IS NULL;
+      " 2>/dev/null || true
+    )"
   fi
   prod_state="$(systemctl --user show polylogued.service -p ActiveState --value 2>/dev/null || true)"
   prod_sub_state="$(systemctl --user show polylogued.service -p SubState --value 2>/dev/null || true)"
@@ -61,11 +79,11 @@ if [ "$format" = "--json" ]; then
   devloop_sub_state="$(systemctl --user show polylogued-devloop.service -p SubState --value 2>/dev/null || true)"
   polylogued_rows="$(ps -eo pid=,args= | awk '$3 ~ /\/polylogued$/ && $4 == "run" {print}' || true)"
   worktree_gc_json="$(devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"
-  python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$observed_events" "$source_version" "$raw_rows" "$raw_materialization_debt" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$worktree_gc_json" "$pressure_rows" "$performance_blocked" <<'PY'
+  python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$observed_events" "$source_version" "$raw_rows" "$raw_materialization_debt" "$raw_materialization_replayable" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$worktree_gc_json" "$pressure_rows" "$performance_blocked" <<'PY'
 import json
 import sys
 
-repo, current, archive_root, git_branch, git_head, git_tracked_changes, git_untracked_changes, index_version, sessions, messages, observed_events, source_version, raw_rows, raw_materialization_debt, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows, worktree_gc_json, pressure_rows, performance_blocked = sys.argv[1:]
+repo, current, archive_root, git_branch, git_head, git_tracked_changes, git_untracked_changes, index_version, sessions, messages, observed_events, source_version, raw_rows, raw_materialization_debt, raw_materialization_replayable, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows, worktree_gc_json, pressure_rows, performance_blocked = sys.argv[1:]
 
 def int_or_none(value: str):
     try:
@@ -100,6 +118,7 @@ print(json.dumps({
     },
     "convergence": {
         "raw_materialization_debt": int_or_none(raw_materialization_debt),
+        "raw_materialization_replayable": int_or_none(raw_materialization_replayable),
     },
     "daemon": {
         "prod_state": prod_state,
@@ -157,7 +176,25 @@ if [ -f "$archive_root/source.db" ] && [ -f "$archive_root/index.db" ]; then
         AND s.session_id IS NULL;
     " 2>/dev/null || true
   )"
-  printf 'convergence: raw_materialization_debt=%s\n' "${raw_materialization_debt:-?}"
+  raw_materialization_replayable="$(
+    sqlite3 "$archive_root/source.db" "
+      ATTACH '$archive_root/index.db' AS idx;
+      SELECT COUNT(*)
+      FROM raw_sessions r
+      LEFT JOIN idx.sessions s_by_raw ON s_by_raw.raw_id = r.raw_id
+      LEFT JOIN idx.sessions s_by_native
+        ON r.native_id IS NOT NULL
+       AND s_by_native.origin = r.origin
+       AND s_by_native.native_id = r.native_id
+      WHERE s_by_raw.raw_id IS NULL
+        AND s_by_native.native_id IS NULL
+        AND COALESCE(r.validation_status, '') != 'skipped'
+        AND r.parse_error IS NULL
+        AND r.parsed_at_ms IS NULL;
+    " 2>/dev/null || true
+  )"
+  printf 'convergence: raw_materialization_debt=%s replayable_acquired_unparsed=%s\n' \
+    "${raw_materialization_debt:-?}" "${raw_materialization_replayable:-?}"
 fi
 
 printf '\n== pressure ==\n'

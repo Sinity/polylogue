@@ -457,11 +457,28 @@ if [ -f "$archive_root/source.db" ] && [ -f "$archive_root/index.db" ]; then
         AND s.session_id IS NULL;
     " 2>/dev/null || true
   )"
+  raw_materialization_replayable="$(
+    sqlite3 "$archive_root/source.db" "
+      ATTACH '$archive_root/index.db' AS idx;
+      SELECT COUNT(*)
+      FROM raw_sessions r
+      LEFT JOIN idx.sessions s_by_raw ON s_by_raw.raw_id = r.raw_id
+      LEFT JOIN idx.sessions s_by_native
+        ON r.native_id IS NOT NULL
+       AND s_by_native.origin = r.origin
+       AND s_by_native.native_id = r.native_id
+      WHERE s_by_raw.raw_id IS NULL
+        AND s_by_native.native_id IS NULL
+        AND COALESCE(r.validation_status, '') != 'skipped'
+        AND r.parse_error IS NULL
+        AND r.parsed_at_ms IS NULL;
+    " 2>/dev/null || true
+  )"
   if [ "${raw_materialization_debt:-0}" = "0" ]; then
     ok "raw materialization debt is zero"
   else
-    printf 'INFO: raw materialization debt=%s; do not claim full archive convergence without repair/classification\n' \
-      "${raw_materialization_debt:-unknown}"
+    printf 'INFO: raw materialization debt=%s replayable_acquired_unparsed=%s; do not claim full archive convergence without repair/classification\n' \
+      "${raw_materialization_debt:-unknown}" "${raw_materialization_replayable:-unknown}"
   fi
 fi
 

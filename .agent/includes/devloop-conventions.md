@@ -64,6 +64,10 @@ should remain stable across projects.
 - `devloop-status --json` must expose archive convergence signals needed for
   live claims. In Polylogue that includes `convergence.raw_materialization_debt`
   and core read-model counts such as `index.observed_events`.
+- Treat `convergence.raw_materialization_debt` as the broad raw/index join-gap
+  count and `convergence.raw_materialization_replayable` as the narrower
+  acquired-but-unparsed replay queue. The latter is a repair actuator hint; the
+  former still needs debt classification before claiming convergence.
 - If raw materialization debt is nonzero, demos may still be valid for the rows
   they query, but agents must not claim full archive convergence until the debt
   is repaired or classified.
