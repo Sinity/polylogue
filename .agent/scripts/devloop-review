@@ -284,6 +284,19 @@ else
   ok "devloop primitive names match canonical set"
 fi
 
+readme_missing_scripts=()
+for script in "${canonical_devloop_scripts[@]}"; do
+  if ! grep -Fq "$script" "$repo/.agent/README.md"; then
+    readme_missing_scripts+=("$script")
+  fi
+done
+if [ "${#readme_missing_scripts[@]}" -gt 0 ]; then
+  warn ".agent/README.md omits canonical devloop primitives"
+  printf '%s\n' "${readme_missing_scripts[@]}"
+else
+  ok ".agent/README.md lists canonical devloop primitives"
+fi
+
 state_files=(
   "$current/ACTIVE-LOOP.md"
   "$current/OPERATING-LOG.md"
