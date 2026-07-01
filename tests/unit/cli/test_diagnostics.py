@@ -4,13 +4,15 @@ import re
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.cli.commands import diagnostics
 from polylogue.cli.shared.types import AppEnv
+from polylogue.insights.tool_usage import ToolUsageInsightQuery
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
 def _env() -> AppEnv:
@@ -117,42 +119,91 @@ async def test_turns_reports_duration_thinking_tools_and_characters(monkeypatch:
     assert re.search(r"\b2\b", row)
 
 
+class _FakeToolCallCountStore:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self.rows = rows
+        self.queries: list[ToolUsageInsightQuery] = []
+
+    def __enter__(self) -> _FakeToolCallCountStore:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def list_tool_call_count_rows(self, query: ToolUsageInsightQuery | None = None) -> list[dict[str, object]]:
+        self.queries.append(query or ToolUsageInsightQuery())
+        return self.rows
+
+
+def _patch_tool_call_count_store(
+    monkeypatch: pytest.MonkeyPatch,
+    rows: list[dict[str, object]],
+) -> _FakeToolCallCountStore:
+    store = _FakeToolCallCountStore(rows)
+    monkeypatch.setattr(ArchiveStore, "open_existing", classmethod(lambda cls, archive_root: store))
+    return store
+
+
 @pytest.mark.asyncio
-async def test_tools_aggregates_actions(monkeypatch: pytest.MonkeyPatch) -> None:
-    summary = SimpleNamespace(id="conv-tools")
-
-    async def fake_list_summaries(self: object, repository: object) -> list[SimpleNamespace]:
-        return [summary]
-
-    monkeypatch.setattr(SessionQuerySpec, "list_summaries", fake_list_summaries)
+async def test_tools_renders_tool_usage_insight(monkeypatch: pytest.MonkeyPatch) -> None:
     env = _env()
-    fake_poly = SimpleNamespace(
-        get_actions=AsyncMock(
-            return_value=(
-                SimpleNamespace(normalized_tool_name="bash", tool_name=None),
-                SimpleNamespace(normalized_tool_name=None, tool_name="read"),
-                SimpleNamespace(normalized_tool_name="bash", tool_name=None),
-            )
-        )
+    _patch_tool_call_count_store(
+        monkeypatch,
+        [
+            {
+                "source_name": "claude-code",
+                "origin": "claude-code-session",
+                "normalized_tool_name": "bash",
+                "action_kind": "shell",
+                "call_count": 3,
+            },
+            {
+                "source_name": "codex",
+                "origin": "codex-session",
+                "normalized_tool_name": "read",
+                "action_kind": "file_read",
+                "call_count": 2,
+            },
+        ],
     )
-    monkeypatch.setattr(type(env), "polylogue", property(lambda self: fake_poly))
 
-    await diagnostics._tools(env, origin=None, limit=5)
+    await diagnostics._tools(env, origin=None, tool=None, mcp_server=None, action_kind=None, limit=5)
 
     rendered = "\n".join(call.args[0] for call in _console_print(env).call_args_list if call.args)
-    assert "Top tools" in rendered
+    assert "Tool call counts" in rendered
+    assert "detail: call_counts" in rendered
     assert "bash" in rendered
     assert "read" in rendered
 
 
 @pytest.mark.asyncio
-async def test_tools_reports_empty_archives(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_list_summaries(self: object, repository: object) -> list[SimpleNamespace]:
-        return []
-
-    monkeypatch.setattr(SessionQuerySpec, "list_summaries", fake_list_summaries)
+async def test_tools_passes_filters_to_tool_usage_insight(monkeypatch: pytest.MonkeyPatch) -> None:
     env = _env()
+    store = _patch_tool_call_count_store(monkeypatch, [])
 
-    await diagnostics._tools(env, origin=None, limit=5)
+    await diagnostics._tools(
+        env,
+        origin="claude-code-session",
+        tool="mcp__serena__find_symbol",
+        mcp_server="serena",
+        action_kind="tool_use",
+        limit=5,
+    )
+
+    query = store.queries[0]
+    assert isinstance(query, ToolUsageInsightQuery)
+    assert query.provider == "claude-code-session"
+    assert query.tool == "mcp__serena__find_symbol"
+    assert query.mcp_server == "serena"
+    assert query.action_kind == "tool_use"
+    assert query.limit == 5
+
+
+@pytest.mark.asyncio
+async def test_tools_reports_empty_archives(monkeypatch: pytest.MonkeyPatch) -> None:
+    env = _env()
+    _patch_tool_call_count_store(monkeypatch, [])
+
+    await diagnostics._tools(env, origin=None, tool=None, mcp_server=None, action_kind=None, limit=5)
 
     assert _console_print(env).call_args.args[0] == "No tool invocations found."

@@ -338,42 +338,95 @@ def _usage_counter_line(counters: object) -> str:
 
 
 @click.command("tools")
-@click.option("--origin", help="Filter by origin")
+@click.option("--origin", help="Filter by origin or provider token")
+@click.option("--tool", help="Only entries for this normalized tool name")
+@click.option("--mcp-server", help="Only entries for this MCP server prefix")
+@click.option("--action-kind", help="Only entries for this action kind")
 @click.option("--limit", "-l", "-n", type=int, default=20, help="Max tools to show")
+@click.option(
+    "--json",
+    "output_format",
+    flag_value="json",
+    default=None,
+    help="Shortcut for --format json.",
+)
+@click.option(
+    "--format",
+    "-f",
+    "output_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format.",
+)
 @click.pass_context
-def tools_command(ctx: click.Context, origin: str | None, limit: int) -> None:
-    """Show top tools by invocation count across filtered sessions."""
+def tools_command(
+    ctx: click.Context,
+    origin: str | None,
+    tool: str | None,
+    mcp_server: str | None,
+    action_kind: str | None,
+    limit: int,
+    output_format: str,
+) -> None:
+    """Show tool usage rollups from the canonical actions view."""
     env: AppEnv = ctx.obj
-    run_coroutine_sync(_tools(env, origin, limit))
+    run_coroutine_sync(_tools(env, origin, tool, mcp_server, action_kind, limit, output_format))
 
 
-async def _tools(env: AppEnv, origin: str | None, limit: int) -> None:
-    from collections import Counter
+async def _tools(
+    env: AppEnv,
+    origin: str | None,
+    tool: str | None,
+    mcp_server: str | None,
+    action_kind: str | None,
+    limit: int,
+    output_format: str = "text",
+) -> None:
+    import json
 
-    # Get recent sessions and aggregate their actions
-    spec = SessionQuerySpec(sort="date", limit=100)
-    if origin:
-        spec = SessionQuerySpec(sort="date", limit=100, origins=(origin,))
-    convs = await spec.list_summaries(env.config)
+    from polylogue.insights.tool_usage import ToolUsageInsightQuery
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-    poly = env.polylogue
-    tool_counts: Counter[str] = Counter()
-    for summary in convs:
-        try:
-            actions = await poly.get_actions(str(summary.id))
-            for action in actions:
-                name = getattr(action, "normalized_tool_name", None) or getattr(action, "tool_name", None)
-                if name:
-                    tool_counts[str(name)] += 1
-        except Exception:
-            continue
+    query = ToolUsageInsightQuery(
+        provider=origin,
+        tool=tool,
+        mcp_server=mcp_server,
+        action_kind=action_kind,
+        limit=limit,
+    )
+    with ArchiveStore.open_existing(env.config.archive_root) as archive:
+        rows = archive.list_tool_call_count_rows(query)
+    if output_format == "json":
+        payload = {
+            "kind": "tool_call_counts",
+            "detail_level": "call_counts",
+            "archive_root": str(env.config.archive_root),
+            "filters": {
+                "origin": origin,
+                "tool": tool,
+                "mcp_server": mcp_server,
+                "action_kind": action_kind,
+                "limit": limit,
+            },
+            "items": rows,
+        }
+        click.echo(json.dumps(payload, indent=2))
+        return
 
-    if not tool_counts:
+    if not rows:
         env.ui.console.print("No tool invocations found.")
         return
 
-    env.ui.console.print(f"\n[bold]Top tools by invocation count[/bold] (across {len(convs)} sessions)")
-    env.ui.console.print(f"{'tool':40s}  {'count':>6s}")
-    env.ui.console.print("-" * 50)
-    for name, cnt in tool_counts.most_common(limit):
-        env.ui.console.print(f"{name[:40]:40s}  {cnt:>6d}")
+    env.ui.console.print("\n[bold]Tool call counts[/bold]")
+    env.ui.console.print("  detail: call_counts; use `analyze insights tool-usage` for exact coverage/detail fields")
+    header = f"{'origin':18s}  {'tool':38s}  {'kind':14s}  {'calls':>7s}"
+    env.ui.console.print(header)
+    env.ui.console.print("-" * len(header))
+    for row in rows:
+        source_name = str(row["source_name"])
+        tool_name = str(row["normalized_tool_name"])
+        action_kind_value = str(row["action_kind"])
+        call_count = int(str(row["call_count"]))
+        env.ui.console.print(
+            f"{source_name[:18]:18s}  {tool_name[:38]:38s}  {action_kind_value[:14]:14s}  {call_count:7d}"
+        )

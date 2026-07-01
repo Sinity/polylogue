@@ -343,6 +343,85 @@ class TestListToolUsageInsightsEndToEnd:
         assert insight.providers_without_data == 1
         assert insight.providers_with_data == 1
 
+    async def test_query_filters_entries_without_narrowing_coverage(self, tmp_path: Path) -> None:
+        archive = _archive(tmp_path)
+        db_path = archive.archive_root / "index.db"
+        (
+            SessionBuilder(db_path, "cc-1")
+            .provider("claude-code")
+            .title("CC")
+            .add_message(
+                "cc-1-msg",
+                role="assistant",
+                text="Inspecting",
+                blocks=[
+                    {"type": "tool_use", "name": "mcp__serena__find_symbol", "id": "s1"},
+                    {"type": "tool_use", "name": "mcp__serena__find_symbol", "id": "s2"},
+                    {"type": "tool_use", "name": "Read", "id": "r1"},
+                ],
+            )
+            .save()
+        )
+        (
+            SessionBuilder(db_path, "cx-1")
+            .provider("codex")
+            .title("CX")
+            .add_message(
+                "cx-1-msg",
+                role="assistant",
+                text="Searching",
+                blocks=[{"type": "tool_use", "name": "mcp__codebase-memory__search_code", "id": "c1"}],
+            )
+            .save()
+        )
+        (
+            SessionBuilder(db_path, "gpt-1")
+            .provider("chatgpt")
+            .title("GPT")
+            .add_message("gpt-1-msg", role="user", text="Hi")
+            .save()
+        )
+
+        [insight] = await archive.list_tool_usage_insights(
+            ToolUsageInsightQuery(provider="claude-code-session", mcp_server="serena", limit=1)
+        )
+
+        assert [entry.normalized_tool_name for entry in insight.entries] == ["mcp__serena__find_symbol"]
+        assert insight.entries[0].call_count == 2
+        assert insight.entries[0].source_name == "claude-code"
+        assert insight.entries[0].mcp_server == "serena"
+        assert {entry.source_name for entry in insight.provider_coverage} == {
+            "claude-code",
+            "codex",
+            "chatgpt",
+        }
+        assert insight.has_coverage_gaps is True
+
+    async def test_query_pagination_is_not_applied_twice(self, tmp_path: Path) -> None:
+        archive = _archive(tmp_path)
+        db_path = archive.archive_root / "index.db"
+        (
+            SessionBuilder(db_path, "cc-1")
+            .provider("claude-code")
+            .title("CC")
+            .add_message(
+                "cc-1-msg",
+                role="assistant",
+                text="Tools",
+                blocks=[
+                    {"type": "tool_use", "name": "Alpha", "id": "a1"},
+                    {"type": "tool_use", "name": "Alpha", "id": "a2"},
+                    {"type": "tool_use", "name": "Beta", "id": "b1"},
+                    {"type": "tool_use", "name": "Gamma", "id": "g1"},
+                ],
+            )
+            .save()
+        )
+
+        [insight] = await archive.list_tool_usage_insights(ToolUsageInsightQuery(offset=1, limit=1))
+
+        assert [entry.normalized_tool_name for entry in insight.entries] == ["beta"]
+
     async def test_empty_archive_returns_envelope_with_no_gaps(self, tmp_path: Path) -> None:
         result = await _archive(tmp_path).list_tool_usage_insights(ToolUsageInsightQuery())
         assert len(result) == 1

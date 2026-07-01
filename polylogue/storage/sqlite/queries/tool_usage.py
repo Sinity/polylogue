@@ -13,6 +13,10 @@ from __future__ import annotations
 import aiosqlite
 from typing_extensions import TypedDict
 
+from polylogue.core.enums import Provider
+from polylogue.core.sources import origin_from_provider
+from polylogue.insights.tool_usage import ToolUsageInsightQuery
+
 __all__ = [
     "ToolUsageProviderCoverageRow",
     "ToolUsageRow",
@@ -50,6 +54,7 @@ class ToolUsageProviderCoverageRow(TypedDict):
 
 async def get_tool_usage_rows(
     conn: aiosqlite.Connection,
+    query: ToolUsageInsightQuery | None = None,
 ) -> list[ToolUsageRow]:
     """Aggregate tool usage from canonical ``actions`` rows.
 
@@ -58,10 +63,35 @@ async def get_tool_usage_rows(
     categories.
     """
 
+    request = query or ToolUsageInsightQuery()
+    where: list[str] = []
+    params: list[object] = []
+    origin = _origin_for_tool_usage_filter(request.provider)
+    if origin:
+        where.append("s.origin = ?")
+        params.append(origin)
+    if request.tool:
+        where.append("COALESCE(NULLIF(LOWER(a.tool_name), ''), 'unknown') = LOWER(?)")
+        params.append(request.tool)
+    if request.mcp_server:
+        where.append("COALESCE(NULLIF(LOWER(a.tool_name), ''), 'unknown') LIKE ?")
+        params.append(f"mcp__{request.mcp_server.lower()}__%")
+    if request.action_kind:
+        where.append("COALESCE(NULLIF(a.semantic_type, ''), 'tool_use') = ?")
+        params.append(request.action_kind)
+    if request.limit is not None:
+        limit_clause = "LIMIT ? OFFSET ?"
+        params.extend((request.limit, request.offset))
+    elif request.offset:
+        limit_clause = "LIMIT -1 OFFSET ?"
+        params.append(request.offset)
+    else:
+        limit_clause = ""
+
     cursor = await conn.execute(
-        """
+        f"""
         SELECT
-            COALESCE(NULLIF(s.origin, ''), 'unknown') AS source_name,
+            s.origin AS origin,
             COALESCE(NULLIF(LOWER(a.tool_name), ''), 'unknown') AS normalized_tool_name,
             COALESCE(NULLIF(a.semantic_type, ''), 'tool_use') AS action_kind,
             COUNT(*) AS call_count,
@@ -72,17 +102,20 @@ async def get_tool_usage_rows(
             SUM(CASE WHEN a.output_text IS NOT NULL AND a.output_text != '' THEN 1 ELSE 0 END) AS output_text_calls
         FROM actions a
         JOIN sessions s ON s.session_id = a.session_id
+        {"WHERE " + " AND ".join(where) if where else ""}
         GROUP BY
-            COALESCE(NULLIF(s.origin, ''), 'unknown'),
+            s.origin,
             normalized_tool_name,
             action_kind
-        ORDER BY call_count DESC, source_name ASC, normalized_tool_name ASC
-        """
+        ORDER BY call_count DESC, s.origin ASC, normalized_tool_name ASC
+        {limit_clause}
+        """,
+        tuple(params),
     )
     rows = await cursor.fetchall()
     return [
         {
-            "source_name": str(row["source_name"] or "unknown"),
+            "source_name": _provider_for_origin(str(row["origin"] or "unknown-export")).value,
             "normalized_tool_name": str(row["normalized_tool_name"] or "unknown"),
             "action_kind": str(row["action_kind"] or "unknown"),
             "call_count": int(row["call_count"] or 0),
@@ -136,3 +169,36 @@ async def get_tool_usage_provider_coverage_rows(
         }
         for row in rows
     ]
+
+
+def _origin_for_tool_usage_filter(provider_or_origin: str | None) -> str | None:
+    if provider_or_origin is None:
+        return None
+    known_origin = {
+        "claude-code-session",
+        "codex-session",
+        "gemini-cli-session",
+        "hermes-session",
+        "antigravity-session",
+        "chatgpt-export",
+        "claude-ai-export",
+        "aistudio-drive",
+        "unknown-export",
+    }
+    if provider_or_origin in known_origin:
+        return provider_or_origin
+    return origin_from_provider(Provider.from_string(provider_or_origin)).value
+
+
+def _provider_for_origin(origin: str) -> Provider:
+    return {
+        "claude-code-session": Provider.CLAUDE_CODE,
+        "codex-session": Provider.CODEX,
+        "gemini-cli-session": Provider.GEMINI_CLI,
+        "hermes-session": Provider.HERMES,
+        "antigravity-session": Provider.ANTIGRAVITY,
+        "chatgpt-export": Provider.CHATGPT,
+        "claude-ai-export": Provider.CLAUDE_AI,
+        "aistudio-drive": Provider.GEMINI,
+        "unknown-export": Provider.UNKNOWN,
+    }.get(origin, Provider.UNKNOWN)

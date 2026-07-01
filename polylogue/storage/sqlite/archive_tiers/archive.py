@@ -1650,17 +1650,87 @@ class ArchiveStore:
     def list_tool_usage_insights(self, query: ToolUsageInsightQuery | None = None) -> list[ToolUsageInsight]:
         """Aggregate tool-usage insights from action rows."""
         request = query or ToolUsageInsightQuery()
+        builder_request = _tool_usage_builder_query(request)
         insight = build_tool_usage_insight(
-            rows=self._tool_usage_rows(),
+            rows=self._tool_usage_rows(request),
             coverage_rows=self._tool_usage_provider_coverage_rows(),
-            query=request,
+            query=builder_request,
             materialized_at=datetime.now(UTC).isoformat(),
         )
         return [insight]
 
-    def _tool_usage_rows(self) -> list[ToolUsageRow]:
+    def list_tool_call_count_rows(self, query: ToolUsageInsightQuery | None = None) -> list[dict[str, object]]:
+        """Fast call-count-only tool rollups from tool-use blocks."""
+        request = query or ToolUsageInsightQuery()
+        where = ["b.block_type = 'tool_use'"]
+        params: list[object] = []
+        origin = _origin_for_tool_usage_filter(request.provider)
+        if origin:
+            where.append("s.origin = ?")
+            params.append(origin)
+        if request.tool:
+            where.append("COALESCE(NULLIF(LOWER(b.tool_name), ''), 'unknown') = LOWER(?)")
+            params.append(request.tool)
+        if request.mcp_server:
+            where.append("COALESCE(NULLIF(LOWER(b.tool_name), ''), 'unknown') LIKE ?")
+            params.append(f"mcp__{request.mcp_server.lower()}__%")
+        if request.action_kind:
+            where.append("COALESCE(NULLIF(b.semantic_type, ''), 'tool_use') = ?")
+            params.append(request.action_kind)
+        if request.limit is not None:
+            limit_clause = "LIMIT ? OFFSET ?"
+            params.extend((request.limit, request.offset))
+        elif request.offset:
+            limit_clause = "LIMIT -1 OFFSET ?"
+            params.append(request.offset)
+        else:
+            limit_clause = ""
         rows = self._conn.execute(
-            """
+            f"""
+            SELECT
+                s.origin AS origin,
+                COALESCE(NULLIF(LOWER(b.tool_name), ''), 'unknown') AS normalized_tool_name,
+                COALESCE(NULLIF(b.semantic_type, ''), 'tool_use') AS action_kind,
+                COUNT(*) AS call_count
+            FROM blocks b
+            JOIN sessions s ON s.session_id = b.session_id
+            WHERE {" AND ".join(where)}
+            GROUP BY s.origin, normalized_tool_name, action_kind
+            ORDER BY call_count DESC, s.origin ASC, normalized_tool_name ASC
+            {limit_clause}
+            """,
+            tuple(params),
+        ).fetchall()
+        return [
+            {
+                "source_name": _provider_for_origin(str(row["origin"])).value,
+                "origin": str(row["origin"] or "unknown-export"),
+                "normalized_tool_name": str(row["normalized_tool_name"] or "unknown"),
+                "action_kind": str(row["action_kind"] or "tool_use"),
+                "call_count": int(row["call_count"] or 0),
+            }
+            for row in rows
+        ]
+
+    def _tool_usage_rows(self, query: ToolUsageInsightQuery | None = None) -> list[ToolUsageRow]:
+        request = query or ToolUsageInsightQuery()
+        where: list[str] = []
+        params: list[object] = []
+        origin = _origin_for_tool_usage_filter(request.provider)
+        if origin:
+            where.append("s.origin = ?")
+            params.append(origin)
+        if request.tool:
+            where.append("COALESCE(NULLIF(LOWER(a.tool_name), ''), 'unknown') = LOWER(?)")
+            params.append(request.tool)
+        if request.mcp_server:
+            where.append("COALESCE(NULLIF(LOWER(a.tool_name), ''), 'unknown') LIKE ?")
+            params.append(f"mcp__{request.mcp_server.lower()}__%")
+        if request.action_kind:
+            where.append("COALESCE(NULLIF(a.semantic_type, ''), 'tool_use') = ?")
+            params.append(request.action_kind)
+
+        sql = """
             SELECT
                 s.origin AS origin,
                 COALESCE(NULLIF(LOWER(a.tool_name), ''), 'unknown') AS normalized_tool_name,
@@ -1673,9 +1743,25 @@ class ArchiveStore:
                 SUM(CASE WHEN a.output_text IS NOT NULL AND a.output_text != '' THEN 1 ELSE 0 END) AS output_text_calls
             FROM actions a
             JOIN sessions s ON s.session_id = a.session_id
+            {where_clause}
             GROUP BY s.origin, normalized_tool_name, action_kind
             ORDER BY call_count DESC, s.origin ASC, normalized_tool_name ASC
+            {limit_clause}
             """
+        if request.limit is not None:
+            limit_clause = "LIMIT ? OFFSET ?"
+            params.extend((request.limit, request.offset))
+        elif request.offset:
+            limit_clause = "LIMIT -1 OFFSET ?"
+            params.append(request.offset)
+        else:
+            limit_clause = ""
+        rows = self._conn.execute(
+            sql.format(
+                where_clause=("WHERE " + " AND ".join(where)) if where else "",
+                limit_clause=limit_clause,
+            ),
+            tuple(params),
         ).fetchall()
         return [
             {
@@ -4697,6 +4783,34 @@ def _origin_for_provider_value(provider: str | None) -> str | None:
     if provider is None:
         return None
     return origin_from_provider(Provider.from_string(provider)).value
+
+
+def _origin_for_tool_usage_filter(provider_or_origin: str | None) -> str | None:
+    if provider_or_origin is None:
+        return None
+    known_origin = {
+        "claude-code-session",
+        "codex-session",
+        "gemini-cli-session",
+        "hermes-session",
+        "antigravity-session",
+        "chatgpt-export",
+        "claude-ai-export",
+        "aistudio-drive",
+        "unknown-export",
+    }
+    if provider_or_origin in known_origin:
+        return provider_or_origin
+    return _origin_for_provider_value(provider_or_origin)
+
+
+def _tool_usage_builder_query(query: ToolUsageInsightQuery) -> ToolUsageInsightQuery:
+    origin = _origin_for_tool_usage_filter(query.provider)
+    updates: dict[str, object] = {"limit": None, "offset": 0}
+    if origin is None:
+        return query.model_copy(update=updates)
+    updates["provider"] = _provider_for_origin(origin).value
+    return query.model_copy(update=updates)
 
 
 def _session_origin(conn: sqlite3.Connection, session_id: str) -> str:

@@ -421,7 +421,7 @@ class PolylogueInsightsMixin:
         self,
         query: ToolUsageInsightQuery | None = None,
     ) -> list[ToolUsageInsight]:
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
+        with ArchiveStore(_active_archive_root(self.config)) as archive:
             return archive.list_tool_usage_insights(query)
 
     async def list_session_cost_insights(
