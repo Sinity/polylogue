@@ -45,6 +45,7 @@ from polylogue.sources.dispatch import (
     detect_provider,
     parse_drive_payload,
     parse_payload,
+    parse_stream_payload,
 )
 from polylogue.sources.drive import (
     download_drive_files,
@@ -1461,6 +1462,82 @@ def test_session_emitter_reuses_jsonl_sniff_payloads_for_grouped_detection(
     assert emitted[0][0] is not None and emitted[0][0].raw_bytes == raw
     assert emitted[0][1].source_name == Provider.CODEX
     assert len(emitted[0][1].messages) == 2
+
+
+def test_claude_code_stream_payload_does_not_materialize_whole_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_eager_parse(_payload: object, _fallback_id: str) -> ParsedSession:
+        raise AssertionError("stream parse should not use eager Claude Code parsing")
+
+    seen_record_counts: list[int] = []
+
+    def fake_stream_parse(records: Iterable[object], fallback_id: str) -> ParsedSession:
+        assert not isinstance(records, list)
+        seen_record_counts.append(sum(1 for _record in records))
+        return ParsedSession(
+            source_name=Provider.CLAUDE_CODE,
+            provider_session_id=fallback_id,
+            title=fallback_id,
+            messages=[],
+        )
+
+    monkeypatch.setattr(claude_parser, "parse_code", fail_eager_parse)
+    monkeypatch.setattr(claude_parser, "parse_code_stream", fake_stream_parse)
+
+    records = (
+        {"type": "user", "sessionId": "session-1", "uuid": f"u-{index}", "message": {"role": "user", "content": "x"}}
+        for index in range(3)
+    )
+
+    sessions = parse_stream_payload(Provider.CLAUDE_CODE, records, "fallback")
+
+    assert [session.provider_session_id for session in sessions] == ["fallback"]
+    assert seen_record_counts == [3]
+
+
+def test_claude_code_stream_payload_splits_contiguous_session_groups(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parsed_groups: list[tuple[str, list[str]]] = []
+
+    def fake_stream_parse(records: Iterable[object], fallback_id: str) -> ParsedSession:
+        session_ids = [
+            str(record.get("sessionId"))
+            for record in records
+            if isinstance(record, dict) and record.get("sessionId") is not None
+        ]
+        parsed_groups.append((fallback_id, session_ids))
+        return ParsedSession(
+            source_name=Provider.CLAUDE_CODE,
+            provider_session_id=fallback_id,
+            title=fallback_id,
+            messages=[],
+        )
+
+    monkeypatch.setattr(claude_parser, "parse_code_stream", fake_stream_parse)
+
+    records: Iterable[object] = iter(
+        [
+            {"type": "summary", "uuid": "prefix", "message": {"role": "system", "content": "prefix"}},
+            {"type": "user", "sessionId": "session-1", "uuid": "u-1", "message": {"role": "user", "content": "one"}},
+            {
+                "type": "assistant",
+                "sessionId": "session-1",
+                "uuid": "a-1",
+                "message": {"role": "assistant", "content": "two"},
+            },
+            {"type": "user", "sessionId": "session-2", "uuid": "u-2", "message": {"role": "user", "content": "three"}},
+        ]
+    )
+
+    sessions = parse_stream_payload(Provider.CLAUDE_CODE, records, "fallback")
+
+    assert [session.provider_session_id for session in sessions] == ["fallback", "session-2"]
+    assert parsed_groups == [
+        ("fallback", ["session-1", "session-1"]),
+        ("session-2", ["session-2"]),
+    ]
 
 
 def test_session_emitter_reuses_jsonl_sniff_payloads_for_individual_detection(
