@@ -62,7 +62,13 @@ if printf '%s\n' "$pressure_rows" | grep -Eq 'borg create|lynchpin.analysis mate
 fi
 
 raw_materialization_debt_payload() {
-  polylogue ops debt list --kind raw-materialization --format json 2>/dev/null || true
+  polylogue ops debt list \
+    --kind raw-materialization \
+    --status open \
+    --status actionable \
+    --status blocked \
+    --status classified \
+    --format json 2>/dev/null || true
 }
 
 if [ "$format" = "--focus" ]; then
