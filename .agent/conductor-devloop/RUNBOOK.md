@@ -55,7 +55,10 @@ Use the executable switch helper:
 This appends the transition to ignored `OPERATING-LOG.md`, updates ignored
 `ACTIVE-LOOP.md` when present, and refreshes the conductor packet. The valid
 focus modes are exactly Direction, Evidence, Construction, Proof, Artifact,
-Velocity, and Meta.
+Velocity, and Meta. The helper also validates the transition edge against the
+shared mode graph used by review and velocity audits. Use `--force` only when a
+rare edge is genuinely correct and the trigger/decision explains why it should
+not be routed through a normal intermediate mode.
 
 ## One-Loop Protocol
 

@@ -47,7 +47,7 @@ the active loop state before broad work.
 Use the shared focus modes exactly:
 
 ```text
-Direction -> Evidence -> Construction -> Proof -> Artifact -> Velocity -> Meta
+Direction, Evidence, Construction, Proof, Artifact, Velocity, Meta
 ```
 
 Record material transitions with:
@@ -55,6 +55,10 @@ Record material transitions with:
 ```bash
 .agent/scripts/devloop-focus <from> <to> "<trigger>" "<decision>"
 ```
+
+`devloop-focus` validates transitions against the shared mode graph. Use
+`--force` only for a rare edge whose rationale is explicit in the trigger and
+decision; otherwise switch through a normal intermediate mode.
 
 Start one concrete slice with:
 
