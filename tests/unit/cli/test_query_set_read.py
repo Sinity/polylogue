@@ -298,6 +298,56 @@ def test_read_spec_accepts_render_expression() -> None:
     assert payload["projection"]["families"] == ["temporal", "sessions", "chronicle", "messages"]
 
 
+def test_read_spec_accepts_projection_expression() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--plain",
+            "repo:polylogue",
+            "read",
+            "--view",
+            "context-image",
+            "--projection",
+            "max-tokens:1234,redact-paths:false,include-assertions:true",
+            "--spec",
+            "--format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["projection"]["max_tokens"] == 1234
+    assert payload["projection"]["redact_paths"] is False
+    assert payload["projection"]["include_assertions"] is True
+    assert "assertions" in payload["projection"]["families"]
+
+
+def test_read_spec_rejects_conflicting_projection_expression_alias() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--plain",
+            "repo:polylogue",
+            "read",
+            "--view",
+            "context-image",
+            "--projection",
+            "max-tokens:1234",
+            "--max-tokens",
+            "999",
+            "--spec",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 2
+    assert "Conflicting projection max_tokens" in result.output
+
+
 def test_read_spec_rejects_conflicting_render_expression_alias() -> None:
     runner = CliRunner()
     result = runner.invoke(

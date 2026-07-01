@@ -206,6 +206,17 @@ _READ_FORMATS = tuple(sorted({fmt for profile in READ_VIEW_PROFILES for fmt in p
 _READ_RENDER_LAYOUTS = ("standard", "context-image")
 _READ_TIMESTAMP_POLICIES = ("renderer-default", "include-available", "omit")
 _READ_RENDER_EXPRESSION_KEYS = ("layout", "timestamps", "format", "destination", "to", "out")
+_READ_PROJECTION_EXPRESSION_KEYS = (
+    "max-tokens",
+    "max_tokens",
+    "tokens",
+    "redact-paths",
+    "redact_paths",
+    "redact",
+    "include-assertions",
+    "include_assertions",
+    "assertions",
+)
 
 
 def _explicit_read_view_options(ctx: click.Context) -> frozenset[str]:
@@ -271,6 +282,64 @@ def _parse_read_render_expression(expression: str | None) -> dict[str, str]:
     return result
 
 
+def _parse_projection_bool(field: str, value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on", "include", "included"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "omit", "omitted", "exclude", "excluded"}:
+        return False
+    raise click.UsageError(f"Invalid --projection {field} value {value!r}; expected true/false.")
+
+
+def _parse_read_projection_expression(expression: str | None) -> dict[str, int | bool]:
+    """Parse a compact projection expression into ProjectionSpec field aliases."""
+
+    if expression is None:
+        return {}
+    result: dict[str, int | bool] = {}
+    try:
+        tokens = shlex.split(expression.replace(",", " "))
+    except ValueError as exc:
+        raise click.UsageError(f"Invalid --projection expression: {exc}") from exc
+    for token in tokens:
+        if "=" in token:
+            key, value = token.split("=", 1)
+        elif ":" in token:
+            key, value = token.split(":", 1)
+        else:
+            raise click.UsageError(
+                f"Invalid --projection token {token!r}; expected key:value or key=value. "
+                f"Known keys: {', '.join(_READ_PROJECTION_EXPRESSION_KEYS)}."
+            )
+        key = key.strip().lower().replace("-", "_")
+        value = value.strip()
+        if key == "tokens":
+            key = "max_tokens"
+        elif key == "redact":
+            key = "redact_paths"
+        elif key == "assertions":
+            key = "include_assertions"
+        if key not in {"max_tokens", "redact_paths", "include_assertions"}:
+            raise click.UsageError(
+                f"Unknown --projection key {key!r}. Known keys: {', '.join(_READ_PROJECTION_EXPRESSION_KEYS)}."
+            )
+        if not value:
+            raise click.UsageError(f"Empty --projection value for {key!r}.")
+        if key in result:
+            raise click.UsageError(f"Duplicate --projection key {key!r}.")
+        if key == "max_tokens":
+            try:
+                parsed_int = int(value)
+            except ValueError as exc:
+                raise click.UsageError(f"Invalid --projection max-tokens value {value!r}; expected integer.") from exc
+            if parsed_int < 1:
+                raise click.UsageError("Invalid --projection max-tokens value; expected integer >= 1.")
+            result[key] = parsed_int
+        else:
+            result[key] = _parse_projection_bool(key, value)
+    return result
+
+
 def _merge_render_option(field: str, expression_value: str | None, flag_value: str | None) -> str | None:
     """Merge a render-expression field with its ergonomic CLI alias."""
 
@@ -280,6 +349,38 @@ def _merge_render_option(field: str, expression_value: str | None, flag_value: s
         return expression_value
     raise click.UsageError(
         f"Conflicting render {field}: --render sets {expression_value!r} but the dedicated flag sets {flag_value!r}."
+    )
+
+
+def _merge_projection_int(field: str, expression_value: object | None, flag_value: int | None) -> int | None:
+    if expression_value is None:
+        return flag_value
+    if not isinstance(expression_value, int) or isinstance(expression_value, bool):
+        raise click.UsageError(f"Invalid --projection {field}; expected integer.")
+    if flag_value is None or flag_value == expression_value:
+        return expression_value
+    raise click.UsageError(
+        f"Conflicting projection {field}: --projection sets {expression_value!r} "
+        f"but the dedicated flag sets {flag_value!r}."
+    )
+
+
+def _merge_projection_bool(
+    field: str,
+    expression_value: object | None,
+    flag_value: bool | None,
+    *,
+    default: bool,
+) -> bool:
+    if expression_value is None:
+        return flag_value if flag_value is not None else default
+    if not isinstance(expression_value, bool):
+        raise click.UsageError(f"Invalid --projection {field}; expected boolean.")
+    if flag_value is None or flag_value == expression_value:
+        return expression_value
+    raise click.UsageError(
+        f"Conflicting projection {field}: --projection sets {expression_value!r} "
+        f"but the dedicated flag sets {flag_value!r}."
     )
 
 
@@ -581,7 +682,12 @@ def _projection_spec_with_resolved_session_refs(
 
 
 _READ_HELP_OPTION_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
-    ("Projection", frozenset({"view", "show_views", "show_spec", "render_expr", "render_layout", "timestamp_policy"})),
+    (
+        "Projection",
+        frozenset(
+            {"view", "show_views", "show_spec", "render_expr", "projection_expr", "render_layout", "timestamp_policy"}
+        ),
+    ),
     ("Delivery and format", frozenset({"destination", "output_format", "out_path", "fields"})),
     ("Cardinality and pagination", frozenset({"all_matches", "first_only", "limit", "offset"})),
     (
@@ -719,6 +825,15 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: b
     ),
 )
 @click.option(
+    "--projection",
+    "projection_expr",
+    default=None,
+    help=(
+        "Projection expression, e.g. max-tokens:4000,redact-paths:true,include-assertions:false. "
+        "Known keys: max-tokens, redact-paths, include-assertions."
+    ),
+)
+@click.option(
     "--render-layout",
     type=click.Choice(_READ_RENDER_LAYOUTS),
     default=None,
@@ -813,6 +928,7 @@ def read_verb(
     destination: str,
     output_format: str | None,
     render_expr: str | None,
+    projection_expr: str | None,
     render_layout: str | None,
     timestamp_policy: str | None,
     out_path: str | None,
@@ -874,11 +990,30 @@ def read_verb(
         return
     request = _parent_request(ctx)
     render_settings = _parse_read_render_expression(render_expr)
+    projection_settings = _parse_read_projection_expression(projection_expr)
     destination_alias = (
         destination
         if (source := ctx.get_parameter_source("destination")) is not None and source.name == "COMMANDLINE"
         else None
     )
+    max_tokens = _merge_projection_int("max_tokens", projection_settings.get("max_tokens"), max_tokens)
+    include_assertions = _merge_projection_bool(
+        "include_assertions",
+        projection_settings.get("include_assertions"),
+        include_assertions
+        if (source := ctx.get_parameter_source("include_assertions")) is not None and source.name == "COMMANDLINE"
+        else None,
+        default=False,
+    )
+    redact_paths = _merge_projection_bool(
+        "redact_paths",
+        projection_settings.get("redact_paths"),
+        (not no_redact)
+        if (source := ctx.get_parameter_source("no_redact")) is not None and source.name == "COMMANDLINE"
+        else None,
+        default=True,
+    )
+    no_redact = not redact_paths
     render_layout = _merge_render_option("layout", render_settings.get("layout"), render_layout)
     timestamp_policy = _merge_render_option("timestamps", render_settings.get("timestamps"), timestamp_policy)
     output_format = _merge_render_option("format", render_settings.get("format"), output_format)

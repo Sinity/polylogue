@@ -280,6 +280,10 @@ Projection:
                                   available,format:markdown. Known keys:
                                   layout, timestamps, format, destination/to,
                                   out.
+  --projection TEXT               Projection expression, e.g. max-
+                                  tokens:4000,redact-paths:true,include-
+                                  assertions:false. Known keys: max-tokens,
+                                  redact-paths, include-assertions.
   --render-layout [standard|context-image]
                                   Render layout for the composed projection
                                   spec; defaults from --view.
