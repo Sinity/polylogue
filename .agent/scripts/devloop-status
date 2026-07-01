@@ -26,17 +26,23 @@ if [ "$format" = "--json" ]; then
   devloop_state="$(systemctl --user show polylogued-devloop.service -p ActiveState --value 2>/dev/null || true)"
   devloop_sub_state="$(systemctl --user show polylogued-devloop.service -p SubState --value 2>/dev/null || true)"
   polylogued_rows="$(pgrep -af 'polylogued run' || true)"
-  python3 - "$repo" "$current" "$archive_root" "$index_version" "$sessions" "$messages" "$source_version" "$raw_rows" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" <<'PY'
+  worktree_gc_json="$(devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"
+  python3 - "$repo" "$current" "$archive_root" "$index_version" "$sessions" "$messages" "$source_version" "$raw_rows" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$worktree_gc_json" <<'PY'
 import json
 import sys
 
-repo, current, archive_root, index_version, sessions, messages, source_version, raw_rows, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows = sys.argv[1:]
+repo, current, archive_root, index_version, sessions, messages, source_version, raw_rows, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows, worktree_gc_json = sys.argv[1:]
 
 def int_or_none(value: str):
     try:
         return int(value)
     except ValueError:
         return None
+
+try:
+    worktree_gc = json.loads(worktree_gc_json)
+except json.JSONDecodeError:
+    worktree_gc = {}
 
 print(json.dumps({
     "repo": repo,
@@ -57,6 +63,11 @@ print(json.dumps({
         "devloop_state": devloop_state,
         "devloop_sub_state": devloop_sub_state,
         "polylogued": [line for line in polylogued_rows.splitlines() if line],
+    },
+    "worktrees": {
+        "total_count": int_or_none(str(worktree_gc.get("total_count", ""))),
+        "safe_count": int_or_none(str(worktree_gc.get("safe_count", ""))),
+        "blocked_count": int_or_none(str(worktree_gc.get("blocked_count", ""))),
     },
 }, indent=2, sort_keys=True))
 PY
@@ -91,6 +102,31 @@ devloop_sub_state="$(systemctl --user show polylogued-devloop.service -p SubStat
 printf 'prod polylogued.service: %s/%s\n' "${prod_active_state:-unknown}" "${prod_sub_state:-unknown}"
 printf 'devloop polylogued-devloop.service: %s/%s\n' "${devloop_active_state:-unknown}" "${devloop_sub_state:-unknown}"
 pgrep -af 'polylogued run' || true
+
+printf '\n== worktrees ==\n'
+worktree_gc_json="$(devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"
+python3 - "$worktree_gc_json" <<'PY'
+import json
+import sys
+
+try:
+    data = json.loads(sys.argv[1])
+except json.JSONDecodeError:
+    print("worktree-gc: unavailable")
+    raise SystemExit(0)
+
+total = data.get("total_count")
+safe = data.get("safe_count")
+blocked = data.get("blocked_count")
+print(f"agent worktrees: total={total} safe={safe} blocked={blocked}")
+blocked_items = [item for item in data.get("worktrees", []) if not item.get("safe")]
+dirty = [item for item in blocked_items if item.get("blocked_reason") == "dirty"]
+unmerged = [item for item in blocked_items if item.get("blocked_reason") == "branch-not-merged"]
+if dirty:
+    print(f"dirty_blocked={len(dirty)}")
+if unmerged:
+    print(f"unmerged_blocked={len(unmerged)}")
+PY
 
 printf '\n== active loop ==\n'
 if [ -f "$current/ACTIVE-LOOP.md" ]; then
