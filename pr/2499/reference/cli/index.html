@@ -1,0 +1,1352 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CLI Reference — Polylogue</title>
+    <style>
+
+        :root {
+            --bg-primary: #0B0E14;
+            --bg-secondary: #13171F;
+            --bg-tertiary: #1A1F2A;
+            --text-primary: #E6E8EC;
+            --text-secondary: #8B919A;
+            --text-tertiary: #555B63;
+            --accent: #3B82F6;
+            --accent-hover: #2563EB;
+            --border: #1E2430;
+            --shadow: rgba(0, 0, 0, 0.4);
+            --green: #22C55E;
+            --yellow: #EAB308;
+            --red: #EF4444;
+            --provider-claude-code: #D97706;
+            --provider-codex: #3B82F6;
+            --provider-chatgpt: #10B981;
+            --provider-gemini: #8B5CF6;
+            --provider-claude-ai: #F59E0B;
+            --header-height: 56px;
+            --nav-width: 240px;
+            --content-max-width: 720px;
+            --footer-height: 40px;
+            --font-body: &#39;Inter&#39;, system-ui, -apple-system, sans-serif;
+            --font-code: &#39;JetBrains Mono&#39;, &#39;Fira Code&#39;, monospace;
+        }
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg-primary: #FAFAFA;
+                --bg-secondary: #FFFFFF;
+                --bg-tertiary: #F3F4F6;
+                --text-primary: #111827;
+                --text-secondary: #6B7280;
+                --text-tertiary: #9CA3AF;
+                --border: #E5E7EB;
+                --shadow: rgba(0, 0, 0, 0.08);
+            }
+        }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html { font-size: 15px; }
+        body {
+            font-family: var(--font-body);
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
+        }
+        .site-header {
+            position: sticky; top: 0; z-index: 10;
+            height: var(--header-height);
+            background-color: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; padding: 0 1.5rem; gap: 1rem;
+        }
+        .site-header .logo { font-weight: 700; font-size: 1.1rem; color: var(--text-primary); text-decoration: none; white-space: nowrap; }
+        .site-header .logo span { color: var(--accent); }
+        .site-header .search-bar { flex: 1; max-width: 400px; margin: 0 auto; }
+        .site-header .search-bar input {
+            width: 100%; padding: 0.4rem 0.75rem; border-radius: 6px;
+            border: 1px solid var(--border); background-color: var(--bg-tertiary);
+            color: var(--text-primary); font-family: var(--font-body); font-size: 0.9rem;
+        }
+        .site-header .theme-toggle {
+            background: none; border: 1px solid var(--border); border-radius: 6px;
+            padding: 0.3rem 0.6rem; cursor: pointer; color: var(--text-secondary); font-size: 0.9rem;
+        }
+        .page-layout { display: flex; min-height: calc(100vh - var(--header-height)); }
+        .site-nav {
+            width: var(--nav-width); flex-shrink: 0; padding: 2rem 1.5rem;
+            background-color: var(--bg-primary); border-right: 1px solid var(--border);
+            overflow-y: auto; position: sticky; top: var(--header-height);
+            height: calc(100vh - var(--header-height));
+        }
+        .site-nav .nav-section { margin-bottom: 1.5rem; }
+        .site-nav .nav-section-title { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-tertiary); margin-bottom: 0.5rem; }
+        .site-nav a { display: block; padding: 0.3rem 0; color: var(--text-secondary); text-decoration: none; font-size: 0.9rem; }
+        .site-nav a:hover { color: var(--text-primary); }
+        .site-nav a.active { color: var(--accent); font-weight: 500; }
+        .content { flex: 1; max-width: var(--content-max-width); margin: 0 auto; padding: 2rem 2rem 4rem; width: 100%; }
+        h1 { font-size: 1.87rem; font-weight: 600; line-height: 1.3; margin: 2rem 0 1rem; }
+        h1:first-child { margin-top: 0; }
+        h2 { font-size: 1.47rem; font-weight: 600; line-height: 1.3; margin: 2rem 0 0.75rem; }
+        h3 { font-size: 1.2rem; font-weight: 600; line-height: 1.4; margin: 1.5rem 0 0.5rem; }
+        p { margin-bottom: 1rem; }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { color: var(--accent-hover); }
+        code { font-family: var(--font-code); font-size: 0.87rem; background-color: var(--bg-tertiary); padding: 0.15em 0.4em; border-radius: 3px; }
+        pre { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 1rem 1.25rem; overflow-x: auto; margin-bottom: 1.25rem; font-size: 0.87rem; line-height: 1.5; }
+        pre code { background: none; padding: 0; font-size: inherit; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 1.25rem; font-size: 0.9rem; }
+        th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+        th { font-weight: 600; color: var(--text-secondary); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+        .card { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; }
+        .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+        .stat-card { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; text-align: center; }
+        .stat-card .stat-value { font-size: 2rem; font-weight: 700; color: var(--accent); }
+        .stat-card .stat-label { font-size: 0.8rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.25rem; }
+        .badge { display: inline-block; padding: 0.15em 0.5em; border-radius: 4px; font-size: 0.8rem; font-weight: 500; }
+        .badge-green { background-color: rgba(34, 197, 94, 0.15); color: var(--green); }
+        .badge-yellow { background-color: rgba(234, 179, 8, 0.15); color: var(--yellow); }
+        .badge-red { background-color: rgba(239, 68, 68, 0.15); color: var(--red); }
+        .site-footer { height: var(--footer-height); display: flex; align-items: center; justify-content: space-between; padding: 0 1.5rem; border-top: 1px solid var(--border); font-size: 0.8rem; color: var(--text-tertiary); }
+        .site-footer a { color: var(--text-secondary); }
+        .home-hero { text-align: center; padding: 4rem 0 3rem; }
+        .home-hero h1 { font-size: 3rem; margin-bottom: 0.5rem; }
+        .home-hero .tagline { font-size: 1.2rem; color: var(--text-secondary); margin-bottom: 2rem; }
+        .home-hero .hero-search { max-width: 500px; margin: 0 auto 3rem; }
+        .home-hero .hero-search input { width: 100%; padding: 0.75rem 1rem; border-radius: 8px; border: 1px solid var(--border); background-color: var(--bg-secondary); color: var(--text-primary); font-family: var(--font-body); font-size: 1rem; }
+        .home-links { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; margin-top: 2rem; }
+        .home-links a { display: inline-block; padding: 0.6rem 1.5rem; border-radius: 6px; background-color: var(--bg-secondary); border: 1px solid var(--border); font-weight: 500; }
+        .home-links a:hover { background-color: var(--bg-tertiary); border-color: var(--accent); }
+        @media (max-width: 768px) {
+            .site-nav { display: none; }
+            .content { padding: 1.5rem 1rem; }
+            .home-hero h1 { font-size: 2rem; }
+        }
+        @media print {
+            .site-header, .site-nav, .site-footer { display: none; }
+            .content { max-width: none; padding: 0; }
+            body { background: white; color: black; }
+        }
+
+pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.highlight .hll { background-color: #49483e }
+.highlight { background: #272822; color: #F8F8F2 }
+.highlight .c { color: #959077 } /* Comment */
+.highlight .err { color: #ED007E; background-color: #1E0010 } /* Error */
+.highlight .esc { color: #F8F8F2 } /* Escape */
+.highlight .g { color: #F8F8F2 } /* Generic */
+.highlight .k { color: #66D9EF } /* Keyword */
+.highlight .l { color: #AE81FF } /* Literal */
+.highlight .n { color: #F8F8F2 } /* Name */
+.highlight .o { color: #FF4689 } /* Operator */
+.highlight .x { color: #F8F8F2 } /* Other */
+.highlight .p { color: #F8F8F2 } /* Punctuation */
+.highlight .ch { color: #959077 } /* Comment.Hashbang */
+.highlight .cm { color: #959077 } /* Comment.Multiline */
+.highlight .cp { color: #959077 } /* Comment.Preproc */
+.highlight .cpf { color: #959077 } /* Comment.PreprocFile */
+.highlight .c1 { color: #959077 } /* Comment.Single */
+.highlight .cs { color: #959077 } /* Comment.Special */
+.highlight .gd { color: #FF4689 } /* Generic.Deleted */
+.highlight .ge { color: #F8F8F2; font-style: italic } /* Generic.Emph */
+.highlight .ges { color: #F8F8F2; font-weight: bold; font-style: italic } /* Generic.EmphStrong */
+.highlight .gr { color: #F8F8F2 } /* Generic.Error */
+.highlight .gh { color: #F8F8F2 } /* Generic.Heading */
+.highlight .gi { color: #A6E22E } /* Generic.Inserted */
+.highlight .go { color: #66D9EF } /* Generic.Output */
+.highlight .gp { color: #FF4689; font-weight: bold } /* Generic.Prompt */
+.highlight .gs { color: #F8F8F2; font-weight: bold } /* Generic.Strong */
+.highlight .gu { color: #959077 } /* Generic.Subheading */
+.highlight .gt { color: #F8F8F2 } /* Generic.Traceback */
+.highlight .kc { color: #66D9EF } /* Keyword.Constant */
+.highlight .kd { color: #66D9EF } /* Keyword.Declaration */
+.highlight .kn { color: #FF4689 } /* Keyword.Namespace */
+.highlight .kp { color: #66D9EF } /* Keyword.Pseudo */
+.highlight .kr { color: #66D9EF } /* Keyword.Reserved */
+.highlight .kt { color: #66D9EF } /* Keyword.Type */
+.highlight .ld { color: #E6DB74 } /* Literal.Date */
+.highlight .m { color: #AE81FF } /* Literal.Number */
+.highlight .s { color: #E6DB74 } /* Literal.String */
+.highlight .na { color: #A6E22E } /* Name.Attribute */
+.highlight .nb { color: #F8F8F2 } /* Name.Builtin */
+.highlight .nc { color: #A6E22E } /* Name.Class */
+.highlight .no { color: #66D9EF } /* Name.Constant */
+.highlight .nd { color: #A6E22E } /* Name.Decorator */
+.highlight .ni { color: #F8F8F2 } /* Name.Entity */
+.highlight .ne { color: #A6E22E } /* Name.Exception */
+.highlight .nf { color: #A6E22E } /* Name.Function */
+.highlight .nl { color: #F8F8F2 } /* Name.Label */
+.highlight .nn { color: #F8F8F2 } /* Name.Namespace */
+.highlight .nx { color: #A6E22E } /* Name.Other */
+.highlight .py { color: #F8F8F2 } /* Name.Property */
+.highlight .nt { color: #FF4689 } /* Name.Tag */
+.highlight .nv { color: #F8F8F2 } /* Name.Variable */
+.highlight .ow { color: #FF4689 } /* Operator.Word */
+.highlight .pm { color: #F8F8F2 } /* Punctuation.Marker */
+.highlight .w { color: #F8F8F2 } /* Text.Whitespace */
+.highlight .mb { color: #AE81FF } /* Literal.Number.Bin */
+.highlight .mf { color: #AE81FF } /* Literal.Number.Float */
+.highlight .mh { color: #AE81FF } /* Literal.Number.Hex */
+.highlight .mi { color: #AE81FF } /* Literal.Number.Integer */
+.highlight .mo { color: #AE81FF } /* Literal.Number.Oct */
+.highlight .sa { color: #E6DB74 } /* Literal.String.Affix */
+.highlight .sb { color: #E6DB74 } /* Literal.String.Backtick */
+.highlight .sc { color: #E6DB74 } /* Literal.String.Char */
+.highlight .dl { color: #E6DB74 } /* Literal.String.Delimiter */
+.highlight .sd { color: #E6DB74 } /* Literal.String.Doc */
+.highlight .s2 { color: #E6DB74 } /* Literal.String.Double */
+.highlight .se { color: #AE81FF } /* Literal.String.Escape */
+.highlight .sh { color: #E6DB74 } /* Literal.String.Heredoc */
+.highlight .si { color: #E6DB74 } /* Literal.String.Interpol */
+.highlight .sx { color: #E6DB74 } /* Literal.String.Other */
+.highlight .sr { color: #E6DB74 } /* Literal.String.Regex */
+.highlight .s1 { color: #E6DB74 } /* Literal.String.Single */
+.highlight .ss { color: #E6DB74 } /* Literal.String.Symbol */
+.highlight .bp { color: #F8F8F2 } /* Name.Builtin.Pseudo */
+.highlight .fm { color: #A6E22E } /* Name.Function.Magic */
+.highlight .vc { color: #F8F8F2 } /* Name.Variable.Class */
+.highlight .vg { color: #F8F8F2 } /* Name.Variable.Global */
+.highlight .vi { color: #F8F8F2 } /* Name.Variable.Instance */
+.highlight .vm { color: #F8F8F2 } /* Name.Variable.Magic */
+.highlight .il { color: #AE81FF } /* Literal.Number.Integer.Long */
+    </style>
+    
+</head>
+<body>
+    <header class="site-header">
+        <a href="/polylogue/" class="logo">poly<span>logue</span></a>
+        <div class="search-bar">
+            <input type="search" placeholder="Search docs..." id="search-input">
+        </div>
+        <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+            <span class="light-icon">☀</span>
+            <span class="dark-icon">☾</span>
+        </button>
+    </header>
+    <div class="page-layout">
+        <nav class="site-nav" id="site-nav">
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Documentation</div>
+                
+                <a href="/polylogue/docs/getting-started/" >
+                    Getting Started
+                </a>
+                
+                <a href="/polylogue/docs/search/" >
+                    Search
+                </a>
+                
+                <a href="/polylogue/docs/providers/" >
+                    Providers
+                </a>
+                
+                <a href="/polylogue/docs/insights/" >
+                    Insights
+                </a>
+                
+                <a href="/polylogue/docs/export/" >
+                    Export
+                </a>
+                
+                <a href="/polylogue/docs/daemon/" >
+                    Daemon
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Reference</div>
+                
+                <a href="/polylogue/reference/cli/" class="active">
+                    CLI
+                </a>
+                
+                <a href="/polylogue/reference/mcp/" >
+                    MCP
+                </a>
+                
+                <a href="/polylogue/reference/api/" >
+                    API
+                </a>
+                
+                <a href="/polylogue/reference/config/" >
+                    Config
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Architecture</div>
+                
+                <a href="/polylogue/architecture/rings/" >
+                    Rings
+                </a>
+                
+                <a href="/polylogue/architecture/internals/" >
+                    Internals
+                </a>
+                
+                <a href="/polylogue/architecture/schema/" >
+                    Schema
+                </a>
+                
+                <a href="/polylogue/architecture/contributing/" >
+                    Contributing
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Verifiability</div>
+                
+                <a href="/polylogue/verifiability/catalog/" >
+                    Catalog
+                </a>
+                
+                <a href="/polylogue/verifiability/coverage/" >
+                    Coverage
+                </a>
+                
+                <a href="/polylogue/verifiability/mutation/" >
+                    Mutation
+                </a>
+                
+                <a href="/polylogue/verifiability/freshness/" >
+                    Freshness
+                </a>
+                
+                <a href="/polylogue/verifiability/drift/" >
+                    Drift
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Design</div>
+                
+                <a href="/polylogue/design/second-brain/" >
+                    Second Brain
+                </a>
+                
+                <a href="/polylogue/design/time-machine/" >
+                    Time Machine
+                </a>
+                
+                <a href="/polylogue/design/project-memory/" >
+                    Project Memory
+                </a>
+                
+                <a href="/polylogue/design/agent-first-mcp/" >
+                    Agent-First MCP
+                </a>
+                
+                <a href="/polylogue/design/archive-storytelling/" >
+                    Archive Storytelling
+                </a>
+                
+                <a href="/polylogue/design/whole-product/" >
+                    Whole Product
+                </a>
+                
+            </div>
+            
+        </nav>
+        <main class="content">
+            
+<p><a href="../README.md">← Back to README</a></p>
+<!-- Generated by `devtools render cli-reference`. Edit devtools/render_cli_reference.py instead. -->
+<h1>CLI Reference</h1>
+<p>This reference is generated from the live <code>polylogue --help</code> surface inside the project devshell.</p>
+<h2>Top-Level Command</h2>
+<pre><code class="language-text">Usage: polylogue [OPTIONS] COMMAND [ARGS]...
+
+  Polylogue - AI session archive.
+
+  Dispatch model (query-first):
+      Use `polylogue find QUERY then ACTION` for query-result workflows.
+      Quoted query text is also accepted when followed by an action:
+      `polylogue 'QUERY' then read`.
+      Run `polylogue --help` to see the full subcommand list, or
+      `polylogue --diagnose &lt;args&gt;` to have the parser explain how it
+      routed your invocation.
+
+  Product roles:
+      Search/read/action:   find QUERY then read|select|mark|analyze|delete|continue; facets
+      Setup/demo/evidence:  config, init, import, demo, tutorial
+      Reader/TUI:           dashboard --status, dashboard
+      Operations:           status (same as polylogue ops status), ops diagnostics, ops maintenance, ops backup
+
+  Query mode (default):
+      polylogue find &quot;search terms&quot;
+      polylogue --origin claude-ai-export --since &quot;last week&quot; find &quot;search terms&quot;
+      polylogue --latest find 'repo:polylogue' then read --to browser
+
+  Verbs (actions on matched sessions):
+      polylogue find id:abc then read          # exact ref: one selected session
+      polylogue find id:abc then select --json # expose selected-session identity
+      polylogue find id:abc then read --view messages
+      polylogue find id:abc then read --to browser
+      polylogue find id:abc then analyze --facets
+      polylogue facets --query &quot;vector store&quot; --format json
+      polylogue find &quot;urgent&quot; then delete --dry-run
+      polylogue find 'repo:polylogue' then read --all --format ndjson
+
+  Combined filters:
+      polylogue --referenced-path README.md find 'repo:polylogue' then read
+      polylogue find 'actions where tool:bash AND text:pytest' then read --view messages
+      polylogue --action-sequence file_read,file_edit,shell find 'repo:polylogue' then analyze
+      polylogue --action-text &quot;pytest -q&quot; find 'repo:polylogue' then read
+      polylogue find 'pytest -q tests/unit/core/test_semantic_facts.py' --retrieval-lane actions
+      polylogue --origin claude-code-session --since 2026-01-01 find 'repo:polylogue' then analyze --by repo --format json
+      polylogue find 'actions where action:file_edit AND path:polylogue/cli' then read --view messages
+      polylogue find 'near:&quot;sqlite locking bug in parser&quot;' then read
+
+  Modifiers (write operations):
+      polylogue find &quot;urgent&quot; then mark --tag-add review
+
+  See also:
+      polylogue --help                  # this screen
+      polylogue find --help             # query workflow help
+      polylogue &lt;subcommand&gt; --help     # per-subcommand help
+      polylogue --diagnose &lt;args&gt;       # explain parser decisions
+
+Options:
+  --help-markdown                 Emit the full --help tree (root + every
+                                  subcommand) as Markdown and exit.
+  -i, --id TEXT                   Session ID (exact or prefix match)
+  -c, --contains TEXT             FTS term (repeatable = AND)
+  --exclude-text TEXT             Exclude FTS term
+  --retrieval-lane LANE           Query lane: dialogue FTS, action text, or
+                                  hybrid
+  --lexical                       Force FTS-only search (overrides hybrid
+                                  auto-elevation when embeddings are
+                                  populated).
+  --semantic                      Treat the query as a similarity prompt
+                                  (vector-only; requires embeddings).
+  --origin TEXT                   Include origins (comma = OR)
+  --exclude-origin TEXT           Exclude origins
+  -r, --repo TEXT                 Filter by repository name (comma = OR)
+  -t, --tag TEXT                  Include tags (comma = OR, supports
+                                  key:value)
+  --exclude-tag TEXT              Exclude tags
+  --title TEXT                    Title contains
+  --referenced-path TEXT          Referenced file path contains substring
+                                  (repeatable = AND)
+  --cwd-prefix TEXT               Filter sessions whose recorded working
+                                  directory starts with this prefix
+  --action ACTION                 Require semantic action category (repeatable
+                                  = AND)
+  --exclude-action ACTION         Exclude semantic action category (repeatable
+                                  = AND)
+  --action-sequence TEXT          Require ordered semantic action subsequence
+                                  (comma-separated)
+  --action-text TEXT              Require text within normalized action
+                                  evidence (repeatable = AND)
+  --tool TEXT                     Require normalized tool name (repeatable =
+                                  AND)
+  --exclude-tool TEXT             Exclude normalized tool name (repeatable =
+                                  AND)
+  --similar TEXT                  Semantic similarity query (requires
+                                  embeddings)
+  --has TEXT                      Filter by content: thinking (reasoning),
+                                  tools (calls), summary, attachments
+  --has-tool-use                  Only sessions with tool use (SQL pushdown)
+  --has-thinking                  Only sessions with thinking blocks (SQL
+                                  pushdown)
+  --has-paste                     Only sessions with pasted content (SQL
+                                  pushdown)
+  --typed-only                    Only sessions without pasted content (typed
+                                  prose only)
+  --min-messages INTEGER          Minimum message count
+  --max-messages INTEGER          Maximum message count
+  --min-words INTEGER             Minimum total word count
+  --message-type TYPE             Filter by message content type (message,
+                                  summary, tool_use, tool_result, thinking,
+                                  context, protocol)
+  --since-session TEXT            Show sessions in same cwd after this session
+                                  ID
+  --since TEXT                    After date (ISO, 'yesterday', 'last week')
+  --until TEXT                    Before date
+  -l, -n, --limit INTEGER         Max results
+  --offset INTEGER                Offset for paginated results
+  --cursor TEXT                   Opaque keyset cursor from a previous
+                                  response's next_cursor. Stable across
+                                  archive growth for ranked search (#1268).
+  --latest                        Most recent (= --sort date --limit 1)
+  --sort [date|tokens|messages|words|longest|random]
+                                  Sort by field
+  --reverse                       Reverse sort order
+  --sample INTEGER                Random sample of N sessions
+  -o, --output TEXT               Output destinations: browser, clipboard,
+                                  stdout (comma-separated)
+  --json                          Shortcut for --format json. Disables color
+                                  and progress for pipeable output. (#1689)
+  -f, --format [markdown|json|ndjson|html|obsidian|org|yaml|plaintext|csv]
+                                  Output format (for --latest, --stream, or
+                                  verb output). `ndjson` emits one JSON
+                                  document per line, streaming-friendly for
+                                  shell pipelines and LLM tool-use harnesses.
+  --explain                       Explain query DSL parsing and lowering
+                                  instead of executing the query.
+  --transform [strip-tools|strip-thinking|strip-all]
+                                  Remove content: strip-tools (tool calls),
+                                  strip-thinking (reasoning), strip-all (both)
+  --no-code-blocks                Exclude fenced and structured code blocks
+                                  from output
+  --no-tool-calls                 Exclude tool invocation records from output
+  --no-tool-outputs               Exclude tool-result payloads from output
+  --no-file-reads                 Exclude file-read payloads while keeping
+                                  other tool output
+  --prose-only                    Show only authored prose text
+  --stream                        Stream output (low memory). Requires
+                                  --latest or -i ID. Incompatible with
+                                  --transform
+  -d, --dialogue-only             Show only user/assistant messages
+  --message-role TEXT             Show only selected message roles (repeatable
+                                  or comma-separated: user, assistant, system,
+                                  tool, unknown)
+  --material-origin TEXT          Show only selected material origins
+                                  (repeatable or comma-separated:
+                                  human_authored, runtime_protocol,
+                                  tool_result, unknown)
+  --set TEXT...                   Set metadata key value
+  --add-tag TEXT                  Add tags (comma-separated)
+  --plain                         Force non-interactive plain output
+  -v, --verbose                   Verbose output
+  --diagnose                      Explain CLI parser decisions on stderr
+                                  before running. Useful when query-first
+                                  dispatch surprises you: shows whether tokens
+                                  were routed to a subcommand, an explicit
+                                  query, or the strict command floor.
+  --version                       Show the version and exit.
+  --help                          Show this message and exit.
+
+Commands:
+  Search, read, and action workflows:
+    find      Search the archive, then optionally run an...
+    read      Read matched sessions (route to view/destination).
+    select    Select one matched session or print candidate identities.
+    mark      Mark selected sessions; review candidates under mark candidates.
+    analyze   Analyze matched sessions and named facet families.
+    facets    Show global or scoped archive facet families.
+    delete    Delete matched sessions.
+    continue  Compile a successor-agent continuation report.
+    Use `find QUERY then ACTION`; `facets` is the direct archive aggregate
+    command.
+
+  Setup, import, and evidence:
+    config    Show resolved Polylogue configuration with...
+    init      Detect chat sources and write a starter polylogue.toml.
+    import    Import sessions from configured sources.
+    demo      Seed and verify the deterministic demo archive.
+    tutorial  Inspect first-run setup state.
+    Use these for first-run setup, source import, demo archives, and
+    onboarding checks.
+
+  Reader and local UI:
+    dashboard  Launch the terminal dashboard TUI.
+    `dashboard` launches the terminal TUI; `dashboard --status` prints launch
+    evidence.
+
+  Operations and maintenance:
+    status  Show daemon and archive status.
+    ops     Run operational archive and daemon commands.
+    `polylogue status` is the root shortcut for `polylogue ops status`; deeper
+    maintenance stays under `ops`.
+</code></pre>
+<h2>Analyze Verb</h2>
+<pre><code class="language-text">Usage: polylogue analyze [OPTIONS] COMMAND [ARGS]...
+
+  Analyze matched sessions: statistics, facets, and aggregates.
+
+  Applies to the full result set by default (no cardinality restriction).
+  Wraps aggregate and facet views over the matched session set.
+
+  Examples:
+      polylogue find 'repo:polylogue since:7d' then analyze
+      polylogue find 'repo:polylogue since:7d' then analyze --count
+      polylogue find 'repo:polylogue since:7d' then analyze --by origin
+      polylogue find 'repo:polylogue since:7d' then analyze --by month
+      polylogue find 'repo:polylogue' then analyze --facets
+      polylogue find 'repo:polylogue' then analyze --by day --format json
+      polylogue analyze --cost-outlook --plan claude-pro --format json
+      polylogue analyze usage --format json
+
+Options:
+  --count                         Print only the matched-session count.
+  --by [origin|month|year|day|action|tool|repo|work-kind]
+                                  Group statistics by dimension
+  --facets                        Show named facet families for the matched
+                                  result set; cheap families are default.
+  --cost-outlook                  Project the current billing cycle for a
+                                  configured subscription plan.
+  --postmortem                    Distilled postmortem bundle over the matched
+                                  session scope (#2380).
+  --portfolio                     Corpus-wide sanitized portfolio report over
+                                  the matched scope (#2437).
+  --plan TEXT                     Subscription plan name for --cost-outlook.
+  --method [linear|trailing-7d-mean|eom-naive]
+                                  Projection method for --cost-outlook.
+  --no-idf                        With --facets, skip inverse-document-
+                                  frequency weighting
+  --include-deferred              With --facets, compute deferred detail
+                                  families: repos, roles, material origins,
+                                  message types, actions, flags.
+  --json                          Shortcut for --format json.
+  -f, --format [markdown|json|ndjson|html|obsidian|org|yaml|plaintext|csv]
+                                  Output format (ndjson = one JSON document
+                                  per row, streaming-friendly)
+  -l, -n, --limit INTEGER         Max matched sessions before grouping
+  --help                          Show this message and exit.
+
+Commands:
+  insights  Inspect durable archive insight read models.
+  pace      Show inter-turn gap analysis for one or more sessions.
+  tools     Show top tools by invocation count across filtered sessions.
+  turns     Show per-turn cost and duration for one session.
+  usage     Audit provider usage accounting without turning it into a...
+</code></pre>
+<h2>Read Verb</h2>
+<pre><code class="language-text">Usage: polylogue read [OPTIONS] [REF]
+
+  Read matched sessions.
+
+  Routes to the appropriate renderer based on --view and delivers the
+  output to --to (terminal, stdout, browser, clipboard, or file).
+
+  Examples:
+      polylogue --id abc123 read
+      polylogue find id:abc then read --view messages
+      polylogue find id:abc then read --view raw --format json
+      polylogue find id:abc then read --to browser
+      polylogue find 'repo:polylogue has:paste' then read --all --format ndjson
+      polylogue find id:abc then read --view context --related-limit 5
+      polylogue find 'cost tracking' then read --view context-pack --max-sessions 5
+      polylogue read --view context-pack --project-repo github.com/Sinity/polylogue --since 2026-01-01
+      polylogue find id:abc then read --view recovery
+      polylogue read --views
+      polylogue read --views --format json
+      polylogue find id:abc then read --view neighbors --window-hours 48
+      polylogue --latest read --view neighbors --format json
+      polylogue find id:abc then read --view correlation --since-hours 4
+      polylogue --latest read --view correlation --otlp --format json
+      polylogue read session:abc123 --format json
+
+  Reserved views (not yet implemented):
+      timeline, tools, files, metadata, continuation
+
+Options:
+  -v, --view VIEW[,VIEW...]       What to render (summary, transcript,
+                                  messages, raw, context, context-pack,
+                                  recovery, neighbors, correlation).
+                                  [default: summary]
+  --to [terminal|stdout|browser|clipboard|file]
+                                  Output destination.  [default: terminal]
+  --json                          Shortcut for --format json.
+  -f, --format [csv|html|json|markdown|ndjson|obsidian|org|plaintext|text|yaml]
+                                  Output format (where applicable).
+  --out PATH                      File path for --to file.
+  --all                           Apply to all matched sessions (bulk export).
+  -r, --message-role TEXT         Filter by message role (--view messages).
+  --material-origin ORIGIN        Filter by material origin (--view messages).
+  --message-type TYPE             Filter by message content type (--view
+                                  messages).
+  -l, -n, --limit INTEGER         Max items to return.
+  --offset INTEGER                Pagination offset.
+  --window-hours INTEGER          Neighboring time window around the seed
+                                  session (--view neighbors).  [default: 24]
+  --repo-path TEXT                Git repository path for correlation (--view
+                                  correlation). Defaults to the session's
+                                  repo/cwd.
+  --since-hours INTEGER           Hours before/after the session to scan for
+                                  commits (--view correlation).  [default: 2]
+  --confidence-threshold FLOAT    Minimum confidence for file-overlap commit
+                                  detection (--view correlation).  [default:
+                                  0.3]
+  --github-api / --no-github-api  Cross-reference issue/PR refs with the
+                                  GitHub API via gh CLI (--view correlation).
+  --otlp                          Add OTLP span evidence to correlation output
+                                  (--view correlation).
+  --related-limit INTEGER         Number of related sessions to include
+                                  (--view context).  [default: 5]
+  --report [continue|blame|work-packet]
+                                  Render a recovery report preset (--view
+                                  recovery): continue, blame, or work-packet.
+  --project-path TEXT             Filter by cwd prefix pattern (--view
+                                  context-pack).
+  --project-repo TEXT             Filter by git repo URL or name (--view
+                                  context-pack).
+  --since TEXT                    Start date, ISO 8601 (--view context-pack).
+  --until TEXT                    End date, ISO 8601 (--view context-pack).
+  --pack-origin TEXT              Source-origin filter (--view context-pack).
+  --query TEXT                    Free-text query (--view context-pack).
+  --max-sessions INTEGER          Max sessions, 1-20 (--view context-pack).
+                                  [default: 5]
+  --max-tokens INTEGER            Bound accumulated output to a token budget;
+                                  over-budget segments are reported as
+                                  omissions.
+  --include-assertions            Include context-inject assertion claims in
+                                  the compiled context image.
+  --no-redact                     Do not redact filesystem paths (--view
+                                  context-pack).
+  --no-code-blocks                Exclude code blocks (--view messages).
+  --no-tool-calls                 Exclude tool calls (--view messages).
+  --no-tool-outputs               Exclude tool outputs (--view messages).
+  --no-file-reads                 Exclude file reads (--view messages).
+  --prose-only                    Show only prose text (--view messages).
+  --fields TEXT                   Fields for JSON/YAML outputs (--all).
+  --views                         List executable read-view profiles and exit.
+  --first                         Read the first matched session only.
+  --help                          Show this message and exit.
+</code></pre>
+<h2>Select Verb</h2>
+<pre><code class="language-text">Usage: polylogue select [OPTIONS]
+
+  Select one matched session with fzf/prompt fallback.
+
+Options:
+  -n, --limit INTEGER RANGE  Max candidate sessions.  [default: 20; x&gt;=1]
+  --print [id|title|origin]  Field to print for the selected session.
+                             [default: id]
+  --json                     Print the selected session as one JSON object.
+  --help                     Show this message and exit.
+</code></pre>
+<h2>Delete Verb</h2>
+<pre><code class="language-text">Usage: polylogue delete [OPTIONS]
+
+  Delete matched sessions.
+
+  Cardinality rules:
+    --dry-run       Preview what would be deleted (no confirmation needed).
+    --yes           Confirm deletion for a single matched session.
+    --yes --all     Required when the query matches more than one session.
+
+  Examples:
+      polylogue find id:abc then delete --dry-run
+      polylogue find id:abc then delete --dry-run --format json
+      polylogue find id:abc then delete --yes
+      polylogue find 'repo:polylogue since:7d' then delete --dry-run --all
+      polylogue find 'repo:polylogue since:7d' then delete --yes --all
+
+Options:
+  --dry-run        Preview what would be deleted without deleting
+  --yes            Confirm the deletion (required for actual deletion)
+  --all            Delete all matched sessions (required when multiple match)
+  --json           Shortcut for --format json.
+  --format [json]  Output format. JSON emits a MutationResultPayload.
+  --help           Show this message and exit.
+</code></pre>
+<h2>Mark Verb</h2>
+<pre><code class="language-text">Usage: polylogue mark [OPTIONS] COMMAND [ARGS]...
+
+  Mark query-result sessions with tags, notes, or durable marks.
+
+  This owns session overlays only. Use `mark candidates` for assertion-
+  candidate review; target-ref/web annotations are separate surfaces, not
+  hidden here.
+
+  Requires exactly one matched session unless --all is present.
+  Use --first to act on the first match when the query is non-specific.
+
+  Mark types: star, pin, archive (managed via --star/--unstar, --pin/--unpin,
+  --archive/--unarchive).  Tags are free-form strings.  Notes are stored as
+  durable annotations on the session.
+
+  Examples:
+      polylogue find id:abc then mark --tag-add reviewed
+      polylogue find id:abc then mark --star --note &quot;key insight&quot;
+      polylogue find id:abc then mark --unstar --tag-remove reviewed
+      polylogue find id:abc then mark --pin
+      polylogue find 'repo:polylogue since:7d' then mark --tag-add sprint --all
+
+Options:
+  --tag-add TAG     Add a tag to the matched session(s)
+  --tag-remove TAG  Remove a tag from the matched session(s)
+  --star            Star the matched session
+  --unstar          Remove star from the matched session
+  --pin             Pin the matched session
+  --unpin           Remove pin from the matched session
+  --archive         Archive-mark the matched session
+  --unarchive       Remove archive-mark from the matched session
+  --note TEXT       Add or update a note annotation
+  --all             Apply to all matched sessions (default: singleton only)
+  --first           Apply to the first matched session only
+  --json            Shortcut for --format json.
+  --format [json]   Output format. JSON emits a MutationResultPayload.
+  --help            Show this message and exit.
+
+Commands:
+  candidates  Review assertion candidates for a selected session or...
+</code></pre>
+<h2>Mark Candidate Assertions</h2>
+<pre><code class="language-text">Usage: polylogue mark candidates [OPTIONS] COMMAND [ARGS]...
+
+  Review assertion candidates for a selected session or target ref.
+
+  Candidate commands own review state and claim judgment: review, list,
+  accept, reject, defer, or supersede candidate assertions. They do not apply
+  ordinary session tags, stars, pins, archive marks, or notes.
+
+Options:
+  --help  Show this message and exit.
+
+Commands:
+  accept     Accept a candidate assertion into an active assertion.
+  defer      Record a durable candidate assertion deferral.
+  list       List candidate assertion claims.
+  reject     Reject a candidate assertion with a durable reason.
+  review     List candidate assertion review state and disabled actions.
+  supersede  Supersede a candidate with an explicit active assertion.
+</code></pre>
+<h2>Continue Verb</h2>
+<pre><code class="language-text">Usage: polylogue continue [OPTIONS]
+
+  Compile a successor-agent continuation report for one matched session.
+
+  Examples:
+      polylogue find id:abc then continue
+      polylogue find id:abc then continue --format json
+      polylogue --latest continue --to clipboard
+      polylogue find 'repo:polylogue near:id:abc' then continue --to file --out handoff.md
+      polylogue continue --candidates --repo /workspace/polylogue --recent polylogue/cli/query_verbs.py
+
+Options:
+  --to [terminal|stdout|browser|clipboard|file]
+                                  Output destination.  [default: terminal]
+  --out PATH                      File path for --to file.
+  --candidates                    Rank archived sessions that are likely
+                                  continuation targets for a repository
+                                  context.
+  --repo TEXT                     Repository path for --candidates ranking.
+  --cwd TEXT                      Current working directory for --candidates
+                                  prefix matching.
+  --recent TEXT                   Recently touched file path for --candidates.
+                                  Repeatable.
+  --limit INTEGER                 Maximum continuation candidates to return.
+                                  [default: 10]
+  --json                          Shortcut for --format json.
+  -f, --format [json]             Output format. JSON emits the shared
+                                  ContextImage payload.
+  --help                          Show this message and exit.
+</code></pre>
+<h2>Insights</h2>
+<pre><code class="language-text">Usage: polylogue ops insights [OPTIONS] COMMAND [ARGS]...
+
+  Operate durable archive insight materialization.
+
+Options:
+  --help  Show this message and exit.
+
+Commands:
+  audit   Report per-product rigor profile across materialized insights...
+  export  Export versioned archive-insight bundles.
+  status  Report insight materialization coverage and readiness.
+</code></pre>
+<h2>Operations</h2>
+<pre><code class="language-text">Usage: polylogue ops [OPTIONS] COMMAND [ARGS]...
+
+  Run operational archive, daemon, auth, embedding, and maintenance commands.
+
+Options:
+  --help  Show this message and exit.
+
+Commands:
+  auth         Authenticate optional external services.
+  backup       Create a timestamped durability-tier backup.
+  debt         List archive work that needs operator attention.
+  diagnostics  Run archive and session diagnostics.
+  doctor       Run archive health checks and repairs.
+  embed        Enable, preflight, and backfill the embedding pipeline.
+  insights     Check and export derived insight materialization.
+  maintenance  Preview and run maintenance backfill operations.
+  reset        Reset local archive state.
+  status       Show daemon and archive status.
+</code></pre>
+<h2>Doctor</h2>
+<pre><code class="language-text">Usage: polylogue ops doctor [OPTIONS]
+
+  Health check with optional maintenance and cleanup previews.
+
+Options:
+  -f, --format [json]             Output format
+  -v, --verbose                   Show breakdown by provider
+  --repair                        Run safe derived-data and database
+                                  maintenance repairs
+  --cleanup                       Run destructive archive cleanup for orphaned
+                                  or empty persisted data
+  --target [session_insights|dangling_fts|message_type_backfill|raw_materialization|message_embeddings|wal_checkpoint|orphaned_messages|empty_sessions|orphaned_attachments|orphaned_blobs|superseded_raw_snapshots]
+                                  Limit maintenance to named targets such as
+                                  session_insights, dangling_fts,
+                                  message_type_backfill, raw_materialization,
+                                  message_embeddings, wal_checkpoint,
+                                  orphaned_messages, empty_sessions,
+                                  orphaned_attachments, orphaned_blobs, or
+                                  superseded_raw_snapshots
+  --preview                       Preview maintenance without executing
+                                  (requires --repair or --cleanup)
+  --vacuum                        Reclaim unused space after maintenance
+                                  (requires --repair or --cleanup)
+  --deep                          Run SQLite integrity and expensive orphan
+                                  scans (slow on large databases)
+  --runtime                       Run environment and runtime verification
+                                  checks
+  --daemon                        Show daemon component status
+  --blob, --blob-integrity        Verify blob store integrity (missing,
+                                  orphaned, corrupt, and stale-lease blobs)
+  --full                          Run full blob-integrity scan (requires
+                                  --blob)
+  --schemas                       Run raw-corpus schema verification (non-
+                                  mutating)
+  --artifact-coverage             Inspect durable artifact coverage
+  --artifacts                     List durable artifact observations
+  --cohorts                       Summarize durable artifact cohorts
+  --schema-provider TEXT          Limit schema verification to DB provider
+                                  name (repeatable)
+  --artifact-provider TEXT        Limit artifact coverage/listing/cohorting to
+                                  effective provider (repeatable)
+  --artifact-status TEXT          Limit artifact listing/cohorting to support
+                                  status (repeatable)
+  --artifact-kind TEXT            Limit artifact listing/cohorting to artifact
+                                  kind (repeatable)
+  --artifact-limit INTEGER        Limit artifact coverage/listing/cohorting to
+                                  N observation rows
+  --artifact-offset INTEGER       Start offset for artifact
+                                  coverage/listing/cohorting  [default: 0]
+  --schema-samples TEXT           Validation samples per raw payload: positive
+                                  integer or 'all'  [default: all]
+  --schema-record-limit INTEGER   Limit schema verification to N raw records
+                                  (for chunked runs)
+  --schema-record-offset INTEGER  Start offset for chunked schema verification
+                                  [default: 0]
+  --schema-quarantine-malformed   Mark malformed raw payloads as failed
+                                  validation during schema verification
+                                  (mutates DB)
+  --help                          Show this message and exit.
+</code></pre>
+<h2>Auth</h2>
+<pre><code class="language-text">Usage: polylogue ops auth [OPTIONS]
+
+  Authenticate with external services (Google Drive for Gemini).
+
+  Examples:
+      polylogue ops auth           # Interactive OAuth for Google Drive
+      polylogue ops auth --refresh # Force token refresh
+      polylogue ops auth --revoke  # Revoke stored credentials
+
+Options:
+  --service TEXT  Auth service (default: drive)
+  --refresh       Force token refresh
+  --revoke        Revoke existing credentials
+  --help          Show this message and exit.
+</code></pre>
+<h2>Reset</h2>
+<pre><code class="language-text">Usage: polylogue ops reset [OPTIONS]
+
+  Reset database, blob store, assets, cache, or auth state.
+
+  By default, requires explicit flags to specify what to reset. Use --all to
+  reset everything.
+
+  Identity-preserving reset:
+    --session ID  Tombstone a specific session (preserves user metadata)
+    --source PATH      Tombstone all sessions from a source path
+
+Options:
+  --database         Delete the rebuildable SQLite tiers (preserves user.db)
+  --include-user-db  Also delete the irreplaceable user.db tier (tags,
+                     annotations, marks, notes). Destructive.
+  --blob             Delete the content-addressed blob store
+  --assets           Delete archived assets/attachments
+  --cache            Delete search indexes, schemas, and cache
+  --auth             Delete Google Drive OAuth tokens
+  --all              Reset everything
+  -y, --yes          Skip confirmation prompt
+  --session TEXT     Tombstone a specific session by ID
+  --source PATH      Tombstone all sessions from a source path
+  --help             Show this message and exit.
+</code></pre>
+<h2>Config</h2>
+<pre><code class="language-text">Usage: polylogue config [OPTIONS] COMMAND [ARGS]...
+
+  Show resolved Polylogue configuration with precedence sources.
+
+Options:
+  -f, --format [toml|json]  Output format.
+  --show-layers             Show the layer source for each config key
+                            (default/site/user/env/cli).
+  --help                    Show this message and exit.
+
+Commands:
+  action-affordances  Print shared query-action affordance metadata as JSON.
+  completions         Generate shell completion scripts.
+  paths               Print canonical archive paths and filesystem topology.
+  query-completions   Print shared query-builder completion metadata as...
+</code></pre>
+<h2>Completions</h2>
+<pre><code class="language-text">Usage: polylogue config completions [OPTIONS]
+
+  Generate shell completion scripts.
+
+Options:
+  --shell [bash|zsh|fish]  [required]
+  --help                   Show this message and exit.
+
+  Install:
+    bash: add  eval &quot;$(polylogue config completions --shell bash)&quot;  to ~/.bashrc
+    zsh:  add  eval &quot;$(polylogue config completions --shell zsh)&quot;   to ~/.zshrc
+    fish: polylogue config completions --shell fish &gt; ~/.config/fish/completions/polylogue.fish
+
+  Dynamic completers cover: session IDs, origins/source-families,
+  tags, repos, cwd prefixes, action categories and sequences, tool names,
+  message types, retrieval lanes.
+</code></pre>
+<h2>Paths</h2>
+<pre><code class="language-text">Usage: polylogue config paths [OPTIONS]
+
+  Print canonical archive paths and filesystem topology.
+
+  Reports the resolved archive root, database path, config file path, blob
+  store root, and whether any bind mounts are detected.
+
+Options:
+  -f, --format [text|json]  Output format.
+  --help                    Show this message and exit.
+</code></pre>
+<h2>Dashboard</h2>
+<pre><code class="language-text">Usage: polylogue dashboard [OPTIONS]
+
+  Launch the terminal dashboard TUI with explicit runtime evidence.
+
+Options:
+  --status              Print dashboard launch/readiness evidence without
+                        starting the TUI.
+  --format [text|json]  Output format for --status and launch evidence.
+                        [default: text]
+  --help                Show this message and exit.
+</code></pre>
+<h2>Tutorial</h2>
+<pre><code class="language-text">Usage: polylogue tutorial [OPTIONS]
+
+  Inspect first-run setup state and print the next concrete action.
+
+  Each stage is idempotent — already-satisfied stages are marked ``[skip]``.
+  Use ``--non-interactive`` to print the current state without prompting
+  (suitable for scripts and CI).
+
+Options:
+  --non-interactive  Skip prompts; print the stage diagnostic and exit.
+  --help             Show this message and exit.
+</code></pre>
+<h2>Public Action Contracts</h2>
+<p>This section is generated from <code>polylogue.operations.action_contracts.ACTION_CONTRACTS</code>.
+It records the public action floor, not every utility command in the Click tree.</p>
+<table>
+<thead>
+<tr>
+<th>Action</th>
+<th>Effect</th>
+<th>Target</th>
+<th>Input</th>
+<th>Cardinality</th>
+<th>Safety</th>
+<th>Formats</th>
+<th>Destinations</th>
+<th>Confirm</th>
+<th>Select</th>
+<th>Machine envelope</th>
+<th>Guards</th>
+<th>Next actions</th>
+<th>Completion</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>polylogue find</code></td>
+<td><code>read</code></td>
+<td><code>none</code></td>
+<td><code>none</code></td>
+<td><code>any</code></td>
+<td><code>safe</code></td>
+<td><code>human</code>, <code>json</code>, <code>ndjson</code></td>
+<td><code>terminal</code>, <code>stdout</code>, <code>file</code>, <code>api</code>, <code>mcp</code></td>
+<td>-</td>
+<td>-</td>
+<td><code>result_set</code></td>
+<td><code>explicit_query_intent</code></td>
+<td><code>select</code>, <code>read</code>, <code>analyze</code>, <code>continue</code>, <code>mark</code>, <code>delete</code></td>
+<td><code>query_expression</code></td>
+</tr>
+<tr>
+<td><code>polylogue read</code></td>
+<td><code>read</code></td>
+<td><code>selection</code></td>
+<td><code>query_result_set</code></td>
+<td><code>explicit_multi</code></td>
+<td><code>safe</code></td>
+<td><code>human</code>, <code>json</code>, <code>ndjson</code></td>
+<td><code>terminal</code>, <code>stdout</code>, <code>browser</code>, <code>clipboard</code>, <code>file</code>, <code>api</code>, <code>mcp</code></td>
+<td>-</td>
+<td><code>polylogue find QUERY then select</code></td>
+<td><code>item</code></td>
+<td><code>single_match_unless_all_or_first</code>, <code>file_destination_requires_out</code></td>
+<td><code>continue</code>, <code>mark</code>, <code>delete</code></td>
+<td><code>session_id</code></td>
+</tr>
+<tr>
+<td><code>polylogue continue</code></td>
+<td><code>read</code></td>
+<td><code>selection</code></td>
+<td><code>query_result_set</code></td>
+<td><code>singleton</code></td>
+<td><code>safe</code></td>
+<td><code>human</code>, <code>json</code></td>
+<td><code>terminal</code>, <code>stdout</code>, <code>clipboard</code>, <code>file</code>, <code>api</code>, <code>mcp</code></td>
+<td>-</td>
+<td><code>polylogue find QUERY then select</code></td>
+<td><code>item</code></td>
+<td>-</td>
+<td><code>read</code>, <code>mark</code></td>
+<td><code>session_id</code></td>
+</tr>
+<tr>
+<td><code>polylogue select</code></td>
+<td><code>read</code></td>
+<td><code>selection</code></td>
+<td><code>query_result_set</code></td>
+<td><code>singleton</code></td>
+<td><code>safe</code></td>
+<td><code>human</code>, <code>json</code></td>
+<td><code>terminal</code>, <code>stdout</code>, <code>api</code>, <code>mcp</code></td>
+<td>-</td>
+<td>-</td>
+<td><code>item</code></td>
+<td>-</td>
+<td><code>read</code>, <code>continue</code>, <code>analyze</code>, <code>mark</code>, <code>delete</code></td>
+<td><code>session_id</code></td>
+</tr>
+<tr>
+<td><code>polylogue mark</code></td>
+<td><code>write</code></td>
+<td><code>selection</code></td>
+<td><code>query_result_set</code></td>
+<td><code>explicit_multi</code></td>
+<td><code>mutating</code></td>
+<td><code>human</code>, <code>json</code></td>
+<td><code>terminal</code>, <code>stdout</code>, <code>api</code>, <code>mcp</code></td>
+<td>-</td>
+<td><code>polylogue find QUERY then select</code></td>
+<td><code>mutation</code></td>
+<td><code>single_match_unless_all_or_first</code></td>
+<td><code>read</code>, <code>analyze</code></td>
+<td><code>session_id</code></td>
+</tr>
+<tr>
+<td><code>polylogue analyze</code></td>
+<td><code>read</code></td>
+<td><code>selection</code></td>
+<td><code>query_result_set</code></td>
+<td><code>any</code></td>
+<td><code>safe</code></td>
+<td><code>human</code>, <code>json</code>, <code>ndjson</code></td>
+<td><code>terminal</code>, <code>stdout</code>, <code>file</code>, <code>api</code>, <code>mcp</code></td>
+<td>-</td>
+<td>-</td>
+<td><code>result_set</code></td>
+<td>-</td>
+<td><code>select</code>, <code>read</code></td>
+<td><code>query_expression</code></td>
+</tr>
+<tr>
+<td><code>polylogue delete</code></td>
+<td><code>destructive</code></td>
+<td><code>selection</code></td>
+<td><code>query_result_set</code></td>
+<td><code>destructive_multi</code></td>
+<td><code>destructive</code></td>
+<td><code>human</code>, <code>json</code></td>
+<td><code>terminal</code>, <code>stdout</code>, <code>api</code>, <code>mcp</code></td>
+<td><code>polylogue find QUERY then delete --dry-run</code></td>
+<td><code>polylogue find QUERY then select</code></td>
+<td><code>mutation</code></td>
+<td><code>dry_run_or_yes_required</code>, <code>single_match_unless_all</code></td>
+<td><code>find</code></td>
+<td><code>session_id</code></td>
+</tr>
+<tr>
+<td><code>polylogue import</code></td>
+<td><code>import</code></td>
+<td><code>path</code></td>
+<td><code>path</code></td>
+<td><code>singleton</code></td>
+<td><code>mutating</code></td>
+<td><code>human</code></td>
+<td><code>terminal</code>, <code>stdout</code>, <code>api</code></td>
+<td>-</td>
+<td>-</td>
+<td><code>mutation</code></td>
+<td><code>path_exists_or_demo</code>, <code>daemon_accepts_schedule</code></td>
+<td><code>ops</code>, <code>read</code>, <code>analyze</code></td>
+<td><code>filesystem_path</code></td>
+</tr>
+<tr>
+<td><code>polylogue config</code></td>
+<td><code>config</code></td>
+<td><code>config</code></td>
+<td><code>config</code></td>
+<td><code>any</code></td>
+<td><code>operational</code></td>
+<td><code>human</code>, <code>json</code></td>
+<td><code>terminal</code>, <code>stdout</code></td>
+<td>-</td>
+<td>-</td>
+<td><code>item</code></td>
+<td><code>secret_values_redacted</code></td>
+<td><code>ops</code></td>
+<td><code>config_key</code></td>
+</tr>
+<tr>
+<td><code>polylogue ops</code></td>
+<td><code>ops</code></td>
+<td><code>runtime</code></td>
+<td><code>runtime</code></td>
+<td><code>any</code></td>
+<td><code>operational</code></td>
+<td><code>human</code></td>
+<td><code>terminal</code>, <code>stdout</code>, <code>api</code></td>
+<td>-</td>
+<td>-</td>
+<td><code>item</code></td>
+<td>-</td>
+<td><code>find</code>, <code>read</code></td>
+<td>-</td>
+</tr>
+</tbody>
+</table>
+<h2>Published Machine Output Schemas</h2>
+<p>This section is generated from <code>devtools.render_cli_output_schemas.SCHEMAS</code>.
+The schema files live under <code>docs/schemas/cli-output/</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Schema</th>
+<th>Model</th>
+<th>Surfaces</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>session-list-row</code></td>
+<td><code>SessionListRowPayload</code></td>
+<td><code>polylogue read --all --format json</code><br><code>polylogue read --all --format ndjson</code><br><code>polylogue read --all --format yaml</code></td>
+</tr>
+<tr>
+<td><code>session-summary</code></td>
+<td><code>SessionSummaryPayload</code></td>
+<td><code>polylogue analyze --format json (rows)</code><br><code>polylogue --format json &lt;query&gt; (hits[].session)</code></td>
+</tr>
+<tr>
+<td><code>session-message-row</code></td>
+<td><code>SessionMessageRowPayload</code></td>
+<td><code>polylogue read --view messages --format ndjson</code><br><code>polylogue read --view messages --format json (messages[])</code></td>
+</tr>
+<tr>
+<td><code>session-messages-response</code></td>
+<td><code>SessionMessagesResponsePayload</code></td>
+<td><code>polylogue read --view messages --format json</code></td>
+</tr>
+<tr>
+<td><code>session-search-hit</code></td>
+<td><code>SessionSearchHitPayload</code></td>
+<td><code>polylogue --format json &lt;query&gt;</code><br><code>polylogue --format ndjson &lt;query&gt;</code></td>
+</tr>
+<tr>
+<td><code>search-envelope</code></td>
+<td><code>SearchEnvelope</code></td>
+<td><code>polylogue --format json &lt;query&gt;</code><br><code>GET /api/sessions?query=...</code></td>
+</tr>
+<tr>
+<td><code>query-unit-envelope</code></td>
+<td><code>QueryUnitEnvelope</code></td>
+<td><code>polylogue --format json messages where ...</code><br><code>polylogue --format json actions where ...</code><br><code>polylogue --format json blocks where ...</code><br><code>polylogue --format json assertions where ...</code><br><code>polylogue --format json files where ...</code><br><code>polylogue --format json runs where ...</code><br><code>polylogue --format json observed-events where ...</code><br><code>polylogue --format json context-snapshots where ...</code><br><code>Polylogue.query_units(...)</code><br><code>MCP query_units</code><br><code>GET /api/query-units?expression=...</code></td>
+</tr>
+<tr>
+<td><code>query-unit-aggregate-envelope</code></td>
+<td><code>QueryUnitAggregateEnvelope</code></td>
+<td>`polylogue --format json messages where ...</td>
+</tr>
+<tr>
+<td><code>import-explain</code></td>
+<td><code>ImportExplainPayload</code></td>
+<td><code>polylogue import PATH --explain --format json</code><br><code>polylogue import PATH --explain --format ndjson (entries)</code></td>
+</tr>
+<tr>
+<td><code>archive-debt-list</code></td>
+<td><code>ArchiveDebtListPayload</code></td>
+<td><code>polylogue ops debt list --format json</code></td>
+</tr>
+<tr>
+<td><code>session-neighbor-candidate</code></td>
+<td><code>SessionNeighborCandidatePayload</code></td>
+<td><code>polylogue read --view neighbors --format json</code></td>
+</tr>
+<tr>
+<td><code>mutation-result</code></td>
+<td><code>MutationResultPayload</code></td>
+<td><code>polylogue find &lt;query&gt; then delete --dry-run</code><br><code>polylogue find &lt;query&gt; then delete --yes</code><br><code>MCP mutation tools</code><br><code>daemon mutation endpoints</code></td>
+</tr>
+<tr>
+<td><code>action-affordance-list</code></td>
+<td><code>ActionAffordanceListPayload</code></td>
+<td><code>polylogue config action-affordances</code><br><code>GET /api/action-affordances</code><br><code>MCP action_affordances</code></td>
+</tr>
+<tr>
+<td><code>machine-error</code></td>
+<td><code>MachineErrorPayload</code></td>
+<td><code>polylogue * --machine (error path)</code></td>
+</tr>
+<tr>
+<td><code>machine-success</code></td>
+<td><code>MachineSuccessPayload</code></td>
+<td><code>polylogue * --machine (success path)</code></td>
+</tr>
+<tr>
+<td><code>query-error</code></td>
+<td><code>QueryErrorPayload</code></td>
+<td><code>GET /api/sessions?query=... (error path)</code><br><code>daemon query/read error responses</code><br><code>MCP query/read error responses</code></td>
+</tr>
+</tbody>
+</table>
+
+<hr style="margin: 3rem 0 1rem; border-color: var(--border);">
+<nav style="display: flex; justify-content: space-between; font-size: 0.9rem;">
+    <a href="/polylogue/docs/daemon/">← Daemon</a>
+    <a href="/polylogue/reference/mcp/">MCP Reference →</a>
+</nav>
+
+        </main>
+    </div>
+    <footer class="site-footer">
+        <span>Polylogue — your AI memory</span>
+        <a href="https://github.com/Sinity/polylogue">GitHub</a>
+    </footer>
+    <script>
+        function toggleTheme() {
+            var html = document.documentElement;
+            var current = html.getAttribute('data-theme');
+            html.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+            localStorage.setItem('theme', current === 'dark' ? 'light' : 'dark');
+        }
+        (function() {
+            var saved = localStorage.getItem('theme');
+            if (saved) document.documentElement.setAttribute('data-theme', saved);
+        })();
+    </script>
+    
+</body>
+</html>
