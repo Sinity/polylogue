@@ -65,9 +65,7 @@ class SessionSummary(SessionSummaryRuntimeMixin, BaseModel):
     @property
     def canonical_url(self) -> str | None:
         """Public web URL for web-originated sessions; None for local origins."""
-        return canonical_session_url(
-            self.origin, native_id_from_session_id(self.id), self.provider_project_ref
-        )
+        return canonical_session_url(self.origin, native_id_from_session_id(self.id), self.provider_project_ref)
 
 
 class Session(SessionRuntimeMixin, BaseModel):
@@ -107,9 +105,7 @@ class Session(SessionRuntimeMixin, BaseModel):
     @property
     def canonical_url(self) -> str | None:
         """Public web URL for web-originated sessions; None for local origins."""
-        return canonical_session_url(
-            self.origin, native_id_from_session_id(self.id), self.provider_project_ref
-        )
+        return canonical_session_url(self.origin, native_id_from_session_id(self.id), self.provider_project_ref)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

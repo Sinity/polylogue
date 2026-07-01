@@ -8,10 +8,10 @@ from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar
 from pydantic import RootModel
 from typing_extensions import TypedDict
 
-from polylogue.core.web_urls import canonical_session_url
 from polylogue.context.compiler import ContextImage
 from polylogue.core.json import JSONDocument
 from polylogue.core.user_state_targets import TARGET_SESSION
+from polylogue.core.web_urls import canonical_session_url
 from polylogue.mcp.context_pack import (
     ContextPackActionSummary as MCPContextPackActionSummary,
 )

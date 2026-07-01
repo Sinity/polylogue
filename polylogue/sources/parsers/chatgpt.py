@@ -512,9 +512,7 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     # as gizmo_id / conversation_template_id. A bare g-<id> is a custom GPT, not a
     # project, so only the g-p- prefix is treated as a workspace/project ref.
     project_raw = payload.get("conversation_template_id") or payload.get("gizmo_id")
-    provider_project_ref = (
-        str(project_raw) if isinstance(project_raw, str) and project_raw.startswith("g-p-") else None
-    )
+    provider_project_ref = str(project_raw) if isinstance(project_raw, str) and project_raw.startswith("g-p-") else None
 
     return ParsedSession(
         source_name=Provider.CHATGPT,
