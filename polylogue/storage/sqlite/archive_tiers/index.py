@@ -33,7 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 19
+INDEX_SCHEMA_VERSION = 20
 
 INDEX_DDL = f"""
 CREATE TABLE IF NOT EXISTS sessions (
@@ -201,6 +201,12 @@ ON blocks(session_id, message_id, position);
 
 CREATE INDEX IF NOT EXISTS idx_blocks_type
 ON blocks(block_type);
+
+CREATE INDEX IF NOT EXISTS idx_blocks_type_tool
+ON blocks(
+    block_type,
+    COALESCE(NULLIF(LOWER(tool_name), ''), 'unknown')
+);
 
 CREATE INDEX IF NOT EXISTS idx_blocks_tool_id
 ON blocks(tool_id)

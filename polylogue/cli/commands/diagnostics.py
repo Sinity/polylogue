@@ -351,7 +351,7 @@ def _usage_counter_line(counters: object) -> str:
     "--days",
     type=int,
     default=None,
-    help="With --basis actions, restrict to sessions whose sort key is within this many days.",
+    help="Restrict to sessions whose sort key is within this many days.",
 )
 @click.option(
     "--basis",
@@ -450,8 +450,6 @@ async def _tools(
         raise click.UsageError("--compare-family cannot be combined with --tool or --mcp-server")
     if detail_patterns and basis != "actions" and compare_family is None:
         raise click.UsageError("--detail-pattern is only supported with --basis actions")
-    if days is not None and basis != "actions" and compare_family is None:
-        raise click.UsageError("--days is only supported with --basis actions")
     if days is not None and days < 1:
         raise click.UsageError("--days must be positive")
     since_ms = None
@@ -496,7 +494,7 @@ async def _tools(
                 mcp_server=payload_mcp_server,
                 action_kind=action_kind,
                 detail_patterns=payload_detail_patterns,
-                days=days if payload_basis == "actions" else None,
+                days=days,
                 basis=payload_basis,
                 limit=limit,
             ),
@@ -504,7 +502,12 @@ async def _tools(
         )
 
     query = ToolUsageInsightQuery(
-        provider=origin, tool=tool, mcp_server=mcp_server, action_kind=action_kind, limit=limit
+        provider=origin,
+        tool=tool,
+        mcp_server=mcp_server,
+        action_kind=action_kind,
+        since_ms=since_ms,
+        limit=limit,
     )
     with ArchiveStore.open_existing(env.config.archive_root) as archive:
         if compare_family:
@@ -517,9 +520,15 @@ async def _tools(
                 provider=origin,
                 mcp_server=mcp_family,
                 action_kind=action_kind,
+                since_ms=since_ms,
                 limit=limit,
             )
-            action_query = ToolUsageInsightQuery(provider=origin, action_kind=action_kind, limit=limit)
+            action_query = ToolUsageInsightQuery(
+                provider=origin,
+                action_kind=action_kind,
+                since_ms=since_ms,
+                limit=limit,
+            )
             call_payload = payload_for(
                 rows=archive.list_tool_call_count_rows(mcp_query),
                 payload_basis="tool-use-blocks",

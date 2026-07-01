@@ -669,6 +669,109 @@ class TestListToolUsageInsightsEndToEnd:
             }
         ]
 
+    async def test_call_and_observed_event_counts_since_filter_uses_session_sort_key(self, tmp_path: Path) -> None:
+        archive = _archive(tmp_path)
+        db_path = archive.archive_root / "index.db"
+        old_ts = "2026-01-01T00:00:00+00:00"
+        recent_ts = "2026-01-03T00:00:00+00:00"
+        cutoff_ms = int(datetime(2026, 1, 2, tzinfo=UTC).timestamp() * 1000)
+        tool_block = {"type": "tool_use", "name": "mcp__serena__find_symbol", "id": "t1"}
+
+        (
+            SessionBuilder(db_path, "old-cc")
+            .provider("claude-code")
+            .updated_at(old_ts)
+            .add_message("old-cc-msg", role="assistant", text="Old", timestamp=old_ts, blocks=[tool_block])
+            .save()
+        )
+        (
+            SessionBuilder(db_path, "recent-cc")
+            .provider("claude-code")
+            .updated_at(recent_ts)
+            .add_message(
+                "recent-cc-msg",
+                role="assistant",
+                text="Recent",
+                timestamp=recent_ts,
+                blocks=[tool_block],
+            )
+            .save()
+        )
+
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.executemany(
+                """
+                INSERT INTO session_observed_events (
+                    event_ref, session_id, run_ref, position, kind, summary,
+                    delivery_state, payload_json, search_text
+                ) VALUES (?, ?, ?, 1, 'tool_finished', ?, 'observed', ?, ?)
+                """,
+                [
+                    (
+                        "event:old",
+                        "claude-code-session:ext-old-cc",
+                        "run:old",
+                        "old serena ok",
+                        json.dumps(
+                            {
+                                "tool_name": "mcp__serena__find_symbol",
+                                "handler_kind": "mcp",
+                                "status": "ok",
+                            }
+                        ),
+                        "old serena ok",
+                    ),
+                    (
+                        "event:recent",
+                        "claude-code-session:ext-recent-cc",
+                        "run:recent",
+                        "recent serena ok",
+                        json.dumps(
+                            {
+                                "tool_name": "mcp__serena__find_symbol",
+                                "handler_kind": "mcp",
+                                "status": "ok",
+                            }
+                        ),
+                        "recent serena ok",
+                    ),
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        query = ToolUsageInsightQuery(
+            provider="claude-code-session",
+            mcp_server="serena",
+            since_ms=cutoff_ms,
+            limit=5,
+        )
+        with ArchiveStore.open_existing(archive.archive_root) as store:
+            call_rows = store.list_tool_call_count_rows(query)
+            event_rows = store.list_tool_observed_event_count_rows(query)
+
+        assert call_rows == [
+            {
+                "source_name": "claude-code",
+                "origin": "claude-code-session",
+                "normalized_tool_name": "mcp__serena__find_symbol",
+                "action_kind": "tool_use",
+                "call_count": 1,
+            }
+        ]
+        assert event_rows == [
+            {
+                "source_name": "claude-code",
+                "origin": "claude-code-session",
+                "normalized_tool_name": "mcp__serena__find_symbol",
+                "action_kind": "mcp",
+                "status": "ok",
+                "event_count": 1,
+            }
+        ]
+
     async def test_empty_archive_returns_envelope_with_no_gaps(self, tmp_path: Path) -> None:
         result = await _archive(tmp_path).list_tool_usage_insights(ToolUsageInsightQuery())
         assert len(result) == 1

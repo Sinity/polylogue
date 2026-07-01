@@ -70,15 +70,22 @@ async def get_tool_usage_rows(
     if origin:
         where.append("s.origin = ?")
         params.append(origin)
+    tool_expr = "COALESCE(NULLIF(LOWER(a.tool_name), ''), 'unknown')"
     if request.tool:
-        where.append("COALESCE(NULLIF(LOWER(a.tool_name), ''), 'unknown') = LOWER(?)")
+        where.append(f"{tool_expr} = LOWER(?)")
         params.append(request.tool)
     if request.mcp_server:
-        where.append("COALESCE(NULLIF(LOWER(a.tool_name), ''), 'unknown') LIKE ?")
-        params.append(f"mcp__{request.mcp_server.lower()}__%")
+        mcp_prefix = f"mcp__{request.mcp_server.lower()}__"
+        where.append(f"{tool_expr} >= ?")
+        where.append(f"{tool_expr} < ?")
+        params.append(mcp_prefix)
+        params.append(f"{mcp_prefix}\U0010ffff")
     if request.action_kind:
         where.append("COALESCE(NULLIF(a.semantic_type, ''), 'tool_use') = ?")
         params.append(request.action_kind)
+    if request.since_ms is not None:
+        where.append("s.sort_key_ms >= ?")
+        params.append(request.since_ms)
     if request.limit is not None:
         limit_clause = "LIMIT ? OFFSET ?"
         params.extend((request.limit, request.offset))
@@ -92,7 +99,7 @@ async def get_tool_usage_rows(
         f"""
         SELECT
             s.origin AS origin,
-            COALESCE(NULLIF(LOWER(a.tool_name), ''), 'unknown') AS normalized_tool_name,
+            {tool_expr} AS normalized_tool_name,
             COALESCE(NULLIF(a.semantic_type, ''), 'tool_use') AS action_kind,
             COUNT(*) AS call_count,
             COUNT(DISTINCT a.session_id) AS session_count,

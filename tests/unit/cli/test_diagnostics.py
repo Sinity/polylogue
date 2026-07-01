@@ -507,12 +507,18 @@ async def test_tools_json_compares_family_across_evidence_bases(
         "actions",
     ]
     assert payload["bases"][0]["filters"]["mcp_server"] == "serena"
+    assert payload["bases"][0]["filters"]["days"] == 30
     assert payload["bases"][1]["filters"]["mcp_server"] == "serena"
+    assert payload["bases"][1]["filters"]["days"] == 30
     assert payload["bases"][2]["filters"]["detail_patterns"] == ["serena"]
     assert payload["bases"][2]["filters"]["days"] == 30
     assert payload["bases"][0]["items"][0]["call_count"] == 3
     assert payload["bases"][1]["items"][0]["event_count"] == 2
     assert payload["bases"][2]["items"][0]["evidence_kind"] == "mcp_tool_call"
+    assert len(store.queries) == 1
+    assert store.queries[0].since_ms is not None
+    assert len(store.event_queries) == 1
+    assert store.event_queries[0].since_ms is not None
     assert store.detail_patterns == [("serena",)]
     assert len(store.since_ms_values) == 1
     assert store.since_ms_values[0] is not None

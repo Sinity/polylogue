@@ -1202,6 +1202,13 @@ schema shape:
 - Schema bumps are deletes-then-defines, never deltas. A schema change
   edits the owning tier DDL/version and documents the re-ingest expectation.
   No upgrade helpers are added for the bump.
+- Index schema version 20 adds `idx_blocks_type_tool`, an expression index on
+  `(block_type, COALESCE(NULLIF(LOWER(tool_name), ''), 'unknown'))`, so tool
+  family rollups can resolve exact tool names and MCP-server prefixes without
+  scanning every `tool_use` block in large archives. The `analyze tools`
+  lowerers use range predicates for MCP prefixes to match the index expression.
+  Existing index tiers must be rebuilt from source evidence
+  (`polylogue ops reset --index && polylogued run`).
 - Index schema version 19 adds expression indexes for materialized
   `session_observed_events` tool outcome payload fields. The terminal query DSL
   can now ask questions such as

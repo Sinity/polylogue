@@ -805,7 +805,7 @@ class ArchiveStore:
         offset: int = 0,
     ) -> list[SessionWorkEventInsight]:
         """List archive work-event insights with the public insight contract."""
-        where: list[str] = ["u.block_type = 'tool_use'"]
+        where: list[str] = []
         params: list[object] = []
         if session_id is not None:
             where.append("we.session_id = ?")
@@ -1709,15 +1709,22 @@ class ArchiveStore:
         if origin:
             where.append("s.origin = ?")
             params.append(origin)
+        tool_expr = "COALESCE(NULLIF(LOWER(b.tool_name), ''), 'unknown')"
         if request.tool:
-            where.append("COALESCE(NULLIF(LOWER(b.tool_name), ''), 'unknown') = LOWER(?)")
+            where.append(f"{tool_expr} = LOWER(?)")
             params.append(request.tool)
         if request.mcp_server:
-            where.append("COALESCE(NULLIF(LOWER(b.tool_name), ''), 'unknown') LIKE ?")
-            params.append(f"mcp__{request.mcp_server.lower()}__%")
+            mcp_prefix = f"mcp__{request.mcp_server.lower()}__"
+            where.append(f"{tool_expr} >= ?")
+            where.append(f"{tool_expr} < ?")
+            params.append(mcp_prefix)
+            params.append(f"{mcp_prefix}\U0010ffff")
         if request.action_kind:
             where.append("COALESCE(NULLIF(b.semantic_type, ''), 'tool_use') = ?")
             params.append(request.action_kind)
+        if request.since_ms is not None:
+            where.append("s.sort_key_ms >= ?")
+            params.append(request.since_ms)
         if request.limit is not None:
             limit_clause = "LIMIT ? OFFSET ?"
             params.extend((request.limit, request.offset))
@@ -1730,7 +1737,7 @@ class ArchiveStore:
             f"""
             SELECT
                 s.origin AS origin,
-                COALESCE(NULLIF(LOWER(b.tool_name), ''), 'unknown') AS normalized_tool_name,
+                {tool_expr} AS normalized_tool_name,
                 COALESCE(NULLIF(b.semantic_type, ''), 'tool_use') AS action_kind,
                 COUNT(*) AS call_count
             FROM blocks b
@@ -1779,6 +1786,9 @@ class ArchiveStore:
         if request.action_kind:
             where.append(f"{handler_expr} = ?")
             params.append(request.action_kind)
+        if request.since_ms is not None:
+            where.append("s.sort_key_ms >= ?")
+            params.append(request.since_ms)
         if request.limit is not None:
             limit_clause = "LIMIT ? OFFSET ?"
             params.extend((request.limit, request.offset))
@@ -1833,26 +1843,30 @@ class ArchiveStore:
         """
 
         request = query or ToolUsageInsightQuery()
-        where: list[str] = []
+        where: list[str] = ["u.block_type = 'tool_use'"]
         params: list[object] = []
         origin = _origin_for_tool_usage_filter(request.provider)
         if origin:
             where.append("s.origin = ?")
             params.append(origin)
+        tool_expr = "COALESCE(NULLIF(LOWER(u.tool_name), ''), 'unknown')"
         if request.tool:
-            where.append("COALESCE(NULLIF(LOWER(u.tool_name), ''), 'unknown') = LOWER(?)")
+            where.append(f"{tool_expr} = LOWER(?)")
             params.append(request.tool)
         tool_patterns: tuple[str, ...] = ()
         if request.mcp_server:
             tool_patterns = (f"mcp__{request.mcp_server.lower()}__",)
-            where.append("COALESCE(NULLIF(LOWER(u.tool_name), ''), 'unknown') LIKE ?")
-            params.append(f"mcp__{request.mcp_server.lower()}__%")
+            where.append(f"{tool_expr} >= ?")
+            where.append(f"{tool_expr} < ?")
+            params.append(tool_patterns[0])
+            params.append(f"{tool_patterns[0]}\U0010ffff")
         if request.action_kind:
             where.append("COALESCE(NULLIF(u.semantic_type, ''), 'tool_use') = ?")
             params.append(request.action_kind)
-        if since_ms is not None:
+        effective_since_ms = since_ms if since_ms is not None else request.since_ms
+        if effective_since_ms is not None:
             where.append("s.sort_key_ms >= ?")
-            params.append(since_ms)
+            params.append(effective_since_ms)
         cleaned_details = _clean_affordance_patterns(detail_patterns)
         fts_queries = tuple(
             fts_query for pattern in cleaned_details if (fts_query := normalize_fts5_query(pattern)) is not None
@@ -1860,11 +1874,14 @@ class ArchiveStore:
         if cleaned_details:
             if not fts_queries:
                 return []
-            where.append("(" + " OR ".join("f.text MATCH ?" for _ in fts_queries) + ")")
+            where.append(
+                "("
+                + " OR ".join("u.rowid IN (SELECT rowid FROM messages_fts WHERE text MATCH ?)" for _ in fts_queries)
+                + ")"
+            )
             params.extend(fts_queries)
 
         def fetch_rows() -> list[sqlite3.Row]:
-            fts_join = "JOIN messages_fts f ON f.rowid = u.rowid" if fts_queries else ""
             return list(
                 self._conn.execute(
                     f"""
@@ -1881,7 +1898,6 @@ class ArchiveStore:
                 r.tool_result_exit_code AS exit_code
             FROM blocks u
             JOIN sessions s ON s.session_id = u.session_id
-            {fts_join}
             LEFT JOIN blocks r
                 ON r.tool_id = u.tool_id
                AND r.session_id = u.session_id
@@ -1967,20 +1983,27 @@ class ArchiveStore:
         if origin:
             where.append("s.origin = ?")
             params.append(origin)
+        tool_expr = "COALESCE(NULLIF(LOWER(a.tool_name), ''), 'unknown')"
         if request.tool:
-            where.append("COALESCE(NULLIF(LOWER(a.tool_name), ''), 'unknown') = LOWER(?)")
+            where.append(f"{tool_expr} = LOWER(?)")
             params.append(request.tool)
         if request.mcp_server:
-            where.append("COALESCE(NULLIF(LOWER(a.tool_name), ''), 'unknown') LIKE ?")
-            params.append(f"mcp__{request.mcp_server.lower()}__%")
+            mcp_prefix = f"mcp__{request.mcp_server.lower()}__"
+            where.append(f"{tool_expr} >= ?")
+            where.append(f"{tool_expr} < ?")
+            params.append(mcp_prefix)
+            params.append(f"{mcp_prefix}\U0010ffff")
         if request.action_kind:
             where.append("COALESCE(NULLIF(a.semantic_type, ''), 'tool_use') = ?")
             params.append(request.action_kind)
+        if request.since_ms is not None:
+            where.append("s.sort_key_ms >= ?")
+            params.append(request.since_ms)
 
         sql = """
             SELECT
                 s.origin AS origin,
-                COALESCE(NULLIF(LOWER(a.tool_name), ''), 'unknown') AS normalized_tool_name,
+                {tool_expr} AS normalized_tool_name,
                 COALESCE(NULLIF(a.semantic_type, ''), 'tool_use') AS action_kind,
                 COUNT(*) AS call_count,
                 COUNT(DISTINCT s.session_id) AS session_count,
@@ -2005,6 +2028,7 @@ class ArchiveStore:
             limit_clause = ""
         rows = self._conn.execute(
             sql.format(
+                tool_expr=tool_expr,
                 where_clause=("WHERE " + " AND ".join(where)) if where else "",
                 limit_clause=limit_clause,
             ),
