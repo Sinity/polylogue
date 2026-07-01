@@ -1915,6 +1915,7 @@ These are the commands worth remembering during normal repo work:
 | Command | Description |
 | --- | --- |
 | `devtools workspace affordance-usage` | Analyze agent affordance/tool usage from archive tool-use rows. |
+| `devtools workspace cli-surface-audit` | Capture a current-curated CLI surface audit demo. |
 | `devtools workspace demo-shelf` | Refresh or verify current demo shelf indexes. |
 | `devtools workspace deployment-smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
 | `devtools workspace dev-loop` | Preflight branch-local daemon, web-shell, and browser-capture development loops. |

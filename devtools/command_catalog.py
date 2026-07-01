@@ -473,6 +473,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace cli-surface-audit",
+        "workspace",
+        "Capture a current-curated CLI surface audit demo.",
+        "devtools.cli_surface_audit",
+        use_when=(
+            "Refresh the CLI surface audit shelf through one reusable command that captures representative "
+            "help, status, query, read, and facets outputs while keeping large unbounded diagnostics opt-in."
+        ),
+        examples=(
+            "devtools workspace cli-surface-audit",
+            "devtools workspace cli-surface-audit --out-dir .agent/demos/cli-surface-audit/current --json",
+            "devtools workspace cli-surface-audit --include-unbounded-dialogue",
+        ),
+    ),
+    CommandSpec(
         "workspace read-package",
         "workspace",
         "Render a declarative package of Polylogue read artifacts.",
