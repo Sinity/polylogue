@@ -14,6 +14,11 @@ from typing import TYPE_CHECKING, Protocol
 
 from typing_extensions import TypedDict
 
+from polylogue.storage.embeddings.materialization import (
+    archive_embeddable_message_where,
+    archive_messages_table_ref,
+    count_archive_embedding_session_state,
+)
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
 from polylogue.storage.embeddings.progress import EmbeddingCatchupRunPayload
 from polylogue.storage.search_providers.sqlite_vec_support import (
@@ -107,16 +112,6 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     )
 
 
-def _index_exists(conn: sqlite3.Connection, index_name: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='index' AND name = ? LIMIT 1",
-            (index_name,),
-        ).fetchone()
-        is not None
-    )
-
-
 def _attached_table_exists(conn: sqlite3.Connection, schema_name: str, table_name: str) -> bool:
     quoted_schema = '"' + schema_name.replace('"', '""') + '"'
     return (
@@ -132,20 +127,6 @@ def _attached_table_name(conn: sqlite3.Connection, schema_name: str, table_name:
     if _attached_table_exists(conn, schema_name, table_name):
         return f"{schema_name}.{table_name}"
     return ""
-
-
-_EMBEDDABLE_PROSE_WHERE = """
-m.message_type = 'message'
-AND m.role IN ('user', 'assistant')
-AND m.material_origin IN ('human_authored', 'assistant_authored')
-AND m.word_count > 0
-"""
-
-
-def _messages_table_ref(conn: sqlite3.Connection) -> str:
-    if _index_exists(conn, "idx_messages_message_type"):
-        return "messages AS m INDEXED BY idx_messages_message_type"
-    return "messages AS m"
 
 
 def _scalar_int(conn: sqlite3.Connection, sql: str) -> int:
@@ -186,10 +167,10 @@ def _archive_index_path(db_path: Path) -> Path | None:
     return index_db if index_db.exists() else None
 
 
-def _coverage_percent(*, embedded_sessions: int, total_sessions: int) -> float:
-    if total_sessions <= 0:
-        return 0.0
-    return embedded_sessions / total_sessions * 100
+def _coverage_percent(*, embedded_sessions: int, eligible_sessions: int, total_sessions: int) -> float:
+    if eligible_sessions <= 0:
+        return 100.0 if total_sessions > 0 else 0.0
+    return embedded_sessions / eligible_sessions * 100
 
 
 def _embedding_status(
@@ -200,11 +181,11 @@ def _embedding_status(
 ) -> str:
     if total_sessions <= 0:
         return "empty"
+    if pending_sessions <= 0:
+        return "complete"
     if embedded_sessions <= 0:
         return "none"
-    if pending_sessions > 0:
-        return "partial"
-    return "complete"
+    return "partial"
 
 
 def _freshness_status(status: str, stats: EmbeddingStatsSnapshot) -> str:
@@ -294,7 +275,8 @@ def _payload_from_stats(
     pending_messages_exact: bool,
 ) -> EmbeddingStatusPayload:
     embedded_sessions = stats.embedded_sessions
-    pending_sessions = stats.pending_sessions or max(total_sessions - embedded_sessions, 0)
+    pending_sessions = stats.pending_sessions
+    eligible_sessions = embedded_sessions + pending_sessions
     status = _embedding_status(
         total_sessions=total_sessions,
         embedded_sessions=embedded_sessions,
@@ -318,6 +300,7 @@ def _payload_from_stats(
         "embedding_coverage_percent": round(
             _coverage_percent(
                 embedded_sessions=embedded_sessions,
+                eligible_sessions=eligible_sessions,
                 total_sessions=total_sessions,
             ),
             1,
@@ -371,21 +354,9 @@ def _archive_embedding_status_payload(
         has_status = bool(status_table)
         has_meta = bool(meta_table)
         total_sessions = _scalar_int(conn, "SELECT COUNT(*) FROM sessions")
-        embedded_sessions = (
-            _scalar_int(
-                conn,
-                f"""
-                SELECT COUNT(*)
-                FROM sessions s
-                JOIN {status_table} e ON e.session_id = s.session_id
-                WHERE e.needs_reindex = 0
-                  AND e.message_count_embedded >= s.message_count
-                """,
-            )
-            if has_status
-            else 0
-        )
-        pending_sessions = max(total_sessions - embedded_sessions, 0)
+        session_state = count_archive_embedding_session_state(conn, status_table=status_table, rebuild=False)
+        embedded_sessions = session_state.embedded_sessions if has_status else 0
+        pending_sessions = session_state.pending_sessions
         if has_meta:
             embedded_messages = _scalar_int(
                 conn,
@@ -409,8 +380,9 @@ def _archive_embedding_status_payload(
         model_counts: dict[str, int] = {}
         dimension_counts: dict[int, int] = {}
         if include_detail and has_messages:
-            messages_ref = _messages_table_ref(conn)
-            total_messages = _scalar_int(conn, f"SELECT COUNT(*) FROM {messages_ref} WHERE {_EMBEDDABLE_PROSE_WHERE}")
+            messages_ref = archive_messages_table_ref(conn, alias="m")
+            embeddable_where = archive_embeddable_message_where("m")
+            total_messages = _scalar_int(conn, f"SELECT COUNT(*) FROM {messages_ref} WHERE {embeddable_where}")
             if has_meta and embedded_messages == 0:
                 pending_messages = total_messages
             elif has_meta:
@@ -425,7 +397,7 @@ def _archive_embedding_status_payload(
                     FROM {messages_ref}
                     LEFT JOIN {meta_table} em {meta_join}
                     {status_join}
-                    WHERE {_EMBEDDABLE_PROSE_WHERE}
+                    WHERE {embeddable_where}
                       AND (
                         {meta_missing_column} IS NULL
                         OR COALESCE(em.needs_reindex, 0) = 1
@@ -447,7 +419,7 @@ def _archive_embedding_status_payload(
                     SELECT COUNT(*)
                     FROM {messages_ref}
                     LEFT JOIN {meta_table} em {meta_join}
-                    WHERE {_EMBEDDABLE_PROSE_WHERE}
+                    WHERE {embeddable_where}
                       AND {meta_missing_column} IS NULL
                     """,
                 )
@@ -457,7 +429,7 @@ def _archive_embedding_status_payload(
                     SELECT COUNT(*)
                     FROM {messages_ref}
                     LEFT JOIN {meta_table} em {meta_join}
-                    WHERE {_EMBEDDABLE_PROSE_WHERE}
+                    WHERE {embeddable_where}
                       AND (
                         {meta_missing_column} IS NULL
                         OR COALESCE(em.needs_reindex, 0) = 1

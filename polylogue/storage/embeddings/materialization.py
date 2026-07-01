@@ -50,6 +50,26 @@ class EmbeddingCatchupLimits:
 
 
 @dataclass(frozen=True, slots=True)
+class ArchiveEmbeddingSessionState:
+    """Eligible-session embedding completion counts for an archive index."""
+
+    eligible_sessions: int
+    embedded_sessions: int
+    pending_sessions: int
+
+
+def archive_embeddable_message_where(alias: str = "m") -> str:
+    """SQL predicate for authored prose messages eligible for embedding."""
+
+    return f"""
+{alias}.message_type = 'message'
+AND {alias}.role IN ('user', 'assistant')
+AND {alias}.material_origin IN ('human_authored', 'assistant_authored')
+AND {alias}.word_count > 0
+"""
+
+
+@dataclass(frozen=True, slots=True)
 class EmbedSessionOutcome:
     """Typed outcome for embedding one session."""
 
@@ -251,7 +271,7 @@ def select_pending_archive_session_window(
 
     min_filter = ""
     if min_messages is not None:
-        min_filter = "AND s.message_count >= ?"
+        min_filter = "AND COALESCE(ec.message_count, 0) >= ?"
         params.append(int(min_messages))
 
     if status_table is None:
@@ -259,13 +279,20 @@ def select_pending_archive_session_window(
     where_clause = (
         "1 = 1"
         if rebuild or not status_table
-        else "(e.session_id IS NULL OR e.needs_reindex = 1 OR e.message_count_embedded < s.message_count)"
+        else "(e.session_id IS NULL OR e.needs_reindex = 1 OR e.message_count_embedded < COALESCE(ec.message_count, 0))"
     )
     join_clause = f"LEFT JOIN {status_table} e ON e.session_id = s.session_id" if status_table else ""
     cursor = conn.execute(
         f"""
-        SELECT s.session_id, s.title, s.message_count
+        WITH embeddable_counts AS (
+            SELECT m.session_id, COUNT(*) AS message_count
+            FROM {archive_messages_table_ref(conn, alias="m")}
+            WHERE {archive_embeddable_message_where("m")}
+            GROUP BY m.session_id
+        )
+        SELECT s.session_id, s.title, COALESCE(ec.message_count, 0) AS message_count
         FROM sessions s
+        JOIN embeddable_counts ec ON ec.session_id = s.session_id
         {join_clause}
         WHERE {where_clause}
           {id_filter}
@@ -292,6 +319,81 @@ def select_pending_archive_session_window(
             if max_messages is not None and message_total >= max_messages:
                 return pending
     return pending
+
+
+def count_archive_embedding_session_state(
+    conn: sqlite3.Connection,
+    *,
+    status_table: str,
+    rebuild: bool = False,
+) -> ArchiveEmbeddingSessionState:
+    """Count eligible sessions and their embedding completion state."""
+
+    if not _table_exists(conn, "messages"):
+        return ArchiveEmbeddingSessionState(eligible_sessions=0, embedded_sessions=0, pending_sessions=0)
+
+    if rebuild or not status_table:
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM (
+                SELECT m.session_id
+                FROM {archive_messages_table_ref(conn, alias="m")}
+                WHERE {archive_embeddable_message_where("m")}
+                GROUP BY m.session_id
+            ) eligible_counts
+            """
+        ).fetchone()
+        eligible = int(row[0] or 0) if row is not None else 0
+        return ArchiveEmbeddingSessionState(
+            eligible_sessions=eligible,
+            embedded_sessions=0,
+            pending_sessions=eligible,
+        )
+
+    row = conn.execute(
+        f"""
+        WITH eligible_counts AS (
+            SELECT m.session_id, COUNT(*) AS message_count
+            FROM {archive_messages_table_ref(conn, alias="m")}
+            WHERE {archive_embeddable_message_where("m")}
+            GROUP BY m.session_id
+        )
+        SELECT
+            COUNT(*) AS eligible_sessions,
+            SUM(
+                CASE
+                    WHEN e.session_id IS NOT NULL
+                     AND e.needs_reindex = 0
+                     AND e.message_count_embedded >= ec.message_count
+                    THEN 1 ELSE 0
+                END
+            ) AS embedded_sessions,
+            SUM(
+                CASE
+                    WHEN e.session_id IS NULL
+                      OR e.needs_reindex = 1
+                      OR e.message_count_embedded < ec.message_count
+                    THEN 1 ELSE 0
+                END
+            ) AS pending_sessions
+        FROM eligible_counts ec
+        LEFT JOIN {status_table} e ON e.session_id = ec.session_id
+        """
+    ).fetchone()
+    if row is None:
+        return ArchiveEmbeddingSessionState(eligible_sessions=0, embedded_sessions=0, pending_sessions=0)
+    return ArchiveEmbeddingSessionState(
+        eligible_sessions=int(row[0] or 0),
+        embedded_sessions=int(row[1] or 0),
+        pending_sessions=int(row[2] or 0),
+    )
+
+
+def archive_messages_table_ref(conn: sqlite3.Connection, *, alias: str) -> str:
+    if _index_exists(conn, "idx_messages_message_type"):
+        return f"messages AS {alias} INDEXED BY idx_messages_message_type"
+    return f"messages AS {alias}"
 
 
 def mark_all_archive_sessions_needs_reindex(index_db_path: Path) -> None:
@@ -546,6 +648,14 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     return row is not None
 
 
+def _index_exists(conn: sqlite3.Connection, index: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name=? LIMIT 1",
+        (index,),
+    ).fetchone()
+    return row is not None
+
+
 def _usable_db_path(db_path: object) -> Path | None:
     if isinstance(db_path, Path):
         return db_path
@@ -656,9 +766,13 @@ def _embedding_status_row_exists(db_path: object, session_id: str) -> bool:
 
 __all__ = [
     "EmbeddingCatchupLimits",
+    "ArchiveEmbeddingSessionState",
     "EmbedSessionOutcome",
     "EmbedSingleStatus",
     "PendingSession",
+    "archive_embeddable_message_where",
+    "archive_messages_table_ref",
+    "count_archive_embedding_session_state",
     "embed_session_sync",
     "embed_archive_session_sync",
     "iter_pending_sessions",

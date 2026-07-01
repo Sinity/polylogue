@@ -290,6 +290,14 @@ class TestFormatMetricsReadsArchiveState:
                     origin TEXT NOT NULL DEFAULT 'codex-session',
                     message_count INTEGER NOT NULL DEFAULT 0
                 );
+                CREATE TABLE messages (
+                    message_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'user',
+                    message_type TEXT NOT NULL DEFAULT 'message',
+                    material_origin TEXT NOT NULL DEFAULT 'human_authored',
+                    word_count INTEGER NOT NULL DEFAULT 8
+                );
                 CREATE TABLE embedding_status (
                     session_id TEXT PRIMARY KEY,
                     message_count_embedded INTEGER NOT NULL DEFAULT 0,
@@ -349,10 +357,22 @@ class TestFormatMetricsReadsArchiveState:
                 [("conv-embedded",), ("conv-pending",), ("conv-missing-status",)],
             )
             conn.executemany(
-                "INSERT INTO embedding_status (session_id, needs_reindex, error_message) VALUES (?, ?, ?)",
+                "INSERT INTO messages (message_id, session_id) VALUES (?, ?)",
                 [
-                    ("conv-embedded", 0, None),
-                    ("conv-pending", 1, "provider timeout"),
+                    ("conv-embedded:m1", "conv-embedded"),
+                    ("conv-pending:m1", "conv-pending"),
+                    ("conv-missing-status:m1", "conv-missing-status"),
+                ],
+            )
+            conn.executemany(
+                """
+                INSERT INTO embedding_status (
+                    session_id, message_count_embedded, needs_reindex, error_message
+                ) VALUES (?, ?, ?, ?)
+                """,
+                [
+                    ("conv-embedded", 1, 0, None),
+                    ("conv-pending", 0, 1, "provider timeout"),
                 ],
             )
             conn.executemany(
@@ -605,6 +625,14 @@ class TestFormatMetricsReadsArchiveState:
                     origin TEXT NOT NULL,
                     message_count INTEGER NOT NULL
                 );
+                CREATE TABLE messages (
+                    message_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'user',
+                    message_type TEXT NOT NULL DEFAULT 'message',
+                    material_origin TEXT NOT NULL DEFAULT 'human_authored',
+                    word_count INTEGER NOT NULL DEFAULT 8
+                );
                 CREATE TABLE raw_sessions (
                     raw_id TEXT PRIMARY KEY,
                     origin TEXT NOT NULL,
@@ -624,6 +652,13 @@ class TestFormatMetricsReadsArchiveState:
                     ('s-embedded', 'codex-session', 2),
                     ('s-pending', 'codex-session', 3),
                     ('s-missing-status', 'claude-code-session', 1);
+                INSERT INTO messages (message_id, session_id) VALUES
+                    ('s-embedded:m1', 's-embedded'),
+                    ('s-embedded:m2', 's-embedded'),
+                    ('s-pending:m1', 's-pending'),
+                    ('s-pending:m2', 's-pending'),
+                    ('s-pending:m3', 's-pending'),
+                    ('s-missing-status:m1', 's-missing-status');
                 INSERT INTO raw_sessions VALUES
                     ('raw-1', 'codex-session', 1767225700000, 1767225700000, NULL, NULL),
                     ('raw-2', 'claude-code-session', NULL, 1767225700000, 'bad json', 'failed');

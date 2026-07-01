@@ -202,7 +202,7 @@ class TestPreflightCommand:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from polylogue.archive.message.roles import Role
-        from polylogue.core.enums import BlockType, Provider
+        from polylogue.core.enums import BlockType, MaterialOrigin, Provider
         from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -218,8 +218,14 @@ class TestPreflightCommand:
                         ParsedMessage(
                             provider_message_id="m1",
                             role=Role.USER,
-                            text="embed me",
-                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="embed me")],
+                            text="This human-authored preflight message is long enough to embed.",
+                            blocks=[
+                                ParsedContentBlock(
+                                    type=BlockType.TEXT,
+                                    text="This human-authored preflight message is long enough to embed.",
+                                )
+                            ],
+                            material_origin=MaterialOrigin.HUMAN_AUTHORED,
                         )
                     ],
                 )
@@ -244,7 +250,7 @@ class TestPreflightCommand:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from polylogue.archive.message.roles import Role
-        from polylogue.core.enums import BlockType, Provider
+        from polylogue.core.enums import BlockType, MaterialOrigin, Provider
         from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -261,8 +267,14 @@ class TestPreflightCommand:
                             ParsedMessage(
                                 provider_message_id="m1",
                                 role=Role.USER,
-                                text=f"embed me {index}",
-                                blocks=[ParsedContentBlock(type=BlockType.TEXT, text=f"embed me {index}")],
+                                text=f"This human-authored preflight window message {index} is long enough to embed.",
+                                blocks=[
+                                    ParsedContentBlock(
+                                        type=BlockType.TEXT,
+                                        text=f"This human-authored preflight window message {index} is long enough to embed.",
+                                    )
+                                ],
+                                material_origin=MaterialOrigin.HUMAN_AUTHORED,
                             )
                         ],
                     )
