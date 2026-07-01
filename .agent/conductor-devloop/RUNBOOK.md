@@ -33,6 +33,22 @@ Completed proofs, old commits, and prior demo notes belong in
 when a new slice begins, and `devloop-review` warns if it accretes into a
 historical ledger.
 
+## Post-Compaction Discipline
+
+Conversation compaction is a lossy state snapshot, not a new operator
+instruction. After compaction:
+
+- obey the newest real user message first;
+- use the summary to recover state, proofs, files, jobs, commits, and
+  unfinished work, not to invent a fresh priority;
+- do not infer that repeated themes in the summary were re-requested at resume
+  time;
+- if the summary overweights process/meta/velocity work, spend at most one
+  bounded Meta pass to correct the scaffold, then return to the object-level
+  slice unless the newest user message says otherwise;
+- update `ACTIVE-LOOP.md` if it disagrees with the actual current slice before
+  committing or widening work.
+
 ## Focus Modes
 
 - `Direction`: choose the slice.

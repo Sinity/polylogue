@@ -34,6 +34,21 @@ Then read, in order:
 If `devloop-review` warns, fix the warning or record the conscious exception in
 the active loop state before broad work.
 
+## Post-Compaction Discipline
+
+Conversation compaction is a lossy state snapshot, not a new operator
+instruction. After compaction or resume:
+
+- obey the newest real user message first;
+- use the summary only to recover files, commits, proofs, jobs, and unfinished
+  work;
+- do not treat repeated themes in the summary as freshly re-requested;
+- if the summary overweights process/meta work, spend at most one bounded Meta
+  pass to repair the scaffold, then return to the object-level slice unless the
+  newest user message says otherwise;
+- update `ACTIVE-LOOP.md` when it disagrees with live state before committing
+  or widening work.
+
 ## Shape
 
 - `.agent/conductor-devloop/` is the active loop packet. Tracked files explain
