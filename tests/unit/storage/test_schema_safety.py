@@ -555,6 +555,33 @@ class TestAnalyticsQueryPlan:
         finally:
             conn.close()
 
+    def test_observed_event_tool_outcome_grouping_uses_expression_index(self, tmp_path: Path) -> None:
+        """Tool outcome GROUP BY should use the matching observed-event expression index."""
+        db_path = tmp_path / "test.db"
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.executescript(SCHEMA_DDL)
+            cursor = conn.execute(
+                """
+                EXPLAIN QUERY PLAN
+                SELECT COALESCE(NULLIF(json_extract(e.payload_json, '$.handler_kind'), ''), 'unknown') AS group_key,
+                       COUNT(*) AS count
+                FROM session_observed_events e
+                JOIN sessions s ON s.session_id = e.session_id
+                WHERE e.kind = 'tool_finished'
+                GROUP BY group_key
+                ORDER BY count DESC, group_key DESC
+                LIMIT 20 OFFSET 0
+                """
+            )
+            plan = " | ".join(row[3] if len(row) > 3 else str(row) for row in cursor.fetchall())
+            assert "idx_session_observed_events_kind_handler" in plan, (
+                f"Expected observed-event handler expression index, got: {plan}"
+            )
+            assert "TEMP B-TREE FOR GROUP BY" not in plan.upper(), f"Unexpected temp GROUP BY plan: {plan}"
+        finally:
+            conn.close()
+
     def test_session_count_is_cheap(self, tmp_path: Path) -> None:
         """COUNT(*) on sessions table should not require FTS scan."""
         db_path = tmp_path / "test.db"

@@ -1202,6 +1202,17 @@ schema shape:
 - Schema bumps are deletes-then-defines, never deltas. A schema change
   edits the owning tier DDL/version and documents the re-ingest expectation.
   No upgrade helpers are added for the bump.
+- Index schema version 19 adds expression indexes for materialized
+  `session_observed_events` tool outcome payload fields. The terminal query DSL
+  can now ask questions such as
+  `observed-events where kind:tool_finished | group by handler | count`; on
+  large archives the v18 shape filtered by `kind` and then built temporary
+  B-trees over JSON-extracted `tool_name`, `handler_kind`, or `status` values.
+  The v19 indexes key `(kind, COALESCE(NULLIF(json_extract(payload_json,
+  '$.<field>'), ''), 'unknown'))` for `tool_name`, `handler_kind`, and
+  `status`, matching the SQL lowerer's group expressions. Existing index tiers
+  must be rebuilt from source evidence (`polylogue ops reset --index &&
+  polylogued run`).
 - Index schema version 16 captures structured tool-result outcomes (the
   "keystone"). `blocks` gains `tool_result_is_error` (0/1, nullable) and
   `tool_result_exit_code` (nullable INTEGER); the `actions` view exposes them

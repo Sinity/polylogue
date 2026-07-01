@@ -428,6 +428,28 @@ def _query_unit_group_expression(unit: str, row_alias: str, group_by: str | None
         raise ValueError(f"unsupported {unit} aggregate group field: {group_by}") from exc
 
 
+def _query_unit_group_uses_session(group_by: str | None) -> bool:
+    """Return whether an aggregate group expression needs the sessions alias."""
+
+    if group_by is None:
+        return False
+    return group_by.startswith("session.") or group_by in {"origin", "repo"}
+
+
+def _session_filter_is_active(session_filters: Mapping[str, object] | None) -> bool:
+    """Return whether normalized session filters contain a real constraint."""
+
+    if not session_filters:
+        return False
+    for value in session_filters.values():
+        if value is None or value is False or value == "":
+            continue
+        if isinstance(value, Sequence) and not isinstance(value, str | bytes) and len(value) == 0:
+            continue
+        return True
+    return False
+
+
 class ArchiveStore:
     """Minimal archive-root façade for archive source/index/user tiers."""
 
@@ -3728,20 +3750,31 @@ class ArchiveStore:
                 offset=normalized_offset,
                 session_filters=session_filters,
             )
+        active_session_filters = _session_filter_is_active(session_filters)
+        needs_session = (
+            unit != "observed-event"
+            or active_session_filters
+            or _query_unit_group_uses_session(group_by)
+            or _predicate_uses_session_scope(predicate)
+        )
+        session_alias = "s" if needs_session else None
         group_expr = _query_unit_group_expression(unit, row_alias, group_by)
-        clause, params = _structural_predicate_clause(unit, row_alias, predicate, session_alias="s")
+        clause, params = _structural_predicate_clause(unit, row_alias, predicate, session_alias=session_alias)
         where_clause = clause or "1=1"
         session_clause = ""
         session_params: list[object] = []
-        if session_filters:
+        if needs_session and active_session_filters and session_filters is not None:
             session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
-        from_sql = {
+        from_sql_by_unit = {
             "message": "messages m JOIN sessions s ON s.session_id = m.session_id",
             "action": "actions a JOIN sessions s ON s.session_id = a.session_id",
             "block": "blocks b JOIN sessions s ON s.session_id = b.session_id",
             "assertion": "user_tier.assertions a LEFT JOIN sessions s ON a.target_ref = 'session:' || s.session_id",
             "observed-event": "session_observed_events e JOIN sessions s ON s.session_id = e.session_id",
-        }[unit]
+        }
+        from_sql = (
+            "session_observed_events e" if unit == "observed-event" and not needs_session else from_sql_by_unit[unit]
+        )
         order_clause = _query_unit_aggregate_order(sort, sort_direction)
         rows = self._conn.execute(
             f"""
@@ -5529,6 +5562,20 @@ def _predicate_session_field(predicate: QueryFieldPredicate) -> str | None:
     return None
 
 
+def _predicate_uses_session_scope(predicate: QueryPredicate) -> bool:
+    """Return whether a structural predicate needs the sessions alias."""
+
+    if isinstance(predicate, QueryFieldPredicate):
+        return _predicate_session_field(predicate) is not None
+    if isinstance(predicate, QueryNotPredicate):
+        return _predicate_uses_session_scope(predicate.child)
+    if isinstance(predicate, QueryBoolPredicate):
+        return any(_predicate_uses_session_scope(child) for child in predicate.children)
+    return isinstance(
+        predicate, QueryTextPredicate | QueryExistsPredicate | QuerySequencePredicate | QueryLineagePredicate
+    )
+
+
 def _in_or_equals_clause(column: str, values: tuple[str, ...], *, lower: bool = False) -> tuple[str, list[object]]:
     normalized = tuple(value.strip().lower() if lower else value.strip() for value in values if value.strip())
     if not normalized:
@@ -5840,7 +5887,7 @@ def _observed_event_field_predicate_clause(
 ) -> tuple[str, list[object]]:
     field = predicate.bound_field_name(context="lowering observed-event predicates")
     if field in {"kind", "delivery_state"}:
-        return _in_or_equals_clause(f"{event_alias}.{field}", predicate.values, lower=True)
+        return _in_or_equals_clause(f"{event_alias}.{field}", predicate.values)
     if field == "tool":
         return _in_or_equals_clause(
             f"json_extract({event_alias}.payload_json, '$.tool_name')",

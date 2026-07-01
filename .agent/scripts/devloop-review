@@ -5,6 +5,14 @@ repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
 current="${POLYLOGUE_AGENT_CURRENT:-$repo/.agent/conductor-devloop}"
 packet="$current"
 archive_root="${POLYLOGUE_ARCHIVE_ROOT:-/home/sinity/.local/share/polylogue}"
+expected_index_version="$(
+  cd "$repo" &&
+    python - <<'PY'
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+
+print(INDEX_SCHEMA_VERSION)
+PY
+)"
 
 canonical_devloop_scripts=(
   devloop-ahead
@@ -429,10 +437,10 @@ if [ -f "$archive_root/index.db" ]; then
   version="$(sqlite3 "$archive_root/index.db" 'PRAGMA user_version;' 2>/dev/null || true)"
   sessions="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM sessions;' 2>/dev/null || true)"
   messages="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM messages;' 2>/dev/null || true)"
-  if [ "$version" = "18" ]; then
+  if [ "$version" = "$expected_index_version" ]; then
     ok "active archive root $archive_root schema v$version sessions=${sessions:-?} messages=${messages:-?}"
   else
-    warn "active archive root $archive_root schema v${version:-unknown}, expected v18"
+    warn "active archive root $archive_root schema v${version:-unknown}, expected v$expected_index_version"
   fi
 else
   warn "active archive root has no index.db: $archive_root"

@@ -2356,7 +2356,7 @@ class TestBooleanQueryExpression:
         self,
         workspace_env: dict[str, Path],
     ) -> None:
-        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.archive.query.unit_results import query_unit_rows, query_unit_session_filters
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from polylogue.surfaces.payloads import QueryUnitAggregateEnvelope
         from tests.infra.storage_records import SessionBuilder
@@ -2426,8 +2426,17 @@ class TestBooleanQueryExpression:
             "observed-events where kind:tool_finished AND handler:mcp | group by status | count"
         )
         assert source is not None
+        statements: list[str] = []
         with ArchiveStore.open_existing(index_db.parent) as archive:
-            envelope = query_unit_rows(archive, source, query="observed-event-aggregate", limit=20)
+            archive._conn.set_trace_callback(statements.append)
+            envelope = query_unit_rows(
+                archive,
+                source,
+                query="observed-event-aggregate",
+                limit=20,
+                session_filters=query_unit_session_filters(),
+            )
+            archive._conn.set_trace_callback(None)
 
         assert isinstance(envelope, QueryUnitAggregateEnvelope)
         assert envelope.pipeline_stages == (
@@ -2439,6 +2448,9 @@ class TestBooleanQueryExpression:
             ("status", "failed", 1),
             ("status", "ok", 1),
         ]
+        aggregate_statement = next(statement for statement in statements if "GROUP BY group_key" in statement)
+        assert "FROM session_observed_events e" in aggregate_statement
+        assert "JOIN sessions" not in aggregate_statement
 
     def test_unknown_terminal_unit_does_not_fall_through_to_block_rows(self) -> None:
         from polylogue.archive.query.unit_results import query_unit_rows
