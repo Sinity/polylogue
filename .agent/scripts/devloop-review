@@ -72,6 +72,7 @@ required_scaffold=(
   "$repo/.agent/scripts/devloop-meta"
   "$repo/.agent/scripts/devloop-wait"
   "$repo/.agent/scripts/devloop-velocity"
+  "$repo/.agent/tools/conductor_compact.py"
 )
 
 missing=0
@@ -353,9 +354,17 @@ allowed_packet_files=(
 if [ -d "$current" ]; then
   packet_bytes="$(du -sb "$current" 2>/dev/null | awk '{print $1}' || printf 0)"
   packet_files="$(find "$current" -maxdepth 1 -type f 2>/dev/null | wc -l | tr -d ' ')"
+  log_bytes="$(wc -c < "$current/OPERATING-LOG.md" 2>/dev/null || printf 0)"
+  events_bytes="$(wc -c < "$current/EVENTS.jsonl" 2>/dev/null || printf 0)"
   printf 'INFO: conductor packet size=%s bytes files=%s\n' "$packet_bytes" "$packet_files"
   if [ "${packet_bytes:-0}" -gt 5242880 ]; then
     warn "conductor packet exceeds 5 MiB; consolidate logs/artifacts or explain the current need"
+  fi
+  if [ "${log_bytes:-0}" -gt 262144 ]; then
+    warn "OPERATING-LOG.md exceeds the rolling active-window budget; run .agent/scripts/devloop-sync"
+  fi
+  if [ "${events_bytes:-0}" -gt 393216 ]; then
+    warn "EVENTS.jsonl exceeds the active generated-sidecar budget; run .agent/scripts/devloop-sync"
   fi
   if [ "${packet_files:-0}" -gt 32 ]; then
     warn "conductor packet has more than 32 root files; move non-startup material to includes, demos, or scratch/research"

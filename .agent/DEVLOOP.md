@@ -80,6 +80,11 @@ Refresh generated local state with:
 .agent/scripts/devloop-sync
 ```
 
+`devloop-sync` also keeps the active conductor packet compact: if
+`OPERATING-LOG.md` grows past the rolling-window budget, older entries move to
+ignored `.agent/archive/conductor-history/` and `EVENTS.jsonl` is regenerated
+from the active window.
+
 ## Current Goal
 
 Conduct the Polylogue dogfood/demo devloop indefinitely: continuously choose the

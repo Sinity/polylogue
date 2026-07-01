@@ -6,6 +6,7 @@ packet="${POLYLOGUE_CONDUCTOR_PACKET:-$repo/.agent/conductor-devloop}"
 
 mkdir -p "$packet"
 
+"$repo/.agent/tools/conductor_compact.py" --root "$packet" >/dev/null
 "$repo/.agent/scripts/devloop-refresh-events" >/dev/null
 "$repo/.agent/scripts/devloop-refresh-demos" >/dev/null
 
