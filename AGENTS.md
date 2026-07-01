@@ -525,9 +525,11 @@ process group if the step exceeds `POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S` (default
 45 minutes) or produces no output for
 `POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S` (default 10 minutes).
 `POLYLOGUE_VERIFY_RESOURCE_INTERVAL_S` controls resource sampling cadence
-(default 2 seconds). Set these timeout variables to `0` only for an explicit
-diagnostic run where an unusually long full-suite pass is expected and
-supervised.
+(default 2 seconds). Basetemp size is a recursive filesystem walk, so it is
+sampled less frequently; `POLYLOGUE_VERIFY_BASETEMP_SIZE_INTERVAL_S` controls
+that cadence (default 15 seconds, `0` disables the size walk). Set timeout
+variables to `0` only for an explicit diagnostic run where an unusually long
+full-suite pass is expected and supervised.
 
 Selection artifacts preserve exact selected/deselected counts but sample node
 IDs by default (`POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT`, default 500) so
@@ -992,7 +994,7 @@ full permission audit trail (PermissionRequest/PermissionDenied).
 Vector embeddings for semantic search, powered by Voyage AI (`voyage-4`,
 1024 dimensions) via SQLite-vec (`vec0` virtual table):
 
-- **Storage**: `message_embeddings` (vec0), `embeddings_meta`, `embedding_status`
+- **Storage**: `message_embeddings` (vec0), `message_embeddings_meta`, `embedding_status`
 - **Search**: `--similar` flag triggers pure vector search; hybrid mode combines
   FTS5 + vector via Reciprocal Rank Fusion
 - **Integration**: Daemon-side post-ingest and ambient catch-up embedding is
@@ -1277,12 +1279,15 @@ schema shape:
   read-model tables — `session_runs`, `session_observed_events`, and
   `session_context_snapshots` — recomputed by the session-insight materializer
   (`compile_session_digest(...).run_projection`) exactly like `session_profiles`.
-  They give the `run` / `observed-event` / `context-snapshot` query units a
-  durable SQL-backed lowerer (terminal rows, `exists`, and sort) instead of the
-  per-query session-digest scan. They are derived/rebuildable, not a new
-  source of truth; the durable evidence stays `session_events` + `messages` +
-  `topology_edges`. Existing index tiers must be rebuilt from source evidence
-  (`polylogue ops reset --index && polylogued run`).
+  They are derived/rebuildable enrichments, not the only query substrate:
+  terminal `run` / `observed-event` / `context-snapshot` queries also synthesize
+  cheap local rows directly from `sessions` and `blocks` (main runs,
+  `session_started`, tool-finished outcomes, and session-start context
+  snapshots). The durable evidence stays `session_events` + `messages` +
+  `topology_edges`, and materialized rows are retained only where they encode
+  richer non-local projections that are not cheap to lower directly. Existing
+  index tiers must be rebuilt from source evidence (`polylogue ops reset --index
+  && polylogued run`).
 - Index schema version 10 adds a role-leading `idx_messages_role` index so
   daemon `/api/facets` can compute global role counts without scanning the
   session-role compound index and spilling to a temp B-tree. Existing index

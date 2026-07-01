@@ -6854,7 +6854,7 @@ def _exists_predicate_clause(table_alias: str, predicate: QueryExistsPredicate) 
             params,
         )
     if predicate.unit in {"run", "observed-event", "context-snapshot"}:
-        run_projection_relations = {
+        run_projection_relations: dict[str, tuple[str, str, str, list[object]]] = {
             "run": (_SOURCE_RUN_RELATION_SQL, "runs", "exists_runs", []),
             "context-snapshot": (
                 _SOURCE_CONTEXT_SNAPSHOT_RELATION_SQL,
