@@ -49,6 +49,63 @@ def test_format_foreign_key_violations_renders_sqlite_rows(tmp_path: Path) -> No
     assert "'fkid': 0" in rendered
 
 
+def test_scoped_foreign_key_check_ignores_preexisting_orphans(tmp_path: Path) -> None:
+    db_path = tmp_path / "scoped-fk.db"
+    with open_connection(db_path) as conn:
+        conn.execute(
+            "INSERT INTO sessions (origin, native_id, content_hash) VALUES ('codex-session', 'old', zeroblob(32))"
+        )
+        conn.execute(
+            "INSERT INTO sessions (origin, native_id, content_hash) VALUES ('codex-session', 'new', zeroblob(32))"
+        )
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute(
+            """
+            INSERT INTO blocks (message_id, session_id, position, block_type, text)
+            VALUES ('codex-session:old:old-missing-message', 'codex-session:old', 0, 'text', 'old orphan')
+            """
+        )
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys = ON")
+
+        violations = ingest_batch_core._foreign_key_violations_for_sessions(conn, ("codex-session:new",))
+
+    assert violations == []
+
+
+def test_scoped_foreign_key_check_reports_current_session_orphans(tmp_path: Path) -> None:
+    db_path = tmp_path / "scoped-fk.db"
+    with open_connection(db_path) as conn:
+        conn.execute(
+            "INSERT INTO sessions (origin, native_id, content_hash) VALUES ('codex-session', 'new', zeroblob(32))"
+        )
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute(
+            """
+            INSERT INTO blocks (message_id, session_id, position, block_type, text)
+            VALUES ('codex-session:new:new-missing-message', 'codex-session:new', 0, 'text', 'new orphan')
+            """
+        )
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys = ON")
+
+        violations = ingest_batch_core._foreign_key_violations_for_sessions(conn, ("codex-session:new",))
+
+    assert violations == [
+        {
+            "table": "blocks",
+            "rowid": 1,
+            "parent": "messages",
+            "fkid": 1,
+            "session_id": "codex-session:new",
+            "message_id": "codex-session:new:new-missing-message",
+            "child_key": "codex-session:new:new-missing-message",
+        }
+    ]
+
+
 def test_process_ingest_batch_sync_records_wal_checkpoint_observation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
