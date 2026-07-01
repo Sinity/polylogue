@@ -86,6 +86,11 @@ Refresh generated local state with:
 ignored `.agent/archive/conductor-history/` and `EVENTS.jsonl` is regenerated
 from the active window.
 
+Every `.agent/scripts/devloop-*` primitive must support a side-effect-free
+`--help` path. Use that for discovery instead of trying scripts with placeholder
+arguments; `devloop-review` checks that help probing does not mutate active
+state files.
+
 ## Current Goal
 
 Conduct the Polylogue dogfood/demo devloop indefinitely: continuously choose the

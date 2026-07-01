@@ -17,6 +17,12 @@ Before a capability slice:
 Use `.agent/scripts/devloop-status --json` when another script or report needs
 structured state instead of human-readable text.
 
+Every `.agent/scripts/devloop-*` primitive supports `--help` as a read-only
+discovery path. Do not probe a script with placeholder positional arguments just
+to learn its interface; a prior `--help` sweep accidentally rewrote active loop
+state, so `devloop-review` now executes all help paths and verifies the active
+state hashes are unchanged.
+
 Do not start broad import/test/runtime work while daemon/root/process warnings
 are unexplained.
 

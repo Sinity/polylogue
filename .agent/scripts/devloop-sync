@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+Usage: .agent/scripts/devloop-sync
+
+Refresh generated conductor state: compact the active operating-log window,
+regenerate EVENTS.jsonl and demo indexes, remove obsolete packet mirrors, and
+write MANIFEST.md plus devloop-script-hashes.tsv. Does not mirror to /realm/inbox.
+EOF
+  exit 0
+fi
+
 repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
 packet="${POLYLOGUE_CONDUCTOR_PACKET:-$repo/.agent/conductor-devloop}"
 

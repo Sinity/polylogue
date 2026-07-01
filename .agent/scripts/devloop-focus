@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+Usage: .agent/scripts/devloop-focus <from> <to> <trigger> [decision]
+
+Record a material focus transition using the shared modes:
+Direction, Evidence, Construction, Proof, Artifact, Velocity, Meta.
+
+Example:
+  devloop-focus Evidence Construction "stage timings prove the blocker" "Patch the shared path and add focused proof"
+EOF
+  exit 0
+fi
+
 if [ "$#" -lt 3 ]; then
   cat >&2 <<'EOF'
 usage: devloop-focus <from> <to> <trigger> [decision]

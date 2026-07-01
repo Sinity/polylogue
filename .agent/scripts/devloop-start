@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+Usage: .agent/scripts/devloop-start [--meta|--focus MODE] <slice-title>
+
+Start one devloop slice, append an operating-log entry, update ACTIVE-LOOP.md,
+and refresh generated conductor state. Use --meta, or --focus Meta, for process
+and scaffold work. Obvious process/convention titles infer Meta automatically.
+EOF
+  exit 0
+fi
+
 start_focus="Direction"
 if [ "${1:-}" = "--meta" ]; then
   start_focus="Meta"

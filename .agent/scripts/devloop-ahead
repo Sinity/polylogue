@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+Usage: .agent/scripts/devloop-ahead
+
+Print useful foreground work suggestions while a long Polylogue command runs.
+This script is read-only.
+EOF
+  exit 0
+fi
+
 cat <<'EOF'
 Useful foreground work while a long Polylogue command runs:
 - inspect the exact slow stage call sites and note whether it is global or local work;

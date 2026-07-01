@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+Usage: .agent/scripts/devloop-review
+
+Run the adversarial scaffold/state review: tracked-vs-ignored boundaries,
+canonical primitive names, conductor packet clutter, generated-state freshness,
+focus transitions, daemon/archive state, worktree state, and pressure signals.
+EOF
+  exit 0
+fi
+
 repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
 current="${POLYLOGUE_AGENT_CURRENT:-$repo/.agent/conductor-devloop}"
 packet="$current"
@@ -147,6 +158,50 @@ if [ "${#non_executable_scripts[@]}" -gt 0 ]; then
   printf '%s\n' "${non_executable_scripts[@]}"
 else
   ok "devloop scripts are executable"
+fi
+
+scripts_without_help=()
+for path in "$repo"/.agent/scripts/devloop-*; do
+  [ -e "$path" ] || continue
+  if ! grep -Eq -- '--help|-h' "$path"; then
+    scripts_without_help+=("${path#$repo/}")
+  fi
+done
+if [ "${#scripts_without_help[@]}" -gt 0 ]; then
+  warn "devloop scripts lack a side-effect-free --help path"
+  printf '%s\n' "${scripts_without_help[@]}"
+else
+  ok "devloop scripts expose side-effect-free help"
+fi
+
+help_state_files=(
+  "$current/ACTIVE-LOOP.md"
+  "$current/OPERATING-LOG.md"
+  "$current/EVENTS.jsonl"
+  "$current/DEMO-RADAR.md"
+)
+before_help_state="$(
+  for path in "${help_state_files[@]}"; do
+    [ -f "$path" ] && sha256sum "$path"
+  done
+)"
+help_probe_failed=0
+for path in "$repo"/.agent/scripts/devloop-*; do
+  [ -e "$path" ] || continue
+  if ! "$path" --help >/dev/null 2>&1; then
+    help_probe_failed=1
+    warn "devloop script --help failed: ${path#$repo/}"
+  fi
+done
+after_help_state="$(
+  for path in "${help_state_files[@]}"; do
+    [ -f "$path" ] && sha256sum "$path"
+  done
+)"
+if [ "$before_help_state" != "$after_help_state" ]; then
+  warn "devloop script --help mutated active state"
+elif [ "$help_probe_failed" -eq 0 ]; then
+  ok "devloop script --help paths are side-effect-free"
 fi
 
 allowed_agent_root_entries=(

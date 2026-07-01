@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+Usage: .agent/scripts/devloop-handoff
+
+Write HANDOFF-LATEST.md from current status plus the latest operating-log tail,
+then refresh generated conductor state. The handoff is local ignored state.
+EOF
+  exit 0
+fi
+
 root="${POLYLOGUE_AGENT_LOG_ROOT:-/realm/project/polylogue/.agent/conductor-devloop}"
 out="$root/HANDOFF-LATEST.md"
 {

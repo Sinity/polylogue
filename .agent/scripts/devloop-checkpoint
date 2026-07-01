@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+Usage: .agent/scripts/devloop-checkpoint [title]
+
+Record a lightweight checkpoint after a material reassessment, proof, or pivot,
+then refresh generated conductor state. This does not start a new slice.
+EOF
+  exit 0
+fi
+
 title="${1:-checkpoint}"
 "$(dirname "$0")/devloop-log" "checkpoint: $title" "Focus: checkpoint
 Trigger: $title

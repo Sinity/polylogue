@@ -15,11 +15,16 @@
   projection, and rendering algebra.
 - Waiting on long imports/tests without producing scaffold, demo, or source-review
   progress.
+- Probing devloop helper scripts with placeholder arguments and accidentally
+  mutating `ACTIVE-LOOP.md`, `OPERATING-LOG.md`, `EVENTS.jsonl`, or
+  `DEMO-RADAR.md`.
 
 ## Mitigations
 
 - Run `.agent/scripts/devloop-review` at startup and before broad status claims.
 - Run `.agent/scripts/devloop-sync` after changing current notes.
+- Discover helper interfaces with `.agent/scripts/devloop-* --help`; review
+  verifies that every help path is present and side-effect-free.
 - Include root + schema + sessions + messages in every archive status line.
 - Quarantine obsolete databases under `/realm/inbox/polylogue-obsolete-db-quarantine`
   with a manifest instead of leaving them near active paths.

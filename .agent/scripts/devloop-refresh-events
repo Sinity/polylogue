@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+Usage: .agent/scripts/devloop-refresh-events
+
+Regenerate conductor-devloop/EVENTS.jsonl from OPERATING-LOG.md. This is a
+derived local sidecar for machine analysis; OPERATING-LOG.md remains the human
+source window.
+EOF
+  exit 0
+fi
+
 root="${POLYLOGUE_AGENT_LOG_ROOT:-/realm/project/polylogue/.agent/conductor-devloop}"
 log="$root/OPERATING-LOG.md"
 events="$root/EVENTS.jsonl"
