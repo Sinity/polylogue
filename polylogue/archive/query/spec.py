@@ -484,6 +484,11 @@ class SessionQuerySpec:
     offset: int = 0
     cursor: str | None = None
     boolean_predicate: QueryPredicate | None = None
+    #: Canonical query units to attach to each selected session as a
+    #: post-selection projection (the DSL ``with <units>`` clause). This is a
+    #: projection, not a filter/sort/limit, so it is deliberately absent from
+    #: :class:`~polylogue.archive.query.plan.SessionQueryPlan`.
+    with_units: tuple[str, ...] = ()
 
     @classmethod
     def from_params(cls, params: Mapping[str, object], *, strict: bool = False) -> SessionQuerySpec:
@@ -586,6 +591,7 @@ class SessionQuerySpec:
             config=config,
             vector_provider=vector_provider,
             query_plan=self.to_plan(vector_provider=vector_provider),
+            with_units=self.with_units,
         )
 
 
