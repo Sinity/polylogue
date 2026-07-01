@@ -181,12 +181,15 @@ schema shape:
   read-model tables — `session_runs`, `session_observed_events`, and
   `session_context_snapshots` — recomputed by the session-insight materializer
   (`compile_session_digest(...).run_projection`) exactly like `session_profiles`.
-  They give the `run` / `observed-event` / `context-snapshot` query units a
-  durable SQL-backed lowerer (terminal rows, `exists`, and sort) instead of the
-  per-query session-digest scan. They are derived/rebuildable, not a new
-  source of truth; the durable evidence stays `session_events` + `messages` +
-  `topology_edges`. Existing index tiers must be rebuilt from source evidence
-  (`polylogue ops reset --index && polylogued run`).
+  They are derived/rebuildable enrichments, not the only query substrate:
+  terminal `run` / `observed-event` / `context-snapshot` queries also synthesize
+  cheap local rows directly from `sessions` and `blocks` (main runs,
+  `session_started`, tool-finished outcomes, and session-start context
+  snapshots). The durable evidence stays `session_events` + `messages` +
+  `topology_edges`, and materialized rows are retained only where they encode
+  richer non-local projections that are not cheap to lower directly. Existing
+  index tiers must be rebuilt from source evidence (`polylogue ops reset --index
+  && polylogued run`).
 - Index schema version 10 adds a role-leading `idx_messages_role` index so
   daemon `/api/facets` can compute global role counts without scanning the
   session-role compound index and spilling to a temp B-tree. Existing index

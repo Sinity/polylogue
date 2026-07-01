@@ -338,7 +338,7 @@ class ArchiveAssertionQueryRow:
 
 @dataclass(frozen=True, slots=True)
 class ArchiveRunQueryRow:
-    """Terminal query projection over materialized ``session_runs`` rows."""
+    """Terminal query projection over source-derived or materialized run rows."""
 
     session_id: str
     origin: str
@@ -358,7 +358,7 @@ class ArchiveObservedEventQueryRow:
 
 @dataclass(frozen=True, slots=True)
 class ArchiveContextSnapshotQueryRow:
-    """Terminal query projection over materialized ``session_context_snapshots`` rows."""
+    """Terminal query projection over source-derived or materialized context rows."""
 
     session_id: str
     origin: str
@@ -377,7 +377,29 @@ class ArchiveQueryUnitAggregateRow:
 
 
 _OBSERVED_EVENT_RELATION_SQL = """
-WITH tool_finished_base AS (
+WITH session_started_base AS (
+    SELECT
+        'source' AS row_source,
+        'observed-event:' || s0.session_id || ':session_started' AS event_ref,
+        s0.session_id AS session_id,
+        'run:' || s0.session_id AS run_ref,
+        0 AS position,
+        printf('%016d', COALESCE(s0.created_at_ms, s0.updated_at_ms, 0)) AS source_updated_at,
+        'session_started' AS kind,
+        COALESCE(NULLIF(s0.title, ''), s0.session_id) AS summary,
+        'observed' AS delivery_state,
+        'session:' || s0.session_id AS subject_ref,
+        json_array('session:' || s0.session_id) AS object_refs_json,
+        json_array(s0.session_id) AS evidence_refs_json,
+        json_object('origin', s0.origin, 'native_id', s0.native_id) AS payload_json,
+        trim(COALESCE(s0.title, '') || ' ' || COALESCE(s0.native_id, '') || ' ' || COALESCE(s0.origin, '')) AS search_text,
+        NULL AS subject_message_id,
+        NULL AS tool_use_position,
+        NULL AS result_message_id,
+        NULL AS result_position
+    FROM sessions s0
+),
+tool_finished_base AS (
     SELECT
         'source' AS row_source,
         'observed-event:' || u.block_id || ':tool_finished' AS event_ref,
@@ -428,6 +450,8 @@ WITH tool_finished_base AS (
         AND ({source_where})
 ),
 source_observed_events AS (
+    SELECT * FROM session_started_base
+    UNION ALL
     SELECT
         row_source,
         event_ref,
@@ -477,11 +501,12 @@ materialized_observed_events AS (
         NULL AS result_message_id,
         NULL AS result_position
     FROM session_observed_events e
-    WHERE e.kind <> 'tool_finished'
+    WHERE e.kind NOT IN ('session_started', 'tool_finished')
         OR NOT EXISTS (
             SELECT 1
             FROM source_observed_events source
             WHERE source.session_id = e.session_id
+                AND source.kind = e.kind
         )
 ),
 observed_events AS (
@@ -797,7 +822,7 @@ def _observed_event_from_query_row(row: sqlite3.Row) -> ObservedEvent:
     payload = json.loads(str(row["payload_json"] or "{}"))
     return ObservedEvent(
         event_ref=ObjectRef.parse(str(row["event_ref"])),
-        kind="tool_finished",
+        kind=str(row["kind"]),  # type: ignore[arg-type]
         run_ref=ObjectRef.parse(str(row["run_ref"])),
         summary=str(row["summary"]),
         delivery_state="observed",

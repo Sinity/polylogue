@@ -99,12 +99,7 @@ def test_web_reader_archive_root_rejects_schema_mismatch(tmp_path: Path) -> None
 
 
 def _materialize_run_projection(index_db: Path) -> None:
-    """Rebuild session insights so the materialized run-projection tables exist.
-
-    The ``run`` / ``observed-event`` / ``context-snapshot`` units read the
-    derived ``session_runs`` / ``session_observed_events`` /
-    ``session_context_snapshots`` tables, so tests must materialize after writing.
-    """
+    """Rebuild session insights for richer digest-derived run-projection rows."""
     from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
     from polylogue.storage.sqlite.connection import open_connection
 
@@ -1948,8 +1943,6 @@ class TestReaderQueryUnits:
             .save()
         )
 
-        _materialize_run_projection(index_db)
-
         expression = quote("observed-events where session.repo:polylogue AND kind:session_started")
         with _running_server(workspace_env) as (_, base_url):
             payload = cast(dict[str, object], _get_json(base_url, f"/api/query-units?expression={expression}"))
@@ -1973,8 +1966,6 @@ class TestReaderQueryUnits:
             .add_message("m-context", role="user", text="Daemon context snapshot seed")
             .save()
         )
-
-        _materialize_run_projection(index_db)
 
         expression = quote("context-snapshots where session.repo:polylogue AND boundary:session_start AND text:context")
         with _running_server(workspace_env) as (_, base_url):
