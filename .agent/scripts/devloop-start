@@ -43,9 +43,11 @@ esac
 root="${POLYLOGUE_AGENT_LOG_ROOT:-/realm/project/polylogue/.agent/conductor-devloop}"
 next_focus="Evidence"
 next_decision="gather current evidence before editing"
+meta_origin="no"
 if [ "$start_focus" = "Meta" ]; then
   next_focus="Meta"
   next_decision="audit process evidence and choose the smallest executable scaffold improvement"
+  meta_origin="yes"
 fi
 
 "$(dirname "$0")/devloop-log" "$title" "Focus: $start_focus -> $next_focus
@@ -58,7 +60,7 @@ Velocity note: slice started through devloop-start so elapsed time is tracked.
 Next decision: $next_decision."
 
 if [ -f "$root/ACTIVE-LOOP.md" ]; then
-  python3 - "$root/ACTIVE-LOOP.md" "$title" "$start_focus" "$next_focus" "$next_decision" <<'PY'
+  python3 - "$root/ACTIVE-LOOP.md" "$title" "$start_focus" "$next_focus" "$next_decision" "$meta_origin" <<'PY'
 from pathlib import Path
 import sys
 
@@ -67,9 +69,11 @@ title = sys.argv[2]
 start_focus = sys.argv[3]
 next_focus = sys.argv[4]
 next_decision = sys.argv[5]
+meta_origin = sys.argv[6]
 text = path.read_text()
 replacements = {
     "Current Slice": f"Current Slice\n\n{title}",
+    "Meta Origin": f"Meta Origin\n\n{meta_origin}",
     "Current Focus": (
         f"Current Focus\n\nFocus: {start_focus} -> {next_focus}\n\n"
         f"Trigger: {title}\n\n"
@@ -108,6 +112,11 @@ for heading, body in replacements.items():
     if next_start == -1:
         next_start = len(text)
     text = text[:start] + "## " + body + "\n" + text[next_start:]
+if "## Meta Origin" not in text:
+    marker = "## Current Focus"
+    start = text.find(marker)
+    if start != -1:
+        text = text[:start] + f"## Meta Origin\n\n{meta_origin}\n\n" + text[start:]
 path.write_text(text)
 PY
 fi

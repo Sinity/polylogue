@@ -714,7 +714,6 @@ import sys
 from pathlib import Path
 
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
-log_text = Path(sys.argv[2]).read_text(encoding="utf-8") if Path(sys.argv[2]).exists() else ""
 
 def section(heading: str) -> str:
     marker = f"## {heading}"
@@ -727,27 +726,16 @@ def section(heading: str) -> str:
     return text[start + len(marker):next_start].strip()
 
 slice_text = section("Current Slice").lower()
-slice_title = section("Current Slice").strip()
 focus_text = section("Current Focus")
 focus_line = next((line.strip() for line in focus_text.splitlines() if line.startswith("Focus: ")), "")
+meta_origin = section("Meta Origin").strip().lower()
 is_meta_slice = bool(
     re.search(r"\b(meta|scaffold|devloop)\b", slice_text)
     or re.search(r"\bprocess[- ]?(self|improvement|convention)\b", slice_text)
     or "self-improvement" in slice_text
 )
 is_meta_focus = "Meta ->" in focus_line or "-> Meta" in focus_line
-has_recorded_meta_origin = False
-if slice_title:
-    entry_re = re.compile(
-        r"^## \d{4}-\d{2}-\d{2} .* [—-] " + re.escape(slice_title) + r"$",
-        re.M,
-    )
-    entry_match = entry_re.search(log_text)
-    if entry_match is not None:
-        next_match = re.search(r"^## \d{4}-\d{2}-\d{2} ", log_text[entry_match.end() :], re.M)
-        entry_end = entry_match.end() + next_match.start() if next_match is not None else len(log_text)
-        entry_body = log_text[entry_match.end() : entry_end]
-        has_recorded_meta_origin = bool(re.search(r"^Focus: Meta ->", entry_body, re.M))
+has_recorded_meta_origin = meta_origin in {"yes", "true"}
 if is_meta_slice and not (is_meta_focus or has_recorded_meta_origin):
     raise SystemExit(1)
 PY

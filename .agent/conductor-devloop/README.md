@@ -90,7 +90,8 @@ The proof ladder is:
 ## State Files And Their Roles
 
 - `ACTIVE-LOOP.md` — current slice, focus transition, accepted warnings, and
-  next action.
+  next action. It also carries `Meta Origin: yes/no` so process slices remain
+  auditable after they move from `Meta` into evidence, proof, or velocity.
 - `OPERATING-LOG.md` — timestamped log of decisions, evidence, actions, proof,
   and next decisions.
 - `EVENTS.jsonl` — structured event sidecar generated from the operating log.
