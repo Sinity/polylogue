@@ -18,6 +18,13 @@ structured state instead of human-readable text.
 Do not start broad import/test/runtime work while daemon/root/process warnings
 are unexplained.
 
+`ACTIVE-LOOP.md` is current-slice state, not a history file. Keep its accepted
+warnings section short and limited to live exceptions from the current slice.
+Completed proofs, old commits, and prior demo notes belong in
+`OPERATING-LOG.md` or `DEMO-RADAR.md`; `devloop-start` resets the warning field
+when a new slice begins, and `devloop-review` warns if it accretes into a
+historical ledger.
+
 ## Focus Modes
 
 - `Direction`: choose the slice.

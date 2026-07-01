@@ -23,6 +23,12 @@ text = path.read_text()
 replacements = {
     "Current Slice": f"Current Slice\n\n{title}",
     "Current Focus": "Current Focus\n\nFocus: Direction -> Evidence",
+    "Accepted Warnings": (
+        "Accepted Warnings\n\n"
+        "None recorded for this slice. If `devloop-review` warnings are consciously accepted, "
+        "record only current-slice exceptions here; historical proofs and completed slices belong "
+        "in `OPERATING-LOG.md` or `DEMO-RADAR.md`."
+    ),
     "Next Action": "Next Action\n\nFill the new OPERATING-LOG entry, gather live evidence, and choose the narrow proof.",
 }
 for heading, body in replacements.items():

@@ -322,6 +322,34 @@ if [ -f "$current/ACTIVE-LOOP.md" ]; then
   else
     warn "ACTIVE-LOOP.md lacks a valid Focus transition"
   fi
+  if python3 - "$current/ACTIVE-LOOP.md" <<'PY'
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+marker = "## Accepted Warnings"
+start = text.find(marker)
+if start == -1:
+    raise SystemExit(1)
+next_start = text.find("\n## ", start + 1)
+if next_start == -1:
+    next_start = len(text)
+section = text[start + len(marker):next_start]
+lines = [line.strip() for line in section.splitlines() if line.strip()]
+historical_markers = (" committed as ", " is committed as ", "demo ", "slice is committed")
+if len(lines) > 8:
+    raise SystemExit(1)
+if any(any(marker in line for marker in historical_markers) for line in lines):
+    raise SystemExit(1)
+PY
+  then
+    ok "ACTIVE-LOOP accepted warnings are current-slice scoped"
+  else
+    warn "ACTIVE-LOOP accepted warnings look like historical ledger; keep history in OPERATING-LOG/DEMO-RADAR"
+  fi
 fi
 
 polylogued_pids="$(ps -eo pid=,args= | awk '$3 ~ /\/polylogued$/ && $4 == "run" {print}' || true)"
