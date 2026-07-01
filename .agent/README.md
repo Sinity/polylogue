@@ -65,3 +65,8 @@ loop state in ignored files under `conductor-devloop/` via the devloop scripts,
 durable research in ignored `scratch/research/`, generated proof under the
 relevant ignored demo/artifact directory, and completed/stale notes under an
 ignored archive directory.
+
+Ignored support shelves must stay small and non-authoritative. `.agent/archive/`
+may hold compact archaeology such as old operating-log windows; it must not grow
+into a second conductor packet. `.agent/task-history/` is a local execution
+ledger for analysis and can be rotated if it becomes bulky.

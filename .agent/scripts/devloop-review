@@ -403,6 +403,39 @@ else
   ok "no handoff mirror"
 fi
 
+if [ -d "$repo/.agent/archive" ]; then
+  archive_bytes="$(du -sb "$repo/.agent/archive" 2>/dev/null | awk '{print $1}' || printf 0)"
+  printf 'INFO: ignored .agent/archive size=%s bytes\n' "$archive_bytes"
+  if [ "${archive_bytes:-0}" -gt 2097152 ]; then
+    warn ".agent/archive exceeds 2 MiB; compact, move bulky archaeology to /realm/inbox/p_arch, or document why it is still useful"
+  fi
+  archive_mirrors="$(
+    find "$repo/.agent/archive" -type f \
+      \( -name 'ACTIVE-LOOP.md' -o -name 'EVENTS.jsonl' -o -name 'HANDOFF-LATEST.md' -o -name 'README.md' -o -name 'RUNBOOK.md' \) \
+      -printf '%P\n' 2>/dev/null \
+      | grep -Ev '^conductor-history/[0-9]{4}-[0-9]{2}-[0-9]{2}/README[.]md$' \
+      | sort || true
+  )"
+  if [ -n "$archive_mirrors" ]; then
+    warn ".agent/archive contains files that look like startup/conductor mirrors"
+    printf '%s\n' "$archive_mirrors"
+  else
+    ok ".agent/archive has no startup/conductor mirror files"
+  fi
+else
+  ok "no ignored .agent/archive archaeology directory"
+fi
+
+if [ -d "$repo/.agent/task-history" ]; then
+  task_history_bytes="$(du -sb "$repo/.agent/task-history" 2>/dev/null | awk '{print $1}' || printf 0)"
+  printf 'INFO: ignored .agent/task-history size=%s bytes\n' "$task_history_bytes"
+  if [ "${task_history_bytes:-0}" -gt 5242880 ]; then
+    warn ".agent/task-history exceeds 5 MiB; rotate or compact the local devtools execution ledger"
+  fi
+else
+  ok "no ignored .agent/task-history ledger"
+fi
+
 if demo_check_output="$("$repo/.agent/scripts/devloop-refresh-demos" --check 2>&1)"; then
   ok "$demo_check_output"
 else
