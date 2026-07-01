@@ -477,6 +477,38 @@ else
   ok "devloop-status --json works"
 fi
 
+worktree_gc_json="$(devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"
+if python3 - "$worktree_gc_json" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+
+try:
+    data = json.loads(sys.argv[1])
+except json.JSONDecodeError:
+    raise SystemExit(2)
+safe = int(data.get("safe_count") or 0)
+blocked = int(data.get("blocked_count") or 0)
+if safe:
+    raise SystemExit(1)
+if blocked:
+    print(f"INFO: blocked worktrees={blocked}; inspect with devtools workspace worktree-gc --json before deleting")
+raise SystemExit(0)
+PY
+then
+  ok "no safe removable worktrees"
+else
+  case "$?" in
+    1)
+      warn "safe removable worktrees exist; run devtools workspace worktree-gc and apply only after reviewing candidates"
+      ;;
+    *)
+      warn "worktree-gc JSON probe failed"
+      ;;
+  esac
+fi
+
 heavy="$(pgrep -af 'devtools verify|devtools test|pytest|polylogue import|polylogued run|nix build|nix develop --command' || true)"
 if [ -n "$heavy" ]; then
   printf 'INFO: active heavy-ish processes:\n%s\n' "$heavy"
