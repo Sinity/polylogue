@@ -53,6 +53,16 @@ ok() {
   printf 'OK: %s\n' "$*"
 }
 
+polylogued_process_rows() {
+  ps -eo pid=,comm=,args= \
+    | awk '
+      $2 ~ /^(awk|grep|rg|sed|zsh|bash)$/ {next}
+      /\/polylogued run( |$)/ {print; next}
+      /polylogue[.]daemon[.]cli/ && /main[;]/ && / run( |$)/ {print; next}
+    ' \
+    || true
+}
+
 required_scaffold=(
   "$repo/.agent/README.md"
   "$repo/.agent/DEVLOOP.md"
@@ -783,7 +793,7 @@ PY
   fi
 fi
 
-polylogued_pids="$(ps -eo pid=,args= | awk '$3 ~ /\/polylogued$/ && $4 == "run" {print}' || true)"
+polylogued_pids="$(polylogued_process_rows)"
 if [ -z "$polylogued_pids" ]; then
   warn "polylogued is not running; acceptable only between convergence restarts"
 else

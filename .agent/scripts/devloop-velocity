@@ -102,7 +102,12 @@ src = data.get("source", {})
 daemon = data.get("daemon", {})
 print("index=" f"v{idx.get('schema_version')} " f"sessions={idx.get('sessions')} " f"messages={idx.get('messages')}")
 print(f"source=v{src.get('schema_version')} raw_sessions={src.get('raw_sessions')}")
-print(f"daemon={daemon.get('devloop_state')} prod={daemon.get('prod_state')}")
+daemon_state = "running" if daemon.get("polylogued") else daemon.get("devloop_state")
+print(
+    f"daemon={daemon_state} "
+    f"service={daemon.get('devloop_state')} "
+    f"prod={daemon.get('prod_state')}"
+)
 packet = data.get("agent_packet", {})
 print(
     "agent_packet="

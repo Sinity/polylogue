@@ -41,6 +41,16 @@ if printf '%s\n' "$pressure_rows" | grep -Eq 'borg create|lynchpin.analysis mate
   performance_blocked="true"
 fi
 
+polylogued_process_rows() {
+  ps -eo pid=,comm=,args= \
+    | awk '
+      $2 ~ /^(awk|grep|rg|sed|zsh|bash)$/ {next}
+      /\/polylogued run( |$)/ {print; next}
+      /polylogue[.]daemon[.]cli/ && /main[;]/ && / run( |$)/ {print; next}
+    ' \
+    || true
+}
+
 if [ "$format" = "--json" ]; then
   index_version=""
   sessions=""
@@ -95,7 +105,7 @@ if [ "$format" = "--json" ]; then
   prod_sub_state="$(systemctl --user show polylogued.service -p SubState --value 2>/dev/null || true)"
   devloop_state="$(systemctl --user show polylogued-devloop.service -p ActiveState --value 2>/dev/null || true)"
   devloop_sub_state="$(systemctl --user show polylogued-devloop.service -p SubState --value 2>/dev/null || true)"
-  polylogued_rows="$(ps -eo pid=,args= | awk '$3 ~ /\/polylogued$/ && $4 == "run" {print}' || true)"
+  polylogued_rows="$(polylogued_process_rows)"
   worktree_gc_json="$(POLYLOGUE_TASK_HISTORY_DISABLE=1 devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"
   python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$observed_events" "$source_version" "$raw_rows" "$raw_materialization_debt" "$raw_materialization_replayable" "$ops_status_json" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$worktree_gc_json" "$pressure_rows" "$performance_blocked" "$packet_bytes" "$packet_files" "$packet_dirs" "$operating_log_bytes" "$events_bytes" <<'PY'
 import json
@@ -344,7 +354,7 @@ devloop_active_state="$(systemctl --user show polylogued-devloop.service -p Acti
 devloop_sub_state="$(systemctl --user show polylogued-devloop.service -p SubState --value 2>/dev/null || true)"
 printf 'prod polylogued.service: %s/%s\n' "${prod_active_state:-unknown}" "${prod_sub_state:-unknown}"
 printf 'devloop polylogued-devloop.service: %s/%s\n' "${devloop_active_state:-unknown}" "${devloop_sub_state:-unknown}"
-ps -eo pid=,args= | awk '$3 ~ /\/polylogued$/ && $4 == "run" {print}' || true
+polylogued_process_rows
 
 printf '\n== worktrees ==\n'
 worktree_gc_json="$(POLYLOGUE_TASK_HISTORY_DISABLE=1 devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"
