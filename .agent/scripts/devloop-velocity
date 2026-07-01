@@ -214,6 +214,7 @@ expected_edges = {
     ("Artifact", "Velocity"),
     ("Artifact", "Direction"),
     ("Artifact", "Meta"),
+    ("Artifact", "Proof"),
     ("Velocity", "Direction"),
     ("Velocity", "Evidence"),
     ("Velocity", "Artifact"),
