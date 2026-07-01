@@ -686,6 +686,65 @@ PY
   else
     warn "$focus_audit_output"
   fi
+  if global_focus_audit_output="$(DEVLOOP_FOCUS_EDGES="$(devloop_focus_edges)" python3 - "$current/OPERATING-LOG.md" <<'PY'
+from __future__ import annotations
+
+import os
+import re
+import sys
+from pathlib import Path
+
+log_path = Path(sys.argv[1])
+heading_re = re.compile(r"^## \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z]+ [—-] (?P<title>.+)$")
+entries: list[tuple[str, str]] = []
+title = ""
+body: list[str] = []
+for line in log_path.read_text(encoding="utf-8").splitlines():
+    match = heading_re.match(line)
+    if match is not None:
+        if title:
+            entries.append((title, "\n".join(body)))
+        title = match.group("title").strip()
+        body = []
+    elif title:
+        body.append(line)
+if title:
+    entries.append((title, "\n".join(body)))
+
+expected_edges = {
+    tuple(line.split(":", 1))
+    for line in os.environ.get("DEVLOOP_FOCUS_EDGES", "").splitlines()
+    if ":" in line
+}
+if not expected_edges:
+    raise SystemExit("missing DEVLOOP_FOCUS_EDGES")
+
+focus_re = re.compile(r"^Focus: ([A-Za-z]+) -> ([A-Za-z]+)$", re.M)
+bad_edges: list[str] = []
+attributed = 0
+for entry_title, entry_body in entries:
+    for match in focus_re.finditer(entry_body):
+        edge = (match.group(1), match.group(2))
+        if edge in expected_edges:
+            continue
+        lowered = entry_body.lower()
+        if "historical focus anomaly" in lowered or "intentional focus anomaly" in lowered:
+            attributed += 1
+            continue
+        bad_edges.append(f"{edge[0]}->{edge[1]} :: {entry_title}")
+
+if bad_edges:
+    print("unexpected historical focus transitions need attribution:")
+    print("\n".join(bad_edges))
+    raise SystemExit(1)
+
+print(f"historical focus edge audit OK: attributed_anomalies={attributed}")
+PY
+  )"; then
+    ok "$global_focus_audit_output"
+  else
+    warn "$global_focus_audit_output"
+  fi
   if python3 - "$current/ACTIVE-LOOP.md" "$current/OPERATING-LOG.md" <<'PY'
 from __future__ import annotations
 

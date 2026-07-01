@@ -191,16 +191,28 @@ import sys
 from collections import Counter
 
 path = sys.argv[1]
-transitions: list[tuple[str, str, str]] = []
+entries: list[tuple[str, str]] = []
 title = ""
+body: list[str] = []
 with open(path, encoding="utf-8") as handle:
     for raw in handle:
         line = raw.rstrip("\n")
         if line.startswith("## "):
+            if title:
+                entries.append((title, "\n".join(body)))
             title = line[3:]
+            body = []
+        elif title:
+            body.append(line)
+if title:
+    entries.append((title, "\n".join(body)))
+
+transitions: list[tuple[str, str, str, str]] = []
+for title, body_text in entries:
+    for line in body_text.splitlines():
         match = re.match(r"Focus: ([A-Za-z]+) -> ([A-Za-z]+)$", line)
         if match:
-            transitions.append((title, match.group(1), match.group(2)))
+            transitions.append((title, body_text, match.group(1), match.group(2)))
 
 expected_edges = {
     tuple(line.split(":", 1))
@@ -209,27 +221,36 @@ expected_edges = {
 }
 if not expected_edges:
     raise SystemExit("missing DEVLOOP_FOCUS_EDGES")
-edge_counts = Counter((src, dst) for _, src, dst in transitions)
+edge_counts = Counter((src, dst) for _, _body, src, dst in transitions)
 print(f"transitions={len(transitions)}")
 for (src, dst), count in edge_counts.most_common():
     print(f"{src}->{dst}: {count}")
 
-skips = [
-    (title, src, dst)
-    for title, src, dst in transitions
-    if (src, dst) not in expected_edges
-]
-if skips:
-    print("unexpected_edges:")
-    for item_title, src, dst in skips[-8:]:
+unattributed_edges: list[tuple[str, str, str]] = []
+attributed_edges: list[tuple[str, str, str]] = []
+for item_title, item_body, src, dst in transitions:
+    if (src, dst) in expected_edges:
+        continue
+    lowered = item_body.lower()
+    if "historical focus anomaly" in lowered or "intentional focus anomaly" in lowered:
+        attributed_edges.append((item_title, src, dst))
+    else:
+        unattributed_edges.append((item_title, src, dst))
+if unattributed_edges:
+    print("unattributed_unexpected_edges:")
+    for item_title, src, dst in unattributed_edges[-8:]:
+        print(f"  {src}->{dst} :: {item_title}")
+if attributed_edges:
+    print("attributed_unexpected_edges:")
+    for item_title, src, dst in attributed_edges[-8:]:
         print(f"  {src}->{dst} :: {item_title}")
 
-proof_exits = Counter(dst for _, src, dst in transitions if src == "Proof")
+proof_exits = Counter(dst for _, _body, src, dst in transitions if src == "Proof")
 if proof_exits:
     print("proof_exits=" + ", ".join(f"{dst}:{count}" for dst, count in proof_exits.most_common()))
     direct_skip_items = [
         (title, dst)
-        for title, src, dst in transitions
+        for title, _body, src, dst in transitions
         if src == "Proof" and dst not in {"Artifact", "Velocity"}
     ]
     direct_skips = len(direct_skip_items)
@@ -245,7 +266,7 @@ if proof_exits:
 recent = transitions[-8:]
 if recent:
     print("recent:")
-    for item_title, src, dst in recent:
+    for item_title, _body, src, dst in recent:
         print(f"  {src}->{dst} :: {item_title}")
 PY
 else
