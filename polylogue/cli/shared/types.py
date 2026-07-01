@@ -7,7 +7,6 @@ the ~2.5 s archive/storage import cost.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -31,18 +30,47 @@ def _lazy_services() -> RuntimeServices:
     return build_runtime_services()
 
 
-@dataclass
 class AppEnv:
     """CLI application environment.
 
-    Backing services use ``default_factory`` so imports are deferred
-    until an instance is created — ``--help`` never pays the cost.
-    The real CLI path (``AppEnv(ui=create_ui(...))``) passes explicit
-    values, skipping the factories entirely.
+    Backing UI and services are created lazily on first access so metadata-only
+    commands such as ``read --views`` do not pay for UI, storage, or archive
+    setup. Tests and command paths can still inject explicit objects with
+    ``AppEnv(ui=...)`` and ``AppEnv(services=...)``.
     """
 
-    ui: UI = field(default_factory=_lazy_ui)
-    services: RuntimeServices = field(default_factory=_lazy_services)
+    def __init__(
+        self,
+        *,
+        ui: UI | None = None,
+        services: RuntimeServices | None = None,
+        plain: bool = True,
+    ) -> None:
+        self._ui = ui
+        self._services = services
+        self._plain = plain
+
+    @property
+    def ui(self) -> UI:
+        if self._ui is None:
+            from polylogue.ui import create_ui
+
+            self._ui = create_ui(self._plain)
+        return self._ui
+
+    @ui.setter
+    def ui(self, value: UI) -> None:
+        self._ui = value
+
+    @property
+    def services(self) -> RuntimeServices:
+        if self._services is None:
+            self._services = _lazy_services()
+        return self._services
+
+    @services.setter
+    def services(self, value: RuntimeServices) -> None:
+        self._services = value
 
     @property
     def config(self) -> Config:

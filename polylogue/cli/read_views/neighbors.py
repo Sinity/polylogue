@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import cast
 
 from polylogue.archive.session.neighbor_candidates import SessionNeighborCandidate
+from polylogue.cli.read_view_registry import NEIGHBOR_READ_VIEW_OPTION_NAMES
 from polylogue.cli.read_views.base import (
     ReadViewInvocation,
     ReadViewNeighborOptions,
@@ -13,8 +14,6 @@ from polylogue.cli.read_views.base import (
 )
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
-
-NEIGHBOR_READ_VIEW_OPTION_NAMES = frozenset({"limit", "window_hours"})
 
 
 def build_neighbor_options(values: ReadViewOptionValues) -> ReadViewNeighborOptions:

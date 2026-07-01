@@ -8,6 +8,7 @@ from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.cli.query import _create_query_vector_provider
+from polylogue.cli.read_view_registry import CHRONICLE_READ_VIEW_OPTION_NAMES
 from polylogue.cli.read_views.base import (
     ReadViewChronicleOptions,
     ReadViewInvocation,
@@ -29,7 +30,6 @@ from polylogue.surfaces.chronicle import (
     render_chronicle_markdown,
 )
 
-CHRONICLE_READ_VIEW_OPTION_NAMES = frozenset({"limit"})
 DEFAULT_CHRONICLE_EDGE_LIMIT = 8
 
 

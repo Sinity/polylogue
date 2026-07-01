@@ -234,11 +234,11 @@ Options:
   --help                          Show this message and exit.
 
 Commands:
-  insights  Inspect durable archive insight read models.
-  pace      Show inter-turn gap analysis for one or more sessions.
-  tools     Show top tools by invocation count across filtered sessions.
-  turns     Show per-turn cost and duration for one session.
-  usage     Audit provider usage accounting without turning it into a...
+  insights  Check and export derived insight materialization.
+  pace      Analyze session pacing, gaps, and burstiness.
+  tools     Analyze tool usage across sessions.
+  turns     Analyze turn structure for one session.
+  usage     Analyze provider usage events.
 ```
 
 ## Read Verb

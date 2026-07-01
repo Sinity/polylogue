@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import cast
 
 from polylogue.api.sync.bridge import run_coroutine_sync
+from polylogue.cli.read_view_registry import CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES, CONTEXT_READ_VIEW_OPTION_NAMES
 from polylogue.cli.read_views.base import (
     ReadViewContextImageOptions,
     ReadViewContextOptions,
@@ -15,20 +16,6 @@ from polylogue.cli.read_views.base import (
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.surfaces.payloads import serialize_surface_payload
-
-CONTEXT_READ_VIEW_OPTION_NAMES = frozenset({"related_limit"})
-CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES = frozenset(
-    {
-        "max_sessions",
-        "no_redact",
-        "context_origin",
-        "context_query",
-        "project_path",
-        "project_repo",
-        "since",
-        "until",
-    }
-)
 
 
 def build_context_options(values: ReadViewOptionValues) -> ReadViewContextOptions:

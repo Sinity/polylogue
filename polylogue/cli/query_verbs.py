@@ -7,7 +7,8 @@ a specific action on the matched sessions.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, cast
+from collections.abc import Awaitable
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import click
 from click.shell_completion import CompletionItem
@@ -16,35 +17,78 @@ if TYPE_CHECKING:
     from polylogue.cli.root_request import RootModeRequest
     from polylogue.cli.select import SelectPrintField
     from polylogue.surfaces.payloads import FacetsResponse
+    from polylogue.surfaces.projection_spec import QueryProjectionSpec
 
-from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.viewport import (
     READ_VIEW_PROFILE_BY_ID,
     READ_VIEW_PROFILES,
     read_view_choices,
     read_view_profile_payloads,
 )
-from polylogue.cli.read_view_handlers import (
-    READ_VIEW_HANDLERS,
-    ReadViewInvocation,
-    read_view_option_names,
-    read_view_options_for_view,
-    run_query_set_read_view,
-    run_read_view,
-)
-from polylogue.cli.read_views.base import deliver_content
+from polylogue.cli.read_view_registry import READ_VIEW_HANDLER_METADATA, read_view_option_names
 from polylogue.cli.shared.types import AppEnv
 from polylogue.cli.verb_names import VERB_NAMES
 from polylogue.core.enums import AssertionStatus
-from polylogue.surfaces.payloads import (
-    AssertionCandidateReviewListPayload,
-    AssertionClaimListPayload,
-    serialize_surface_payload,
-)
-from polylogue.surfaces.projection_spec import QueryProjectionSpec, projection_from_views
 
 _FACET_TERMINAL_BUCKET_LIMIT = 12
 _FACET_TERMINAL_IDF_LIMIT = 12
+_T = TypeVar("_T")
+
+
+def run_coroutine_sync(coro: Awaitable[_T]) -> _T:
+    """Import the sync bridge only when a verb actually needs archive work."""
+
+    from polylogue.api.sync.bridge import run_coroutine_sync as _run_coroutine_sync
+
+    return _run_coroutine_sync(coro)
+
+
+def _deliver_content(env: AppEnv, content: str, *, destination: str, out_path: str | None) -> None:
+    """Import read-view delivery helpers only on real delivery paths."""
+
+    from polylogue.cli.read_views.base import deliver_content
+
+    deliver_content(env, content, destination=destination, out_path=out_path)
+
+
+def serialize_surface_payload(payload: Any, *, exclude_none: bool = False) -> str:
+    """Serialize surface payloads without importing payload models at module load."""
+
+    from polylogue.surfaces.payloads import serialize_surface_payload as _serialize_surface_payload
+
+    return _serialize_surface_payload(payload, exclude_none=exclude_none)
+
+
+def read_view_options_for_view(view: str, values: dict[str, object]) -> Any:
+    """Build typed read-view options without importing handlers at module load."""
+
+    from polylogue.cli.read_view_handlers import read_view_options_for_view as _read_view_options_for_view
+
+    return _read_view_options_for_view(view, values)
+
+
+def run_query_set_read_view(*args: Any, **kwargs: Any) -> Any:
+    """Execute a query-set read view without importing handlers at module load."""
+
+    from polylogue.cli.read_view_handlers import run_query_set_read_view as _run_query_set_read_view
+
+    return _run_query_set_read_view(*args, **kwargs)
+
+
+def run_read_view(*args: Any, **kwargs: Any) -> Any:
+    """Execute a session read view without importing handlers at module load."""
+
+    from polylogue.cli.read_view_handlers import run_read_view as _run_read_view
+
+    return _run_read_view(*args, **kwargs)
+
+
+def _read_view_invocation(**kwargs: Any) -> Any:
+    """Create a read-view invocation without importing handlers at module load."""
+
+    from polylogue.cli.read_view_handlers import ReadViewInvocation
+
+    return ReadViewInvocation(**kwargs)
 
 
 def _sorted_nonzero_facet_values(values: dict[str, int]) -> list[tuple[str, int]]:
@@ -249,7 +293,6 @@ def _emit_continue_candidates(
 ) -> None:
     """Rank archived sessions for continuation from the current work context."""
 
-    from polylogue.api.sync.bridge import run_coroutine_sync
     from polylogue.cli.shared.machine_errors import emit_success
 
     candidates = run_coroutine_sync(
@@ -308,9 +351,9 @@ def _complete_read_format(ctx: click.Context, param: click.Parameter, incomplete
 def _render_read_view_profiles_plain() -> str:
     lines = ["Read views:"]
     for profile in READ_VIEW_PROFILES:
-        handler = READ_VIEW_HANDLERS[profile.view_id]
-        options = ", ".join(f"--{name.replace('_', '-')}" for name in sorted(handler.accepted_options)) or "none"
-        scope = "query-set" if handler.accepts_query_set else handler.session_policy
+        metadata = READ_VIEW_HANDLER_METADATA[profile.view_id]
+        options = ", ".join(f"--{name.replace('_', '-')}" for name in sorted(metadata.accepted_options)) or "none"
+        scope = "query-set" if metadata.accepts_query_set else metadata.session_policy
         handoff = " handoff" if profile.successor_handoff else ""
         lines.append(
             f"  {profile.view_id:<12} {profile.lossiness:<10} evidence={profile.evidence_policy:<10}"
@@ -327,11 +370,11 @@ def _emit_read_view_profiles(output_format: str | None) -> None:
 
         payloads: list[dict[str, object]] = []
         for payload in read_view_profile_payloads():
-            handler = READ_VIEW_HANDLERS[str(payload["view_id"])]
+            metadata = READ_VIEW_HANDLER_METADATA[str(payload["view_id"])]
             augmented: dict[str, object] = dict(payload)
-            augmented["cli_options"] = sorted(handler.accepted_options)
-            augmented["session_policy"] = handler.session_policy
-            augmented["accepts_query_set"] = handler.accepts_query_set
+            augmented["cli_options"] = sorted(metadata.accepted_options)
+            augmented["session_policy"] = metadata.session_policy
+            augmented["accepts_query_set"] = metadata.accepts_query_set
             payloads.append(augmented)
         emit_success({"read_views": payloads})
         return
@@ -369,6 +412,8 @@ def _build_read_projection_spec(
     neighbor_window_hours: int | None = None,
 ) -> QueryProjectionSpec:
     """Build the typed selection/projection/render contract for read options."""
+
+    from polylogue.surfaces.projection_spec import projection_from_views
 
     primary_view = views[0] if views else "summary"
     effective_format = (
@@ -769,7 +814,7 @@ def read_verb(
             neighbor_limit=projection_neighbor_limit,
             neighbor_window_hours=projection_neighbor_window_hours,
         )
-        deliver_content(
+        _deliver_content(
             env,
             serialize_surface_payload(spec, exclude_none=True) + "\n",
             destination=destination,
@@ -887,10 +932,10 @@ def read_verb(
         )
         return
 
-    handler = READ_VIEW_HANDLERS[primary_view]
+    handler_metadata = READ_VIEW_HANDLER_METADATA[primary_view]
     session_id = None
     exact_session_ref = _spec_is_exact_session_ref(request.query_spec())
-    if destination == "browser" or first_only or exact_session_ref or not handler.accepts_query_set:
+    if destination == "browser" or first_only or exact_session_ref or not handler_metadata.accepts_query_set:
         session_id = _resolve_query_action_session_id(env, request, operation="read", first_only=first_only)
     effective_format = _effective_read_output_format(request, view=primary_view, output_format=output_format)
     projection_spec = _build_read_projection_spec(
@@ -927,7 +972,7 @@ def read_verb(
         run_read_view(
             env,
             request,
-            ReadViewInvocation(
+            _read_view_invocation(
                 view="summary",
                 session_id=session_id,
                 output_format=effective_format,
@@ -942,7 +987,7 @@ def read_verb(
     run_read_view(
         env,
         request,
-        ReadViewInvocation(
+        _read_view_invocation(
             view=primary_view,
             session_id=session_id,
             output_format=effective_format,
@@ -1120,7 +1165,7 @@ def continue_verb(
             )
         )
     )
-    deliver_content(env, _render_context_image_markdown(image), destination=destination, out_path=out_path)
+    _deliver_content(env, _render_context_image_markdown(image), destination=destination, out_path=out_path)
 
 
 @click.command("delete")
@@ -1283,7 +1328,6 @@ def mark_verb(
     """
     import uuid
 
-    from polylogue.api.sync.bridge import run_coroutine_sync
     from polylogue.cli.verb_cardinality import CardinalityError, check_cardinality, resolve_session_ids_for_verb
 
     if ctx.invoked_subcommand is not None:
@@ -1403,6 +1447,8 @@ def list_mark_candidates_command(env: AppEnv, target_ref: str | None, limit: int
     """List candidate assertion claims."""
     items = run_coroutine_sync(env.polylogue.list_assertion_candidates(target_ref=target_ref, limit=limit))
     if output_format == "json":
+        from polylogue.surfaces.payloads import AssertionClaimListPayload
+
         payload = AssertionClaimListPayload(
             items=tuple(items), total=len(items), limit=limit, statuses=(AssertionStatus.CANDIDATE,)
         )
@@ -1424,6 +1470,8 @@ def list_mark_candidates_command(env: AppEnv, target_ref: str | None, limit: int
 @click.pass_obj
 def review_mark_candidates_command(env: AppEnv, target_ref: str | None, limit: int, output_format: str | None) -> None:
     """List candidate assertion review state and disabled actions."""
+    from polylogue.surfaces.payloads import AssertionCandidateReviewListPayload
+
     payload = run_coroutine_sync(env.polylogue.list_assertion_candidate_reviews(target_ref=target_ref, limit=limit))
     if not isinstance(payload, AssertionCandidateReviewListPayload):
         payload = AssertionCandidateReviewListPayload.from_envelopes(
@@ -1716,7 +1764,6 @@ def analyze_verb(
 
     import json as _json
 
-    from polylogue.api.sync.bridge import run_coroutine_sync
     from polylogue.cli.shared.cost_rendering import render_outlook_plain
     from polylogue.cost.outlook import ProjectionMethod
     from polylogue.cost.plans import PlanLookupError
@@ -1857,14 +1904,23 @@ def analyze_verb(
 
 
 def _attach_analyze_subcommands() -> None:
-    from polylogue.cli.commands.diagnostics import pace_command, tools_command, turns_command, usage_command
-    from polylogue.cli.commands.insights import analyze_insights_command
+    from polylogue.cli.click_command_registration import _LazyCommand, _LazyGroup
 
-    analyze_verb.add_command(analyze_insights_command)
-    analyze_verb.add_command(pace_command)
-    analyze_verb.add_command(tools_command)
-    analyze_verb.add_command(turns_command)
-    analyze_verb.add_command(usage_command)
+    analyze_verb.add_command(
+        _LazyGroup(
+            "insights",
+            "polylogue.cli.commands.insights",
+            "analyze_insights_command",
+            short_help="Check and export derived insight materialization.",
+        )
+    )
+    for name, attr, help_text in (
+        ("pace", "pace_command", "Analyze session pacing, gaps, and burstiness."),
+        ("tools", "tools_command", "Analyze tool usage across sessions."),
+        ("turns", "turns_command", "Analyze turn structure for one session."),
+        ("usage", "usage_command", "Analyze provider usage events."),
+    ):
+        analyze_verb.add_command(_LazyCommand(name, "polylogue.cli.commands.diagnostics", attr, short_help=help_text))
 
 
 _attach_analyze_subcommands()
@@ -1934,7 +1990,6 @@ def _resolve_target_session_id(request: RootModeRequest) -> str | None:
     if request.query_terms:
         from dataclasses import replace
 
-        from polylogue.api.sync.bridge import run_coroutine_sync
         from polylogue.config import Config
 
         explicit = request.params.get("conv_id")
@@ -2196,7 +2251,6 @@ def run_read_context_image(
     ``compile_context`` (seed refs from the resolved selection) or, when only
     context-image filters narrow the set, to ``context_image_payload``.
     """
-    from polylogue.cli.read_views.base import deliver_content
     from polylogue.context.compiler import (
         DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE,
         DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION,
@@ -2260,7 +2314,7 @@ def run_read_context_image(
         content = serialize_surface_payload(image, exclude_none=True) + "\n"
     else:
         content = _render_context_image_markdown(image)
-    deliver_content(env, content, destination=destination, out_path=out_path)
+    _deliver_content(env, content, destination=destination, out_path=out_path)
 
 
 QUERY_VERBS = (
