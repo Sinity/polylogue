@@ -51,6 +51,7 @@ def maybe_checkpoint_wal(
     warn_bytes: int = DEFAULT_WAL_WARN_BYTES,
     truncate_bytes: int = DEFAULT_WAL_TRUNCATE_BYTES,
     timeout_s: float = 1.0,
+    allow_truncate: bool = True,
 ) -> WalCheckpointObservation:
     """Checkpoint WAL when it crosses a bounded threshold.
 
@@ -74,7 +75,7 @@ def maybe_checkpoint_wal(
             if row is not None:
                 busy, log, checkpointed = int(row[0] or 0), int(row[1] or 0), int(row[2] or 0)
             after_passive = _wal_size(db)
-            if busy == 0 and after_passive >= truncate_bytes:
+            if allow_truncate and busy == 0 and after_passive >= truncate_bytes:
                 mode = "truncate"
                 row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
                 if row is not None:

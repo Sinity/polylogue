@@ -833,7 +833,6 @@ def _process_ingest_batch_sync(
     setup_started = time.perf_counter()
     conn = _open_sync_connection(db_path)
     summary.setup_elapsed_s = time.perf_counter() - setup_started
-    heavy_batch = summary.total_blob_mb >= INGEST_RELEASE_BLOB_MB_THRESHOLD
     materialized_ids: set[str] = set()
     _observe_current_rss(summary)
     transaction_started = False
@@ -878,7 +877,7 @@ def _process_ingest_batch_sync(
             summary.commit_elapsed_s = time.perf_counter() - commit_started
             from polylogue.storage.sqlite.wal_checkpoint import maybe_checkpoint_wal
 
-            wal_observation = maybe_checkpoint_wal(db_path, reason="ingest_batch_commit")
+            wal_observation = maybe_checkpoint_wal(db_path, reason="ingest_batch_commit", allow_truncate=False)
             summary.wal_checkpoint_mode = wal_observation.mode
             summary.wal_bytes_before_checkpoint = wal_observation.wal_bytes_before
             summary.wal_bytes_after_checkpoint = wal_observation.wal_bytes_after
@@ -920,9 +919,6 @@ def _process_ingest_batch_sync(
     summary.worker_progress_completed = progress.completed_raw_count
     summary.worker_progress_total = progress.total_raw_count
     summary.elapsed_s = time.perf_counter() - t_start
-    if heavy_batch or summary.total_msgs >= INGEST_RELEASE_MESSAGE_THRESHOLD:
-        release_process_memory()
-        _observe_current_rss(summary)
     return summary
 
 
@@ -1048,7 +1044,6 @@ async def process_ingest_batch(
     )
     if heavy_batch:
         del batch_summary
-        release_process_memory()
     return observation
 
 
