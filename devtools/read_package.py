@@ -56,6 +56,19 @@ class ReadPackageProjection:
 
 
 @dataclass(frozen=True, slots=True)
+class ReadPackageRender:
+    fields: str | None = None
+
+    def as_payload(self) -> dict[str, str]:
+        return {"fields": self.fields} if self.fields is not None else {}
+
+    def cli_args(self) -> tuple[str, ...]:
+        if self.fields is None:
+            return ()
+        return ("--fields", self.fields)
+
+
+@dataclass(frozen=True, slots=True)
 class ReadPackageArtifact:
     name: str
     view: str
@@ -63,6 +76,7 @@ class ReadPackageArtifact:
     path: str
     spec: bool = False
     projection: ReadPackageProjection = ReadPackageProjection()
+    render: ReadPackageRender = ReadPackageRender()
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +145,21 @@ def _read_projection(data: dict[str, Any], label: str) -> ReadPackageProjection:
     return result
 
 
+def _read_render(data: dict[str, Any], label: str) -> ReadPackageRender:
+    if "fields" in data:
+        raise ValueError(f"{label}.fields moved under {label}.render.fields")
+    raw = data.get("render", {})
+    render = _expect_mapping(raw, f"{label}.render")
+    allowed = {"fields"}
+    unknown = sorted(set(render) - allowed)
+    if unknown:
+        raise ValueError(f"{label}.render has unsupported key(s): {', '.join(unknown)}")
+    fields = render.get("fields")
+    if fields is not None:
+        fields = _expect_string(fields, f"{label}.render.fields")
+    return ReadPackageRender(fields=fields)
+
+
 def load_read_package_spec(path: Path) -> ReadPackageSpec:
     """Load a JSON/YAML read-package spec from disk."""
 
@@ -155,6 +184,7 @@ def load_read_package_spec(path: Path) -> ReadPackageSpec:
             path=_expect_string(artifact_data.get("path"), f"artifacts[{index}].path"),
             spec=bool(artifact_data.get("spec", False)),
             projection=_read_projection(artifact_data, f"artifacts[{index}]"),
+            render=_read_render(artifact_data, f"artifacts[{index}]"),
         )
         if artifact.name in seen_names:
             raise ValueError(f"duplicate artifact name: {artifact.name}")
@@ -202,6 +232,7 @@ def build_read_package_plan(
             artifact.output_format,
             *(("--spec",) if artifact.spec else ()),
             *artifact.projection.cli_args(),
+            *artifact.render.cli_args(),
             "--to",
             "file",
             "--out",
@@ -250,6 +281,7 @@ def _summary(
                 "format": item.artifact.output_format,
                 "spec": item.artifact.spec,
                 "projection": item.artifact.projection.as_payload(),
+                "render": item.artifact.render.as_payload(),
                 "path": str(item.out_path),
                 "argv": list(item.argv),
                 "bytes": item.out_path.stat().st_size if item.out_path.exists() else None,

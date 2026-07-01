@@ -31,6 +31,7 @@ def test_load_read_package_spec_validates_and_builds_plan(tmp_path: Path) -> Non
                         "format": "json",
                         "path": "spec.json",
                         "spec": True,
+                        "render": {"fields": "selection,projection,render"},
                     },
                 ],
             }
@@ -45,6 +46,8 @@ def test_load_read_package_spec_validates_and_builds_plan(tmp_path: Path) -> Non
     assert plan[0].artifact.projection.max_tokens == 120
     assert plan[1].artifact.spec is True
     assert "--spec" in plan[1].argv
+    assert plan[1].artifact.render.fields == "selection,projection,render"
+    assert "--fields" in plan[1].argv
     assert plan[0].argv == (
         "polylogue",
         "--id",
@@ -61,6 +64,7 @@ def test_load_read_package_spec_validates_and_builds_plan(tmp_path: Path) -> Non
         "--out",
         str(tmp_path / "out" / "dialogue.md"),
     )
+    assert plan[1].argv[8:11] == ("--spec", "--fields", "selection,projection,render")
 
 
 def test_read_package_dry_run_emits_summary_without_writing(
@@ -100,6 +104,7 @@ def test_read_package_dry_run_emits_summary_without_writing(
     assert payload["pruned"] == []
     assert payload["artifacts"][0]["view"] == "dialogue"
     assert payload["artifacts"][0]["projection"] == {}
+    assert payload["artifacts"][0]["render"] == {}
     assert not (tmp_path / "out").exists()
 
 
@@ -149,6 +154,32 @@ def test_read_package_rejects_flat_max_tokens(tmp_path: Path) -> None:
     with pytest.raises(
         ValueError,
         match=r"artifacts\[0\]\.max_tokens moved under artifacts\[0\]\.projection\.max_tokens",
+    ):
+        load_read_package_spec(spec_path)
+
+
+def test_read_package_rejects_flat_fields(tmp_path: Path) -> None:
+    spec_path = tmp_path / "package.json"
+    spec_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "artifacts": [
+                    {
+                        "name": "dialogue",
+                        "view": "dialogue",
+                        "format": "json",
+                        "path": "dialogue.json",
+                        "fields": "session_id,title",
+                    },
+                ],
+            }
+        )
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"artifacts\[0\]\.fields moved under artifacts\[0\]\.render\.fields",
     ):
         load_read_package_spec(spec_path)
 
@@ -237,6 +268,29 @@ def test_read_package_rejects_unknown_projection_keys(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match=r"artifacts\[0\]\.projection has unsupported key"):
+        load_read_package_spec(spec_path)
+
+
+def test_read_package_rejects_unknown_render_keys(tmp_path: Path) -> None:
+    spec_path = tmp_path / "package.json"
+    spec_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "artifacts": [
+                    {
+                        "name": "dialogue",
+                        "view": "dialogue",
+                        "format": "json",
+                        "path": "dialogue.json",
+                        "render": {"layout": "compact"},
+                    },
+                ],
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match=r"artifacts\[0\]\.render has unsupported key"):
         load_read_package_spec(spec_path)
 
 

@@ -74,8 +74,8 @@ expressions or explicit read views to narrow what is selected before rendering.
 
 For repeatable local demo/export bundles, describe ordinary `read` artifacts in
 a JSON/YAML package and render it through `devtools workspace read-package`.
-Artifact-level projection policy lives under `projection`, matching the
-`read --spec` vocabulary:
+Artifact-level projection policy lives under `projection`, and renderer/layout
+policy lives under `render`. Both map to ordinary `polylogue read` flags:
 
 ```json
 {
@@ -89,13 +89,24 @@ Artifact-level projection policy lives under `projection`, matching the
       "projection": {
         "max_tokens": 120
       }
+    },
+    {
+      "name": "spec-json",
+      "view": "temporal,chronicle",
+      "format": "json",
+      "path": "spec.json",
+      "spec": true,
+      "render": {
+        "fields": "selection,projection,render"
+      }
     }
   ]
 }
 ```
 
 This is still composition over `polylogue read`: the package renderer plans
-normal read commands such as `--view dialogue --format json --max-tokens 120`.
+normal read commands such as `--view dialogue --format json --max-tokens 120`
+or `--spec --fields selection,projection,render`.
 
 ## Sharing Considerations
 
