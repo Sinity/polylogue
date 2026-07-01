@@ -3951,9 +3951,8 @@ async def test_archive_tiers_api_session_insight_status_reads_index_tier(tmp_pat
             conn.execute(
                 """
                 INSERT INTO session_phases (
-                    session_id, position, phase_type, confidence,
-                    start_index, end_index
-                ) VALUES (?, 0, 'execution', 0.9, 0, 0)
+                    session_id, position, start_index, end_index
+                ) VALUES (?, 0, 0, 0)
                 """,
                 (first_id,),
             )
