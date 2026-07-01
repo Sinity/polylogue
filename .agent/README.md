@@ -54,8 +54,8 @@ should follow the bootstrap below without needing chat context.
 - `scratch/README.md` — tracked routing rules for ignored scratch material.
 - `archive/` — ignored archaeology only. It is not a startup surface and should
   not receive current state, generated proofs, or demos.
-- `task-history/` — ignored devtools execution ledger populated by
-  `devtools`; useful for velocity analysis, not a startup surface.
+- `task-history/` — ignored devtools execution ledger and runtime baselines;
+  useful for velocity analysis, not a startup surface.
 - `tools/` — small helper scripts.
 
 ## Rule
@@ -68,5 +68,5 @@ ignored archive directory.
 
 Ignored support shelves must stay small and non-authoritative. `.agent/archive/`
 may hold compact archaeology such as old operating-log windows; it must not grow
-into a second conductor packet. `.agent/task-history/` is a local execution
-ledger for analysis and can be rotated if it becomes bulky.
+into a second conductor packet. `.agent/task-history/` is a local execution and
+baseline ledger for analysis and can be rotated if it becomes bulky.

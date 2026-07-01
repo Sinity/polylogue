@@ -7,8 +7,8 @@ Usage: .agent/scripts/devloop-baseline [label]
 
 Capture a timestamped lightweight baseline for the Polylogue devloop: archive
 root/counts/schema, daemon state, git state, memory/pressure, and likely
-loop-affecting processes. The output is local scratch evidence, not a product
-artifact.
+loop-affecting processes. The output is local task-history evidence, not a
+product artifact or scratch research note.
 EOF
   exit 0
 fi
@@ -22,7 +22,7 @@ cd "$repo"
 
 timestamp="$(date --iso-8601=seconds)"
 stamp="$(date +%Y%m%dT%H%M%S%z)"
-out_dir="$repo/.agent/scratch/artifacts/live-baselines"
+out_dir="$repo/.agent/task-history/live-baselines"
 out="$out_dir/${stamp}-${safe_label:-baseline}.md"
 mkdir -p "$out_dir"
 

@@ -53,10 +53,11 @@ should remain stable across projects.
   process docs, and self-prompts.
 - Ignored conductor state explains what is happening now.
 - Ignored demos are current curated artifacts, not historical dumps.
-- Ignored scratch is supporting research, not active loop state.
+- Ignored scratch is supporting research, not active loop state or generated
+  dump storage.
 - Ignored archive/task-history shelves are support surfaces only. They may keep
-  compact archaeology or local execution ledgers, but they must not become
-  startup packets, handoff mirrors, or bulky raw dumps.
+  compact archaeology, local execution ledgers, runtime baselines, and generated
+  process evidence, but they must not become startup packets or handoff mirrors.
 - Generated manifests are acceptable; duplicated script/readme snapshots are
   not.
 - The active conductor packet may contain ignored logs and generated sidecars,

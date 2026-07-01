@@ -194,9 +194,10 @@ resource-sensitive work:
 .agent/scripts/devloop-baseline "short-label"
 ```
 
-Baselines live under `.agent/scratch/live-baselines/` and are local evidence for
-comparison, not product demos. They should state archive root, schema, daemon
-state, memory/pressure, and loop-affecting processes.
+Baselines live under `.agent/task-history/live-baselines/` and are local
+process/runtime evidence for comparison, not product demos and not scratch
+research. They should state archive root, schema, daemon state,
+memory/pressure, and loop-affecting processes.
 
 For a faster speed read without creating a baseline artifact:
 

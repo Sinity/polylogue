@@ -37,6 +37,7 @@ inspect it, and what caveats remain.
 
 ## If Scratch Gets Messy
 
-Move bulky generated outputs to `.agent/scratch/artifacts/`, old notes to
-`.agent/scratch/archive/`, and current operating context to this directory.
+Move durable research to `.agent/scratch/research/`, generated process/runtime
+evidence to `.agent/task-history/`, superseded compact archaeology to
+`.agent/archive/`, and current operating context to `.agent/conductor-devloop/`.
 Run `.agent/scripts/devloop-sync` after material updates.

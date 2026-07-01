@@ -411,6 +411,35 @@ else
   ok "no scratch/current active-state mirror"
 fi
 
+allowed_scratch_entries=(
+  README.md
+  research
+)
+unexpected_scratch_entries="$(
+  find "$repo/.agent/scratch" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null \
+    | sort \
+    | comm -23 - <(printf '%s\n' "${allowed_scratch_entries[@]}" | sort)
+)"
+if [ -n "$unexpected_scratch_entries" ]; then
+  warn ".agent/scratch contains non-research/support entries; move generated evidence to .agent/task-history, demos, or archive"
+  printf '%s\n' "$unexpected_scratch_entries"
+else
+  ok ".agent/scratch is limited to README plus supporting research"
+fi
+
+scratch_dump_files="$(
+  find "$repo/.agent/scratch" -type f \
+    \( -name '*.json' -o -name '*.jsonl' -o -name '*.csv' -o -name '*.log' -o -name '*.out' -o -name '*.txt' \) \
+    -printf '%P\n' 2>/dev/null \
+    | sort || true
+)"
+if [ -n "$scratch_dump_files" ]; then
+  warn ".agent/scratch contains generated-looking dump files; route dumps to .agent/task-history or a demo packet"
+  printf '%s\n' "$scratch_dump_files"
+else
+  ok ".agent/scratch has no generated-looking dump files"
+fi
+
 if [ -d "$repo/.agent/handoff" ]; then
   warn ".agent/handoff exists; handoff state belongs in the conductor packet, not a mirror"
 else
