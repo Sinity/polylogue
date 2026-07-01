@@ -634,7 +634,13 @@ def _raw_materialization_debt_row(
             f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size} bytes. "
             f"Sample source shapes: {shape_text}. These rows need parser/materialization classification, not blind replay."
         )
-        actions = ()
+        actions = (
+            ArchiveDebtActionPayload(
+                label="Explain parser output",
+                command=("polylogue", "import", "--explain"),
+                description="Pass one of the sampled source paths and compare produced session refs with index materialization.",
+            ),
+        )
     elif category == "materialized-alias":
         severity = "info"
         status = "open"
@@ -688,7 +694,7 @@ def _raw_materialization_debt_row(
         caveats=(
             "Rows are grouped by origin and failure category; evidence refs include at most five sampled raw artifacts.",
         ),
-        actions=actions if status == "actionable" else (),
+        actions=actions,
     )
 
 
