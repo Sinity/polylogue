@@ -1201,6 +1201,48 @@ schema shape:
 - Schema bumps are deletes-then-defines, never deltas. A schema change
   edits the owning tier DDL/version and documents the re-ingest expectation.
   No upgrade helpers are added for the bump.
+- Index schema version 15 makes `idx_messages_session_sortkey` an expression
+  index — `(session_id, (occurred_at_ms IS NULL), occurred_at_ms, message_id)`
+  (#2475 perf audit). The keyset/paginated message reads order by
+  `(occurred_at_ms IS NULL), occurred_at_ms, message_id` so NULL-timestamp rows
+  sort last; the v14 plain `(session_id, occurred_at_ms, message_id)` index could
+  not satisfy that leading `IS NULL` expression, so the planner fell back to
+  `USE TEMP B-TREE FOR ORDER BY` and sorted the whole session per chunk
+  (expensive on multi-thousand-message sessions). The expression index matches
+  the ORDER BY exactly and plans as a covering-index scan with no temp sort
+  (verified via EXPLAIN QUERY PLAN). Rebuild from source evidence
+  (`polylogue ops reset --database && polylogued run`).
+- Index schema version 14 hardens lineage normalization (#2467 audit).
+  `session_links.branch_point_message_id` is no longer a FK with `ON DELETE SET
+  NULL`: a parent's full-replace re-ingest (`DELETE FROM messages` then re-INSERT)
+  would otherwise null the child's branch point during the DELETE step and
+  permanently break the child's composition. `message_id` is deterministic, so the
+  plain-TEXT reference survives the re-create; reads bail to the child's own tail
+  if a branch point ever dangles. Also adds `idx_messages_session_sortkey` so the
+  keyset/paginated message reads stop doing a temp B-tree sort per chunk. Rebuild
+  from source evidence.
+- Index schema version 13 makes attachment bytes honest (#2468). `attachments.blob_hash`
+  is now nullable and holds the **true SHA-256 of the stored bytes** when acquired
+  (previously a synthetic hash of the attachment id was written with no blob ever
+  stored — 0 blobs for 8,425 rows). A new `acquisition_status`
+  (`acquired` / `unavailable` / `unfetched`) records whether the bytes were
+  fetched. Inline export bytes (e.g. Gemini base64) are written to the
+  content-addressed blob store at ingest; other sources stay `unfetched` with the
+  source ref preserved for later re-acquisition. Rebuild from source evidence.
+- Index schema version 12 normalizes prefix-sharing lineage (#2467). A fork,
+  resume, spawned subagent, or auto-compaction copy physically replays the
+  parent's leading context; the writer now drops that inherited prefix and keeps
+  only the child's divergent tail, recording the relationship on `session_links`
+  via two new columns: `branch_point_message_id` (the last inherited parent
+  message) and `inheritance` (`prefix-sharing` vs `spawned-fresh`). Reads
+  (`get_messages`, `read_archive_session_envelope`) compose the parent transcript
+  up to the branch point + the child's own tail, so each real message is stored
+  once while the full logical transcript is still served. Existing index tiers
+  must be rebuilt from source evidence (`polylogue ops reset --database &&
+  polylogued run`); `source.db` is untouched, so this is a derived-index rebuild
+  with no user-data impact. (The matching parser detection of Codex
+  `forked_from_id`/`thread_spawn` and Claude `agent-acompact-*` shipped
+  alongside.)
 - Index schema version 11 materializes the run projection into three derived
   read-model tables — `session_runs`, `session_observed_events`, and
   `session_context_snapshots` — recomputed by the session-insight materializer
@@ -1856,6 +1898,7 @@ These are the commands worth remembering during normal repo work:
 | --- | --- |
 | `devtools bench campaign` | Run or compare benchmark campaigns. |
 | `devtools bench ingest-amplification` | Measure deterministic per-tier ingest write amplification on a synthetic fixture (#1851). |
+| `devtools bench ingest-throughput` | Measure ingest wall-clock throughput on a synthetic fixture. |
 | `devtools bench memory` | Measure query-memory envelopes on generated fixtures. |
 | `devtools bench mutation` | Run focused mutation campaigns and maintain their local index. |
 | `devtools bench slo` | Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements. |
