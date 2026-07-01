@@ -12,7 +12,7 @@ import socket
 import sqlite3
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -70,14 +70,13 @@ from polylogue.surfaces.payloads import (
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
     from polylogue.archive.query.spec import SessionQuerySpec
-    from polylogue.archive.semantic.content_projection import ContentProjectionSpec
     from polylogue.storage.sqlite.archive_tiers.archive import (
         ArchiveSessionSearchHit,
         ArchiveSessionSummary,
         ArchiveStore,
     )
-    from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow
-    from polylogue.surfaces.payloads import FacetBucketsPayload, RecoveryReportFormat, RecoveryReportKind
+    from polylogue.storage.sqlite.archive_tiers.write import ArchiveMessageRow
+    from polylogue.surfaces.payloads import FacetBucketsPayload
 
 logger = get_logger(__name__)
 
@@ -287,7 +286,6 @@ def _parameterized_get_routes() -> tuple[_ParameterizedGetRoute, ...]:
     return (
         _parameterized_get_route("/api/sessions/:id", "_handle_get_session"),
         _parameterized_get_route("/api/sessions/:id/messages", "_handle_get_messages", passes_params=True),
-        _parameterized_get_route("/api/sessions/:id/recovery", "_handle_get_session_recovery", passes_params=True),
         _parameterized_get_route("/api/sessions/:id/read", "_handle_get_session_read", passes_params=True),
         _parameterized_get_route("/api/sessions/:id/raw", "_handle_get_session_raw"),
         _parameterized_get_route("/api/sessions/:id/cost", "_handle_get_session_cost"),
@@ -529,20 +527,6 @@ def _csv_values(params: dict[str, list[str]], key: str) -> tuple[str, ...]:
     for value in params.get(key) or []:
         values.extend(token.strip() for token in value.split(",") if token.strip())
     return tuple(dict.fromkeys(values))
-
-
-def _content_projection_from_params(params: dict[str, list[str]]) -> ContentProjectionSpec:
-    from polylogue.archive.semantic.content_projection import ContentProjectionSpec
-
-    return ContentProjectionSpec.from_params(
-        {
-            "no_code_blocks": bool(params.get("no_code_blocks")),
-            "no_tool_calls": bool(params.get("no_tool_calls")),
-            "no_tool_outputs": bool(params.get("no_tool_outputs")),
-            "no_file_reads": bool(params.get("no_file_reads")),
-            "prose_only": bool(params.get("prose_only")),
-        }
-    )
 
 
 def _archive_datetime_to_ms(value: datetime | None) -> int | None:
@@ -2430,75 +2414,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             for att in message.attachments
         ]
 
-    def _project_text_block(self, text: str | None, projection: ContentProjectionSpec) -> str | None:
-        if text is None:
-            return None
-        if (
-            projection.include_prose
-            and projection.include_code
-            and projection.include_reasoning
-            and projection.include_system_noise
-        ):
-            return text
-
-        from polylogue.archive.message.models import Message
-        from polylogue.archive.message.roles import Role
-        from polylogue.archive.semantic.content_projection import project_message_content
-
-        projected = project_message_content(
-            [Message(id="archive-block", role=Role.ASSISTANT, text=text, blocks=[])],
-            projection,
-        )
-        if not projected:
-            return None
-        return projected[0].text
-
-    def _project_archive_message(
-        self,
-        message: ArchiveMessageRow,
-        projection: ContentProjectionSpec,
-    ) -> ArchiveMessageRow | None:
-        if projection.is_default():
-            return message
-        tool_semantics = {
-            block.tool_id: block.semantic_type
-            for block in message.blocks
-            if block.block_type == "tool_use" and block.tool_id and block.semantic_type
-        }
-        blocks: list[ArchiveBlockRow] = []
-        for block in message.blocks:
-            if block.block_type == "thinking" and not projection.include_reasoning:
-                continue
-            if block.block_type == "code" and not projection.include_code:
-                continue
-            if block.block_type == "tool_use" and not projection.include_tool_calls:
-                continue
-            if block.block_type == "tool_result":
-                semantic_type = tool_semantics.get(block.tool_id or "", block.semantic_type or "")
-                if semantic_type == "file_read" and not (
-                    projection.include_file_reads and projection.include_tool_outputs
-                ):
-                    continue
-                if semantic_type != "file_read" and not projection.include_tool_outputs:
-                    continue
-            if block.block_type in {"image", "document", "file"} and not projection.include_attachments:
-                continue
-            if block.block_type == "text":
-                text = self._project_text_block(block.text, projection)
-                if text is None:
-                    continue
-                blocks.append(replace(block, text=text))
-                continue
-            if (
-                block.block_type not in {"thinking", "code", "tool_use", "tool_result", "image", "document", "file"}
-                and not projection.include_prose
-            ):
-                continue
-            blocks.append(block)
-        if not blocks and projection.filters_content():
-            return None
-        return replace(message, blocks=tuple(blocks))
-
     def _archive_message_payload(self, session_id: str, message: ArchiveMessageRow) -> dict[str, object]:
         message_id = str(message.message_id)
         text = "\n\n".join(str(block.text) for block in message.blocks if block.text)
@@ -3066,66 +2981,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         return tuple(AssertionStatus.from_string(token) for token in normalized)
 
     # ------------------------------------------------------------------
-    # Handlers: recovery/work-packet read surface (#1846/#1838/#1845)
-    # ------------------------------------------------------------------
-
-    @daemon_safe_handler
-    def _handle_get_session_recovery(self, conv_id: str, params: dict[str, list[str]]) -> None:
-        """``GET /api/sessions/{id}/recovery`` exposes shared recovery DTOs.
-
-        Supported forms:
-        - ``?report=digest&format=json`` returns ``RecoveryDigest``.
-        - ``?report=work-packet&format=json`` returns ``RecoveryWorkPacket``.
-        - ``?report=work-packet&format=markdown`` returns rendered markdown.
-
-        ``continue`` and ``blame`` remain CLI/MCP recovery-report presets for
-        now. The web workbench exposes only digest/work-packet because those
-        are the storage-free evidence bundle DTOs #1846 can consume without
-        turning report presets into a second read-profile execution API.
-
-        Raw transcripts are not included; all support remains through the
-        recovery/work-packet evidence refs. The route is a stable local API
-        contract because it returns the shared ``RecoveryReadPayload``.
-        """
-
-        report = (self._get_param(params, "report", "work-packet") or "work-packet").strip().lower()
-        output_format = (self._get_param(params, "format", "json") or "json").strip().lower()
-        if output_format not in {"json", "markdown"}:
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_format")
-            return
-        if report not in {"digest", "work-packet"}:
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_report")
-            return
-        if report == "digest" and output_format != "json":
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_format")
-            return
-
-        async def _get(poly: Polylogue) -> object:
-            return await self._do_get_session_recovery(poly, conv_id, report, output_format)
-
-        result = self._sync_run(_get)
-        if result is None:
-            self._send_error(HTTPStatus.NOT_FOUND, "not_found")
-            return
-        self._send_json(HTTPStatus.OK, result)
-
-    async def _do_get_session_recovery(
-        self,
-        poly: Polylogue,
-        conv_id: str,
-        report: str,
-        output_format: str,
-    ) -> object | None:
-        payload = await poly.recovery_read_payload(
-            conv_id,
-            report=cast("RecoveryReportKind", report),
-            output_format=cast("RecoveryReportFormat", output_format),
-        )
-        if payload is None:
-            return None
-        return payload.model_dump(mode="json", exclude_none=True)
-
-    # ------------------------------------------------------------------
     # Handlers: shared single-session read-view execution (#1846)
     # ------------------------------------------------------------------
 
@@ -3151,29 +3006,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if view == "messages":
             limit = self._get_int(params, "limit", 50)
             offset = self._get_int(params, "offset", 0)
-            projection = _content_projection_from_params(params)
             archive_root = _web_reader_archive_root()
             if archive_root is not None:
-                payload: object | None = self._do_archive_get_messages(archive_root, conv_id, limit, offset, projection)
+                payload: object | None = self._do_archive_get_messages(archive_root, conv_id, limit, offset)
             else:
 
                 async def _get(poly: Polylogue) -> object:
-                    return await self._do_get_messages(poly, conv_id, limit, offset, projection)
+                    return await self._do_get_messages(poly, conv_id, limit, offset)
 
                 payload = self._sync_run(_get)
-        elif view == "recovery":
-            report = (self._get_param(params, "report", "work-packet") or "work-packet").strip().lower()
-            if report not in {"digest", "work-packet"}:
-                self._send_error(HTTPStatus.BAD_REQUEST, "invalid_report")
-                return
-            if report == "digest" and output_format != "json":
-                self._send_error(HTTPStatus.BAD_REQUEST, "invalid_format")
-                return
-
-            async def _get(poly: Polylogue) -> object | None:
-                return await self._do_get_session_recovery(poly, conv_id, report, output_format)
-
-            payload = self._sync_run(_get)
         elif view == "context":
             if output_format != "json":
                 self._send_error(HTTPStatus.BAD_REQUEST, "invalid_format")
@@ -3189,7 +3030,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 return dict(context_payload.model_dump(mode="json", exclude_none=True))
 
             payload = self._sync_run(_get_context)
-        elif view == "context-pack":
+        elif view == "context-image":
             if output_format != "json":
                 self._send_error(HTTPStatus.BAD_REQUEST, "invalid_format")
                 return
@@ -3199,7 +3040,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 if self._get_param(params, "include_messages") is not None:
                     include_messages = self._get_bool(params, "include_messages")
                 max_tokens = self._get_int(params, "max_tokens", 0) or None
-                context_payload = await poly.context_pack_payload(
+                context_payload = await poly.context_image_payload(
                     seed_session_id=conv_id,
                     max_sessions=1,
                     max_tokens=max_tokens,
@@ -3316,17 +3157,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _handle_get_messages(self, conv_id: str, params: dict[str, list[str]]) -> None:
         limit = self._get_int(params, "limit", 50)
         offset = self._get_int(params, "offset", 0)
-        projection = _content_projection_from_params(params)
 
         archive_root = _web_reader_archive_root()
         if archive_root is not None:
-            self._send_json(
-                HTTPStatus.OK, self._do_archive_get_messages(archive_root, conv_id, limit, offset, projection)
-            )
+            self._send_json(HTTPStatus.OK, self._do_archive_get_messages(archive_root, conv_id, limit, offset))
             return
 
         async def _get(poly: Polylogue) -> object:
-            return await self._do_get_messages(poly, conv_id, limit, offset, projection)
+            return await self._do_get_messages(poly, conv_id, limit, offset)
 
         result = self._sync_run(_get)
         self._send_json(HTTPStatus.OK, result)
@@ -3337,13 +3175,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         conv_id: str,
         limit: int,
         offset: int,
-        projection: ContentProjectionSpec,
     ) -> object:
         messages, total = await poly.get_messages_paginated(
             conv_id,
             limit=limit,
             offset=offset,
-            content_projection=projection,
         )
         session_id = str(conv_id)
         return {
@@ -3373,7 +3209,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         conv_id: str,
         limit: int,
         offset: int,
-        projection: ContentProjectionSpec,
     ) -> object:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -3383,11 +3218,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 envelope = archive.read_session(session_id)
             except KeyError:
                 return {"messages": [], "total": 0, "limit": limit, "offset": offset}
-        messages = [
-            message
-            for message in (self._project_archive_message(message, projection) for message in envelope.messages)
-            if message
-        ]
+        messages = list(envelope.messages)
         page = messages[offset : offset + limit]
         return {
             "messages": [self._archive_message_payload(envelope.session_id, message) for message in page],

@@ -13,7 +13,6 @@ from pydantic import Field
 
 from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.archive.query.spec import SessionQuerySpec
-from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 
 MCPToolLimit: TypeAlias = Annotated[int, Field(ge=1)]
 MCPToolOffset: TypeAlias = Annotated[int, Field(ge=0)]
@@ -75,6 +74,7 @@ class MCPSessionQueryRequest:
     until: str | None = None
     tag: str | None = None
     repo: str | None = None
+    project: str | None = None
     title: str | None = None
     contains: str | None = None
     exclude_text: str | None = None
@@ -120,6 +120,7 @@ class MCPSessionQueryRequest:
             until=self.until,
             tag=self.tag,
             repo=self.repo,
+            project=self.project,
             title=self.title,
             contains=self.contains,
             exclude_text=self.exclude_text,
@@ -154,28 +155,6 @@ class MCPSessionQueryRequest:
             message_type=self.message_type,
             offset=self.offset,
             cursor=self.cursor,
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class MCPContentProjectionRequest:
-    """Typed MCP-side content projection request shared by read/export surfaces."""
-
-    no_code_blocks: bool = False
-    no_tool_calls: bool = False
-    no_tool_outputs: bool = False
-    no_file_reads: bool = False
-    prose_only: bool = False
-
-    def build_projection(self) -> ContentProjectionSpec:
-        return ContentProjectionSpec.from_params(
-            {
-                "no_code_blocks": self.no_code_blocks,
-                "no_tool_calls": self.no_tool_calls,
-                "no_tool_outputs": self.no_tool_outputs,
-                "no_file_reads": self.no_file_reads,
-                "prose_only": self.prose_only,
-            }
         )
 
 
@@ -243,7 +222,6 @@ __all__ = [
     "session_query_request_signature",
     "MCPToolLimit",
     "MCPToolOffset",
-    "MCPContentProjectionRequest",
     "MCPSessionQueryRequest",
     "normalize_query_params",
 ]

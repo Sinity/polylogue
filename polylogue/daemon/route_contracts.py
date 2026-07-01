@@ -249,15 +249,6 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
     ),
     RouteContract(
         "GET",
-        "/api/sessions/:id/recovery",
-        "read_detail",
-        "stable",
-        "bearer_if_configured",
-        "RecoveryReadPayload",
-        "Consumes shared recovery digest/work-packet DTOs for the local workbench and API clients.",
-    ),
-    RouteContract(
-        "GET",
         "/api/sessions/:id/read",
         "read_detail",
         "stable",

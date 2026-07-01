@@ -12,7 +12,6 @@ import pytest
 from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID, READ_VIEW_PROFILES, read_view_choices
 from polylogue.cli import query_verbs, read_view_handlers
 from polylogue.cli.read_view_handlers import ReadViewInvocation
-from polylogue.cli.read_views.recovery import run_read_recovery
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec
@@ -139,9 +138,6 @@ def test_read_direct_ref_emits_shared_resolution_payload(capsys: pytest.CaptureF
             output_format="json",
             out_path=None,
             export_all=False,
-            message_role=(),
-            material_origin=(),
-            message_type=None,
             limit=None,
             offset=0,
             window_hours=24,
@@ -151,22 +147,16 @@ def test_read_direct_ref_emits_shared_resolution_payload(capsys: pytest.CaptureF
             github_api=True,
             otlp=False,
             related_limit=5,
-            recovery_report=None,
             project_path=None,
             project_repo=None,
             since=None,
             until=None,
-            pack_origin=None,
-            pack_query=None,
+            context_origin=None,
+            context_query=None,
             max_sessions=5,
             max_tokens=None,
             include_assertions=False,
             no_redact=False,
-            no_code_blocks=False,
-            no_tool_calls=False,
-            no_tool_outputs=False,
-            no_file_reads=False,
-            prose_only=False,
             fields=None,
             first_only=False,
             show_views=False,
@@ -251,10 +241,7 @@ def test_read_view_completion_comes_from_view_profiles() -> None:
 
     items = option.shell_complete(click.Context(query_verbs.read_verb), "rec")
 
-    assert [item.value for item in items] == ["recovery"]
-    assert items[0].help is not None
-    assert "Recovery:" in items[0].help
-    assert "successor-agent recovery transform" in items[0].help
+    assert [item.value for item in items] == []
 
 
 def test_read_format_click_choices_come_from_view_profiles() -> None:
@@ -284,9 +271,6 @@ def _read_verb_kwargs(**overrides: object) -> dict[str, object]:
         "output_format": None,
         "out_path": None,
         "export_all": False,
-        "message_role": (),
-        "material_origin": (),
-        "message_type": None,
         "limit": None,
         "offset": 0,
         "window_hours": 24,
@@ -296,25 +280,34 @@ def _read_verb_kwargs(**overrides: object) -> dict[str, object]:
         "github_api": True,
         "otlp": False,
         "related_limit": 5,
-        "recovery_report": None,
         "project_path": None,
         "project_repo": None,
         "since": None,
         "until": None,
-        "pack_origin": None,
-        "pack_query": None,
+        "context_origin": None,
+        "context_query": None,
         "max_sessions": 5,
         "max_tokens": None,
         "include_assertions": False,
         "no_redact": False,
-        "no_code_blocks": False,
-        "no_tool_calls": False,
-        "no_tool_outputs": False,
-        "no_file_reads": False,
-        "prose_only": False,
         "fields": None,
         "first_only": False,
         "show_views": False,
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+def _continue_verb_kwargs(**overrides: object) -> dict[str, object]:
+    defaults: dict[str, object] = {
+        "destination": "terminal",
+        "out_path": None,
+        "candidates": False,
+        "repo_path": None,
+        "cwd": None,
+        "recent_files": (),
+        "candidate_limit": 10,
+        "output_format": None,
     }
     defaults.update(overrides)
     return defaults
@@ -408,12 +401,12 @@ def test_read_verb_context_composes_preamble_not_passthrough() -> None:
     deliver.assert_called_once()
 
 
-def test_read_verb_context_pack_invokes_pack_view() -> None:
-    """read --view context-pack compiles a ContextImage via context_pack_payload."""
+def test_read_verb_context_image_invokes_pack_view() -> None:
+    """read --view context-image compiles a ContextImage via context_image_payload."""
     from polylogue.context.compiler import ContextImage, ContextSpec
 
     _, child = _context_pair(query_terms=())
-    child.obj.polylogue = SimpleNamespace(context_pack_payload=MagicMock(name="context_pack_payload"))
+    child.obj.polylogue = SimpleNamespace(context_image_payload=MagicMock(name="context_image_payload"))
     wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
@@ -422,141 +415,49 @@ def test_read_verb_context_pack_invokes_pack_view() -> None:
         patch("polylogue.cli.query_verbs.run_coroutine_sync", return_value=image),
         patch("polylogue.cli.read_views.base.deliver_content") as deliver,
     ):
-        wrapped(child, **_read_verb_kwargs(view="context-pack", pack_query="cost", max_sessions=3))
+        wrapped(child, **_read_verb_kwargs(view="context-image", context_query="cost", max_sessions=3))
 
-    child.obj.polylogue.context_pack_payload.assert_called_once()
-    kwargs = child.obj.polylogue.context_pack_payload.call_args.kwargs
+    child.obj.polylogue.context_image_payload.assert_called_once()
+    kwargs = child.obj.polylogue.context_image_payload.call_args.kwargs
     assert kwargs["query"] == "cost"
     assert kwargs["max_sessions"] == 3
     deliver.assert_called_once()
 
 
-def test_read_verb_recovery_compiles_digest() -> None:
-    """read --view recovery renders the facade-compiled recovery digest (#1880)."""
-    _, child = _context_pair(params={"conv_id": "codex-session:abc123"}, query_terms=())
-    child.obj.polylogue = SimpleNamespace()
-    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
-    assert callable(wrapped)
-
-    async def recovery_digest(session_id: str) -> SimpleNamespace:
-        assert session_id == "codex-session:abc123"
-        return SimpleNamespace(resume_markdown="# Resume: demo\n")
-
-    child.obj.polylogue.recovery_digest = recovery_digest
-
-    with (
-        patch("polylogue.cli.read_views.recovery.deliver_content") as deliver,
-    ):
-        wrapped(child, **_read_verb_kwargs(view="recovery"))
-
-    deliver.assert_called_once_with(child.obj, "# Resume: demo\n", destination="terminal", out_path=None)
-
-
-def test_read_verb_recovery_default_ignores_report_renderer() -> None:
-    """Default recovery view stays the existing resume bundle, not a preset report."""
-    _, child = _context_pair(params={"conv_id": "codex-session:abc123"}, query_terms=())
-    child.obj.polylogue = SimpleNamespace()
-    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
-    assert callable(wrapped)
-
-    digest = SimpleNamespace(
-        resume_markdown="# Resume: demo\n",
-        report_markdown=lambda preset: f"# {preset.title()}: demo [evidence: E1]\n",
-    )
-
-    async def recovery_digest(session_id: str) -> SimpleNamespace:
-        assert session_id == "codex-session:abc123"
-        return digest
-
-    child.obj.polylogue.recovery_digest = recovery_digest
-
-    with (
-        patch("polylogue.cli.read_views.recovery.deliver_content") as deliver,
-    ):
-        wrapped(child, **_read_verb_kwargs(view="recovery"))
-
-    deliver.assert_called_once_with(child.obj, "# Resume: demo\n", destination="terminal", out_path=None)
-
-
-def test_read_verb_recovery_report_selector_renders_presets() -> None:
-    """read --view recovery --report exposes distinct recovery reports."""
-    _, child = _context_pair(params={"conv_id": "codex-session:abc123"}, query_terms=())
-    child.obj.polylogue = SimpleNamespace()
-    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
-    assert callable(wrapped)
-
-    reports = {
-        "continue": "# Continue: demo [evidence: E1]\n",
-        "blame": "# Blame: demo [evidence: E2]\n",
-        "work-packet": "# Resume: demo\n\n## Evidence\n",
-    }
-
-    async def recovery_report(session_id: str, preset: str) -> str:
-        assert session_id == "codex-session:abc123"
-        return reports[preset]
-
-    child.obj.polylogue.recovery_report = recovery_report
-
-    with (
-        patch("polylogue.cli.read_views.recovery.deliver_content") as deliver,
-    ):
-        wrapped(child, **_read_verb_kwargs(view="recovery", recovery_report="continue"))
-        wrapped(child, **_read_verb_kwargs(view="recovery", recovery_report="blame"))
-        wrapped(child, **_read_verb_kwargs(view="recovery", recovery_report="work-packet"))
-
-    continue_report = deliver.call_args_list[0].args[1]
-    blame_report = deliver.call_args_list[1].args[1]
-    work_packet_report = deliver.call_args_list[2].args[1]
-    assert continue_report.startswith("# Continue:")
-    assert blame_report.startswith("# Blame:")
-    assert work_packet_report.startswith("# Resume:")
-    assert continue_report != blame_report
-    assert work_packet_report not in {continue_report, blame_report}
-    assert "[evidence: E1]" in continue_report
-    assert "[evidence: E2]" in blame_report
-    assert "## Evidence" in work_packet_report
-
-
-def test_read_verb_recovery_report_selector_rejects_unknown() -> None:
-    option = next(param for param in query_verbs.read_verb.params if param.name == "recovery_report")
-
-    with pytest.raises(click.BadParameter, match="'incident' is not one of 'continue', 'blame', 'work-packet'"):
-        option.type.convert("incident", option, click.Context(query_verbs.read_verb))
-
-
-def _continue_verb_kwargs(**overrides: object) -> dict[str, object]:
-    defaults: dict[str, object] = {
-        "destination": "terminal",
-        "out_path": None,
-        "candidates": False,
-        "repo_path": None,
-        "cwd": None,
-        "recent_files": (),
-        "candidate_limit": 10,
-        "output_format": None,
-    }
-    defaults.update(overrides)
-    return defaults
-
-
-def test_continue_verb_renders_recovery_continue_report() -> None:
-    """``find QUERY then continue`` reuses the recovery continue report surface."""
+def test_continue_verb_compiles_context_from_query_unit_recipe() -> None:
+    """``continue`` composes messages plus terminal query-unit DSL segments."""
     _, child = _context_pair(query_terms=("id:codex-session:abc123",))
     wrapped = getattr(query_verbs.continue_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
-    with patch("polylogue.cli.query_verbs.run_read_view") as run_read_view:
+    captured_specs: list[ContextSpec] = []
+    image = ContextImage(
+        spec=ContextSpec(seed_refs=("session:codex-session:abc123",), read_views=("messages",)), segments=()
+    )
+
+    async def compile_context(spec: ContextSpec) -> ContextImage:
+        captured_specs.append(spec)
+        return image
+
+    async def get_session(session_id: str) -> object:
+        assert session_id == "codex-session:abc123"
+        return object()
+
+    child.obj.polylogue = SimpleNamespace(compile_context=compile_context, get_session=get_session)
+    with (
+        patch("polylogue.cli.query_verbs.deliver_content") as deliver,
+    ):
         wrapped(child, **_continue_verb_kwargs(destination="clipboard"))
 
-    invocation = run_read_view.call_args.args[2]
-    assert invocation == ReadViewInvocation(
-        view="recovery",
-        session_id="codex-session:abc123",
-        output_format=None,
-        destination="clipboard",
-        out_path=None,
-        options=read_view_handlers.ReadViewRecoveryOptions(report="continue"),
+    called_spec = captured_specs[0]
+    assert called_spec.read_views == ("messages",)
+    assert called_spec.unit_queries == (
+        "runs where session.id:codex-session:abc123",
+        "observed-events where session.id:codex-session:abc123",
+        "context-snapshots where session.id:codex-session:abc123",
+        "actions where session.id:codex-session:abc123",
     )
+    deliver.assert_called_once()
 
 
 def test_continue_verb_rejects_ambiguous_ranked_results() -> None:
@@ -583,16 +484,17 @@ def test_continue_verb_json_emits_context_image(capsys: pytest.CaptureFixture[st
     spec = ContextSpec(
         purpose="continue",
         seed_refs=("session:codex-session:abc123",),
-        read_views=("recovery",),
+        read_views=("messages",),
+        unit_queries=("runs where session.id:codex-session:abc123",),
     )
     image = ContextImage(
         spec=spec,
         segments=(
             ContextSegment(
-                segment_id="recovery:codex-session:abc123",
-                kind="recovery",
-                title="Recovery",
-                markdown="Continue from here.",
+                segment_id="query-unit:abc123",
+                kind="query_unit",
+                title="Query: runs",
+                markdown="Temporal rows.",
                 token_estimate=3,
             ),
         ),
@@ -604,7 +506,11 @@ def test_continue_verb_json_emits_context_image(capsys: pytest.CaptureFixture[st
         seen["spec"] = spec
         return image
 
-    child.obj = SimpleNamespace(polylogue=SimpleNamespace(compile_context=compile_context))
+    async def get_session(session_id: str) -> object:
+        assert session_id == "codex-session:abc123"
+        return object()
+
+    child.obj = SimpleNamespace(polylogue=SimpleNamespace(compile_context=compile_context, get_session=get_session))
     wrapped = getattr(query_verbs.continue_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
@@ -613,11 +519,18 @@ def test_continue_verb_json_emits_context_image(capsys: pytest.CaptureFixture[st
     emitted = json.loads(capsys.readouterr().out)
     assert emitted["spec"]["purpose"] == "continue"
     assert emitted["spec"]["seed_refs"] == ["session:codex-session:abc123"]
-    assert emitted["segments"][0]["markdown"] == "Continue from here."
+    assert emitted["spec"]["read_views"] == ["messages"]
+    assert emitted["segments"][0]["kind"] == "query_unit"
     spec = seen["spec"]
     assert spec.purpose == "continue"
     assert spec.seed_refs == ("session:codex-session:abc123",)
-    assert spec.read_views == ("recovery",)
+    assert spec.read_views == ("messages",)
+    assert spec.unit_queries == (
+        "runs where session.id:codex-session:abc123",
+        "observed-events where session.id:codex-session:abc123",
+        "context-snapshots where session.id:codex-session:abc123",
+        "actions where session.id:codex-session:abc123",
+    )
 
 
 def test_continue_candidates_ranks_context_without_session_resolution() -> None:
@@ -688,106 +601,6 @@ def test_resolve_target_session_id_uses_query_terms(workspace_env: dict[str, Pat
     assert query_verbs._resolve_target_session_id(request) == f"{stored.origin.value}:{stored.native_id}"
 
 
-def test_read_view_recovery_json_uses_success_envelope(capsys: pytest.CaptureFixture[str]) -> None:
-    """The recovery read view exposes the typed digest under the machine envelope."""
-
-    class _API:
-        async def recovery_digest(self, session_id: str) -> SimpleNamespace:
-            assert session_id == "s1"
-            return SimpleNamespace(resume_markdown="# Resume\n")
-
-    env = SimpleNamespace(polylogue=_API())
-
-    with (
-        patch("polylogue.surfaces.payloads.model_json_document", return_value={"session_id": "s1"}),
-    ):
-        run_read_recovery(
-            cast(AppEnv, env),
-            RootModeRequest.from_params({}),
-            ReadViewInvocation(
-                view="recovery",
-                session_id="s1",
-                output_format="json",
-                destination="terminal",
-                out_path=None,
-            ),
-        )
-
-    output = capsys.readouterr().out
-    assert '"status": "ok"' in output
-    assert '"recovery"' in output
-
-
-def test_read_view_recovery_work_packet_json_uses_success_envelope(capsys: pytest.CaptureFixture[str]) -> None:
-    """The recovery work-packet report exposes its DTO under machine output."""
-
-    class _API:
-        async def recovery_work_packet(self, session_id: str) -> SimpleNamespace:
-            assert session_id == "s1"
-            return SimpleNamespace(session_id=session_id, entries=())
-
-    env = SimpleNamespace(polylogue=_API())
-
-    with patch("polylogue.surfaces.payloads.model_json_document", return_value={"session_id": "s1"}):
-        run_read_recovery(
-            cast(AppEnv, env),
-            RootModeRequest.from_params({}),
-            ReadViewInvocation(
-                view="recovery",
-                session_id="s1",
-                output_format="json",
-                destination="terminal",
-                out_path=None,
-                options=read_view_handlers.ReadViewRecoveryOptions(report="work-packet"),
-            ),
-        )
-
-    output = capsys.readouterr().out
-    assert '"status": "ok"' in output
-    assert '"recovery_work_packet"' in output
-
-
-def test_read_view_recovery_honors_root_json_format() -> None:
-    """Root --json applies to recovery output when the verb has no local format."""
-    _, child = _context_pair(params={"conv_id": "codex-session:abc123", "output_format": "json"}, query_terms=())
-    child.obj.polylogue = SimpleNamespace()
-    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
-    assert callable(wrapped)
-
-    async def recovery_digest(session_id: str) -> SimpleNamespace:
-        assert session_id == "codex-session:abc123"
-        return SimpleNamespace(resume_markdown="# Resume\n")
-
-    child.obj.polylogue.recovery_digest = recovery_digest
-
-    with (
-        patch("polylogue.surfaces.payloads.model_json_document", return_value={"session_id": "codex-session:abc123"}),
-        patch("polylogue.cli.read_views.recovery.deliver_content") as deliver,
-    ):
-        wrapped(child, **_read_verb_kwargs(view="recovery", output_format=None))
-
-    content = deliver.call_args.args[1]
-    assert '"status": "ok"' in content
-    assert '"recovery"' in content
-
-
-def test_read_view_recovery_requires_session_id() -> None:
-    env = SimpleNamespace(polylogue=SimpleNamespace())
-
-    with pytest.raises(click.UsageError, match="requires a session ID"):
-        read_view_handlers.run_read_view(
-            cast(AppEnv, env),
-            RootModeRequest.from_params({}),
-            ReadViewInvocation(
-                view="recovery",
-                session_id=None,
-                output_format=None,
-                destination="terminal",
-                out_path=None,
-            ),
-        )
-
-
 def test_read_view_rejects_format_outside_selected_profile() -> None:
     env = SimpleNamespace(polylogue=SimpleNamespace())
 
@@ -805,52 +618,19 @@ def test_read_view_rejects_format_outside_selected_profile() -> None:
         )
 
 
-def test_read_view_rejects_explicit_options_for_other_views() -> None:
-    env = SimpleNamespace(polylogue=SimpleNamespace())
-
-    with pytest.raises(click.UsageError, match="read --view recovery does not use --message-role"):
-        read_view_handlers.run_read_view(
-            cast(AppEnv, env),
-            RootModeRequest.from_params({}),
-            ReadViewInvocation(
-                view="recovery",
-                session_id="s1",
-                output_format=None,
-                destination="terminal",
-                out_path=None,
-                explicit_options=frozenset({"message_role"}),
-            ),
-        )
-
-
-def test_read_view_accepts_explicit_options_owned_by_selected_view() -> None:
-    read_view_handlers.READ_VIEW_HANDLERS["recovery"].validate(
-        ReadViewInvocation(
-            view="recovery",
-            session_id="s1",
-            output_format=None,
-            destination="terminal",
-            out_path=None,
-            options=read_view_handlers.ReadViewRecoveryOptions(report="continue"),
-            explicit_options=frozenset({"recovery_report"}),
-        ),
-        RootModeRequest.from_params({}),
-    )
-
-
 def test_read_view_registry_builds_typed_view_options() -> None:
     options = read_view_handlers.read_view_options_for_view(
-        "context-pack",
+        "context-image",
         {
             "project_path": "/workspace/polylogue",
             "project_repo": "github.com/Sinity/polylogue",
-            "pack_query": "route contracts",
+            "context_query": "route contracts",
             "max_sessions": 3,
             "no_redact": True,
         },
     )
 
-    assert isinstance(options, read_view_handlers.ReadViewContextPackOptions)
+    assert isinstance(options, read_view_handlers.ReadViewContextImageOptions)
     assert options.project_path == "/workspace/polylogue"
     assert options.project_repo == "github.com/Sinity/polylogue"
     assert options.query == "route contracts"
@@ -860,10 +640,10 @@ def test_read_view_registry_builds_typed_view_options() -> None:
 
 def test_explicit_read_view_options_reports_command_line_values_only() -> None:
     ctx = click.Context(query_verbs.read_verb)
-    ctx.set_parameter_source("message_role", click.core.ParameterSource.COMMANDLINE)
+    ctx.set_parameter_source("related_limit", click.core.ParameterSource.COMMANDLINE)
     ctx.set_parameter_source("related_limit", click.core.ParameterSource.DEFAULT)
 
-    assert query_verbs._explicit_read_view_options(ctx) == frozenset({"message_role"})
+    assert query_verbs._explicit_read_view_options(ctx) == frozenset()
 
 
 def test_resolve_target_session_id_uses_explicit_conv_id() -> None:

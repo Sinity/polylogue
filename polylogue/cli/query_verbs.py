@@ -24,7 +24,6 @@ from polylogue.archive.viewport import (
     read_view_choices,
     read_view_profile_payloads,
 )
-from polylogue.cli.click_option_groups import _LazyChoice
 from polylogue.cli.read_view_handlers import (
     ReadViewInvocation,
     read_view_option_names,
@@ -32,6 +31,7 @@ from polylogue.cli.read_view_handlers import (
     run_bulk_export_view,
     run_read_view,
 )
+from polylogue.cli.read_views.base import deliver_content
 from polylogue.cli.shared.types import AppEnv
 from polylogue.cli.verb_names import VERB_NAMES
 from polylogue.core.enums import AssertionStatus
@@ -142,26 +142,6 @@ def _get_root_request_class() -> object:  # pragma: no cover — returns RootMod
     return RootModeRequest
 
 
-def _get_message_type_class() -> object:  # pragma: no cover — returns MessageType
-    from polylogue.archive.message.types import MessageType
-
-    return MessageType
-
-
-def _get_message_type_choices() -> list[str]:
-    return [m.value for m in _get_message_type_class()]  # type: ignore[attr-defined]
-
-
-def _get_material_origin_class() -> object:  # pragma: no cover — returns MaterialOrigin
-    from polylogue.core.enums import MaterialOrigin
-
-    return MaterialOrigin
-
-
-def _get_material_origin_choices() -> list[str]:
-    return [m.value for m in _get_material_origin_class()]  # type: ignore[attr-defined]
-
-
 def _lazy_shell_complete(source: str):  # type: ignore[no-untyped-def]
     def _complete(ctx: click.Context, param: click.Parameter, incomplete: str):  # type: ignore[no-untyped-def]
         from polylogue.cli.shell_completion_values import complete_query_source
@@ -172,15 +152,10 @@ def _lazy_shell_complete(source: str):  # type: ignore[no-untyped-def]
     return _complete
 
 
-_complete_session_id = _lazy_shell_complete("session_id")
-_complete_material_origin = _lazy_shell_complete("material_origin")
-_complete_message_type = _lazy_shell_complete("message_type")
-
 _READ_VIEWS = read_view_choices()
 _READ_VIEW_HELP = "What to render (" + ", ".join(_READ_VIEWS) + ")."
 _READ_DESTINATIONS = ("terminal", "stdout", "browser", "clipboard", "file")
 _READ_FORMATS = tuple(sorted({fmt for profile in READ_VIEW_PROFILES for fmt in profile.formats}))
-_RECOVERY_REPORT_PRESETS = ("continue", "blame", "work-packet")
 
 
 def _explicit_read_view_options(ctx: click.Context) -> frozenset[str]:
@@ -197,24 +172,15 @@ def _read_view_option_values(
     *,
     limit: int | None,
     offset: int,
-    message_role: tuple[str, ...],
-    material_origin: tuple[str, ...],
-    message_type: str | None,
-    no_code_blocks: bool,
-    no_tool_calls: bool,
-    no_tool_outputs: bool,
-    no_file_reads: bool,
-    prose_only: bool,
     related_limit: int,
     project_path: str | None,
     project_repo: str | None,
     since: str | None,
     until: str | None,
-    pack_origin: str | None,
-    pack_query: str | None,
+    context_origin: str | None,
+    context_query: str | None,
     max_sessions: int,
     no_redact: bool,
-    recovery_report: str | None,
     window_hours: int,
     repo_path: str | None,
     since_hours: int,
@@ -227,24 +193,15 @@ def _read_view_option_values(
     return {
         "limit": limit,
         "offset": offset,
-        "message_role": message_role,
-        "material_origin": material_origin,
-        "message_type": message_type,
-        "no_code_blocks": no_code_blocks,
-        "no_tool_calls": no_tool_calls,
-        "no_tool_outputs": no_tool_outputs,
-        "no_file_reads": no_file_reads,
-        "prose_only": prose_only,
         "related_limit": related_limit,
         "project_path": project_path,
         "project_repo": project_repo,
         "since": since,
         "until": until,
-        "pack_origin": pack_origin,
-        "pack_query": pack_query,
+        "context_origin": context_origin,
+        "context_query": context_query,
         "max_sessions": max_sessions,
         "no_redact": no_redact,
-        "recovery_report": recovery_report,
         "window_hours": window_hours,
         "repo_path": repo_path,
         "since_hours": since_hours,
@@ -255,6 +212,18 @@ def _read_view_option_values(
 
 
 _CONTINUE_CANDIDATE_DEFAULT_LIMIT = 10
+
+
+def _successor_context_unit_queries(session_id: str) -> tuple[str, ...]:
+    """Default successor-context recipe expressed through terminal DSL units."""
+
+    session_clause = f"session.id:{session_id}"
+    return (
+        f"runs where {session_clause}",
+        f"observed-events where {session_clause}",
+        f"context-snapshots where {session_clause}",
+        f"actions where {session_clause}",
+    )
 
 
 def _wants_json(request: RootModeRequest, *, output_format: str | None) -> bool:
@@ -435,23 +404,6 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: b
 )
 @click.option("--out", "out_path", type=click.Path(), default=None, help="File path for --to file.")
 @click.option("--all", "export_all", is_flag=True, help="Apply to all matched sessions (bulk export).")
-# message/raw pagination flags
-@click.option("--message-role", "-r", "message_role", multiple=True, help="Filter by message role (--view messages).")
-@click.option(
-    "--material-origin",
-    "material_origin",
-    multiple=True,
-    type=_LazyChoice(_get_material_origin_choices, "origin"),
-    shell_complete=_complete_material_origin,
-    help="Filter by material origin (--view messages).",
-)
-@click.option(
-    "--message-type",
-    "message_type",
-    type=_LazyChoice(_get_message_type_choices, "type"),
-    shell_complete=_complete_message_type,
-    help="Filter by message content type (--view messages).",
-)
 @click.option("--limit", "-l", "-n", type=int, default=None, help="Max items to return.")
 @click.option("--offset", type=int, default=0, help="Pagination offset.")
 @click.option(
@@ -498,21 +450,14 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: b
     show_default=True,
     help="Number of related sessions to include (--view context).",
 )
+@click.option("--project-path", default=None, help="Filter by cwd prefix pattern (--view context-image).")
+@click.option("--project-repo", default=None, help="Filter by git repo URL or name (--view context-image).")
+@click.option("--since", default=None, help="Start date, ISO 8601 (--view context-image).")
+@click.option("--until", default=None, help="End date, ISO 8601 (--view context-image).")
+@click.option("--context-origin", "context_origin", default=None, help="Source-origin filter (--view context-image).")
+@click.option("--query", "context_query", default=None, help="Free-text query (--view context-image).")
 @click.option(
-    "--report",
-    "recovery_report",
-    type=click.Choice(_RECOVERY_REPORT_PRESETS),
-    default=None,
-    help="Render a recovery report preset (--view recovery): continue, blame, or work-packet.",
-)
-@click.option("--project-path", default=None, help="Filter by cwd prefix pattern (--view context-pack).")
-@click.option("--project-repo", default=None, help="Filter by git repo URL or name (--view context-pack).")
-@click.option("--since", default=None, help="Start date, ISO 8601 (--view context-pack).")
-@click.option("--until", default=None, help="End date, ISO 8601 (--view context-pack).")
-@click.option("--pack-origin", "pack_origin", default=None, help="Source-origin filter (--view context-pack).")
-@click.option("--query", "pack_query", default=None, help="Free-text query (--view context-pack).")
-@click.option(
-    "--max-sessions", type=int, default=5, show_default=True, help="Max sessions, 1-20 (--view context-pack)."
+    "--max-sessions", type=int, default=5, show_default=True, help="Max sessions, 1-20 (--view context-image)."
 )
 @click.option(
     "--max-tokens",
@@ -526,12 +471,7 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: b
     default=False,
     help="Include context-inject assertion claims in the compiled context image.",
 )
-@click.option("--no-redact", is_flag=True, default=False, help="Do not redact filesystem paths (--view context-pack).")
-@click.option("--no-code-blocks", is_flag=True, help="Exclude code blocks (--view messages).")
-@click.option("--no-tool-calls", is_flag=True, help="Exclude tool calls (--view messages).")
-@click.option("--no-tool-outputs", is_flag=True, help="Exclude tool outputs (--view messages).")
-@click.option("--no-file-reads", is_flag=True, help="Exclude file reads (--view messages).")
-@click.option("--prose-only", is_flag=True, help="Show only prose text (--view messages).")
+@click.option("--no-redact", is_flag=True, default=False, help="Do not redact filesystem paths (--view context-image).")
 @click.option("--fields", help="Fields for JSON/YAML outputs (--all).")
 @click.option("--views", "show_views", is_flag=True, help="List executable read-view profiles and exit.")
 @click.option("--first", "first_only", is_flag=True, help="Read the first matched session only.")
@@ -544,9 +484,6 @@ def read_verb(
     output_format: str | None,
     out_path: str | None,
     export_all: bool,
-    message_role: tuple[str, ...],
-    material_origin: tuple[str, ...],
-    message_type: str | None,
     limit: int | None,
     offset: int,
     window_hours: int,
@@ -556,22 +493,16 @@ def read_verb(
     github_api: bool,
     otlp: bool,
     related_limit: int,
-    recovery_report: str | None,
     project_path: str | None,
     project_repo: str | None,
     since: str | None,
     until: str | None,
-    pack_origin: str | None,
-    pack_query: str | None,
+    context_origin: str | None,
+    context_query: str | None,
     max_sessions: int,
     max_tokens: int | None,
     include_assertions: bool,
     no_redact: bool,
-    no_code_blocks: bool,
-    no_tool_calls: bool,
-    no_tool_outputs: bool,
-    no_file_reads: bool,
-    prose_only: bool,
     fields: str | None,
     first_only: bool,
     show_views: bool = False,
@@ -591,9 +522,8 @@ def read_verb(
         polylogue find id:abc then read --to browser
         polylogue find 'repo:polylogue has:paste' then read --all --format ndjson
         polylogue find id:abc then read --view context --related-limit 5
-        polylogue find 'cost tracking' then read --view context-pack --max-sessions 5
-        polylogue read --view context-pack --project-repo github.com/Sinity/polylogue --since 2026-01-01
-        polylogue find id:abc then read --view recovery
+        polylogue find 'cost tracking' then read --view context-image --max-sessions 5
+        polylogue read --view context-image --project-repo github.com/Sinity/polylogue --since 2026-01-01
         polylogue read --views
         polylogue read --views --format json
         polylogue find id:abc then read --view neighbors --window-hours 48
@@ -664,10 +594,10 @@ def read_verb(
         return
 
     # General context-image path: multi-view composition, token-bounded
-    # accumulation, assertion inclusion, and the context-pack lens all collapse
+    # accumulation, assertion inclusion, and the context-image lens all collapse
     # onto the shared compile_context engine rather than parallel assemblers.
     needs_context_image = (
-        len(view_tokens) > 1 or primary_view == "context-pack" or max_tokens is not None or include_assertions
+        len(view_tokens) > 1 or primary_view == "context-image" or max_tokens is not None or include_assertions
     )
     if needs_context_image and destination != "browser":
         run_read_context_image(
@@ -681,8 +611,8 @@ def read_verb(
             project_repo=project_repo,
             since=since,
             until=until,
-            pack_origin=pack_origin,
-            pack_query=pack_query,
+            context_origin=context_origin,
+            context_query=context_query,
             no_redact=no_redact,
             output_format=output_format,
             destination=destination,
@@ -723,24 +653,15 @@ def read_verb(
                 _read_view_option_values(
                     limit=limit,
                     offset=offset,
-                    message_role=message_role,
-                    material_origin=material_origin,
-                    message_type=message_type,
-                    no_code_blocks=no_code_blocks,
-                    no_tool_calls=no_tool_calls,
-                    no_tool_outputs=no_tool_outputs,
-                    no_file_reads=no_file_reads,
-                    prose_only=prose_only,
                     related_limit=related_limit,
                     project_path=project_path,
                     project_repo=project_repo,
                     since=since,
                     until=until,
-                    pack_origin=pack_origin,
-                    pack_query=pack_query,
+                    context_origin=context_origin,
+                    context_query=context_query,
                     max_sessions=max_sessions,
                     no_redact=no_redact,
-                    recovery_report=recovery_report,
                     window_hours=window_hours,
                     repo_path=repo_path,
                     since_hours=since_hours,
@@ -851,6 +772,9 @@ def continue_verb(
     session_id = _resolve_query_action_session_id(env, request, operation="continue")
     if session_id is None:
         raise click.UsageError("continue requires one matched session (use --id, --latest, or a narrowing query).")
+    session = run_coroutine_sync(env.polylogue.get_session(session_id))
+    if session is None:
+        raise click.UsageError(f"Session not found: {session_id}")
     root_format = request.params.get("output_format")
     effective_format = (
         output_format if output_format is not None else root_format if isinstance(root_format, str) else None
@@ -869,7 +793,8 @@ def continue_verb(
                 ContextSpec(
                     purpose="continue",
                     seed_refs=(f"session:{session_id}",),
-                    read_views=("recovery",),
+                    read_views=("messages",),
+                    unit_queries=_successor_context_unit_queries(session_id),
                 )
             )
         )
@@ -880,18 +805,21 @@ def continue_verb(
         else:
             click.echo(rendered)
         return
-    run_read_view(
-        env,
-        request,
-        ReadViewInvocation(
-            view="recovery",
-            session_id=session_id,
-            output_format=effective_format,
-            destination=destination,
-            out_path=out_path,
-            options=read_view_options_for_view("recovery", {"recovery_report": "continue"}),
-        ),
+    if effective_format not in (None, "markdown"):
+        raise click.UsageError("continue supports markdown output by default or --format json.")
+    from polylogue.context.compiler import ContextSpec
+
+    image = run_coroutine_sync(
+        env.polylogue.compile_context(
+            ContextSpec(
+                purpose="continue",
+                seed_refs=(f"session:{session_id}",),
+                read_views=("messages",),
+                unit_queries=_successor_context_unit_queries(session_id),
+            )
+        )
     )
+    deliver_content(env, _render_context_image_markdown(image), destination=destination, out_path=out_path)
 
 
 @click.command("delete")
@@ -1658,11 +1586,7 @@ def _explain_terminal_action(request: RootModeRequest, **terminal_action: object
 
 
 def _effective_read_output_format(request: RootModeRequest, *, view: str, output_format: str | None) -> str | None:
-    effective_format = output_format
-    if view == "recovery" and effective_format is None:
-        root_format = request.params.get("output_format")
-        effective_format = root_format if isinstance(root_format, str) else None
-    return effective_format
+    return output_format
 
 
 def _parent_request(ctx: click.Context) -> RootModeRequest:
@@ -1856,8 +1780,8 @@ def run_read_context_image(
     project_repo: str | None,
     since: str | None,
     until: str | None,
-    pack_origin: str | None,
-    pack_query: str | None,
+    context_origin: str | None,
+    context_query: str | None,
     no_redact: bool,
     output_format: str | None,
     destination: str,
@@ -1867,22 +1791,27 @@ def run_read_context_image(
     """Compile and emit a bounded context image over the matched selection.
 
     This is the single general read path for multi-view composition, token
-    budgeting, assertion inclusion, and the context-pack lens. It delegates to
+    budgeting, assertion inclusion, and the context-image lens. It delegates to
     ``compile_context`` (seed refs from the resolved selection) or, when only
-    context-pack filters narrow the set, to ``context_pack_payload``.
+    context-image filters narrow the set, to ``context_image_payload``.
     """
     from polylogue.cli.read_views.base import deliver_content
-    from polylogue.context.compiler import ContextSpec
+    from polylogue.context.compiler import (
+        DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE,
+        DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION,
+        ContextSpec,
+    )
 
     poly = env.polylogue
     redact = not no_redact
     limit = max(1, min(max_sessions, 20))
     session_ids = _resolve_query_action_session_ids(env, request, limit=limit, first_only=first_only)
 
-    # compile_context handles messages/recovery/work-packet; the context-pack
+    # compile_context handles read views and query-unit context; the context-image
     # token maps to the message transcript view. Other tokens become honest
     # "unsupported" omissions inside compile_context rather than silent drops.
-    compile_views = tuple("messages" if token == "context-pack" else token for token in views)
+    compile_views = tuple("messages" if token == "context-image" else token for token in views)
+    uses_context_image_defaults = "context-image" in views
 
     if session_ids:
         spec = ContextSpec(
@@ -1890,19 +1819,25 @@ def run_read_context_image(
             seed_refs=tuple(f"session:{session_id}" for session_id in session_ids),
             read_views=compile_views,
             max_tokens=max_tokens,
+            max_messages_per_session=(
+                DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION if uses_context_image_defaults else None
+            ),
+            max_chars_per_message=(
+                DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE if uses_context_image_defaults else None
+            ),
             include_assertions=include_assertions,
             redaction_policy="raw-opt-in" if not redact else "default",
         )
         image = run_coroutine_sync(poly.compile_context(spec))
-    elif "context-pack" in views:
+    elif "context-image" in views:
         image = run_coroutine_sync(
-            poly.context_pack_payload(
+            poly.context_image_payload(
                 project_path=project_path,
                 project_repo=project_repo,
                 since=since,
                 until=until,
-                origin=pack_origin,
-                query=pack_query,
+                origin=context_origin,
+                query=context_query,
                 max_sessions=limit,
                 max_tokens=max_tokens,
                 include_messages="messages" in compile_views,

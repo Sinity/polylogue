@@ -8,24 +8,23 @@ import click
 
 from polylogue.archive.viewport import read_view_choices
 from polylogue.cli.read_views.base import (
+    ReadViewContextImageOptions,
     ReadViewContextOptions,
-    ReadViewContextPackOptions,
     ReadViewCorrelationOptions,
     ReadViewHandler,
     ReadViewInvocation,
     ReadViewMessageOptions,
     ReadViewNeighborOptions,
     ReadViewOptions,
-    ReadViewRecoveryOptions,
 )
 from polylogue.cli.read_views.bulk import run_bulk_export_view
 from polylogue.cli.read_views.context import (
-    CONTEXT_PACK_READ_VIEW_OPTION_NAMES,
+    CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES,
     CONTEXT_READ_VIEW_OPTION_NAMES,
+    build_context_image_options,
     build_context_options,
-    build_context_pack_options,
     run_read_context,
-    run_read_context_pack,
+    run_read_context_image,
 )
 from polylogue.cli.read_views.correlation import (
     CORRELATION_READ_VIEW_OPTION_NAMES,
@@ -43,7 +42,6 @@ from polylogue.cli.read_views.neighbors import (
     build_neighbor_options,
     run_read_neighbors,
 )
-from polylogue.cli.read_views.recovery import RECOVERY_READ_VIEW_OPTION_NAMES, build_recovery_options, run_read_recovery
 from polylogue.cli.read_views.standard import run_read_summary_or_transcript
 from polylogue.cli.shared.types import AppEnv
 
@@ -78,21 +76,13 @@ READ_VIEW_HANDLERS: dict[str, ReadViewHandler] = {
         accepted_options=CONTEXT_READ_VIEW_OPTION_NAMES,
         option_builder=build_context_options,
     ),
-    "context-pack": ReadViewHandler(
-        "context-pack",
+    "context-image": ReadViewHandler(
+        "context-image",
         "none",
-        run_read_context_pack,
+        run_read_context_image,
         default_format="markdown",
-        accepted_options=CONTEXT_PACK_READ_VIEW_OPTION_NAMES,
-        option_builder=build_context_pack_options,
-    ),
-    "recovery": ReadViewHandler(
-        "recovery",
-        "required",
-        run_read_recovery,
-        default_format="markdown",
-        accepted_options=RECOVERY_READ_VIEW_OPTION_NAMES,
-        option_builder=build_recovery_options,
+        accepted_options=CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES,
+        option_builder=build_context_image_options,
     ),
     "neighbors": ReadViewHandler(
         "neighbors",
@@ -167,14 +157,13 @@ validate_read_view_handler_registry()
 __all__ = [
     "READ_VIEW_HANDLERS",
     "ReadViewContextOptions",
-    "ReadViewContextPackOptions",
+    "ReadViewContextImageOptions",
     "ReadViewCorrelationOptions",
     "ReadViewHandler",
     "ReadViewInvocation",
     "ReadViewMessageOptions",
     "ReadViewNeighborOptions",
     "ReadViewOptions",
-    "ReadViewRecoveryOptions",
     "read_view_handler_ids",
     "read_view_option_names",
     "read_view_options_for_view",

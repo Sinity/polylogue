@@ -54,25 +54,28 @@ def test_continue_json_by_root_format_renders_context_image(cli_workspace: dict[
     payload = json.loads(result.output)
     assert payload["spec"]["purpose"] == "continue"
     assert payload["spec"]["seed_refs"] == [f"session:{NID_CONTINUE_ROOT}"]
-    assert payload["segments"][0]["kind"] == "recovery"
-    assert "CLI Continue" in payload["segments"][0]["markdown"]
+    assert {segment["kind"] for segment in payload["segments"]} == {"query_unit", "read_view"}
+    assert all(segment["kind"] != "recovery" for segment in payload["segments"])
+    message_segments = [segment for segment in payload["segments"] if segment["payload_kind"] == "messages"]
+    assert message_segments
+    assert "CLI Continue" in message_segments[0]["markdown"]
 
 
-def test_continue_plain_names_successor_recovery_sections(cli_workspace: dict[str, Path]) -> None:
+def test_continue_plain_names_successor_context_sections(cli_workspace: dict[str, Path]) -> None:
     _seed_continuation_session(cli_workspace["db_path"])
 
     result = CliRunner().invoke(cli, ["--id", NID_CONTINUE_ROOT, "continue"], catch_exceptions=False)
 
     assert result.exit_code == 0
-    assert "Continue" in result.output
-    assert "evidence" in result.output.lower()
+    assert "# Query: run" in result.output
+    assert "# Messages: CLI Continue" in result.output
 
 
 def test_continue_missing_session_exits_with_clear_message(cli_workspace: dict[str, Path]) -> None:
     result = CliRunner().invoke(cli, ["--id", "missing-session", "continue"], catch_exceptions=False)
 
-    assert result.exit_code == 1
-    assert "Session not found: missing-session" in str(result.exception)
+    assert result.exit_code == 2
+    assert "Session not found: missing-session" in result.output
 
 
 def test_continue_candidates_json_repeats_recent_files(cli_workspace: dict[str, Path]) -> None:

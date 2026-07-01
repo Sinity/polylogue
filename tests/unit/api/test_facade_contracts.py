@@ -76,8 +76,6 @@ READ_BY_ID_NONE_METHODS: frozenset[str] = frozenset(
         "get_session_profile_record",
         "get_session_latency_profile_insight",
         "resume_brief",
-        "recovery_digest",
-        "recovery_work_packet",
     }
 )
 
@@ -210,10 +208,9 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "delete_annotation",
         "list_annotations",
         "neighbor_candidates",
-        "context_pack_payload",
+        "context_image_payload",
         "context_preamble_payload",
         "compile_context",
-        "recovery_report",
         "find_resume_candidates",
         "export_insight_bundle",
         # Distilled postmortem bundle (#2380).
@@ -242,7 +239,6 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "list_assertion_candidate_reviews",
         "judge_assertion_candidate",
         "neighbor_candidate_payloads",
-        "recovery_read_payload",
         "resolve_ref",
         "export_otel",
         "session_correlation_payload",
@@ -287,6 +283,8 @@ def _discovered_public_async_methods() -> set[str]:
 
 def _archive(tmp_path: Path) -> Polylogue:
     """Construct a Polylogue facade against an isolated tmp archive."""
+    with ArchiveStore(tmp_path):
+        pass
     return Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
 
 
@@ -673,8 +671,8 @@ async def test_archive_debt_returns_shared_payload_on_empty_archive(tmp_path: Pa
         result = await archive.archive_debt(kinds=("archive-tier",), limit=1)
         assert isinstance(result, ArchiveDebtListPayload)
         assert result.mode == "archive-debt-list"
-        assert result.totals.total == 1
-        assert result.rows[0].kind == "archive-tier"
+        assert result.totals.total == 0
+        assert result.rows == ()
     finally:
         await archive.close()
 
@@ -811,34 +809,34 @@ async def test_get_session_returns_typed_object(tmp_path: Path) -> None:
         await archive.close()
 
 
-async def test_recovery_digest_compiles_seeded_session(tmp_path: Path) -> None:
-    """``recovery_digest`` exposes the deterministic transform surface (#1880)."""
+async def test_session_digest_compiles_seeded_session(tmp_path: Path) -> None:
+    """The private session-digest helper compiles deterministic transform output."""
     archive = _archive(tmp_path)
     db_path = archive.config.archive_root / "index.db"
     await _seed_two_sessions(db_path)
     try:
-        digest = await archive.recovery_digest("claude-ai-export:conv-alpha")
+        digest = await archive._session_digest("claude-ai-export:conv-alpha")
 
         assert digest is not None
         assert digest.session_id == "claude-ai-export:conv-alpha"
-        assert digest.transform.transform_id == "recovery_digest_v0"
+        assert digest.transform.transform_id == "session_digest_v0"
         assert digest.transform.input_session_id == "claude-ai-export:conv-alpha"
         assert digest.resume_markdown.startswith("# Resume: Alpha")
         assert digest.raw_refs
-        assert await archive.recovery_digest("nonexistent") is None
+        assert await archive._session_digest("nonexistent") is None
     finally:
         await archive.close()
 
 
-async def test_recovery_digest_resolves_subagent_child_links(tmp_path: Path) -> None:
-    """Archive-backed recovery enriches raw Task child ids with topology refs."""
+async def test_session_digest_resolves_subagent_child_links(tmp_path: Path) -> None:
+    """Archive-backed session digests enrich raw Task child ids with topology refs."""
     from polylogue.core.enums import BranchType
 
     archive = _archive(tmp_path)
     parent = ParsedSession(
         source_name=Provider.CODEX,
-        provider_session_id="recovery-parent",
-        title="Recovery Parent",
+        provider_session_id="session-digest-parent",
+        title="Session Digest Parent",
         messages=[
             ParsedMessage(
                 provider_message_id="parent-message",
@@ -851,8 +849,8 @@ async def test_recovery_digest_resolves_subagent_child_links(tmp_path: Path) -> 
                         tool_id="task-tool",
                         tool_input={
                             "taskId": "task-123",
-                            "child_session_id": "codex-session:recovery-child",
-                            "prompt": "Inspect recovery topology.",
+                            "child_session_id": "codex-session:session-digest-child",
+                            "prompt": "Inspect session topology.",
                         },
                     )
                 ],
@@ -861,10 +859,10 @@ async def test_recovery_digest_resolves_subagent_child_links(tmp_path: Path) -> 
     )
     child = ParsedSession(
         source_name=Provider.CODEX,
-        provider_session_id="recovery-child",
-        parent_session_provider_id="recovery-parent",
+        provider_session_id="session-digest-child",
+        parent_session_provider_id="session-digest-parent",
         branch_type=BranchType.SUBAGENT,
-        title="Recovery Child",
+        title="Session Digest Child",
         messages=[
             ParsedMessage(
                 provider_message_id="child-message",
@@ -879,7 +877,7 @@ async def test_recovery_digest_resolves_subagent_child_links(tmp_path: Path) -> 
             parent_id = archive_db.write_parsed(parent)
             child_id = archive_db.write_parsed(child)
 
-        digest = await archive.recovery_digest(parent_id)
+        digest = await archive._session_digest(parent_id)
 
         assert digest is not None
         [subagent] = digest.subagent_reports
@@ -888,11 +886,8 @@ async def test_recovery_digest_resolves_subagent_child_links(tmp_path: Path) -> 
         assert subagent.child_link_type == "subagent"
         assert subagent.resolved_child_session_id == child_id
         assert "child_link_status=resolved" in digest.resume_markdown
-        report = await archive.recovery_report(parent_id, "continue")
-        assert report is not None
-        assert "resolved_child_session_id=codex-session:recovery-child" in report
 
-        alias_digest = await archive.recovery_digest("codex:recovery-parent")
+        alias_digest = await archive._session_digest("codex:session-digest-parent")
         assert alias_digest is not None
         [alias_subagent] = alias_digest.subagent_reports
         assert alias_subagent.resolved_child_session_id == child_id
@@ -913,8 +908,8 @@ async def test_list_read_view_profiles_exposes_shared_profile_payloads(tmp_path:
             views[view_id] = profile
         assert views["raw"]["lossiness"] == "raw"
         assert views["raw"]["evidence_policy"] == "required"
-        assert views["recovery"]["successor_handoff"] is True
-        formats = views["recovery"]["formats"]
+        assert "recovery" not in views
+        formats = views["context-image"]["formats"]
         assert isinstance(formats, list)
         assert "markdown" in formats
     finally:
@@ -1102,80 +1097,8 @@ async def test_query_completions_exposes_shared_completion_payload(tmp_path: Pat
         await archive.close()
 
 
-async def test_recovery_report_renders_seeded_session_presets(tmp_path: Path) -> None:
-    """``recovery_report`` exposes deterministic preset markdown with evidence refs."""
-    from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
-
-    archive = _archive(tmp_path)
-    db_path = archive.config.archive_root / "index.db"
-    await _seed_two_sessions(db_path)
-    with sqlite3.connect(archive.config.archive_root / "user.db") as conn:
-        upsert_assertion(
-            conn,
-            assertion_id="recovery-caveat-alpha",
-            target_ref="session:claude-ai-export:conv-alpha",
-            kind=AssertionKind.CAVEAT,
-            body_text="Review findings have not been read yet.",
-            author_ref="user:test",
-            author_kind="user",
-            evidence_refs=["claude-ai-export:conv-alpha"],
-            status="active",
-            visibility="private",
-            now_ms=1_700_000_000_000,
-        )
-        upsert_assertion(
-            conn,
-            assertion_id="recovery-decision-injected-alpha",
-            target_ref="session:claude-ai-export:conv-alpha",
-            kind=AssertionKind.DECISION,
-            body_text="Resume with the assertion-aware continuation context.",
-            author_ref="agent:test",
-            author_kind="agent",
-            evidence_refs=["claude-ai-export:conv-alpha"],
-            status="active",
-            visibility="private",
-            context_policy={"inject": True},
-            now_ms=1_700_000_000_100,
-        )
-    try:
-        continue_report = await archive.recovery_report("claude-ai-export:conv-alpha", "continue")
-        blame_report = await archive.recovery_report("claude-ai-export:conv-alpha", "blame")
-        work_packet_report = await archive.recovery_report("claude-ai-export:conv-alpha", "work-packet")
-        work_packet = await archive.recovery_work_packet("claude-ai-export:conv-alpha")
-
-        assert continue_report is not None
-        assert blame_report is not None
-        assert work_packet_report is not None
-        assert work_packet is not None
-        assert continue_report.startswith("# Continue: Alpha")
-        assert blame_report.startswith("# Blame: Alpha")
-        assert work_packet_report.startswith("# Resume: Alpha")
-        assert work_packet.session_id == "claude-ai-export:conv-alpha"
-        assert work_packet.render_markdown() == work_packet_report
-        assertion_entries = [entry for entry in work_packet.entries if entry.section == "assertions"]
-        assert sorted((entry.label, entry.support, entry.text) for entry in assertion_entries) == [
-            ("caveat", "caveat", "Review findings have not been read yet."),
-            ("decision", "assertion", "Resume with the assertion-aware continuation context."),
-        ]
-        assert continue_report != blame_report
-        assert work_packet_report not in {continue_report, blame_report}
-        assert "[evidence:" in continue_report
-        assert "[evidence:" in blame_report
-        assert "## Assertion Claims" in continue_report
-        assert "decision: Resume with the assertion-aware continuation context." in continue_report
-        assert "Review findings have not been read yet." not in continue_report
-        assert "## Assertion Claims" in work_packet_report
-        assert "- [caveat] caveat: Review findings have not been read yet." in work_packet_report
-        assert "- [assertion] decision: Resume with the assertion-aware continuation context." in work_packet_report
-        assert "## Evidence" in work_packet_report
-        assert await archive.recovery_report("nonexistent", "continue") is None
-        assert await archive.recovery_work_packet("nonexistent") is None
-    finally:
-        await archive.close()
-
-
-async def test_compile_context_builds_recovery_segments_from_refs_and_query(tmp_path: Path) -> None:
-    """``compile_context`` executes ContextSpec over existing recovery views."""
+async def test_compile_context_builds_message_segments_from_refs_and_query(tmp_path: Path) -> None:
+    """``compile_context`` executes ContextSpec over supported context views."""
     from polylogue.context.compiler import ContextSpec
 
     archive = _archive(tmp_path)
@@ -1186,20 +1109,13 @@ async def test_compile_context_builds_recovery_segments_from_refs_and_query(tmp_
             ContextSpec(
                 seed_refs=("session:claude-ai-export:conv-alpha", "assertion:claim-1"),
                 seed_query="beta body",
-                read_views=("recovery", "work-packet", "messages"),
+                read_views=("messages",),
                 max_tokens=20_000,
             )
         )
 
         assert image.spec.seed_query == "beta body"
-        assert [segment.payload_kind for segment in image.segments] == [
-            "recovery_digest",
-            "work_packet",
-            "messages",
-            "recovery_digest",
-            "work_packet",
-            "messages",
-        ]
+        assert [segment.payload_kind for segment in image.segments] == ["messages", "messages"]
         assert {ref.object_id for ref in image.object_refs if ref.kind == "session"} == {
             "claude-ai-export:conv-alpha",
             "chatgpt-export:conv-beta",
@@ -1216,12 +1132,25 @@ async def test_compile_context_builds_recovery_segments_from_refs_and_query(tmp_
         assert len(message_segments) == 2
         assert "user: alpha body" in (message_segments[0].markdown or "")
         assert "user: beta body" in (message_segments[1].markdown or "")
+
+        unsupported_image = await archive.compile_context(
+            ContextSpec(
+                seed_refs=("session:claude-ai-export:conv-alpha",),
+                read_views=("unsupported-a", "unsupported-b"),
+                max_tokens=20_000,
+            )
+        )
+        assert unsupported_image.segments == ()
+        assert [(item.view, item.reason) for item in unsupported_image.omitted] == [
+            ("unsupported-a", "unsupported"),
+            ("unsupported-b", "unsupported"),
+        ]
     finally:
         await archive.close()
 
 
-async def test_compile_context_honors_assertion_opt_out(tmp_path: Path) -> None:
-    """``ContextSpec(include_assertions=False)`` suppresses injectable claims."""
+async def test_compile_context_message_view_can_opt_out_of_assertion_injection(tmp_path: Path) -> None:
+    """Plain message context stays message-shaped when assertion injection is off."""
     from polylogue.context.compiler import ContextSpec
     from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 
@@ -1244,22 +1173,15 @@ async def test_compile_context_honors_assertion_opt_out(tmp_path: Path) -> None:
         )
 
     try:
-        included = await archive.compile_context(
-            ContextSpec(seed_refs=("session:claude-ai-export:conv-alpha",), include_assertions=True)
-        )
-        omitted = await archive.compile_context(
+        image = await archive.compile_context(
             ContextSpec(seed_refs=("session:claude-ai-export:conv-alpha",), include_assertions=False)
         )
 
-        assert included.assertion_refs == ("context-opt-out-decision",)
-        included_markdown = included.segments[0].markdown
-        omitted_markdown = omitted.segments[0].markdown
-        assert included_markdown is not None
-        assert omitted_markdown is not None
-        assert "This assertion must not enter opted-out context images." in included_markdown
-        assert omitted.assertion_refs == ()
-        assert omitted.segments[0].assertion_refs == ()
-        assert "This assertion must not enter opted-out context images." not in omitted_markdown
+        assert image.assertion_refs == ()
+        assert image.segments[0].assertion_refs == ()
+        markdown = image.segments[0].markdown
+        assert markdown is not None
+        assert "This assertion must not enter opted-out context images." not in markdown
     finally:
         await archive.close()
 
@@ -1294,7 +1216,7 @@ async def test_compile_context_records_missing_and_budget_omissions(tmp_path: Pa
             )
         )
         assert budgeted.segments == ()
-        assert [(item.view, item.reason) for item in budgeted.omitted] == [("recovery", "budget")]
+        assert [(item.view, item.reason) for item in budgeted.omitted] == [("messages", "budget")]
     finally:
         await archive.close()
 
@@ -1508,11 +1430,12 @@ async def test_delete_session_safe_returns_typed_not_found(tmp_path: Path) -> No
 async def test_get_session_returns_none_for_unknown_id(tmp_path: Path) -> None:
     """Read-by-ID methods return ``None`` for unknown IDs, not an exception."""
     archive = _archive(tmp_path)
+    with ArchiveStore(tmp_path):
+        pass
     try:
         assert await archive.get_session("nonexistent") is None
         assert await archive.get_session_summary("nonexistent") is None
         assert await archive.get_session_profile_insight("nonexistent") is None
-        assert await archive.recovery_report("nonexistent", "continue") is None
     finally:
         await archive.close()
 

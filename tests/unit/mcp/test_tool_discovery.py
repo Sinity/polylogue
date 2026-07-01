@@ -29,7 +29,7 @@ _KNOWN_MINIMAL: dict[str, dict[str, object]] = {
     "search": {"query": "hello", "limit": 1},
     "query_units": {"expression": "messages where text:hello", "limit": 1},
     "resolve_ref": {"ref": f"session:{_SYNTHETIC_CONV_ID}"},
-    "compile_context": {"seed_ref": f"session:{_SYNTHETIC_CONV_ID}", "read_views": "recovery"},
+    "compile_context": {"seed_ref": f"session:{_SYNTHETIC_CONV_ID}", "read_views": "messages"},
     "blackboard_list": {},
     "get_session": {"id": _SYNTHETIC_CONV_ID},
     "get_session_summary": {"id": _SYNTHETIC_CONV_ID},
@@ -75,17 +75,17 @@ _KNOWN_MINIMAL: dict[str, dict[str, object]] = {
     "get_stats_by": {"group_by": "origin"},
     "list_read_view_profiles": {},
     "list_assertion_claims": {"target_ref": f"session:{_SYNTHETIC_CONV_ID}", "limit": 1},
-    "get_recovery_report": {"session_id": "demo", "report": "continue"},
-    "get_recovery_work_packet": {"session_id": _SYNTHETIC_CONV_ID},
     "explain_query_expression": {"expression": "repo:polylogue"},
     "query_completions": {"kind": "field", "incomplete": "d"},
     "action_affordances": {},
     "embedding_status": {},
     "embedding_preflight": {},
-    "build_context_pack": {"project_repo": "test"},
+    "build_context_image": {"project_repo": "test"},
     "readiness_check": {},
     "stats": {},
     "get_postmortem_bundle": {},
+    "get_pathologies": {"limit": 1},
+    "provider_usage": {"limit": 1},
 }
 
 
@@ -158,7 +158,7 @@ def test_all_read_tools_discovered() -> None:
         "facets",
         "readiness_check",
         "get_session",
-        "build_context_pack",
+        "build_context_image",
     ]:
         assert expected in _READ_TOOL_NAMES, f"missing expected read tool: {expected}"
 

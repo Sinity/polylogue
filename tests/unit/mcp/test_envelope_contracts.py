@@ -87,8 +87,6 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     # ------- single record -------
     "get_session": "single_object",
     "get_session_summary": "single_object",
-    "get_recovery_report": "single_object",
-    "get_recovery_work_packet": "single_object",
     "compile_context": "single_object",
     "archive_get_session": "single_object",
     "get_metadata": "single_object",
@@ -100,7 +98,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "embedding_status": "single_object",
     "embedding_preflight": "single_object",
     "facets": "single_object",
-    "build_context_pack": "single_object",
+    "build_context_image": "single_object",
     "readiness_check": "single_object",
     "insight_rigor_audit": "single_object",
     "aggregate_sessions": "single_object",

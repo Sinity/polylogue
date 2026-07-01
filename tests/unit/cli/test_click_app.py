@@ -47,11 +47,7 @@ class TestHandleQueryMode:
             "sample": None,
             "output": None,
             "output_format": None,
-            "transform": None,
             "stream": False,
-            "dialogue_only": False,
-            "message_role": (),
-            "material_origin": (),
             "set_meta": (),
             "add_tag": (),
             "plain": False,
@@ -143,9 +139,6 @@ class TestHandleQueryMode:
         for params in (
             self._make_params(limit=10),
             self._make_params(stream=True),
-            self._make_params(dialogue_only=True),
-            self._make_params(message_role=("user",)),
-            self._make_params(material_origin=("human_authored",)),
         ):
             mock_execute, _ = self._call(params)
             mock_execute.assert_called_once()
@@ -202,19 +195,10 @@ def test_read_verb_messages_view_forwards_options(cli_runner: CliRunner) -> None
                 "read",
                 "--view",
                 "messages",
-                "--message-role",
-                "user",
-                "--message-type",
-                "summary",
                 "--limit",
                 "2",
                 "--offset",
                 "1",
-                "--no-code-blocks",
-                "--no-tool-calls",
-                "--no-tool-outputs",
-                "--no-file-reads",
-                "--prose-only",
                 "-f",
                 "json",
             ],
@@ -350,7 +334,7 @@ def test_query_action_read_explain_json_outputs_terminal_action(cli_runner: CliR
     assert payload["plan_description"][-1] == "terminal action: read"
 
 
-def test_query_action_read_explain_recovery_inherits_root_format(cli_runner: CliRunner) -> None:
+def test_query_action_read_explain_uses_default_read_format(cli_runner: CliRunner) -> None:
     result = cli_runner.invoke(
         click_cli,
         [
@@ -363,13 +347,13 @@ def test_query_action_read_explain_recovery_inherits_root_format(cli_runner: Cli
             "then",
             "read",
             "--view",
-            "recovery",
+            "messages",
         ],
     )
 
     assert result.exit_code == 0, result.output
     payload = cast(dict[str, Any], json.loads(result.output))
-    assert cast(dict[str, Any], payload["terminal_action"])["format"] == "json"
+    assert cast(dict[str, Any], payload["terminal_action"])["format"] == "default"
 
 
 def test_query_action_read_explain_uses_local_read_format(cli_runner: CliRunner) -> None:
@@ -531,7 +515,7 @@ def test_read_views_plain_lists_profile_metadata(cli_runner: CliRunner) -> None:
 
     assert result.exit_code == 0
     assert "Read views:" in result.output
-    assert "recovery" in result.output
+    assert "recovery" not in result.output
     assert "evidence=required" in result.output
     assert "handoff" in result.output
 
@@ -544,8 +528,8 @@ def test_read_views_json_outputs_profile_payload(cli_runner: CliRunner) -> None:
     views = {item["view_id"]: item for item in payload["result"]["read_views"]}
     assert payload["status"] == "ok"
     assert views["raw"]["lossiness"] == "raw"
-    assert views["recovery"]["successor_handoff"] is True
-    assert "markdown" in views["recovery"]["formats"]
+    assert "recovery" not in views
+    assert views["context-image"]["successor_handoff"] is True
 
 
 def test_read_verb_raw_view_forwards_options(cli_runner: CliRunner) -> None:

@@ -862,6 +862,28 @@ class TestGetSessionTool:
         assert [message["text"] for message in payload["messages"]] == expected_texts
         assert payload["total"] == len(expected_texts)
 
+    def test_get_messages_returns_unfiltered_session_messages(
+        self,
+        tmp_path: Path,
+        mcp_server: MCPServerUnderTest,
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        session_id = _seed_archive_with_semantic_messages(archive_root)
+
+        with _archive_config(archive_root):
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["get_messages"].fn,
+                session_id=session_id,
+            )
+
+        payload = json.loads(result)
+        assert [message["text"] for message in payload["messages"]] == [
+            "typed human prompt",
+            "# AGENTS.md instructions for /realm/project/polylogue",
+            "assistant answer",
+        ]
+        assert payload["total"] == 3
+
     def test_archive_message_payload_uses_shared_reader_envelope(self) -> None:
         from polylogue.mcp.archive_support import archive_message_payload
         from polylogue.storage.sqlite.archive_tiers.write import (
@@ -915,23 +937,6 @@ class TestGetSessionTool:
         assert body["attachment_refs"] == ["att-1"]
         assert body["content_blocks"][0]["tool_name"] == "Bash"
 
-    def test_get_messages_rejects_unknown_message_type(self, mcp_server: MCPServerUnderTest) -> None:
-        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
-            mock_poly = make_polylogue_mock()
-            mock_get_polylogue.return_value = mock_poly
-
-            result = invoke_surface(
-                mcp_server._tool_manager._tools["get_messages"].fn,
-                session_id="test:long",
-                message_type="summmary",
-            )
-
-        body = json.loads(result)
-        assert body["is_error"] is True
-        assert body["tool"] == "get_messages"
-        assert body["code"] == "internal_error"
-        mock_poly.get_messages_paginated.assert_not_called()
-
     @pytest.mark.asyncio
     async def test_get_with_nonexistent_id(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
@@ -965,7 +970,7 @@ class TestReadViewProfilesTool:
         body = json.loads(result)
         assert body["read_views"] == profiles
         assert body["total"] == len(profiles)
-        assert {profile["view_id"] for profile in body["read_views"]} >= {"raw", "summary", "recovery"}
+        assert {profile["view_id"] for profile in body["read_views"]} >= {"raw", "summary", "context-image"}
 
 
 class TestQueryExplanationTool:

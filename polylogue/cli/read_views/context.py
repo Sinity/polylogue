@@ -6,8 +6,8 @@ from typing import cast
 
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.read_views.base import (
+    ReadViewContextImageOptions,
     ReadViewContextOptions,
-    ReadViewContextPackOptions,
     ReadViewInvocation,
     ReadViewOptionValues,
     deliver_content,
@@ -17,12 +17,12 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.surfaces.payloads import serialize_surface_payload
 
 CONTEXT_READ_VIEW_OPTION_NAMES = frozenset({"related_limit"})
-CONTEXT_PACK_READ_VIEW_OPTION_NAMES = frozenset(
+CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES = frozenset(
     {
         "max_sessions",
         "no_redact",
-        "pack_origin",
-        "pack_query",
+        "context_origin",
+        "context_query",
         "project_path",
         "project_repo",
         "since",
@@ -37,16 +37,16 @@ def build_context_options(values: ReadViewOptionValues) -> ReadViewContextOption
     return ReadViewContextOptions(related_limit=cast(int, values.get("related_limit", 5)))
 
 
-def build_context_pack_options(values: ReadViewOptionValues) -> ReadViewContextPackOptions:
-    """Build options owned by the context-pack read view."""
+def build_context_image_options(values: ReadViewOptionValues) -> ReadViewContextImageOptions:
+    """Build options owned by the context-image read view."""
 
-    return ReadViewContextPackOptions(
+    return ReadViewContextImageOptions(
         project_path=cast(str | None, values.get("project_path")),
         project_repo=cast(str | None, values.get("project_repo")),
         since=cast(str | None, values.get("since")),
         until=cast(str | None, values.get("until")),
-        origin=cast(str | None, values.get("pack_origin")),
-        query=cast(str | None, values.get("pack_query")),
+        origin=cast(str | None, values.get("context_origin")),
+        query=cast(str | None, values.get("context_query")),
         max_sessions=cast(int, values.get("max_sessions", 5)),
         no_redact=cast(bool, values.get("no_redact", False)),
     )
@@ -68,20 +68,20 @@ def run_read_context(env: AppEnv, request: RootModeRequest, invocation: ReadView
     deliver_content(env, preamble + "\n", destination=invocation.destination, out_path=invocation.out_path)
 
 
-def run_read_context_pack(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
-    """Render the project/query-scoped context pack as a compiled context image.
+def run_read_context_image(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
+    """Render the project/query-scoped context image as a compiled context image.
 
-    The context pack is a thin lens over ``compile_context``: the seed session
-    (when the find selection resolved one) or the context-pack selection filters
+    The context image is a thin lens over ``compile_context``: the seed session
+    (when the find selection resolved one) or the context-image selection filters
     pick the sessions, and the shared engine compiles the message transcript with
     omission accounting. The CLI ``read`` verb routes multi-session selections
     through ``run_read_context_image``; this handler covers the single resolved
     seed and direct handler invocation.
     """
 
-    options = cast(ReadViewContextPackOptions, invocation.options or ReadViewContextPackOptions())
+    options = cast(ReadViewContextImageOptions, invocation.options or ReadViewContextImageOptions())
     image = run_coroutine_sync(
-        env.polylogue.context_pack_payload(
+        env.polylogue.context_image_payload(
             seed_session_id=invocation.session_id,
             project_path=options.project_path,
             project_repo=options.project_repo,
@@ -102,10 +102,10 @@ def run_read_context_pack(env: AppEnv, request: RootModeRequest, invocation: Rea
 
 
 __all__ = [
-    "CONTEXT_PACK_READ_VIEW_OPTION_NAMES",
+    "CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES",
     "CONTEXT_READ_VIEW_OPTION_NAMES",
     "build_context_options",
-    "build_context_pack_options",
+    "build_context_image_options",
     "run_read_context",
-    "run_read_context_pack",
+    "run_read_context_image",
 ]

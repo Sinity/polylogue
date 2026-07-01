@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import sqlite3
 from typing import TYPE_CHECKING
 
 from polylogue.mcp.archive_support import (
-    active_archive_root,
     archive_messages_payload,
     archive_session_list_payload,
     archive_summary_payload,
+    mcp_archive_root,
 )
 from polylogue.mcp.payloads import (
     MCPArchiveStatsPayload,
@@ -33,7 +34,7 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     async def stats_resource() -> str:
         try:
             config = hooks.get_config()
-            with ArchiveStore.open_existing(active_archive_root(config) or config.archive_root) as archive:
+            with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
                 archive_stats = archive.stats()
         except Exception as exc:
             return hooks.error_json(
@@ -55,7 +56,7 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         try:
             spec = MCPSessionQueryRequest().build_spec(hooks.clamp_limit)
             config = hooks.get_config()
-            with ArchiveStore.open_existing(active_archive_root(config) or config.archive_root) as archive:
+            with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
                 payload = archive_session_list_payload(archive, spec)
             return hooks.json_payload(payload)
         except Exception as exc:
@@ -69,13 +70,15 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     async def session_resource(conv_id: str) -> str:
         try:
             config = hooks.get_config()
-            with ArchiveStore.open_existing(active_archive_root(config) or config.archive_root) as archive:
+            with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
                 try:
                     session_id = archive.resolve_session_id(conv_id)
                     archive_summary = archive.read_summary(session_id)
                 except (KeyError, ValueError):
                     return hooks.error_json(f"Session not found: {conv_id}", code="not_found")
                 return hooks.json_payload(archive_summary_payload(archive_summary))
+        except sqlite3.OperationalError:
+            return hooks.error_json(f"Session not found: {conv_id}", code="not_found")
         except Exception as exc:
             return hooks.error_json(
                 f"Failed to get session {conv_id}: {exc}",
@@ -99,13 +102,15 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     async def messages_resource(conv_id: str) -> str:
         try:
             config = hooks.get_config()
-            with ArchiveStore.open_existing(active_archive_root(config) or config.archive_root) as archive:
+            with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
                 try:
                     session_id = archive.resolve_session_id(conv_id)
                     session = archive.read_session(session_id)
                 except (KeyError, ValueError):
                     return hooks.error_json(f"Session not found: {conv_id}", code="not_found")
                 return hooks.json_payload(archive_messages_payload(session, limit=20, offset=0))
+        except sqlite3.OperationalError:
+            return hooks.error_json(f"Session not found: {conv_id}", code="not_found")
         except Exception as exc:
             return hooks.error_json(
                 f"Failed to list messages for {conv_id}: {exc}",
@@ -130,7 +135,7 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         try:
             spec = MCPSessionQueryRequest(origin=name, sort="date", limit=10).build_spec(hooks.clamp_limit)
             config = hooks.get_config()
-            with ArchiveStore.open_existing(active_archive_root(config) or config.archive_root) as archive:
+            with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
                 payload = archive_session_list_payload(archive, spec)
             return hooks.json_payload(payload)
         except Exception as exc:

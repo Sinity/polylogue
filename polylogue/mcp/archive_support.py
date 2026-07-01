@@ -84,6 +84,14 @@ def active_archive_root(config: Config) -> Path | None:
     return archive_file_set_root_for_paths(archive_root_path=archive_root, db_anchor=db_anchor)
 
 
+def mcp_archive_root(config: Config) -> Path:
+    """Return the usable archive root for MCP read surfaces."""
+    active_root = active_archive_root(config)
+    if active_root is not None and (active_root / "index.db").exists():
+        return active_root
+    return config.archive_root
+
+
 def archive_index_active_paths(
     *,
     archive_root: Path,

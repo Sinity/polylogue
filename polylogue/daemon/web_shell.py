@@ -377,10 +377,8 @@ var state = {
   // Per-session collapsed-section toggles for the Insights tab.
   // Keyed as ``"<session_id>:<kind>"``; default = expanded.
   insightsCollapsed: {},
-  // Per-session evidence/work-packet panel cache (#1846). Keyed by
-  // session_id; populated from the new daemon recovery/assertion routes.
-  // This is intentionally a read-side cache over shared DTOs, not a web-only
-  // evidence model.
+  // Per-session evidence/context panel cache (#1846). Keyed by session_id and
+  // populated from the shared read-view and assertion routes.
   evidencePanels: {},
   // Shared read-view profile inventory (#1846/#1838). Loaded from
   // /api/read-view-profiles so the shell does not grow a second profile
@@ -1205,9 +1203,7 @@ function renderReadViewSelector(c) {
 
 function applyReadViewSelection(viewId) {
   state.selectedReadView = viewId || 'messages';
-  if (viewId === 'recovery') {
-    state.inspectorTab = 'evidence';
-  } else if (viewId === 'raw') {
+  if (viewId === 'raw') {
     state.inspectorTab = 'raw';
   }
   document.querySelectorAll('#inspector-tabs button').forEach(function(b) {
@@ -1337,10 +1333,9 @@ function renderReadViewExecution(c, viewId) {
     return '<div class="main-empty"><h3>Loading ' + esc(viewId) + '...</h3></div>';
   }
   var payload = envelope.payload || {};
-  if (viewId === 'recovery') return renderRecoveryReadView(payload);
   if (viewId === 'raw') return renderRawReadView(payload);
   if (viewId === 'context') return renderContextReadView(payload);
-  if (viewId === 'context-pack') return renderContextPackReadView(payload);
+  if (viewId === 'context-image') return renderContextImageReadView(payload);
   if (viewId === 'neighbors') return renderNeighborsReadView(payload);
   if (viewId === 'correlation') return renderCorrelationReadView(payload);
   return '<div class="main-empty"><h3>Unsupported read view</h3><p>' + esc(viewId) + '</p></div>';
@@ -1352,22 +1347,6 @@ function retryReadViewExecution() {
   delete state.readViewErrors[key];
   delete state.readViewPayloads[key];
   renderMain();
-}
-
-function renderRecoveryReadView(payload) {
-  var packet = payload.work_packet || {};
-  var entries = packet.entries || [];
-  var html = '<div class="read-view-panel"><h3>Recovery work packet</h3>'
-    + '<p class="muted">Read through /api/sessions/:id/read using the shared recovery DTO.</p>'
-    + '<div class="inspector-field"><span class="label">entries</span><span class="value">' + esc(String(entries.length)) + '</span></div>'
-    + '<div class="inspector-field"><span class="label">evidence refs</span><span class="value">' + esc(String((packet.evidence_refs || []).length)) + '</span></div>';
-  entries.slice(0, 10).forEach(function(entry) {
-    html += '<div class="annotation-item"><div class="meta">' + esc(entry.section || 'entry') + ' / ' + esc(entry.support || 'support') + '</div>'
-      + '<div class="note"><strong>' + esc(entry.label || 'entry') + '</strong><br>' + esc(entry.text || '') + '</div></div>';
-  });
-  if (!entries.length) html += '<div class="inspector-empty">No recovery entries surfaced for this session.</div>';
-  html += '</div>';
-  return html;
 }
 
 function renderRawReadView(payload) {
@@ -1412,7 +1391,7 @@ function renderContextReadView(payload) {
   return html;
 }
 
-function renderContextPackReadView(payload) {
+function renderContextImageReadView(payload) {
   var segments = payload.segments || [];
   var omitted = payload.omitted || [];
   var spec = payload.spec || {};
@@ -1420,8 +1399,8 @@ function renderContextPackReadView(payload) {
     + '<p class="muted">Read through /api/sessions/:id/read using the shared ContextImage payload (compile_context).</p>'
     + '<div class="inspector-field"><span class="label">segments</span><span class="value">' + esc(String(segments.length)) + '</span></div>'
     + '<div class="inspector-field"><span class="label">tokens</span><span class="value">' + esc(String(payload.token_estimate || 0)) + '</span></div>'
-    + '<div class="inspector-field"><span class="label">views</span><span class="value">' + esc((spec.read_views || []).join(', ') || 'recovery') + '</span></div>'
-    + '<div class="inspector-field"><span class="label">strategy</span><span class="value">' + esc(payload.selection_strategy || 'single_session_recovery_digest_v0') + '</span></div>';
+    + '<div class="inspector-field"><span class="label">views</span><span class="value">' + esc((spec.read_views || []).join(', ') || '-') + '</span></div>'
+    + '<div class="inspector-field"><span class="label">strategy</span><span class="value">' + esc(payload.selection_strategy || 'context_spec_v1') + '</span></div>';
   segments.slice(0, 8).forEach(function(segment) {
     html += '<div class="annotation-item"><div class="meta">' + esc(segment.kind || 'segment') + ' / ' + esc(String(segment.token_estimate || 0)) + ' tokens</div>'
       + '<div class="note"><strong>' + esc(segment.title || segment.segment_id || 'Segment') + '</strong></div></div>';
@@ -1868,9 +1847,9 @@ function renderInspectorCost(el, c) {
 
 async function loadEvidencePanel(id) {
   try {
-    var recovery = await fetchJSON('/api/sessions/' + encodeURIComponent(id) + '/recovery?report=work-packet&format=json', {timeoutMs: 10000});
+    var context = await fetchJSON('/api/sessions/' + encodeURIComponent(id) + '/read?view=context-image&format=json&include_messages=0', {timeoutMs: 10000});
     var assertions = await fetchJSON('/api/assertions?target_ref=' + encodeURIComponent('session:' + id) + '&limit=20', {timeoutMs: 10000});
-    state.evidencePanels[id] = {recovery: recovery, assertions: assertions};
+    state.evidencePanels[id] = {context: context, assertions: assertions};
   } catch(e) {
     state.evidencePanels[id] = {error: String(e)};
   }
@@ -1901,23 +1880,23 @@ function renderInspectorEvidence(el, c) {
     el.innerHTML = '<div class="inspector-empty">Evidence surface unavailable</div>';
     return;
   }
-  var packet = (panel.recovery && panel.recovery.work_packet) || {};
+  var contextPayload = (panel.context && panel.context.payload) || {};
   var assertions = (panel.assertions && panel.assertions.items) || [];
-  var html = '<div class="inspector-section"><h4>Work packet</h4>'
-    + '<div class="inspector-field"><span class="label">entries</span><span class="value">' + esc(String((packet.entries || []).length)) + '</span></div>'
-    + '<div class="inspector-field"><span class="label">evidence refs</span><span class="value">' + esc(String((packet.evidence_refs || []).length)) + '</span></div>'
+  var html = '<div class="inspector-section"><h4>Context image</h4>'
+    + '<div class="inspector-field"><span class="label">segments</span><span class="value">' + esc(String((contextPayload.segments || []).length)) + '</span></div>'
+    + '<div class="inspector-field"><span class="label">evidence refs</span><span class="value">' + esc(String((contextPayload.evidence_refs || []).length)) + '</span></div>'
     + '</div>';
-  if ((packet.entries || []).length) {
-    html += '<div class="inspector-section"><h4>Packet entries</h4>';
-    (packet.entries || []).slice(0, 8).forEach(function(entry) {
-      html += '<div class="annotation-item"><div class="meta">' + esc(entry.section || 'entry') + ' / ' + esc(entry.support || 'support') + '</div>'
-        + '<div class="note"><strong>' + esc(entry.label || 'entry') + '</strong><br>' + esc(entry.text || '') + '</div>'
+  if ((contextPayload.segments || []).length) {
+    html += '<div class="inspector-section"><h4>Segments</h4>';
+    (contextPayload.segments || []).slice(0, 8).forEach(function(segment) {
+      html += '<div class="annotation-item"><div class="meta">' + esc(segment.kind || 'segment') + ' / ' + esc(String(segment.token_estimate || 0)) + ' tokens</div>'
+        + '<div class="note"><strong>' + esc(segment.title || segment.segment_id || 'Segment') + '</strong></div>'
         + '</div>';
     });
     html += '</div>';
   }
-  html += '<div class="inspector-section"><h4>Evidence refs</h4>' + renderRefList(packet.evidence_refs || []) + '</div>';
-  html += '<div class="inspector-section"><h4>Target refs</h4>' + renderRefList(packet.target_refs || []) + '</div>';
+  html += '<div class="inspector-section"><h4>Evidence refs</h4>' + renderRefList(contextPayload.evidence_refs || []) + '</div>';
+  html += '<div class="inspector-section"><h4>Object refs</h4>' + renderRefList(contextPayload.object_refs || []) + '</div>';
   html += '<div class="inspector-section"><h4>Assertions</h4>';
   if (assertions.length) {
     assertions.forEach(function(claim) {

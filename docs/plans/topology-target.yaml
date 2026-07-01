@@ -3510,6 +3510,10 @@ files:
     loc: 2810
     target: polylogue/surfaces/payloads.py
     owner: stable
+  - path: polylogue/surfaces/projection_spec.py
+    loc: 164
+    target: polylogue/surfaces/projection_spec.py
+    owner: stable
   - path: polylogue/telemetry/__init__.py
     loc: 5
     target: polylogue/telemetry/__init__.py

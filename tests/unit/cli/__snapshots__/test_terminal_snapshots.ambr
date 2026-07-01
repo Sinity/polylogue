@@ -141,6 +141,8 @@
     --origin TEXT                   Include origins (comma = OR)
     --exclude-origin TEXT           Exclude origins
     -r, --repo TEXT                 Filter by repository name (comma = OR)
+    --project TEXT                  Filter by provider project ref, e.g. ChatGPT
+                                    g-p-<id> (comma = OR)
     -t, --tag TEXT                  Include tags (comma = OR, supports
                                     key:value)
     --exclude-tag TEXT              Exclude tags
@@ -175,9 +177,6 @@
     --min-messages INTEGER          Minimum message count
     --max-messages INTEGER          Maximum message count
     --min-words INTEGER             Minimum total word count
-    --message-type TYPE             Filter by message content type (message,
-                                    summary, tool_use, tool_result, thinking,
-                                    context, protocol)
     --since-session TEXT            Show sessions in same cwd after this session
                                     ID
     --since TEXT                    After date (ISO, 'yesterday', 'last week')
@@ -203,27 +202,8 @@
                                     shell pipelines and LLM tool-use harnesses.
     --explain                       Explain query DSL parsing and lowering
                                     instead of executing the query.
-    --transform [strip-tools|strip-thinking|strip-all]
-                                    Remove content: strip-tools (tool calls),
-                                    strip-thinking (reasoning), strip-all (both)
-    --no-code-blocks                Exclude fenced and structured code blocks
-                                    from output
-    --no-tool-calls                 Exclude tool invocation records from output
-    --no-tool-outputs               Exclude tool-result payloads from output
-    --no-file-reads                 Exclude file-read payloads while keeping
-                                    other tool output
-    --prose-only                    Show only authored prose text
     --stream                        Stream output (low memory). Requires
-                                    --latest or -i ID. Incompatible with
-                                    --transform
-    -d, --dialogue-only             Show only user<PATH> messages
-    --message-role TEXT             Show only selected message roles (repeatable
-                                    or comma-separated: user, assistant, system,
-                                    tool, unknown)
-    --material-origin TEXT          Show only selected material origins
-                                    (repeatable or comma-separated:
-                                    human_authored, runtime_protocol,
-                                    tool_result, unknown)
+                                    --latest or -i ID.
     --set TEXT...                   Set metadata key value
     --add-tag TEXT                  Add tags (comma-separated)
     --plain                         Force non-interactive plain output
@@ -362,6 +342,9 @@
     --exclude-origin TEXT           Exclude origins
     -r, --repo TEXT                 Filter by repository name
   (comma = OR)
+    --project TEXT                  Filter by provider project
+   ref, e.g. ChatGPT
+                                    g-p-<id> (comma = OR)
     -t, --tag TEXT                  Include tags (comma = OR,
   supports
                                     key:value)
@@ -414,11 +397,6 @@
     --min-messages INTEGER          Minimum message count
     --max-messages INTEGER          Maximum message count
     --min-words INTEGER             Minimum total word count
-    --message-type TYPE             Filter by message content
-  type (message,
-                                    summary, tool_use, tool_re
-  sult, thinking,
-                                    context, protocol)
     --since-session TEXT            Show sessions in same cwd
   after this session
                                     ID
@@ -462,42 +440,9 @@
   and lowering
                                     instead of executing the q
   uery.
-    --transform [strip-tools|strip-thinking|strip-all]
-                                    Remove content: strip-tool
-  s (tool calls),
-                                    strip-thinking (reasoning)
-  , strip-all (both)
-    --no-code-blocks                Exclude fenced and structu
-  red code blocks
-                                    from output
-    --no-tool-calls                 Exclude tool invocation re
-  cords from output
-    --no-tool-outputs               Exclude tool-result payloa
-  ds from output
-    --no-file-reads                 Exclude file-read payloads
-   while keeping
-                                    other tool output
-    --prose-only                    Show only authored prose t
-  ext
     --stream                        Stream output (low memory)
   . Requires
-                                    --latest or -i ID. Incompa
-  tible with
-                                    --transform
-    -d, --dialogue-only             Show only user<PATH> m
-  essages
-    --message-role TEXT             Show only selected message
-   roles (repeatable
-                                    or comma-separated: user,
-  assistant, system,
-                                    tool, unknown)
-    --material-origin TEXT          Show only selected materia
-  l origins
-                                    (repeatable or comma-separ
-  ated:
-                                    human_authored, runtime_pr
-  otocol,
-                                    tool_result, unknown)
+                                    --latest or -i ID.
     --set TEXT...                   Set metadata key value
     --add-tag TEXT                  Add tags (comma-separated)
     --plain                         Force non-interactive plai
@@ -619,6 +564,8 @@
     --origin TEXT                   Include origins (comma = OR)
     --exclude-origin TEXT           Exclude origins
     -r, --repo TEXT                 Filter by repository name (comma = OR)
+    --project TEXT                  Filter by provider project ref, e.g. ChatGPT
+                                    g-p-<id> (comma = OR)
     -t, --tag TEXT                  Include tags (comma = OR, supports
                                     key:value)
     --exclude-tag TEXT              Exclude tags
@@ -653,9 +600,6 @@
     --min-messages INTEGER          Minimum message count
     --max-messages INTEGER          Maximum message count
     --min-words INTEGER             Minimum total word count
-    --message-type TYPE             Filter by message content type (message,
-                                    summary, tool_use, tool_result, thinking,
-                                    context, protocol)
     --since-session TEXT            Show sessions in same cwd after this session
                                     ID
     --since TEXT                    After date (ISO, 'yesterday', 'last week')
@@ -681,27 +625,8 @@
                                     shell pipelines and LLM tool-use harnesses.
     --explain                       Explain query DSL parsing and lowering
                                     instead of executing the query.
-    --transform [strip-tools|strip-thinking|strip-all]
-                                    Remove content: strip-tools (tool calls),
-                                    strip-thinking (reasoning), strip-all (both)
-    --no-code-blocks                Exclude fenced and structured code blocks
-                                    from output
-    --no-tool-calls                 Exclude tool invocation records from output
-    --no-tool-outputs               Exclude tool-result payloads from output
-    --no-file-reads                 Exclude file-read payloads while keeping
-                                    other tool output
-    --prose-only                    Show only authored prose text
     --stream                        Stream output (low memory). Requires
-                                    --latest or -i ID. Incompatible with
-                                    --transform
-    -d, --dialogue-only             Show only user<PATH> messages
-    --message-role TEXT             Show only selected message roles (repeatable
-                                    or comma-separated: user, assistant, system,
-                                    tool, unknown)
-    --material-origin TEXT          Show only selected material origins
-                                    (repeatable or comma-separated:
-                                    human_authored, runtime_protocol,
-                                    tool_result, unknown)
+                                    --latest or -i ID.
     --set TEXT...                   Set metadata key value
     --add-tag TEXT                  Add tags (comma-separated)
     --plain                         Force non-interactive plain output

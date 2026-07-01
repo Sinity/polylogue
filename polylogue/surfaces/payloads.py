@@ -1645,43 +1645,6 @@ def _candidate_review_disabled_reasons(
     }
 
 
-RecoveryReportKind: TypeAlias = Literal["digest", "work-packet"]
-RecoveryReportFormat: TypeAlias = Literal["json", "markdown"]
-
-
-class RecoveryReadPayload(SurfacePayloadModel):
-    """Shared recovery/read envelope for daemon web and future API/MCP parity."""
-
-    session_id: str
-    report: RecoveryReportKind
-    format: RecoveryReportFormat
-    digest: dict[str, object] | None = None
-    work_packet: dict[str, object] | None = None
-    markdown: str | None = None
-
-    @classmethod
-    def from_digest(cls, digest: BaseModel) -> RecoveryReadPayload:
-        return cls(
-            session_id=str(digest.model_dump(mode="python")["session_id"]),
-            report="digest",
-            format="json",
-            digest=cast(dict[str, object], model_json_document(digest, exclude_none=True)),
-        )
-
-    @classmethod
-    def from_work_packet_json(cls, packet: BaseModel) -> RecoveryReadPayload:
-        return cls(
-            session_id=str(packet.model_dump(mode="python")["session_id"]),
-            report="work-packet",
-            format="json",
-            work_packet=cast(dict[str, object], model_json_document(packet, exclude_none=True)),
-        )
-
-    @classmethod
-    def from_work_packet_markdown(cls, *, session_id: object, markdown: str) -> RecoveryReadPayload:
-        return cls(session_id=str(session_id), report="work-packet", format="markdown", markdown=markdown)
-
-
 class RefResolutionActionPayload(SurfacePayloadModel):
     """One affordance a client can offer after resolving a public ref."""
 
@@ -2835,9 +2798,6 @@ __all__ = [
     "OtelLogRecordPayload",
     "OtelProjectionPayload",
     "OtelSpanPayload",
-    "RecoveryReadPayload",
-    "RecoveryReportFormat",
-    "RecoveryReportKind",
     "RefResolutionActionPayload",
     "RANKING_POLICY_MIXED",
     "RANKING_POLICY_VERSION",

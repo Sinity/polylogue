@@ -26,14 +26,6 @@ class ReadViewMessageOptions:
 
     limit: int | None = None
     offset: int = 0
-    role: tuple[str, ...] = ()
-    material_origin: tuple[str, ...] = ()
-    message_type: str | None = None
-    no_code_blocks: bool = False
-    no_tool_calls: bool = False
-    no_tool_outputs: bool = False
-    no_file_reads: bool = False
-    prose_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,8 +36,8 @@ class ReadViewContextOptions:
 
 
 @dataclass(frozen=True, slots=True)
-class ReadViewContextPackOptions:
-    """Options owned by the project context-pack view."""
+class ReadViewContextImageOptions:
+    """Options owned by the project context-image view."""
 
     project_path: str | None = None
     project_repo: str | None = None
@@ -55,13 +47,6 @@ class ReadViewContextPackOptions:
     query: str | None = None
     max_sessions: int = 5
     no_redact: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class ReadViewRecoveryOptions:
-    """Options owned by the recovery digest/report view."""
-
-    report: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,8 +71,7 @@ class ReadViewCorrelationOptions:
 ReadViewOptions = (
     ReadViewMessageOptions
     | ReadViewContextOptions
-    | ReadViewContextPackOptions
-    | ReadViewRecoveryOptions
+    | ReadViewContextImageOptions
     | ReadViewNeighborOptions
     | ReadViewCorrelationOptions
 )
@@ -182,7 +166,7 @@ def execute_query_request(env: AppEnv, request: RootModeRequest) -> None:
 
 __all__ = [
     "ReadViewContextOptions",
-    "ReadViewContextPackOptions",
+    "ReadViewContextImageOptions",
     "ReadViewCorrelationOptions",
     "ReadViewHandler",
     "ReadViewHandlerFunc",
@@ -193,7 +177,6 @@ __all__ = [
     "ReadViewOptionBuilder",
     "ReadViewOptions",
     "ReadViewOptionValues",
-    "ReadViewRecoveryOptions",
     "ReadViewSessionPolicy",
     "deliver_content",
     "execute_query_request",

@@ -1,6 +1,6 @@
-"""Unit tests for the build_context_pack MCP tool and context-pack selection.
+"""Unit tests for the build_context_image MCP tool and context-image selection.
 
-build_context_pack collapsed onto the shared ``compile_context`` engine: it is a
+build_context_image collapsed onto the shared ``compile_context`` engine: it is a
 thin lens that selects sessions through the query algebra and returns the
 ``ContextImage`` payload. These tests cover the selection helper directly and the
 tool's delegation/contract; ContextImage compilation itself is covered by the API
@@ -18,8 +18,8 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.models import Session
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.context.compiler import ContextImage, ContextOmission, ContextSegment, ContextSpec
+from polylogue.context.selection import select_context_image_sessions
 from polylogue.core.enums import Provider
-from polylogue.mcp.context_pack import select_context_pack_sessions
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import (
     EXPECTED_TOOL_NAMES,
@@ -55,23 +55,23 @@ def _context_image(*, with_messages: bool = True) -> ContextImage:
     )
 
 
-class TestBuildContextPackRegistration:
-    """Verify the build_context_pack tool is registered and callable."""
+class TestBuildContextImageRegistration:
+    """Verify the build_context_image tool is registered and callable."""
 
     def test_tool_name_is_in_expected_set(self) -> None:
-        assert "build_context_pack" in EXPECTED_TOOL_NAMES
+        assert "build_context_image" in EXPECTED_TOOL_NAMES
 
     def test_tool_is_registered_on_server(self, mcp_server: MCPServerUnderTest) -> None:
         tools = mcp_server._tool_manager._tools
-        assert "build_context_pack" in tools
-        assert callable(tools["build_context_pack"].fn)
+        assert "build_context_image" in tools
+        assert callable(tools["build_context_image"].fn)
 
 
-class TestContextPackSelection:
+class TestContextImageSelection:
     """The recall-oriented query-algebra selection retained after the collapse."""
 
     @pytest.mark.asyncio
-    async def test_context_pack_broadens_zero_result_archaeology_query(self) -> None:
+    async def test_context_image_broadens_zero_result_archaeology_query(self) -> None:
         """A pasted multi-token archaeology query falls back to recall terms."""
         conv = make_conv(
             id="test:conv-1",
@@ -90,7 +90,7 @@ class TestContextPackSelection:
         def coerce_limit(value: object) -> int:
             return int(str(value))
 
-        selection = await select_context_pack_sessions(
+        selection = await select_context_image_sessions(
             query_sessions,
             coerce_limit,
             project_path=None,
@@ -108,7 +108,7 @@ class TestContextPackSelection:
         assert ("event_replacements",) in seen_queries
 
     @pytest.mark.asyncio
-    async def test_context_pack_relaxes_project_filter_after_recall_miss(self) -> None:
+    async def test_context_image_relaxes_project_filter_after_recall_miss(self) -> None:
         """Project filters are relaxed only after strict and in-project recall miss."""
         conv = make_conv(
             id="test:conv-2",
@@ -125,7 +125,7 @@ class TestContextPackSelection:
         def coerce_limit(value: object) -> int:
             return int(str(value))
 
-        selection = await select_context_pack_sessions(
+        selection = await select_context_image_sessions(
             query_sessions,
             coerce_limit,
             project_path="/realm/project/sinex",
@@ -142,18 +142,18 @@ class TestContextPackSelection:
         assert selection.relaxed_filters == ("project_path",)
 
 
-class TestBuildContextPackDelegation:
-    """The tool delegates to context_pack_payload and serializes the ContextImage."""
+class TestBuildContextImageDelegation:
+    """The tool delegates to context_image_payload and serializes the ContextImage."""
 
     @pytest.mark.asyncio
     async def test_returns_context_image_payload(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
             mock_poly = make_polylogue_mock()
-            mock_poly.context_pack_payload = AsyncMock(return_value=_context_image())
+            mock_poly.context_image_payload = AsyncMock(return_value=_context_image())
             mock_get_polylogue.return_value = mock_poly
 
             raw = await invoke_surface_async(
-                mcp_server._tool_manager._tools["build_context_pack"].fn,
+                mcp_server._tool_manager._tools["build_context_image"].fn,
                 query="needle",
                 max_sessions=1,
             )
@@ -163,7 +163,7 @@ class TestBuildContextPackDelegation:
         assert payload["segments"][0]["payload_kind"] == "messages"
         assert payload["token_estimate"] == 2
         # Delegated to the shared engine with messages included by default.
-        kwargs = mock_poly.context_pack_payload.call_args.kwargs
+        kwargs = mock_poly.context_image_payload.call_args.kwargs
         assert kwargs["query"] == "needle"
         assert kwargs["include_messages"] is True
         assert kwargs["redact_paths"] is True
@@ -172,29 +172,29 @@ class TestBuildContextPackDelegation:
     async def test_summary_detail_omits_messages(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
             mock_poly = make_polylogue_mock()
-            mock_poly.context_pack_payload = AsyncMock(return_value=_context_image(with_messages=False))
+            mock_poly.context_image_payload = AsyncMock(return_value=_context_image(with_messages=False))
             mock_get_polylogue.return_value = mock_poly
 
             await invoke_surface_async(
-                mcp_server._tool_manager._tools["build_context_pack"].fn,
+                mcp_server._tool_manager._tools["build_context_image"].fn,
                 max_sessions=1,
                 detail_level="summary",
             )
 
-        kwargs = mock_poly.context_pack_payload.call_args.kwargs
+        kwargs = mock_poly.context_image_payload.call_args.kwargs
         assert kwargs["include_messages"] is False
 
     @pytest.mark.asyncio
     async def test_redact_paths_passthrough(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
             mock_poly = make_polylogue_mock()
-            mock_poly.context_pack_payload = AsyncMock(return_value=_context_image())
+            mock_poly.context_image_payload = AsyncMock(return_value=_context_image())
             mock_get_polylogue.return_value = mock_poly
 
             await invoke_surface_async(
-                mcp_server._tool_manager._tools["build_context_pack"].fn,
+                mcp_server._tool_manager._tools["build_context_image"].fn,
                 max_sessions=1,
                 redact_paths=False,
             )
 
-        assert mock_poly.context_pack_payload.call_args.kwargs["redact_paths"] is False
+        assert mock_poly.context_image_payload.call_args.kwargs["redact_paths"] is False
