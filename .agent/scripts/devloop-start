@@ -17,30 +17,39 @@ esac
 
 title="${1:?usage: devloop-start [--focus MODE] <slice-title>}"
 root="${POLYLOGUE_AGENT_LOG_ROOT:-/realm/project/polylogue/.agent/conductor-devloop}"
-"$(dirname "$0")/devloop-log" "$title" "Focus: $start_focus -> Evidence
+next_focus="Evidence"
+next_decision="gather current evidence before editing"
+if [ "$start_focus" = "Meta" ]; then
+  next_focus="Meta"
+  next_decision="audit process evidence and choose the smallest executable scaffold improvement"
+fi
+
+"$(dirname "$0")/devloop-log" "$title" "Focus: $start_focus -> $next_focus
 Trigger: $title
 Primary aim: define the slice against current evidence before editing.
 Evidence touched: initial devloop status, review, active loop, and slice trigger.
-Action taken: started the slice and moved focus to Evidence.
+Action taken: started the slice and moved focus to $next_focus.
 Artifact/proof: pending; record the narrow proof before claiming completion.
 Velocity note: slice started through devloop-start so elapsed time is tracked.
-Next decision: gather evidence and choose the smallest coherent construction step."
+Next decision: $next_decision."
 
 if [ -f "$root/ACTIVE-LOOP.md" ]; then
-  python3 - "$root/ACTIVE-LOOP.md" "$title" "$start_focus" <<'PY'
+  python3 - "$root/ACTIVE-LOOP.md" "$title" "$start_focus" "$next_focus" "$next_decision" <<'PY'
 from pathlib import Path
 import sys
 
 path = Path(sys.argv[1])
 title = sys.argv[2]
 start_focus = sys.argv[3]
+next_focus = sys.argv[4]
+next_decision = sys.argv[5]
 text = path.read_text()
 replacements = {
     "Current Slice": f"Current Slice\n\n{title}",
     "Current Focus": (
-        f"Current Focus\n\nFocus: {start_focus} -> Evidence\n\n"
+        f"Current Focus\n\nFocus: {start_focus} -> {next_focus}\n\n"
         f"Trigger: {title}\n\n"
-        "Decision: Gather current evidence, choose the narrow proof, and record the next material focus switch."
+        f"Decision: {next_decision.capitalize()}, then record the next material focus switch."
     ),
     "Accepted Warnings": (
         "Accepted Warnings\n\n"
@@ -48,7 +57,7 @@ replacements = {
         "record only current-slice exceptions here; historical proofs and completed slices belong "
         "in `OPERATING-LOG.md` or `DEMO-RADAR.md`."
     ),
-    "Next Action": "Next Action\n\nFill the new OPERATING-LOG entry, gather live evidence, and choose the narrow proof.",
+    "Next Action": f"Next Action\n\nFill the new OPERATING-LOG entry, {next_decision}.",
 }
 for heading, body in replacements.items():
     marker = f"## {heading.splitlines()[0]}"

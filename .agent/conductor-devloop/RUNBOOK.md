@@ -114,6 +114,10 @@ Velocity, and Meta.
 7. **Meta**
    - Run when the operator corrects process behavior, repeated friction appears,
      or a loop feels vague/stalled.
+   - Start pure process/self-improvement slices with
+     `.agent/scripts/devloop-start --focus Meta "<slice>"`; this records
+     `Meta -> Meta` until a deliberate transition moves the loop back to
+     Evidence, Construction, Proof, Artifact, Velocity, or Direction.
    - Use `.agent/scripts/devloop-meta "<trigger>" "<failure-hypothesis>" "<evidence>" "<change-considered>" "<change-made>" "<change-deferred>" "<next-tripwire>"`.
    - Fill every field; use `none` only when a field is genuinely empty.
    - Prefer one concrete scaffold/tooling/observability change over broad
