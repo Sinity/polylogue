@@ -4113,11 +4113,65 @@ class TestBooleanQueryExpression:
             assert selected("sessions where exists run(role:subagent)") == ["codex-session:ext-exists-hit"]
             assert selected("exists observed-event(kind:subagent_started)") == ["codex-session:ext-exists-hit"]
             assert selected("exists context-snapshot(boundary:subagent_start)") == ["codex-session:ext-exists-hit"]
-            # Every session has a main run, so the broad predicate selects both.
+
+    def test_exists_run_projection_predicates_use_source_relations(self, workspace_env: dict[str, Path]) -> None:
+        """`exists` selectors agree with source-derived run projection terminal rows."""
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        archive_root = workspace_env["archive_root"]
+        index_db = archive_root / "index.db"
+        (
+            SessionBuilder(index_db, "source-exists-hit")
+            .provider("claude-code")
+            .git_repository_url("polylogue")
+            .title("source exists hit")
+            .add_message(
+                "m-hit",
+                role="assistant",
+                text="I will inspect the archive.",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "id": "tool-hit",
+                        "name": "Read",
+                        "tool_input": {"file_path": "polylogue/storage/sqlite/archive_tiers/archive.py"},
+                    },
+                    {"type": "tool_result", "tool_id": "tool-hit", "text": "ok"},
+                ],
+            )
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "source-exists-miss")
+            .provider("claude-code")
+            .git_repository_url("polylogue")
+            .title("source exists miss")
+            .save()
+        )
+        with sqlite3.connect(index_db) as conn:
+            conn.execute("DELETE FROM session_runs")
+            conn.execute("DELETE FROM session_observed_events")
+            conn.execute("DELETE FROM session_context_snapshots")
+            conn.commit()
+
+        with ArchiveStore.open_existing(archive_root) as archive:
+
+            def selected(expression: str) -> list[str]:
+                spec = compile_expression(expression)
+                assert spec.boolean_predicate is not None
+                rows = archive.list_summaries(limit=100, boolean_predicate=spec.boolean_predicate)
+                return sorted(row.session_id for row in rows)
+
             assert selected("sessions where exists run(role:main)") == [
-                "codex-session:ext-exists-hit",
-                "codex-session:ext-exists-miss",
+                "claude-code-session:ext-source-exists-hit",
+                "claude-code-session:ext-source-exists-miss",
             ]
+            assert selected("exists context-snapshot(boundary:session_start)") == [
+                "claude-code-session:ext-source-exists-hit",
+                "claude-code-session:ext-source-exists-miss",
+            ]
+            assert selected("exists observed-event(tool:Read)") == ["claude-code-session:ext-source-exists-hit"]
 
     def test_exists_block_tool_predicate_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore

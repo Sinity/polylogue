@@ -6740,12 +6740,23 @@ def _exists_predicate_clause(table_alias: str, predicate: QueryExistsPredicate) 
             params,
         )
     if predicate.unit in {"run", "observed-event", "context-snapshot"}:
-        run_projection_tables = {
-            "run": ("session_runs", "exists_runs"),
-            "observed-event": ("session_observed_events", "exists_observed_events"),
-            "context-snapshot": ("session_context_snapshots", "exists_context_snapshots"),
+        run_projection_relations = {
+            "run": (_SOURCE_RUN_RELATION_SQL, "runs", "exists_runs", []),
+            "context-snapshot": (
+                _SOURCE_CONTEXT_SNAPSHOT_RELATION_SQL,
+                "context_snapshots",
+                "exists_context_snapshots",
+                [],
+            ),
         }
-        table_name, row_alias = run_projection_tables[predicate.unit]
+        if predicate.unit == "observed-event":
+            source_where, source_params = _observed_event_source_pushdown(predicate.child)
+            prefix_sql = _OBSERVED_EVENT_RELATION_SQL.format(source_where=source_where)
+            relation_name = "observed_events"
+            row_alias = "exists_observed_events"
+            relation_params = source_params
+        else:
+            prefix_sql, relation_name, row_alias, relation_params = run_projection_relations[predicate.unit]
         child_clause, params = _structural_predicate_clause(
             predicate.unit,
             row_alias,
@@ -6755,13 +6766,14 @@ def _exists_predicate_clause(table_alias: str, predicate: QueryExistsPredicate) 
         return (
             f"""
             EXISTS (
+                {prefix_sql}
                 SELECT 1
-                FROM {table_name} {row_alias}
+                FROM {relation_name} {row_alias}
                 WHERE {row_alias}.session_id = {table_alias}.session_id
                   AND {child_clause}
             )
             """.strip(),
-            params,
+            [*relation_params, *params],
         )
     raise ValueError(f"unsupported structural query unit: {predicate.unit}")
 
