@@ -180,6 +180,11 @@ Use:
 .agent/scripts/devloop-integration --subagent-prompt
 ```
 
+The default report shows the workbench branch state and any local PR-shaped
+replay worktrees under the integration root. Treat that as the source of truth
+for integration status before deciding to push/open PRs, continue replaying
+groups, or ask another subagent for clustering.
+
 The intended flow is:
 
 1. cluster ahead commits by related product/change intent;

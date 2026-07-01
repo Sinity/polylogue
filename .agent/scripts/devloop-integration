@@ -12,6 +12,11 @@ Options:
   --base <ref>        Default: origin/master if present, else master.
   --subagent-prompt  Print a prompt for a read-heavy integration-planning subagent.
   -h, --help         Show this help.
+
+Environment:
+  POLYLOGUE_INTEGRATION_WORKTREE_ROOT
+      Optional root for local PR-shaped replay worktrees.
+      Default: /realm/tmp/worktrees/polylogue-integration-first-wave
 EOF
 }
 
@@ -61,6 +66,9 @@ head="$(git rev-parse --short HEAD)"
 merge_base="$(git merge-base "$base" HEAD)"
 ahead_count="$(git rev-list --count "$merge_base"..HEAD)"
 dirty="$(git status --short | wc -l | tr -d ' ')"
+repo="$(git rev-parse --show-toplevel)"
+integration_root="${POLYLOGUE_INTEGRATION_WORKTREE_ROOT:-/realm/tmp/worktrees/polylogue-integration-first-wave}"
+replay_plan="$repo/.agent/task-history/integration-first-wave-replay-plan.md"
 
 echo "== integration state =="
 echo "branch: ${branch:-detached}"
@@ -69,6 +77,35 @@ echo "base: $base"
 echo "merge_base: $(git rev-parse --short "$merge_base")"
 echo "commits_ahead: $ahead_count"
 echo "dirty_paths: $dirty"
+echo
+
+echo "== local PR-shaped replay state =="
+echo "worktree_root: $integration_root"
+if [[ -f "$replay_plan" ]]; then
+  echo "replay_plan: $replay_plan"
+else
+  echo "replay_plan: missing"
+fi
+if [[ ! -d "$integration_root" ]]; then
+  echo "local_branches: none"
+else
+  found=0
+  for path in "$integration_root"/*; do
+    [[ -d "$path" ]] || continue
+    if ! git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      continue
+    fi
+    found=1
+    local_branch="$(git -C "$path" branch --show-current || true)"
+    local_head="$(git -C "$path" rev-parse --short HEAD)"
+    local_dirty="$(git -C "$path" status --short | wc -l | tr -d ' ')"
+    printf '%s\tbranch=%s\thead=%s\tdirty_paths=%s\n' \
+      "$path" "${local_branch:-detached}" "$local_head" "$local_dirty"
+  done
+  if [[ "$found" == "0" ]]; then
+    echo "local_branches: none"
+  fi
+fi
 echo
 
 echo "== commits ahead of base =="

@@ -207,6 +207,13 @@ Use:
 .agent/scripts/devloop-integration --subagent-prompt
 ```
 
+The default report must show both sides of the lane:
+
+- workbench state: merge-base, current head, commits ahead of `origin/master`;
+- local replay state: PR-shaped worktrees under the integration root, their
+  branches, heads, dirty-path counts, and the current replay-plan artifact when
+  present.
+
 The branch integration target is PR-shaped:
 
 1. Start candidate PR branches from current `origin/master`.
@@ -225,6 +232,11 @@ verification, pushing, and PR creation.
 Run the integration lane during Direction or Velocity when commits ahead of
 master are accumulating across unrelated slices, and during wait windows when
 the pending proof does not need the same checkout or archive.
+
+Before pushing, opening PRs, continuing to the next replay group, or deciding a
+local PR branch is ready, run `.agent/scripts/devloop-integration` and record
+the exact branch heads plus verification in `OPERATING-LOG.md` or the replay
+plan. Do not rely on chat memory for integration state.
 
 ## Heavy Work
 
