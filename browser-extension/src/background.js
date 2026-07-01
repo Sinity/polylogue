@@ -6,6 +6,7 @@ const recentBackgroundCaptures = new Map();
 // command_id -> true once dispatched to a content script this SW lifetime, so a
 // fast poll cannot deliver the same command twice before its ack lands.
 const inFlightPostCommands = new Set();
+const pendingPostCommandAcks = new Map();
 let postPollTimer = 0;
 
 function injectionPlanForUrl(url) {
@@ -296,8 +297,19 @@ function conversationIdForUrl(url) {
 async function ackPostCommand(commandId, result) {
   try {
     await postJson(`/v1/post-commands/${encodeURIComponent(commandId)}/ack`, result);
+    pendingPostCommandAcks.delete(commandId);
+    inFlightPostCommands.delete(commandId);
+    return true;
   } catch (error) {
     await appendCaptureLog({ ok: false, reason: "post_ack", command_id: commandId, error: String(error.message || error) });
+    pendingPostCommandAcks.set(commandId, result);
+    return false;
+  }
+}
+
+async function retryPendingPostCommandAcks() {
+  for (const [commandId, result] of [...pendingPostCommandAcks.entries()]) {
+    await ackPostCommand(commandId, result);
   }
 }
 
@@ -312,6 +324,7 @@ async function findTabForCommand(command) {
     const url = tab.url || tab.pendingUrl || "";
     if (providerTokenForUrl(url) !== provider) continue;
     if (wantNew) {
+      if (conversationIdForUrl(url)) continue;
       if (tab.active) return tab;
       fallback = fallback || tab;
       continue;
@@ -324,10 +337,11 @@ async function findTabForCommand(command) {
 async function dispatchPostCommand(command) {
   if (!command || !command.command_id || inFlightPostCommands.has(command.command_id)) return;
   inFlightPostCommands.add(command.command_id);
+  let terminalAckRecorded = false;
   try {
     const tab = await findTabForCommand(command);
     if (!tab?.id) {
-      await ackPostCommand(command.command_id, { status: "failed", detail: "no_matching_tab" });
+      terminalAckRecorded = await ackPostCommand(command.command_id, { status: "failed", detail: "no_matching_tab" });
       return;
     }
     await ensureCaptureScripts(tab);
@@ -335,26 +349,27 @@ async function dispatchPostCommand(command) {
     try {
       result = await chrome.tabs.sendMessage(tab.id, { type: "polylogue.postReply", command });
     } catch (error) {
-      await ackPostCommand(command.command_id, {
+      terminalAckRecorded = await ackPostCommand(command.command_id, {
         status: "failed",
         detail: String(error.message || error),
         observed_url: tab.url || null,
       });
       return;
     }
-    await ackPostCommand(command.command_id, {
+    terminalAckRecorded = await ackPostCommand(command.command_id, {
       status: result?.status === "submitted" ? "submitted" : "failed",
       detail: result?.detail || null,
       observed_url: result?.observed_url || tab.url || null,
     });
   } finally {
-    inFlightPostCommands.delete(command.command_id);
+    if (terminalAckRecorded) inFlightPostCommands.delete(command.command_id);
   }
 }
 
 async function pollPostCommands() {
   const { postingEnabled } = await postingSettings();
   if (!postingEnabled) return;
+  await retryPendingPostCommandAcks();
   for (const provider of ["chatgpt", "claude"]) {
     let body;
     try {
@@ -376,7 +391,7 @@ async function startPostPolling() {
     return;
   }
   if (postPollTimer) return;
-  postPollTimer = setInterval(() => {
+  postPollTimer = globalThis.setInterval(() => {
     void pollPostCommands();
   }, POST_POLL_INTERVAL_MS);
   void pollPostCommands();
@@ -384,7 +399,7 @@ async function startPostPolling() {
 
 function stopPostPolling() {
   if (postPollTimer) {
-    clearInterval(postPollTimer);
+    globalThis.clearInterval(postPollTimer);
     postPollTimer = 0;
   }
 }

@@ -26,6 +26,8 @@ from polylogue.browser_capture.models import (
 )
 from polylogue.browser_capture.receiver import (
     BrowserCaptureReceiverConfig,
+    BrowserPostCommandConflictError,
+    BrowserPostCommandStateError,
     BrowserPostDisabledError,
     ack_post_command,
     browser_post_enabled,
@@ -217,7 +219,12 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         if parsed.path == "/v1/post-commands":
             params = parse_qs(parsed.query)
             post_provider = params.get("provider", [""])[0] or None
-            commands = poll_post_commands(provider=post_provider, spool_path=self.server.config.spool_path)
+            try:
+                commands = poll_post_commands(provider=post_provider, spool_path=self.server.config.spool_path)
+            except OSError as exc:
+                logger.warning("browser_capture.post_poll_failed", request_id=self._request_id(), error=repr(exc))
+                self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
+                return
             self._send_json(
                 HTTPStatus.OK,
                 BrowserPostCommandListPayload(
@@ -315,6 +322,10 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             logger.warning("browser_capture.post_disabled", request_id=self._request_id())
             self._safe_error(HTTPStatus.FORBIDDEN, "post_disabled")
             return
+        except BrowserPostCommandConflictError:
+            logger.warning("browser_capture.post_command_conflict", request_id=self._request_id())
+            self._safe_error(HTTPStatus.CONFLICT, "duplicate_post_command")
+            return
         except OSError as exc:
             logger.warning("browser_capture.post_enqueue_failed", request_id=self._request_id(), error=repr(exc))
             self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
@@ -348,6 +359,10 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             return
         try:
             command = ack_post_command(command_id, ack, spool_path=self.server.config.spool_path)
+        except BrowserPostCommandStateError:
+            logger.warning("browser_capture.post_ack_invalid_state", request_id=self._request_id())
+            self._safe_error(HTTPStatus.CONFLICT, "invalid_post_command_state")
+            return
         except OSError as exc:
             logger.warning("browser_capture.post_ack_failed", request_id=self._request_id(), error=repr(exc))
             self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")

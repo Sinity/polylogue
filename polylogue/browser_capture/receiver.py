@@ -435,6 +435,14 @@ class BrowserPostDisabledError(RuntimeError):
     """Raised when a post command is requested while posting is disabled."""
 
 
+class BrowserPostCommandConflictError(RuntimeError):
+    """Raised when a queued post command id would overwrite an existing command."""
+
+
+class BrowserPostCommandStateError(RuntimeError):
+    """Raised when an ack targets a command state that cannot be acked."""
+
+
 def browser_post_enabled() -> bool:
     """Return whether outbound posting is enabled via the env safety flag."""
     return os.environ.get(BROWSER_POST_ENABLED_ENV, "") == "1"
@@ -492,6 +500,8 @@ def enqueue_post_command(
         raise BrowserPostDisabledError(f"outbound posting is disabled; set {BROWSER_POST_ENABLED_ENV}=1 to enable")
     root = post_command_queue_root(spool_path)
     command_id = _safe_token(request.command_id) if request.command_id else uuid4().hex
+    if _post_command_path(root, command_id).exists():
+        raise BrowserPostCommandConflictError(f"post command already exists: {command_id}")
     now = datetime.now(UTC).isoformat()
     command = BrowserPostCommand(
         command_id=command_id,
@@ -554,6 +564,10 @@ def ack_post_command(
     command = _read_post_command(path)
     if command is None:
         return None
+    if command.status in {"submitted", "failed"}:
+        return command
+    if command.status != "dispatched":
+        raise BrowserPostCommandStateError(f"cannot ack post command in {command.status!r} state")
     now = datetime.now(UTC).isoformat()
     command.status = ack.status
     command.detail = ack.detail
@@ -569,6 +583,8 @@ __all__ = [
     "POST_COMMAND_QUEUE_DIRNAME",
     "BrowserCaptureReceiverConfig",
     "BrowserCaptureWriteResult",
+    "BrowserPostCommandConflictError",
+    "BrowserPostCommandStateError",
     "BrowserPostDisabledError",
     "ack_post_command",
     "browser_post_enabled",

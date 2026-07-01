@@ -186,7 +186,8 @@
     } else {
       node.textContent = text;
     }
-    node.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, data: text, inputType: "insertText" }));
+    const InputEventCtor = typeof window.InputEvent === "function" ? window.InputEvent : window.Event;
+    node.dispatchEvent(new InputEventCtor("input", { bubbles: true, cancelable: true, data: text, inputType: "insertText" }));
     return true;
   }
 

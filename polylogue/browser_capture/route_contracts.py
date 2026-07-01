@@ -100,13 +100,28 @@ BROWSER_CAPTURE_ROUTE_CONTRACTS: tuple[BrowserCaptureRouteContract, ...] = (
 
 
 def browser_capture_route_contract_for(method: str, path: str) -> BrowserCaptureRouteContract | None:
-    """Return the receiver route contract for an exact method/path pair."""
+    """Return the receiver route contract for a method/path pair."""
 
     method_upper = method.upper()
     for contract in BROWSER_CAPTURE_ROUTE_CONTRACTS:
-        if contract.method == method_upper and contract.pattern == path:
+        if contract.method == method_upper and _route_pattern_matches(contract.pattern, path):
             return contract
     return None
+
+
+def _route_pattern_matches(pattern: str, path: str) -> bool:
+    pattern_parts = pattern.strip("/").split("/")
+    path_parts = path.strip("/").split("/")
+    if len(pattern_parts) != len(path_parts):
+        return False
+    for pattern_part, path_part in zip(pattern_parts, path_parts, strict=True):
+        if pattern_part.startswith("{") and pattern_part.endswith("}"):
+            if not path_part:
+                return False
+            continue
+        if pattern_part != path_part:
+            return False
+    return True
 
 
 __all__ = [

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import get_args
 
 import click
+from pydantic import ValidationError
 
-from polylogue.browser_capture.models import BrowserPostCommandRequest, BrowserPostTarget
+from polylogue.browser_capture.models import BrowserPostCommandRequest, BrowserPostProvider, BrowserPostTarget
 from polylogue.browser_capture.receiver import (
     BROWSER_POST_ENABLED_ENV,
     BrowserPostDisabledError,
@@ -57,7 +59,7 @@ def serve_command(host: str, port: int, spool_path: Path | None) -> None:
 
 
 @browser_capture_command.command("post")
-@click.option("--provider", type=click.Choice(["chatgpt", "claude"]), required=True)
+@click.option("--provider", type=click.Choice(list(get_args(BrowserPostProvider))), required=True)
 @click.option(
     "--conversation-id",
     "conversation_id",
@@ -93,15 +95,17 @@ def post_command(
     is only queued here; the running receiver serves it to the extension via
     GET /v1/post-commands.
     """
-    request = BrowserPostCommandRequest(
-        provider=provider,  # type: ignore[arg-type]
-        target=BrowserPostTarget(conversation_id=conversation_id, project_ref=project_ref),
-        text=text,
-        command_id=command_id,
-        submit=submit,
-    )
     try:
+        request = BrowserPostCommandRequest(
+            provider=provider,  # type: ignore[arg-type]
+            target=BrowserPostTarget(conversation_id=conversation_id, project_ref=project_ref),
+            text=text,
+            command_id=command_id,
+            submit=submit,
+        )
         command = enqueue_post_command(request, spool_path=spool_path)
+    except ValidationError as exc:
+        raise click.ClickException(str(exc)) from None
     except BrowserPostDisabledError:
         raise click.ClickException(
             f"Outbound posting is disabled. Set {BROWSER_POST_ENABLED_ENV}=1 to enable (default OFF safety guard)."

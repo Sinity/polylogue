@@ -12,6 +12,7 @@ from threading import Thread
 from typing import cast
 
 import pytest
+from click.testing import CliRunner
 
 from polylogue.browser_capture.models import (
     BrowserPostCommandAckRequest,
@@ -20,6 +21,8 @@ from polylogue.browser_capture.models import (
 )
 from polylogue.browser_capture.receiver import (
     BROWSER_POST_ENABLED_ENV,
+    BrowserPostCommandConflictError,
+    BrowserPostCommandStateError,
     BrowserPostDisabledError,
     ack_post_command,
     browser_post_enabled,
@@ -32,6 +35,7 @@ from polylogue.browser_capture.route_contracts import (
     browser_capture_route_contract_for,
 )
 from polylogue.browser_capture.server import make_server
+from polylogue.daemon.cli import main as daemon_cli
 
 _EXTENSION_ORIGIN = "chrome-extension://polylogue-test"
 
@@ -110,6 +114,41 @@ def test_ack_unknown_command(tmp_path: Path, post_enabled: None) -> None:
     )
 
 
+def test_enqueue_rejects_duplicate_normalized_command_id(tmp_path: Path, post_enabled: None) -> None:
+    enqueue_post_command(_request_obj().model_copy(update={"command_id": "manual/id"}), spool_path=tmp_path)
+
+    with pytest.raises(BrowserPostCommandConflictError):
+        enqueue_post_command(_request_obj().model_copy(update={"command_id": "manual id"}), spool_path=tmp_path)
+
+
+def test_ack_requires_dispatched_state(tmp_path: Path, post_enabled: None) -> None:
+    command = enqueue_post_command(_request_obj(), spool_path=tmp_path)
+
+    with pytest.raises(BrowserPostCommandStateError):
+        ack_post_command(command.command_id, BrowserPostCommandAckRequest(status="submitted"), spool_path=tmp_path)
+
+
+def test_ack_terminal_state_is_idempotent(tmp_path: Path, post_enabled: None) -> None:
+    command = enqueue_post_command(_request_obj(), spool_path=tmp_path)
+    [dispatched] = poll_post_commands(provider="chatgpt", spool_path=tmp_path)
+    acked = ack_post_command(
+        dispatched.command_id,
+        BrowserPostCommandAckRequest(status="submitted", detail="first", observed_url="https://chatgpt.com/c/conv-1"),
+        spool_path=tmp_path,
+    )
+    repeated = ack_post_command(
+        command.command_id,
+        BrowserPostCommandAckRequest(status="failed", detail="second", observed_url="https://chatgpt.com/c/conv-2"),
+        spool_path=tmp_path,
+    )
+
+    assert acked is not None
+    assert repeated is not None
+    assert repeated.status == "submitted"
+    assert repeated.detail == "first"
+    assert repeated.observed_url == "https://chatgpt.com/c/conv-1"
+
+
 # ---- HTTP route surface ---------------------------------------------------
 
 
@@ -149,6 +188,7 @@ def test_route_contracts_registered() -> None:
     assert {"post_command_enqueue", "post_command_poll", "post_command_ack"} <= kinds
     assert browser_capture_route_contract_for("POST", "/v1/post-commands") is not None
     assert browser_capture_route_contract_for("GET", "/v1/post-commands") is not None
+    assert browser_capture_route_contract_for("POST", "/v1/post-commands/abc123/ack") is not None
 
 
 def test_http_enqueue_disabled_returns_403(tmp_path: Path, post_disabled: None) -> None:
@@ -211,3 +251,46 @@ def test_http_ack_unknown_command_404(tmp_path: Path, post_enabled: None) -> Non
         status, body = _request(host, port, "POST", "/v1/post-commands/nope/ack", body={"status": "failed"})
     assert status == HTTPStatus.NOT_FOUND
     assert body["error"] == "unknown_command"
+
+
+def test_http_ack_pending_command_returns_conflict(tmp_path: Path, post_enabled: None) -> None:
+    with _running_receiver(tmp_path) as (host, port):
+        status, enq = _request(
+            host,
+            port,
+            "POST",
+            "/v1/post-commands",
+            body={"provider": "chatgpt", "target": {"conversation_id": "conv-9"}, "text": "Research X"},
+        )
+        assert status == HTTPStatus.ACCEPTED
+        command_id = cast(str, enq["command_id"])
+
+        status, body = _request(
+            host,
+            port,
+            "POST",
+            f"/v1/post-commands/{command_id}/ack",
+            body={"status": "submitted"},
+        )
+
+    assert status == HTTPStatus.CONFLICT
+    assert body["error"] == "invalid_post_command_state"
+
+
+def test_daemon_post_command_reports_empty_text_cleanly(tmp_path: Path, post_enabled: None) -> None:
+    result = CliRunner().invoke(
+        daemon_cli,
+        [
+            "browser-capture",
+            "post",
+            "--provider",
+            "chatgpt",
+            "--text",
+            "   ",
+            "--spool",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "post command text must not be empty" in result.output
