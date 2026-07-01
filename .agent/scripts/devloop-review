@@ -588,7 +588,7 @@ PY
   fi
 fi
 
-worktree_gc_json="$(devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"
+worktree_gc_json="$(POLYLOGUE_TASK_HISTORY_DISABLE=1 devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"
 if python3 - "$worktree_gc_json" <<'PY'
 from __future__ import annotations
 

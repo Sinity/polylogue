@@ -83,7 +83,7 @@ if [ "$format" = "--json" ]; then
   devloop_state="$(systemctl --user show polylogued-devloop.service -p ActiveState --value 2>/dev/null || true)"
   devloop_sub_state="$(systemctl --user show polylogued-devloop.service -p SubState --value 2>/dev/null || true)"
   polylogued_rows="$(ps -eo pid=,args= | awk '$3 ~ /\/polylogued$/ && $4 == "run" {print}' || true)"
-  worktree_gc_json="$(devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"
+  worktree_gc_json="$(POLYLOGUE_TASK_HISTORY_DISABLE=1 devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"
   python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$observed_events" "$source_version" "$raw_rows" "$raw_materialization_debt" "$raw_materialization_replayable" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$worktree_gc_json" "$pressure_rows" "$performance_blocked" "$packet_bytes" "$packet_files" "$packet_dirs" "$operating_log_bytes" "$events_bytes" <<'PY'
 import json
 import sys
@@ -290,7 +290,7 @@ printf 'devloop polylogued-devloop.service: %s/%s\n' "${devloop_active_state:-un
 ps -eo pid=,args= | awk '$3 ~ /\/polylogued$/ && $4 == "run" {print}' || true
 
 printf '\n== worktrees ==\n'
-worktree_gc_json="$(devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"
+worktree_gc_json="$(POLYLOGUE_TASK_HISTORY_DISABLE=1 devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"
 python3 - "$worktree_gc_json" <<'PY'
 import json
 import sys
