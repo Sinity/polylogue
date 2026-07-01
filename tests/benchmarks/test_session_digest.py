@@ -1,7 +1,7 @@
-"""Recovery digest transform benchmark tests.
+"""Session digest transform benchmark tests.
 
 Run with:
-    pytest tests/benchmarks/test_recovery_digest.py --benchmark-enable -p no:xdist -v
+    pytest tests/benchmarks/test_session_digest.py --benchmark-enable -p no:xdist -v
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
-from polylogue.insights.transforms import RecoveryReportPreset, compile_recovery_digest, render_recovery_report
+from polylogue.insights.transforms import SessionReportPreset, compile_session_digest, render_session_report
 from polylogue.types import SessionId
 from tests.benchmarks.helpers import BenchmarkFixture
 
@@ -26,7 +26,7 @@ def _session(message_count: int) -> Session:
                 id=f"m{index}",
                 role=Role.USER if index % 4 == 0 else Role.ASSISTANT,
                 text=(
-                    f"Decision: keep recovery digest benchmark fixture {index} deterministic.\n"
+                    f"Decision: keep session digest benchmark fixture {index} deterministic.\n"
                     f"Done:\n- PR #{1900 + index} merged\n"
                     "Blockers:\n- none\n"
                     f"Next: verify artifact #{index}"
@@ -53,7 +53,7 @@ def _session(message_count: int) -> Session:
                         "name": "Task",
                         "tool_input": {
                             "subagent_type": "Explore",
-                            "prompt": f"Map recovery evidence lane {index}.",
+                            "prompt": f"Map session evidence lane {index}.",
                         },
                     },
                     {
@@ -66,10 +66,10 @@ def _session(message_count: int) -> Session:
         )
 
     return Session(
-        id=SessionId("codex-session:recovery-benchmark"),
+        id=SessionId("codex-session:session-digest-benchmark"),
         origin=Origin.CODEX_SESSION,
-        title="Recovery digest benchmark",
-        git_branch="feature/test/recovery-digest-benchmark",
+        title="Session digest benchmark",
+        git_branch="feature/test/session-digest-benchmark",
         working_directories=("/realm/project/polylogue",),
         messages=MessageCollection(messages=messages),
     )
@@ -77,25 +77,25 @@ def _session(message_count: int) -> Session:
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("message_count", [12, 120])
-def test_bench_compile_recovery_digest(benchmark: BenchmarkFixture, message_count: int) -> None:
-    """compile_recovery_digest() over tool-heavy session transcripts."""
+def test_bench_compile_session_digest(benchmark: BenchmarkFixture, message_count: int) -> None:
+    """compile_session_digest() over tool-heavy session transcripts."""
     session = _session(message_count)
 
-    digest = benchmark(lambda: compile_recovery_digest(session))
+    digest = benchmark(lambda: compile_session_digest(session))
 
     assert digest.size_metrics.message_count == message_count
     assert digest.size_metrics.tool_summary_count == message_count
     assert digest.size_metrics.subagent_report_count == message_count
-    assert digest.transform.transform_id == "recovery_digest_v0"
+    assert digest.transform.transform_id == "session_digest_v0"
 
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("preset", ["continue", "blame"])
-def test_bench_render_recovery_report(benchmark: BenchmarkFixture, preset: RecoveryReportPreset) -> None:
-    """render_recovery_report() for deterministic recovery report presets."""
-    digest = compile_recovery_digest(_session(120))
+def test_bench_render_session_report(benchmark: BenchmarkFixture, preset: SessionReportPreset) -> None:
+    """render_session_report() for deterministic session report presets."""
+    digest = compile_session_digest(_session(120))
 
-    report = benchmark(lambda: render_recovery_report(digest, preset=preset))
+    report = benchmark(lambda: render_session_report(digest, preset=preset))
 
-    assert report.startswith(f"# {preset.title()}: Recovery digest benchmark")
+    assert report.startswith(f"# {preset.title()}: Session digest benchmark")
     assert "[evidence:" in report

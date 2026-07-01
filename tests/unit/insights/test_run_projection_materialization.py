@@ -1,7 +1,7 @@
 """Parity test for the materialized run-projection read-models.
 
 Rows written by the run-projection materializer must hydrate back to exactly the
-output of ``compile_recovery_digest(session, session_links=()).run_projection`` —
+output of ``compile_session_digest(session, session_links=()).run_projection`` —
 the same compute the runtime query path performs. This guards the #2384 keystone:
 the derived tables are a faithful materialization, not a lossy re-derivation.
 """
@@ -18,7 +18,7 @@ from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
-from polylogue.insights.transforms import compile_recovery_digest
+from polylogue.insights.transforms import compile_session_digest
 from polylogue.storage.insights.session.run_projection_rows import (
     build_session_context_snapshot_records,
     build_session_observed_event_records,
@@ -91,7 +91,7 @@ async def _seed_archive(conn: aiosqlite.Connection) -> str:
 
 async def test_run_projection_materialization_parity(tmp_path: Path) -> None:
     session = _session()
-    projection = compile_recovery_digest(session, session_links=()).run_projection
+    projection = compile_session_digest(session, session_links=()).run_projection
 
     run_records = build_session_run_records(projection, materialized_at=_MATERIALIZED_AT)
     event_records = build_session_observed_event_records(projection, materialized_at=_MATERIALIZED_AT)

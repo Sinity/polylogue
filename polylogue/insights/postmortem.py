@@ -3,10 +3,10 @@
 One compact, shareable artifact over a matched session scope. Every headline
 metric carries at least one drillable :class:`EvidenceRef`. The ``failure_mode``
 and ``wasted_loop`` fields are populated by the #2383 pathology detectors
-(:mod:`polylogue.insights.pathology`) run over the recovery-digest run
+(:mod:`polylogue.insights.pathology`) run over the session-digest run
 projections; they report ``detected``/``clean``/``unavailable`` rather than
 fabricating a signal. ``longest_tool_gap`` still degrades in v0 because the
-session profile and recovery digest do not carry per-tool-call timestamps.
+session profile and session digest do not carry per-tool-call timestamps.
 
 The aggregator :func:`compile_postmortem_bundle` is pure: it consumes
 already-fetched profiles and digests and performs no I/O, so it is unit-testable
@@ -26,7 +26,7 @@ from polylogue.insights.pathology import PathologyFinding, compile_pathology_rep
 
 if TYPE_CHECKING:
     from polylogue.archive.session.models import SessionProfile
-    from polylogue.insights.transforms import RecoveryDigest
+    from polylogue.insights.transforms import SessionDigest
 
 POSTMORTEM_SCHEMA_VERSION = 2
 
@@ -36,7 +36,7 @@ _MAX_AGGREGATE_EVIDENCE = 5
 
 # Reasons used when a field degrades honestly instead of fabricating a value.
 _PATHOLOGY_UNAVAILABLE_REASON = (
-    "no run projection available in scope; pathology detection needs recovery-digest evidence"
+    "no run projection available in scope; pathology detection needs session-digest evidence"
 )
 _TOOL_GAP_REASON = (
     "per-tool-call timestamps are not present in the session profile or recovery "
@@ -197,14 +197,14 @@ def _iso(value: datetime | None) -> str | None:
 
 def compile_postmortem_bundle(
     profiles: Sequence[SessionProfile],
-    digests: Mapping[str, RecoveryDigest],
+    digests: Mapping[str, SessionDigest],
     *,
     scope: PostmortemScope,
 ) -> PostmortemBundle:
     """Pure aggregator: build a :class:`PostmortemBundle` from fetched data.
 
     No I/O. ``profiles`` are the hydrated session profiles in scope; ``digests``
-    maps ``session_id`` to its recovery digest (a subset of profiles is fine —
+    maps ``session_id`` to its session digest (a subset of profiles is fine —
     digests may be missing for sessions without one).
     """
 
@@ -334,7 +334,7 @@ def compile_postmortem_bundle(
     )
 
     # --- pathology detection (#2383) ----------------------------------------
-    # The recovery digests carry the typed run projection the detectors need.
+    # The session digests carry the typed run projection the detectors need.
     projections = [digests[p.session_id].run_projection for p in profiles if p.session_id in digests]
     if projections:
         report = compile_pathology_report(projections)

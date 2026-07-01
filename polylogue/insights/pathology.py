@@ -2,7 +2,7 @@
 
 Rule-based, versioned detectors that mine recurring failure-mode pathologies from
 the typed run projection (:class:`polylogue.insights.run_projection.RunProjection`)
-that the recovery digest already carries. No I/O, no LLM-as-judge — every finding
+that the session digest already carries. No I/O, no LLM-as-judge — every finding
 is reproducible from the same evidence and drillable through ``EvidenceRef``s.
 
 Detectors operate over structured run-projection evidence (#2482):
