@@ -616,6 +616,7 @@ def _raw_materialization_debt_row(
     return ArchiveDebtRowPayload(
         debt_ref=f"debt:raw-materialization:{origin}:{category}",
         kind="raw-materialization",
+        category=category,
         stage=stage,
         subject_ref=f"raw-origin:{origin}",
         severity=severity,

@@ -321,6 +321,7 @@ class ArchiveDebtRowPayload(SurfacePayloadModel):
 
     debt_ref: str
     kind: ArchiveDebtKind
+    category: str | None = None
     stage: str
     subject_ref: str
     severity: ArchiveDebtSeverity
