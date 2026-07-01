@@ -35,6 +35,7 @@ from devtools.pages_builder import (
     PagesConfig,
     build_site,
     load_pages_config,
+    validate_site_links,
 )
 
 _MINIMAL_CONFIG = """
@@ -88,10 +89,14 @@ def synthetic_site(
     """
     fake_root = tmp_path / "repo"
     fake_root.mkdir()
+    (fake_root / "README.md").write_text("# Repo README\n", encoding="utf-8")
     docs = fake_root / "docs"
     docs.mkdir()
     (docs / "getting-started.md").write_text(
-        "# Getting Started\n\nWelcome to the synthetic site.\n",
+        "# Getting Started\n\n"
+        "Welcome to the synthetic site.\n\n"
+        "[Search docs](search.md) and [repo README](../README.md).\n\n"
+        "Plain file names such as CLAUDE.md should not become external links.\n",
         encoding="utf-8",
     )
     (docs / "search.md").write_text(
@@ -189,7 +194,9 @@ def test_navigation_section_rendered_on_every_page(synthetic_site: Path) -> None
     """Each emitted page contains every nav entry from pages.toml.
 
     Items are rendered as ``<a href="...">\\n   Label\\n</a>``, so we
-    normalize whitespace before substring-checking.
+    normalize whitespace before substring-checking. Links are relative to
+    the current HTML file so the same artifact can be deployed under
+    ``/main/``, ``/pr/N/``, ``/latest/``, or served from disk.
     """
     for rel in (
         "index.html",
@@ -199,8 +206,7 @@ def test_navigation_section_rendered_on_every_page(synthetic_site: Path) -> None
         html = _read(synthetic_site / rel)
         normalized = re.sub(r"\s+", " ", html)
         assert ">Docs<" in normalized, rel
-        assert "/polylogue/docs/getting-started/" in normalized, rel
-        assert "/polylogue/docs/search/" in normalized, rel
+        assert 'href="/polylogue' not in normalized, rel
         assert "> Getting Started <" in normalized or ">Getting Started<" in normalized, rel
         assert "> Search <" in normalized or ">Search<" in normalized, rel
 
@@ -208,27 +214,35 @@ def test_navigation_section_rendered_on_every_page(synthetic_site: Path) -> None
 def test_navigation_links_resolve_to_built_pages(synthetic_site: Path) -> None:
     """Every nav-sidebar link maps to a built page in the output.
 
-    The base template emits sidebar entries as ``/polylogue<path>`` for
-    each ``[[nav.items]]`` entry in ``pages.toml``. We extract only those
-    links (not body links from rendered markdown / home-page hero) and
-    require each one to resolve to an emitted file.
+    We extract only sidebar links (not body links from rendered markdown /
+    home-page hero) and require each one to resolve to an emitted file from
+    the current page location.
     """
-    html = _read(synthetic_site / "docs" / "getting-started" / "index.html")
+    page = synthetic_site / "docs" / "getting-started" / "index.html"
+    html = _read(page)
     nav_block_match = re.search(r'<nav class="site-nav"[^>]*>(.*?)</nav>', html, re.DOTALL)
     assert nav_block_match, "site-nav block not found"
-    nav_hrefs = re.findall(r'href="(/polylogue[^"]+)"', nav_block_match.group(1))
+    nav_hrefs = re.findall(r'href="([^"]+)"', nav_block_match.group(1))
     assert nav_hrefs, "expected at least one sidebar link"
     for href in nav_hrefs:
-        rel = href[len("/polylogue") :].lstrip("/")
-        if not rel:
-            target = synthetic_site / "index.html"
-        elif rel.endswith("/"):
-            target = synthetic_site / rel / "index.html"
-        elif rel.endswith(".html"):
-            target = synthetic_site / rel
-        else:
-            target = synthetic_site / rel / "index.html"
+        target = (page.parent / href).resolve()
+        if href.endswith("/") or target.is_dir():
+            target = target / "index.html"
         assert target.exists(), f"nav href {href!r} points at missing file {target}"
+
+
+def test_generated_local_links_resolve(synthetic_site: Path) -> None:
+    """The site-level link verifier catches local broken links."""
+    assert validate_site_links(synthetic_site) == []
+
+
+def test_markdown_links_rewritten_for_site_and_repo_files(synthetic_site: Path) -> None:
+    """Markdown links point at built site pages or stable source blobs."""
+    html = _read(synthetic_site / "docs" / "getting-started" / "index.html")
+    hrefs = _collect_links(html).hrefs
+    assert "../search/" in hrefs
+    assert "https://github.com/Sinity/polylogue/blob/master/README.md" in hrefs
+    assert "http://CLAUDE.md" not in hrefs
 
 
 def test_no_unresolved_template_placeholders(synthetic_site: Path) -> None:

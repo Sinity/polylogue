@@ -15,7 +15,7 @@ BASE_TEMPLATE = """<!DOCTYPE html>
 </head>
 <body>
     <header class="site-header">
-        <a href="/polylogue/" class="logo">poly<span>logue</span></a>
+        <a href="{{ site_root }}" class="logo">poly<span>logue</span></a>
         <div class="search-bar">
             <input type="search" placeholder="Search docs..." id="search-input">
         </div>
@@ -30,7 +30,7 @@ BASE_TEMPLATE = """<!DOCTYPE html>
             <div class="nav-section">
                 <div class="nav-section-title">{{ section.title }}</div>
                 {% for item in section.entries %}
-                <a href="/polylogue{{ item.path }}" {% if item.path == current_path %}class="active"{% endif %}>
+                <a href="{{ item.href }}" {% if item.path == current_path %}class="active"{% endif %}>
                     {{ item.label }}
                 </a>
                 {% endfor %}
@@ -69,7 +69,7 @@ HOME_TEMPLATE = """{% extends "base.html" %}
     <p class="tagline">Your AI memory</p>
     <div class="hero-search">
         <input type="search" placeholder="Search your archive..."
-               onkeydown="if(event.key==='Enter'){window.location='/polylogue/docs/search/?q='+encodeURIComponent(this.value)}">
+               onkeydown="if(event.key==='Enter' && '{{ search_href }}'){window.location='{{ search_href }}?q='+encodeURIComponent(this.value)}">
     </div>
     <div class="card-grid">
         <div class="stat-card">
@@ -86,10 +86,9 @@ HOME_TEMPLATE = """{% extends "base.html" %}
         </div>
     </div>
     <div class="home-links">
-        <a href="/polylogue/docs/getting-started/">Get started \u2192</a>
-        <a href="/polylogue/docs/">Documentation \u2192</a>
-        <a href="/polylogue/architecture/">Architecture \u2192</a>
-        <a href="/polylogue/verifiability/">Verifiability \u2192</a>
+        {% for link in home_links %}
+        <a href="{{ link.href }}">{{ link.label }} {{ link.suffix }}</a>
+        {% endfor %}
     </div>
 </div>
 {% endblock %}
@@ -100,8 +99,8 @@ DOC_TEMPLATE = """{% extends "base.html" %}
 {{ content | safe }}
 <hr style="margin: 3rem 0 1rem; border-color: var(--border);">
 <nav style="display: flex; justify-content: space-between; font-size: 0.9rem;">
-    {% if prev %}<a href="/polylogue{{ prev.path }}">\u2190 {{ prev.label }}</a>{% else %}<span></span>{% endif %}
-    {% if next %}<a href="/polylogue{{ next.path }}">{{ next.label }} \u2192</a>{% else %}<span></span>{% endif %}
+    {% if prev %}<a href="{{ prev.href }}">\u2190 {{ prev.label }}</a>{% else %}<span></span>{% endif %}
+    {% if next %}<a href="{{ next.href }}">{{ next.label }} \u2192</a>{% else %}<span></span>{% endif %}
 </nav>
 {% endblock %}
 """

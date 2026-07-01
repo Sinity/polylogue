@@ -6,7 +6,7 @@ through Jinja2 templates, runs Pagefind, writes .cache/site/.
 Usage:
     devtools render pages              Build .cache/site/
     devtools render pages --serve      Build and serve locally
-    devtools render pages --check      Verify .cache/site/ matches sources
+    devtools render pages --check      Verify sources render and links resolve
     devtools render pages --watch      Rebuild on source changes
 """
 
@@ -39,7 +39,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--check",
         action="store_true",
-        help="Verify .cache/site/ is in sync with sources (exit non-zero on drift).",
+        help="Verify the site sources render and generated local links resolve.",
     )
     parser.add_argument(
         "--watch",
@@ -94,17 +94,6 @@ def _run_render_commands(verbose: bool = False) -> None:
             print(f"  Warning: devtools {name} failed with exit code {result}", file=sys.stderr)
 
 
-def _hash_directory(dir_path: Path) -> str:
-    """Compute a rough hash of directory contents for drift detection."""
-    import hashlib
-
-    hasher = hashlib.sha256()
-    for f in sorted(dir_path.rglob("*")):
-        if f.is_file() and "pagefind" not in f.parts:
-            hasher.update(f.read_bytes())
-    return hasher.hexdigest()
-
-
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
 
@@ -118,18 +107,18 @@ def main(argv: list[str] | None = None) -> int:
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_dir = Path(tmp) / "_site"
-            from devtools.pages_builder import build_site
+            from devtools.pages_builder import build_site, validate_site_links
 
             build_site(config_path=config_path, output_dir=tmp_dir)
-            new_hash = _hash_directory(tmp_dir)
-            if not args.output.exists():
-                print(f"OK: {args.output} is absent; sources render successfully.")
-                return 0
-            current_hash = _hash_directory(args.output)
-            if current_hash != new_hash:
-                print(f"Error: {args.output} is out of sync with sources. Run: devtools render pages", file=sys.stderr)
+            broken_links = validate_site_links(tmp_dir)
+            if broken_links:
+                print("Error: generated site has broken local links:", file=sys.stderr)
+                for link in broken_links[:20]:
+                    print(f"  {link.page}: {link.href} -> {link.target}", file=sys.stderr)
+                if len(broken_links) > 20:
+                    print(f"  ... and {len(broken_links) - 20} more", file=sys.stderr)
                 return 1
-            print(f"OK: {args.output} matches sources.")
+            print("OK: site sources render and generated local links resolve.")
             return 0
 
     print("Building GitHub Pages site...", file=sys.stderr)
