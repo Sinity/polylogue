@@ -14,8 +14,9 @@ from zoneinfo import ZoneInfo
 from polylogue.surfaces.temporal_evidence import TemporalEvidenceEvent, build_temporal_evidence_window
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OPERATING_LOG = ROOT / ".agent/scratch/current/2026-06-30-devloop/OPERATING-LOG.md"
-DEFAULT_EVENT_LOG = ROOT / ".agent/scratch/current/2026-06-30-devloop/EVENTS.jsonl"
+DEFAULT_CONDUCTOR_ROOT = ROOT / ".agent/conductor-devloop"
+DEFAULT_OPERATING_LOG = DEFAULT_CONDUCTOR_ROOT / "OPERATING-LOG.md"
+DEFAULT_EVENT_LOG = DEFAULT_CONDUCTOR_ROOT / "EVENTS.jsonl"
 WARSAW = ZoneInfo("Europe/Warsaw")
 LOG_HEADING_RE = re.compile(
     r"^## (?P<date>\d{4}-\d{2}-\d{2}) (?P<time>\d{2}:\d{2}(?::\d{2})?) CEST [—-] (?P<title>.+)$"
