@@ -22,6 +22,7 @@ required_scaffold=(
   "$repo/.agent/includes/devloop-conventions.md"
   "$repo/.agent/includes/projection-render-direction.md"
   "$current/README.md"
+  "$current/INDEX.md"
   "$current/VELOCITY.md"
   "$current/PROCESS.md"
   "$current/TACTICS.md"
@@ -55,9 +56,36 @@ for path in "${required_scaffold[@]}"; do
 done
 [ "$missing" -eq 0 ] && ok "required scaffold files present"
 
+untracked_scaffold=()
+for path in "${required_scaffold[@]}"; do
+  rel="${path#$repo/}"
+  if [ -e "$path" ] && ! git -C "$repo" ls-files --error-unmatch "$rel" >/dev/null 2>&1; then
+    untracked_scaffold+=("$rel")
+  fi
+done
+if [ "${#untracked_scaffold[@]}" -gt 0 ]; then
+  warn "required scaffold files are not tracked by git"
+  printf '%s\n' "${untracked_scaffold[@]}"
+else
+  ok "required scaffold files are tracked"
+fi
+
+non_executable_scripts=()
+for path in "$repo"/.agent/scripts/devloop-*; do
+  [ -e "$path" ] || continue
+  if [ ! -x "$path" ]; then
+    non_executable_scripts+=("${path#$repo/}")
+  fi
+done
+if [ "${#non_executable_scripts[@]}" -gt 0 ]; then
+  warn "devloop scripts are not executable"
+  printf '%s\n' "${non_executable_scripts[@]}"
+else
+  ok "devloop scripts are executable"
+fi
+
 state_files=(
   "$current/ACTIVE-LOOP.md"
-  "$current/INDEX.md"
   "$current/OPERATING-LOG.md"
   "$current/EVENTS.jsonl"
   "$current/DEMO-RADAR.md"

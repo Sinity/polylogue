@@ -17,10 +17,11 @@ Then read, in order:
 
 1. `.agent/conductor-devloop/README.md`
 2. `.agent/conductor-devloop/RUNBOOK.md`
-3. `.agent/conductor-devloop/ACTIVE-LOOP.md` when present
-4. `.agent/conductor-devloop/OPERATING-LOG.md` tail
-5. `.agent/conductor-devloop/DEMO-RADAR.md`
-6. `.agent/includes/README.md`
+3. `.agent/conductor-devloop/INDEX.md`
+4. `.agent/conductor-devloop/ACTIVE-LOOP.md` when present
+5. `.agent/conductor-devloop/OPERATING-LOG.md` tail
+6. `.agent/conductor-devloop/DEMO-RADAR.md`
+7. `.agent/includes/README.md`
 
 If `devloop-review` warns, fix the warning or record the conscious exception in
 the active loop state before broad work.
@@ -80,4 +81,3 @@ or live capture, maintain logs and handoffs, and reprioritize by evidence.
 - Always state archive root, schema version, and relevant counts when quoting
   live archive facts.
 - `/realm/inbox` is staging only. The devloop must not depend on it.
-

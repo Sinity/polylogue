@@ -49,6 +49,8 @@ should remain stable across projects.
 ## Boundaries
 
 - Tracked scaffold explains how to resume.
+- Tracked conductor protocol includes `README.md`, `INDEX.md`, `RUNBOOK.md`,
+  process docs, and self-prompts.
 - Ignored conductor state explains what is happening now.
 - Ignored demos are current curated artifacts, not historical dumps.
 - Ignored scratch is supporting research, not active loop state.
@@ -63,4 +65,3 @@ should remain stable across projects.
 - Split durable process/architecture memory into `.agent/includes/`.
 - Stop copying scripts into `.agent/conductor-devloop/scripts/`.
 - Use `devloop-review` to catch drift from these conventions.
-

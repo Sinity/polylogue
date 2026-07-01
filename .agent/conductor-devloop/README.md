@@ -19,7 +19,7 @@ then do this:
 1. From `/realm/project/polylogue`, read `.agent/DEVLOOP.md`.
 2. Run `.agent/scripts/devloop-status`.
 3. Run `.agent/scripts/devloop-review`.
-4. Read `RUNBOOK.md`.
+4. Read `RUNBOOK.md` and `INDEX.md`.
 5. If local `ACTIVE-LOOP.md` exists, read it and continue that slice.
 6. If local state is absent, start in `Direction`: choose a slice from the goal,
    current repo state, and any available archive/daemon evidence.
@@ -102,8 +102,8 @@ The proof ladder is:
 - `SELF-PROMPTS.md` — durable goal, primary self-prompt, adversarial prompt,
   and tactical prompt.
 - `ADVERSARIAL-REVIEW.md` — known failure modes and mitigations.
-- `INDEX.md` — routing guide for the active packet and archived-context
-  boundary.
+- `INDEX.md` — tracked routing guide for the active packet and archived-context
+  boundary. This must survive checkout; current state belongs in ignored files.
 
 Current local state is intentionally ignored by git. The tracked scaffold tells
 a future agent how to resume; the ignored state tells it where this exact loop
