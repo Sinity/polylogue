@@ -11,6 +11,27 @@ polylogued_process_rows() {
     || true
 }
 
+polylogued_devloop_rows() {
+  repo="${1:-/realm/project/polylogue}"
+  polylogued_process_rows \
+    | awk -v repo="$repo" '
+      index($0, repo "/.venv/bin/python") > 0 {print; next}
+      /polylogued-devloop[.]service/ {print; next}
+      /--api-port 8766/ {print; next}
+    '
+}
+
+polylogued_non_devloop_rows() {
+  repo="${1:-/realm/project/polylogue}"
+  polylogued_process_rows \
+    | awk -v repo="$repo" '
+      index($0, repo "/.venv/bin/python") > 0 {next}
+      /polylogued-devloop[.]service/ {next}
+      /--api-port 8766/ {next}
+      {print}
+    '
+}
+
 devloop_focus_modes() {
   cat <<'EOF'
 Direction

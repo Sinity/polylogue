@@ -5,6 +5,8 @@
 - Quoting stale 16K-session counts from pre-dedup backups as current truth.
 - Running a daemon against XDG while reasoning about `/realm/tmp/polylogue-dev`.
 - Keeping prod and dev archive roots alive at once, then comparing mixed counts.
+- Treating "one polylogued process exists" as sufficient when the process is not
+  clearly the repo devloop daemon shape.
 - Letting obsolete DB directories remain discoverable as plausible current roots.
 - Treating recovery/export/read flags as durable product surfaces after the DSL
   and projection substrate should own the capability.
@@ -26,6 +28,8 @@
 - Discover helper interfaces with `.agent/scripts/devloop-* --help`; review
   verifies that every help path is present and side-effect-free.
 - Include root + schema + sessions + messages in every archive status line.
+- Require daemon status to distinguish prod service state, devloop service
+  state, repo-venv/manual devloop processes, and non-devloop `polylogued` rows.
 - Quarantine obsolete databases under `/realm/inbox/polylogue-obsolete-db-quarantine`
   with a manifest instead of leaving them near active paths.
 - Before keeping any old public command, endpoint, DTO, or flag, state why it is

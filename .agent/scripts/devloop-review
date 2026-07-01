@@ -830,15 +830,21 @@ PY
 fi
 
 polylogued_pids="$(polylogued_process_rows)"
+polylogued_devloop_pids="$(polylogued_devloop_rows "$repo")"
+polylogued_non_devloop_pids="$(polylogued_non_devloop_rows "$repo")"
 if [ -z "$polylogued_pids" ]; then
   warn "polylogued is not running; acceptable only between convergence restarts"
 else
   count="$(printf '%s\n' "$polylogued_pids" | wc -l)"
-  if [ "$count" -eq 1 ]; then
-    ok "one polylogued run process"
+  devloop_count="$(printf '%s\n' "$polylogued_devloop_pids" | sed '/^$/d' | wc -l)"
+  if [ "$count" -eq 1 ] && [ "$devloop_count" -eq 1 ] && [ -z "$polylogued_non_devloop_pids" ]; then
+    ok "one devloop polylogued run process"
   else
-    warn "multiple polylogued run processes detected: $count"
+    warn "polylogued process shape is not the expected single devloop daemon: total=$count devloop=$devloop_count"
     printf '%s\n' "$polylogued_pids"
+    if [ -n "$polylogued_non_devloop_pids" ]; then
+      printf 'non-devloop polylogued rows:\n%s\n' "$polylogued_non_devloop_pids"
+    fi
   fi
 fi
 

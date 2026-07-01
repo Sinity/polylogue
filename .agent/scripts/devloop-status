@@ -145,13 +145,15 @@ if [ "$format" = "--json" ]; then
   devloop_state="$(systemctl --user show polylogued-devloop.service -p ActiveState --value 2>/dev/null || true)"
   devloop_sub_state="$(systemctl --user show polylogued-devloop.service -p SubState --value 2>/dev/null || true)"
   polylogued_rows="$(polylogued_process_rows)"
+  polylogued_devloop_rows="$(polylogued_devloop_rows "$repo")"
+  polylogued_non_devloop_rows="$(polylogued_non_devloop_rows "$repo")"
   worktree_gc_json="$(POLYLOGUE_TASK_HISTORY_DISABLE=1 devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"
-  python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$observed_events" "$source_version" "$raw_rows" "$raw_materialization_debt" "$raw_materialization_replayable" "$ops_status_json" "$raw_debt_json" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$worktree_gc_json" "$pressure_rows" "$performance_blocked" "$packet_bytes" "$packet_files" "$packet_dirs" "$operating_log_bytes" "$events_bytes" <<'PY'
+  python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$observed_events" "$source_version" "$raw_rows" "$raw_materialization_debt" "$raw_materialization_replayable" "$ops_status_json" "$raw_debt_json" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$polylogued_devloop_rows" "$polylogued_non_devloop_rows" "$worktree_gc_json" "$pressure_rows" "$performance_blocked" "$packet_bytes" "$packet_files" "$packet_dirs" "$operating_log_bytes" "$events_bytes" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-repo, current, archive_root, git_branch, git_head, git_tracked_changes, git_untracked_changes, index_version, sessions, messages, observed_events, source_version, raw_rows, raw_materialization_debt, raw_materialization_replayable, ops_status_json, raw_debt_json, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows, worktree_gc_json, pressure_rows, performance_blocked, packet_bytes, packet_files, packet_dirs, operating_log_bytes, events_bytes = sys.argv[1:]
+repo, current, archive_root, git_branch, git_head, git_tracked_changes, git_untracked_changes, index_version, sessions, messages, observed_events, source_version, raw_rows, raw_materialization_debt, raw_materialization_replayable, ops_status_json, raw_debt_json, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows, polylogued_devloop_rows, polylogued_non_devloop_rows, worktree_gc_json, pressure_rows, performance_blocked, packet_bytes, packet_files, packet_dirs, operating_log_bytes, events_bytes = sys.argv[1:]
 
 def int_or_none(value: str):
     try:
@@ -293,6 +295,8 @@ print(json.dumps({
         "devloop_state": devloop_state,
         "devloop_sub_state": devloop_sub_state,
         "polylogued": [line for line in polylogued_rows.splitlines() if line],
+        "polylogued_devloop": [line for line in polylogued_devloop_rows.splitlines() if line],
+        "polylogued_non_devloop": [line for line in polylogued_non_devloop_rows.splitlines() if line],
     },
     "agent_packet": {
         "path": current,
@@ -468,7 +472,16 @@ devloop_active_state="$(systemctl --user show polylogued-devloop.service -p Acti
 devloop_sub_state="$(systemctl --user show polylogued-devloop.service -p SubState --value 2>/dev/null || true)"
 printf 'prod polylogued.service: %s/%s\n' "${prod_active_state:-unknown}" "${prod_sub_state:-unknown}"
 printf 'devloop polylogued-devloop.service: %s/%s\n' "${devloop_active_state:-unknown}" "${devloop_sub_state:-unknown}"
-polylogued_process_rows
+devloop_rows="$(polylogued_devloop_rows "$repo")"
+non_devloop_rows="$(polylogued_non_devloop_rows "$repo")"
+if [ -n "$devloop_rows" ]; then
+  printf 'devloop polylogued process:\n%s\n' "$devloop_rows"
+else
+  printf 'devloop polylogued process: none\n'
+fi
+if [ -n "$non_devloop_rows" ]; then
+  printf 'non-devloop polylogued process:\n%s\n' "$non_devloop_rows"
+fi
 
 printf '\n== worktrees ==\n'
 if [ "$format" = "--quick" ]; then
