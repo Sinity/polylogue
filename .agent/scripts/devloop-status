@@ -61,6 +61,10 @@ if printf '%s\n' "$pressure_rows" | grep -Eq 'borg create|lynchpin.analysis mate
   performance_blocked="true"
 fi
 
+raw_materialization_debt_payload() {
+  polylogue ops debt list --kind raw-materialization --format json 2>/dev/null || true
+}
+
 if [ "$format" = "--focus" ]; then
   printf '== polylogue devloop focus ==\n'
   printf 'repo: %s\n' "$repo"
@@ -94,6 +98,7 @@ if [ "$format" = "--json" ]; then
   raw_materialization_debt=""
   raw_materialization_replayable=""
   ops_status_json=""
+  raw_debt_json=""
   if [ -f "$archive_root/index.db" ]; then
     index_version="$(sqlite3 "$archive_root/index.db" 'PRAGMA user_version;' 2>/dev/null || true)"
     sessions="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM sessions;' 2>/dev/null || true)"
@@ -134,18 +139,19 @@ if [ "$format" = "--json" ]; then
     )"
   fi
   ops_status_json="$(polylogue ops status --format json 2>/dev/null || true)"
+  raw_debt_json="$(raw_materialization_debt_payload)"
   prod_state="$(systemctl --user show polylogued.service -p ActiveState --value 2>/dev/null || true)"
   prod_sub_state="$(systemctl --user show polylogued.service -p SubState --value 2>/dev/null || true)"
   devloop_state="$(systemctl --user show polylogued-devloop.service -p ActiveState --value 2>/dev/null || true)"
   devloop_sub_state="$(systemctl --user show polylogued-devloop.service -p SubState --value 2>/dev/null || true)"
   polylogued_rows="$(polylogued_process_rows)"
   worktree_gc_json="$(POLYLOGUE_TASK_HISTORY_DISABLE=1 devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"
-  python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$observed_events" "$source_version" "$raw_rows" "$raw_materialization_debt" "$raw_materialization_replayable" "$ops_status_json" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$worktree_gc_json" "$pressure_rows" "$performance_blocked" "$packet_bytes" "$packet_files" "$packet_dirs" "$operating_log_bytes" "$events_bytes" <<'PY'
+  python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$observed_events" "$source_version" "$raw_rows" "$raw_materialization_debt" "$raw_materialization_replayable" "$ops_status_json" "$raw_debt_json" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$worktree_gc_json" "$pressure_rows" "$performance_blocked" "$packet_bytes" "$packet_files" "$packet_dirs" "$operating_log_bytes" "$events_bytes" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-repo, current, archive_root, git_branch, git_head, git_tracked_changes, git_untracked_changes, index_version, sessions, messages, observed_events, source_version, raw_rows, raw_materialization_debt, raw_materialization_replayable, ops_status_json, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows, worktree_gc_json, pressure_rows, performance_blocked, packet_bytes, packet_files, packet_dirs, operating_log_bytes, events_bytes = sys.argv[1:]
+repo, current, archive_root, git_branch, git_head, git_tracked_changes, git_untracked_changes, index_version, sessions, messages, observed_events, source_version, raw_rows, raw_materialization_debt, raw_materialization_replayable, ops_status_json, raw_debt_json, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows, worktree_gc_json, pressure_rows, performance_blocked, packet_bytes, packet_files, packet_dirs, operating_log_bytes, events_bytes = sys.argv[1:]
 
 def int_or_none(value: str):
     try:
@@ -164,6 +170,68 @@ except json.JSONDecodeError:
     ops_status = {}
 raw_readiness = ops_status.get("raw_materialization_readiness") or {}
 raw_component = (ops_status.get("component_readiness") or {}).get("raw_materialization") or {}
+try:
+    raw_debt = json.loads(raw_debt_json) if raw_debt_json else {}
+except json.JSONDecodeError:
+    raw_debt = {}
+if raw_debt:
+    totals = raw_debt.get("totals") or {}
+    rows = raw_debt.get("rows") or []
+    category_counts: dict[str, int] = {}
+    source_family_counts: dict[str, int] = {}
+    for row in rows:
+        affected = int(row.get("affected_count") or 0)
+        category = row.get("category") or "unspecified"
+        source_family = row.get("source_family") or "unspecified"
+        category_counts[category] = category_counts.get(category, 0) + affected
+        source_family_counts[source_family] = source_family_counts.get(source_family, 0) + affected
+    raw_readiness = {
+        "available": True,
+        "total": totals.get("total"),
+        "critical": totals.get("critical"),
+        "warning": totals.get("warning"),
+        "actionable": totals.get("actionable"),
+        "blocked": totals.get("blocked"),
+        "affected_total": totals.get("affected_total"),
+        "affected_actionable": totals.get("affected_actionable"),
+        "affected_open": totals.get("affected_open"),
+        "affected_blocked": totals.get("affected_blocked"),
+        "category_counts": dict(sorted(category_counts.items())),
+        "source_family_counts": dict(sorted(source_family_counts.items())),
+        "sampled_rows": rows[:5],
+    }
+    if (totals.get("affected_total") or 0) == 0:
+        raw_state = "ready"
+    elif (totals.get("blocked") or 0) and not (totals.get("actionable") or 0):
+        raw_state = "blocked"
+    else:
+        raw_state = "stale"
+    raw_component = {
+        "component": "raw_materialization",
+        "scope": "archive",
+        "state": raw_state,
+        "summary": "raw evidence pending materialization" if raw_state != "ready" else "ready",
+        "counts": {
+            key: value
+            for key, value in totals.items()
+            if key in {
+                "total",
+                "critical",
+                "warning",
+                "actionable",
+                "blocked",
+                "affected_total",
+                "affected_actionable",
+                "affected_open",
+                "affected_blocked",
+            }
+        },
+        "metadata": {
+            "category_counts": dict(sorted(category_counts.items())),
+            "source_family_counts": dict(sorted(source_family_counts.items())),
+        },
+        "repair_hint": "polylogue ops debt list --kind raw-materialization",
+    }
 
 def active_section(text: str, heading: str) -> str | None:
     marker = f"## {heading}"
@@ -331,13 +399,9 @@ if [ -f "$archive_root/source.db" ] && [ -f "$archive_root/index.db" ]; then
   )"
   printf 'convergence: raw_materialization_debt=%s replayable_acquired_unparsed=%s\n' \
     "${raw_materialization_debt:-?}" "${raw_materialization_replayable:-?}"
-  if [ "$format" != "--quick" ]; then
-    ops_status_json="$(polylogue ops status --format json 2>/dev/null || true)"
-  else
-    ops_status_json=""
-  fi
-  if [ -n "$ops_status_json" ]; then
-    python3 - "$ops_status_json" <<'PY'
+  raw_debt_json="$(raw_materialization_debt_payload)"
+  if [ -n "$raw_debt_json" ]; then
+    python3 - "$raw_debt_json" <<'PY'
 from __future__ import annotations
 
 import json
@@ -348,25 +412,38 @@ try:
 except json.JSONDecodeError:
     raise SystemExit(0)
 
-readiness = payload.get("raw_materialization_readiness") or {}
-component = (payload.get("component_readiness") or {}).get("raw_materialization") or {}
-if not readiness:
+totals = payload.get("totals") or {}
+rows = payload.get("rows") or []
+if not totals:
     raise SystemExit(0)
+category_counts: dict[str, int] = {}
+source_family_counts: dict[str, int] = {}
+for row in rows:
+    affected = int(row.get("affected_count") or 0)
+    category = row.get("category") or "unspecified"
+    source_family = row.get("source_family") or "unspecified"
+    category_counts[category] = category_counts.get(category, 0) + affected
+    source_family_counts[source_family] = source_family_counts.get(source_family, 0) + affected
+if (totals.get("affected_total") or 0) == 0:
+    state = "ready"
+elif (totals.get("blocked") or 0) and not (totals.get("actionable") or 0):
+    state = "blocked"
+else:
+    state = "stale"
 print(
     "raw_materialization_status: "
-    f"rows={readiness.get('total')} "
-    f"affected={readiness.get('affected_total')} "
-    f"actionable={readiness.get('affected_actionable')} "
-    f"open={readiness.get('affected_open')} "
-    f"state={component.get('state') or 'unknown'}"
+    f"rows={totals.get('total')} "
+    f"affected={totals.get('affected_total')} "
+    f"actionable={totals.get('affected_actionable')} "
+    f"blocked={totals.get('affected_blocked')} "
+    f"open={totals.get('affected_open')} "
+    f"state={state}"
 )
-categories = readiness.get("category_counts") or {}
-if categories:
-    rendered = ", ".join(f"{name}={count}" for name, count in sorted(categories.items()))
+if category_counts:
+    rendered = ", ".join(f"{name}={count}" for name, count in sorted(category_counts.items()))
     print(f"raw_materialization_categories: {rendered}")
-families = readiness.get("source_family_counts") or {}
-if families:
-    rendered = ", ".join(f"{name}={count}" for name, count in sorted(families.items()))
+if source_family_counts:
+    rendered = ", ".join(f"{name}={count}" for name, count in sorted(source_family_counts.items()))
     print(f"raw_materialization_source_families: {rendered}")
 PY
   fi
