@@ -29,7 +29,7 @@ reintroducing special recovery/export/read silos.
 
 - `SelectionSpec` carries refs, query text, origin, time bounds, and limit.
 - `ProjectionSpec` carries evidence families, field selection, body policy,
-  role/block filters, token budget, and redaction policy.
+  role/block filters, token budget, assertion inclusion, and redaction policy.
 - `RenderSpec` carries format, destination, layout, timestamp policy, and file
   output path.
 - `QueryProjectionSpec` composes all three.

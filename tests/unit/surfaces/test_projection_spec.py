@@ -69,15 +69,26 @@ def test_context_image_view_maps_to_authored_dialogue_projection() -> None:
     assert spec.projection.families == (
         EvidenceFamily.CONTEXT,
         EvidenceFamily.MESSAGES,
-        EvidenceFamily.ASSERTIONS,
     )
     assert spec.projection.body_policy is BodyPolicy.AUTHORED_DIALOGUE
     assert spec.projection.max_tokens == 1200
     assert spec.projection.redact_paths is False
+    assert spec.projection.include_assertions is False
     assert spec.render.timestamps is RenderTimestampPolicy.INCLUDE_AVAILABLE
     assert {"tool_use", "tool_result", "function_call", "function_call_output"} <= set(
         spec.projection.exclude_block_kinds
     )
+
+
+def test_context_image_projection_records_assertion_inclusion() -> None:
+    spec = projection_from_views(("context-image",), include_assertions=True)
+
+    assert spec.projection.families == (
+        EvidenceFamily.CONTEXT,
+        EvidenceFamily.MESSAGES,
+        EvidenceFamily.ASSERTIONS,
+    )
+    assert spec.projection.include_assertions is True
 
 
 def test_multi_view_projection_dedupes_families_and_preserves_body_policy() -> None:

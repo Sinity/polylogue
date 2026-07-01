@@ -411,6 +411,7 @@ def _build_read_projection_spec(
     neighbor_limit: int | None = None,
     neighbor_window_hours: int | None = None,
     redact_paths: bool = True,
+    include_assertions: bool = False,
 ) -> QueryProjectionSpec:
     """Build the typed selection/projection/render contract for read options."""
 
@@ -442,6 +443,7 @@ def _build_read_projection_spec(
         neighbor_limit=neighbor_limit,
         neighbor_window_hours=neighbor_window_hours,
         redact_paths=redact_paths,
+        include_assertions=include_assertions,
     )
 
 
@@ -816,6 +818,7 @@ def read_verb(
             neighbor_limit=projection_neighbor_limit,
             neighbor_window_hours=projection_neighbor_window_hours,
             redact_paths=not no_redact,
+            include_assertions=include_assertions,
         )
         _deliver_content(
             env,
@@ -875,6 +878,7 @@ def read_verb(
             neighbor_limit=projection_neighbor_limit,
             neighbor_window_hours=projection_neighbor_window_hours,
             redact_paths=not no_redact,
+            include_assertions=include_assertions,
         )
         run_query_set_read_view(
             env,
@@ -914,6 +918,7 @@ def read_verb(
             selection_project_path=spec_selection_project_path,
             selection_project_repo=spec_selection_project_repo,
             redact_paths=not no_redact,
+            include_assertions=include_assertions,
         )
         run_read_context_image(
             env,
