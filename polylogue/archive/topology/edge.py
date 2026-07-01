@@ -15,17 +15,16 @@ from polylogue.types import SessionId
 def branch_type_to_edge_type(
     branch_type: BranchType | None,
     *,
-    default: TopologyEdgeType = TopologyEdgeType.CONTINUATION,
+    default: TopologyEdgeType = TopologyEdgeType.BRANCH,
 ) -> TopologyEdgeType:
     """Map a parsed ``BranchType`` to the canonical ``TopologyEdgeType``.
 
     Centralized so future grep-locality stays cheap. ``BranchType`` carries
-    four values today (continuation, sidechain, fork, subagent); the mapping
-    is the identity on those.  When ``branch_type`` is ``None`` (parser
-    asserted a parent but did not classify the relationship), the fallback
-    is ``CONTINUATION`` — the conservative default that matches how
-    ``sessions.parent_session_id`` semantically behaves for
-    unclassified continuations.
+    four values today (continuation, sidechain, fork, subagent); the mapping is
+    the identity on those. When ``branch_type`` is ``None`` (parser asserted a
+    parent but did not classify the relationship), the fallback is the generic
+    topology ``BRANCH`` link. It records the parent edge without fabricating a
+    narrower ``sessions.branch_type``.
     """
     if branch_type is None:
         return default

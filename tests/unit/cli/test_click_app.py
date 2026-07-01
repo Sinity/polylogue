@@ -523,6 +523,23 @@ def test_read_views_plain_lists_profile_metadata(cli_runner: CliRunner) -> None:
     assert "scope=query-set" in result.output
 
 
+def test_read_help_groups_options_by_ownership(cli_runner: CliRunner) -> None:
+    result = cli_runner.invoke(click_cli, ["--plain", "read", "--help"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    assert "Options:" not in result.output
+    assert "Projection:" in result.output
+    assert "Delivery and format:" in result.output
+    assert "Cardinality and pagination:" in result.output
+    assert "Context-image projection:" in result.output
+    assert "Context and neighbor views:" in result.output
+    assert "Correlation view:" in result.output
+    assert "Other options:" in result.output
+    assert "--views" in result.output
+    assert "--max-tokens" in result.output
+    assert "--repo-path" in result.output
+
+
 def test_read_views_json_outputs_profile_payload(cli_runner: CliRunner) -> None:
     result = cli_runner.invoke(click_cli, ["--plain", "read", "--views", "--format", "json"], catch_exceptions=False)
 

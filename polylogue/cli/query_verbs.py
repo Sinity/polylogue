@@ -339,6 +339,59 @@ def _emit_read_view_profiles(output_format: str | None) -> None:
     click.echo(_render_read_view_profiles_plain())
 
 
+_READ_HELP_OPTION_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
+    ("Projection", frozenset({"view", "show_views"})),
+    ("Delivery and format", frozenset({"destination", "output_format", "out_path", "fields"})),
+    ("Cardinality and pagination", frozenset({"all_matches", "first_only", "limit", "offset"})),
+    (
+        "Context-image projection",
+        frozenset(
+            {
+                "project_path",
+                "project_repo",
+                "since",
+                "until",
+                "context_origin",
+                "context_query",
+                "max_sessions",
+                "max_tokens",
+                "include_assertions",
+                "no_redact",
+            }
+        ),
+    ),
+    ("Context and neighbor views", frozenset({"related_limit", "window_hours"})),
+    ("Correlation view", frozenset({"repo_path", "since_hours", "confidence_threshold", "github_api", "otlp"})),
+)
+
+
+class _ReadCommand(click.Command):
+    """Click command with read-option help grouped by ownership."""
+
+    def format_options(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        grouped: dict[str, list[tuple[str, str]]] = {heading: [] for heading, _ in _READ_HELP_OPTION_GROUPS}
+        other: list[tuple[str, str]] = []
+
+        for param in self.get_params(ctx):
+            record = param.get_help_record(ctx)
+            if record is None:
+                continue
+            target = other
+            for heading, names in _READ_HELP_OPTION_GROUPS:
+                if param.name in names:
+                    target = grouped[heading]
+                    break
+            target.append(record)
+
+        for heading, _names in _READ_HELP_OPTION_GROUPS:
+            if grouped[heading]:
+                with formatter.section(heading):
+                    formatter.write_dl(grouped[heading])
+        if other:
+            with formatter.section("Other options"):
+                formatter.write_dl(other)
+
+
 def _summary_all_output_param(destination: str, out_path: str | None) -> str | None:
     """Translate read delivery options to the root query output contract."""
     if destination == "file":
@@ -380,7 +433,7 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: b
     run_select(ctx.obj, request, limit=limit, print_field=field)
 
 
-@click.command("read")
+@click.command("read", cls=_ReadCommand)
 @click.option(
     "--view",
     "-v",

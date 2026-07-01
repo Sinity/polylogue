@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+from polylogue.archive.session.branch_type import BranchType
+from polylogue.archive.topology.edge import TopologyEdgeType, branch_type_to_edge_type
 from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
 from polylogue.core.enums import BlockType, PasteBoundary, SessionKind
 from polylogue.core.identity_law import message_id as archive_message_id
@@ -1930,7 +1932,7 @@ def _write_session_link(
 ) -> None:
     if not session.parent_session_provider_id:
         return
-    link_type = _enum_value(session.branch_type) or "continuation"
+    link_type = branch_type_to_edge_type(session.branch_type, default=TopologyEdgeType.BRANCH).value
     conn.execute(
         """
         INSERT OR REPLACE INTO session_links (
@@ -1952,6 +1954,13 @@ def _write_session_link(
             _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at) or 0,
         ),
     )
+
+
+def _branch_type_from_link_type(link_type: object) -> str | None:
+    try:
+        return BranchType(str(link_type)).value
+    except ValueError:
+        return None
 
 
 def _resolve_session_graph(
@@ -2060,7 +2069,7 @@ def _refresh_session_projection(conn: sqlite3.Connection, session_id: str, *, se
         ).fetchone()
         branch_type: str | None
         if unresolved_link is not None:
-            branch_type = str(unresolved_link[0])
+            branch_type = _branch_type_from_link_type(unresolved_link[0])
         else:
             existing_branch = conn.execute(
                 "SELECT branch_type FROM sessions WHERE session_id = ?",
@@ -2098,7 +2107,7 @@ def _refresh_session_projection(conn: sqlite3.Connection, session_id: str, *, se
             branch_type = ?
         WHERE session_id = ?
         """,
-        (parent_session_id, parent_root_id, str(parent_link[1]), session_id),
+        (parent_session_id, parent_root_id, _branch_type_from_link_type(parent_link[1]), session_id),
     )
 
 

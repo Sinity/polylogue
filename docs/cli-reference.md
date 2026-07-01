@@ -269,22 +269,53 @@ Usage: polylogue read [OPTIONS] [REF]
       polylogue --latest read --view correlation --otlp --format json
       polylogue read session:abc123 --format json
 
-Options:
-  -v, --view VIEW[,VIEW...]       What to render (summary, transcript,
-                                  messages, raw, context, context-image,
-                                  neighbors, correlation, temporal,
-                                  chronicle).  [default: summary]
+Projection:
+  -v, --view VIEW[,VIEW...]  What to render (summary, transcript, messages,
+                             raw, context, context-image, neighbors,
+                             correlation, temporal, chronicle).  [default:
+                             summary]
+  --views                    List executable read-view profiles, formats, and
+                             options.
+
+Delivery and format:
   --to [terminal|stdout|browser|clipboard|file]
                                   Output destination.  [default: terminal]
   --json                          Shortcut for --format json.
   -f, --format [csv|html|json|markdown|ndjson|obsidian|org|plaintext|text|yaml]
                                   Output format (where applicable).
   --out PATH                      File path for --to file.
-  --all                           Read all matched sessions.
-  -l, -n, --limit INTEGER         Max items to return.
-  --offset INTEGER                Pagination offset.
-  --window-hours INTEGER          Neighboring time window around the seed
-                                  session (--view neighbors).  [default: 24]
+  --fields TEXT                   Fields for JSON/YAML outputs (--all).
+
+Cardinality and pagination:
+  --all                    Read all matched sessions.
+  -l, -n, --limit INTEGER  Max items to return.
+  --offset INTEGER         Pagination offset.
+  --first                  Read the first matched session only.
+
+Context-image projection:
+  --project-path TEXT     Filter by cwd prefix pattern (--view context-image).
+  --project-repo TEXT     Filter by git repo URL or name (--view context-
+                          image).
+  --since TEXT            Start date, ISO 8601 (--view context-image).
+  --until TEXT            End date, ISO 8601 (--view context-image).
+  --context-origin TEXT   Source-origin filter (--view context-image).
+  --query TEXT            Free-text query (--view context-image).
+  --max-sessions INTEGER  Max sessions, 1-20 (--view context-image).
+                          [default: 5]
+  --max-tokens INTEGER    Bound accumulated output to a token budget; over-
+                          budget segments are reported as omissions.
+  --include-assertions    Include context-inject assertion claims in the
+                          compiled context image.
+  --no-redact             Do not redact filesystem paths (--view context-
+                          image).
+
+Context and neighbor views:
+  --window-hours INTEGER   Neighboring time window around the seed session
+                           (--view neighbors).  [default: 24]
+  --related-limit INTEGER  Number of related sessions to include (--view
+                           context).  [default: 5]
+
+Correlation view:
   --repo-path TEXT                Git repository path for correlation (--view
                                   correlation). Defaults to the session's
                                   repo/cwd.
@@ -297,30 +328,9 @@ Options:
                                   GitHub API via gh CLI (--view correlation).
   --otlp                          Add OTLP span evidence to correlation output
                                   (--view correlation).
-  --related-limit INTEGER         Number of related sessions to include
-                                  (--view context).  [default: 5]
-  --project-path TEXT             Filter by cwd prefix pattern (--view
-                                  context-image).
-  --project-repo TEXT             Filter by git repo URL or name (--view
-                                  context-image).
-  --since TEXT                    Start date, ISO 8601 (--view context-image).
-  --until TEXT                    End date, ISO 8601 (--view context-image).
-  --context-origin TEXT           Source-origin filter (--view context-image).
-  --query TEXT                    Free-text query (--view context-image).
-  --max-sessions INTEGER          Max sessions, 1-20 (--view context-image).
-                                  [default: 5]
-  --max-tokens INTEGER            Bound accumulated output to a token budget;
-                                  over-budget segments are reported as
-                                  omissions.
-  --include-assertions            Include context-inject assertion claims in
-                                  the compiled context image.
-  --no-redact                     Do not redact filesystem paths (--view
-                                  context-image).
-  --fields TEXT                   Fields for JSON/YAML outputs (--all).
-  --views                         List executable read-view profiles, formats,
-                                  and options.
-  --first                         Read the first matched session only.
-  --help                          Show this message and exit.
+
+Other options:
+  --help  Show this message and exit.
 ```
 
 ## Select Verb

@@ -95,7 +95,7 @@ async def _ingest_synthetic_child(
     provider: Provider,
     child_id: str,
     parent_id: str,
-    branch_type: BranchType,
+    branch_type: BranchType | None,
 ) -> str:
     parsed = ParsedSession(
         source_name=provider,
@@ -181,6 +181,55 @@ class TestTopologyEdgeUnresolvedAC:
         assert edges[0]["link_type"] == TopologyEdgeType.CONTINUATION.value
         assert edges[0]["status"] == TopologyEdgeStatus.UNRESOLVED.value
         assert edges[0]["dst_session_native_id"] == "missing-codex-parent"
+
+    @pytest.mark.asyncio
+    async def test_codex_unclassified_parent_uses_generic_link(
+        self,
+        workspace_env: WorkspaceEnv,
+        tmp_path: Path,
+    ) -> None:
+        """Codex forked_from_id proves a parent, not fork-vs-resume."""
+
+        db_path = db_setup(workspace_env)
+        async with _make_repository(db_path) as repo:
+            child_id = await _ingest_synthetic_child(
+                repo=repo,
+                provider=Provider.CODEX,
+                child_id="unclassified-child",
+                parent_id="unclassified-parent",
+                branch_type=None,
+            )
+
+            with open_connection(db_path) as conn:
+                child_before = conn.execute(
+                    "SELECT parent_session_id, branch_type FROM sessions WHERE session_id = ?",
+                    (child_id,),
+                ).fetchone()
+            assert child_before["parent_session_id"] is None
+            assert child_before["branch_type"] is None
+
+            parent_parsed = ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="unclassified-parent",
+                title="Unclassified Parent",
+                messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="parent")],
+            )
+            await ingest_session(parent_parsed, backend=repo.backend)
+            parent_id = _archive_session_id(Provider.CODEX, "unclassified-parent")
+
+        edges = _fetch_edges(db_path)
+        assert len(edges) == 1
+        assert edges[0]["link_type"] == TopologyEdgeType.BRANCH.value
+        assert edges[0]["status"] == TopologyEdgeStatus.RESOLVED.value
+        assert edges[0]["dst_session_id"] == parent_id
+
+        with open_connection(db_path) as conn:
+            child_after = conn.execute(
+                "SELECT parent_session_id, branch_type FROM sessions WHERE session_id = ?",
+                (child_id,),
+            ).fetchone()
+        assert child_after["parent_session_id"] == parent_id
+        assert child_after["branch_type"] is None
 
     @pytest.mark.asyncio
     async def test_chatgpt_branch_parent_session_absent_unresolved(
