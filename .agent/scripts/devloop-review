@@ -520,6 +520,118 @@ PY
   else
     warn "ACTIVE-LOOP accepted warnings look like historical ledger; keep history in OPERATING-LOG/DEMO-RADAR"
   fi
+  if focus_audit_output="$(python3 - "$current/ACTIVE-LOOP.md" "$current/OPERATING-LOG.md" <<'PY'
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+active_path = Path(sys.argv[1])
+log_path = Path(sys.argv[2])
+active = active_path.read_text(encoding="utf-8")
+
+slice_match = re.search(r"^## Current Slice\n\n(?P<slice>.+?)\n\n## ", active, re.M | re.S)
+current_slice = slice_match.group("slice").strip() if slice_match is not None else ""
+if not current_slice:
+    raise SystemExit("missing current slice in ACTIVE-LOOP.md")
+
+heading_re = re.compile(r"^## \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z]+ [—-] (?P<title>.+)$")
+entries: list[tuple[str, str]] = []
+title = ""
+body: list[str] = []
+for line in log_path.read_text(encoding="utf-8").splitlines():
+    match = heading_re.match(line)
+    if match is not None:
+        if title:
+            entries.append((title, "\n".join(body)))
+        title = match.group("title").strip()
+        body = []
+    elif title:
+        body.append(line)
+if title:
+    entries.append((title, "\n".join(body)))
+
+start_index = 0
+for index, (entry_title, _body) in enumerate(entries):
+    if entry_title == current_slice:
+        start_index = index
+
+window = entries[start_index:]
+focus_re = re.compile(r"^Focus: ([A-Za-z]+) -> ([A-Za-z]+)$", re.M)
+expected_edges = {
+    ("Direction", "Evidence"),
+    ("Direction", "Construction"),
+    ("Direction", "Artifact"),
+    ("Direction", "Proof"),
+    ("Direction", "Meta"),
+    ("Evidence", "Construction"),
+    ("Evidence", "Proof"),
+    ("Evidence", "Artifact"),
+    ("Evidence", "Velocity"),
+    ("Evidence", "Meta"),
+    ("Construction", "Proof"),
+    ("Construction", "Meta"),
+    ("Proof", "Artifact"),
+    ("Proof", "Velocity"),
+    ("Proof", "Evidence"),
+    ("Proof", "Direction"),
+    ("Proof", "Meta"),
+    ("Artifact", "Velocity"),
+    ("Artifact", "Direction"),
+    ("Artifact", "Meta"),
+    ("Artifact", "Proof"),
+    ("Velocity", "Direction"),
+    ("Velocity", "Evidence"),
+    ("Velocity", "Artifact"),
+    ("Velocity", "Meta"),
+    ("Meta", "Meta"),
+    ("Meta", "Evidence"),
+    ("Meta", "Construction"),
+    ("Meta", "Proof"),
+    ("Meta", "Artifact"),
+    ("Meta", "Velocity"),
+    ("Meta", "Direction"),
+}
+bad_edges: list[str] = []
+unattributed_proof_exits: list[str] = []
+focus_count = 0
+for entry_title, entry_body in window:
+    for match in focus_re.finditer(entry_body):
+        focus_count += 1
+        edge = (match.group(1), match.group(2))
+        if edge not in expected_edges:
+            bad_edges.append(f"{edge[0]}->{edge[1]} :: {entry_title}")
+        if edge[0] == "Proof" and edge[1] not in {"Artifact", "Velocity"}:
+            lowered = entry_body.lower()
+            if not any(
+                phrase in lowered
+                for phrase in (
+                    "no artifact",
+                    "no demo",
+                    "velocity closure",
+                    "direct proof exit",
+                    "skip artifact",
+                )
+            ):
+                unattributed_proof_exits.append(f"Proof->{edge[1]} :: {entry_title}")
+
+if bad_edges:
+    print("unexpected focus transitions in current slice:")
+    print("\n".join(bad_edges))
+    raise SystemExit(1)
+if unattributed_proof_exits:
+    print("direct Proof exits in current slice need attribution:")
+    print("\n".join(unattributed_proof_exits))
+    raise SystemExit(1)
+
+print(f"current-slice focus audit OK: slice={current_slice!r} transitions={focus_count}")
+PY
+  )"; then
+    ok "$focus_audit_output"
+  else
+    warn "$focus_audit_output"
+  fi
   if python3 - "$current/ACTIVE-LOOP.md" "$current/OPERATING-LOG.md" <<'PY'
 from __future__ import annotations
 
