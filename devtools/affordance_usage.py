@@ -14,29 +14,26 @@ from sqlite3 import Connection
 from typing import Any, cast
 
 from polylogue.config import Config, get_config
+from polylogue.insights.affordance_usage import (
+    DEFAULT_FAMILY_PATTERNS,
+    matched_by_row,
+)
+from polylogue.insights.affordance_usage import (
+    clean_patterns as _clean_patterns,
+)
+from polylogue.insights.affordance_usage import (
+    evidence_kind_for_row as _evidence_kind,
+)
+from polylogue.insights.affordance_usage import (
+    family_for_row as _family_for_row,
+)
+from polylogue.insights.affordance_usage import (
+    like_param as _like_param,
+)
+from polylogue.insights.affordance_usage import (
+    normalized_tool_name_for_row as _normalized_tool_name,
+)
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-
-DEFAULT_FAMILY_PATTERNS: tuple[str, ...] = (
-    "serena",
-    "codebase",
-    "cclsp",
-    "context7",
-    "polylogue",
-    "lynchpin",
-)
-
-FAMILY_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("serena", ("serena",)),
-    ("codebase-memory", ("codebase-memory", "codebase_memory", "codebasememory", "search_code")),
-    ("cclsp", ("cclsp",)),
-    ("context7", ("context7",)),
-    ("polylogue", ("polylogue",)),
-    ("lynchpin", ("lynchpin",)),
-)
-
-GENERIC_DETAIL_TOOL_FAMILIES: frozenset[str] = frozenset(
-    {"exec_command", "functions", "functions.exec_command", "bash", "shell", "client"}
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,105 +115,8 @@ def _int(value: object) -> int:
     raise TypeError(f"expected numeric SQLite value, got {type(value).__name__}")
 
 
-def _family_for_text(text: object) -> str | None:
-    normalized = str(text or "").lower()
-    for family, needles in FAMILY_ALIASES:
-        if any(needle in normalized for needle in needles):
-            return family
-    return None
-
-
-def _family_for_tool(tool_name: object) -> str:
-    normalized = str(tool_name or "").lower()
-    if family := _family_for_text(normalized):
-        return family
-    if normalized.startswith("mcp__"):
-        parts = normalized.split("__")
-        if len(parts) > 1 and parts[1]:
-            return parts[1].replace("plugin_", "")
-    return normalized or "unknown"
-
-
-def _family_for_row(row: dict[str, object]) -> str:
-    tool_family = _family_for_tool(row.get("tool_name"))
-    if tool_family in GENERIC_DETAIL_TOOL_FAMILIES:
-        return _family_for_text(_row_detail_text(row)) or tool_family
-    return tool_family
-
-
-def _normalized_tool_name(row: dict[str, object]) -> str:
-    raw = str(row.get("tool_name") or "").lower()
-    family = _family_for_row(row)
-    if raw.startswith("mcp__"):
-        parts = [part for part in raw.split("__") if part and part != "mcp"]
-        if not parts:
-            return "mcp/unknown"
-        namespace = parts[0].removeprefix("plugin_")
-        tool_parts = parts[1:]
-        if namespace.startswith(f"{family}_"):
-            namespace = family
-        if tool_parts and tool_parts[0] == family:
-            tool_parts = tool_parts[1:]
-        tool = "__".join(tool_parts) if tool_parts else namespace
-        return f"{family}/{tool}"
-    if family in GENERIC_DETAIL_TOOL_FAMILIES:
-        return raw or "unknown"
-    if _family_for_text(_row_detail_text(row)) == family and raw in GENERIC_DETAIL_TOOL_FAMILIES:
-        return f"{family}/command-detail"
-    if family != raw and _family_for_text(raw) == family:
-        return f"{family}/{raw}"
-    return raw or "unknown"
-
-
-def _clean_patterns(patterns: tuple[str, ...]) -> tuple[str, ...]:
-    return tuple(pattern.strip().lower() for pattern in patterns if pattern.strip())
-
-
-def _row_text(row: dict[str, object], key: str) -> str:
-    return str(row.get(key) or "").lower()
-
-
-def _row_detail_text(row: dict[str, object]) -> str:
-    return _row_text(row, "match_detail") or _row_text(row, "detail")
-
-
-def _matches_any(value: str, patterns: tuple[str, ...]) -> bool:
-    return bool(patterns) and any(pattern in value for pattern in patterns)
-
-
-def _like_param(pattern: str) -> str:
-    escaped = pattern.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    return f"%{escaped}%"
-
-
-def _evidence_kind(row: dict[str, object]) -> str:
-    tool_name = _row_text(row, "tool_name")
-    tool_family = _family_for_tool(tool_name)
-    if tool_name.startswith("mcp__"):
-        return "mcp_tool_call"
-    if tool_family in GENERIC_DETAIL_TOOL_FAMILIES:
-        return "command_detail"
-    if tool_family in {"apply_patch", "edit"}:
-        return "edit_content"
-    if tool_family in {"agent"}:
-        return "subagent"
-    if tool_family in {"update_plan"}:
-        return "agent_planning"
-    if tool_family in {"web_search_call"}:
-        return "web_search"
-    return "tool_call"
-
-
 def _matched_by(row: dict[str, object], tool_patterns: tuple[str, ...], detail_patterns: tuple[str, ...]) -> str:
-    tool_match = _matches_any(_row_text(row, "tool_name"), tool_patterns)
-    detail_match = _matches_any(_row_detail_text(row), detail_patterns)
-    if tool_match and detail_match:
-        return "tool_name+detail"
-    if detail_match:
-        return "detail"
-    if tool_match:
-        return "tool_name"
-    return "implicit-default"
+    return matched_by_row(row, tool_patterns=tool_patterns, detail_patterns=detail_patterns)
 
 
 def _annotate_rows(

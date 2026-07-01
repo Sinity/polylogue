@@ -199,7 +199,8 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
         description=(
             "Structured tool count output for `polylogue analyze tools --format json`. "
             "The `basis` and `detail_level` fields declare whether rows count raw "
-            "`tool_use` blocks or materialized `tool_finished` observed-event outcomes."
+            "`tool_use` blocks, materialized `tool_finished` observed-event outcomes, "
+            "or canonical action evidence including command/path/input detail matches."
         ),
         model=ToolCountPayload,
         surfaces=("polylogue analyze tools --format json",),

@@ -37,6 +37,18 @@ from polylogue.core.dates import parse_date
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONValue, require_json_value
 from polylogue.core.sources import origin_from_provider
+from polylogue.insights.affordance_usage import (
+    clean_patterns as _clean_affordance_patterns,
+)
+from polylogue.insights.affordance_usage import (
+    evidence_kind_for_row as _affordance_evidence_kind,
+)
+from polylogue.insights.affordance_usage import (
+    matched_by_row as _affordance_matched_by,
+)
+from polylogue.insights.affordance_usage import (
+    normalized_tool_name_for_row as _affordance_normalized_tool_name,
+)
 from polylogue.insights.archive import (
     ArchiveCoverageInsight,
     ArchiveDebtInsight,
@@ -793,7 +805,7 @@ class ArchiveStore:
         offset: int = 0,
     ) -> list[SessionWorkEventInsight]:
         """List archive work-event insights with the public insight contract."""
-        where: list[str] = []
+        where: list[str] = ["u.block_type = 'tool_use'"]
         params: list[object] = []
         if session_id is not None:
             where.append("we.session_id = ?")
@@ -1803,6 +1815,164 @@ class ArchiveStore:
             }
             for row in rows
         ]
+
+    def list_tool_action_evidence_count_rows(
+        self,
+        query: ToolUsageInsightQuery | None = None,
+        *,
+        detail_patterns: tuple[str, ...] = (),
+        since_ms: int | None = None,
+    ) -> list[dict[str, object]]:
+        """Tool/affordance rollups from the canonical ``actions`` projection.
+
+        Unlike raw tool-use block counts, this basis can match command/path/input
+        details and then normalize generic shell rows into families such as
+        ``codebase-memory/command-detail``. The normalized grouping is a read
+        projection; raw tool names remain folded into the evidence kind and
+        matched-by fields rather than replacing source evidence.
+        """
+
+        request = query or ToolUsageInsightQuery()
+        where: list[str] = []
+        params: list[object] = []
+        origin = _origin_for_tool_usage_filter(request.provider)
+        if origin:
+            where.append("s.origin = ?")
+            params.append(origin)
+        if request.tool:
+            where.append("COALESCE(NULLIF(LOWER(u.tool_name), ''), 'unknown') = LOWER(?)")
+            params.append(request.tool)
+        tool_patterns: tuple[str, ...] = ()
+        if request.mcp_server:
+            tool_patterns = (f"mcp__{request.mcp_server.lower()}__",)
+            where.append("COALESCE(NULLIF(LOWER(u.tool_name), ''), 'unknown') LIKE ?")
+            params.append(f"mcp__{request.mcp_server.lower()}__%")
+        if request.action_kind:
+            where.append("COALESCE(NULLIF(u.semantic_type, ''), 'tool_use') = ?")
+            params.append(request.action_kind)
+        cleaned_details = _clean_affordance_patterns(detail_patterns)
+        fts_queries = tuple(
+            query for pattern in cleaned_details if (query := normalize_fts5_query(pattern)) is not None
+        )
+        if cleaned_details:
+            if not fts_queries:
+                return []
+            where.append("(" + " OR ".join("f.text MATCH ?" for _ in fts_queries) + ")")
+            params.extend(fts_queries)
+
+        def fetch_rows(extra_where: list[str], extra_params: list[object]) -> list[sqlite3.Row]:
+            combined_where = [*extra_where, *where]
+            fts_join = "JOIN messages_fts f ON f.rowid = u.rowid" if fts_queries else ""
+            return list(
+                self._conn.execute(
+                    f"""
+            SELECT
+                s.origin AS origin,
+                u.tool_name AS tool_name,
+                COALESCE(NULLIF(u.semantic_type, ''), 'tool_use') AS action_kind,
+                u.session_id AS session_id,
+                u.message_id AS message_id,
+                COALESCE(u.tool_command, '') || ' ' ||
+                    COALESCE(u.tool_path, '') || ' ' ||
+                    COALESCE(u.tool_input, '') AS match_detail,
+                r.tool_result_is_error AS is_error,
+                r.tool_result_exit_code AS exit_code
+            FROM blocks u
+            JOIN sessions s ON s.session_id = u.session_id
+            {fts_join}
+            LEFT JOIN blocks r
+                ON r.tool_id = u.tool_id
+               AND r.session_id = u.session_id
+               AND r.block_type = 'tool_result'
+            {"WHERE " + " AND ".join(combined_where) if combined_where else ""}
+            """,
+                    (*extra_params, *params),
+                ).fetchall()
+            )
+
+        if since_ms is None:
+            rows = fetch_rows([], [])
+        else:
+            recent_session_rows = self._conn.execute(
+                """
+                SELECT session_id
+                FROM sessions
+                WHERE sort_key_ms >= ?
+                ORDER BY sort_key_ms DESC, session_id
+                """,
+                (since_ms,),
+            ).fetchall()
+            recent_session_ids = [str(row["session_id"]) for row in recent_session_rows]
+            rows = []
+            for index in range(0, len(recent_session_ids), 400):
+                chunk = recent_session_ids[index : index + 400]
+                placeholders = ",".join("?" for _ in chunk)
+                rows.extend(fetch_rows([f"u.session_id IN ({placeholders})"], list(chunk)))
+
+        buckets: dict[tuple[str, str, str, str, str], dict[str, object]] = {}
+        sessions: dict[tuple[str, str, str, str, str], set[str]] = {}
+        for row in rows:
+            source_name = _provider_for_origin(str(row["origin"])).value
+            public_row = {
+                "tool_name": str(row["tool_name"] or ""),
+                "match_detail": str(row["match_detail"] or ""),
+            }
+            if cleaned_details and not any(
+                pattern in str(public_row["match_detail"]).lower() for pattern in cleaned_details
+            ):
+                continue
+            normalized_tool_name = _affordance_normalized_tool_name(public_row)
+            evidence_kind = _affordance_evidence_kind(public_row)
+            matched_by = _affordance_matched_by(
+                public_row,
+                tool_patterns=tool_patterns,
+                detail_patterns=cleaned_details,
+            )
+            key = (
+                source_name,
+                str(row["origin"] or "unknown-export"),
+                normalized_tool_name,
+                str(row["action_kind"] or "tool_use"),
+                evidence_kind,
+            )
+            bucket = buckets.setdefault(
+                key,
+                {
+                    "source_name": source_name,
+                    "origin": str(row["origin"] or "unknown-export"),
+                    "normalized_tool_name": normalized_tool_name,
+                    "action_kind": str(row["action_kind"] or "tool_use"),
+                    "evidence_kind": evidence_kind,
+                    "matched_by": matched_by,
+                    "call_count": 0,
+                    "session_count": 0,
+                    "error_count": 0,
+                    "nonzero_exit_count": 0,
+                },
+            )
+            sessions.setdefault(key, set()).add(str(row["session_id"]))
+            bucket["call_count"] = int(bucket["call_count"]) + 1
+            bucket["error_count"] = int(bucket["error_count"]) + (1 if int(row["is_error"] or 0) == 1 else 0)
+            bucket["nonzero_exit_count"] = int(bucket["nonzero_exit_count"]) + (
+                1 if row["exit_code"] is not None and int(row["exit_code"] or 0) != 0 else 0
+            )
+        for key, bucket in buckets.items():
+            bucket["session_count"] = len(sessions.get(key, set()))
+        ordered = sorted(
+            buckets.values(),
+            key=lambda item: (
+                -int(item["call_count"]),
+                str(item["origin"]),
+                str(item["normalized_tool_name"]),
+                str(item["evidence_kind"]),
+            ),
+        )
+        offset = request.offset or 0
+        if request.limit is not None:
+            ordered = ordered[offset : offset + request.limit]
+        elif offset:
+            ordered = ordered[offset:]
+        return ordered
 
     def _tool_usage_rows(self, query: ToolUsageInsightQuery | None = None) -> list[ToolUsageRow]:
         request = query or ToolUsageInsightQuery()

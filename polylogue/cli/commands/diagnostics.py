@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import click
@@ -343,11 +343,25 @@ def _usage_counter_line(counters: object) -> str:
 @click.option("--mcp-server", help="Only MCP tools with this server prefix, e.g. serena -> mcp__serena__*")
 @click.option("--action-kind", help="Only entries for this action kind")
 @click.option(
+    "--detail-pattern",
+    multiple=True,
+    help="With --basis actions, match command/path/input detail text. Repeatable.",
+)
+@click.option(
+    "--days",
+    type=int,
+    default=None,
+    help="With --basis actions, restrict to sessions whose sort key is within this many days.",
+)
+@click.option(
     "--basis",
-    type=click.Choice(["tool-use-blocks", "observed-events"]),
+    type=click.Choice(["tool-use-blocks", "observed-events", "actions"]),
     default="tool-use-blocks",
     show_default=True,
-    help="Underlying projection: tool-use-blocks counts calls; observed-events counts finished tool outcomes.",
+    help=(
+        "Underlying projection: tool-use-blocks counts calls; "
+        "observed-events counts finished tool outcomes; actions counts canonical action evidence."
+    ),
 )
 @click.option("--limit", "-l", "-n", type=int, default=20, help="Max tools to show")
 @click.option(
@@ -372,13 +386,17 @@ def tools_command(
     tool: str | None,
     mcp_server: str | None,
     action_kind: str | None,
+    detail_pattern: tuple[str, ...],
+    days: int | None,
     basis: str,
     limit: int,
     output_format: str,
 ) -> None:
     """Show tool usage rollups from archive projections."""
     env: AppEnv = ctx.obj
-    run_coroutine_sync(_tools(env, origin, tool, mcp_server, action_kind, basis, limit, output_format))
+    run_coroutine_sync(
+        _tools(env, origin, tool, mcp_server, action_kind, detail_pattern, days, basis, limit, output_format)
+    )
 
 
 async def _tools(
@@ -387,6 +405,8 @@ async def _tools(
     tool: str | None,
     mcp_server: str | None,
     action_kind: str | None,
+    detail_patterns: tuple[str, ...],
+    days: int | None,
     basis: str,
     limit: int,
     output_format: str = "text",
@@ -404,6 +424,15 @@ async def _tools(
         ToolCountRowPayload,
     )
 
+    if detail_patterns and basis != "actions":
+        raise click.UsageError("--detail-pattern is only supported with --basis actions")
+    if days is not None and basis != "actions":
+        raise click.UsageError("--days is only supported with --basis actions")
+    if days is not None and days < 1:
+        raise click.UsageError("--days must be positive")
+    since_ms = None
+    if days is not None:
+        since_ms = int((datetime.now(UTC) - timedelta(days=days)).timestamp() * 1000)
     query = ToolUsageInsightQuery(
         provider=origin,
         tool=tool,
@@ -417,6 +446,15 @@ async def _tools(
             kind = "tool_observed_event_counts"
             detail = "tool_finished_observed_events"
             count_key = "event_count"
+        elif basis == "actions":
+            rows = archive.list_tool_action_evidence_count_rows(
+                query,
+                detail_patterns=detail_patterns,
+                since_ms=since_ms,
+            )
+            kind = "tool_action_evidence_counts"
+            detail = "canonical_action_evidence_counts"
+            count_key = "call_count"
         else:
             rows = archive.list_tool_call_count_rows(query)
             kind = "tool_call_counts"
@@ -432,6 +470,8 @@ async def _tools(
                 tool=tool,
                 mcp_server=mcp_server,
                 action_kind=action_kind,
+                detail_patterns=tuple(detail_patterns),
+                days=days,
                 basis=cast(ToolCountBasis, basis),
                 limit=limit,
             ),
@@ -441,8 +481,23 @@ async def _tools(
                     origin=str(row["origin"]),
                     normalized_tool_name=str(row["normalized_tool_name"]),
                     action_kind=str(row["action_kind"]),
+                    evidence_kind=str(row["evidence_kind"])
+                    if "evidence_kind" in row and row["evidence_kind"] is not None
+                    else None,
+                    matched_by=str(row["matched_by"])
+                    if "matched_by" in row and row["matched_by"] is not None
+                    else None,
                     call_count=int(str(row["call_count"]))
                     if "call_count" in row and row["call_count"] is not None
+                    else None,
+                    session_count=int(str(row["session_count"]))
+                    if "session_count" in row and row["session_count"] is not None
+                    else None,
+                    error_count=int(str(row["error_count"]))
+                    if "error_count" in row and row["error_count"] is not None
+                    else None,
+                    nonzero_exit_count=int(str(row["nonzero_exit_count"]))
+                    if "nonzero_exit_count" in row and row["nonzero_exit_count"] is not None
                     else None,
                     status=str(row["status"]) if "status" in row and row["status"] is not None else None,
                     event_count=int(str(row["event_count"]))
@@ -459,11 +514,19 @@ async def _tools(
         env.ui.console.print("No tool invocations found.")
         return
 
-    title = "Tool observed-event counts" if basis == "observed-events" else "Tool call counts"
+    if basis == "observed-events":
+        title = "Tool observed-event counts"
+    elif basis == "actions":
+        title = "Tool action evidence counts"
+    else:
+        title = "Tool call counts"
     env.ui.console.print(f"\n[bold]{title}[/bold]")
     if basis == "observed-events":
         env.ui.console.print("  detail: tool_finished observed events; counts tool outcomes, not raw tool_use blocks")
         header = f"{'origin':18s}  {'tool':38s}  {'kind':14s}  {'status':10s}  {'events':>7s}"
+    elif basis == "actions":
+        env.ui.console.print("  detail: canonical actions evidence; can include command/path/input detail matches")
+        header = f"{'origin':18s}  {'tool':38s}  {'kind':14s}  {'evidence':16s}  {'calls':>7s}"
     else:
         env.ui.console.print(
             "  detail: tool_use block call counts; use `analyze insights tool-usage` for exact coverage/detail fields"
@@ -483,6 +546,15 @@ async def _tools(
                 f"{tool_name[:38]:38s}  "
                 f"{action_kind_value[:14]:14s}  "
                 f"{status[:10]:10s}  "
+                f"{count:7d}"
+            )
+        elif basis == "actions":
+            evidence_kind = str(row.get("evidence_kind") or "unknown")
+            env.ui.console.print(
+                f"{source_name[:18]:18s}  "
+                f"{tool_name[:38]:38s}  "
+                f"{action_kind_value[:14]:14s}  "
+                f"{evidence_kind[:16]:16s}  "
                 f"{count:7d}"
             )
         else:

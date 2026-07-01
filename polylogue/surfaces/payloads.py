@@ -367,9 +367,13 @@ class ArchiveDebtListPayload(SurfacePayloadModel):
     caveats: tuple[str, ...] = ()
 
 
-ToolCountBasis = Literal["tool-use-blocks", "observed-events"]
-ToolCountKind = Literal["tool_call_counts", "tool_observed_event_counts"]
-ToolCountDetailLevel = Literal["tool_use_block_call_counts", "tool_finished_observed_events"]
+ToolCountBasis = Literal["tool-use-blocks", "observed-events", "actions"]
+ToolCountKind = Literal["tool_call_counts", "tool_observed_event_counts", "tool_action_evidence_counts"]
+ToolCountDetailLevel = Literal[
+    "tool_use_block_call_counts",
+    "tool_finished_observed_events",
+    "canonical_action_evidence_counts",
+]
 
 
 class ToolCountFiltersPayload(SurfacePayloadModel):
@@ -379,6 +383,8 @@ class ToolCountFiltersPayload(SurfacePayloadModel):
     tool: str | None = None
     mcp_server: str | None = None
     action_kind: str | None = None
+    detail_patterns: tuple[str, ...] = ()
+    days: int | None = None
     basis: ToolCountBasis
     limit: int
 
@@ -390,7 +396,12 @@ class ToolCountRowPayload(SurfacePayloadModel):
     origin: str
     normalized_tool_name: str
     action_kind: str
+    evidence_kind: str | None = None
+    matched_by: str | None = None
     call_count: int | None = None
+    session_count: int | None = None
+    error_count: int | None = None
+    nonzero_exit_count: int | None = None
     status: str | None = None
     event_count: int | None = None
 

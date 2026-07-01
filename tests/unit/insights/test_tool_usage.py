@@ -550,6 +550,59 @@ class TestListToolUsageInsightsEndToEnd:
         assert any("idx_session_observed_events_kind_tool" in row for row in plan)
         assert any("<expr>>?" in row and "<expr><?" in row for row in plan)
 
+    async def test_action_evidence_counts_normalize_detail_matches(self, tmp_path: Path) -> None:
+        archive = _archive(tmp_path)
+        db_path = archive.archive_root / "index.db"
+        (
+            SessionBuilder(db_path, "cx-1")
+            .provider("codex")
+            .title("CX")
+            .add_message(
+                "cx-1-msg",
+                role="assistant",
+                text="Searching",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "name": "functions.exec_command",
+                        "id": "t1",
+                        "input": {"command": 'codebase-memory-mcp cli search_code \'{"project":"polylogue"}\''},
+                    },
+                    {
+                        "type": "tool_result",
+                        "id": "t1",
+                        "text": "ok",
+                        "tool_result_is_error": 0,
+                        "tool_result_exit_code": 0,
+                    },
+                    {"type": "tool_use", "name": "search_code", "id": "t2", "input": {"query": "ToolUsage"}},
+                    {"type": "tool_use", "name": "", "id": "t3", "text": "codebase-memory mentioned in prose"},
+                ],
+            )
+            .save()
+        )
+
+        with ArchiveStore.open_existing(archive.archive_root) as store:
+            rows = store.list_tool_action_evidence_count_rows(
+                ToolUsageInsightQuery(provider="codex-session", limit=5),
+                detail_patterns=("codebase-memory",),
+            )
+
+        assert rows == [
+            {
+                "source_name": "codex",
+                "origin": "codex-session",
+                "normalized_tool_name": "codebase-memory/command-detail",
+                "action_kind": "tool_use",
+                "evidence_kind": "command_detail",
+                "matched_by": "detail",
+                "call_count": 1,
+                "session_count": 1,
+                "error_count": 0,
+                "nonzero_exit_count": 0,
+            }
+        ]
+
     async def test_empty_archive_returns_envelope_with_no_gaps(self, tmp_path: Path) -> None:
         result = await _archive(tmp_path).list_tool_usage_insights(ToolUsageInsightQuery())
         assert len(result) == 1

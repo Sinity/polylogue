@@ -126,11 +126,16 @@ class _FakeToolCountStore:
         self,
         call_rows: list[dict[str, object]],
         event_rows: list[dict[str, object]] | None = None,
+        action_rows: list[dict[str, object]] | None = None,
     ) -> None:
         self.call_rows = call_rows
         self.event_rows = event_rows or []
+        self.action_rows = action_rows or []
         self.queries: list[ToolUsageInsightQuery] = []
         self.event_queries: list[ToolUsageInsightQuery] = []
+        self.action_queries: list[ToolUsageInsightQuery] = []
+        self.detail_patterns: list[tuple[str, ...]] = []
+        self.since_ms_values: list[int | None] = []
 
     def __enter__(self) -> _FakeToolCountStore:
         return self
@@ -149,13 +154,26 @@ class _FakeToolCountStore:
         self.event_queries.append(query or ToolUsageInsightQuery())
         return self.event_rows
 
+    def list_tool_action_evidence_count_rows(
+        self,
+        query: ToolUsageInsightQuery | None = None,
+        *,
+        detail_patterns: tuple[str, ...] = (),
+        since_ms: int | None = None,
+    ) -> list[dict[str, object]]:
+        self.action_queries.append(query or ToolUsageInsightQuery())
+        self.detail_patterns.append(detail_patterns)
+        self.since_ms_values.append(since_ms)
+        return self.action_rows
+
 
 def _patch_tool_count_store(
     monkeypatch: pytest.MonkeyPatch,
     call_rows: list[dict[str, object]],
     event_rows: list[dict[str, object]] | None = None,
+    action_rows: list[dict[str, object]] | None = None,
 ) -> _FakeToolCountStore:
-    store = _FakeToolCountStore(call_rows, event_rows)
+    store = _FakeToolCountStore(call_rows, event_rows, action_rows)
     monkeypatch.setattr(ArchiveStore, "open_existing", classmethod(lambda cls, archive_root: store))
     return store
 
@@ -166,7 +184,10 @@ def test_tools_help_explains_basis_and_mcp_server_filters() -> None:
 
     assert result.exit_code == 0
     assert "observed-events counts finished tool outcomes" in output
+    assert "actions counts canonical action evidence" in output
     assert "tool-use-blocks counts calls" in output
+    assert "--detail-pattern" in output
+    assert "--days" in output
     assert "serena -> mcp__serena__*" in output
     assert "mcp__serena__find_symbol" in output
 
@@ -200,6 +221,8 @@ async def test_tools_renders_tool_usage_insight(monkeypatch: pytest.MonkeyPatch)
         tool=None,
         mcp_server=None,
         action_kind=None,
+        detail_patterns=(),
+        days=None,
         basis="tool-use-blocks",
         limit=5,
     )
@@ -243,6 +266,8 @@ async def test_tools_renders_observed_event_basis(monkeypatch: pytest.MonkeyPatc
         tool=None,
         mcp_server="serena",
         action_kind=None,
+        detail_patterns=(),
+        days=None,
         basis="observed-events",
         limit=5,
     )
@@ -278,6 +303,8 @@ async def test_tools_json_declares_tool_use_basis(
         tool=None,
         mcp_server=None,
         action_kind=None,
+        detail_patterns=(),
+        days=None,
         basis="tool-use-blocks",
         limit=5,
         output_format="json",
@@ -325,6 +352,8 @@ async def test_tools_json_declares_observed_event_basis(
         tool=None,
         mcp_server="serena",
         action_kind=None,
+        detail_patterns=(),
+        days=None,
         basis="observed-events",
         limit=5,
         output_format="json",
@@ -348,6 +377,69 @@ async def test_tools_json_declares_observed_event_basis(
 
 
 @pytest.mark.asyncio
+async def test_tools_json_declares_action_evidence_basis(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    env = _env()
+    store = _patch_tool_count_store(
+        monkeypatch,
+        [],
+        action_rows=[
+            {
+                "source_name": "codex",
+                "origin": "codex-session",
+                "normalized_tool_name": "codebase-memory/command-detail",
+                "action_kind": "tool_use",
+                "evidence_kind": "command_detail",
+                "matched_by": "detail",
+                "call_count": 2,
+                "session_count": 1,
+                "error_count": 0,
+                "nonzero_exit_count": 0,
+            },
+        ],
+    )
+
+    await diagnostics._tools(
+        env,
+        origin=None,
+        tool=None,
+        mcp_server=None,
+        action_kind=None,
+        detail_patterns=("codebase-memory",),
+        days=30,
+        basis="actions",
+        limit=5,
+        output_format="json",
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["kind"] == "tool_action_evidence_counts"
+    assert payload["detail_level"] == "canonical_action_evidence_counts"
+    assert payload["filters"]["basis"] == "actions"
+    assert payload["filters"]["detail_patterns"] == ["codebase-memory"]
+    assert payload["filters"]["days"] == 30
+    assert payload["items"] == [
+        {
+            "source_name": "codex",
+            "origin": "codex-session",
+            "normalized_tool_name": "codebase-memory/command-detail",
+            "action_kind": "tool_use",
+            "evidence_kind": "command_detail",
+            "matched_by": "detail",
+            "call_count": 2,
+            "session_count": 1,
+            "error_count": 0,
+            "nonzero_exit_count": 0,
+        }
+    ]
+    assert store.detail_patterns == [("codebase-memory",)]
+    assert len(store.since_ms_values) == 1
+    assert store.since_ms_values[0] is not None
+
+
+@pytest.mark.asyncio
 async def test_tools_passes_filters_to_tool_usage_insight(monkeypatch: pytest.MonkeyPatch) -> None:
     env = _env()
     store = _patch_tool_count_store(monkeypatch, [])
@@ -358,6 +450,8 @@ async def test_tools_passes_filters_to_tool_usage_insight(monkeypatch: pytest.Mo
         tool="mcp__serena__find_symbol",
         mcp_server="serena",
         action_kind="tool_use",
+        detail_patterns=(),
+        days=None,
         basis="tool-use-blocks",
         limit=5,
     )
@@ -382,6 +476,8 @@ async def test_tools_reports_empty_archives(monkeypatch: pytest.MonkeyPatch) -> 
         tool=None,
         mcp_server=None,
         action_kind=None,
+        detail_patterns=(),
+        days=None,
         basis="tool-use-blocks",
         limit=5,
     )
