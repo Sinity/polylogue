@@ -446,6 +446,7 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
     assert parse_pending.severity == "warning"
     assert parse_pending.status == "actionable"
     assert parse_pending.category == "parse-pending"
+    assert "max raw payload size: 2.0 KiB (2,048 bytes)" in (parse_pending.details or "")
     assert parse_pending.actions[0].command == ("polylogued", "run")
     assert parse_pending.actions[1].label == "Preview targeted raw replay"
     assert parse_pending.actions[1].command == (
@@ -468,6 +469,7 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
     assert "parsed but have no materialized session" in parsed_gap.summary
     assert "blind replay is not the primary repair" in (parsed_gap.details or "")
     assert "passed=1" in (parsed_gap.details or "")
+    assert "max raw payload size: 4.0 KiB (4,096 bytes)" in (parsed_gap.details or "")
     assert parsed_gap.actions == ()
 
     session_shaped = by_ref["debt:raw-materialization:codex-session:parsed-session-unmaterialized"]

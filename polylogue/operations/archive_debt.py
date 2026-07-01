@@ -597,6 +597,18 @@ def _embedded_session_materialization_counts(
     return (len(session_ids), materialized)
 
 
+def _format_bytes(value: int) -> str:
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    amount = float(max(value, 0))
+    for unit in units:
+        if amount < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(amount):,} B"
+            return f"{amount:.1f} {unit} ({value:,} bytes)"
+        amount /= 1024
+    return f"{value:,} bytes"
+
+
 def _raw_materialization_debt_row(
     archive_root: Path,
     *,
@@ -608,6 +620,7 @@ def _raw_materialization_debt_row(
     count = len(rows)
     sample_rows = rows[:5]
     max_blob_size = max(_int_value(row["blob_size"]) or 0 for row in rows)
+    max_blob_size_text = _format_bytes(max_blob_size)
     validation_counts = _count_values(row["validation_status"] for row in rows)
     source_available = any(_source_artifact_exists(str(row["source_path"])) for row in rows)
     severity: ArchiveDebtSeverity
@@ -622,7 +635,7 @@ def _raw_materialization_debt_row(
         stage = "raw-blob"
         summary = f"{count} {origin} raw artifact(s) reference missing blob payloads"
         details = (
-            f"Max raw payload size: {max_blob_size} bytes; validation states: "
+            f"Max raw payload size: {max_blob_size_text}; validation states: "
             f"{_format_counts(validation_counts)}. Re-acquire from source before parsing."
         )
         actions = (
@@ -636,9 +649,7 @@ def _raw_materialization_debt_row(
         severity = "critical"
         stage = "parse"
         summary = f"{count} {origin} raw artifact(s) failed before materializing sessions"
-        details = (
-            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size} bytes."
-        )
+        details = f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size_text}."
         actions = (
             ArchiveDebtActionPayload(
                 label="Inspect source artifacts",
@@ -657,7 +668,7 @@ def _raw_materialization_debt_row(
         coverage_text = "; ".join(coverage_parts) if coverage_parts else "embedded session coverage unavailable"
         summary = f"{count} {origin} aggregate raw artifact(s) are only partially materialized"
         details = (
-            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size} bytes. "
+            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size_text}. "
             f"Sample coverage: {coverage_text}. Inspect parser/source coverage rather than replaying the raw row blindly."
         )
         actions = (
@@ -673,7 +684,7 @@ def _raw_materialization_debt_row(
         stage = "parse"
         summary = f"{count} {origin} raw artifact(s) parsed but have no materialized session"
         details = (
-            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size} bytes. "
+            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size_text}. "
             "These rows already passed parsing, so blind replay is not the primary repair. They need an auditable "
             "skip reason or parser/materialization classification."
         )
@@ -693,7 +704,7 @@ def _raw_materialization_debt_row(
         )
         summary = f"{count} {origin} session-shaped raw artifact(s) parsed without materialized sessions"
         details = (
-            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size} bytes. "
+            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size_text}. "
             f"Sample source shapes: {shape_text}.{sample_session_text} "
             "These rows need parser/materialization classification, not blind replay."
         )
@@ -728,7 +739,7 @@ def _raw_materialization_debt_row(
         stage = "parse"
         summary = f"{count} {origin} raw artifact(s) materialized through native/source aliases"
         details = (
-            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size} bytes. "
+            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size_text}. "
             "These rows do not join by raw_id, but the same logical sessions are already present by provider native id "
             "or by a source-path-derived native id. They reconcile raw/index counts and should not be replayed blindly."
         )
@@ -739,7 +750,7 @@ def _raw_materialization_debt_row(
         stage = "parse"
         summary = f"{count} {origin} raw artifact(s) parsed as non-session artifacts"
         details = (
-            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size} bytes. "
+            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size_text}. "
             "These source rows are recognized sidecars or metadata-only records, not transcript sessions, so replaying "
             "them should not be expected to create index sessions."
         )
@@ -749,9 +760,7 @@ def _raw_materialization_debt_row(
         stage = "parse"
         sample_raw_id = str(sample_rows[0]["raw_id"]) if sample_rows else ""
         summary = f"{count} {origin} raw artifact(s) are acquired but not yet parsed"
-        details = (
-            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size} bytes."
-        )
+        details = f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size_text}."
         actions = (
             ArchiveDebtActionPayload(
                 label="Run daemon ingest",
