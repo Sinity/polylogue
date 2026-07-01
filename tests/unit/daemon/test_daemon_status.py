@@ -409,7 +409,7 @@ def test_daemon_status_marks_raw_materialization_debt_not_ready(
     assert materialization["warning"] == 1
     assert materialization["affected_total"] == 238
     assert materialization["affected_actionable"] == 238
-    assert materialization["affected_open"] == 238
+    assert materialization["affected_open"] == 0
     assert materialization["category_counts"] == {"parsed-without-session": 238}
     assert materialization["source_family_counts"] == {"aistudio-drive": 238}
 

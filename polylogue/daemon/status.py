@@ -1834,7 +1834,7 @@ def _raw_materialization_readiness_info() -> RawMaterializationReadiness:
         source_family_counts[row.source_family or "unspecified"] += affected_count
         if row.status == "actionable":
             affected_actionable += affected_count
-        if row.status != "blocked":
+        if row.status == "open":
             affected_open += affected_count
     return RawMaterializationReadiness(
         available=True,
