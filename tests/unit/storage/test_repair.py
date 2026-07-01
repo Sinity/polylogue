@@ -378,7 +378,7 @@ def test_raw_materialization_scope_filters_count_only_matching_raw_rows(tmp_path
     assert by_root.repaired_count == 1
 
 
-def test_raw_materialization_defers_batch_fts_then_repairs_once(
+def test_raw_materialization_leaves_fts_to_ingest_or_fts_stage(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -407,15 +407,6 @@ def test_raw_materialization_defers_batch_fts_then_repairs_once(
             calls["parse_kwargs"] = kwargs
             return FakeParseResult()
 
-    def fake_repair_dangling_fts(_config: Config, *, dry_run: bool = False) -> repair_mod.RepairResult:
-        calls["fts_dry_run"] = dry_run
-        return repair_mod._repair_result(
-            "dangling_fts",
-            repaired_count=7,
-            success=True,
-            detail="repaired 7 FTS rows",
-        )
-
     def fake_candidate_ids(
         _config: Config,
         *,
@@ -434,19 +425,18 @@ def test_raw_materialization_defers_batch_fts_then_repairs_once(
     monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", FakeParsingService)
     monkeypatch.setattr("polylogue.storage.repository.SessionRepository", FakeRepository)
     monkeypatch.setattr("polylogue.storage.sqlite.async_sqlite.SQLiteBackend", FakeBackend)
-    monkeypatch.setattr(repair_mod, "repair_dangling_fts", fake_repair_dangling_fts)
 
     result = repair_mod.repair_raw_materialization(config, dry_run=False)
 
     assert result.success is True
     assert result.repaired_count == 2
-    assert "repaired 7 FTS rows" in result.detail
+    assert "message FTS left to ingest triggers or the FTS maintenance stage" in result.detail
     assert calls["parse_kwargs"] == {
         "raw_ids": ["raw-1"],
+        "progress_callback": None,
         "force_write": False,
         "repair_message_fts": False,
     }
-    assert calls["fts_dry_run"] is False
     assert calls["raw_artifact_id"] is None
     assert calls["closed"] is True
 

@@ -1233,7 +1233,12 @@ def repair_raw_materialization(
                         index - 1,
                         desc=f"raw_materialization: parsing raw {index}/{total} {raw_id[:12]}",
                     )
-                result = await service.parse_from_raw(raw_ids=[raw_id], force_write=False, repair_message_fts=False)
+                result = await service.parse_from_raw(
+                    raw_ids=[raw_id],
+                    progress_callback=progress_callback,
+                    force_write=False,
+                    repair_message_fts=False,
+                )
                 processed_total += len(result.processed_ids)
                 if progress_callback is not None:
                     progress_callback(
@@ -1255,24 +1260,23 @@ def repair_raw_materialization(
             success=False,
             detail=f"Failed to materialize raw evidence: {exc}",
         )
-    fts_result = repair_dangling_fts(config, dry_run=False)
     if candidates.already_parsed:
         detail = (
             f"Replayed {len(raw_ids):,} raw rows "
             f"({candidates.already_parsed:,} already parsed but not materialized); "
-            f"{processed:,} sessions changed; {fts_result.detail}"
+            f"{processed:,} sessions changed; message FTS left to ingest triggers or the FTS maintenance stage"
         )
     else:
         detail = (
             f"Replayed {len(raw_ids):,} acquired-but-unparsed raw rows; "
-            f"{processed:,} sessions changed; {fts_result.detail}"
+            f"{processed:,} sessions changed; message FTS left to ingest triggers or the FTS maintenance stage"
         )
     if missing_blobs:
         detail += f"; {missing_blobs:,} raw rows remain blocked by missing blobs"
     return _repair_result(
         "raw_materialization",
         repaired_count=processed,
-        success=missing_blobs == 0 and fts_result.success,
+        success=missing_blobs == 0,
         detail=detail,
     )
 
