@@ -515,6 +515,41 @@ class TestListToolUsageInsightsEndToEnd:
             },
         ]
 
+    async def test_observed_event_mcp_filter_uses_tool_expression_index(self, tmp_path: Path) -> None:
+        archive = _archive(tmp_path)
+        db_path = archive.archive_root / "index.db"
+        (
+            SessionBuilder(db_path, "cc-1")
+            .provider("claude-code")
+            .title("CC")
+            .add_message("cc-1-msg", role="assistant", text="Tools")
+            .save()
+        )
+        tool_expr = "COALESCE(NULLIF(json_extract(payload_json, '$.tool_name'), ''), 'unknown')"
+        mcp_prefix = "mcp__serena__"
+
+        conn = sqlite3.connect(db_path)
+        try:
+            plan = [
+                str(row[-1])
+                for row in conn.execute(
+                    f"""
+                    EXPLAIN QUERY PLAN
+                    SELECT COUNT(*)
+                    FROM session_observed_events
+                    WHERE kind = 'tool_finished'
+                      AND {tool_expr} >= ?
+                      AND {tool_expr} < ?
+                    """,
+                    (mcp_prefix, f"{mcp_prefix}\U0010ffff"),
+                )
+            ]
+        finally:
+            conn.close()
+
+        assert any("idx_session_observed_events_kind_tool" in row for row in plan)
+        assert any("<expr>>?" in row and "<expr><?" in row for row in plan)
+
     async def test_empty_archive_returns_envelope_with_no_gaps(self, tmp_path: Path) -> None:
         result = await _archive(tmp_path).list_tool_usage_insights(ToolUsageInsightQuery())
         assert len(result) == 1

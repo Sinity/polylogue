@@ -1756,11 +1756,14 @@ class ArchiveStore:
         handler_expr = "COALESCE(NULLIF(json_extract(e.payload_json, '$.handler_kind'), ''), 'unknown')"
         status_expr = "COALESCE(NULLIF(json_extract(e.payload_json, '$.status'), ''), 'unknown')"
         if request.tool:
-            where.append(f"LOWER({tool_expr}) = LOWER(?)")
+            where.append(f"{tool_expr} = ?")
             params.append(request.tool)
         if request.mcp_server:
-            where.append(f"LOWER({tool_expr}) LIKE ?")
-            params.append(f"mcp__{request.mcp_server.lower()}__%")
+            mcp_prefix = f"mcp__{request.mcp_server.lower()}__"
+            where.append(f"{tool_expr} >= ?")
+            where.append(f"{tool_expr} < ?")
+            params.append(mcp_prefix)
+            params.append(f"{mcp_prefix}\U0010ffff")
         if request.action_kind:
             where.append(f"{handler_expr} = ?")
             params.append(request.action_kind)
