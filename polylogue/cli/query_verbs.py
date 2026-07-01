@@ -348,6 +348,20 @@ def _complete_read_format(ctx: click.Context, param: click.Parameter, incomplete
     return [CompletionItem(output_format, help=help_text) for output_format, help_text in sorted(items.items())]
 
 
+def _read_view_projection_contract(view_id: str) -> dict[str, object]:
+    """Return the shared projection/render contract summary for a read view."""
+
+    from polylogue.surfaces.projection_spec import projection_from_view
+
+    spec = projection_from_view(view_id)
+    return {
+        "families": [family.value for family in spec.projection.families],
+        "body_policy": spec.projection.body_policy.value,
+        "render_layout": spec.render.layout,
+        "timestamp_policy": spec.render.timestamps.value,
+    }
+
+
 def _render_read_view_profiles_plain() -> str:
     lines = ["Read views:"]
     for profile in READ_VIEW_PROFILES:
@@ -355,11 +369,19 @@ def _render_read_view_profiles_plain() -> str:
         options = ", ".join(f"--{name.replace('_', '-')}" for name in sorted(metadata.accepted_options)) or "none"
         scope = "query-set" if metadata.accepts_query_set else metadata.session_policy
         handoff = " handoff" if profile.successor_handoff else ""
+        projection = _read_view_projection_contract(profile.view_id)
         lines.append(
             f"  {profile.view_id:<12} {profile.lossiness:<10} evidence={profile.evidence_policy:<10}"
             f" formats={','.join(profile.formats)}{handoff}"
         )
         lines.append(f"      scope={scope}; options={options}")
+        lines.append(
+            "      projection="
+            f"{','.join(cast(list[str], projection['families']))}; "
+            f"body={projection['body_policy']}; "
+            f"render={projection['render_layout']}; "
+            f"timestamps={projection['timestamp_policy']}"
+        )
         lines.append(f"      {profile.purpose}")
     return "\n".join(lines)
 
@@ -375,6 +397,7 @@ def _emit_read_view_profiles(output_format: str | None) -> None:
             augmented["cli_options"] = sorted(metadata.accepted_options)
             augmented["session_policy"] = metadata.session_policy
             augmented["accepts_query_set"] = metadata.accepts_query_set
+            augmented["projection_contract"] = _read_view_projection_contract(str(payload["view_id"]))
             payloads.append(augmented)
         emit_success({"read_views": payloads})
         return

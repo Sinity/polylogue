@@ -539,6 +539,10 @@ def test_read_views_plain_lists_profile_metadata(cli_runner: CliRunner) -> None:
     assert "options=--limit, --offset" in result.output
     assert "options=--confidence-threshold, --github-api, --otlp, --repo-path, --since-hours" in result.output
     assert "scope=query-set" in result.output
+    assert (
+        "projection=context,messages; body=authored-dialogue; render=standard; timestamps=include-available"
+        in result.output
+    )
 
 
 def test_read_help_groups_options_by_ownership(cli_runner: CliRunner) -> None:
@@ -572,6 +576,18 @@ def test_read_views_json_outputs_profile_payload(cli_runner: CliRunner) -> None:
     assert views["raw"]["session_policy"] == "required"
     assert views["dialogue"]["accepts_query_set"] is True
     assert views["chronicle"]["accepts_query_set"] is True
+    assert views["context-image"]["projection_contract"] == {
+        "families": ["context", "messages"],
+        "body_policy": "authored-dialogue",
+        "render_layout": "standard",
+        "timestamp_policy": "include-available",
+    }
+    assert views["raw"]["projection_contract"] == {
+        "families": ["raw"],
+        "body_policy": "full",
+        "render_layout": "standard",
+        "timestamp_policy": "renderer-default",
+    }
 
 
 def test_read_verb_raw_view_forwards_options(cli_runner: CliRunner) -> None:
