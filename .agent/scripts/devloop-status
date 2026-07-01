@@ -206,13 +206,21 @@ if raw_debt:
         raw_state = "ready"
     elif (totals.get("blocked") or 0) and not (totals.get("actionable") or 0):
         raw_state = "blocked"
+    elif not (totals.get("affected_actionable") or 0) and not (totals.get("critical") or 0) and not (totals.get("warning") or 0):
+        raw_state = "degraded"
     else:
         raw_state = "stale"
+    raw_summary = {
+        "ready": "ready",
+        "blocked": "raw evidence blocked",
+        "degraded": "raw evidence classified as non-actionable",
+        "stale": "raw evidence pending materialization",
+    }[raw_state]
     raw_component = {
         "component": "raw_materialization",
         "scope": "archive",
         "state": raw_state,
-        "summary": "raw evidence pending materialization" if raw_state != "ready" else "ready",
+        "summary": raw_summary,
         "counts": {
             key: value
             for key, value in totals.items()
@@ -432,6 +440,8 @@ if (totals.get("affected_total") or 0) == 0:
     state = "ready"
 elif (totals.get("blocked") or 0) and not (totals.get("actionable") or 0):
     state = "blocked"
+elif not (totals.get("affected_actionable") or 0) and not (totals.get("critical") or 0) and not (totals.get("warning") or 0):
+    state = "degraded"
 else:
     state = "stale"
 print(

@@ -1615,44 +1615,9 @@ def _component_from_fts_readiness(readiness: FTSReadiness) -> ComponentReadiness
 def _component_from_raw_materialization_readiness(
     readiness: RawMaterializationReadiness,
 ) -> ComponentReadiness:
-    if not readiness.available:
-        state = CapabilityReadinessState.UNKNOWN
-        summary = "unknown"
-    elif readiness.total == 0:
-        state = CapabilityReadinessState.READY
-        summary = "ready"
-    elif readiness.blocked > 0:
-        state = CapabilityReadinessState.BLOCKED
-        summary = "raw evidence blocked"
-    elif readiness.critical > 0:
-        state = CapabilityReadinessState.POISONED
-        summary = "raw evidence not materialized"
-    else:
-        state = CapabilityReadinessState.STALE
-        summary = "raw evidence pending materialization"
-    return ComponentReadiness(
-        component="raw_materialization",
-        scope="archive",
-        state=state,
-        summary=summary,
-        counts={
-            "total": readiness.total,
-            "critical": readiness.critical,
-            "warning": readiness.warning,
-            "actionable": readiness.actionable,
-            "blocked": readiness.blocked,
-            "affected_total": readiness.affected_total,
-            "affected_actionable": readiness.affected_actionable,
-            "affected_open": readiness.affected_open,
-        },
-        metadata={
-            "category_counts": readiness.category_counts,
-            "source_family_counts": readiness.source_family_counts,
-        },
-        repair_hint=None
-        if state == CapabilityReadinessState.READY
-        else ("polylogue ops debt list --kind raw-materialization"),
-    )
+    from polylogue.readiness.capability import component_from_raw_materialization_readiness
+
+    return component_from_raw_materialization_readiness(readiness.model_dump())
 
 
 def _component_from_insight_freshness(freshness: InsightFreshness) -> ComponentReadiness:

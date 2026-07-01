@@ -1239,56 +1239,9 @@ def _direct_raw_materialization_readiness(active_root: Path) -> dict[str, Any]:
 
 
 def _direct_raw_materialization_component(readiness: dict[str, Any] | None) -> dict[str, Any]:
-    from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
+    from polylogue.readiness.capability import component_from_raw_materialization_readiness
 
-    payload = readiness or {}
-    available = bool(payload.get("available", False))
-    total = _safe_int(payload.get("total"))
-    critical = _safe_int(payload.get("critical"))
-    warning = _safe_int(payload.get("warning"))
-    actionable = _safe_int(payload.get("actionable"))
-    blocked = _safe_int(payload.get("blocked"))
-    affected_total = _safe_int(payload.get("affected_total"))
-    affected_actionable = _safe_int(payload.get("affected_actionable"))
-    affected_open = _safe_int(payload.get("affected_open"))
-    if not available:
-        state = CapabilityReadinessState.UNKNOWN
-        summary = "unknown"
-    elif total == 0:
-        state = CapabilityReadinessState.READY
-        summary = "ready"
-    elif blocked > 0:
-        state = CapabilityReadinessState.BLOCKED
-        summary = "raw evidence blocked"
-    elif critical > 0:
-        state = CapabilityReadinessState.POISONED
-        summary = "raw evidence not materialized"
-    else:
-        state = CapabilityReadinessState.STALE
-        summary = "raw evidence pending materialization"
-    return ComponentReadiness(
-        component="raw_materialization",
-        scope="archive",
-        state=state,
-        summary=summary,
-        counts={
-            "total": total,
-            "critical": critical,
-            "warning": warning,
-            "actionable": actionable,
-            "blocked": blocked,
-            "affected_total": affected_total,
-            "affected_actionable": affected_actionable,
-            "affected_open": affected_open,
-        },
-        metadata={
-            "category_counts": dict(payload.get("category_counts") or {}),
-            "source_family_counts": dict(payload.get("source_family_counts") or {}),
-        },
-        repair_hint=None
-        if state == CapabilityReadinessState.READY
-        else "polylogue ops debt list --kind raw-materialization",
-    ).to_dict()
+    return component_from_raw_materialization_readiness(readiness).to_dict()
 
 
 def _direct_assertion_component(active_root: Path) -> dict[str, Any]:
