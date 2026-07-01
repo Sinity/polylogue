@@ -180,6 +180,53 @@ def test_tool_count_payload_validates_against_schema() -> None:
     jsonschema.validate(instance=instance, schema=schema)
 
 
+def test_tool_family_comparison_payload_validates_against_schema() -> None:
+    """ToolFamilyComparisonPayload must validate against the published schema."""
+    import jsonschema
+
+    from polylogue.surfaces.payloads import (
+        ToolCountFiltersPayload,
+        ToolCountPayload,
+        ToolCountRowPayload,
+        ToolFamilyComparisonPayload,
+    )
+
+    schema = _load_published_schema("tool-family-comparison")
+    payload = ToolFamilyComparisonPayload(
+        kind="tool_family_evidence_comparison",
+        archive_root="/home/sinity/.local/share/polylogue",
+        family="serena",
+        bases=(
+            ToolCountPayload(
+                kind="tool_observed_event_counts",
+                detail_level="tool_finished_observed_events",
+                archive_root="/home/sinity/.local/share/polylogue",
+                filters=ToolCountFiltersPayload(
+                    origin=None,
+                    tool=None,
+                    mcp_server="serena",
+                    action_kind=None,
+                    basis="observed-events",
+                    limit=5,
+                ),
+                items=(
+                    ToolCountRowPayload(
+                        source_name="claude-code",
+                        origin="claude-code-session",
+                        normalized_tool_name="mcp__serena__find_symbol",
+                        action_kind="mcp",
+                        status="ok",
+                        event_count=3,
+                    ),
+                ),
+            ),
+        ),
+        caveats=("Counts are basis-specific.",),
+    )
+    instance = payload.model_dump(mode="json", exclude_none=True)
+    jsonschema.validate(instance=instance, schema=schema)
+
+
 def test_session_list_row_payload_validates_against_schema() -> None:
     """SessionListRowPayload must validate against the published schema."""
     import jsonschema

@@ -26,6 +26,7 @@ devtools render cli-output-schemas --check # CI sync check
 | [`import-explain.schema.json`](./import-explain.schema.json) | `polylogue import PATH --explain --format json`<br>`polylogue import PATH --explain --format ndjson (entries)` | `ImportExplainPayload` |
 | [`archive-debt-list.schema.json`](./archive-debt-list.schema.json) | `polylogue ops debt list --format json` | `ArchiveDebtListPayload` |
 | [`tool-counts.schema.json`](./tool-counts.schema.json) | `polylogue analyze tools --format json` | `ToolCountPayload` |
+| [`tool-family-comparison.schema.json`](./tool-family-comparison.schema.json) | `polylogue analyze tools --compare-family FAMILY --format json` | `ToolFamilyComparisonPayload` |
 | [`session-neighbor-candidate.schema.json`](./session-neighbor-candidate.schema.json) | `polylogue read --view neighbors --format json` | `SessionNeighborCandidatePayload` |
 | [`mutation-result.schema.json`](./mutation-result.schema.json) | `polylogue find <query> then delete --dry-run`<br>`polylogue find <query> then delete --yes`<br>`MCP mutation tools`<br>`daemon mutation endpoints` | `MutationResultPayload` |
 | [`action-affordance-list.schema.json`](./action-affordance-list.schema.json) | `polylogue config action-affordances`<br>`GET /api/action-affordances`<br>`MCP action_affordances` | `ActionAffordanceListPayload` |

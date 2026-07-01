@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import cast
 from unittest.mock import MagicMock
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -188,6 +189,7 @@ def test_tools_help_explains_basis_and_mcp_server_filters() -> None:
     assert "tool-use-blocks counts calls" in output
     assert "--detail-pattern" in output
     assert "--days" in output
+    assert "--compare-family" in output
     assert "serena -> mcp__serena__*" in output
     assert "mcp__serena__find_symbol" in output
 
@@ -437,6 +439,101 @@ async def test_tools_json_declares_action_evidence_basis(
     assert store.detail_patterns == [("codebase-memory",)]
     assert len(store.since_ms_values) == 1
     assert store.since_ms_values[0] is not None
+
+
+@pytest.mark.asyncio
+async def test_tools_json_compares_family_across_evidence_bases(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    env = _env()
+    store = _patch_tool_count_store(
+        monkeypatch,
+        call_rows=[
+            {
+                "source_name": "claude-code",
+                "origin": "claude-code-session",
+                "normalized_tool_name": "mcp__serena__find_symbol",
+                "action_kind": "mcp",
+                "call_count": 3,
+            },
+        ],
+        event_rows=[
+            {
+                "source_name": "claude-code",
+                "origin": "claude-code-session",
+                "normalized_tool_name": "mcp__serena__find_symbol",
+                "action_kind": "mcp",
+                "status": "ok",
+                "event_count": 2,
+            },
+        ],
+        action_rows=[
+            {
+                "source_name": "claude-code",
+                "origin": "claude-code-session",
+                "normalized_tool_name": "serena/find_symbol",
+                "action_kind": "tool_use",
+                "evidence_kind": "mcp_tool_call",
+                "matched_by": "detail",
+                "call_count": 2,
+                "session_count": 1,
+                "error_count": 0,
+                "nonzero_exit_count": 0,
+            },
+        ],
+    )
+
+    await diagnostics._tools(
+        env,
+        origin=None,
+        tool=None,
+        mcp_server=None,
+        action_kind=None,
+        detail_patterns=(),
+        days=30,
+        basis="tool-use-blocks",
+        limit=5,
+        output_format="json",
+        compare_family="serena",
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["kind"] == "tool_family_evidence_comparison"
+    assert payload["family"] == "serena"
+    assert [basis["filters"]["basis"] for basis in payload["bases"]] == [
+        "tool-use-blocks",
+        "observed-events",
+        "actions",
+    ]
+    assert payload["bases"][0]["filters"]["mcp_server"] == "serena"
+    assert payload["bases"][1]["filters"]["mcp_server"] == "serena"
+    assert payload["bases"][2]["filters"]["detail_patterns"] == ["serena"]
+    assert payload["bases"][2]["filters"]["days"] == 30
+    assert payload["bases"][0]["items"][0]["call_count"] == 3
+    assert payload["bases"][1]["items"][0]["event_count"] == 2
+    assert payload["bases"][2]["items"][0]["evidence_kind"] == "mcp_tool_call"
+    assert store.detail_patterns == [("serena",)]
+    assert len(store.since_ms_values) == 1
+    assert store.since_ms_values[0] is not None
+
+
+@pytest.mark.asyncio
+async def test_tools_compare_family_rejects_overlapping_tool_filters() -> None:
+    with pytest.raises(click.UsageError):
+        await diagnostics._tools(
+            _env(),
+            origin=None,
+            tool="mcp__serena__find_symbol",
+            mcp_server=None,
+            action_kind=None,
+            detail_patterns=(),
+            days=None,
+            basis="tool-use-blocks",
+            limit=5,
+            output_format="json",
+            compare_family="serena",
+        )
 
 
 @pytest.mark.asyncio

@@ -416,6 +416,16 @@ class ToolCountPayload(SurfacePayloadModel):
     items: tuple[ToolCountRowPayload, ...]
 
 
+class ToolFamilyComparisonPayload(SurfacePayloadModel):
+    """Multi-basis evidence comparison for one tool/affordance family."""
+
+    kind: Literal["tool_family_evidence_comparison"]
+    archive_root: str
+    family: str
+    bases: tuple[ToolCountPayload, ...]
+    caveats: tuple[str, ...] = ()
+
+
 def normalize_role(role: object) -> str:
     if not role:
         return "unknown"
