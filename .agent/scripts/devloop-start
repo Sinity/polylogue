@@ -1,9 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-title="${1:?usage: devloop-start <slice-title>}"
+start_focus="Direction"
+if [ "${1:-}" = "--focus" ]; then
+  start_focus="${2:?usage: devloop-start [--focus MODE] <slice-title>}"
+  shift 2
+fi
+
+case "$start_focus" in
+  Direction|Evidence|Construction|Proof|Artifact|Velocity|Meta) ;;
+  *)
+    printf 'invalid focus mode: %s\n' "$start_focus" >&2
+    exit 2
+    ;;
+esac
+
+title="${1:?usage: devloop-start [--focus MODE] <slice-title>}"
 root="${POLYLOGUE_AGENT_LOG_ROOT:-/realm/project/polylogue/.agent/conductor-devloop}"
-"$(dirname "$0")/devloop-log" "$title" "Focus: Direction -> Evidence
+"$(dirname "$0")/devloop-log" "$title" "Focus: $start_focus -> Evidence
 Trigger: $title
 Primary aim: define the slice against current evidence before editing.
 Evidence touched: initial devloop status, review, active loop, and slice trigger.
@@ -13,16 +27,17 @@ Velocity note: slice started through devloop-start so elapsed time is tracked.
 Next decision: gather evidence and choose the smallest coherent construction step."
 
 if [ -f "$root/ACTIVE-LOOP.md" ]; then
-  python3 - "$root/ACTIVE-LOOP.md" "$title" <<'PY'
+  python3 - "$root/ACTIVE-LOOP.md" "$title" "$start_focus" <<'PY'
 from pathlib import Path
 import sys
 
 path = Path(sys.argv[1])
 title = sys.argv[2]
+start_focus = sys.argv[3]
 text = path.read_text()
 replacements = {
     "Current Slice": f"Current Slice\n\n{title}",
-    "Current Focus": "Current Focus\n\nFocus: Direction -> Evidence",
+    "Current Focus": f"Current Focus\n\nFocus: {start_focus} -> Evidence",
     "Accepted Warnings": (
         "Accepted Warnings\n\n"
         "None recorded for this slice. If `devloop-review` warnings are consciously accepted, "

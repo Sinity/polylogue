@@ -10,7 +10,9 @@ Before a capability slice:
 4. If ignored local `ACTIVE-LOOP.md` exists, read it.
 5. If review warns, fix it or record the accepted warning in `ACTIVE-LOOP.md`
    when local state exists; otherwise initialize local state first.
-6. Start the slice with `.agent/scripts/devloop-start "<slice>"`.
+6. Start the slice with `.agent/scripts/devloop-start "<slice>"`, or
+   `.agent/scripts/devloop-start --focus Meta "<slice>"` when the slice itself
+   begins as process/self-improvement work.
 
 Use `.agent/scripts/devloop-status --json` when another script or report needs
 structured state instead of human-readable text.
@@ -63,7 +65,9 @@ Velocity, and Meta.
    - State out-of-scope items.
    - Write the slice contract before editing: demo value, reusable substrate,
      proof ladder, non-goals, and first concrete action.
-   - Start the slice with `.agent/scripts/devloop-start "<slice>"`.
+   - Start the slice with `.agent/scripts/devloop-start "<slice>"`. Use
+     `--focus Meta` for process-improvement slices so the first logged
+     transition is truthful instead of a synthetic Direction entry.
    - Run `.agent/scripts/devloop-demo` when the slice should create, refresh,
      retire, or caveat an artifact.
 
