@@ -841,7 +841,7 @@ else
 fi
 
 if [ -n "$status_json" ]; then
-  raw_counts="$(
+  mapfile -t raw_materialization_fields < <(
     python3 - "$status_json" <<'PY'
 from __future__ import annotations
 
@@ -856,25 +856,43 @@ readiness = convergence.get("raw_materialization_readiness") or {}
 component = convergence.get("raw_materialization_component") or {}
 categories = readiness.get("category_counts") or {}
 category_text = ",".join(f"{name}={count}" for name, count in sorted(categories.items()))
-print(
-    "" if debt is None else debt,
-    "" if replayable is None else replayable,
-    "" if readiness.get("affected_total") is None else readiness.get("affected_total"),
-    "" if readiness.get("affected_actionable") is None else readiness.get("affected_actionable"),
-    "" if readiness.get("affected_open") is None else readiness.get("affected_open"),
-    component.get("state") or "",
-    category_text,
-)
+payload = {
+    "debt": "unknown" if debt is None else str(debt),
+    "replayable": "unknown" if replayable is None else str(replayable),
+    "affected_total": "unknown" if readiness.get("affected_total") is None else str(readiness.get("affected_total")),
+    "affected_actionable": (
+        "unknown" if readiness.get("affected_actionable") is None else str(readiness.get("affected_actionable"))
+    ),
+    "affected_open": "unknown" if readiness.get("affected_open") is None else str(readiness.get("affected_open")),
+    "state": component.get("state") or "unknown",
+    "categories": category_text,
+}
+for key in (
+    "debt",
+    "replayable",
+    "affected_total",
+    "affected_actionable",
+    "affected_open",
+    "state",
+    "categories",
+):
+    print(payload[key])
 PY
-  )"
-  read -r raw_materialization_debt raw_materialization_replayable raw_affected_total raw_affected_actionable raw_affected_open raw_state raw_category_text <<<"$raw_counts"
-  if [ "${raw_materialization_debt:-}" = "0" ] && [ "${raw_materialization_replayable:-}" = "0" ]; then
+  )
+  raw_materialization_debt="${raw_materialization_fields[0]:-unknown}"
+  raw_materialization_replayable="${raw_materialization_fields[1]:-unknown}"
+  raw_affected_total="${raw_materialization_fields[2]:-unknown}"
+  raw_affected_actionable="${raw_materialization_fields[3]:-unknown}"
+  raw_affected_open="${raw_materialization_fields[4]:-unknown}"
+  raw_state="${raw_materialization_fields[5]:-unknown}"
+  raw_category_text="${raw_materialization_fields[6]:-}"
+  if [ "$raw_materialization_debt" = "0" ] && [ "$raw_materialization_replayable" = "0" ]; then
     ok "raw materialization debt is zero according to devloop-status"
   else
     printf 'INFO: raw materialization debt=%s replayable_acquired_unparsed=%s affected=%s actionable=%s open=%s state=%s from devloop-status; do not claim full archive convergence without repair/classification\n' \
-      "${raw_materialization_debt:-unknown}" "${raw_materialization_replayable:-unknown}" \
-      "${raw_affected_total:-unknown}" "${raw_affected_actionable:-unknown}" \
-      "${raw_affected_open:-unknown}" "${raw_state:-unknown}"
+      "$raw_materialization_debt" "$raw_materialization_replayable" \
+      "$raw_affected_total" "$raw_affected_actionable" \
+      "$raw_affected_open" "$raw_state"
     if [ -n "${raw_category_text:-}" ]; then
       printf 'INFO: raw materialization categories=%s\n' "$raw_category_text"
     fi
