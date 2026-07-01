@@ -391,10 +391,18 @@ async def _tools(
     limit: int,
     output_format: str = "text",
 ) -> None:
-    import json
+    from typing import cast
 
     from polylogue.insights.tool_usage import ToolUsageInsightQuery
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.surfaces.payloads import (
+        ToolCountBasis,
+        ToolCountDetailLevel,
+        ToolCountFiltersPayload,
+        ToolCountKind,
+        ToolCountPayload,
+        ToolCountRowPayload,
+    )
 
     query = ToolUsageInsightQuery(
         provider=origin,
@@ -415,21 +423,36 @@ async def _tools(
             detail = "tool_use_block_call_counts"
             count_key = "call_count"
     if output_format == "json":
-        payload = {
-            "kind": kind,
-            "detail_level": detail,
-            "archive_root": str(env.config.archive_root),
-            "filters": {
-                "origin": origin,
-                "tool": tool,
-                "mcp_server": mcp_server,
-                "action_kind": action_kind,
-                "basis": basis,
-                "limit": limit,
-            },
-            "items": rows,
-        }
-        click.echo(json.dumps(payload, indent=2))
+        payload = ToolCountPayload(
+            kind=cast(ToolCountKind, kind),
+            detail_level=cast(ToolCountDetailLevel, detail),
+            archive_root=str(env.config.archive_root),
+            filters=ToolCountFiltersPayload(
+                origin=origin,
+                tool=tool,
+                mcp_server=mcp_server,
+                action_kind=action_kind,
+                basis=cast(ToolCountBasis, basis),
+                limit=limit,
+            ),
+            items=tuple(
+                ToolCountRowPayload(
+                    source_name=str(row["source_name"]),
+                    origin=str(row["origin"]),
+                    normalized_tool_name=str(row["normalized_tool_name"]),
+                    action_kind=str(row["action_kind"]),
+                    call_count=int(str(row["call_count"]))
+                    if "call_count" in row and row["call_count"] is not None
+                    else None,
+                    status=str(row["status"]) if "status" in row and row["status"] is not None else None,
+                    event_count=int(str(row["event_count"]))
+                    if "event_count" in row and row["event_count"] is not None
+                    else None,
+                )
+                for row in rows
+            ),
+        )
+        click.echo(payload.to_json(exclude_none=True))
         return
 
     if not rows:

@@ -41,6 +41,7 @@ from polylogue.surfaces.payloads import (
     SessionNeighborCandidatePayload,
     SessionSearchHitPayload,
     SessionSummaryPayload,
+    ToolCountPayload,
 )
 
 DEFAULT_OUTPUT_DIR = Path("docs/schemas/cli-output")
@@ -191,6 +192,17 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
         ),
         model=ArchiveDebtListPayload,
         surfaces=("polylogue ops debt list --format json",),
+    ),
+    CliOutputSchema(
+        name="tool-counts",
+        title="Tool Counts",
+        description=(
+            "Structured tool count output for `polylogue analyze tools --format json`. "
+            "The `basis` and `detail_level` fields declare whether rows count raw "
+            "`tool_use` blocks or materialized `tool_finished` observed-event outcomes."
+        ),
+        model=ToolCountPayload,
+        surfaces=("polylogue analyze tools --format json",),
     ),
     CliOutputSchema(
         name="session-neighbor-candidate",

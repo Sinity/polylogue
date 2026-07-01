@@ -358,6 +358,44 @@ class ArchiveDebtListPayload(SurfacePayloadModel):
     caveats: tuple[str, ...] = ()
 
 
+ToolCountBasis = Literal["tool-use-blocks", "observed-events"]
+ToolCountKind = Literal["tool_call_counts", "tool_observed_event_counts"]
+ToolCountDetailLevel = Literal["tool_use_block_call_counts", "tool_finished_observed_events"]
+
+
+class ToolCountFiltersPayload(SurfacePayloadModel):
+    """Filters applied to `polylogue analyze tools --format json`."""
+
+    origin: str | None = None
+    tool: str | None = None
+    mcp_server: str | None = None
+    action_kind: str | None = None
+    basis: ToolCountBasis
+    limit: int
+
+
+class ToolCountRowPayload(SurfacePayloadModel):
+    """One grouped tool count row from a declared archive projection basis."""
+
+    source_name: str
+    origin: str
+    normalized_tool_name: str
+    action_kind: str
+    call_count: int | None = None
+    status: str | None = None
+    event_count: int | None = None
+
+
+class ToolCountPayload(SurfacePayloadModel):
+    """Structured output for `polylogue analyze tools --format json`."""
+
+    kind: ToolCountKind
+    detail_level: ToolCountDetailLevel
+    archive_root: str
+    filters: ToolCountFiltersPayload
+    items: tuple[ToolCountRowPayload, ...]
+
+
 def normalize_role(role: object) -> str:
     if not role:
         return "unknown"

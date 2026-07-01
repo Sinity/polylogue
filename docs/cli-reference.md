@@ -755,6 +755,7 @@ The schema files live under `docs/schemas/cli-output/`.
 | `query-unit-aggregate-envelope` | `QueryUnitAggregateEnvelope` | `polylogue --format json messages where ... | group by role | count`<br>`Polylogue.query_units(...)`<br>`MCP query_units`<br>`GET /api/query-units?expression=...` |
 | `import-explain` | `ImportExplainPayload` | `polylogue import PATH --explain --format json`<br>`polylogue import PATH --explain --format ndjson (entries)` |
 | `archive-debt-list` | `ArchiveDebtListPayload` | `polylogue ops debt list --format json` |
+| `tool-counts` | `ToolCountPayload` | `polylogue analyze tools --format json` |
 | `session-neighbor-candidate` | `SessionNeighborCandidatePayload` | `polylogue read --view neighbors --format json` |
 | `mutation-result` | `MutationResultPayload` | `polylogue find <query> then delete --dry-run`<br>`polylogue find <query> then delete --yes`<br>`MCP mutation tools`<br>`daemon mutation endpoints` |
 | `action-affordance-list` | `ActionAffordanceListPayload` | `polylogue config action-affordances`<br>`GET /api/action-affordances`<br>`MCP action_affordances` |

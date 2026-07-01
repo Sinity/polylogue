@@ -1,0 +1,191 @@
+{
+  "$defs": {
+    "ToolCountFiltersPayload": {
+      "additionalProperties": false,
+      "description": "Filters applied to `polylogue analyze tools --format json`.",
+      "properties": {
+        "action_kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Action Kind"
+        },
+        "basis": {
+          "enum": [
+            "tool-use-blocks",
+            "observed-events"
+          ],
+          "title": "Basis",
+          "type": "string"
+        },
+        "limit": {
+          "title": "Limit",
+          "type": "integer"
+        },
+        "mcp_server": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mcp Server"
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Origin"
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool"
+        }
+      },
+      "required": [
+        "basis",
+        "limit"
+      ],
+      "title": "ToolCountFiltersPayload",
+      "type": "object"
+    },
+    "ToolCountRowPayload": {
+      "additionalProperties": false,
+      "description": "One grouped tool count row from a declared archive projection basis.",
+      "properties": {
+        "action_kind": {
+          "title": "Action Kind",
+          "type": "string"
+        },
+        "call_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Call Count"
+        },
+        "event_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Event Count"
+        },
+        "normalized_tool_name": {
+          "title": "Normalized Tool Name",
+          "type": "string"
+        },
+        "origin": {
+          "title": "Origin",
+          "type": "string"
+        },
+        "source_name": {
+          "title": "Source Name",
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        }
+      },
+      "required": [
+        "source_name",
+        "origin",
+        "normalized_tool_name",
+        "action_kind"
+      ],
+      "title": "ToolCountRowPayload",
+      "type": "object"
+    }
+  },
+  "$id": "https://polylogue.dev/schemas/cli-output/tool-counts.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Structured tool count output for `polylogue analyze tools --format json`. The `basis` and `detail_level` fields declare whether rows count raw `tool_use` blocks or materialized `tool_finished` observed-event outcomes.\n\nGenerated from `polylogue.surfaces.payloads.ToolCountPayload` by `devtools render cli-output-schemas`. Do not edit by hand.",
+  "properties": {
+    "archive_root": {
+      "title": "Archive Root",
+      "type": "string"
+    },
+    "detail_level": {
+      "enum": [
+        "tool_use_block_call_counts",
+        "tool_finished_observed_events"
+      ],
+      "title": "Detail Level",
+      "type": "string"
+    },
+    "filters": {
+      "$ref": "#/$defs/ToolCountFiltersPayload"
+    },
+    "items": {
+      "items": {
+        "$ref": "#/$defs/ToolCountRowPayload"
+      },
+      "title": "Items",
+      "type": "array"
+    },
+    "kind": {
+      "enum": [
+        "tool_call_counts",
+        "tool_observed_event_counts"
+      ],
+      "title": "Kind",
+      "type": "string"
+    }
+  },
+  "required": [
+    "kind",
+    "detail_level",
+    "archive_root",
+    "filters",
+    "items"
+  ],
+  "title": "Tool Counts",
+  "type": "object",
+  "x-polylogue-cli-surfaces": [
+    "polylogue analyze tools --format json"
+  ],
+  "x-polylogue-source-model": "ToolCountPayload"
+}

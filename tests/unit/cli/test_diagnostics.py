@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -239,6 +240,99 @@ async def test_tools_renders_observed_event_basis(monkeypatch: pytest.MonkeyPatc
     assert "tool_finished observed events" in rendered
     assert "mcp__serena__find_symbol" in rendered
     assert "failed" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tools_json_declares_tool_use_basis(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    env = _env()
+    _patch_tool_count_store(
+        monkeypatch,
+        [
+            {
+                "source_name": "codex",
+                "origin": "codex-session",
+                "normalized_tool_name": "exec_command",
+                "action_kind": "shell",
+                "call_count": 2,
+            },
+        ],
+    )
+
+    await diagnostics._tools(
+        env,
+        origin="codex-session",
+        tool=None,
+        mcp_server=None,
+        action_kind=None,
+        basis="tool-use-blocks",
+        limit=5,
+        output_format="json",
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["kind"] == "tool_call_counts"
+    assert payload["detail_level"] == "tool_use_block_call_counts"
+    assert payload["filters"]["basis"] == "tool-use-blocks"
+    assert payload["items"] == [
+        {
+            "source_name": "codex",
+            "origin": "codex-session",
+            "normalized_tool_name": "exec_command",
+            "action_kind": "shell",
+            "call_count": 2,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_tools_json_declares_observed_event_basis(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    env = _env()
+    _patch_tool_count_store(
+        monkeypatch,
+        [],
+        [
+            {
+                "source_name": "claude-code",
+                "origin": "claude-code-session",
+                "normalized_tool_name": "mcp__serena__find_symbol",
+                "action_kind": "mcp",
+                "status": "failed",
+                "event_count": 1,
+            },
+        ],
+    )
+
+    await diagnostics._tools(
+        env,
+        origin=None,
+        tool=None,
+        mcp_server="serena",
+        action_kind=None,
+        basis="observed-events",
+        limit=5,
+        output_format="json",
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["kind"] == "tool_observed_event_counts"
+    assert payload["detail_level"] == "tool_finished_observed_events"
+    assert payload["filters"]["basis"] == "observed-events"
+    assert payload["filters"]["mcp_server"] == "serena"
+    assert payload["items"] == [
+        {
+            "source_name": "claude-code",
+            "origin": "claude-code-session",
+            "normalized_tool_name": "mcp__serena__find_symbol",
+            "action_kind": "mcp",
+            "status": "failed",
+            "event_count": 1,
+        }
+    ]
 
 
 @pytest.mark.asyncio
