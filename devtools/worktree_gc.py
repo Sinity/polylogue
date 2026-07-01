@@ -126,9 +126,10 @@ def _branch_patch_equivalence(repo_root: Path, target: str, branch_ref: str) -> 
 
     ``git branch --merged`` only recognizes ancestry merges. Polylogue's normal
     integration path squash-merges PRs, so a branch can be fully represented on
-    ``master`` while still appearing unmerged by ancestry. ``git cherry`` compares
-    patch IDs and marks equivalent commits with ``-`` and unique commits with
-    ``+``; only the all-``-`` case is safe to remove automatically.
+    the resolved target while still appearing unmerged by ancestry. ``git
+    cherry`` compares per-commit patch IDs and is retained as diagnostic
+    evidence, but multi-commit squash merges are proven by virtually merging the
+    branch into the target and checking whether the target tree would change.
     """
     branch = _branch_short_name(branch_ref)
     out = _run_git_nullable(["cherry", target, branch], cwd=repo_root)
@@ -138,12 +139,21 @@ def _branch_patch_equivalence(repo_root: Path, target: str, branch_ref: str) -> 
     equivalent = sum(1 for line in rows if line.startswith("-"))
     unique = sum(1 for line in rows if line.startswith("+"))
     unknown = len(rows) - equivalent - unique
+    tree_equivalent = _branch_tree_equivalent(repo_root, target, branch)
     return {
-        "patch_equivalent": bool(rows) and unique == 0 and unknown == 0,
+        "patch_equivalent": tree_equivalent or (bool(rows) and unique == 0 and unknown == 0),
+        "tree_equivalent": tree_equivalent,
         "equivalent_commits": equivalent,
         "unique_commits": unique,
         "unknown_commits": unknown,
     }
+
+
+def _branch_tree_equivalent(repo_root: Path, target: str, branch: str) -> bool:
+    """Return True when merging *branch* into *target* would not change target."""
+    target_tree = _run_git_nullable(["rev-parse", f"{target}^{{tree}}"], cwd=repo_root)
+    merged_tree = _run_git_nullable(["merge-tree", "--write-tree", target, branch], cwd=repo_root)
+    return bool(target_tree and merged_tree and target_tree == merged_tree)
 
 
 def check_dirty(worktree_path: Path) -> bool:
@@ -310,10 +320,12 @@ def collect_candidates(repo_root: Path, *, target: str | None = None) -> tuple[l
     entries = parse_worktree_list(porcelain)
     merged = _merged_branches(repo_root, target=target_ref)
     existing = _existing_branches(repo_root)
+    worktree_branches = {entry.branch for entry in entries if entry.branch is not None}
     patch_evidence = {
         ref: evidence
         for ref in existing
         if ref not in merged
+        if ref in worktree_branches
         if (evidence := _branch_patch_equivalence(repo_root, target_ref, ref)) is not None
     }
     candidates = classify_candidates(

@@ -336,17 +336,43 @@ def test_build_payload_shape() -> None:
             safe=True,
             action="remove",
         ),
+        GcCandidate(
+            entry=WorktreeEntry(
+                path=Path("/tmp/wt-squashed"),
+                head="def456",
+                branch="refs/heads/feature/squashed",
+                locked=False,
+            ),
+            reason="squash-equivalent",
+            safe=True,
+            action="remove",
+            evidence={
+                "patch_equivalent": True,
+                "tree_equivalent": True,
+                "equivalent_commits": 0,
+                "unique_commits": 2,
+                "unknown_commits": 0,
+            },
+        ),
     ]
     payload = _build_payload(candidates, target="origin/master")
-    assert payload["safe_count"] == 1
+    assert payload["safe_count"] == 2
     assert payload["blocked_count"] == 0
-    assert payload["total_count"] == 1
+    assert payload["total_count"] == 2
     assert payload["target"] == "origin/master"
     entries = payload["worktrees"]
     assert isinstance(entries, list)
     assert entries[0]["path"] == "/tmp/wt"
     assert entries[0]["reason"] == "merged"
     assert entries[0]["safe"] is True
+    assert entries[1]["path"] == "/tmp/wt-squashed"
+    assert entries[1]["evidence"] == {
+        "patch_equivalent": True,
+        "tree_equivalent": True,
+        "equivalent_commits": 0,
+        "unique_commits": 2,
+        "unknown_commits": 0,
+    }
 
 
 def test_main_json_output(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -435,10 +461,41 @@ def test_collect_marks_clean_squash_equivalent_worktree_safe(tmp_path: Path) -> 
     assert candidate.action == "remove"
     assert candidate.evidence == {
         "patch_equivalent": True,
+        "tree_equivalent": True,
         "equivalent_commits": 1,
         "unique_commits": 0,
         "unknown_commits": 0,
     }
+
+
+def test_collect_marks_multi_commit_squash_equivalent_worktree_safe(tmp_path: Path) -> None:
+    """A multi-commit branch is safe when its combined tree is already landed."""
+    repo = _make_repo(tmp_path / "repo")
+
+    _run_git(["checkout", "-b", "feature/multi-squashed"], cwd=repo)
+    (repo / "first.txt").write_text("first")
+    _run_git(["add", "first.txt"], cwd=repo)
+    _run_git(["commit", "-m", "first"], cwd=repo)
+    (repo / "second.txt").write_text("second")
+    _run_git(["add", "second.txt"], cwd=repo)
+    _run_git(["commit", "-m", "second"], cwd=repo)
+    _run_git(["checkout", "master"], cwd=repo)
+    _run_git(["merge", "--squash", "feature/multi-squashed"], cwd=repo)
+    _run_git(["commit", "-m", "squash multi"], cwd=repo)
+
+    wt = _make_worktree(repo, tmp_path / "wt-multi-squashed", "feature/multi-squashed")
+
+    candidates, _entries = collect_candidates(repo)
+    candidate = next((c for c in candidates if c.entry.path == wt), None)
+
+    assert candidate is not None
+    assert candidate.reason == "squash-equivalent"
+    assert candidate.safe is True
+    assert candidate.action == "remove"
+    assert candidate.evidence is not None
+    assert candidate.evidence["patch_equivalent"] is True
+    assert candidate.evidence["tree_equivalent"] is True
+    assert candidate.evidence["unique_commits"] == 2
 
 
 def test_collect_keeps_partly_unique_squash_branch_blocked(tmp_path: Path) -> None:
@@ -469,6 +526,7 @@ def test_collect_keeps_partly_unique_squash_branch_blocked(tmp_path: Path) -> No
     assert candidate.blocked_reason == "branch-not-merged"
     assert candidate.evidence is not None
     assert candidate.evidence["patch_equivalent"] is False
+    assert candidate.evidence["tree_equivalent"] is False
     assert candidate.evidence["equivalent_commits"] == 1
     assert candidate.evidence["unique_commits"] == 1
 
