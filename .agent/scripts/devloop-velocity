@@ -197,5 +197,97 @@ else
   printf 'missing OPERATING-LOG.md\n'
 fi
 
+printf '\n== task-history signal ==\n'
+task_history="$repo/.agent/task-history/tasks.jsonl"
+if [ -f "$task_history" ]; then
+  python3 - "$task_history" "$top" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+from statistics import mean
+
+path = Path(sys.argv[1])
+top = int(sys.argv[2])
+rows: list[dict[str, object]] = []
+for raw in path.read_text(encoding="utf-8").splitlines():
+    if not raw.strip():
+        continue
+    try:
+        row = json.loads(raw)
+    except json.JSONDecodeError:
+        continue
+    if isinstance(row, dict):
+        rows.append(row)
+
+def command(row: dict[str, object]) -> str:
+    value = row.get("command")
+    return value if isinstance(value, str) else ""
+
+def args(row: dict[str, object]) -> list[str]:
+    value = row.get("args")
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return []
+
+def duration(row: dict[str, object]) -> float:
+    value = row.get("duration_ms")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+def exit_code(row: dict[str, object]) -> int:
+    value = row.get("exit_code")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+def is_internal_probe(row: dict[str, object]) -> bool:
+    return command(row) == "workspace worktree-gc" and args(row) == ["--json"]
+
+signal = [row for row in rows if not is_internal_probe(row)]
+internal_count = len(rows) - len(signal)
+print(f"rows={len(rows)} signal_rows={len(signal)} ignored_internal_probe_rows={internal_count}")
+if signal:
+    recent_window = signal[-50:]
+    exits = Counter(exit_code(row) for row in recent_window)
+    avg_ms = mean(duration(row) for row in recent_window)
+    print(
+        "recent50="
+        f"failures={sum(count for code, count in exits.items() if code != 0)} "
+        f"avg_ms={avg_ms:.0f} "
+        "exit_codes="
+        + ",".join(f"{code}:{count}" for code, count in sorted(exits.items()))
+    )
+    print("top_commands:")
+    for name, count in Counter(command(row) for row in signal).most_common(top):
+        print(f"  {count:4d}x {name}")
+    failures = [row for row in signal if exit_code(row) != 0][-min(top, 8):]
+    if failures:
+        print("recent_failures:")
+        for row in failures:
+            arg_text = " ".join(args(row))
+            print(
+                f"  {row.get('timestamp')} exit={exit_code(row)} "
+                f"{command(row)} {arg_text}".rstrip()
+            )
+    slow = sorted(signal, key=duration, reverse=True)[: min(top, 8)]
+    if slow:
+        print("slowest:")
+        for row in slow:
+            arg_text = " ".join(args(row))
+            print(
+                f"  {duration(row):8.0f}ms exit={exit_code(row)} "
+                f"{command(row)} {arg_text}".rstrip()
+            )
+PY
+else
+  printf 'missing task history\n'
+fi
+
 printf '\n== active heavy-ish processes ==\n'
 pgrep -af 'devtools verify|devtools test|pytest|polylogue import|polylogued run|nix build|nix develop --command|borg create' || true
