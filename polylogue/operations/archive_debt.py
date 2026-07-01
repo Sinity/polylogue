@@ -428,6 +428,10 @@ def _parsed_session_shape_reason(archive_root: Path, row: sqlite3.Row) -> str | 
 
 
 def _parsed_session_native_ids(archive_root: Path, row: sqlite3.Row) -> tuple[str, ...]:
+    if row["parse_error"] or row["parsed_at_ms"] is None:
+        return ()
+    if _parsed_session_shape_reason(archive_root, row) is None:
+        return ()
     origin = str(row["origin"] or "")
     blob_path = _raw_blob_path(archive_root, row)
     ids: list[str] = []

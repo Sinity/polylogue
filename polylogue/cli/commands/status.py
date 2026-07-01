@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 import time
+from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -1214,6 +1215,13 @@ def _direct_raw_materialization_readiness(active_root: Path) -> dict[str, Any]:
             "sampled_rows": [],
         }
     rows = [row for row in payload.rows if row.kind == "raw-materialization"]
+    category_counts: Counter[str] = Counter()
+    source_family_counts: Counter[str] = Counter()
+    for row in rows:
+        affected = int(row.affected_count or 1)
+        category_counts[str(row.category)] += affected
+        if row.source_family:
+            source_family_counts[str(row.source_family)] += affected
     return {
         "available": True,
         "total": len(rows),
@@ -1221,6 +1229,11 @@ def _direct_raw_materialization_readiness(active_root: Path) -> dict[str, Any]:
         "warning": sum(1 for row in rows if row.severity == "warning"),
         "actionable": sum(1 for row in rows if row.status == "actionable"),
         "blocked": sum(1 for row in rows if row.status == "blocked"),
+        "affected_total": int(payload.totals.affected_total),
+        "affected_actionable": int(payload.totals.affected_actionable),
+        "affected_open": int(payload.totals.affected_open),
+        "category_counts": dict(sorted(category_counts.items())),
+        "source_family_counts": dict(sorted(source_family_counts.items())),
         "sampled_rows": [row.model_dump(mode="json", exclude_none=True) for row in rows[:5]],
     }
 
@@ -1235,6 +1248,9 @@ def _direct_raw_materialization_component(readiness: dict[str, Any] | None) -> d
     warning = _safe_int(payload.get("warning"))
     actionable = _safe_int(payload.get("actionable"))
     blocked = _safe_int(payload.get("blocked"))
+    affected_total = _safe_int(payload.get("affected_total"))
+    affected_actionable = _safe_int(payload.get("affected_actionable"))
+    affected_open = _safe_int(payload.get("affected_open"))
     if not available:
         state = CapabilityReadinessState.UNKNOWN
         summary = "unknown"
@@ -1261,6 +1277,13 @@ def _direct_raw_materialization_component(readiness: dict[str, Any] | None) -> d
             "warning": warning,
             "actionable": actionable,
             "blocked": blocked,
+            "affected_total": affected_total,
+            "affected_actionable": affected_actionable,
+            "affected_open": affected_open,
+        },
+        metadata={
+            "category_counts": dict(payload.get("category_counts") or {}),
+            "source_family_counts": dict(payload.get("source_family_counts") or {}),
         },
         repair_hint=None
         if state == CapabilityReadinessState.READY
