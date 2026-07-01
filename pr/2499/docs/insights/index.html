@@ -387,7 +387,7 @@ Operational readiness, audit, and export stay under <code>polylogue ops insights
 <tr>
 <td>Work Phases</td>
 <td><code>analyze insights phases</code></td>
-<td>Session segment classification: planning, implementation, verification, exploration</td>
+<td>Time-gap session intervals for navigation and rough timeline shape</td>
 </tr>
 <tr>
 <td>Work Threads</td>
@@ -529,37 +529,14 @@ summary, and the heuristic event label plus confidence/evidence. File/tool
 categories such as <code>file_read</code>, <code>file_edit</code>, or <code>shell</code> live on action/tool
 surfaces, not in <code>session_work_events.heuristic_label</code>.</p>
 <h2>Work Phases</h2>
-<p>Sessions are segmented into phases based on activity patterns.</p>
+<p>Sessions are segmented into time-gap phases for navigation and rough timeline
+shape. These are intervals, not intent labels.</p>
 <pre><code class="language-bash">polylogue analyze insights phases
-polylogue analyze insights phases --kind implementation
+polylogue analyze insights phases --session-id claude-ai:abc123
 </code></pre>
-<p>Phase kinds:</p>
-<table>
-<thead>
-<tr>
-<th>Kind</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>planning</code></td>
-<td>Design discussion, requirements gathering</td>
-</tr>
-<tr>
-<td><code>implementation</code></td>
-<td>Code writing and editing</td>
-</tr>
-<tr>
-<td><code>verification</code></td>
-<td>Testing, linting, debugging</td>
-</tr>
-<tr>
-<td><code>exploration</code></td>
-<td>Searching, browsing, reading</td>
-</tr>
-</tbody>
-</table>
+<p>Phase rows expose start/end time, message range, word count, and tool-count
+evidence. Intent labels such as planning or verification belong on work-event
+heuristics, not on phase intervals.</p>
 <h2>Work Threads</h2>
 <p>Multi-session groupings connected by repo, branch relationships, and work
 continuity.</p>
