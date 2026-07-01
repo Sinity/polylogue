@@ -112,6 +112,11 @@ currently is.
 Durable cross-loop conventions live in `.agent/includes/`. Do not bury durable
 architecture or process memory only in ignored conductor history.
 
+`devloop-script-hashes.tsv` is generated local state, but it is load-bearing:
+`devloop-sync` refreshes hashes for every `devloop-*` primitive and
+`lib-devloop`, and `devloop-review` fails stale hashes so a future agent can
+trust that the packet describes the scripts currently in the checkout.
+
 ## Backlog And Prioritization Model
 
 The devloop does keep future workload, but it is deliberately evidence-shaped

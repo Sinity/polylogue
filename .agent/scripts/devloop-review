@@ -401,6 +401,21 @@ else
   ok "no duplicated script snapshots in conductor packet"
 fi
 
+expected_script_hashes="$(
+  find "$repo/.agent/scripts" -maxdepth 1 -type f \( -name 'devloop-*' -o -name 'lib-devloop' \) -print0 \
+    | sort -z \
+    | xargs -0 sha256sum \
+    | awk -v repo="$repo/" '{sub(repo, "", $2); print $2 "\t" $1}'
+)"
+script_hash_manifest="$current/devloop-script-hashes.tsv"
+if [ ! -f "$script_hash_manifest" ]; then
+  warn "missing devloop script hash manifest; run .agent/scripts/devloop-sync"
+elif [ "$expected_script_hashes" != "$(cat "$script_hash_manifest")" ]; then
+  warn "devloop script hash manifest is stale; run .agent/scripts/devloop-sync"
+else
+  ok "devloop script hash manifest is current"
+fi
+
 if [ -f "$current/agent.README.md" ] || [ -f "$current/scratch.README.md" ]; then
   warn "conductor packet contains duplicated README snapshots; run .agent/scripts/devloop-sync"
 else

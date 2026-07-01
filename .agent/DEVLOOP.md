@@ -89,6 +89,9 @@ Refresh generated local state with:
 `OPERATING-LOG.md` grows past the rolling-window budget, older entries move to
 ignored `.agent/archive/conductor-history/` and `EVENTS.jsonl` is regenerated
 from the active window.
+It also refreshes `devloop-script-hashes.tsv` for every `devloop-*` primitive
+and the shared `lib-devloop` helper; `devloop-review` treats that manifest as a
+freshness tripwire for scaffold drift.
 
 Every `.agent/scripts/devloop-*` primitive must support a side-effect-free
 `--help` path. Use that for discovery instead of trying scripts with placeholder

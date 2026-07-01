@@ -25,7 +25,7 @@ rm -rf "$packet/scripts"
 rm -f "$packet/agent.README.md" "$packet/scratch.README.md"
 
 script_manifest="$packet/devloop-script-hashes.tsv"
-find "$repo/.agent/scripts" -maxdepth 1 -type f -name 'devloop-*' -print0 \
+find "$repo/.agent/scripts" -maxdepth 1 -type f \( -name 'devloop-*' -o -name 'lib-devloop' \) -print0 \
   | sort -z \
   | xargs -0 sha256sum \
   | awk -v repo="$repo/" '{sub(repo, "", $2); print $2 "\t" $1}' \
