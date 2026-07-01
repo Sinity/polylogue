@@ -13,7 +13,7 @@ does not push down.
 from __future__ import annotations
 
 import builtins
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, TypedDict, TypeVar
 
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
@@ -22,6 +22,8 @@ from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.core.enums import MaterialOrigin, Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.types import SessionId
+
+_AttachableT = TypeVar("_AttachableT", Session, SessionSummary)
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -396,12 +398,37 @@ def _open_archive(archive_root: Path) -> ArchiveStore:
     return ArchiveStore.open_existing(archive_root)
 
 
+def _attach_units_to_domain(
+    items: builtins.list[_AttachableT],
+    archive: ArchiveStore,
+    with_units: tuple[str, ...],
+) -> builtins.list[_AttachableT]:
+    """Attach ``with <units>`` projection rows onto domain models (#2492).
+
+    Returns updated copies carrying ``attached_units`` (pydantic models are
+    treated as immutable for safety). A no-op when no units are requested.
+    """
+
+    if not with_units or not items:
+        return items
+    from polylogue.archive.query.attached_units import fetch_attached_units
+
+    session_ids = [item.id for item in items]
+    attached = fetch_attached_units(archive, session_ids, with_units)
+    updated: builtins.list[_AttachableT] = []
+    for item in items:
+        per_session = {unit: tuple(by_session.get(item.id, ())) for unit, by_session in attached.items()}
+        updated.append(item.model_copy(update={"attached_units": per_session}))
+    return updated
+
+
 async def list_summaries_archive(
     plan: SessionQueryPlan,
     *,
     archive_root: Path,
     config: Config | None,
     default_limit: int = 50,
+    with_units: tuple[str, ...] = (),
 ) -> builtins.list[SessionSummary]:
     rank_first = bool(plan.fts_terms and plan.sort is None)
     with _open_archive(archive_root) as archive:
@@ -412,7 +439,11 @@ async def list_summaries_archive(
             archive_root=archive_root,
             default_limit=default_limit,
         )
-    summaries = [_summary_to_domain(summary) for summary in archive_rows]
+        summaries = _attach_units_to_domain(
+            [_summary_to_domain(summary) for summary in archive_rows],
+            archive,
+            with_units,
+        )
     filtered = plan._apply_common_filters(summaries, sql_pushed=True)
     ordered = filtered if rank_first else plan._sort_summaries(filtered)
     return plan._finalize(ordered)
@@ -424,6 +455,7 @@ async def list_archive(
     archive_root: Path,
     config: Config | None,
     default_limit: int = 50,
+    with_units: tuple[str, ...] = (),
 ) -> builtins.list[Session]:
     rank_first = bool(plan.fts_terms and plan.sort is None)
     with _open_archive(archive_root) as archive:
@@ -434,7 +466,11 @@ async def list_archive(
             archive_root=archive_root,
             default_limit=default_limit,
         )
-        sessions = [_session_to_session(archive.read_session(summary.session_id)) for summary in archive_rows]
+        sessions = _attach_units_to_domain(
+            [_session_to_session(archive.read_session(summary.session_id)) for summary in archive_rows],
+            archive,
+            with_units,
+        )
     filtered = plan._apply_full_filters(sessions, sql_pushed=True)
     ordered = filtered if rank_first else plan._sort_sessions(filtered)
     return plan._finalize(ordered)
