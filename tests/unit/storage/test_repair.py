@@ -530,7 +530,7 @@ def test_raw_materialization_progress_reports_raw_payload_size(
             ["raw-1"],
             0,
             0,
-            {"raw-1": 1_610_612_736},
+            {"raw-1": 256 * 1024 * 1024},
         ),
     )
     monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", FakeParsingService)
@@ -544,11 +544,43 @@ def test_raw_materialization_progress_reports_raw_payload_size(
     )
 
     assert result.success is True
-    assert any("raw_materialization: parsing raw 1/1 raw-1 size=1.5 GiB" in line for line in progress)
-    assert result.metrics["raw_materialization_total_blob_bytes"] == 1_610_612_736.0
-    assert result.metrics["raw_materialization_max_blob_bytes"] == 1_610_612_736.0
+    assert any("raw_materialization: parsing raw 1/1 raw-1 size=256.0 MiB" in line for line in progress)
+    assert result.metrics["raw_materialization_total_blob_bytes"] == float(256 * 1024 * 1024)
+    assert result.metrics["raw_materialization_max_blob_bytes"] == float(256 * 1024 * 1024)
     assert result.metrics["raw_materialization_session_change_count"] == 1.0
     assert result.metrics["raw_materialization_parse_failure_count"] == 0.0
+
+
+def test_raw_materialization_blocks_oversized_actual_replay(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+
+    class UnexpectedParsingService:
+        def __init__(self, **_kwargs: object) -> None:
+            raise AssertionError("oversized raw rows should be blocked before parsing")
+
+    monkeypatch.setattr(
+        repair_mod,
+        "_raw_materialization_candidate_ids",
+        lambda *_args, **_kwargs: repair_mod.RawMaterializationCandidates(
+            ["raw-1"],
+            0,
+            0,
+            {"raw-1": 2 * 1024 * 1024 * 1024},
+        ),
+    )
+    monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", UnexpectedParsingService)
+
+    result = repair_mod.repair_raw_materialization(config, dry_run=False)
+
+    assert result.success is False
+    assert result.repaired_count == 0
+    assert "exceed actual replay limit 1.0 GiB" in result.detail
+    assert "largest=2.0 GiB" in result.detail
+    assert result.metrics["raw_materialization_oversized_count"] == 1.0
+    assert result.metrics["raw_materialization_execute_blob_limit_bytes"] == float(1024 * 1024 * 1024)
 
 
 def test_raw_materialization_reports_parse_write_failures(

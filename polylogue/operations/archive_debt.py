@@ -15,6 +15,7 @@ from polylogue.daemon.convergence_debt_status import convergence_debt_summary_in
 from polylogue.daemon.embedding_readiness import embedding_readiness_info
 from polylogue.daemon.fts_status import fts_readiness_info
 from polylogue.maintenance.targets import MAINTENANCE_TARGET_NAMES
+from polylogue.storage.repair import RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.user_write import list_assertion_candidates
 from polylogue.surfaces.payloads import (
@@ -761,27 +762,51 @@ def _raw_materialization_debt_row(
         sample_raw_id = str(sample_rows[0]["raw_id"]) if sample_rows else ""
         summary = f"{count} {origin} raw artifact(s) are acquired but not yet parsed"
         details = f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size_text}."
-        actions = (
-            ArchiveDebtActionPayload(
-                label="Run daemon ingest",
-                command=("polylogued", "run"),
-            ),
-            ArchiveDebtActionPayload(
-                label="Preview targeted raw replay",
-                command=(
-                    "polylogue",
-                    "ops",
-                    "maintenance",
-                    "run",
-                    "--target",
-                    "raw_materialization",
-                    "--raw-artifact",
-                    sample_raw_id,
-                    "--dry-run",
+        if max_blob_size > RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES:
+            status = "blocked"
+            details += (
+                f" Actual replay is blocked by the {_format_bytes(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)} "
+                "raw-materialization execution limit; this needs a streaming provider-specific repair path."
+            )
+            actions = (
+                ArchiveDebtActionPayload(
+                    label="Preview targeted raw replay",
+                    command=(
+                        "polylogue",
+                        "ops",
+                        "maintenance",
+                        "run",
+                        "--target",
+                        "raw_materialization",
+                        "--raw-artifact",
+                        sample_raw_id,
+                        "--dry-run",
+                    ),
+                    description="Preview byte size and candidate count; actual replay is blocked until streaming repair exists.",
                 ),
-                description="Preview reparsing one sampled acquired raw artifact before running a broad repair.",
-            ),
-        )
+            )
+        else:
+            actions = (
+                ArchiveDebtActionPayload(
+                    label="Run daemon ingest",
+                    command=("polylogued", "run"),
+                ),
+                ArchiveDebtActionPayload(
+                    label="Preview targeted raw replay",
+                    command=(
+                        "polylogue",
+                        "ops",
+                        "maintenance",
+                        "run",
+                        "--target",
+                        "raw_materialization",
+                        "--raw-artifact",
+                        sample_raw_id,
+                        "--dry-run",
+                    ),
+                    description="Preview reparsing one sampled acquired raw artifact before running a broad repair.",
+                ),
+            )
 
     return ArchiveDebtRowPayload(
         debt_ref=f"debt:raw-materialization:{origin}:{category}",

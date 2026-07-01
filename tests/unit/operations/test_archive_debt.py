@@ -11,6 +11,7 @@ import pytest
 
 from polylogue.operations import archive_debt as module
 from polylogue.operations.archive_debt import archive_debt_list
+from polylogue.storage.repair import RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
@@ -515,6 +516,47 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
     assert metadata_only.severity == "info"
     assert metadata_only.affected_count == 1
     assert "metadata-only" in (metadata_only.details or "") or "non-session artifacts" in metadata_only.summary
+
+
+def test_archive_debt_blocks_oversized_raw_materialization_replay(tmp_path: Path) -> None:
+    _source_db, _index_db, source_file = _init_raw_materialization_fixture(tmp_path)
+    oversized_size = RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES + 1
+    blob = tmp_path / "blob" / "14" / ("14" * 31)
+    blob.parent.mkdir(exist_ok=True)
+    blob.write_bytes(b"{}")
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                acquired_at_ms, parsed_at_ms, parse_error, validated_at_ms,
+                validation_status
+            ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+            """,
+            (
+                "raw-oversized-parse-pending",
+                "claude-code-session",
+                "oversized-native",
+                str(source_file),
+                bytes.fromhex("14" * 32),
+                oversized_size,
+                None,
+                None,
+                None,
+                None,
+            ),
+        )
+
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
+
+    by_ref = {row.debt_ref: row for row in payload.rows}
+    row = by_ref["debt:raw-materialization:claude-code-session:parse-pending"]
+    assert row.status == "blocked"
+    assert row.affected_count == 1
+    assert "Actual replay is blocked by the 1.0 GiB" in (row.details or "")
+    assert "raw-materialization execution limit" in (row.details or "")
+    assert row.actions[0].label == "Preview targeted raw replay"
+    assert payload.totals.affected_blocked == 1
 
 
 def test_archive_debt_reports_codex_zero_token_projection_debt(tmp_path: Path) -> None:

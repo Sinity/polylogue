@@ -38,6 +38,7 @@ from polylogue.storage.message_type_backfill import (
 logger = get_logger(__name__)
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 _PROBE_ONLY_EXACT_MESSAGE_ROW_LIMIT = 100_000
+RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES = 1024 * 1024 * 1024
 
 
 def _format_bytes(value: int) -> str:
@@ -1229,12 +1230,28 @@ def repair_raw_materialization(
         "raw_materialization_total_blob_bytes": float(candidates.total_blob_bytes),
         "raw_materialization_max_blob_bytes": float(candidates.max_blob_bytes),
     }
+    oversized_raw_ids = [
+        raw_id
+        for raw_id in raw_ids
+        if candidates.raw_blob_bytes.get(raw_id, 0) > RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
+    ]
+    oversized_raw_id_set = set(oversized_raw_ids)
+    executable_raw_ids = [raw_id for raw_id in raw_ids if raw_id not in oversized_raw_id_set]
+    if oversized_raw_ids:
+        metrics["raw_materialization_oversized_count"] = float(len(oversized_raw_ids))
+        metrics["raw_materialization_execute_blob_limit_bytes"] = float(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)
     if dry_run:
         byte_detail = ""
         if raw_ids:
             byte_detail = (
                 f"; queued raw payload bytes total={_format_bytes(candidates.total_blob_bytes)}, "
                 f"largest={_format_bytes(candidates.max_blob_bytes)}"
+            )
+        oversized_detail = ""
+        if oversized_raw_ids:
+            oversized_detail = (
+                f"; {len(oversized_raw_ids):,} raw rows exceed actual replay limit "
+                f"{_format_bytes(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)}"
             )
         if candidates.already_parsed:
             detail = (
@@ -1244,6 +1261,7 @@ def repair_raw_materialization(
         else:
             detail = f"Would: replay {len(raw_ids):,} acquired-but-unparsed raw rows into index.db"
         detail += byte_detail
+        detail += oversized_detail
         if missing_blobs:
             detail += f"; {missing_blobs:,} raw rows blocked by missing blobs"
         return _repair_result(
@@ -1264,6 +1282,19 @@ def repair_raw_materialization(
             detail=detail,
             metrics=metrics,
         )
+    if not executable_raw_ids:
+        return _repair_result(
+            "raw_materialization",
+            repaired_count=0,
+            success=False,
+            detail=(
+                f"Raw materialization blocked: {len(oversized_raw_ids):,} raw rows exceed actual replay limit "
+                f"{_format_bytes(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)}; "
+                f"largest={_format_bytes(candidates.max_blob_bytes)}. Use a streaming provider-specific "
+                "repair path before replaying these rows."
+            ),
+            metrics=metrics,
+        )
 
     async def _run() -> tuple[int, int]:
         from polylogue.pipeline.services.parsing import ParsingService
@@ -1276,8 +1307,8 @@ def repair_raw_materialization(
         failure_total = 0
         try:
             service = ParsingService(repository=repository, archive_root=config.archive_root, config=config)
-            total = len(raw_ids)
-            for index, raw_id in enumerate(raw_ids, start=1):
+            total = len(executable_raw_ids)
+            for index, raw_id in enumerate(executable_raw_ids, start=1):
                 raw_size = candidates.raw_blob_bytes.get(raw_id, 0)
                 size_suffix = f" size={_format_bytes(raw_size)}" if raw_size else ""
                 if progress_callback is not None:
@@ -1318,23 +1349,28 @@ def repair_raw_materialization(
     metrics["raw_materialization_session_change_count"] = float(processed)
     if candidates.already_parsed:
         detail = (
-            f"Replayed {len(raw_ids):,} raw rows "
+            f"Replayed {len(executable_raw_ids):,} raw rows "
             f"({candidates.already_parsed:,} already parsed but not materialized); "
             f"{processed:,} sessions changed; message FTS left to ingest triggers or the FTS maintenance stage"
         )
     else:
         detail = (
-            f"Replayed {len(raw_ids):,} acquired-but-unparsed raw rows; "
+            f"Replayed {len(executable_raw_ids):,} acquired-but-unparsed raw rows; "
             f"{processed:,} sessions changed; message FTS left to ingest triggers or the FTS maintenance stage"
         )
     if missing_blobs:
         detail += f"; {missing_blobs:,} raw rows remain blocked by missing blobs"
+    if oversized_raw_ids:
+        detail += (
+            f"; {len(oversized_raw_ids):,} raw rows remain blocked by replay limit "
+            f"{_format_bytes(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)}"
+        )
     if failures:
         detail += f"; {failures:,} raw rows failed during parse/write"
     return _repair_result(
         "raw_materialization",
         repaired_count=processed,
-        success=missing_blobs == 0 and failures == 0,
+        success=missing_blobs == 0 and failures == 0 and not oversized_raw_ids,
         detail=detail,
         metrics=metrics,
     )
