@@ -559,6 +559,49 @@ def test_archive_debt_blocks_oversized_raw_materialization_replay(tmp_path: Path
     assert payload.totals.affected_blocked == 1
 
 
+def test_archive_debt_marks_oversized_stream_raw_materialization_actionable(tmp_path: Path) -> None:
+    _source_db, _index_db, _source_file = _init_raw_materialization_fixture(tmp_path)
+    source_file = tmp_path / "claude-code.jsonl"
+    source_file.write_text("{}", encoding="utf-8")
+    oversized_size = RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES + 1
+    blob = tmp_path / "blob" / "15" / ("15" * 31)
+    blob.parent.mkdir(exist_ok=True)
+    blob.write_bytes(b"{}")
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                acquired_at_ms, parsed_at_ms, parse_error, validated_at_ms,
+                validation_status
+            ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+            """,
+            (
+                "raw-oversized-stream-parse-pending",
+                "claude-code-session",
+                "oversized-stream-native",
+                str(source_file),
+                bytes.fromhex("15" * 32),
+                oversized_size,
+                None,
+                None,
+                None,
+                None,
+            ),
+        )
+
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
+
+    by_ref = {row.debt_ref: row for row in payload.rows}
+    row = by_ref["debt:raw-materialization:claude-code-session:parse-pending"]
+    assert row.status == "actionable"
+    assert row.affected_count == 1
+    assert "stream-record JSONL sources" in (row.details or "")
+    assert "Actual replay is blocked" not in (row.details or "")
+    assert row.actions[0].label == "Run daemon ingest"
+    assert payload.totals.affected_actionable >= 1
+
+
 def test_archive_debt_reports_codex_zero_token_projection_debt(tmp_path: Path) -> None:
     _write_current_tier_files(tmp_path)
     index_db = tmp_path / "index.db"

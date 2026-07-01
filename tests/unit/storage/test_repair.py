@@ -583,6 +583,67 @@ def test_raw_materialization_blocks_oversized_actual_replay(
     assert result.metrics["raw_materialization_execute_blob_limit_bytes"] == float(1024 * 1024 * 1024)
 
 
+def test_raw_materialization_allows_oversized_stream_record_replay(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    calls: dict[str, object] = {}
+
+    class FakeBackend:
+        def __init__(self, *, db_path: Path) -> None:
+            calls["db_path"] = db_path
+
+    class FakeRepository:
+        def __init__(self, *, backend: FakeBackend, archive_root: Path) -> None:
+            calls["archive_root"] = archive_root
+
+        async def close(self) -> None:
+            calls["closed"] = True
+
+    class FakeParseResult:
+        processed_ids = {"session-1"}
+        parse_failures = 0
+
+    class FakeParsingService:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def parse_from_raw(self, **kwargs: object) -> FakeParseResult:
+            calls["parse_kwargs"] = kwargs
+            return FakeParseResult()
+
+    monkeypatch.setattr(
+        repair_mod,
+        "_raw_materialization_candidate_ids",
+        lambda *_args, **_kwargs: repair_mod.RawMaterializationCandidates(
+            ["raw-1"],
+            0,
+            0,
+            {"raw-1": 2 * 1024 * 1024 * 1024},
+            {"raw-1": "claude-code-session"},
+            {"raw-1": "/captures/claude/session.jsonl"},
+        ),
+    )
+    monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", FakeParsingService)
+    monkeypatch.setattr("polylogue.storage.repository.SessionRepository", FakeRepository)
+    monkeypatch.setattr("polylogue.storage.sqlite.async_sqlite.SQLiteBackend", FakeBackend)
+
+    result = repair_mod.repair_raw_materialization(config, dry_run=False)
+
+    assert result.success is True
+    assert result.repaired_count == 1
+    assert result.metrics["raw_materialization_stream_oversized_count"] == 1.0
+    assert "oversized stream-record raw rows used streaming replay" in result.detail
+    assert calls["parse_kwargs"] == {
+        "raw_ids": ["raw-1"],
+        "progress_callback": None,
+        "force_write": False,
+        "repair_message_fts": False,
+    }
+    assert calls["closed"] is True
+
+
 def test_raw_materialization_reports_parse_write_failures(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

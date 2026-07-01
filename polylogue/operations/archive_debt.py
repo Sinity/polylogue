@@ -11,10 +11,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from polylogue.core.enums import Origin
+from polylogue.core.sources import provider_from_origin
 from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
 from polylogue.daemon.embedding_readiness import embedding_readiness_info
 from polylogue.daemon.fts_status import fts_readiness_info
 from polylogue.maintenance.targets import MAINTENANCE_TARGET_NAMES
+from polylogue.sources.dispatch import is_stream_record_provider
 from polylogue.storage.repair import RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.user_write import list_assertion_candidates
@@ -610,6 +613,11 @@ def _format_bytes(value: int) -> str:
     return f"{value:,} bytes"
 
 
+def _raw_materialization_row_stream_safe(*, origin: str, row: sqlite3.Row) -> bool:
+    provider = provider_from_origin(Origin.from_string(origin))
+    return is_stream_record_provider(str(row["source_path"] or ""), provider)
+
+
 def _raw_materialization_debt_row(
     archive_root: Path,
     *,
@@ -622,6 +630,13 @@ def _raw_materialization_debt_row(
     sample_rows = rows[:5]
     max_blob_size = max(_int_value(row["blob_size"]) or 0 for row in rows)
     max_blob_size_text = _format_bytes(max_blob_size)
+    oversized_rows = [
+        row for row in rows if (_int_value(row["blob_size"]) or 0) > RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
+    ]
+    stream_safe_oversized_rows = [
+        row for row in oversized_rows if _raw_materialization_row_stream_safe(origin=origin, row=row)
+    ]
+    blocked_oversized_count = len(oversized_rows) - len(stream_safe_oversized_rows)
     validation_counts = _count_values(row["validation_status"] for row in rows)
     source_available = any(_source_artifact_exists(str(row["source_path"])) for row in rows)
     severity: ArchiveDebtSeverity
@@ -762,11 +777,11 @@ def _raw_materialization_debt_row(
         sample_raw_id = str(sample_rows[0]["raw_id"]) if sample_rows else ""
         summary = f"{count} {origin} raw artifact(s) are acquired but not yet parsed"
         details = f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size_text}."
-        if max_blob_size > RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES:
+        if blocked_oversized_count:
             status = "blocked"
             details += (
                 f" Actual replay is blocked by the {_format_bytes(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)} "
-                "raw-materialization execution limit; this needs a streaming provider-specific repair path."
+                f"raw-materialization execution limit for {blocked_oversized_count:,} non-stream-safe oversized row(s)."
             )
             actions = (
                 ArchiveDebtActionPayload(
@@ -782,10 +797,15 @@ def _raw_materialization_debt_row(
                         sample_raw_id,
                         "--dry-run",
                     ),
-                    description="Preview byte size and candidate count; actual replay is blocked until streaming repair exists.",
+                    description="Preview byte size and candidate count; actual replay remains blocked for non-stream-safe oversized rows.",
                 ),
             )
         else:
+            if stream_safe_oversized_rows:
+                details += (
+                    f" {len(stream_safe_oversized_rows):,} oversized row(s) are stream-record JSONL sources and can use "
+                    "the streaming raw-materialization path."
+                )
             actions = (
                 ArchiveDebtActionPayload(
                     label="Run daemon ingest",

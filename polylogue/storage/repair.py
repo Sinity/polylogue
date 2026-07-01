@@ -10,9 +10,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from polylogue.config import Config
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.core.sources import origin_from_provider
+from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.logging import get_logger
 from polylogue.maintenance.models import DerivedModelStatus, MaintenanceCategory
 from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
@@ -23,6 +23,7 @@ from polylogue.maintenance.targets import (
     build_maintenance_target_catalog,
 )
 from polylogue.protocols import ProgressCallback
+from polylogue.sources.dispatch import is_stream_record_provider
 from polylogue.storage.blob_repair import count_orphaned_blobs_sync, repair_orphaned_blobs_data
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.insights.session.repair_assessment import (
@@ -59,6 +60,8 @@ class RawMaterializationCandidates:
     missing_blobs: int
     already_parsed: int
     raw_blob_bytes: dict[str, int] = field(default_factory=dict)
+    raw_origins: dict[str, str] = field(default_factory=dict)
+    raw_source_paths: dict[str, str] = field(default_factory=dict)
 
     @property
     def total_blob_bytes(self) -> int:
@@ -100,6 +103,8 @@ def _raw_materialization_candidate_ids(
     blob_store = BlobStore(config.archive_root / "blob")
     raw_ids: list[str] = []
     raw_blob_bytes: dict[str, int] = {}
+    raw_origins: dict[str, str] = {}
+    raw_source_paths: dict[str, str] = {}
     missing_blobs = 0
     already_parsed = 0
     with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
@@ -159,6 +164,8 @@ def _raw_materialization_candidate_ids(
             if blob_store.exists(blob_hash):
                 raw_id = str(row["raw_id"])
                 raw_ids.append(raw_id)
+                raw_origins[raw_id] = str(row["origin"] or "")
+                raw_source_paths[raw_id] = str(row["source_path"] or "")
                 blob_size = row["blob_size"]
                 if isinstance(blob_size, int):
                     raw_blob_bytes[raw_id] = blob_size
@@ -166,7 +173,20 @@ def _raw_materialization_candidate_ids(
                     already_parsed += 1
             else:
                 missing_blobs += 1
-    return RawMaterializationCandidates(raw_ids, missing_blobs, already_parsed, raw_blob_bytes)
+    return RawMaterializationCandidates(
+        raw_ids,
+        missing_blobs,
+        already_parsed,
+        raw_blob_bytes,
+        raw_origins,
+        raw_source_paths,
+    )
+
+
+def _raw_materialization_stream_safe(candidates: RawMaterializationCandidates, raw_id: str) -> bool:
+    origin = Origin.from_string(candidates.raw_origins.get(raw_id))
+    provider = provider_from_origin(origin)
+    return is_stream_record_provider(candidates.raw_source_paths.get(raw_id), provider)
 
 
 def _raw_materialized_by_source_path_native(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
@@ -1230,16 +1250,25 @@ def repair_raw_materialization(
         "raw_materialization_total_blob_bytes": float(candidates.total_blob_bytes),
         "raw_materialization_max_blob_bytes": float(candidates.max_blob_bytes),
     }
-    oversized_raw_ids = [
+    oversized_candidate_raw_ids = [
         raw_id
         for raw_id in raw_ids
         if candidates.raw_blob_bytes.get(raw_id, 0) > RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
+    ]
+    oversized_stream_safe_raw_ids = [
+        raw_id for raw_id in oversized_candidate_raw_ids if _raw_materialization_stream_safe(candidates, raw_id)
+    ]
+    oversized_stream_safe_raw_id_set = set(oversized_stream_safe_raw_ids)
+    oversized_raw_ids = [
+        raw_id for raw_id in oversized_candidate_raw_ids if raw_id not in oversized_stream_safe_raw_id_set
     ]
     oversized_raw_id_set = set(oversized_raw_ids)
     executable_raw_ids = [raw_id for raw_id in raw_ids if raw_id not in oversized_raw_id_set]
     if oversized_raw_ids:
         metrics["raw_materialization_oversized_count"] = float(len(oversized_raw_ids))
         metrics["raw_materialization_execute_blob_limit_bytes"] = float(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)
+    if oversized_stream_safe_raw_ids:
+        metrics["raw_materialization_stream_oversized_count"] = float(len(oversized_stream_safe_raw_ids))
     if dry_run:
         byte_detail = ""
         if raw_ids:
@@ -1252,6 +1281,10 @@ def repair_raw_materialization(
             oversized_detail = (
                 f"; {len(oversized_raw_ids):,} raw rows exceed actual replay limit "
                 f"{_format_bytes(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)}"
+            )
+        if oversized_stream_safe_raw_ids:
+            oversized_detail += (
+                f"; {len(oversized_stream_safe_raw_ids):,} oversized stream-record raw rows can use streaming replay"
             )
         if candidates.already_parsed:
             detail = (
@@ -1365,6 +1398,8 @@ def repair_raw_materialization(
             f"; {len(oversized_raw_ids):,} raw rows remain blocked by replay limit "
             f"{_format_bytes(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)}"
         )
+    if oversized_stream_safe_raw_ids:
+        detail += f"; {len(oversized_stream_safe_raw_ids):,} oversized stream-record raw rows used streaming replay"
     if failures:
         detail += f"; {failures:,} raw rows failed during parse/write"
     return _repair_result(
