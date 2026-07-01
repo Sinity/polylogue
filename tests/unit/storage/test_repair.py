@@ -312,6 +312,11 @@ def test_raw_materialization_excludes_already_parsed_non_materialized_rows(tmp_p
     assert result.repaired_count == 1
     assert "acquired-but-unparsed raw rows" in result.detail
 
+    scoped = repair_mod.repair_raw_materialization(config, dry_run=True, raw_artifact_id=parsed_raw_id)
+
+    assert scoped.repaired_count == 1
+    assert "already parsed but not materialized" in scoped.detail
+
 
 def test_raw_materialization_scope_filters_count_only_matching_raw_rows(tmp_path: Path) -> None:
     config = _config(tmp_path)
@@ -418,12 +423,12 @@ def test_raw_materialization_defers_batch_fts_then_repairs_once(
         provider: str | None = None,
         source_family: str | None = None,
         source_root: Path | None = None,
-    ) -> tuple[list[str], int]:
+    ) -> repair_mod.RawMaterializationCandidates:
         calls["raw_artifact_id"] = raw_artifact_id
         calls["provider"] = provider
         calls["source_family"] = source_family
         calls["source_root"] = source_root
-        return ["raw-1"], 0
+        return repair_mod.RawMaterializationCandidates(["raw-1"], 0, 0)
 
     monkeypatch.setattr(repair_mod, "_raw_materialization_candidate_ids", fake_candidate_ids)
     monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", FakeParsingService)

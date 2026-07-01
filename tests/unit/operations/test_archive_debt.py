@@ -441,6 +441,16 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
     assert session_shaped.affected_count == 1
     assert "Codex session event stream" in (session_shaped.details or "")
     assert session_shaped.actions[0].command == ("polylogue", "import", "--explain")
+    assert session_shaped.actions[1].command[:6] == (
+        "polylogue",
+        "ops",
+        "maintenance",
+        "run",
+        "--target",
+        "raw_materialization",
+    )
+    assert "--raw-artifact" in session_shaped.actions[1].command
+    assert "--dry-run" in session_shaped.actions[1].command
 
     gemini_session = by_ref["debt:raw-materialization:gemini-cli-session:parsed-session-unmaterialized"]
     assert gemini_session.severity == "warning"
@@ -448,6 +458,7 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
     assert gemini_session.category == "parsed-session-unmaterialized"
     assert "Gemini CLI chat session" in (gemini_session.details or "")
     assert gemini_session.actions[0].label == "Explain parser output"
+    assert gemini_session.actions[1].label == "Preview targeted raw replay"
 
     sidecars = by_ref["debt:raw-materialization:claude-code-session:parsed-non-session-artifact"]
     assert sidecars.severity == "info"

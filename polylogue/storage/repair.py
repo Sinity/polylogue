@@ -40,6 +40,13 @@ _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 _PROBE_ONLY_EXACT_MESSAGE_ROW_LIMIT = 100_000
 
 
+@dataclass(frozen=True)
+class RawMaterializationCandidates:
+    raw_ids: list[str]
+    missing_blobs: int
+    already_parsed: int
+
+
 def _raw_materialization_origin_from_provider(provider: str | None) -> str | None:
     if provider is None:
         return None
@@ -53,22 +60,25 @@ def _raw_materialization_candidate_ids(
     provider: str | None = None,
     source_family: str | None = None,
     source_root: Path | None = None,
-) -> tuple[list[str], int]:
-    """Return acquired-but-unparsed raw ids plus missing-blob debt count.
+) -> RawMaterializationCandidates:
+    """Return replayable raw ids plus missing-blob debt count.
 
     Raw evidence is the durable source of truth, but a raw row whose
     content-addressed blob is absent cannot be reparsed without outside
     evidence. Keep those rows as debt instead of mutating or deleting them.
-    Rows that have already been parsed but did not materialize a session are
-    classification debt, not a safe raw replay queue.
+    Broad repair only queues acquired-but-unparsed rows. An exact
+    ``raw_artifact_id`` scope may queue an already-parsed non-materialized row
+    because that is an explicit replay of one named raw artifact, not a blind
+    archive-wide retry.
     """
     source_db = config.archive_root / "source.db"
     index_db = config.archive_root / "index.db"
     if not source_db.exists() or not index_db.exists():
-        return [], 0
+        return RawMaterializationCandidates([], 0, 0)
     blob_store = BlobStore(config.archive_root / "blob")
     raw_ids: list[str] = []
     missing_blobs = 0
+    already_parsed = 0
     with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
         conn.row_factory = sqlite3.Row
         conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
@@ -90,9 +100,10 @@ def _raw_materialization_candidate_ids(
             normalized_root = str(source_root).rstrip("/")
             source_root_filter = " AND (r.source_path = ? OR r.source_path LIKE ?)"
             params.extend((normalized_root, f"{normalized_root}/%"))
+        parsed_filter = "AND r.parsed_at_ms IS NULL" if raw_artifact_id is None else ""
         rows = conn.execute(
             f"""
-            SELECT r.raw_id, r.origin, r.native_id, r.source_path, r.blob_hash
+            SELECT r.raw_id, r.origin, r.native_id, r.source_path, r.blob_hash, r.parsed_at_ms
             FROM raw_sessions AS r
             LEFT JOIN index_tier.sessions AS s_by_raw ON s_by_raw.raw_id = r.raw_id
             LEFT JOIN index_tier.sessions AS s_by_native
@@ -102,9 +113,9 @@ def _raw_materialization_candidate_ids(
             WHERE s_by_raw.raw_id IS NULL
               AND s_by_native.native_id IS NULL
               AND r.parse_error IS NULL
-              AND r.parsed_at_ms IS NULL
+              {parsed_filter}
               AND NOT (
-                r.validation_status = 'skipped'
+                COALESCE(r.validation_status, '') = 'skipped'
                 AND r.parsed_at_ms IS NOT NULL
                 AND r.parse_error IS NULL
               )
@@ -121,9 +132,11 @@ def _raw_materialization_candidate_ids(
             blob_hash = row["blob_hash"].hex() if isinstance(row["blob_hash"], bytes) else str(row["blob_hash"])
             if blob_store.exists(blob_hash):
                 raw_ids.append(str(row["raw_id"]))
+                if row["parsed_at_ms"] is not None:
+                    already_parsed += 1
             else:
                 missing_blobs += 1
-    return raw_ids, missing_blobs
+    return RawMaterializationCandidates(raw_ids, missing_blobs, already_parsed)
 
 
 def _raw_materialized_by_source_path_native(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
@@ -1166,15 +1179,23 @@ def repair_raw_materialization(
     source_root: Path | None = None,
 ) -> RepairResult:
     """Materialize replayable raw evidence into the index tier."""
-    raw_ids, missing_blobs = _raw_materialization_candidate_ids(
+    candidates = _raw_materialization_candidate_ids(
         config,
         raw_artifact_id=raw_artifact_id,
         provider=provider,
         source_family=source_family,
         source_root=source_root,
     )
+    raw_ids = candidates.raw_ids
+    missing_blobs = candidates.missing_blobs
     if dry_run:
-        detail = f"Would: replay {len(raw_ids):,} acquired-but-unparsed raw rows into index.db"
+        if candidates.already_parsed:
+            detail = (
+                f"Would: replay {len(raw_ids):,} raw rows into index.db "
+                f"({candidates.already_parsed:,} already parsed but not materialized)"
+            )
+        else:
+            detail = f"Would: replay {len(raw_ids):,} acquired-but-unparsed raw rows into index.db"
         if missing_blobs:
             detail += f"; {missing_blobs:,} raw rows blocked by missing blobs"
         return _repair_result(
@@ -1218,9 +1239,17 @@ def repair_raw_materialization(
             detail=f"Failed to materialize raw evidence: {exc}",
         )
     fts_result = repair_dangling_fts(config, dry_run=False)
-    detail = (
-        f"Replayed {len(raw_ids):,} acquired-but-unparsed raw rows; {processed:,} sessions changed; {fts_result.detail}"
-    )
+    if candidates.already_parsed:
+        detail = (
+            f"Replayed {len(raw_ids):,} raw rows "
+            f"({candidates.already_parsed:,} already parsed but not materialized); "
+            f"{processed:,} sessions changed; {fts_result.detail}"
+        )
+    else:
+        detail = (
+            f"Replayed {len(raw_ids):,} acquired-but-unparsed raw rows; "
+            f"{processed:,} sessions changed; {fts_result.detail}"
+        )
     if missing_blobs:
         detail += f"; {missing_blobs:,} raw rows remain blocked by missing blobs"
     return _repair_result(

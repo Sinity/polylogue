@@ -625,6 +625,7 @@ def _raw_materialization_debt_row(
         severity = "warning"
         status = "open"
         stage = "parse"
+        sample_raw_id = str(sample_rows[0]["raw_id"]) if sample_rows else ""
         shape_reasons = sorted(
             {reason for row in sample_rows if (reason := _parsed_session_shape_reason(archive_root, row)) is not None}
         )
@@ -639,6 +640,24 @@ def _raw_materialization_debt_row(
                 label="Explain parser output",
                 command=("polylogue", "import", "--explain"),
                 description="Pass one of the sampled source paths and compare produced session refs with index materialization.",
+            ),
+            ArchiveDebtActionPayload(
+                label="Preview targeted raw replay",
+                command=(
+                    "polylogue",
+                    "ops",
+                    "maintenance",
+                    "run",
+                    "--target",
+                    "raw_materialization",
+                    "--raw-artifact",
+                    sample_raw_id,
+                    "--dry-run",
+                ),
+                description=(
+                    "Preview reparsing one sampled session-shaped raw artifact. Broad raw-materialization repair stays "
+                    "limited to acquired-but-unparsed rows."
+                ),
             ),
         )
     elif category == "materialized-alias":
