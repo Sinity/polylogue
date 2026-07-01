@@ -56,9 +56,11 @@ This appends the transition to ignored `OPERATING-LOG.md`, updates ignored
 `ACTIVE-LOOP.md` when present, and refreshes the conductor packet. The valid
 focus modes are exactly Direction, Evidence, Construction, Proof, Artifact,
 Velocity, and Meta. The helper also validates the transition edge against the
-shared mode graph used by review and velocity audits. Use `--force` only when a
-rare edge is genuinely correct and the trigger/decision explains why it should
-not be routed through a normal intermediate mode.
+shared mode graph used by review and velocity audits. It also checks continuity:
+the `<from>` mode must match the active loop's current target mode, so stale
+manual transitions fail before they rewrite local state. Use `--force` only when
+a rare edge or continuity break is genuinely correct and the trigger/decision
+explains why it should not be routed through the normal state machine.
 
 ## One-Loop Protocol
 

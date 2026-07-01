@@ -61,9 +61,10 @@ Record material transitions with:
 .agent/scripts/devloop-focus <from> <to> "<trigger>" "<decision>"
 ```
 
-`devloop-focus` validates transitions against the shared mode graph. Use
-`--force` only for a rare edge whose rationale is explicit in the trigger and
-decision; otherwise switch through a normal intermediate mode.
+`devloop-focus` validates transitions against the shared mode graph and checks
+that `<from>` matches the active loop's current target mode. Use `--force` only
+for a rare edge or deliberate continuity break whose rationale is explicit in
+the trigger and decision; otherwise switch through a normal intermediate mode.
 
 Start one concrete slice with:
 

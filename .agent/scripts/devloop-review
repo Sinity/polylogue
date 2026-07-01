@@ -238,6 +238,12 @@ else
   ok "devloop-meta requires explicit audit fields"
 fi
 
+if grep -q 'stale focus transition' "$repo/.agent/scripts/devloop-focus"; then
+  ok "devloop-focus rejects stale active-mode transitions"
+else
+  warn "devloop-focus does not enforce active-mode continuity"
+fi
+
 meta_start_terms=("meta" "process" "scaffold" "devloop" "conductor" "convention")
 missing_meta_start_terms=()
 for term in "${meta_start_terms[@]}"; do

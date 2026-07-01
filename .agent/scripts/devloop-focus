@@ -63,6 +63,28 @@ if [ "$force" -eq 0 ] && ! devloop_focus_edge_allowed "$from" "$to"; then
   exit 2
 fi
 
+if [ "$force" -eq 0 ] && [ -f "$active" ]; then
+  current_to="$(
+    python3 - "$active" <<'PY'
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+match = re.search(r"^Focus: ([A-Za-z]+) -> ([A-Za-z]+)$", text, re.M)
+if match is not None:
+    print(match.group(2))
+PY
+  )"
+  if [ -n "$current_to" ] && [ "$current_to" != "$from" ]; then
+    printf 'stale focus transition: active loop is in %s, got from=%s\n' "$current_to" "$from" >&2
+    printf 'rerun with from=%s, or use --force with an explicit rationale\n' "$current_to" >&2
+    exit 2
+  fi
+fi
+
 "$(dirname "$0")/devloop-log" "focus: $from -> $to" "Focus: $from -> $to
 Trigger: $trigger
 Decision: $decision"
