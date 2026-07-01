@@ -243,8 +243,11 @@ def _json_breakdown_section(commands: list[CommandRecord]) -> str:
         return ""
     sections = ["## Large JSON Payloads", ""]
     for command in large_json_commands:
+        top_level_bytes = command["json_top_level_bytes"]
+        if top_level_bytes is None:
+            continue
         top = sorted(
-            command["json_top_level_bytes"].items(),
+            top_level_bytes.items(),
             key=lambda item: item[1],
             reverse=True,
         )[:8]
