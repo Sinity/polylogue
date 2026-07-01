@@ -13,6 +13,7 @@ from devtools.worktree_gc import (
     GcCandidate,
     WorktreeEntry,
     _build_payload,
+    _resolve_target,
     apply_removals,
     check_dirty,
     classify_candidates,
@@ -95,6 +96,18 @@ def test_check_dirty_true(tmp_path: Path) -> None:
 def test_check_dirty_missing_path(tmp_path: Path) -> None:
     """check_dirty returns False for non-existent paths (prunable)."""
     assert check_dirty(tmp_path / "nonexistent") is False
+
+
+def test_default_target_prefers_origin_master(tmp_path: Path) -> None:
+    """Repo workflows integrate through origin/master, not stale local master."""
+    repo = _make_repo(tmp_path / "repo")
+    remote = tmp_path / "remote.git"
+    _run_git(["init", "--bare", str(remote)], cwd=tmp_path)
+    _run_git(["remote", "add", "origin", str(remote)], cwd=repo)
+    _run_git(["push", "-u", "origin", "master"], cwd=repo)
+
+    assert _resolve_target(repo, None) == "origin/master"
+    assert _resolve_target(repo, "master") == "master"
 
 
 # ── classification ─────────────────────────────────────────────────
@@ -324,10 +337,11 @@ def test_build_payload_shape() -> None:
             action="remove",
         ),
     ]
-    payload = _build_payload(candidates)
+    payload = _build_payload(candidates, target="origin/master")
     assert payload["safe_count"] == 1
     assert payload["blocked_count"] == 0
     assert payload["total_count"] == 1
+    assert payload["target"] == "origin/master"
     entries = payload["worktrees"]
     assert isinstance(entries, list)
     assert entries[0]["path"] == "/tmp/wt"
@@ -396,6 +410,67 @@ def test_collect_end_to_end(tmp_path: Path) -> None:
     assert active_c.reason == "unmerged"
     assert active_c.safe is False
     assert active_c.blocked_reason == "branch-not-merged"
+
+
+def test_collect_marks_clean_squash_equivalent_worktree_safe(tmp_path: Path) -> None:
+    """A squash-merged branch is safe when all commits are patch-equivalent."""
+    repo = _make_repo(tmp_path / "repo")
+
+    _run_git(["checkout", "-b", "feature/squashed"], cwd=repo)
+    (repo / "squashed-file.txt").write_text("squashed work")
+    _run_git(["add", "squashed-file.txt"], cwd=repo)
+    _run_git(["commit", "-m", "squashed work"], cwd=repo)
+    _run_git(["checkout", "master"], cwd=repo)
+    _run_git(["merge", "--squash", "feature/squashed"], cwd=repo)
+    _run_git(["commit", "-m", "squash feature"], cwd=repo)
+
+    wt = _make_worktree(repo, tmp_path / "wt-squashed", "feature/squashed")
+
+    candidates, _entries = collect_candidates(repo)
+    candidate = next((c for c in candidates if c.entry.path == wt), None)
+
+    assert candidate is not None
+    assert candidate.reason == "squash-equivalent"
+    assert candidate.safe is True
+    assert candidate.action == "remove"
+    assert candidate.evidence == {
+        "patch_equivalent": True,
+        "equivalent_commits": 1,
+        "unique_commits": 0,
+        "unknown_commits": 0,
+    }
+
+
+def test_collect_keeps_partly_unique_squash_branch_blocked(tmp_path: Path) -> None:
+    """A branch with any unique commit remains blocked after a squash merge."""
+    repo = _make_repo(tmp_path / "repo")
+
+    _run_git(["checkout", "-b", "feature/partial"], cwd=repo)
+    (repo / "landed.txt").write_text("landed")
+    _run_git(["add", "landed.txt"], cwd=repo)
+    _run_git(["commit", "-m", "landed"], cwd=repo)
+    _run_git(["checkout", "master"], cwd=repo)
+    _run_git(["merge", "--squash", "feature/partial"], cwd=repo)
+    _run_git(["commit", "-m", "squash partial"], cwd=repo)
+    _run_git(["checkout", "feature/partial"], cwd=repo)
+    (repo / "unique.txt").write_text("not landed")
+    _run_git(["add", "unique.txt"], cwd=repo)
+    _run_git(["commit", "-m", "unique"], cwd=repo)
+    _run_git(["checkout", "master"], cwd=repo)
+
+    wt = _make_worktree(repo, tmp_path / "wt-partial", "feature/partial")
+
+    candidates, _entries = collect_candidates(repo)
+    candidate = next((c for c in candidates if c.entry.path == wt), None)
+
+    assert candidate is not None
+    assert candidate.reason == "unmerged"
+    assert candidate.safe is False
+    assert candidate.blocked_reason == "branch-not-merged"
+    assert candidate.evidence is not None
+    assert candidate.evidence["patch_equivalent"] is False
+    assert candidate.evidence["equivalent_commits"] == 1
+    assert candidate.evidence["unique_commits"] == 1
 
 
 def test_dirty_blocks_in_collect(tmp_path: Path) -> None:

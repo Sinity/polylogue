@@ -1923,7 +1923,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace dev-loop` | Preflight branch-local daemon, web-shell, and browser-capture development loops. |
 | `devtools workspace failure-context` | Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope. |
 | `devtools workspace tasks` | Record and query local agent task execution history. |
-| `devtools workspace worktree-gc` | Safe worktree garbage collection — list and remove merged or abandoned git worktrees. |
+| `devtools workspace worktree-gc` | Safe worktree garbage collection — list and remove merged, squash-equivalent, or abandoned git worktrees. |
 
 <!-- END GENERATED: devtools-command-catalog -->
 

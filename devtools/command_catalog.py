@@ -337,11 +337,12 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "workspace worktree-gc",
         "workspace",
-        "Safe worktree garbage collection — list and remove merged or abandoned git worktrees.",
+        "Safe worktree garbage collection — list and remove merged, squash-equivalent, or abandoned git worktrees.",
         "devtools.worktree_gc",
         use_when=(
             "Clean up agent and feature worktrees that have been merged or whose branches "
-            "have been deleted. Dry-run by default; pass --apply to remove safe candidates. "
+            "have been deleted. Also recognizes fully patch-equivalent squash-merged branches via git cherry. "
+            "Dry-run by default; pass --apply to remove safe candidates. "
             "Never removes dirty worktrees or the main worktree."
         ),
         examples=(

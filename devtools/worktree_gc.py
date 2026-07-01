@@ -33,6 +33,7 @@ class GcCandidate:
     safe: bool
     blocked_reason: str | None = None
     action: str | None = None
+    evidence: dict[str, object] | None = None
 
 
 def _run_git(args: list[str], *, cwd: Path | None = None) -> str:
@@ -104,6 +105,47 @@ def _existing_branches(repo_root: Path) -> set[str]:
     return {line.strip() for line in out.splitlines()}
 
 
+def _ref_exists(repo_root: Path, ref: str) -> bool:
+    return _run_git_nullable(["rev-parse", "--verify", "--quiet", ref], cwd=repo_root) is not None
+
+
+def _resolve_target(repo_root: Path, target: str | None) -> str:
+    if target:
+        return target
+    if _ref_exists(repo_root, "refs/remotes/origin/master"):
+        return "origin/master"
+    return "master"
+
+
+def _branch_short_name(ref: str) -> str:
+    return ref.removeprefix("refs/heads/")
+
+
+def _branch_patch_equivalence(repo_root: Path, target: str, branch_ref: str) -> dict[str, object] | None:
+    """Return patch-equivalence evidence for *branch_ref* against *target*.
+
+    ``git branch --merged`` only recognizes ancestry merges. Polylogue's normal
+    integration path squash-merges PRs, so a branch can be fully represented on
+    ``master`` while still appearing unmerged by ancestry. ``git cherry`` compares
+    patch IDs and marks equivalent commits with ``-`` and unique commits with
+    ``+``; only the all-``-`` case is safe to remove automatically.
+    """
+    branch = _branch_short_name(branch_ref)
+    out = _run_git_nullable(["cherry", target, branch], cwd=repo_root)
+    if out is None:
+        return None
+    rows = [line for line in out.splitlines() if line]
+    equivalent = sum(1 for line in rows if line.startswith("-"))
+    unique = sum(1 for line in rows if line.startswith("+"))
+    unknown = len(rows) - equivalent - unique
+    return {
+        "patch_equivalent": bool(rows) and unique == 0 and unknown == 0,
+        "equivalent_commits": equivalent,
+        "unique_commits": unique,
+        "unknown_commits": unknown,
+    }
+
+
 def check_dirty(worktree_path: Path) -> bool:
     """Return True if the worktree has uncommitted changes."""
     if not worktree_path.exists():
@@ -118,6 +160,7 @@ def classify_candidates(
     repo_root: Path,
     merged: set[str],
     existing: set[str],
+    patch_evidence: dict[str, dict[str, object]] | None = None,
 ) -> list[GcCandidate]:
     """Classify each worktree entry as a candidate or blocked."""
     candidates: list[GcCandidate] = []
@@ -126,7 +169,14 @@ def classify_candidates(
             continue
         if entry.path == repo_root:
             continue
-        candidates.append(_classify_one(entry, merged=merged, existing=existing))
+        candidates.append(
+            _classify_one(
+                entry,
+                merged=merged,
+                existing=existing,
+                patch_evidence=patch_evidence or {},
+            )
+        )
     return candidates
 
 
@@ -135,6 +185,7 @@ def _classify_one(
     *,
     merged: set[str],
     existing: set[str],
+    patch_evidence: dict[str, dict[str, object]],
 ) -> GcCandidate:
     if entry.prunable:
         dirty = check_dirty(entry.path)
@@ -216,21 +267,62 @@ def _classify_one(
             action="remove",
         )
 
+    evidence = patch_evidence.get(entry.branch)
+    if evidence and evidence.get("patch_equivalent") is True:
+        dirty = check_dirty(entry.path)
+        if dirty:
+            return GcCandidate(
+                entry=entry,
+                reason="squash-equivalent",
+                safe=False,
+                blocked_reason="dirty",
+                evidence=evidence,
+            )
+        if entry.locked:
+            return GcCandidate(
+                entry=entry,
+                reason="squash-equivalent",
+                safe=False,
+                blocked_reason="locked",
+                evidence=evidence,
+            )
+        return GcCandidate(
+            entry=entry,
+            reason="squash-equivalent",
+            safe=True,
+            action="remove",
+            evidence=evidence,
+        )
+
     return GcCandidate(
         entry=entry,
         reason="unmerged",
         safe=False,
         blocked_reason="branch-not-merged",
+        evidence=evidence,
     )
 
 
-def collect_candidates(repo_root: Path, *, target: str = "master") -> tuple[list[GcCandidate], list[WorktreeEntry]]:
+def collect_candidates(repo_root: Path, *, target: str | None = None) -> tuple[list[GcCandidate], list[WorktreeEntry]]:
     """Run git commands and return classified candidates plus all entries."""
+    target_ref = _resolve_target(repo_root, target)
     porcelain = _run_git(["worktree", "list", "--porcelain"], cwd=repo_root)
     entries = parse_worktree_list(porcelain)
-    merged = _merged_branches(repo_root, target=target)
+    merged = _merged_branches(repo_root, target=target_ref)
     existing = _existing_branches(repo_root)
-    candidates = classify_candidates(entries, repo_root=repo_root, merged=merged, existing=existing)
+    patch_evidence = {
+        ref: evidence
+        for ref in existing
+        if ref not in merged
+        if (evidence := _branch_patch_equivalence(repo_root, target_ref, ref)) is not None
+    }
+    candidates = classify_candidates(
+        entries,
+        repo_root=repo_root,
+        merged=merged,
+        existing=existing,
+        patch_evidence=patch_evidence,
+    )
     return candidates, entries
 
 
@@ -276,6 +368,7 @@ def apply_removals(candidates: list[GcCandidate], *, repo_root: Path, force: boo
 def _build_payload(
     candidates: list[GcCandidate],
     apply_results: list[dict[str, object]] | None = None,
+    target: str | None = None,
 ) -> dict[str, object]:
     entries: list[dict[str, object]] = []
     for c in candidates:
@@ -289,6 +382,8 @@ def _build_payload(
             "blocked_reason": c.blocked_reason,
             "locked": c.entry.locked,
         }
+        if c.evidence is not None:
+            entry["evidence"] = c.evidence
         entries.append(entry)
 
     payload: dict[str, object] = {
@@ -297,6 +392,8 @@ def _build_payload(
         "blocked_count": sum(1 for c in candidates if not c.safe),
         "total_count": len(candidates),
     }
+    if target is not None:
+        payload["target"] = target
     if apply_results is not None:
         payload["results"] = apply_results
     return payload
@@ -353,19 +450,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--target",
-        default="master",
-        help="Target branch for merge check (default: master).",
+        default=None,
+        help="Target branch for merge check (default: origin/master when available, else master).",
     )
     args = parser.parse_args(argv)
 
     repo_root = Path(_run_git(["rev-parse", "--show-toplevel"]))
-    candidates, _entries = collect_candidates(repo_root, target=args.target)
+    target_ref = _resolve_target(repo_root, args.target)
+    candidates, _entries = collect_candidates(repo_root, target=target_ref)
 
     apply_results = None
     if args.apply:
         apply_results = apply_removals(candidates, repo_root=repo_root, force=args.force)
 
-    payload = _build_payload(candidates, apply_results=apply_results)
+    payload = _build_payload(candidates, apply_results=apply_results, target=target_ref)
 
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
