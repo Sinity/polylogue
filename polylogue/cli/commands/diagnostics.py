@@ -567,7 +567,7 @@ async def _tools(
                 bases=(call_payload, event_payload, action_payload),
                 caveats=(
                     "Counts are grouped by evidence basis and must not be summed across bases.",
-                    "Observed-event sections only include materialized tool_finished outcomes.",
+                    "Observed-event sections count source-derived tool_finished outcomes, not raw tool_use calls.",
                     "Action evidence can include command/path/input detail matches for tools used outside MCP rows.",
                 ),
             )

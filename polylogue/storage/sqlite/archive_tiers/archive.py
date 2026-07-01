@@ -45,6 +45,12 @@ from polylogue.insights.affordance_usage import (
     evidence_kind_for_row as _affordance_evidence_kind,
 )
 from polylogue.insights.affordance_usage import (
+    family_for_text as _affordance_family_for_text,
+)
+from polylogue.insights.affordance_usage import (
+    like_param as _affordance_like_param,
+)
+from polylogue.insights.affordance_usage import (
     matched_by_row as _affordance_matched_by,
 )
 from polylogue.insights.affordance_usage import (
@@ -2336,6 +2342,20 @@ class ArchiveStore:
                 + ")"
             )
             params.extend(fts_queries)
+            if (
+                not request.tool
+                and not request.mcp_server
+                and not request.action_kind
+                and (family := _affordance_family_for_text(" ".join(cleaned_details))) is not None
+            ):
+                return self._list_tool_action_detail_evidence_count_rows(
+                    where=where,
+                    params=tuple(params),
+                    family=family,
+                    detail_patterns=cleaned_details,
+                    limit=request.limit,
+                    offset=request.offset,
+                )
 
         def fetch_rows() -> list[sqlite3.Row]:
             return list(
@@ -2430,6 +2450,75 @@ class ArchiveStore:
         elif offset:
             ordered = ordered[offset:]
         return ordered
+
+    def _list_tool_action_detail_evidence_count_rows(
+        self,
+        *,
+        where: list[str],
+        params: tuple[object, ...],
+        family: str,
+        detail_patterns: tuple[str, ...],
+        limit: int | None,
+        offset: int,
+    ) -> list[dict[str, object]]:
+        """Fast grouped action-evidence rows for generic command detail matches."""
+
+        generic_tools = ("exec_command", "functions", "functions.exec_command", "bash", "shell", "client")
+        tool_expr = "COALESCE(NULLIF(LOWER(u.tool_name), ''), 'unknown')"
+        detail_expr = (
+            "LOWER(COALESCE(u.tool_command, '') || ' ' || "
+            "COALESCE(u.tool_path, '') || ' ' || COALESCE(u.tool_input, ''))"
+        )
+        detail_clauses = " OR ".join(f"{detail_expr} LIKE ? ESCAPE '\\'" for _ in detail_patterns)
+        all_where = [*where, f"({detail_clauses})", f"{tool_expr} IN ({', '.join('?' for _ in generic_tools)})"]
+        all_params: list[object] = [*params]
+        all_params.extend(_affordance_like_param(pattern) for pattern in detail_patterns)
+        all_params.extend(generic_tools)
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = "LIMIT ? OFFSET ?"
+            all_params.extend((limit, offset))
+        elif offset:
+            limit_clause = "LIMIT -1 OFFSET ?"
+            all_params.append(offset)
+        rows = self._conn.execute(
+            f"""
+            SELECT
+                s.origin AS origin,
+                COALESCE(NULLIF(u.semantic_type, ''), 'tool_use') AS action_kind,
+                COUNT(*) AS call_count,
+                COUNT(DISTINCT u.session_id) AS session_count,
+                SUM(CASE WHEN r.tool_result_is_error = 1 THEN 1 ELSE 0 END) AS error_count,
+                SUM(CASE WHEN r.tool_result_exit_code IS NOT NULL AND r.tool_result_exit_code != 0 THEN 1 ELSE 0 END)
+                    AS nonzero_exit_count
+            FROM blocks u
+            JOIN sessions s ON s.session_id = u.session_id
+            LEFT JOIN blocks r
+                ON r.tool_id = u.tool_id
+               AND r.session_id = u.session_id
+               AND r.block_type = 'tool_result'
+            WHERE {" AND ".join(all_where)}
+            GROUP BY s.origin, action_kind
+            ORDER BY call_count DESC, s.origin ASC, action_kind ASC
+            {limit_clause}
+            """,
+            tuple(all_params),
+        ).fetchall()
+        return [
+            {
+                "source_name": _provider_for_origin(str(row["origin"])).value,
+                "origin": str(row["origin"] or "unknown-export"),
+                "normalized_tool_name": f"{family}/command-detail",
+                "action_kind": str(row["action_kind"] or "tool_use"),
+                "evidence_kind": "command_detail",
+                "matched_by": "detail",
+                "call_count": int(row["call_count"] or 0),
+                "session_count": int(row["session_count"] or 0),
+                "error_count": int(row["error_count"] or 0),
+                "nonzero_exit_count": int(row["nonzero_exit_count"] or 0),
+            }
+            for row in rows
+        ]
 
     def _tool_usage_rows(self, query: ToolUsageInsightQuery | None = None) -> list[ToolUsageRow]:
         request = query or ToolUsageInsightQuery()

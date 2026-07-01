@@ -515,6 +515,7 @@ async def test_tools_json_compares_family_across_evidence_bases(
     assert payload["bases"][0]["items"][0]["call_count"] == 3
     assert payload["bases"][1]["items"][0]["event_count"] == 2
     assert payload["bases"][2]["items"][0]["evidence_kind"] == "mcp_tool_call"
+    assert "source-derived tool_finished outcomes" in payload["caveats"][1]
     assert len(store.queries) == 1
     assert store.queries[0].since_ms is not None
     assert len(store.event_queries) == 1
