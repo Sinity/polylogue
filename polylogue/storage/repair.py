@@ -391,6 +391,7 @@ class RepairResult:
     repaired_count: int
     success: bool
     detail: str = ""
+    metrics: dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> JSONDocument:
         return json_document(
@@ -401,6 +402,7 @@ class RepairResult:
                 "repaired_count": self.repaired_count,
                 "success": self.success,
                 "detail": self.detail,
+                "metrics": dict(self.metrics),
             }
         )
 
@@ -583,6 +585,7 @@ def _repair_result(
     repaired_count: int,
     success: bool,
     detail: str,
+    metrics: dict[str, float] | None = None,
 ) -> RepairResult:
     spec = _maintenance_target_spec(target_name)
     return RepairResult(
@@ -592,6 +595,7 @@ def _repair_result(
         repaired_count=repaired_count,
         success=success,
         detail=detail,
+        metrics=dict(metrics or {}),
     )
 
 
@@ -1218,6 +1222,13 @@ def repair_raw_materialization(
     )
     raw_ids = candidates.raw_ids
     missing_blobs = candidates.missing_blobs
+    metrics = {
+        "raw_materialization_candidate_count": float(len(raw_ids)),
+        "raw_materialization_missing_blob_count": float(missing_blobs),
+        "raw_materialization_already_parsed_count": float(candidates.already_parsed),
+        "raw_materialization_total_blob_bytes": float(candidates.total_blob_bytes),
+        "raw_materialization_max_blob_bytes": float(candidates.max_blob_bytes),
+    }
     if dry_run:
         byte_detail = ""
         if raw_ids:
@@ -1240,6 +1251,7 @@ def repair_raw_materialization(
             repaired_count=len(raw_ids),
             success=True,
             detail=detail,
+            metrics=metrics,
         )
     if not raw_ids:
         detail = "Raw materialization ready"
@@ -1250,6 +1262,7 @@ def repair_raw_materialization(
             repaired_count=0,
             success=missing_blobs == 0,
             detail=detail,
+            metrics=metrics,
         )
 
     async def _run() -> tuple[int, int]:
@@ -1299,7 +1312,10 @@ def repair_raw_materialization(
             repaired_count=0,
             success=False,
             detail=f"Failed to materialize raw evidence: {exc}",
+            metrics=metrics,
         )
+    metrics["raw_materialization_parse_failure_count"] = float(failures)
+    metrics["raw_materialization_session_change_count"] = float(processed)
     if candidates.already_parsed:
         detail = (
             f"Replayed {len(raw_ids):,} raw rows "
@@ -1320,6 +1336,7 @@ def repair_raw_materialization(
         repaired_count=processed,
         success=missing_blobs == 0 and failures == 0,
         detail=detail,
+        metrics=metrics,
     )
 
 

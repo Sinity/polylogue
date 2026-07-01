@@ -214,6 +214,13 @@ def test_raw_materialization_preview_counts_replayable_rows_without_erasing_miss
 
     assert result.repaired_count == 1
     assert result.success is True
+    assert result.metrics == {
+        "raw_materialization_candidate_count": 1.0,
+        "raw_materialization_missing_blob_count": 1.0,
+        "raw_materialization_already_parsed_count": 0.0,
+        "raw_materialization_total_blob_bytes": float(replayable_size),
+        "raw_materialization_max_blob_bytes": float(replayable_size),
+    }
     assert "queued raw payload bytes total=" in result.detail
     assert "largest=" in result.detail
     assert "1 raw rows blocked by missing blobs" in result.detail
@@ -417,6 +424,9 @@ def test_raw_materialization_scope_filters_count_only_matching_raw_rows(tmp_path
     assert by_provider.repaired_count == 2
     assert by_family.repaired_count == 1
     assert by_root.repaired_count == 1
+    assert by_provider.metrics["raw_materialization_candidate_count"] == 2.0
+    assert by_provider.metrics["raw_materialization_total_blob_bytes"] == float(claude_size + other_root_size)
+    assert by_provider.metrics["raw_materialization_max_blob_bytes"] == float(max(claude_size, other_root_size))
 
 
 def test_raw_materialization_leaves_fts_to_ingest_or_fts_stage(
@@ -535,6 +545,10 @@ def test_raw_materialization_progress_reports_raw_payload_size(
 
     assert result.success is True
     assert any("raw_materialization: parsing raw 1/1 raw-1 size=1.5 GiB" in line for line in progress)
+    assert result.metrics["raw_materialization_total_blob_bytes"] == 1_610_612_736.0
+    assert result.metrics["raw_materialization_max_blob_bytes"] == 1_610_612_736.0
+    assert result.metrics["raw_materialization_session_change_count"] == 1.0
+    assert result.metrics["raw_materialization_parse_failure_count"] == 0.0
 
 
 def test_raw_materialization_reports_parse_write_failures(
@@ -581,6 +595,8 @@ def test_raw_materialization_reports_parse_write_failures(
     assert result.repaired_count == 0
     assert "1 raw rows failed during parse/write" in result.detail
     assert "already parsed but not materialized" in result.detail
+    assert result.metrics["raw_materialization_parse_failure_count"] == 1.0
+    assert result.metrics["raw_materialization_already_parsed_count"] == 1.0
 
 
 def _ready_session_insight_status() -> SessionInsightStatusSnapshot:

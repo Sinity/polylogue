@@ -301,6 +301,30 @@ class _ReplayState:
         )
 
 
+def _numeric_metric(value: object) -> float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
+
+
+def _operation_metrics(state: _ReplayState) -> dict[str, float]:
+    metrics = {"repaired_count": float(state.repaired_total)}
+    for result in state.results:
+        result_metrics = result.get("metrics")
+        if not isinstance(result_metrics, dict):
+            continue
+        for key, value in result_metrics.items():
+            metric_value = _numeric_metric(value)
+            if metric_value is None:
+                continue
+            metric_key = str(key)
+            if metric_key.endswith("_max_blob_bytes"):
+                metrics[metric_key] = max(metrics.get(metric_key, 0.0), metric_value)
+            else:
+                metrics[metric_key] = metrics.get(metric_key, 0.0) + metric_value
+    return metrics
+
+
 def execute_replay(
     config: Config,
     targets: Iterable[str],
@@ -484,7 +508,7 @@ def execute_replay(
         reason=InvalidationReason.UNKNOWN if state.failures else None,
         resume_cursor=state.cursor,
         failure_samples=BoundedFailureSamples.from_samples(state.failures),
-        metrics={"repaired_count": float(state.repaired_total)},
+        metrics=_operation_metrics(state),
     )
 
     if persist_state:
@@ -732,7 +756,7 @@ def _build_in_progress_snapshot(
         scope=MaintenanceScope(targets=state.targets),
         resume_cursor=cursor,
         failure_samples=BoundedFailureSamples.from_samples(state.failures),
-        metrics={"repaired_count": float(state.repaired_total)},
+        metrics=_operation_metrics(state),
     )
 
 
