@@ -897,6 +897,30 @@ PY
       printf 'INFO: raw materialization categories=%s\n' "$raw_category_text"
     fi
   fi
+  quick_status="$("$repo/.agent/scripts/devloop-status" --quick 2>/dev/null || true)"
+  if python3 - "$raw_materialization_debt" "$raw_materialization_replayable" "$quick_status" <<'PY'
+from __future__ import annotations
+
+import re
+import sys
+
+expected_debt, expected_replayable, quick_status = sys.argv[1:]
+match = re.search(
+    r"^convergence: raw_materialization_debt=(?P<debt>\S+) "
+    r"replayable_acquired_unparsed=(?P<replayable>\S+)$",
+    quick_status,
+    re.M,
+)
+if match is None:
+    raise SystemExit(1)
+if match.group("debt") != expected_debt or match.group("replayable") != expected_replayable:
+    raise SystemExit(1)
+PY
+  then
+    ok "devloop-status --quick raw debt matches JSON status"
+  else
+    warn "devloop-status --quick raw debt disagrees with JSON status"
+  fi
 else
   warn "devloop-status --json failed before raw materialization review"
 fi
