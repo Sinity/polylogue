@@ -88,7 +88,7 @@ Shared script contracts:
 
 | Script | Contract |
 | --- | --- |
-| `devloop-status` | Fast live status: git, active loop, runtime/archive health, packet size, active heavy work. |
+| `devloop-status` | Fast live status: git, active loop, runtime/archive health, packet size, active heavy work. Provide `--focus` and `--quick` when useful. |
 | `devloop-review` | Adversarial scaffold/state audit; fail on hard drift, warn on soft clutter. |
 | `devloop-start` | Start one named slice and write active/log state. |
 | `devloop-checkpoint` | Record reassessment without changing slice identity. |

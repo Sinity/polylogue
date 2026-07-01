@@ -3,11 +3,16 @@ set -euo pipefail
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   cat <<'EOF'
-Usage: .agent/scripts/devloop-status [--json]
+Usage: .agent/scripts/devloop-status [--json|--quick|--focus]
 
 Print the live Polylogue devloop status: git state, active loop state,
 conductor packet size, archive schema/counts/convergence, daemon state,
-worktree state, and pressure signals. Use --json for machine-readable output.
+worktree state, and pressure signals.
+
+Modes:
+  --json     Full machine-readable status for scripts and review gates.
+  --quick    Skip slower detailed ops/worktree probes during host pressure.
+  --focus    Print only the current slice, focus, next action, git, and packet.
 EOF
   exit 0
 fi
@@ -15,7 +20,19 @@ fi
 repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
 archive_root="${POLYLOGUE_ARCHIVE_ROOT:-/home/sinity/.local/share/polylogue}"
 current="${POLYLOGUE_AGENT_CURRENT:-$repo/.agent/conductor-devloop}"
-format="${1:-text}"
+format="text"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json|--quick|--focus)
+      format="$1"
+      shift
+      ;;
+    *)
+      printf 'unknown argument: %s\n' "$1" >&2
+      exit 2
+      ;;
+  esac
+done
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=.agent/scripts/lib-devloop
 source "$script_dir/lib-devloop"
@@ -42,6 +59,29 @@ pressure_rows="$(
 performance_blocked="false"
 if printf '%s\n' "$pressure_rows" | grep -Eq 'borg create|lynchpin.analysis materialize'; then
   performance_blocked="true"
+fi
+
+if [ "$format" = "--focus" ]; then
+  printf '== polylogue devloop focus ==\n'
+  printf 'repo: %s\n' "$repo"
+  printf 'current: %s\n' "$current"
+  printf 'git: branch=%s head=%s tracked_changes=%s untracked_changes=%s\n' \
+    "${git_branch:-unknown}" "${git_head:-unknown}" "$git_tracked_changes" "$git_untracked_changes"
+  printf 'agent_packet: bytes=%s files=%s dirs=%s operating_log_bytes=%s events_jsonl_bytes=%s\n' \
+    "${packet_bytes:-?}" "${packet_files:-?}" "${packet_dirs:-?}" "${operating_log_bytes:-?}" "${events_bytes:-?}"
+  if [ -f "$current/ACTIVE-LOOP.md" ]; then
+    awk '
+      /^## Current Slice$/ {section="slice"; print ""; print "-- current slice --"; next}
+      /^## Current Focus$/ {section="focus"; print ""; print "-- current focus --"; next}
+      /^## Next Action$/ {section="next"; print ""; print "-- next action --"; next}
+      /^## / {section=""}
+      section && NF {print}
+    ' "$current/ACTIVE-LOOP.md" | sed -n '1,80p'
+  else
+    printf '\nmissing ACTIVE-LOOP.md\n'
+  fi
+  printf '\npressure: live_performance_proof_blocked=%s\n' "$performance_blocked"
+  exit 0
 fi
 
 if [ "$format" = "--json" ]; then
@@ -291,7 +331,11 @@ if [ -f "$archive_root/source.db" ] && [ -f "$archive_root/index.db" ]; then
   )"
   printf 'convergence: raw_materialization_debt=%s replayable_acquired_unparsed=%s\n' \
     "${raw_materialization_debt:-?}" "${raw_materialization_replayable:-?}"
-  ops_status_json="$(polylogue ops status --format json 2>/dev/null || true)"
+  if [ "$format" != "--quick" ]; then
+    ops_status_json="$(polylogue ops status --format json 2>/dev/null || true)"
+  else
+    ops_status_json=""
+  fi
   if [ -n "$ops_status_json" ]; then
     python3 - "$ops_status_json" <<'PY'
 from __future__ import annotations
@@ -350,8 +394,11 @@ printf 'devloop polylogued-devloop.service: %s/%s\n' "${devloop_active_state:-un
 polylogued_process_rows
 
 printf '\n== worktrees ==\n'
-worktree_gc_json="$(POLYLOGUE_TASK_HISTORY_DISABLE=1 devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"
-python3 - "$worktree_gc_json" <<'PY'
+if [ "$format" = "--quick" ]; then
+  printf 'skipped in --quick mode; run full status or devtools workspace worktree-gc --json for details\n'
+else
+  worktree_gc_json="$(POLYLOGUE_TASK_HISTORY_DISABLE=1 devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"
+  python3 - "$worktree_gc_json" <<'PY'
 import json
 import sys
 
@@ -373,6 +420,7 @@ if dirty:
 if unmerged:
     print(f"unmerged_blocked={len(unmerged)}")
 PY
+fi
 
 printf '\n== active loop ==\n'
 if [ -f "$current/ACTIVE-LOOP.md" ]; then

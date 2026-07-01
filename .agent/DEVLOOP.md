@@ -13,6 +13,11 @@ From `/realm/project/polylogue`:
 .agent/scripts/devloop-review
 ```
 
+Use `.agent/scripts/devloop-status --focus` for a very fast context refresh
+when only the active slice, focus, next action, git state, and packet size are
+needed. Use `--quick` when host pressure is high and slower detailed
+ops/worktree probes would add friction.
+
 Then read, in order:
 
 1. `.agent/conductor-devloop/README.md`
