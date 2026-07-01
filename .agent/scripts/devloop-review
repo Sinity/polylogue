@@ -324,7 +324,7 @@ if [ -f "$current/ACTIVE-LOOP.md" ]; then
   fi
 fi
 
-polylogued_pids="$(pgrep -af 'polylogued run' || true)"
+polylogued_pids="$(ps -eo pid=,args= | awk '$3 ~ /\/polylogued$/ && $4 == "run" {print}' || true)"
 if [ -z "$polylogued_pids" ]; then
   warn "polylogued is not running; acceptable only between convergence restarts"
 else
