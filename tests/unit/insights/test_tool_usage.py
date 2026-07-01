@@ -16,7 +16,6 @@ Covers four shapes:
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -426,71 +425,46 @@ class TestListToolUsageInsightsEndToEnd:
 
         assert [entry.normalized_tool_name for entry in insight.entries] == ["beta"]
 
-    async def test_observed_event_tool_counts_use_materialized_projection(self, tmp_path: Path) -> None:
+    async def test_observed_event_tool_counts_use_canonical_tool_results(self, tmp_path: Path) -> None:
         archive = _archive(tmp_path)
         db_path = archive.archive_root / "index.db"
         (
             SessionBuilder(db_path, "cc-1")
             .provider("claude-code")
             .title("CC")
-            .add_message("cc-1-msg", role="assistant", text="Tools")
-            .save()
-        )
-        session_id = "claude-code-session:ext-cc-1"
-        conn = sqlite3.connect(db_path)
-        try:
-            conn.executemany(
-                """
-                INSERT INTO session_observed_events (
-                    event_ref, session_id, run_ref, position, kind, summary,
-                    delivery_state, payload_json, search_text
-                ) VALUES (?, ?, ?, ?, 'tool_finished', ?, 'observed', ?, ?)
-                """,
-                [
-                    (
-                        "event:1",
-                        session_id,
-                        "run:cc-1",
-                        1,
-                        "serena ok",
-                        json.dumps(
-                            {
-                                "tool_name": "mcp__serena__find_symbol",
-                                "handler_kind": "mcp",
-                                "status": "ok",
-                            }
-                        ),
-                        "serena ok",
-                    ),
-                    (
-                        "event:2",
-                        session_id,
-                        "run:cc-1",
-                        2,
-                        "serena failed",
-                        json.dumps(
-                            {
-                                "tool_name": "mcp__serena__find_symbol",
-                                "handler_kind": "mcp",
-                                "status": "failed",
-                            }
-                        ),
-                        "serena failed",
-                    ),
-                    (
-                        "event:3",
-                        session_id,
-                        "run:cc-1",
-                        3,
-                        "read ok",
-                        json.dumps({"tool_name": "Read", "handler_kind": "file_read", "status": "ok"}),
-                        "read ok",
-                    ),
+            .add_message(
+                "cc-1-msg",
+                role="assistant",
+                text="Tools",
+                blocks=[
+                    {"type": "tool_use", "name": "mcp__serena__find_symbol", "id": "s1"},
+                    {
+                        "type": "tool_result",
+                        "tool_id": "s1",
+                        "text": "ok",
+                        "tool_result_is_error": 0,
+                        "tool_result_exit_code": 0,
+                    },
+                    {"type": "tool_use", "name": "mcp__serena__find_symbol", "id": "s2"},
+                    {
+                        "type": "tool_result",
+                        "tool_id": "s2",
+                        "text": "failed",
+                        "tool_result_is_error": 1,
+                        "tool_result_exit_code": 1,
+                    },
+                    {"type": "tool_use", "name": "Read", "id": "r1"},
+                    {
+                        "type": "tool_result",
+                        "tool_id": "r1",
+                        "text": "read ok",
+                        "tool_result_is_error": 0,
+                        "tool_result_exit_code": 0,
+                    },
                 ],
             )
-            conn.commit()
-        finally:
-            conn.close()
+            .save()
+        )
 
         with ArchiveStore.open_existing(archive.archive_root) as store:
             rows = store.list_tool_observed_event_count_rows(
@@ -676,12 +650,25 @@ class TestListToolUsageInsightsEndToEnd:
         recent_ts = "2026-01-03T00:00:00+00:00"
         cutoff_ms = int(datetime(2026, 1, 2, tzinfo=UTC).timestamp() * 1000)
         tool_block = {"type": "tool_use", "name": "mcp__serena__find_symbol", "id": "t1"}
+        result_block = {
+            "type": "tool_result",
+            "tool_id": "t1",
+            "text": "ok",
+            "tool_result_is_error": 0,
+            "tool_result_exit_code": 0,
+        }
 
         (
             SessionBuilder(db_path, "old-cc")
             .provider("claude-code")
             .updated_at(old_ts)
-            .add_message("old-cc-msg", role="assistant", text="Old", timestamp=old_ts, blocks=[tool_block])
+            .add_message(
+                "old-cc-msg",
+                role="assistant",
+                text="Old",
+                timestamp=old_ts,
+                blocks=[tool_block, result_block],
+            )
             .save()
         )
         (
@@ -693,54 +680,10 @@ class TestListToolUsageInsightsEndToEnd:
                 role="assistant",
                 text="Recent",
                 timestamp=recent_ts,
-                blocks=[tool_block],
+                blocks=[tool_block, result_block],
             )
             .save()
         )
-
-        conn = sqlite3.connect(db_path)
-        try:
-            conn.executemany(
-                """
-                INSERT INTO session_observed_events (
-                    event_ref, session_id, run_ref, position, kind, summary,
-                    delivery_state, payload_json, search_text
-                ) VALUES (?, ?, ?, 1, 'tool_finished', ?, 'observed', ?, ?)
-                """,
-                [
-                    (
-                        "event:old",
-                        "claude-code-session:ext-old-cc",
-                        "run:old",
-                        "old serena ok",
-                        json.dumps(
-                            {
-                                "tool_name": "mcp__serena__find_symbol",
-                                "handler_kind": "mcp",
-                                "status": "ok",
-                            }
-                        ),
-                        "old serena ok",
-                    ),
-                    (
-                        "event:recent",
-                        "claude-code-session:ext-recent-cc",
-                        "run:recent",
-                        "recent serena ok",
-                        json.dumps(
-                            {
-                                "tool_name": "mcp__serena__find_symbol",
-                                "handler_kind": "mcp",
-                                "status": "ok",
-                            }
-                        ),
-                        "recent serena ok",
-                    ),
-                ],
-            )
-            conn.commit()
-        finally:
-            conn.close()
 
         query = ToolUsageInsightQuery(
             provider="claude-code-session",

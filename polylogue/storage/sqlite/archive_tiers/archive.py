@@ -1763,19 +1763,34 @@ class ArchiveStore:
     def list_tool_observed_event_count_rows(
         self, query: ToolUsageInsightQuery | None = None
     ) -> list[dict[str, object]]:
-        """Tool outcome rollups from the materialized observed-event projection."""
+        """Tool outcome rollups from canonical tool-use/result block evidence."""
         request = query or ToolUsageInsightQuery()
-        where = ["e.kind = 'tool_finished'"]
+        where = ["u.block_type = 'tool_use'"]
         params: list[object] = []
         origin = _origin_for_tool_usage_filter(request.provider)
         if origin:
             where.append("s.origin = ?")
             params.append(origin)
-        tool_expr = "COALESCE(NULLIF(json_extract(e.payload_json, '$.tool_name'), ''), 'unknown')"
-        handler_expr = "COALESCE(NULLIF(json_extract(e.payload_json, '$.handler_kind'), ''), 'unknown')"
-        status_expr = "COALESCE(NULLIF(json_extract(e.payload_json, '$.status'), ''), 'unknown')"
+        tool_expr = "COALESCE(NULLIF(LOWER(u.tool_name), ''), 'unknown')"
+        handler_expr = (
+            "CASE "
+            f"WHEN {tool_expr} >= 'mcp__' AND {tool_expr} < 'mcp__\U0010ffff' THEN 'mcp' "
+            "WHEN NULLIF(u.tool_command, '') IS NOT NULL THEN 'shell' "
+            "ELSE COALESCE(NULLIF(u.semantic_type, ''), 'tool_use') "
+            "END"
+        )
+        status_expr = (
+            "CASE "
+            "WHEN r.tool_result_exit_code IS NOT NULL "
+            "THEN CASE WHEN r.tool_result_exit_code = 0 THEN 'ok' ELSE 'failed' END "
+            "WHEN r.tool_result_is_error IS NOT NULL "
+            "THEN CASE WHEN r.tool_result_is_error = 1 THEN 'failed' ELSE 'ok' END "
+            "ELSE 'unknown' "
+            "END"
+        )
+        where.append("r.rowid IS NOT NULL")
         if request.tool:
-            where.append(f"{tool_expr} = ?")
+            where.append(f"{tool_expr} = LOWER(?)")
             params.append(request.tool)
         if request.mcp_server:
             mcp_prefix = f"mcp__{request.mcp_server.lower()}__"
@@ -1805,8 +1820,12 @@ class ArchiveStore:
                 {handler_expr} AS action_kind,
                 {status_expr} AS status,
                 COUNT(*) AS event_count
-            FROM session_observed_events e
-            JOIN sessions s ON s.session_id = e.session_id
+            FROM blocks u
+            JOIN sessions s ON s.session_id = u.session_id
+            LEFT JOIN blocks r
+                ON r.tool_id = u.tool_id
+               AND r.session_id = u.session_id
+               AND r.block_type = 'tool_result'
             WHERE {" AND ".join(where)}
             GROUP BY s.origin, normalized_tool_name, action_kind, status
             ORDER BY event_count DESC, s.origin ASC, normalized_tool_name ASC, status ASC
