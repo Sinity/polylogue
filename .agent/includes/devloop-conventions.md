@@ -107,6 +107,12 @@ Shared script contracts:
 
 Every `devloop-*` script must support a side-effect-free `--help` path.
 
+The focus-mode graph has one executable source of truth:
+`.agent/scripts/lib-devloop`. Scripts that validate or report transitions must
+consume `devloop_focus_modes`, `devloop_focus_edges`, or
+`devloop_focus_edge_allowed`; do not duplicate the edge set in Python or shell
+snippets inside individual scripts.
+
 ## Boundaries
 
 - Tracked scaffold explains how to resume.

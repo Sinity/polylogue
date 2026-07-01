@@ -600,9 +600,10 @@ PY
   else
     warn "ACTIVE-LOOP accepted warnings look like historical ledger; keep history in OPERATING-LOG/DEMO-RADAR"
   fi
-  if focus_audit_output="$(python3 - "$current/ACTIVE-LOOP.md" "$current/OPERATING-LOG.md" <<'PY'
+  if focus_audit_output="$(DEVLOOP_FOCUS_EDGES="$(devloop_focus_edges)" python3 - "$current/ACTIVE-LOOP.md" "$current/OPERATING-LOG.md" <<'PY'
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -640,39 +641,12 @@ for index, (entry_title, _body) in enumerate(entries):
 window = entries[start_index:]
 focus_re = re.compile(r"^Focus: ([A-Za-z]+) -> ([A-Za-z]+)$", re.M)
 expected_edges = {
-    ("Direction", "Evidence"),
-    ("Direction", "Construction"),
-    ("Direction", "Artifact"),
-    ("Direction", "Proof"),
-    ("Direction", "Meta"),
-    ("Evidence", "Construction"),
-    ("Evidence", "Proof"),
-    ("Evidence", "Artifact"),
-    ("Evidence", "Velocity"),
-    ("Evidence", "Meta"),
-    ("Construction", "Proof"),
-    ("Construction", "Meta"),
-    ("Proof", "Artifact"),
-    ("Proof", "Velocity"),
-    ("Proof", "Evidence"),
-    ("Proof", "Direction"),
-    ("Proof", "Meta"),
-    ("Artifact", "Velocity"),
-    ("Artifact", "Direction"),
-    ("Artifact", "Meta"),
-    ("Artifact", "Proof"),
-    ("Velocity", "Direction"),
-    ("Velocity", "Evidence"),
-    ("Velocity", "Artifact"),
-    ("Velocity", "Meta"),
-    ("Meta", "Meta"),
-    ("Meta", "Evidence"),
-    ("Meta", "Construction"),
-    ("Meta", "Proof"),
-    ("Meta", "Artifact"),
-    ("Meta", "Velocity"),
-    ("Meta", "Direction"),
+    tuple(line.split(":", 1))
+    for line in os.environ.get("DEVLOOP_FOCUS_EDGES", "").splitlines()
+    if ":" in line
 }
+if not expected_edges:
+    raise SystemExit("missing DEVLOOP_FOCUS_EDGES")
 bad_edges: list[str] = []
 unattributed_proof_exits: list[str] = []
 focus_count = 0

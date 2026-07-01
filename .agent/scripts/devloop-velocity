@@ -38,6 +38,9 @@ done
 repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
 current="${POLYLOGUE_AGENT_CURRENT:-$repo/.agent/conductor-devloop}"
 log="$current/OPERATING-LOG.md"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=.agent/scripts/lib-devloop
+source "$script_dir/lib-devloop"
 
 cd "$repo"
 
@@ -181,7 +184,8 @@ fi
 
 printf '\n== focus transition audit ==\n'
 if [ -f "$log" ]; then
-  python3 - "$log" <<'PY'
+  DEVLOOP_FOCUS_EDGES="$(devloop_focus_edges)" python3 - "$log" <<'PY'
+import os
 import re
 import sys
 from collections import Counter
@@ -199,39 +203,12 @@ with open(path, encoding="utf-8") as handle:
             transitions.append((title, match.group(1), match.group(2)))
 
 expected_edges = {
-    ("Direction", "Evidence"),
-    ("Direction", "Construction"),
-    ("Direction", "Artifact"),
-    ("Direction", "Proof"),
-    ("Direction", "Meta"),
-    ("Evidence", "Construction"),
-    ("Evidence", "Proof"),
-    ("Evidence", "Artifact"),
-    ("Evidence", "Velocity"),
-    ("Evidence", "Meta"),
-    ("Construction", "Proof"),
-    ("Construction", "Meta"),
-    ("Proof", "Artifact"),
-    ("Proof", "Velocity"),
-    ("Proof", "Evidence"),
-    ("Proof", "Direction"),
-    ("Proof", "Meta"),
-    ("Artifact", "Velocity"),
-    ("Artifact", "Direction"),
-    ("Artifact", "Meta"),
-    ("Artifact", "Proof"),
-    ("Velocity", "Direction"),
-    ("Velocity", "Evidence"),
-    ("Velocity", "Artifact"),
-    ("Velocity", "Meta"),
-    ("Meta", "Meta"),
-    ("Meta", "Evidence"),
-    ("Meta", "Construction"),
-    ("Meta", "Proof"),
-    ("Meta", "Artifact"),
-    ("Meta", "Velocity"),
-    ("Meta", "Direction"),
+    tuple(line.split(":", 1))
+    for line in os.environ.get("DEVLOOP_FOCUS_EDGES", "").splitlines()
+    if ":" in line
 }
+if not expected_edges:
+    raise SystemExit("missing DEVLOOP_FOCUS_EDGES")
 edge_counts = Counter((src, dst) for _, src, dst in transitions)
 print(f"transitions={len(transitions)}")
 for (src, dst), count in edge_counts.most_common():
