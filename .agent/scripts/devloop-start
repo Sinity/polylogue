@@ -20,7 +20,7 @@ esac
 
 title="${1:?usage: devloop-start [--meta|--focus MODE] <slice-title>}"
 case "$start_focus:$title" in
-  Direction:[Mm]eta*|Direction:[Pp]rocess*|Direction:*devloop*|Direction:*scaffold*)
+  Direction:[Mm]eta*|Direction:[Pp]rocess*|Direction:[Ss]caffold*)
     start_focus="Meta"
     ;;
 esac
