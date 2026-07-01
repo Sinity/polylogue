@@ -140,6 +140,12 @@ else
   ok "devloop scripts are executable"
 fi
 
+if grep -Eq ':-TODO|:-TBD|:-FIXME' "$repo/.agent/scripts/devloop-meta"; then
+  warn "devloop-meta still has placeholder defaults; meta audits must require complete fields"
+else
+  ok "devloop-meta requires explicit audit fields"
+fi
+
 script_name_diff="$(
   {
     find "$repo/.agent/scripts" -maxdepth 1 -type f -name 'devloop-*' -printf '%f\n' | sort

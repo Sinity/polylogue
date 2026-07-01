@@ -37,8 +37,9 @@ material focus changes so the role switch is logged, reflected in
 
 Because current state is ignored locally, `.agent/conductor-devloop/` contains
 tracked process docs plus ignored local state. `devloop-sync` refreshes the
-ignored event sidecar, manifest, and helper-script snapshots; it does not mirror
-state to `/realm/inbox`.
+ignored event sidecar, demo indexes, packet manifest, and tracked script-hash
+list; it does not mirror state to `/realm/inbox` or copy script snapshots into
+the conductor packet.
 
 ## Non-Negotiables
 

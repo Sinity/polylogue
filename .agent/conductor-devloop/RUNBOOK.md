@@ -114,7 +114,8 @@ Velocity, and Meta.
 7. **Meta**
    - Run when the operator corrects process behavior, repeated friction appears,
      or a loop feels vague/stalled.
-   - Use `.agent/scripts/devloop-meta "<trigger>" ...`.
+   - Use `.agent/scripts/devloop-meta "<trigger>" "<failure-hypothesis>" "<evidence>" "<change-considered>" "<change-made>" "<change-deferred>" "<next-tripwire>"`.
+   - Fill every field; use `none` only when a field is genuinely empty.
    - Prefer one concrete scaffold/tooling/observability change over broad
      apology prose.
    - Ask whether demo generation lagged; if yes, run `devloop-demo` and improve
