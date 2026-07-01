@@ -58,6 +58,22 @@ replacements = {
         "in `OPERATING-LOG.md` or `DEMO-RADAR.md`."
     ),
     "Next Action": f"Next Action\n\nFill the new OPERATING-LOG entry, {next_decision}.",
+    "Do Not Drift": (
+        "Do Not Drift\n\n"
+        "- Do not reintroduce `/realm/tmp/polylogue-dev/archive` as a live database root.\n"
+        "- Do not quote counts without archive root and schema version.\n"
+        "- Do not preserve compatibility endpoints, flags, or DTOs just because removal\n"
+        "  is broader than the current file.\n"
+        "- Stay on the current long-lived branch for ordinary loop work; commit logical,\n"
+        "  proven chunks by path and avoid worktrees unless isolation is actually needed.\n"
+        "- Use compile/test/daemon wait time for ahead work in this checkout. A failed\n"
+        "  proof can be retried after batched fixes; it should not freeze the loop.\n"
+        "- Do not overcorrect into \"demo instead of substrate.\" Demonstrated value is the\n"
+        "  forcing function, but substrate repair is the right slice whenever broken\n"
+        "  archive/query/rendering state would make a demo false or fragile.\n"
+        "- Add slice-specific guardrails deliberately; do not inherit stale guardrails\n"
+        "  from the previous slice."
+    ),
 }
 for heading, body in replacements.items():
     marker = f"## {heading.splitlines()[0]}"

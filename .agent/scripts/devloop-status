@@ -87,6 +87,7 @@ if [ "$format" = "--json" ]; then
   python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$observed_events" "$source_version" "$raw_rows" "$raw_materialization_debt" "$raw_materialization_replayable" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$worktree_gc_json" "$pressure_rows" "$performance_blocked" "$packet_bytes" "$packet_files" "$packet_dirs" "$operating_log_bytes" "$events_bytes" <<'PY'
 import json
 import sys
+from pathlib import Path
 
 repo, current, archive_root, git_branch, git_head, git_tracked_changes, git_untracked_changes, index_version, sessions, messages, observed_events, source_version, raw_rows, raw_materialization_debt, raw_materialization_replayable, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows, worktree_gc_json, pressure_rows, performance_blocked, packet_bytes, packet_files, packet_dirs, operating_log_bytes, events_bytes = sys.argv[1:]
 
@@ -100,6 +101,34 @@ try:
     worktree_gc = json.loads(worktree_gc_json)
 except json.JSONDecodeError:
     worktree_gc = {}
+
+def active_section(text: str, heading: str) -> str | None:
+    marker = f"## {heading}"
+    start = text.find(marker)
+    if start == -1:
+        return None
+    next_start = text.find("\n## ", start + 1)
+    if next_start == -1:
+        next_start = len(text)
+    section = text[start + len(marker):next_start].strip()
+    return section or None
+
+active_loop_path = Path(current) / "ACTIVE-LOOP.md"
+active_loop = {
+    "current_slice": None,
+    "focus": None,
+    "next_action": None,
+}
+if active_loop_path.exists():
+    active_text = active_loop_path.read_text(encoding="utf-8")
+    active_loop["current_slice"] = active_section(active_text, "Current Slice")
+    focus = active_section(active_text, "Current Focus")
+    if focus:
+        active_loop["focus"] = next(
+            (line.strip() for line in focus.splitlines() if line.strip().startswith("Focus: ")),
+            focus.splitlines()[0].strip() if focus.splitlines() else None,
+        )
+    active_loop["next_action"] = active_section(active_text, "Next Action")
 
 print(json.dumps({
     "repo": repo,
@@ -149,6 +178,8 @@ print(json.dumps({
         "live_performance_proof_blocked": performance_blocked == "true",
         "active_heavy_rows": [line for line in pressure_rows.splitlines() if line],
     },
+    "active_loop": active_loop,
+    "next_action": active_loop["next_action"],
 }, indent=2, sort_keys=True))
 PY
   exit 0
@@ -162,6 +193,31 @@ printf 'git: branch=%s head=%s tracked_changes=%s untracked_changes=%s\n' \
   "${git_branch:-unknown}" "${git_head:-unknown}" "$git_tracked_changes" "$git_untracked_changes"
 printf 'agent_packet: bytes=%s files=%s dirs=%s operating_log_bytes=%s events_jsonl_bytes=%s\n' \
   "${packet_bytes:-?}" "${packet_files:-?}" "${packet_dirs:-?}" "${operating_log_bytes:-?}" "${events_bytes:-?}"
+if [ -f "$current/ACTIVE-LOOP.md" ]; then
+  current_slice="$(
+    awk '
+      /^## Current Slice$/ {capture=1; next}
+      /^## / && capture {exit}
+      capture && NF {print; exit}
+    ' "$current/ACTIVE-LOOP.md"
+  )"
+  current_focus="$(
+    awk '
+      /^## Current Focus$/ {capture=1; next}
+      /^## / && capture {exit}
+      capture && /^Focus: / {print; exit}
+    ' "$current/ACTIVE-LOOP.md"
+  )"
+  next_action="$(
+    awk '
+      /^## Next Action$/ {capture=1; next}
+      /^## / && capture {exit}
+      capture && NF {print; exit}
+    ' "$current/ACTIVE-LOOP.md"
+  )"
+  printf 'active_loop: slice=%s %s\n' "${current_slice:-unknown}" "${current_focus:-focus=unknown}"
+  printf 'next_action: %s\n' "${next_action:-unknown}"
+fi
 
 if [ -f "$archive_root/index.db" ]; then
   version="$(sqlite3 "$archive_root/index.db" 'PRAGMA user_version;' 2>/dev/null || true)"

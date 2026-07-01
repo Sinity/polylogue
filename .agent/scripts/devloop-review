@@ -497,10 +497,35 @@ else
   ok "no second dev archive at /realm/tmp/polylogue-dev/archive"
 fi
 
-if ! "$repo/.agent/scripts/devloop-status" --json >/dev/null; then
+status_json="$("$repo/.agent/scripts/devloop-status" --json 2>/dev/null || true)"
+if [ -z "$status_json" ]; then
   warn "devloop-status --json failed"
 else
   ok "devloop-status --json works"
+  if [ -f "$current/ACTIVE-LOOP.md" ]; then
+    if python3 - "$status_json" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+
+data = json.loads(sys.argv[1])
+active_loop = data.get("active_loop") or {}
+if not active_loop.get("current_slice"):
+    raise SystemExit(1)
+if not active_loop.get("focus"):
+    raise SystemExit(1)
+if not active_loop.get("next_action"):
+    raise SystemExit(1)
+if data.get("next_action") != active_loop.get("next_action"):
+    raise SystemExit(1)
+PY
+    then
+      ok "devloop-status reports active slice, focus, and next action"
+    else
+      warn "devloop-status --json omits active loop resume fields"
+    fi
+  fi
 fi
 
 worktree_gc_json="$(devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"
