@@ -21,6 +21,7 @@ class MessageSemanticFacts:
     word_count: int
     is_user: bool
     is_human_authored: bool
+    is_candidate_human_authored: bool
     is_assistant: bool
     is_dialogue: bool
     is_context_dump: bool

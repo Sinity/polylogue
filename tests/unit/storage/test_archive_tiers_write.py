@@ -129,6 +129,7 @@ def test_archive_tiers_writer_materializes_codex_session(tmp_path: Path) -> None
                 provider_message_id="u1",
                 role=Role.USER,
                 text="run focused checks",
+                material_origin=MaterialOrigin.HUMAN_AUTHORED,
                 timestamp="2026-01-01T00:00:01+00:00",
                 position=0,
                 variant_index=0,

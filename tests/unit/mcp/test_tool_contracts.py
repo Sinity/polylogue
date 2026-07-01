@@ -21,13 +21,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from polylogue.archive.message.roles import Role
+from polylogue.archive.message.types import MessageType
 from polylogue.archive.models import Session, SessionSummary
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.archive.semantic.pricing import CostEstimatePayload, CostUsagePayload
 from polylogue.archive.session.neighbor_candidates import NeighborReason, SessionNeighborCandidate
 from polylogue.archive.stats import ArchiveStats
 from polylogue.archive.viewport import read_view_profile_payloads
-from polylogue.core.enums import BlockType, Origin, Provider
+from polylogue.core.enums import BlockType, MaterialOrigin, Origin, Provider
 from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.insights.archive import (
     ArchiveCoverageInsight,
@@ -320,6 +321,47 @@ def _seed_archive(
                 provider_session_id=native_id,
                 title=title,
                 messages=messages,
+            )
+        )
+
+
+def _seed_archive_with_semantic_messages(archive_root: Path) -> str:
+    """Seed one runtime-shaped session with distinct role/type/origin rows."""
+    messages = (
+        ParsedMessage(
+            provider_message_id="semantic-human",
+            role=Role.USER,
+            text="typed human prompt",
+            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="typed human prompt")],
+            message_type=MessageType.MESSAGE,
+            material_origin=MaterialOrigin.HUMAN_AUTHORED,
+        ),
+        ParsedMessage(
+            provider_message_id="semantic-context",
+            role=Role.USER,
+            text="# AGENTS.md instructions for /realm/project/polylogue",
+            blocks=[
+                ParsedContentBlock(type=BlockType.TEXT, text="# AGENTS.md instructions for /realm/project/polylogue")
+            ],
+            message_type=MessageType.CONTEXT,
+            material_origin=MaterialOrigin.RUNTIME_CONTEXT,
+        ),
+        ParsedMessage(
+            provider_message_id="semantic-assistant",
+            role=Role.ASSISTANT,
+            text="assistant answer",
+            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="assistant answer")],
+            message_type=MessageType.MESSAGE,
+            material_origin=MaterialOrigin.ASSISTANT_AUTHORED,
+        ),
+    )
+    with ArchiveStore(archive_root) as archive:
+        return archive.write_parsed(
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="semantic-filters",
+                title="Semantic Filters",
+                messages=list(messages),
             )
         )
 
@@ -767,6 +809,37 @@ class TestGetSessionTool:
             result = invoke_surface(mcp_server._tool_manager._tools["get_messages"].fn, session_id=session_id)
 
         assert json.loads(result)["messages"][0]["text"] == long_text
+
+    @pytest.mark.parametrize(
+        ("kwargs", "expected_texts"),
+        [
+            ({"message_role": "user"}, ["typed human prompt", "# AGENTS.md instructions for /realm/project/polylogue"]),
+            ({"material_origin": "human_authored"}, ["typed human prompt"]),
+            ({"material_origin": "runtime_context"}, ["# AGENTS.md instructions for /realm/project/polylogue"]),
+            ({"message_type": "context"}, ["# AGENTS.md instructions for /realm/project/polylogue"]),
+            ({"message_role": "assistant", "message_type": "message"}, ["assistant answer"]),
+        ],
+    )
+    def test_get_messages_filters_role_type_and_material_origin(
+        self,
+        tmp_path: Path,
+        mcp_server: MCPServerUnderTest,
+        kwargs: dict[str, str],
+        expected_texts: list[str],
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        session_id = _seed_archive_with_semantic_messages(archive_root)
+
+        with _archive_config(archive_root):
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["get_messages"].fn,
+                session_id=session_id,
+                **kwargs,
+            )
+
+        payload = json.loads(result)
+        assert [message["text"] for message in payload["messages"]] == expected_texts
+        assert payload["total"] == len(expected_texts)
 
     def test_get_messages_rejects_unknown_message_type(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:

@@ -365,19 +365,6 @@ class PolylogueConfig:
         return str(self._data.get("health_check_tiers", "fast"))
 
     @property
-    def health_fts_auto_restore(self) -> bool:
-        """Whether the daemon health loop should auto-restore missing FTS triggers (#1229).
-
-        When true, :func:`polylogue.daemon.health._check_fts_trigger_drift_fast`
-        drops/re-creates the six canonical FTS sync triggers and runs the
-        FTS5 ``rebuild`` command in place when drift is detected. The
-        check still emits a WARNING-level alert so the operator is told
-        the recovery happened. When false (default), drift surfaces as
-        CRITICAL with an operator-facing restore command.
-        """
-        return bool(self._data.get("health_fts_auto_restore", False))
-
-    @property
     def health_blob_integrity_sample_size(self) -> int:
         """Bounded blob-integrity sample size for daemon health checks (#1231)."""
         return int(str(self._data.get("health_blob_integrity_sample_size", 100)))
@@ -854,14 +841,6 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         description="Comma-separated health-check tiers.",
     ),
     ConfigInventoryEntry(
-        "health_fts_auto_restore",
-        toml_path="health.fts_auto_restore",
-        env_var="POLYLOGUE_HEALTH_FTS_AUTO_RESTORE",
-        owner_class="resource-policy",
-        reload_behavior="daemon-loop",
-        description="Allow health checks to repair FTS trigger drift automatically.",
-    ),
-    ConfigInventoryEntry(
         "health_blob_integrity_sample_size",
         toml_path="health.blob_integrity_sample_size",
         env_var="POLYLOGUE_HEALTH_BLOB_INTEGRITY_SAMPLE_SIZE",
@@ -917,7 +896,6 @@ _BOOL_CONFIG_KEYS = frozenset(
         "embedding_enabled",
         "force_plain",
         "no_color",
-        "health_fts_auto_restore",
         "notification_email_use_tls",
         "notification_email_use_starttls",
         "observability_enabled",
@@ -1040,7 +1018,6 @@ def _default_config_values() -> dict[str, object]:
         "notification_email_max_per_hour": 12,
         "health_check_interval_s": 300,
         "health_check_tiers": "fast",
-        "health_fts_auto_restore": False,
         "health_blob_integrity_sample_size": 100,
         "health_convergence_debt": {},
         "health_cursor_lag": {},

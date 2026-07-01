@@ -65,8 +65,6 @@ files:
     reason: "#1746 lease/GC tests backdate blob mtime and pending_blob_refs.acquired_at with time.time(); production GC reads file mtime and integer acquired_at, not datetime.now()."
   - path: tests/unit/storage/test_raw_ingest_artifacts.py
     reason: "Raw-ingest test uses now() as opaque acquired_at metadata."
-  - path: tests/unit/daemon/test_fts_trigger_drift.py
-    reason: "#1613 bulk-stage gating tests need a now() seed for live_ingest_attempt.updated_at; production probe reads its own datetime.now() which agrees within the freshness window (120s) by margin (stale-case test uses now()-10min, fresh-case is microseconds apart)."
   - path: tests/integration/test_daemon_resilience.py
     reason: "Daemon resilience integration tests (#1735) measure real elapsed wall-clock for process lifecycle events (SIGKILL delivery, subprocess startup, concurrency timing). frozen_clock cannot substitute for real time when waiting on OS process state."
   - path: tests/integration/test_ingest_pipeline_correctness.py

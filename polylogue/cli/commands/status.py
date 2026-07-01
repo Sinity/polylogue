@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -268,6 +269,14 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "neighbor_candidate_payloads": ("archive_routed", "index", "builds neighbor DTOs from index.db"),
     "parse_file": ("archive_routed", "source", "writes source.db and index.db directly"),
     "post_blackboard_note": ("archive_routed", "user", "writes blackboard notes through user.db"),
+    "postmortem_bundle": ("archive_routed", "index", "compiles postmortem bundles from archive-routed session reads"),
+    "pathology_report": ("archive_routed", "index", "compiles pathology reports from archive-routed projections"),
+    "materialize_pathology_assertions": (
+        "archive_routed",
+        "user",
+        "writes pathology candidate assertions through user.db",
+    ),
+    "portfolio_bundle": ("archive_routed", "index", "builds portfolio bundles from archive-routed session reads"),
     "provider_usage_report": ("archive_routed", "index", "delegates to the provider usage report archive helper"),
     "parse_sources": ("archive_routed", "source", "writes source.db and index.db directly"),
     "query_units": ("archive_routed", "index", "queries terminal archive units from index.db"),
@@ -738,6 +747,123 @@ def _column_exists(conn: Any, table_name: str, column_name: str) -> bool:
     return any(str(row[1]) == column_name for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall())
 
 
+# Live ingest workload is read directly from ops.db so it is visible even when
+# the daemon runs with --no-api (no HTTP /api/status to query). The data already
+# exists in ingest_attempts/ingest_cursor/convergence_debt; this surface derives
+# observed throughput and real backlogs from it rather than inferring an ETA it
+# cannot substantiate.
+_WORKLOAD_THROUGHPUT_WINDOW_MS = 5 * 60 * 1000
+_WORKLOAD_HEARTBEAT_STALE_MS = 90 * 1000
+
+
+def _ops_workload_status(active_root: Path, *, now_ms: int) -> dict[str, Any]:
+    """Derive live ingest-workload state from ops.db (read-only).
+
+    Surfaces in-flight attempts, observed throughput over a recent window,
+    cursor coverage, and convergence/retry debt. Returns ``available: False``
+    when the ops tier or its tables are absent.
+    """
+    ops_db = active_root / "ops.db"
+    if not ops_db.exists():
+        return {"available": False, "reason": "missing_ops_tier"}
+    try:
+        conn = sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True)
+    except sqlite3.Error as exc:
+        return {"available": False, "reason": str(exc)}
+    try:
+        if not _table_exists(conn, "ingest_attempts"):
+            return {"available": False, "reason": "missing_ingest_attempts"}
+
+        running_rows = conn.execute(
+            """
+            SELECT phase, origin, started_at_ms, heartbeat_at_ms,
+                   parsed_raw_count, materialized_count
+            FROM ingest_attempts
+            WHERE status = 'running'
+            ORDER BY started_at_ms DESC
+            """
+        ).fetchall()
+        running: list[dict[str, Any]] = []
+        actively_ingesting = False
+        for row in running_rows:
+            heartbeat = _safe_int(row[3], 0)
+            heartbeat_age_ms = now_ms - heartbeat if heartbeat else None
+            fresh = heartbeat_age_ms is not None and heartbeat_age_ms <= _WORKLOAD_HEARTBEAT_STALE_MS
+            actively_ingesting = actively_ingesting or fresh
+            running.append(
+                {
+                    "phase": row[0],
+                    "origin": row[1],
+                    "age_ms": now_ms - _safe_int(row[2], now_ms),
+                    "heartbeat_age_ms": heartbeat_age_ms,
+                    "heartbeat_fresh": fresh,
+                }
+            )
+
+        window_start = now_ms - _WORKLOAD_THROUGHPUT_WINDOW_MS
+        tput = conn.execute(
+            """
+            SELECT COUNT(*),
+                   COALESCE(SUM(parsed_raw_count), 0),
+                   COALESCE(SUM(materialized_count), 0),
+                   COALESCE(SUM(finished_at_ms - started_at_ms), 0)
+            FROM ingest_attempts
+            WHERE status = 'completed' AND finished_at_ms >= ?
+            """,
+            (window_start,),
+        ).fetchone()
+        window_batches = _safe_int(tput[0], 0) if tput else 0
+        window_files = _safe_int(tput[1], 0) if tput else 0
+        window_materialized = _safe_int(tput[2], 0) if tput else 0
+        window_busy_ms = _safe_int(tput[3], 0) if tput else 0
+        files_per_s = (window_files / (window_busy_ms / 1000.0)) if window_busy_ms > 0 else 0.0
+
+        lifetime = {
+            status: _safe_int(count, 0)
+            for status, count in conn.execute("SELECT status, COUNT(*) FROM ingest_attempts GROUP BY status").fetchall()
+        }
+
+        cursor: dict[str, int] = {}
+        if _table_exists(conn, "ingest_cursor"):
+            cursor = {
+                "tracked": _fast_count(conn, "SELECT COUNT(*) FROM ingest_cursor"),
+                "excluded": _fast_count(conn, "SELECT COUNT(*) FROM ingest_cursor WHERE excluded = 1"),
+                "retry_pending": _fast_count(
+                    conn,
+                    "SELECT COUNT(*) FROM ingest_cursor WHERE failure_count > 0 AND excluded = 0",
+                ),
+            }
+
+        debt: dict[str, int] = {}
+        if _table_exists(conn, "convergence_debt"):
+            debt = {
+                status: _safe_int(count, 0)
+                for status, count in conn.execute(
+                    "SELECT status, COUNT(*) FROM convergence_debt GROUP BY status"
+                ).fetchall()
+            }
+        debt_total = sum(debt.values())
+    finally:
+        conn.close()
+
+    return {
+        "available": True,
+        "actively_ingesting": actively_ingesting,
+        "running_count": len(running),
+        "running": running,
+        "throughput": {
+            "window_minutes": _WORKLOAD_THROUGHPUT_WINDOW_MS // 60000,
+            "batches": window_batches,
+            "files": window_files,
+            "materialized": window_materialized,
+            "files_per_second": round(files_per_s, 2),
+        },
+        "cursor": cursor,
+        "debt": {"total": debt_total, "by_status": debt},
+        "lifetime_attempts": lifetime,
+    }
+
+
 @click.command("status")
 @click.option(
     "--daemon-url",
@@ -974,6 +1100,7 @@ def _show_direct_json(env: AppEnv, *, include_archive_readiness: bool = False) -
         "config_exists": config_path.exists(),
         "config_path": str(config_path),
         "archive_tiers": _archive_tier_status(active_root),
+        "ingest_workload": _ops_workload_status(active_root, now_ms=int(time.time() * 1000)),
         "archive_readiness": archive_readiness,
         "archive_facade_routes": _archive_facade_route_status(),
         "archive_cli_routes": _archive_cli_route_status(),
@@ -1191,6 +1318,56 @@ def _direct_transform_component(archive_readiness: dict[str, Any] | None) -> dic
     ).to_dict()
 
 
+def _render_ingest_workload(env: AppEnv, workload: dict[str, Any]) -> None:
+    """Render live ingest-workload state derived from ops.db."""
+    if not workload.get("available"):
+        return
+    tput = workload.get("throughput") or {}
+    files = int(tput.get("files", 0) or 0)
+    rate = float(tput.get("files_per_second", 0.0) or 0.0)
+    window = int(tput.get("window_minutes", 0) or 0)
+    running = int(workload.get("running_count", 0) or 0)
+    active = bool(workload.get("actively_ingesting"))
+    debt = workload.get("debt") or {}
+    debt_total = int(debt.get("total", 0) or 0)
+    # Nothing live or recent to show — stay quiet.
+    if not active and running == 0 and files == 0 and debt_total == 0:
+        return
+
+    state_color = "green" if active else "yellow" if running else "dim"
+    state_text = "ingesting" if active else "idle (stale running attempt)" if running else "idle"
+    env.ui.console.print(f"  Ingest workload: [{state_color}]{state_text}[/{state_color}]")
+
+    if running:
+        parts: list[str] = []
+        for entry in (workload.get("running") or [])[:3]:
+            phase = entry.get("phase") or "unknown"
+            hb = entry.get("heartbeat_age_ms")
+            parts.append(f"{phase} ({int(hb) // 1000}s ago)" if hb is not None else str(phase))
+        env.ui.console.print(f"    in-flight: {running} attempt(s) — {', '.join(parts)}")
+
+    if files or rate:
+        env.ui.console.print(
+            f"    throughput (last {window}m): {files:,} files, "
+            f"{int(tput.get('batches', 0) or 0)} batches, {rate:.2f} files/s"
+        )
+
+    cursor = workload.get("cursor") or {}
+    if cursor:
+        line = f"    coverage: {int(cursor.get('tracked', 0) or 0):,} files tracked"
+        retry = int(cursor.get("retry_pending", 0) or 0)
+        excluded = int(cursor.get("excluded", 0) or 0)
+        if retry:
+            line += f", {retry} retry-pending"
+        if excluded:
+            line += f", {excluded} excluded"
+        env.ui.console.print(line)
+
+    if debt_total:
+        detail = ", ".join(f"{status}={count}" for status, count in (debt.get("by_status") or {}).items())
+        env.ui.console.print(f"    convergence debt: [yellow]{debt_total}[/yellow] ({detail})")
+
+
 def _render_diagnostic(env: AppEnv, diag: Any) -> None:
     """Render a ``StatusDiagnostic`` with rich tags but no traceback."""
     color = "red" if diag.kind in {"schema_mismatch", "locked_db", "unknown_db_error"} else "yellow"
@@ -1282,10 +1459,19 @@ def _show_direct_status(
         finally:
             conn.close()
 
-        env.ui.console.print("\n[bold]Archive (daemon not running)[/bold]")
+        now_ms = int(time.time() * 1000)
+        workload = (
+            _ops_workload_status(active_db.parent, now_ms=now_ms)
+            if active_db.name == "index.db"
+            else {"available": False}
+        )
+        actively_ingesting = bool(workload.get("actively_ingesting"))
+        header = "Archive (daemon ingesting)" if actively_ingesting else "Archive (daemon not running)"
+        env.ui.console.print(f"\n[bold]{header}[/bold]")
         env.ui.console.print(f"  Database: {active_db.name}")
         if active_db.name == "index.db":
             active_root = active_db.parent
+            _render_ingest_workload(env, workload)
             tiers = _archive_tier_status(active_root)
             present = ", ".join(tier for tier, info in tiers.items() if info["exists"])
             missing = ", ".join(tier for tier, info in tiers.items() if not info["exists"])
@@ -1344,7 +1530,7 @@ def _show_direct_status(
                 _render_diagnostic(env, diag)
                 return
 
-        if not compact:
+        if not compact and not actively_ingesting:
             env.ui.console.print("\n  [dim]Run [bold]polylogued run[/bold] to start the daemon.[/dim]")
     except Exception:
         env.ui.console.print(f"\n[yellow]Archive exists at {archive_root()} but could not be queried.[/yellow]")

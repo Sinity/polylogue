@@ -28,7 +28,7 @@ import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType
+from polylogue.core.enums import BlockType, MaterialOrigin
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.codex import looks_like as _looks_like_impl
 from polylogue.sources.parsers.codex import parse as _parse_impl
@@ -117,6 +117,7 @@ class TestStreamingEnvelopeShape:
         session = _parse(records)
         assert len(session.messages) == 1
         assert session.messages[0].role == Role.ASSISTANT
+        assert session.messages[0].material_origin is MaterialOrigin.ASSISTANT_AUTHORED
         assert session.session_events == []
 
     def test_response_item_non_message_payload_routes_to_events(self) -> None:

@@ -1501,23 +1501,17 @@ Full-text search uses SQLite FTS5:
   include it). Case-insensitive for ASCII. Unicode-aware tokenization.
 - **Content sync**: FTS5 indexes use `content='messages'` to stay in sync with
   the source table. Triggers handle INSERT/UPDATE/DELETE.
-- **Trigger suspension**: During bulk operations, FTS triggers are suspended
-  for performance, then re-enabled and the index rebuilt via
-  `INSERT INTO messages_fts(messages_fts) VALUES('rebuild')`.
-- **Risk**: SIGKILL during trigger suspension leaves FTS out of sync.
-  Mitigation: daemon/CLI startup checks and restores FTS triggers.
-- **Catch-up health signalling** (#1613): the FAST-tier
-  `fts_trigger_drift` health check downgrades from CRITICAL to INFO
-  when triggers are missing inside a fresh in-flight bulk attempt
-  (`live_ingest_attempt.status='running'`, `phase IN
-  ('full_parse','full_worker_wait')`, heartbeat within
-  `_BULK_ATTEMPT_FRESHNESS_S` seconds). The writer dropped the triggers
-  inside its own transaction; `commit_archive_write_effects` will
-  restore them before the commit lands, so other readers never see
-  the dropped state — the only entity that observes "15/15 missing"
-  is the writer's own connection mid-batch. Stale or orphaned
-  in-flight rows (no heartbeat in the freshness window) still escalate
-  to CRITICAL because that signature is identical to the SIGKILL leak.
+- **Trigger suspension (atomic, #1242)**: During bulk operations the writer
+  drops the FTS triggers, bulk-writes, then re-creates the triggers and rebuilds
+  the index (`INSERT INTO messages_fts(messages_fts) VALUES('rebuild')`) — all
+  inside the single ingest transaction (`commit_archive_write_effects`). SQLite
+  DDL is transactional, so the drop/restore is atomic with the commit: the
+  committed state always has triggers, and a SIGKILL mid-batch rolls back to
+  the triggers-present state on the next connection. The dropped-trigger state
+  is therefore only ever observable by the writer's own connection mid-batch and
+  never lands as committed drift. There is no separate FTS-trigger-drift health
+  check or auto-restore loop — that machinery guarded a state nothing can
+  commit (removed; the readiness/freshness check below is the real FTS net).
 - **Query syntax**: FTS5 boolean operators (AND/OR/NOT), phrase search
   (`"exact phrase"`), prefix search (`prefix*`). Column filters are not
   directly exposed; use CLI/MCP filters instead.
@@ -1705,8 +1699,8 @@ Series are derived from existing daemon state tables via
 `open_readonly_connection` — `live_ingest_attempt` (totals by status,
 in-flight gauge, recent-attempt duration min/mean/max), unresolved
 `live_convergence_debt` grouped by stage, `pending_blob_refs` (pending
-count, distinct operations), and the six expected FTS sync triggers
-from `_EXPECTED_FTS_TRIGGERS`. The same scrape also exposes embedding
+count, distinct operations), and the expected FTS sync triggers
+from `active_fts_triggers_sync`. The same scrape also exposes embedding
 backlog counts and the latest `embedding_catchup_runs` progress row so
 semantic-search catch-up is visible in normal daemon dashboards without
 running an operator CLI command. Missing tables degrade to zero samples

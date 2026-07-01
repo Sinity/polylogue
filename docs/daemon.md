@@ -230,12 +230,6 @@ Enabled by default on `127.0.0.1:8765`. Disable with `--no-browser-capture`.
 - `disk_space` — free disk space (warns at 500 MB, critical at 100 MB)
 - `wal_size` — WAL file size (warns at 50 MB, errors at 200 MB)
 - `source_availability` — watch roots exist and are readable
-- `fts_trigger_drift` — checks the three canonical message/block FTS sync
-  triggers (`messages_fts_a{i,d,u}`); critical when
-  any are missing. With `[health] fts_auto_restore = true` (or
-  `POLYLOGUE_HEALTH_FTS_AUTO_RESTORE=1`), the daemon restores triggers
-  and rebuilds the FTS index in place, then emits a WARNING-level
-  recovery alert so the operator is told the self-heal happened.
 
 **Medium** (sub-10s queries):
 - `fts_readiness` — FTS index coverage vs. total messages

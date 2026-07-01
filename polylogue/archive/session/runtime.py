@@ -95,7 +95,11 @@ def _clean_topic_text(value: str | None, *, width: int = _TOPIC_MAX_CHARS) -> st
 def _first_substantive_user_turn(analysis: SessionAnalysis) -> str | None:
     fallback_user_turn: str | None = None
     for message in analysis.facts.message_facts:
-        if not message.is_human_authored:
+        # Accept HUMAN_AUTHORED|UNKNOWN user turns: a genuine unmarked prompt is
+        # now UNKNOWN (not fabricated HUMAN_AUTHORED), but known non-human user
+        # rows (tool results, runtime context/protocol, generated packs) are
+        # still excluded. Topic inference is a heuristic, not an authorship claim.
+        if not message.is_candidate_human_authored:
             continue
         cleaned = _clean_topic_text(message.text)
         if cleaned is None:
@@ -220,7 +224,7 @@ def _terminal_state(
     if last is None:
         return "unknown", 0.1, {}
     text_lower = last.text.lower()
-    if last.is_human_authored:
+    if last.is_candidate_human_authored:
         return "question_left", 0.72, {"message_id": last.message_id}
     if last.is_assistant and any(marker in text_lower for marker in _ERROR_MARKERS):
         return "error_left", 0.7, {"message_id": last.message_id}

@@ -282,16 +282,16 @@ def _message_response_latencies(messages: Sequence[Message]) -> tuple[list[int],
             (
                 candidate
                 for candidate in timestamped[index + 1 :]
-                if candidate.is_human_authored or candidate.is_assistant
+                if candidate.is_candidate_human_authored or candidate.is_assistant
             ),
             None,
         )
         if next_message is None or next_message.timestamp is None or message.timestamp is None:
             continue
         delta_ms = max(int((next_message.timestamp - message.timestamp).total_seconds() * 1000), 0)
-        if message.is_human_authored and next_message.is_assistant:
+        if message.is_candidate_human_authored and next_message.is_assistant:
             agent_response_ms.append(delta_ms)
-        elif message.is_assistant and next_message.is_human_authored and delta_ms <= 1_800_000:
+        elif message.is_assistant and next_message.is_candidate_human_authored and delta_ms <= 1_800_000:
             user_response_ms.append(delta_ms)
     return agent_response_ms, user_response_ms
 

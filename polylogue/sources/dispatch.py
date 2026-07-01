@@ -70,6 +70,25 @@ def _payload_sequence(value: object) -> PayloadSequence | None:
     return payloads
 
 
+def _single_document_record(value: object) -> PayloadRecord | None:
+    """Resolve a single JSON document, unwrapping a one-element sequence.
+
+    Document-style providers (gemini-cli, hermes, antigravity) store one JSON
+    object per file. The full-ingest path passes parsed payloads as a list
+    (``list(_iter_json_stream(...))``), so a one-record file arrives here as a
+    single-element list rather than a bare dict. ``_payload_record`` returns
+    ``None`` for a list, which previously made these branches yield no sessions
+    and marked the file as a permanent parse failure (perpetual retry).
+    """
+    record = _payload_record(value)
+    if record is not None:
+        return record
+    sequence = _payload_sequence(value)
+    if sequence is not None and len(sequence) == 1:
+        return _payload_record(sequence[0])
+    return None
+
+
 def _record_messages(record: PayloadRecord) -> list[JSONValue] | None:
     messages = record.get("messages")
     return messages if isinstance(messages, list) else None
@@ -497,7 +516,7 @@ def _lower_payload_specs(
     if runtime_provider in {Provider.CLAUDE_CODE, Provider.CODEX}:
         return _lower_grouped_payload(runtime_provider, shaped_payload, fallback_id)
     if runtime_provider is Provider.GEMINI_CLI:
-        record = _payload_record(shaped_payload)
+        record = _single_document_record(shaped_payload)
         if record is not None and local_agent.looks_like_gemini_cli(record):
             return [_local_agent_document_spec(runtime_provider, record, fallback_id)]
         return []
@@ -510,12 +529,12 @@ def _lower_payload_specs(
             schema_resolution=schema_resolution,
         )
     if runtime_provider is Provider.HERMES:
-        record = _payload_record(shaped_payload)
+        record = _single_document_record(shaped_payload)
         if record is not None and local_agent.looks_like_hermes(record):
             return [_local_agent_document_spec(runtime_provider, record, fallback_id)]
         return []
     if runtime_provider is Provider.ANTIGRAVITY:
-        record = _payload_record(shaped_payload)
+        record = _single_document_record(shaped_payload)
         if record is not None and (
             antigravity.looks_like_markdown_export(record) or antigravity.looks_like_brain_metadata(record, source_path)
         ):

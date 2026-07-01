@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
+from polylogue.core.enums import BlockType, MaterialOrigin, Role
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.codex import looks_like as _looks_like_impl
 from polylogue.sources.parsers.codex import parse as _parse_impl
@@ -127,7 +128,7 @@ class TestSessionMetadata:
         assert result.parent_session_provider_id is None
         assert result.branch_type is None
 
-    def test_forked_from_id_sets_fork_parent(self) -> None:
+    def test_forked_from_id_sets_unclassified_parent(self) -> None:
         # A user fork / resume records `forked_from_id` on the child's own meta.
         payload = [
             {
@@ -150,7 +151,9 @@ class TestSessionMetadata:
         result = parse(payload, "fallback")
         assert result.provider_session_id == "child-1"
         assert result.parent_session_provider_id == "parent-1"
-        assert result.branch_type == BranchType.FORK
+        # forked_from_id proves a parent but not fork-vs-resume, so the type is
+        # left unclassified rather than over-claiming FORK.
+        assert result.branch_type is None
 
     def test_subagent_thread_spawn_sets_subagent_parent(self) -> None:
         # A spawned subagent records `source.subagent.thread_spawn` in addition
@@ -203,7 +206,9 @@ class TestSessionMetadata:
         ]
         result = parse(payload, "fallback")
         assert result.parent_session_provider_id == "real-parent"
-        assert result.branch_type == BranchType.FORK
+        # Explicit marker wins over the legacy second-meta heuristic; the
+        # relationship type stays unclassified (not FORK) on forked_from_id.
+        assert result.branch_type is None
 
     def test_duplicate_session_meta_id_not_counted_twice(self) -> None:
         payload = [
@@ -247,6 +252,29 @@ class TestMessageParsing:
         assert len(result.messages) == 1
         assert result.messages[0].role == "user"
         assert result.messages[0].text == "What is 2+2?"
+        assert result.messages[0].material_origin is MaterialOrigin.HUMAN_AUTHORED
+
+    def test_contextual_user_message_is_not_human_authored(self) -> None:
+        payload = [
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": "# AGENTS.md instructions for /repo\n\n<INSTRUCTIONS>system context</INSTRUCTIONS>",
+                        }
+                    ],
+                },
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        assert result.messages[0].message_type is MessageType.CONTEXT
+        assert result.messages[0].material_origin is MaterialOrigin.RUNTIME_CONTEXT
 
     def test_direct_message_parsed(self) -> None:
         payload = [
@@ -355,6 +383,82 @@ class TestMessageParsing:
         result = parse(payload, "fallback")
         assert len(result.messages) == 1
         assert result.messages[0].text == "query"
+
+    def test_event_user_message_materializes_when_no_response_duplicate(self) -> None:
+        payload = [
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "user_message",
+                    "client_id": "client-1",
+                    "message": "please inspect the parser",
+                },
+            }
+        ]
+
+        result = parse(payload, "fallback")
+
+        assert len(result.messages) == 1
+        assert result.messages[0].provider_message_id == "client-1"
+        assert result.messages[0].role is Role.USER
+        assert result.messages[0].material_origin is MaterialOrigin.HUMAN_AUTHORED
+
+    def test_event_user_message_dedupes_matching_response_message(self) -> None:
+        payload = [
+            {
+                "type": "event_msg",
+                "payload": {"type": "user_message", "client_id": "client-1", "message": "same prompt"},
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "same prompt"}],
+                },
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        assert len(result.messages) == 1
+        assert result.messages[0].text == "same prompt"
+        assert result.messages[0].material_origin is MaterialOrigin.HUMAN_AUTHORED
+
+    def test_custom_tool_call_and_output_materialize_as_action_pair(self) -> None:
+        payload = [
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call",
+                    "id": "ctc-1",
+                    "call_id": "call-custom",
+                    "name": "apply_patch",
+                    "input": "*** Begin Patch\n*** End Patch",
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call-custom",
+                    "output": "patch applied",
+                },
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        assert len(result.messages) == 2
+        use = result.messages[0].blocks[0]
+        output = result.messages[1].blocks[0]
+        assert use.type is BlockType.TOOL_USE
+        assert use.tool_name == "apply_patch"
+        assert use.tool_id == "call-custom"
+        assert use.tool_input == {"arguments": "*** Begin Patch\n*** End Patch"}
+        assert output.type is BlockType.TOOL_RESULT
+        assert output.tool_id == "call-custom"
+        assert output.text == "patch applied"
 
     def test_messages_do_not_keep_raw_provider_meta(self) -> None:
         payload = [

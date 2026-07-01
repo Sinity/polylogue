@@ -39,6 +39,11 @@ def _real_path(value: object) -> Path | None:
     return value if isinstance(value, Path) else None
 
 
+def _filter_value(value: object) -> str:
+    raw = getattr(value, "value", value)
+    return str(raw)
+
+
 class ArchiveQueryFilters(TypedDict):
     origin: str | None
     origins: tuple[str, ...]
@@ -426,14 +431,17 @@ def archive_messages_payload(
     """Build the generic MCP message-list envelope from an archive session."""
     from polylogue.mcp.payloads import MCPMessagesListPayload
 
-    role_filter = frozenset(roles)
+    role_filter = frozenset(_filter_value(role) for role in roles)
+    message_type_filter = _filter_value(message_type) if message_type is not None else None
     material_origin_filter = frozenset(material_origins)
     messages = [
         projected
         for message in session.messages
-        for message_origin in (str(getattr(message.material_origin, "value", message.material_origin)),)
-        if (not role_filter or message.role in role_filter)
-        and (message_type is None or message.message_type == message_type)
+        for message_role in (_filter_value(message.role),)
+        for message_type_value in (_filter_value(message.message_type),)
+        for message_origin in (_filter_value(message.material_origin),)
+        if (not role_filter or message_role in role_filter)
+        and (message_type_filter is None or message_type_value == message_type_filter)
         and (not material_origin_filter or message_origin in material_origin_filter)
         for projected in (_project_archive_message(message, content_projection),)
         if projected is not None

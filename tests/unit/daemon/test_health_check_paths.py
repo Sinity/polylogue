@@ -40,7 +40,6 @@ from polylogue.daemon.health import (
     _check_disk_space_fast,
     _check_embedding_coverage_expensive,
     _check_fts_readiness_medium,
-    _check_fts_trigger_drift_fast,
     _check_insight_freshness_medium,
     _check_raw_failures_medium,
     _check_repeated_stage_failures_medium,
@@ -361,22 +360,6 @@ def test_fts_readiness_counts_docsize_not_virtual_table(
 
     assert alert.severity == HealthSeverity.OK
     assert any("messages_fts_docsize" in query for query in queries)
-
-
-def test_fts_trigger_drift_checks_archive_blocks_triggers(
-    workspace_env: dict[str, Path],
-) -> None:
-    dbf = index_db_path()
-    dbf.parent.mkdir(parents=True, exist_ok=True)
-    initialize_archive_database(dbf, ArchiveTier.INDEX)
-    with sqlite3.connect(dbf) as conn:
-        conn.execute("DROP TRIGGER messages_fts_ad")
-        conn.commit()
-
-    alert = _check_fts_trigger_drift_fast()
-
-    assert alert.severity == HealthSeverity.CRITICAL
-    assert "messages_fts_ad" in alert.message
 
 
 def test_fts_readiness_does_not_accept_stats_when_messages_drift(
