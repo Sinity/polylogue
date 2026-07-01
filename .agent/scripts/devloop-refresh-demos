@@ -3,10 +3,23 @@ set -euo pipefail
 
 repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
 demo_root="${POLYLOGUE_DEMO_ROOT:-$repo/.agent/demos}"
+mode="write"
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+Usage: .agent/scripts/devloop-refresh-demos [--check]
+
+Refresh or verify the current-curated .agent/demos indexes:
+MANIFEST.readable.json, SUMMARY_INDEX.json, and CURATED_CATALOG.md.
+EOF
+  exit 0
+fi
+if [ "${1:-}" = "--check" ]; then
+  mode="check"
+fi
 
 mkdir -p "$demo_root"
 
-python3 - "$demo_root" <<'PY'
+python3 - "$demo_root" "$mode" <<'PY'
 from __future__ import annotations
 
 import json
@@ -16,6 +29,7 @@ import sys
 from pathlib import Path
 
 root = Path(sys.argv[1]).resolve()
+mode = sys.argv[2]
 root.mkdir(parents=True, exist_ok=True)
 
 ignored_dirs = {".git", "__pycache__"}
@@ -125,8 +139,28 @@ else:
     catalog_lines.append("No demo entries found.")
     catalog_lines.append("")
 
-(root / "MANIFEST.readable.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-(root / "SUMMARY_INDEX.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-(root / "CURATED_CATALOG.md").write_text("\n".join(catalog_lines), encoding="utf-8")
-print(f"refreshed {root} ({len(records)} demo entries, {len(files)} files)")
+outputs = {
+    root / "MANIFEST.readable.json": json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+    root / "SUMMARY_INDEX.json": json.dumps(summary, indent=2, sort_keys=True) + "\n",
+    root / "CURATED_CATALOG.md": "\n".join(catalog_lines),
+}
+
+if mode == "check":
+    drifted = []
+    for path, expected in outputs.items():
+        if not path.exists():
+            drifted.append(f"missing {path.relative_to(root)}")
+            continue
+        actual = path.read_text(encoding="utf-8")
+        if actual != expected:
+            drifted.append(f"out-of-sync {path.relative_to(root)}")
+    if drifted:
+        for item in drifted:
+            print(item, file=sys.stderr)
+        raise SystemExit(1)
+    print(f"demo indexes sync OK: {root} ({len(records)} demo entries, {len(files)} files)")
+else:
+    for path, content in outputs.items():
+        path.write_text(content, encoding="utf-8")
+    print(f"refreshed {root} ({len(records)} demo entries, {len(files)} files)")
 PY

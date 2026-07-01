@@ -310,10 +310,11 @@ else
   ok "no handoff mirror"
 fi
 
-if [ -f "$repo/.agent/demos/MANIFEST.readable.json" ] && [ -f "$repo/.agent/demos/SUMMARY_INDEX.json" ]; then
-  ok "demo shelf indexes present"
+if demo_check_output="$("$repo/.agent/scripts/devloop-refresh-demos" --check 2>&1)"; then
+  ok "$demo_check_output"
 else
-  warn "demo shelf indexes missing; run .agent/scripts/devloop-refresh-demos"
+  warn "demo shelf indexes are stale; run .agent/scripts/devloop-refresh-demos"
+  printf '%s\n' "$demo_check_output"
 fi
 
 if [ -f "$current/ACTIVE-LOOP.md" ]; then
