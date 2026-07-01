@@ -250,6 +250,8 @@ MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL = """
         FROM insight_materialization im
         WHERE im.session_id = c.session_id
           AND im.insight_type = ?
+          AND im.materializer_version = ?
+          AND ABS(COALESCE(im.source_sort_key_ms, 0) - COALESCE(c.sort_key_ms, 0)) = 0
     )
 """
 EXPECTED_WORK_EVENT_COUNT_SQL = "SELECT COALESCE(SUM(work_event_count), 0) FROM session_profiles"
@@ -491,7 +493,7 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
         count_key="missing_session_profile_materialization_count",
         table_key="insight_materialization",
         sql=MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL,
-        params=("session_profile",),
+        params=("session_profile", SESSION_INSIGHT_MATERIALIZER_VERSION),
         fallback_count_key="total_sessions",
     ),
     SessionInsightCountDescriptor(
@@ -517,7 +519,7 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
         count_key="missing_latency_materialization_count",
         table_key="insight_materialization",
         sql=MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL,
-        params=("latency",),
+        params=("latency", SESSION_INSIGHT_MATERIALIZER_VERSION),
         fallback_count_key="total_sessions",
     ),
     SessionInsightCountDescriptor(
@@ -535,7 +537,7 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
         count_key="missing_work_event_materialization_count",
         table_key="insight_materialization",
         sql=MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL,
-        params=("work_events",),
+        params=("work_events", SESSION_INSIGHT_MATERIALIZER_VERSION),
         fallback_count_key="total_sessions",
     ),
     SessionInsightCountDescriptor(
@@ -547,7 +549,7 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
         count_key="missing_phase_materialization_count",
         table_key="insight_materialization",
         sql=MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL,
-        params=("phases",),
+        params=("phases", SESSION_INSIGHT_MATERIALIZER_VERSION),
         fallback_count_key="total_sessions",
     ),
     SessionInsightCountDescriptor(
@@ -580,28 +582,28 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
         count_key="missing_run_materialization_count",
         table_key="insight_materialization",
         sql=MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL,
-        params=("runs",),
+        params=("runs", SESSION_INSIGHT_MATERIALIZER_VERSION),
         fallback_count_key="total_sessions",
     ),
     SessionInsightCountDescriptor(
         count_key="missing_observed_event_materialization_count",
         table_key="insight_materialization",
         sql=MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL,
-        params=("observed_events",),
+        params=("observed_events", SESSION_INSIGHT_MATERIALIZER_VERSION),
         fallback_count_key="total_sessions",
     ),
     SessionInsightCountDescriptor(
         count_key="missing_context_snapshot_materialization_count",
         table_key="insight_materialization",
         sql=MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL,
-        params=("context_snapshots",),
+        params=("context_snapshots", SESSION_INSIGHT_MATERIALIZER_VERSION),
         fallback_count_key="total_sessions",
     ),
     SessionInsightCountDescriptor(
         count_key="missing_thread_materialization_count",
         table_key="insight_materialization",
         sql=MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL,
-        params=("thread",),
+        params=("thread", SESSION_INSIGHT_MATERIALIZER_VERSION),
         fallback_count_key="total_sessions",
     ),
     SessionInsightCountDescriptor(

@@ -18,6 +18,7 @@ from polylogue.storage.insights.session.refresh import (
     _refresh_thread_roots_async,
 )
 from polylogue.storage.insights.session.repair_assessment import assess_session_insight_repairs
+from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
@@ -900,9 +901,9 @@ def test_full_rebuild_restores_thread_spine_membership_and_markers(tmp_path: Pat
     child_id = _sid("conv-child", "claude-code-session")
     with open_connection(db_path) as conn:
         thread_markers = {
-            str(row["session_id"])
+            str(row["session_id"]): int(row["materializer_version"])
             for row in conn.execute(
-                "SELECT session_id FROM insight_materialization WHERE insight_type = 'thread'"
+                "SELECT session_id, materializer_version FROM insight_materialization WHERE insight_type = 'thread'"
             ).fetchall()
         }
         members = {
@@ -918,7 +919,10 @@ def test_full_rebuild_restores_thread_spine_membership_and_markers(tmp_path: Pat
         ).fetchone()["created_at_ms"]
 
     # (a) continuation member carries its own 'thread' marker, not only the root.
-    assert thread_markers == {root_id, child_id}
+    assert thread_markers == {
+        root_id: SESSION_INSIGHT_MATERIALIZER_VERSION,
+        child_id: SESSION_INSIGHT_MATERIALIZER_VERSION,
+    }
     # (b) membership join repopulated and created_at_ms re-derived (not zeroed).
     assert members == {root_id, child_id}
     assert created_at_ms > 0

@@ -291,6 +291,17 @@ def _session_insight_requires_archive_wide_rebuild(status: object) -> bool:
             "orphan_latency_profile_row_count",
             "orphan_work_event_inference_count",
             "orphan_phase_inference_count",
+            "stale_day_summary_count",
+        )
+    )
+
+
+def _session_insight_aggregate_debt_count(status: object) -> int:
+    return sum(
+        int(getattr(status, attr, 0) or 0)
+        for attr in (
+            "missing_thread_materialization_count",
+            "stale_thread_count",
             "orphan_thread_count",
             "stale_tag_rollup_count",
             "stale_day_summary_count",
@@ -314,9 +325,12 @@ def _targeted_session_insight_rebuild_ids(
             FROM insight_materialization AS m
             WHERE m.insight_type = ?
               AND m.session_id = s.session_id
+              AND m.materializer_version = ?
+              AND ABS(COALESCE(m.source_sort_key_ms, 0) - COALESCE(s.sort_key_ms, 0)) = 0
         )
         """
         for _insight_type in SESSION_INSIGHT_MATERIALIZATION_TYPES
+        if _insight_type != "thread"
     )
     materializer_version = _session_insight_materializer_version()
     rows = conn.execute(
@@ -367,7 +381,12 @@ def _targeted_session_insight_rebuild_ids(
         (
             materializer_version,
             materializer_version,
-            *SESSION_INSIGHT_MATERIALIZATION_TYPES,
+            *(
+                value
+                for insight_type in SESSION_INSIGHT_MATERIALIZATION_TYPES
+                if insight_type != "thread"
+                for value in (insight_type, materializer_version)
+            ),
         ),
     ).fetchall()
     return tuple(str(row["session_id"] if isinstance(row, sqlite3.Row) else row[0]) for row in rows)
@@ -1062,6 +1081,7 @@ def repair_session_insights(
     """
     from polylogue.api.archive import _rebuild_archive_session_insights
     from polylogue.paths import active_index_db_path
+    from polylogue.storage.insights.session.rebuild import refresh_session_insight_aggregates_sync
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     try:
@@ -1069,6 +1089,7 @@ def repair_session_insights(
         with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
             status = archive.session_insight_status()
             assessment = assess_session_insight_repairs(status)
+            aggregate_debt = _session_insight_aggregate_debt_count(status)
             targeted_session_ids = (
                 None
                 if session_ids is not None or assessment.row_debt == 0
@@ -1084,13 +1105,15 @@ def repair_session_insights(
                         else f"Would: rebuild session insights for {pending:,} scoped session(s)"
                     )
                 elif targeted_session_ids is not None:
-                    pending = len(targeted_session_ids)
+                    pending = len(targeted_session_ids) + aggregate_debt
                     detail = (
                         "Would: session insights already ready"
                         if pending == 0
                         else (
                             "Would: rebuild session insights for "
-                            f"{pending:,} candidate session(s) to repair {assessment.row_debt:,} debt row(s)"
+                            f"{len(targeted_session_ids):,} candidate session(s)"
+                            f" and refresh {aggregate_debt:,} aggregate/thread-materialization debt row(s)"
+                            f" to repair {assessment.row_debt:,} total debt row(s)"
                         )
                     )
                 elif assessment.row_debt == 0:
@@ -1125,13 +1148,12 @@ def repair_session_insights(
             )
             rebuilt_count = rebuilt.total()
             refreshed = archive.session_insight_status()
-            if session_ids is None and assess_session_insight_repairs(refreshed).row_debt > 0:
-                rebuilt = _rebuild_archive_session_insights(
-                    archive,
-                    session_ids=None,
+            if session_ids is None and _session_insight_aggregate_debt_count(refreshed) > 0:
+                aggregate_counts = refresh_session_insight_aggregates_sync(
+                    archive._conn,
                     progress_callback=progress_callback,
                 )
-                rebuilt_count += rebuilt.total()
+                rebuilt_count += aggregate_counts.total()
                 refreshed = archive.session_insight_status()
             # A narrowed rebuild only attests its own slice; do not
             # demand global readiness for a scope-filtered call.

@@ -372,6 +372,12 @@ def test_status_tracks_run_projection_materialization_ledger() -> None:
 
         ready = session_insight_status_sync(conn)
         conn.execute("DELETE FROM insight_materialization WHERE insight_type = 'runs'")
+        missing = session_insight_status_sync(conn)
+        conn.execute(
+            "INSERT INTO insight_materialization (insight_type, session_id, materializer_version, source_sort_key_ms) "
+            "VALUES ('runs', 'ready', ?, 1000)",
+            (SESSION_INSIGHT_MATERIALIZER_VERSION - 1,),
+        )
         stale = session_insight_status_sync(conn)
 
     assert ready.run_count == 1
@@ -380,6 +386,8 @@ def test_status_tracks_run_projection_materialization_ledger() -> None:
     assert ready.run_rows_ready is True
     assert ready.observed_event_rows_ready is True
     assert ready.context_snapshot_rows_ready is True
+    assert missing.missing_run_materialization_count == 1
+    assert missing.run_rows_ready is False
     assert stale.missing_run_materialization_count == 1
     assert stale.run_rows_ready is False
 

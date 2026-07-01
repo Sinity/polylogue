@@ -831,7 +831,12 @@ def test_repair_session_insights_uses_candidate_session_ids(monkeypatch: pytest.
         );
         CREATE TABLE session_work_events (session_id TEXT);
         CREATE TABLE session_phases (session_id TEXT);
-        CREATE TABLE insight_materialization (insight_type TEXT, session_id TEXT);
+        CREATE TABLE insight_materialization (
+            insight_type TEXT,
+            session_id TEXT,
+            materializer_version INTEGER,
+            source_sort_key_ms INTEGER
+        );
         """
     )
     conn.executemany(
@@ -855,16 +860,20 @@ def test_repair_session_insights_uses_candidate_session_ids(monkeypatch: pytest.
         (repair_mod._session_insight_materializer_version(),),
     )
     conn.executemany(
-        "INSERT INTO insight_materialization(insight_type, session_id) VALUES (?, 'ready')",
+        """
+        INSERT INTO insight_materialization(
+            insight_type, session_id, materializer_version, source_sort_key_ms
+        ) VALUES (?, 'ready', ?, 1000)
+        """,
         (
-            ("session_profile",),
-            ("latency",),
-            ("work_events",),
-            ("phases",),
-            ("thread",),
-            ("runs",),
-            ("observed_events",),
-            ("context_snapshots",),
+            ("session_profile", repair_mod._session_insight_materializer_version()),
+            ("latency", repair_mod._session_insight_materializer_version()),
+            ("work_events", repair_mod._session_insight_materializer_version()),
+            ("phases", repair_mod._session_insight_materializer_version()),
+            ("thread", repair_mod._session_insight_materializer_version()),
+            ("runs", repair_mod._session_insight_materializer_version()),
+            ("observed_events", repair_mod._session_insight_materializer_version()),
+            ("context_snapshots", repair_mod._session_insight_materializer_version()),
         ),
     )
 
@@ -914,6 +923,128 @@ def test_repair_session_insights_uses_candidate_session_ids(monkeypatch: pytest.
     assert result.success is True
     assert result.repaired_count == 1
     assert calls == [("missing",)]
+
+
+def test_repair_session_insights_refreshes_stale_thread_materialization_as_aggregate_debt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE sessions (session_id TEXT PRIMARY KEY, sort_key_ms REAL);
+        CREATE TABLE session_profiles (
+            session_id TEXT PRIMARY KEY,
+            materializer_version INTEGER,
+            source_sort_key REAL,
+            work_event_count INTEGER,
+            phase_count INTEGER
+        );
+        CREATE TABLE session_latency_profiles (
+            session_id TEXT PRIMARY KEY,
+            materializer_version INTEGER,
+            source_sort_key REAL
+        );
+        CREATE TABLE session_work_events (session_id TEXT);
+        CREATE TABLE session_phases (session_id TEXT);
+        CREATE TABLE insight_materialization (
+            insight_type TEXT,
+            session_id TEXT,
+            materializer_version INTEGER,
+            source_sort_key_ms INTEGER
+        );
+        """
+    )
+    conn.execute("INSERT INTO sessions(session_id, sort_key_ms) VALUES ('stale-thread-marker', 1000)")
+    current_version = repair_mod._session_insight_materializer_version()
+    conn.execute(
+        """
+        INSERT INTO session_profiles(
+            session_id, materializer_version, source_sort_key, work_event_count, phase_count
+        )
+        VALUES ('stale-thread-marker', ?, 1.0, 0, 0)
+        """,
+        (current_version,),
+    )
+    conn.execute(
+        """
+        INSERT INTO session_latency_profiles(session_id, materializer_version, source_sort_key)
+        VALUES ('stale-thread-marker', ?, 1.0)
+        """,
+        (current_version,),
+    )
+    conn.executemany(
+        """
+        INSERT INTO insight_materialization(
+            insight_type, session_id, materializer_version, source_sort_key_ms
+        ) VALUES (?, 'stale-thread-marker', ?, 1000)
+        """,
+        (
+            ("session_profile", current_version),
+            ("latency", current_version),
+            ("work_events", current_version),
+            ("phases", current_version),
+            ("runs", current_version),
+            ("observed_events", current_version),
+            ("context_snapshots", current_version),
+            ("thread", current_version - 1),
+        ),
+    )
+
+    calls: list[tuple[str, tuple[str, ...] | None]] = []
+
+    class FakeArchive:
+        _conn = conn
+
+        def session_insight_status(self) -> SessionInsightStatusSnapshot:
+            return next(statuses)
+
+        def __enter__(self) -> FakeArchive:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+    stale_status = SessionInsightStatusSnapshot(
+        total_sessions=1,
+        profile_rows_ready=True,
+        latency_profile_rows_ready=True,
+        work_event_inference_rows_ready=True,
+        work_event_inference_fts_ready=True,
+        phase_inference_rows_ready=True,
+        threads_ready=False,
+        threads_fts_ready=True,
+        tag_rollups_ready=True,
+        missing_thread_materialization_count=1,
+    )
+    statuses = iter((stale_status, stale_status, _ready_session_insight_status()))
+
+    def fake_rebuild(_archive: FakeArchive, *, session_ids: tuple[str, ...] | None, **_kwargs: object) -> Any:
+        calls.append(("rebuild", session_ids))
+        return SessionInsightCounts()
+
+    def fake_aggregate_refresh(_conn: sqlite3.Connection, **_kwargs: object) -> SessionInsightCounts:
+        calls.append(("aggregate", None))
+        return SessionInsightCounts(threads=1)
+
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
+        lambda _archive_root, read_only=False: FakeArchive(),
+    )
+    monkeypatch.setattr(
+        "polylogue.api.archive._rebuild_archive_session_insights",
+        fake_rebuild,
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.insights.session.rebuild.refresh_session_insight_aggregates_sync",
+        fake_aggregate_refresh,
+    )
+
+    result = repair_mod.repair_session_insights(_config(tmp_path), dry_run=False)
+
+    assert result.success is True
+    assert result.repaired_count == 1
+    assert calls == [("rebuild", ()), ("aggregate", None)]
 
 
 def test_repair_assessment_counts_missing_run_projection_materialization() -> None:
