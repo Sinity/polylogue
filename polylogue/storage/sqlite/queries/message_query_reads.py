@@ -7,7 +7,7 @@ from typing import Literal
 
 import aiosqlite
 
-from polylogue.archive.message.roles import MessageRoleFilter, Role, message_role_sql_values
+from polylogue.archive.message.roles import MessageRoleFilter, message_role_sql_values
 from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.core.enums import MaterialOrigin
 from polylogue.storage.runtime import MessageRecord
@@ -37,6 +37,7 @@ _MESSAGE_RECORD_SELECT = """
     m.has_tool_use,
     m.has_thinking,
     m.has_paste,
+    m.paste_boundary AS paste_boundary_state,
     m.message_type,
     m.material_origin,
     m.model_name,
@@ -438,7 +439,6 @@ async def iter_messages(
     session_id: str,
     *,
     chunk_size: int = 100,
-    dialogue_only: bool = False,
     message_roles: MessageRoleFilter = (),
     limit: int | None = None,
 ) -> AsyncIterator[MessageRecord]:
@@ -456,7 +456,7 @@ async def iter_messages(
     """
     session_id = await _resolve_session_id(conn, session_id)
     yielded = 0
-    effective_roles = message_roles or ((Role.USER, Role.ASSISTANT) if dialogue_only else ())
+    effective_roles = message_roles
 
     # Keyset streaming is per-session, but a prefix-sharing child's logical
     # transcript spans its parent, so the cursor cannot stream across the

@@ -26,7 +26,7 @@ next: \`polylogue --latest\`  ·  \`polylogue --provider claude-code list\`
                cmd={<><Mono>polylogue</Mono> <span className="cli-q">"fts trigger"</span> <Mono>--repo polylogue --since "last week" list</Mono></>} />
         <Table headers={['id','provider','repo','msgs','tok','since','title']}
                rows={[
-                 ['f0a2bb73','claude-code','polylogue', '53', '31.9k', '4d ago', 'fts trigger drift on UPDATE OF title'],
+                 ['f0a2bb73','claude-code','polylogue', '53', '31.9k', '4d ago', 'fts freshness drift on UPDATE OF title'],
                  ['8d821a4f','claude-code','polylogue', '38', '24.2k', '2d ago', 'query descriptor cleanup — strict validators'],
                  ['904ee18f','claude-code','polylogue', '24', '11.4k', '4d ago', 'doctor --target browser-capture'],
                ]} />
@@ -39,7 +39,7 @@ next: \`polylogue --latest\`  ·  \`polylogue --provider claude-code list\`
    "title":"polylogued daemon split: live + receiver + serve",
    "has":["tool_use","thinking","paste"], "since":"2026-04-30T14:02Z"},
   {"id":"f0a2bb73","provider":"claude-code","msgs":53,"tokens":31900,
-   "title":"fts trigger drift on UPDATE OF title",
+   "title":"fts freshness drift on UPDATE OF title",
    "has":["tool_use","thinking"], "since":"2026-04-27T22:01Z"},
   {"id":"8d821a4f","provider":"claude-code","msgs":38,"tokens":24180,
    "title":"query descriptor cleanup — strict validators",

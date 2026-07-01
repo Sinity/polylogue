@@ -159,7 +159,6 @@ class StreamSemanticFacts:
     thinking_messages: int
     tool_messages: int
     branch_messages: int
-    dialogue_only: bool
     message_roles: tuple[str, ...]
     message_limit: int | None
 
@@ -178,7 +177,6 @@ class StreamSemanticFacts:
                 "thinking_messages": self.thinking_messages,
                 "tool_messages": self.tool_messages,
                 "branch_messages": self.branch_messages,
-                "dialogue_only": self.dialogue_only,
                 "message_roles": list(self.message_roles),
                 "message_limit": self.message_limit,
             }

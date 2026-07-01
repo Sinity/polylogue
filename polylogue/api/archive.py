@@ -1086,6 +1086,7 @@ def _archive_message_to_domain(message: ArchiveMessageRow, *, provider: Provider
         has_tool_use=message.has_tool_use,
         has_thinking=message.has_thinking,
         has_paste=message.has_paste,
+        paste_boundary_state=message.paste_boundary_state,
         duration_ms=message.duration_ms,
         branch_index=message.variant_index,
         parent_id=message.parent_message_id,
@@ -1520,7 +1521,6 @@ class _ArchiveNeighborRuntime:
         self,
         session_id: str,
         *,
-        dialogue_only: bool = False,
         message_roles: MessageRoleFilter = (),
         material_origin: tuple[MaterialOrigin, ...] = (),
         limit: int | None = None,
@@ -1531,8 +1531,6 @@ class _ArchiveNeighborRuntime:
                 return
             count = 0
             for message in session.messages:
-                if dialogue_only and message.role not in {Role.USER, Role.ASSISTANT}:
-                    continue
                 if message_roles and message.role not in message_roles:
                     continue
                 if material_origin and message.material_origin not in material_origin:

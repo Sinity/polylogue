@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 from polylogue.daemon.web_shell_attachments import ATTACHMENT_CSS, ATTACHMENT_JS
-from polylogue.daemon.web_shell_bulk import (
-    BULK_CSS,
-    BULK_JS,
-    BULK_PREVIEW_HTML,
-    BULK_TOOLBAR_HTML,
-)
 from polylogue.daemon.web_shell_lineage import LINEAGE_JS
 from polylogue.daemon.web_shell_paste import PASTE_CSS, PASTE_JS
 from polylogue.daemon.web_shell_provenance import PROVENANCE_JS
 from polylogue.daemon.web_shell_reader import READER_CSS, READER_HELP_HTML, READER_JS
 from polylogue.daemon.web_shell_realtime import REALTIME_JS
+from polylogue.daemon.web_shell_selection import (
+    SELECTION_CSS,
+    SELECTION_JS,
+    SELECTION_PREVIEW_HTML,
+    SELECTION_TOOLBAR_HTML,
+)
 from polylogue.daemon.web_shell_similar import SIMILAR_JS
 from polylogue.daemon.web_shell_workspace import WORKSPACE_CSS, WORKSPACE_HTML, WORKSPACE_JS
 
@@ -124,7 +124,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
 .conv-item .conv-meta .flag.think { color: var(--role-thinking); }
 .conv-item .conv-meta .flag.mark { color: var(--warn); border: 1px solid var(--border); }
 .provider-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 3px; flex-shrink: 0; }
-__BULK_CSS__
+__SELECTION_CSS__
 .sidebar-state { padding: 16px 12px; color: var(--text-dim); font-size: var(--small); text-align: center; line-height: 1.6; }
 .sidebar-state .state-icon { font-size: 24px; margin-bottom: 6px; opacity: 0.4; }
 
@@ -283,7 +283,7 @@ __ATTACHMENT_CSS__
       <button class="help-btn" id="help-btn" title="Keyboard shortcuts (?)">?</button>
     </div>
     <div id="facet-bar"></div>
-__BULK_TOOLBAR_HTML__
+__SELECTION_TOOLBAR_HTML__
     <div id="conv-list"><div class="sidebar-state"><div class="state-icon">&mdash;</div>Loading...</div></div>
   </div>
   <div id="main">
@@ -341,7 +341,7 @@ __READER_HELP_HTML__
   </div>
 </div>
 
-__BULK_PREVIEW_HTML__
+__SELECTION_PREVIEW_HTML__
 
 <script>
 var API = '';
@@ -352,11 +352,11 @@ var state = {
   facetError: '',
   marks: {}, annotations: {}, savedViews: [], workspaces: [], userStateError: '',
   mode: 'single', stackPayload: null, comparePayload: null,
-  // Bulk selection state (#1119). selection is a Set-like object keyed by
-  // session_id. lastBulkResult holds the per-session envelope from
-  // the most recent bulk operation: {succeeded:[ids], failed:[{id,reason}],
+  // Selection set state (#1119). selection is a Set-like object keyed by
+  // session_id. lastSelectionResult holds the per-session envelope from
+  // the most recent selection operation: {succeeded:[ids], failed:[{id,reason}],
   // skipped:[{id,reason}], dryRun:bool, action:string}.
-  bulkSelection: {}, lastBulkResult: null, bulkPending: null,
+  selectionSet: {}, lastSelectionResult: null, selectionPending: null,
   // Cost panel cache (#1122). Keyed by session_id; populated on demand
   // when the Cost inspector tab is opened. ``undefined`` means "not loaded
   // yet", null/{error} means "fetch failed".
@@ -1061,7 +1061,7 @@ function renderSessions() {
   }
   el.innerHTML = items.map(function(c) {
     var sel = state.selected && state.selected.id === c.id ? ' selected' : '';
-    var bulkSel = isBulkSelected(c.id) ? ' bulk-selected' : '';
+    var selectionSel = isSelectionSelected(c.id) ? ' selection-selected' : '';
     var title = esc((c.title || 'Untitled').substring(0, 100));
     var date = c.created_at ? new Date(c.created_at).toLocaleDateString() : '';
     var p = c.origin || 'unknown';
@@ -1076,10 +1076,10 @@ function renderSessions() {
     if (hasMark(c.id, 'pin')) flagsHtml += '<span class="flag mark" title="Pinned">P</span>';
     if (hasMark(c.id, 'archive')) flagsHtml += '<span class="flag mark" title="Archived">A</span>';
     var repoHtml = c.repo ? '<span class="chip" style="font-size:10px;padding:0 4px">' + esc(c.repo.split('/').pop()) + '</span>' : '';
-    var checked = isBulkSelected(c.id) ? ' checked' : '';
-    return '<div class="conv-item' + sel + bulkSel + '" data-id="' + escAttr(c.id) + '">'
+    var checked = isSelectionSelected(c.id) ? ' checked' : '';
+    return '<div class="conv-item' + sel + selectionSel + '" data-id="' + escAttr(c.id) + '">'
       + '<div class="conv-row">'
-      + '<input type="checkbox" class="bulk-check" data-bulk-id="' + escAttr(c.id) + '" aria-label="Select session"' + checked + '>'
+      + '<input type="checkbox" class="selection-check" data-selection-id="' + escAttr(c.id) + '" aria-label="Select session"' + checked + '>'
       + '<div class="conv-body" onclick="selectSession(\'' + escAttr(c.id) + '\')">'
       + '<div class="conv-title">' + title + '</div>'
       + '<div class="conv-meta">'
@@ -1090,10 +1090,10 @@ function renderSessions() {
       + flagsHtml + repoHtml
       + '</div></div></div></div>';
   }).join('');
-  renderBulkToolbar();
+  renderSelectionToolbar();
 }
 
-__BULK_JS__
+__SELECTION_JS__
 
 function renderFacets() {
   var f = state.facets;
@@ -2312,7 +2312,7 @@ document.getElementById('facet-bar').addEventListener('click', function(e) {
   if (facet === 'origin') { state.origin = value || ''; state.offset = 0; loadSessions(); loadFacets(); }
 });
 
-attachBulkHandlers();
+attachSelectionHandlers();
 
 document.getElementById('inspector-tabs').addEventListener('click', function(e) {
   if (e.target.tagName !== 'BUTTON') return;
@@ -2342,10 +2342,10 @@ __ATTACHMENT_JS__
 </html>""".replace("__WORKSPACE_CSS__", WORKSPACE_CSS)
     .replace("__WORKSPACE_HTML__", WORKSPACE_HTML)
     .replace("__WORKSPACE_JS__", WORKSPACE_JS)
-    .replace("__BULK_CSS__", BULK_CSS)
-    .replace("__BULK_TOOLBAR_HTML__", BULK_TOOLBAR_HTML)
-    .replace("__BULK_PREVIEW_HTML__", BULK_PREVIEW_HTML)
-    .replace("__BULK_JS__", BULK_JS)
+    .replace("__SELECTION_CSS__", SELECTION_CSS)
+    .replace("__SELECTION_TOOLBAR_HTML__", SELECTION_TOOLBAR_HTML)
+    .replace("__SELECTION_PREVIEW_HTML__", SELECTION_PREVIEW_HTML)
+    .replace("__SELECTION_JS__", SELECTION_JS)
     .replace("__PROVENANCE_JS__", PROVENANCE_JS)
     .replace("__LINEAGE_JS__", LINEAGE_JS)
     .replace("__SIMILAR_JS__", SIMILAR_JS)

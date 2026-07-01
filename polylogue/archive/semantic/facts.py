@@ -434,11 +434,10 @@ def build_mcp_summary_semantic_facts(
 def build_stream_semantic_facts(
     session: SemanticSessionLike,
     *,
-    dialogue_only: bool = False,
     message_roles: MessageRoleFilter = (),
     message_limit: int | None = None,
 ) -> StreamSemanticFacts:
-    effective_roles = message_roles or ((Role.USER, Role.ASSISTANT) if dialogue_only else ())
+    effective_roles = message_roles
 
     def _passes_role_filter(message: SemanticSessionMessageLike) -> bool:
         return not effective_roles or Role.normalize(str(message.role)) in effective_roles
@@ -464,7 +463,6 @@ def build_stream_semantic_facts(
         thinking_messages=sum(1 for message in filtered_messages if message.is_thinking),
         tool_messages=sum(1 for message in filtered_messages if message.is_tool_use),
         branch_messages=sum(1 for message in filtered_messages if message.branch_index > 0),
-        dialogue_only=dialogue_only,
         message_roles=message_role_labels(effective_roles),
         message_limit=message_limit,
     )

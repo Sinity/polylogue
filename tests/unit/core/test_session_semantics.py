@@ -314,7 +314,7 @@ class TestSessionMetadataAndAggregation:
 
 VIEW_CASES = [
     ViewCase(
-        name="dialogue_only",
+        name="authored_dialogue",
         messages=[
             make_msg(id="u1", role="user", text="Question one with enough detail"),
             make_msg(id="a1", role="assistant", text="Answer one with enough detail"),
@@ -322,7 +322,7 @@ VIEW_CASES = [
             make_msg(id="t1", role="tool", text="tool"),
         ],
         expected_ids=("u1", "a1"),
-        view="dialogue_only",
+        view="authored_dialogue",
     ),
     ViewCase(
         name="assistant_role_filter",

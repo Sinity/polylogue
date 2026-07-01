@@ -3,14 +3,14 @@
 The reader's single-page shell was split for file-size budget reasons
 into three sibling asset modules under ``polylogue/daemon/``:
 
-- :mod:`polylogue.daemon.web_shell_bulk` — bulk-operations toolbar and
+- :mod:`polylogue.daemon.web_shell_selection` — selection-operations toolbar and
   client-side composer (#1119).
 - :mod:`polylogue.daemon.web_shell_lineage` — lineage inspector tab
   rendering and ``/api/sessions/{id}/topology`` consumer (#1121).
 - :mod:`polylogue.daemon.web_shell_workspace` — workspace mode toolbar,
   stack/compare/saved-view/recall-pack routing (#1124, #1203).
 
-Before this PR ``grep -rl web_shell_(bulk|lineage|workspace) tests/`` was
+Before this PR ``grep -rl web_shell_(selection|lineage|workspace) tests/`` was
 empty for all three modules even though the shell-level smoke (#865)
 exercises the assembled HTML. The visual smoke does not pin the cross-
 surface contract: which daemon endpoints the JS calls, which mark types
@@ -20,7 +20,7 @@ the toolbar mutates, and which fields the lineage tab consumes from the
 This file is the durable cross-surface pin. It is organized by source
 module so the closure-matrix row for each module can attribute coverage:
 
-- ``TestWebShellBulkAssetContract`` — asset module integrity and the
+- ``TestWebShellSelectionAssetContract`` — asset module integrity and the
   JS→endpoint contract for ``POST /api/user/marks`` shared with the
   user-state surface stabilized by #1290.
 - ``TestWebShellLineageAssetContract`` — asset module integrity and the
@@ -52,8 +52,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from polylogue.daemon import (
-    web_shell_bulk,
     web_shell_lineage,
+    web_shell_selection,
     web_shell_workspace,
     workspace_routes,
 )
@@ -139,35 +139,35 @@ def _seed_session(session_id: str, workspace_env: dict[str, Path]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 1. web_shell_bulk — asset contract + /api/user/marks JS→endpoint contract
+# 1. web_shell_selection — asset contract + /api/user/marks JS→endpoint contract
 # ---------------------------------------------------------------------------
 
 
-class TestWebShellBulkAssetContract:
-    """Pins what the bulk JS calls so the toolbar never silently drifts.
+class TestWebShellSelectionAssetContract:
+    """Pins what the selection JS calls so the toolbar never silently drifts.
 
-    The bulk surface is intentionally a client-side composition over
+    The selection surface is intentionally a client-side composition over
     existing daemon endpoints. The asset module exposes three string
-    constants — ``BULK_CSS``, ``BULK_TOOLBAR_HTML``, ``BULK_JS`` —
+    constants — ``SELECTION_CSS``, ``SELECTION_TOOLBAR_HTML``, ``SELECTION_JS`` —
     and the JS issues per-session POSTs to ``/api/user/marks``
     (the same endpoint covered by ``test_user_state_http``).
     """
 
     def test_module_exports_three_string_assets(self) -> None:
-        assert isinstance(web_shell_bulk.BULK_CSS, str)
-        assert isinstance(web_shell_bulk.BULK_TOOLBAR_HTML, str)
-        assert isinstance(web_shell_bulk.BULK_JS, str)
-        assert web_shell_bulk.BULK_CSS.strip()
-        assert web_shell_bulk.BULK_TOOLBAR_HTML.strip()
-        assert web_shell_bulk.BULK_JS.strip()
+        assert isinstance(web_shell_selection.SELECTION_CSS, str)
+        assert isinstance(web_shell_selection.SELECTION_TOOLBAR_HTML, str)
+        assert isinstance(web_shell_selection.SELECTION_JS, str)
+        assert web_shell_selection.SELECTION_CSS.strip()
+        assert web_shell_selection.SELECTION_TOOLBAR_HTML.strip()
+        assert web_shell_selection.SELECTION_JS.strip()
 
-    def test_toolbar_html_declares_all_bulk_actions(self) -> None:
+    def test_toolbar_html_declares_all_selection_actions(self) -> None:
         """Toolbar must expose tag/export/delete-preview/reembed-preview.
 
         These five actions are the AC for #1119. Removing any one of
         them silently breaks the toolbar without a render error.
         """
-        html = web_shell_bulk.BULK_TOOLBAR_HTML
+        html = web_shell_selection.SELECTION_TOOLBAR_HTML
         for action in (
             "tag-star",
             "tag-pin",
@@ -176,13 +176,13 @@ class TestWebShellBulkAssetContract:
             "delete-preview",
             "reembed-preview",
         ):
-            assert f'data-bulk-action="{action}"' in html
+            assert f'data-selection-action="{action}"' in html
 
-    def test_bulk_js_calls_only_documented_endpoints(self) -> None:
-        """The bulk module is documented as composing over existing
+    def test_selection_js_calls_only_documented_endpoints(self) -> None:
+        """The selection module is documented as composing over existing
         endpoints; if a new server route appears in the JS without a
         corresponding handler, this assertion forces a code review."""
-        js = web_shell_bulk.BULK_JS
+        js = web_shell_selection.SELECTION_JS
         assert "/api/user/marks" in js
         assert "/api/sessions/" in js
         # Negative pins — the dry-run preview must NOT POST to a delete
@@ -193,28 +193,28 @@ class TestWebShellBulkAssetContract:
         assert "/api/sessions/delete" not in js
 
     def test_dry_run_envelope_shape_is_pinned(self) -> None:
-        """The bulk preview confirm path records ``no_endpoint`` skips.
+        """The selection preview confirm path records ``no_endpoint`` skips.
 
         The shape (``{action, dryRun, succeeded, failed, skipped}``)
         is the cross-surface contract the inspector reads from
-        ``state.lastBulkResult``; pinning the literal strings here
+        ``state.lastSelectionResult``; pinning the literal strings here
         catches silent renames of the envelope keys.
         """
-        js = web_shell_bulk.BULK_JS
+        js = web_shell_selection.SELECTION_JS
         for token in ("dryRun: true", "succeeded:", "failed:", "skipped:"):
             assert token in js
         assert "no_endpoint" in js
 
-    def test_marks_endpoint_accepts_bulk_js_payload_shape(
+    def test_marks_endpoint_accepts_selection_js_payload_shape(
         self,
         workspace_env: dict[str, Path],
     ) -> None:
-        """End-to-end: the JSON shape the bulk JS POSTs is the shape the
+        """End-to-end: the JSON shape the selection JS POSTs is the shape the
         daemon handler accepts. Without this pin a rename on either side
         breaks the toolbar without any test failing."""
-        native_id = _seed_session("c-bulk", workspace_env)
+        native_id = _seed_session("c-selection", workspace_env)
 
-        # This is exactly the payload ``bulkApplyMark`` builds.
+        # This is exactly the payload ``selectionApplyMark`` builds.
         body = json.dumps({"session_id": native_id, "mark_type": "star"}).encode()
         handler = _make_handler("POST", "/api/user/marks", body=body)
         send_error, send_json = _capture(handler)

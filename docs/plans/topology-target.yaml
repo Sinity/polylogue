@@ -1366,10 +1366,6 @@ files:
     loc: 547
     target: polylogue/daemon/web_shell_attachments.py
     owner: stable
-  - path: polylogue/daemon/web_shell_bulk.py
-    loc: 275
-    target: polylogue/daemon/web_shell_bulk.py
-    owner: stable
   - path: polylogue/daemon/web_shell_lineage.py
     loc: 237
     target: polylogue/daemon/web_shell_lineage.py
@@ -1389,6 +1385,10 @@ files:
   - path: polylogue/daemon/web_shell_realtime.py
     loc: 266
     target: polylogue/daemon/web_shell_realtime.py
+    owner: stable
+  - path: polylogue/daemon/web_shell_selection.py
+    loc: 275
+    target: polylogue/daemon/web_shell_selection.py
     owner: stable
   - path: polylogue/daemon/web_shell_similar.py
     loc: 160

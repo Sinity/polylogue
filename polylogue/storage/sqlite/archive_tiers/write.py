@@ -111,6 +111,7 @@ class ArchiveMessageRow:
     has_tool_use: bool = False
     has_thinking: bool = False
     has_paste: bool = False
+    paste_boundary_state: str | None = None
     occurred_at: str | None = None
     duration_ms: int = 0
     parent_message_id: str | None = None
@@ -1179,7 +1180,7 @@ def read_archive_session_envelope(
         """
         SELECT message_id, native_id, role, position, variant_index, is_active_path, is_active_leaf,
                message_type, material_origin, word_count, has_tool_use, has_thinking, has_paste, occurred_at_ms,
-               duration_ms, parent_message_id
+               paste_boundary AS paste_boundary_state, duration_ms, parent_message_id
         FROM messages
         WHERE session_id = ?
         ORDER BY position, variant_index
@@ -1229,6 +1230,7 @@ def read_archive_session_envelope(
                 has_tool_use=bool(message["has_tool_use"]),
                 has_thinking=bool(message["has_thinking"]),
                 has_paste=bool(message["has_paste"]),
+                paste_boundary_state=message["paste_boundary_state"],
                 occurred_at=_iso_from_ms(message["occurred_at_ms"]),
                 duration_ms=int(message["duration_ms"] or 0),
                 parent_message_id=message["parent_message_id"],

@@ -239,7 +239,6 @@ class RepositoryArchiveSessionMixin:
         self,
         session_id: str,
         *,
-        dialogue_only: bool = False,
         message_roles: MessageRoleFilter = (),
         limit: int | None = None,
     ) -> AsyncIterator[Message]:
@@ -247,7 +246,6 @@ class RepositoryArchiveSessionMixin:
         source_name = conv_record.origin.value if conv_record else None
         async for record in self.queries.iter_messages(
             session_id,
-            dialogue_only=dialogue_only,
             message_roles=message_roles,
             limit=limit,
         ):

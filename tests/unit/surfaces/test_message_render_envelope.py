@@ -23,6 +23,7 @@ from pydantic import ValidationError
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
+from polylogue.storage.runtime.archive.records import BlockRecord, MessageRecord
 from polylogue.surfaces.payloads import (
     ReaderActionAvailabilityPayload,
     SessionMessagePayload,
@@ -139,11 +140,45 @@ def test_from_message_propagates_branch_lineage_state() -> None:
 
 
 def test_from_message_propagates_content_flags() -> None:
-    msg = _build_message(has_paste=True, has_tool_use=True, has_thinking=True)
+    msg = _build_message(
+        has_paste=True,
+        paste_boundary_state="projected",
+        has_tool_use=True,
+        has_thinking=True,
+    )
     payload = SessionMessagePayload.from_message(msg, session_id="c1")
     assert payload.has_paste is True
+    assert payload.paste_boundary_state == "projected"
     assert payload.has_tool_use is True
     assert payload.has_thinking is True
+
+
+def test_from_archive_row_propagates_paste_boundary_state() -> None:
+    """Archive row payloads must not collapse paste evidence to has_paste."""
+    row = MessageRecord(
+        message_id="m1",
+        session_id="c1",
+        provider_message_id="native-m1",
+        role=Role.USER,
+        content_hash="0" * 64,
+        blocks=[
+            BlockRecord(
+                block_id="b1",
+                message_id="m1",
+                session_id="c1",
+                block_index=0,
+                type="text",
+                text="See [Pasted text #1]",
+            )
+        ],
+        has_paste=1,
+        paste_boundary_state="projected",
+    )
+
+    payload = SessionMessagePayload.from_archive_row(row, session_id="c1")
+
+    assert payload.has_paste is True
+    assert payload.paste_boundary_state == "projected"
 
 
 def test_from_message_propagates_usage_and_model() -> None:

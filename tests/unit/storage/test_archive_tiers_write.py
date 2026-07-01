@@ -815,7 +815,7 @@ def test_archive_tiers_writer_materializes_paste_span_from_parser_evidence(tmp_p
 
     session = conn.execute("SELECT paste_count FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
     message = conn.execute(
-        "SELECT message_id, has_paste FROM messages WHERE session_id = ?",
+        "SELECT message_id, has_paste, paste_boundary FROM messages WHERE session_id = ?",
         (session_id,),
     ).fetchone()
     span = conn.execute(
@@ -828,6 +828,9 @@ def test_archive_tiers_writer_materializes_paste_span_from_parser_evidence(tmp_p
     ).fetchone()
     assert session["paste_count"] == 1
     assert message["has_paste"] == 1
+    assert message["paste_boundary"] == "whole_message_fallback"
+    envelope = read_archive_session_envelope(conn, session_id)
+    assert envelope.messages[0].paste_boundary_state == "whole_message_fallback"
     assert dict(span) == {
         "paste_id": f"{message['message_id']}:0",
         "position": 0,

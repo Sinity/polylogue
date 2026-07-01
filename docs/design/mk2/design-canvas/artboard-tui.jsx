@@ -50,7 +50,7 @@ const TUICockpit = () => {
         {/* diagnostics */}
         <Panel title="DIAGNOSTICS" k="5">
           <Diag state="ok"    label="archive integrity"   detail="sha256 manifest match" />
-          <Diag state="warn"  label="fts trigger drift"   detail="UPDATE OF body backfill needed" />
+          <Diag state="warn"  label="fts freshness drift" detail="UPDATE OF body backfill needed" />
           <Diag state="stale" label="derived:costs"        detail="last roll-up 14m ago" />
           <Diag state="ok"    label="schema rebuild"      detail="current · ready" />
           <Diag state="ok"    label="receiver reachable"  detail="127.0.0.1:8765 200 OK" />

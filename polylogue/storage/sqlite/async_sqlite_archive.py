@@ -265,7 +265,6 @@ class SQLiteArchiveMixin:
         session_id: str,
         *,
         chunk_size: int = 100,
-        dialogue_only: bool = False,
         message_roles: MessageRoleFilter = (),
         limit: int | None = None,
     ) -> AsyncIterator[MessageRecord]:
@@ -276,7 +275,6 @@ class SQLiteArchiveMixin:
                     conn,
                     session_id,
                     chunk_size=chunk_size,
-                    dialogue_only=dialogue_only,
                     message_roles=message_roles,
                     limit=limit,
                 ):
@@ -284,7 +282,6 @@ class SQLiteArchiveMixin:
             return
         async for msg in self.queries.iter_messages(
             session_id,
-            dialogue_only=dialogue_only,
             message_roles=message_roles,
             limit=limit,
         ):

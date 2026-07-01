@@ -182,7 +182,7 @@ def classify_material_origin(
         if any(marker in stripped for marker in _OPERATOR_COMMAND_MARKERS):
             return MaterialOrigin.OPERATOR_COMMAND
         return MaterialOrigin.RUNTIME_PROTOCOL
-    if normalized_role is Role.ASSISTANT and normalized_type is MessageType.MESSAGE:
+    if normalized_role is Role.ASSISTANT and normalized_type in (MessageType.MESSAGE, MessageType.TOOL_USE):
         # The assistant role IS positive evidence of model authorship: it is the
         # model's output channel. Unlike the user channel, nothing else is
         # injected through it once context/protocol/tool-result shapes are ruled

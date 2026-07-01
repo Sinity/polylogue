@@ -260,7 +260,6 @@ class SQLiteQueryStoreArchiveMixin:
         self,
         session_id: str,
         *,
-        dialogue_only: bool = False,
         message_roles: MessageRoleFilter = (),
         limit: int | None = None,
     ) -> AsyncIterator[MessageRecord]:
@@ -268,7 +267,6 @@ class SQLiteQueryStoreArchiveMixin:
             async for record in messages_q.iter_messages(
                 conn,
                 session_id,
-                dialogue_only=dialogue_only,
                 message_roles=message_roles,
                 limit=limit,
             ):

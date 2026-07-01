@@ -568,8 +568,8 @@ class SessionMessagePayload(SurfacePayloadModel):
     raw_id: str | None = None
     source_path: str | None = None
     # #1655: paste boundary state — exact, projected, whole_message_fallback,
-    # hash_only, or None when the message has no paste evidence. Populated
-    # from the stored ``messages.paste_boundary_state`` column.
+    # hash_only, or None when the message has no paste evidence. Projected
+    # from the stored ``messages.paste_boundary`` column.
     paste_boundary_state: str | None = None
 
     @classmethod
@@ -616,6 +616,7 @@ class SessionMessagePayload(SurfacePayloadModel):
             parent_id=message.parent_id,
             branch_index=int(getattr(message, "branch_index", 0) or 0),
             has_paste=bool(getattr(message, "has_paste", False)),
+            paste_boundary_state=getattr(message, "paste_boundary_state", None),
             has_tool_use=bool(getattr(message, "has_tool_use", False)),
             has_thinking=bool(getattr(message, "has_thinking", False)),
             input_tokens=int(getattr(message, "input_tokens", 0) or 0),
@@ -675,6 +676,7 @@ class SessionMessagePayload(SurfacePayloadModel):
             parent_id=getattr(message, "parent_message_id", None),
             branch_index=int(getattr(message, "variant_index", 0) or 0),
             has_paste=bool(getattr(message, "has_paste", False)),
+            paste_boundary_state=getattr(message, "paste_boundary_state", None),
             has_tool_use=bool(getattr(message, "has_tool_use", False)),
             has_thinking=bool(getattr(message, "has_thinking", False)),
             attachment_refs=attachment_refs,

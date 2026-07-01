@@ -77,7 +77,7 @@ const Boundary = () => (
       </Note>
       <Note title="preserved">
         Query-first grammar: <Mono>polylogue [query] [filters] [verb]</Mono>.
-        Verbs: <Mono>list count stats show open messages raw bulk-export delete</Mono>.
+        Verbs: <Mono>list count stats show open messages raw query-set-read delete</Mono>.
       </Note>
     </div>
   </div>

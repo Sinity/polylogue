@@ -204,7 +204,13 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
         assert [message.message_id async for message in iter_messages(conn, "missing")] == []
         assert [
             message.message_id
-            async for message in iter_messages(conn, current_session_id, dialogue_only=True, chunk_size=1, limit=1)
+            async for message in iter_messages(
+                conn,
+                current_session_id,
+                message_roles=(Role.USER, Role.ASSISTANT),
+                chunk_size=1,
+                limit=1,
+            )
         ] == [f"{current_session_id}:msg-user"]
 
     await backend.close()

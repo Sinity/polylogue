@@ -14,7 +14,7 @@ const Inventory = () => {
     ]},
     { title: 'CLI · interactive', items: [
       ['QueryFirstGroup',          'click group · intercepts argv'],
-      ['query_verbs/*',            'list count stats show open messages raw bulk-export delete'],
+      ['query_verbs/*',            'list count stats show open messages raw query-set-read delete'],
       ['shell_completion_values',  'archive-backed: providers · ids · repos · cwd · tags · tools'],
       ['filter_picker',            'evolved into `polylogue select` · descriptor-driven'],
       ['doctor (target=daemon)',   'reads daemon /api/health · prints overall + components'],

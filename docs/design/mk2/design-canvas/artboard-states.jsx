@@ -20,7 +20,7 @@ const States = () => (
           <Bar pct={62} />
           <p className="muted">fts backfill · ~14s remaining · safe to keep browsing</p>
         </StateRow>
-        <StateRow tone="degraded" title="fts trigger drift">
+        <StateRow tone="degraded" title="fts freshness drift">
           <p>Title search is current; body search may miss recent edits.</p>
           <Mono className="cta">polylogue ops doctor --target fts --fix</Mono>
         </StateRow>

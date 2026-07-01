@@ -37,7 +37,7 @@ const CONVERSATIONS = [
   { id: 'cc44918a', provider: 'gemini',      repo: null,         cwd: null,              title: 'sqlite WAL on tmpfs — durability tradeoff',
     msgs: 9, tokens: 3_120, cost: 0.04, since: '2026-04-28T11:12Z', tags: [],
     has: [], lastTurn: 'don\'t. checkpoint to disk; cache hot pages instead', actions: [] },
-  { id: 'f0a2bb73', provider: 'claude-code', repo: 'polylogue', cwd: '~/src/polylogue', title: 'fts trigger drift on UPDATE OF title',
+  { id: 'f0a2bb73', provider: 'claude-code', repo: 'polylogue', cwd: '~/src/polylogue', title: 'fts freshness drift on UPDATE OF title',
     msgs: 53, tokens: 31_900, cost: 0.66, since: '2026-04-27T22:01Z', tags: ['fts','bug'],
     has: ['tool_use','thinking'], lastTurn: 'add UPDATE OF body trigger; backfill 1.2k rows', actions: ['file_edit','shell','search'] },
   { id: '6da13ee2', provider: 'claude-code', repo: 'sinnix',    cwd: '~/sys/sinnix',     title: 'hyprland scratchpad: capture-quick keybind',

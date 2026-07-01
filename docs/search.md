@@ -553,12 +553,12 @@ Verbs determine the action applied to the matched session set.
 
 | Verb | Description |
 |------|-------------|
-| `read --all` | List/export matched sessions with metadata |
+| `read --all` | Read every matched session with metadata |
 | `analyze --count` | Print count of matched sessions |
 | `analyze --by ...` | Grouped statistics (`origin`, `month`, `year`, `day`, `action`, `tool`, `repo`, `work-kind`) |
 | `read` | Display session content through read views |
 | `read --to browser` | Open session in browser |
-| `read --all --format ...` | Export matched sessions |
+| `read --all --format ...` | Render every matched session in the selected format |
 | `read --view messages` | Show individual messages |
 | `read --view raw` | Show raw (unparsed) session data |
 | `select` | Select and print a single field |
@@ -892,7 +892,7 @@ polylogue 'text:css {session_id claude-code}: refactor'
 |--------|-------------|
 | `markdown` | Default -- formatted markdown with syntax-highlighted code blocks |
 | `json` | Full session as JSON |
-| `jsonl` | One JSON object per line (used by `bulk-export`) |
+| `jsonl` | One JSON object per line (used by `read --all --format ndjson`) |
 | `yaml` | YAML representation |
 | `plaintext` | Plain text, no formatting |
 | `html` | HTML with Pygments syntax highlighting |
@@ -904,7 +904,7 @@ Set format with `-f` / `--format` on a verb:
 
 ```bash
 polylogue "sqlite locking" read --all --format json
-polylogue --since yesterday bulk-export --format jsonl
+polylogue --since yesterday read --all --format ndjson
 ```
 
 ## Facets (Scoped vs Global)

@@ -2936,69 +2936,69 @@ class TestReaderSavedViewsUI:
 
 
 # ---------------------------------------------------------------------------
-# polylogue.local_reader.bulk — multi-select bulk operations (#1119)
+# polylogue.local_reader.selection — multi-select selection operations (#1119)
 # ---------------------------------------------------------------------------
 
 
-class TestReaderBulkOperations:
-    """``polylogue.local_reader.bulk``: selection toolbar + per-session envelope.
+class TestReaderSelectionOperations:
+    """``polylogue.local_reader.selection``: selection toolbar + per-session envelope.
 
-    The bulk surface composes existing daemon routes: ``/api/user/marks``
+    The selection surface composes existing daemon routes: ``/api/user/marks``
     carries route-backed overlay mutations, and ``/api/sessions/{id}``
     carries export reads. Delete and re-embed are exposed only through a
     preview overlay because the daemon has no corresponding mutation routes yet.
 
     These tests assert the shipped HTML carries every load-bearing region
     hook and that the underlying tag endpoint accepts the per-session
-    POSTs the bulk toolbar drives — that is the contract the JS depends on.
+    POSTs the selection toolbar drives — that is the contract the JS depends on.
     Pixel-level assertions are deliberately avoided so reader visual
     iteration does not invalidate the smoke.
     """
 
-    BULK_REGION_HOOKS = (
-        "bulk-toolbar",
-        "bulk-select-all",
-        "bulk-clear",
-        'data-bulk-action="tag-star"',
-        'data-bulk-action="tag-pin"',
-        'data-bulk-action="tag-archive"',
-        'data-bulk-action="export"',
-        'data-bulk-action="delete-preview"',
-        'data-bulk-action="reembed-preview"',
-        "bulk-preview",
-        "bulk-preview-confirm",
-        "bulkApplyMark",
-        "bulkExport",
-        "openBulkPreview",
-        "confirmBulkPreview",
-        "renderBulkToolbar",
-        "isBulkSelected",
-        "bulkSelection",
+    SELECTION_REGION_HOOKS = (
+        "selection-toolbar",
+        "selection-select-all",
+        "selection-clear",
+        'data-selection-action="tag-star"',
+        'data-selection-action="tag-pin"',
+        'data-selection-action="tag-archive"',
+        'data-selection-action="export"',
+        'data-selection-action="delete-preview"',
+        'data-selection-action="reembed-preview"',
+        "selection-preview",
+        "selection-preview-confirm",
+        "selectionApplyMark",
+        "selectionExport",
+        "openSelectionPreview",
+        "confirmSelectionPreview",
+        "renderSelectionToolbar",
+        "isSelectionSelected",
+        "selectionSet",
         "no_endpoint",
     )
 
-    def test_bulk_toolbar_regions_present_in_shell(self, workspace_env: dict[str, Path]) -> None:
+    def test_selection_toolbar_regions_present_in_shell(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
             status, content_type, body = _get_text(base_url, "/")
         assert status == 200
         assert "text/html" in content_type
-        for hook in self.BULK_REGION_HOOKS:
-            assert hook in body, f"web shell missing bulk hook {hook!r}"
+        for hook in self.SELECTION_REGION_HOOKS:
+            assert hook in body, f"web shell missing selection hook {hook!r}"
 
-    def test_bulk_envelope_keys_documented_in_shell(self, workspace_env: dict[str, Path]) -> None:
+    def test_selection_envelope_keys_documented_in_shell(self, workspace_env: dict[str, Path]) -> None:
         """The shipped JS must reference the per-session status keys the
-        bulk envelope contract uses (succeeded/failed/skipped + dryRun + action).
-        These are the field names the UI surfaces to the operator after a bulk
+        selection envelope contract uses (succeeded/failed/skipped + dryRun + action).
+        These are the field names the UI surfaces to the operator after a selection
         op; renaming any of them silently would break the rendered status."""
         with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         for key in ("succeeded", "failed", "skipped", "dryRun", "action"):
-            assert key in body, f"bulk envelope key {key!r} missing from shell"
+            assert key in body, f"selection envelope key {key!r} missing from shell"
 
-    def test_bulk_tag_drives_existing_marks_endpoint(self, workspace_env: dict[str, Path]) -> None:
-        """The bulk toolbar issues per-session POSTs against
+    def test_selection_tag_drives_existing_marks_endpoint(self, workspace_env: dict[str, Path]) -> None:
+        """The selection toolbar issues per-session POSTs against
         ``/api/user/marks``. This simulates that loop server-side to lock the
-        contract: the daemon must accept the same payload shape the bulk JS
+        contract: the daemon must accept the same payload shape the selection JS
         emits for every selected session, and a follow-up GET must
         surface the resulting marks on every session."""
         with _running_server(workspace_env) as (_, base_url):

@@ -34,17 +34,9 @@ logger = get_logger(__name__)
 
 
 class HealthSeverity(str, Enum):
-    """Alert severity with implied escalation.
-
-    ``INFO`` is reserved for known-transient states (e.g., FTS triggers
-    dropped inside an in-flight bulk catch-up writer; see #1613) where
-    the underlying check would otherwise fire CRITICAL but the
-    operator must be told it is expected, not paged. INFO does not
-    escalate ``overall_status``.
-    """
+    """Alert severity with implied escalation."""
 
     OK = "ok"
-    INFO = "info"
     WARNING = "warning"
     ERROR = "error"
     CRITICAL = "critical"
@@ -1143,7 +1135,7 @@ def check_health(*, tiers: set[HealthTier] | None = None) -> DaemonHealth:
     for alert in alerts:
         tier_key = alert.tier.value
         if tier_key not in tier_summary:
-            tier_summary[tier_key] = {"ok": 0, "info": 0, "warning": 0, "error": 0, "critical": 0}
+            tier_summary[tier_key] = {"ok": 0, "warning": 0, "error": 0, "critical": 0}
         tier_summary[tier_key][alert.severity.value] += 1
 
     return DaemonHealth(
@@ -1173,11 +1165,8 @@ def format_health_lines(health: DaemonHealth) -> list[str]:
     return lines
 
 
-# ``INFO`` ranks alongside ``OK`` so a known-transient bulk-stage signal
-# does not escalate the daemon-level overall status (#1613).
 _OVERALL_SEVERITY_RANK = {
     HealthSeverity.OK: 0,
-    HealthSeverity.INFO: 0,
     HealthSeverity.WARNING: 1,
     HealthSeverity.ERROR: 2,
     HealthSeverity.CRITICAL: 3,
@@ -1185,7 +1174,7 @@ _OVERALL_SEVERITY_RANK = {
 
 
 def _compute_overall_health(alerts: list[HealthAlert]) -> HealthSeverity:
-    """Return the worst severity among ``alerts`` (INFO and OK tie at the bottom)."""
+    """Return the worst severity among ``alerts``."""
     overall = HealthSeverity.OK
     for alert in alerts:
         if _OVERALL_SEVERITY_RANK[alert.severity] > _OVERALL_SEVERITY_RANK[overall]:
@@ -1196,8 +1185,6 @@ def _compute_overall_health(alerts: list[HealthAlert]) -> HealthSeverity:
 def _severity_icon(severity: HealthSeverity) -> str:
     if severity == HealthSeverity.OK:
         return "[OK]"
-    if severity == HealthSeverity.INFO:
-        return "[INFO]"
     if severity == HealthSeverity.WARNING:
         return "[WARN]"
     if severity == HealthSeverity.ERROR:
