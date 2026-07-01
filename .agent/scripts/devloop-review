@@ -643,15 +643,32 @@ data = json.loads(sys.argv[1])
 convergence = data.get("convergence") or {}
 debt = convergence.get("raw_materialization_debt")
 replayable = convergence.get("raw_materialization_replayable")
-print("" if debt is None else debt, "" if replayable is None else replayable)
+readiness = convergence.get("raw_materialization_readiness") or {}
+component = convergence.get("raw_materialization_component") or {}
+categories = readiness.get("category_counts") or {}
+category_text = ",".join(f"{name}={count}" for name, count in sorted(categories.items()))
+print(
+    "" if debt is None else debt,
+    "" if replayable is None else replayable,
+    "" if readiness.get("affected_total") is None else readiness.get("affected_total"),
+    "" if readiness.get("affected_actionable") is None else readiness.get("affected_actionable"),
+    "" if readiness.get("affected_open") is None else readiness.get("affected_open"),
+    component.get("state") or "",
+    category_text,
+)
 PY
   )"
-  read -r raw_materialization_debt raw_materialization_replayable <<<"$raw_counts"
+  read -r raw_materialization_debt raw_materialization_replayable raw_affected_total raw_affected_actionable raw_affected_open raw_state raw_category_text <<<"$raw_counts"
   if [ "${raw_materialization_debt:-}" = "0" ] && [ "${raw_materialization_replayable:-}" = "0" ]; then
     ok "raw materialization debt is zero according to devloop-status"
   else
-    printf 'INFO: raw materialization debt=%s replayable_acquired_unparsed=%s from devloop-status; do not claim full archive convergence without repair/classification\n' \
-      "${raw_materialization_debt:-unknown}" "${raw_materialization_replayable:-unknown}"
+    printf 'INFO: raw materialization debt=%s replayable_acquired_unparsed=%s affected=%s actionable=%s open=%s state=%s from devloop-status; do not claim full archive convergence without repair/classification\n' \
+      "${raw_materialization_debt:-unknown}" "${raw_materialization_replayable:-unknown}" \
+      "${raw_affected_total:-unknown}" "${raw_affected_actionable:-unknown}" \
+      "${raw_affected_open:-unknown}" "${raw_state:-unknown}"
+    if [ -n "${raw_category_text:-}" ]; then
+      printf 'INFO: raw materialization categories=%s\n' "$raw_category_text"
+    fi
   fi
 else
   warn "devloop-status --json failed before raw materialization review"

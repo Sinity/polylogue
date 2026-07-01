@@ -39,6 +39,7 @@ if [ "$format" = "--json" ]; then
   raw_rows=""
   raw_materialization_debt=""
   raw_materialization_replayable=""
+  ops_status_json=""
   if [ -f "$archive_root/index.db" ]; then
     index_version="$(sqlite3 "$archive_root/index.db" 'PRAGMA user_version;' 2>/dev/null || true)"
     sessions="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM sessions;' 2>/dev/null || true)"
@@ -78,18 +79,19 @@ if [ "$format" = "--json" ]; then
       " 2>/dev/null || true
     )"
   fi
+  ops_status_json="$(polylogue ops status --format json 2>/dev/null || true)"
   prod_state="$(systemctl --user show polylogued.service -p ActiveState --value 2>/dev/null || true)"
   prod_sub_state="$(systemctl --user show polylogued.service -p SubState --value 2>/dev/null || true)"
   devloop_state="$(systemctl --user show polylogued-devloop.service -p ActiveState --value 2>/dev/null || true)"
   devloop_sub_state="$(systemctl --user show polylogued-devloop.service -p SubState --value 2>/dev/null || true)"
   polylogued_rows="$(ps -eo pid=,args= | awk '$3 ~ /\/polylogued$/ && $4 == "run" {print}' || true)"
   worktree_gc_json="$(POLYLOGUE_TASK_HISTORY_DISABLE=1 devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"
-  python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$observed_events" "$source_version" "$raw_rows" "$raw_materialization_debt" "$raw_materialization_replayable" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$worktree_gc_json" "$pressure_rows" "$performance_blocked" "$packet_bytes" "$packet_files" "$packet_dirs" "$operating_log_bytes" "$events_bytes" <<'PY'
+  python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$observed_events" "$source_version" "$raw_rows" "$raw_materialization_debt" "$raw_materialization_replayable" "$ops_status_json" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$worktree_gc_json" "$pressure_rows" "$performance_blocked" "$packet_bytes" "$packet_files" "$packet_dirs" "$operating_log_bytes" "$events_bytes" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-repo, current, archive_root, git_branch, git_head, git_tracked_changes, git_untracked_changes, index_version, sessions, messages, observed_events, source_version, raw_rows, raw_materialization_debt, raw_materialization_replayable, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows, worktree_gc_json, pressure_rows, performance_blocked, packet_bytes, packet_files, packet_dirs, operating_log_bytes, events_bytes = sys.argv[1:]
+repo, current, archive_root, git_branch, git_head, git_tracked_changes, git_untracked_changes, index_version, sessions, messages, observed_events, source_version, raw_rows, raw_materialization_debt, raw_materialization_replayable, ops_status_json, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows, worktree_gc_json, pressure_rows, performance_blocked, packet_bytes, packet_files, packet_dirs, operating_log_bytes, events_bytes = sys.argv[1:]
 
 def int_or_none(value: str):
     try:
@@ -101,6 +103,13 @@ try:
     worktree_gc = json.loads(worktree_gc_json)
 except json.JSONDecodeError:
     worktree_gc = {}
+
+try:
+    ops_status = json.loads(ops_status_json) if ops_status_json else {}
+except json.JSONDecodeError:
+    ops_status = {}
+raw_readiness = ops_status.get("raw_materialization_readiness") or {}
+raw_component = (ops_status.get("component_readiness") or {}).get("raw_materialization") or {}
 
 def active_section(text: str, heading: str) -> str | None:
     marker = f"## {heading}"
@@ -153,6 +162,8 @@ print(json.dumps({
     "convergence": {
         "raw_materialization_debt": int_or_none(raw_materialization_debt),
         "raw_materialization_replayable": int_or_none(raw_materialization_replayable),
+        "raw_materialization_readiness": raw_readiness or None,
+        "raw_materialization_component": raw_component or None,
     },
     "daemon": {
         "prod_state": prod_state,
@@ -266,6 +277,41 @@ if [ -f "$archive_root/source.db" ] && [ -f "$archive_root/index.db" ]; then
   )"
   printf 'convergence: raw_materialization_debt=%s replayable_acquired_unparsed=%s\n' \
     "${raw_materialization_debt:-?}" "${raw_materialization_replayable:-?}"
+  ops_status_json="$(polylogue ops status --format json 2>/dev/null || true)"
+  if [ -n "$ops_status_json" ]; then
+    python3 - "$ops_status_json" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+
+try:
+    payload = json.loads(sys.argv[1])
+except json.JSONDecodeError:
+    raise SystemExit(0)
+
+readiness = payload.get("raw_materialization_readiness") or {}
+component = (payload.get("component_readiness") or {}).get("raw_materialization") or {}
+if not readiness:
+    raise SystemExit(0)
+print(
+    "raw_materialization_status: "
+    f"rows={readiness.get('total')} "
+    f"affected={readiness.get('affected_total')} "
+    f"actionable={readiness.get('affected_actionable')} "
+    f"open={readiness.get('affected_open')} "
+    f"state={component.get('state') or 'unknown'}"
+)
+categories = readiness.get("category_counts") or {}
+if categories:
+    rendered = ", ".join(f"{name}={count}" for name, count in sorted(categories.items()))
+    print(f"raw_materialization_categories: {rendered}")
+families = readiness.get("source_family_counts") or {}
+if families:
+    rendered = ", ".join(f"{name}={count}" for name, count in sorted(families.items()))
+    print(f"raw_materialization_source_families: {rendered}")
+PY
+  fi
 fi
 
 printf '\n== pressure ==\n'
