@@ -6,6 +6,11 @@ archive_root="${POLYLOGUE_ARCHIVE_ROOT:-/home/sinity/.local/share/polylogue}"
 current="${POLYLOGUE_AGENT_CURRENT:-$repo/.agent/conductor-devloop}"
 format="${1:-text}"
 
+git_branch="$(git -C "$repo" branch --show-current 2>/dev/null || true)"
+git_head="$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || true)"
+git_tracked_changes="$(git -C "$repo" status --porcelain --untracked-files=no 2>/dev/null | sed '/^$/d' | wc -l)"
+git_untracked_changes="$(git -C "$repo" status --porcelain --untracked-files=all 2>/dev/null | awk '$1 == "??" {count++} END {print count + 0}')"
+
 if [ "$format" = "--json" ]; then
   index_version=""
   sessions=""
@@ -27,11 +32,11 @@ if [ "$format" = "--json" ]; then
   devloop_sub_state="$(systemctl --user show polylogued-devloop.service -p SubState --value 2>/dev/null || true)"
   polylogued_rows="$(ps -eo pid=,args= | awk '$3 ~ /\/polylogued$/ && $4 == "run" {print}' || true)"
   worktree_gc_json="$(devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"
-  python3 - "$repo" "$current" "$archive_root" "$index_version" "$sessions" "$messages" "$source_version" "$raw_rows" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$worktree_gc_json" <<'PY'
+  python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$source_version" "$raw_rows" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$worktree_gc_json" <<'PY'
 import json
 import sys
 
-repo, current, archive_root, index_version, sessions, messages, source_version, raw_rows, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows, worktree_gc_json = sys.argv[1:]
+repo, current, archive_root, git_branch, git_head, git_tracked_changes, git_untracked_changes, index_version, sessions, messages, source_version, raw_rows, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows, worktree_gc_json = sys.argv[1:]
 
 def int_or_none(value: str):
     try:
@@ -48,6 +53,12 @@ print(json.dumps({
     "repo": repo,
     "current": current,
     "archive_root": archive_root,
+    "git": {
+        "branch": git_branch,
+        "head": git_head,
+        "tracked_changes": int_or_none(git_tracked_changes),
+        "untracked_changes": int_or_none(git_untracked_changes),
+    },
     "index": {
         "schema_version": int_or_none(index_version),
         "sessions": int_or_none(sessions),
@@ -78,6 +89,8 @@ printf '== polylogue devloop status ==\n'
 printf 'repo: %s\n' "$repo"
 printf 'current: %s\n' "$current"
 printf 'archive_root: %s\n' "$archive_root"
+printf 'git: branch=%s head=%s tracked_changes=%s untracked_changes=%s\n' \
+  "${git_branch:-unknown}" "${git_head:-unknown}" "$git_tracked_changes" "$git_untracked_changes"
 
 if [ -f "$archive_root/index.db" ]; then
   version="$(sqlite3 "$archive_root/index.db" 'PRAGMA user_version;' 2>/dev/null || true)"

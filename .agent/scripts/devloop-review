@@ -89,6 +89,43 @@ else
   ok "required scaffold files are tracked"
 fi
 
+force_included_paths=(
+  ".agent/DEVLOOP.md"
+  ".agent/includes/README.md"
+  ".agent/scripts/devloop-status"
+  ".agent/conductor-devloop/RUNBOOK.md"
+)
+ignored_force_included=()
+for rel in "${force_included_paths[@]}"; do
+  if git -C "$repo" check-ignore -q "$rel"; then
+    ignored_force_included+=("$rel")
+  fi
+done
+if [ "${#ignored_force_included[@]}" -gt 0 ]; then
+  warn "tracked scaffold paths are ignored by .gitignore"
+  printf '%s\n' "${ignored_force_included[@]}"
+else
+  ok "tracked scaffold paths are force-included by .gitignore"
+fi
+
+ignored_state_paths=(
+  ".agent/conductor-devloop/ACTIVE-LOOP.md"
+  ".agent/conductor-devloop/OPERATING-LOG.md"
+  ".agent/demos/README.md"
+)
+not_ignored_state=()
+for rel in "${ignored_state_paths[@]}"; do
+  if [ -e "$repo/$rel" ] && ! git -C "$repo" check-ignore -q "$rel"; then
+    not_ignored_state+=("$rel")
+  fi
+done
+if [ "${#not_ignored_state[@]}" -gt 0 ]; then
+  warn "live state/demo paths are not ignored by .gitignore"
+  printf '%s\n' "${not_ignored_state[@]}"
+else
+  ok "live state and demo paths are ignored by .gitignore"
+fi
+
 non_executable_scripts=()
 for path in "$repo"/.agent/scripts/devloop-*; do
   [ -e "$path" ] || continue

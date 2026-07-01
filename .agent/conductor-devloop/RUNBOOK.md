@@ -245,3 +245,10 @@ The reusable scaffold under `.agent/` is tracked. Current devloop state under
 event sidecars. Treat tracked docs plus ignored local state together as the
 source of truth for contextless resumption; publish or copy the local packet
 elsewhere only on an explicit task.
+
+`devloop-review` enforces this boundary: scaffold paths such as
+`.agent/DEVLOOP.md`, `.agent/includes/`, `.agent/scripts/`, and tracked
+conductor protocol docs must be force-included by `.gitignore`, while current
+state and demos must remain ignored. `devloop-status` reports branch, HEAD,
+tracked-change count, and untracked-change count so a fresh agent sees whether
+it is resuming a clean branch, a local scaffold edit, or a product slice.
