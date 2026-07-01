@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
@@ -586,6 +587,71 @@ class TestListToolUsageInsightsEndToEnd:
             rows = store.list_tool_action_evidence_count_rows(
                 ToolUsageInsightQuery(provider="codex-session", limit=5),
                 detail_patterns=("codebase-memory",),
+            )
+
+        assert rows == [
+            {
+                "source_name": "codex",
+                "origin": "codex-session",
+                "normalized_tool_name": "codebase-memory/command-detail",
+                "action_kind": "tool_use",
+                "evidence_kind": "command_detail",
+                "matched_by": "detail",
+                "call_count": 1,
+                "session_count": 1,
+                "error_count": 0,
+                "nonzero_exit_count": 0,
+            }
+        ]
+
+    async def test_action_evidence_since_filter_uses_session_sort_key(self, tmp_path: Path) -> None:
+        archive = _archive(tmp_path)
+        db_path = archive.archive_root / "index.db"
+        old_ts = "2026-01-01T00:00:00+00:00"
+        recent_ts = "2026-01-03T00:00:00+00:00"
+        cutoff_ms = int(datetime(2026, 1, 2, tzinfo=UTC).timestamp() * 1000)
+        command_block = {
+            "type": "tool_use",
+            "name": "functions.exec_command",
+            "id": "t1",
+            "input": {"command": "codebase-memory-mcp cli search_code '{}'"},
+        }
+        result_block = {
+            "type": "tool_result",
+            "id": "t1",
+            "text": "ok",
+            "tool_result_is_error": 0,
+            "tool_result_exit_code": 0,
+        }
+
+        (
+            SessionBuilder(db_path, "old-cx")
+            .provider("codex")
+            .updated_at(old_ts)
+            .add_message(
+                "old-cx-msg", role="assistant", text="Old", timestamp=old_ts, blocks=[command_block, result_block]
+            )
+            .save()
+        )
+        (
+            SessionBuilder(db_path, "recent-cx")
+            .provider("codex")
+            .updated_at(recent_ts)
+            .add_message(
+                "recent-cx-msg",
+                role="assistant",
+                text="Recent",
+                timestamp=recent_ts,
+                blocks=[command_block, result_block],
+            )
+            .save()
+        )
+
+        with ArchiveStore.open_existing(archive.archive_root) as store:
+            rows = store.list_tool_action_evidence_count_rows(
+                ToolUsageInsightQuery(provider="codex-session", limit=5),
+                detail_patterns=("codebase-memory",),
+                since_ms=cutoff_ms,
             )
 
         assert rows == [

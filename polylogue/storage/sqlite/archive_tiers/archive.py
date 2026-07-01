@@ -1850,9 +1850,12 @@ class ArchiveStore:
         if request.action_kind:
             where.append("COALESCE(NULLIF(u.semantic_type, ''), 'tool_use') = ?")
             params.append(request.action_kind)
+        if since_ms is not None:
+            where.append("s.sort_key_ms >= ?")
+            params.append(since_ms)
         cleaned_details = _clean_affordance_patterns(detail_patterns)
         fts_queries = tuple(
-            query for pattern in cleaned_details if (query := normalize_fts5_query(pattern)) is not None
+            fts_query for pattern in cleaned_details if (fts_query := normalize_fts5_query(pattern)) is not None
         )
         if cleaned_details:
             if not fts_queries:
@@ -1860,8 +1863,7 @@ class ArchiveStore:
             where.append("(" + " OR ".join("f.text MATCH ?" for _ in fts_queries) + ")")
             params.extend(fts_queries)
 
-        def fetch_rows(extra_where: list[str], extra_params: list[object]) -> list[sqlite3.Row]:
-            combined_where = [*extra_where, *where]
+        def fetch_rows() -> list[sqlite3.Row]:
             fts_join = "JOIN messages_fts f ON f.rowid = u.rowid" if fts_queries else ""
             return list(
                 self._conn.execute(
@@ -1884,30 +1886,13 @@ class ArchiveStore:
                 ON r.tool_id = u.tool_id
                AND r.session_id = u.session_id
                AND r.block_type = 'tool_result'
-            {"WHERE " + " AND ".join(combined_where) if combined_where else ""}
+            {"WHERE " + " AND ".join(where) if where else ""}
             """,
-                    (*extra_params, *params),
+                    tuple(params),
                 ).fetchall()
             )
 
-        if since_ms is None:
-            rows = fetch_rows([], [])
-        else:
-            recent_session_rows = self._conn.execute(
-                """
-                SELECT session_id
-                FROM sessions
-                WHERE sort_key_ms >= ?
-                ORDER BY sort_key_ms DESC, session_id
-                """,
-                (since_ms,),
-            ).fetchall()
-            recent_session_ids = [str(row["session_id"]) for row in recent_session_rows]
-            rows = []
-            for index in range(0, len(recent_session_ids), 400):
-                chunk = recent_session_ids[index : index + 400]
-                placeholders = ",".join("?" for _ in chunk)
-                rows.extend(fetch_rows([f"u.session_id IN ({placeholders})"], list(chunk)))
+        rows = fetch_rows()
 
         buckets: dict[tuple[str, str, str, str, str], dict[str, object]] = {}
         sessions: dict[tuple[str, str, str, str, str], set[str]] = {}
@@ -1951,9 +1936,9 @@ class ArchiveStore:
                 },
             )
             sessions.setdefault(key, set()).add(str(row["session_id"]))
-            bucket["call_count"] = int(bucket["call_count"]) + 1
-            bucket["error_count"] = int(bucket["error_count"]) + (1 if int(row["is_error"] or 0) == 1 else 0)
-            bucket["nonzero_exit_count"] = int(bucket["nonzero_exit_count"]) + (
+            bucket["call_count"] = int(str(bucket["call_count"])) + 1
+            bucket["error_count"] = int(str(bucket["error_count"])) + (1 if int(row["is_error"] or 0) == 1 else 0)
+            bucket["nonzero_exit_count"] = int(str(bucket["nonzero_exit_count"])) + (
                 1 if row["exit_code"] is not None and int(row["exit_code"] or 0) != 0 else 0
             )
         for key, bucket in buckets.items():
@@ -1961,7 +1946,7 @@ class ArchiveStore:
         ordered = sorted(
             buckets.values(),
             key=lambda item: (
-                -int(item["call_count"]),
+                -int(str(item["call_count"])),
                 str(item["origin"]),
                 str(item["normalized_tool_name"]),
                 str(item["evidence_kind"]),
