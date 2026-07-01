@@ -604,11 +604,11 @@ class TestNoArchiveStatus:
         assert surfaces["marks"]["active_count"] == 1
         assert surfaces["tag_assertions"]["storage"] == "assertions"
         assert surfaces["metadata_assertions"]["storage"] == "assertions"
-        assert transforms["scope"] == "recovery"
+        assert transforms["scope"] == "session-analysis"
         assert transforms["state"] == "ready"
         assert transforms["counts"]["session_count"] == 3
         assert transforms["counts"]["transform_count"] >= 1
-        assert transforms["counts"]["recovery_transform_version"] == 1
+        assert transforms["counts"]["session_digest_transform_version"] == 1
 
     def test_direct_status_json_reports_missing_assertions_and_transforms_without_archive(
         self,

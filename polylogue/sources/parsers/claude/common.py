@@ -80,7 +80,7 @@ def reclassify_tool_result_envelope(role: Role, content_blocks: list[ParsedConte
     runtime replies with corresponding ``tool_result`` blocks under the
     protocol-mandated ``user`` role. Polylogue's outer-envelope role
     normalization classifies these as ``Role.USER``, polluting
-    ``--message-role user`` filters with non-typed content.
+    role-scoped message queries with non-typed content.
 
     See `#428 <https://github.com/Sinity/polylogue/issues/428>`_.
     """

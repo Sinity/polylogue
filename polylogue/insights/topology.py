@@ -69,7 +69,7 @@ class SessionRef(BaseModel):
     provider + title + depth) without forcing them to hydrate the full
     :class:`~polylogue.archive.session.domain_models.Session`. Slice D
     of #866: surfaces such as the MCP topology tool, future reader panes,
-    and context packs consume this ref instead of re-walking parent
+    and context image/bundle projections consume this ref instead of re-walking parent
     pointers.
     """
 

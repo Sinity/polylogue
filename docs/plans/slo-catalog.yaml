@@ -57,8 +57,8 @@ surfaces:
     tier: "cheap-local"
 
   context:
-    description: "Context-pack assembly placeholder (deferred until #838 lands)"
-    benchmark_test: "tests/benchmarks/test_reader_api.py::test_bench_reader_context_pack"
+    description: "Context-image assembly placeholder (deferred until #838 lands)"
+    benchmark_test: "tests/benchmarks/test_reader_api.py::test_bench_reader_context_image"
     p50_ms: 500
     p95_ms: 1500
     gate: "informational"

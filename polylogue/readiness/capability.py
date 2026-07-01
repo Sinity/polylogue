@@ -230,7 +230,7 @@ def component_from_transform_registry(
     *,
     transform_count: int,
     session_count: int | None,
-    recovery_transform_version: int | None = None,
+    session_digest_transform_version: int | None = None,
     error: str | None = None,
 ) -> ComponentReadiness:
     """Map deterministic transform availability into the shared DTO."""
@@ -257,12 +257,12 @@ def component_from_transform_registry(
     }
     if session_count is not None:
         counts["session_count"] = session_count
-    if recovery_transform_version is not None:
-        counts["recovery_transform_version"] = recovery_transform_version
+    if session_digest_transform_version is not None:
+        counts["session_digest_transform_version"] = session_digest_transform_version
 
     return ComponentReadiness(
         component="transforms",
-        scope="recovery",
+        scope="session-analysis",
         state=state,
         summary=summary,
         counts=counts,

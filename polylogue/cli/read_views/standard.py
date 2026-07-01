@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import json
 import webbrowser
 from dataclasses import replace
+from datetime import datetime
 from urllib.parse import quote
 
-from polylogue.cli.read_views.base import ReadViewInvocation, execute_query_request
+from polylogue.archive.session.domain_models import SessionSummary
+from polylogue.cli.read_views.base import ReadViewInvocation, deliver_content, execute_query_request
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
+from polylogue.surfaces.temporal_evidence import (
+    TemporalEvidenceEvent,
+    TemporalEvidenceWindow,
+    build_temporal_evidence_window,
+)
 
 
 def _is_exact_ref_read(request: RootModeRequest, invocation: ReadViewInvocation) -> bool:
@@ -53,11 +61,92 @@ def run_read_summary_or_transcript(env: AppEnv, request: RootModeRequest, invoca
         execute_query_request(env, updated)
 
 
+def _summary_timestamp(summary: SessionSummary) -> datetime | None:
+    return summary.created_at or summary.updated_at
+
+
+def _summary_to_temporal_event(summary: SessionSummary) -> TemporalEvidenceEvent | None:
+    occurred_at = _summary_timestamp(summary)
+    if occurred_at is None:
+        return None
+    session_ref = f"session:{summary.id}"
+    label = summary.title or str(summary.id)
+    return TemporalEvidenceEvent(
+        event_id=f"{session_ref}:session",
+        occurred_at=occurred_at,
+        family="archive-session",
+        kind="session",
+        label=label,
+        source_ref=session_ref,
+        evidence_refs=(session_ref,),
+    )
+
+
+def _render_temporal_window_markdown(window: TemporalEvidenceWindow) -> str:
+    lines = [
+        "# Temporal Evidence Window",
+        "",
+        f"- Events: {window.event_count}",
+        f"- Bucket: {window.bucket.value}",
+        f"- Families: {', '.join(f'{key}={value}' for key, value in window.family_counts.items()) or 'none'}",
+        f"- Kinds: {', '.join(f'{key}={value}' for key, value in window.kind_counts.items()) or 'none'}",
+    ]
+    if window.caveats:
+        lines.append(f"- Caveats: {', '.join(window.caveats)}")
+    lines.extend(["", "## Buckets"])
+    if window.buckets:
+        for bucket in window.buckets[:25]:
+            lines.append(f"- {bucket.bucket_start.isoformat()} {bucket.family}/{bucket.kind}: {bucket.count}")
+        if len(window.buckets) > 25:
+            lines.append(f"- ... {len(window.buckets) - 25} more buckets")
+    else:
+        lines.append("- none")
+    lines.extend(["", "## Events"])
+    if window.events:
+        for event in window.events[:50]:
+            label = event.label.replace("\n", " ").strip()
+            lines.append(
+                f"- {event.occurred_at.isoformat()} [{event.family}/{event.kind}] {label} ({event.source_ref})"
+            )
+        if len(window.events) > 50:
+            lines.append(f"- ... {len(window.events) - 50} more events")
+    else:
+        lines.append("- none")
+    return "\n".join(lines) + "\n"
+
+
+def run_read_temporal(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
+    """Project selected session summaries into a temporal evidence window."""
+
+    from polylogue.api.sync.bridge import run_coroutine_sync
+    from polylogue.cli.query import _create_query_vector_provider
+    from polylogue.paths import archive_file_set_root_for_paths
+
+    config = env.config
+    spec = request.query_spec()
+    if spec.limit is None:
+        spec = replace(spec, limit=50)
+    archive_root = archive_file_set_root_for_paths(
+        archive_root_path=config.archive_root,
+        db_anchor=config.db_path,
+    )
+    vector_provider = _create_query_vector_provider(config, db_path=archive_root / "embeddings.db")
+    summaries = run_coroutine_sync(spec.list_summaries(config, vector_provider=vector_provider))
+    events = [event for summary in summaries if (event := _summary_to_temporal_event(summary)) is not None]
+    window = build_temporal_evidence_window(events)
+    fmt = invocation.output_format or "markdown"
+    if fmt == "json":
+        content = json.dumps({"temporal_window": window.model_dump(mode="json")}, indent=2) + "\n"
+    else:
+        content = _render_temporal_window_markdown(window)
+    deliver_content(env, content, destination=invocation.destination, out_path=invocation.out_path)
+
+
 def run_read_browser(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
     """Open the first matched session in the daemon web reader."""
 
     from polylogue.api.sync.bridge import run_coroutine_sync
-    from polylogue.archive.session.domain_models import Session, SessionSummary
+    from polylogue.archive.session.domain_models import Session
     from polylogue.cli.query import _create_query_vector_provider
     from polylogue.paths import archive_file_set_root_for_paths
 
@@ -98,4 +187,4 @@ def run_read_browser(env: AppEnv, request: RootModeRequest, invocation: ReadView
     env.ui.console.print(f"Opened: {web_url}")
 
 
-__all__ = ["run_read_browser", "run_read_summary_or_transcript"]
+__all__ = ["run_read_browser", "run_read_summary_or_transcript", "run_read_temporal"]

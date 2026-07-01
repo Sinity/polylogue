@@ -32,9 +32,9 @@ def test_tool_output_omission_is_projection_policy_not_cli_flag() -> None:
     assert "function_call_output" in spec.exclude_block_kinds
 
 
-def test_dialogue_only_policy_omits_tool_blocks_and_tool_role() -> None:
+def test_authored_dialogue_policy_omits_tool_blocks_and_tool_role() -> None:
     spec = ProjectionSpec(
-        body_policy=BodyPolicy.DIALOGUE_ONLY,
+        body_policy=BodyPolicy.AUTHORED_DIALOGUE,
         include_roles=("user", "assistant", "tool"),
     )
 

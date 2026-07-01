@@ -25,7 +25,7 @@ from polylogue.core.refs import ObjectRef, normalize_object_ref_text, normalize_
 
 if TYPE_CHECKING:
     from polylogue.insights.pathology import PathologyFinding
-    from polylogue.insights.transforms import DecisionCandidate, RecoveryDigest, TransformRawRef
+    from polylogue.insights.transforms import DecisionCandidate, SessionDigest, TransformRawRef
 
 
 ASSERTION_DEFAULT_STATUS: Final[AssertionStatus] = AssertionStatus.ACTIVE
@@ -995,11 +995,11 @@ def upsert_assertion(
 
 def upsert_transform_candidate_assertions(
     conn: sqlite3.Connection,
-    digest: RecoveryDigest,
+    digest: SessionDigest,
     *,
     now_ms: int | None = None,
 ) -> list[ArchiveAssertionEnvelope]:
-    """Mirror recovery digest decision candidates as non-injected assertions."""
+    """Mirror session digest decision candidates as non-injected assertions."""
 
     timestamp = now_ms if now_ms is not None else _now_ms()
     scope_ref = f"transform:{digest.transform.transform_id}@v{digest.transform.transform_version}"
@@ -1532,7 +1532,7 @@ def list_assertion_claims(
     context_inject: bool | None = None,
     limit: int | None = None,
 ) -> list[ArchiveAssertionEnvelope]:
-    """List lifecycle claims for recovery/work-packet/profile consumers.
+    """List lifecycle claims for successor-context/profile consumers.
 
     This helper intentionally covers authored/transform claims, not every
     overlay assertion row. Marks, annotations, saved views, recall packs, and

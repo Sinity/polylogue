@@ -62,7 +62,7 @@ next: \`polylogue --latest\`  ·  \`polylogue --provider claude-code list\`
         <Hr />
 
         <Block prompt={'~/src/polylogue ❯'}
-               cmd={<><Mono>polylogue messages 7b3c2e91 --message-role user --limit 3</Mono></>} />
+               cmd={<><Mono>polylogue find 'messages where session.id:7b3c2e91 AND role:user' --limit 3</Mono></>} />
         <Pre>
 {`#01 user · 14:02:11 · 84 tok
   split browser-capture serve out of click_app — should it move to polylogued

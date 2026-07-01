@@ -724,10 +724,6 @@ class TestStreamingOutput:
             display_date=sample_session.display_date,
             messages=list(sample_session.messages),
             output_format=output_format,
-            stats={
-                "total_messages": len(sample_session.messages),
-                "dialogue_messages": len(list(sample_session.iter_dialogue())),
-            },
         )
 
         assert emitted == 2

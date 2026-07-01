@@ -361,7 +361,7 @@ inventory and does not claim that a file still exists on disk.
 `runs`, `observed-events`, and `context-snapshots` are SQL-backed row sources
 over the materialized run-projection tables (`session_runs`,
 `session_observed_events`, `session_context_snapshots`), which the session-insight
-materializer recomputes from each session's recovery/run-projection evidence.
+materializer recomputes from each session's run-projection evidence.
 They are both terminal unit sources (`runs where ...`) and `exists run(...)` /
 `exists observed-event(...)` / `exists context-snapshot(...)` session selectors,
 and they accept the full SQL-backed session filter surface (`session.action`,
@@ -377,7 +377,7 @@ are rejected instead of silently coercing row queries back to session queries.
 
 ## Assertion Candidate Judgment
 
-Transform and recovery jobs may emit assertion rows with `status:candidate`.
+Transform and session-analysis jobs may emit assertion rows with `status:candidate`.
 Candidate rows are private, carry `context_policy.inject=false`, and keep
 `promotion_required=true` until an operator makes an explicit judgment. They
 can be inspected like any other assertion row, or through the review list that
@@ -422,7 +422,7 @@ polylogue ops debt list --kind assertion-candidate --only-actionable --format js
 ## Public Ref Resolution
 
 Query/read payloads carry public object and evidence refs so agents and the web
-shell can jump from a row, work packet, or assertion back to the exact archive
+shell can jump from a row, context image, or assertion back to the exact archive
 object it cites. Resolve refs through the shared resolver rather than turning
 them into broad text search:
 
@@ -508,7 +508,6 @@ can resolve deliberately when the operator wants to inspect source evidence.
 | `--min-messages` | Minimum message count |
 | `--max-messages` | Maximum message count |
 | `--min-words` | Minimum word count |
-| `--message-type` | Filter by message type |
 
 ### Semantic actions
 
@@ -547,19 +546,6 @@ can resolve deliberately when the operator wants to inspect source evidence.
 |------|-------------|
 | `--retrieval-lane` | Query lane: `auto`, `dialogue`, `actions`, `hybrid` |
 | `--similar` | Semantic similarity query (requires embeddings) |
-
-### Output modifiers
-
-| Flag | Description |
-|------|-------------|
-| `--no-code-blocks` | Strip code blocks from output |
-| `--no-tool-calls` | Strip tool call blocks |
-| `--no-tool-outputs` | Strip tool result blocks |
-| `--no-file-reads` | Strip file read blocks |
-| `--prose-only` | Show only authored prose text |
-| `--dialogue-only` | Show only provider-role user/assistant messages |
-| `--message-role` | Filter by provider role (`user`, `assistant`, `system`, `tool`) |
-| `--material-origin` | Filter message rows by authoredness/material source (`human_authored`, `runtime_protocol`, `tool_result`, `unknown`, etc.) |
 
 ## Verbs
 

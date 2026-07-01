@@ -189,6 +189,20 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
         machine_payload="correlation payload",
         degraded_states=("missing session", "repo unavailable", "gh unavailable", "no external matches"),
     ),
+    SessionViewProfile(
+        view_id="temporal",
+        label="Temporal",
+        owner="polylogue.cli.read_views.standard.run_read_temporal",
+        purpose="Temporal evidence window over the selected query result set.",
+        input_scope="query result set or exact session id",
+        included_kinds=("session timestamps", "event counts", "time buckets", "family/kind counts"),
+        lossiness="derived",
+        evidence_policy="required",
+        privacy_policy="uses normalized session summary metadata, not raw transcripts or provider payloads",
+        formats=("markdown", "json"),
+        machine_payload="TemporalEvidenceWindow",
+        degraded_states=("empty result set", "sessions without timestamps"),
+    ),
 )
 
 READ_VIEW_PROFILE_BY_ID: dict[str, SessionViewProfile] = {profile.view_id: profile for profile in READ_VIEW_PROFILES}

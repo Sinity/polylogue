@@ -274,7 +274,8 @@ Usage: polylogue read [OPTIONS] [REF]
 Options:
   -v, --view VIEW[,VIEW...]       What to render (summary, transcript,
                                   messages, raw, context, context-image,
-                                  neighbors, correlation).  [default: summary]
+                                  neighbors, correlation, temporal).
+                                  [default: summary]
   --to [terminal|stdout|browser|clipboard|file]
                                   Output destination.  [default: terminal]
   --json                          Shortcut for --format json.

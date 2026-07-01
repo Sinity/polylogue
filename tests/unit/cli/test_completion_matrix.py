@@ -44,7 +44,6 @@ STATIC_COMPLETERS: tuple[tuple[str, list[str]], ...] = (
     ("retrieval_lane", ["--retrieval-lane"]),
     ("action", ["--action"]),
     ("action_sequence", ["--action-sequence"]),
-    ("message_type", ["messages", "--message-type"]),
     ("read_view", ["read", "--view"]),
     ("read_format", ["read", "--format"]),
 )

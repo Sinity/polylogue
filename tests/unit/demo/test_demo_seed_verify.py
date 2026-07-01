@@ -36,7 +36,7 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
 async def test_seed_materializes_session_profiles_for_postmortem(tmp_path: Path) -> None:
     """The no-daemon seed must materialize the session-profile insight read model.
 
-    Without it ``analyze --postmortem`` (and the recovery-digest surfaces) render
+    Without it ``analyze --postmortem`` (and the session-digest surfaces) render
     an empty bundle on the demo archive because the postmortem aggregator fetches
     profiles that ``parse_sources_archive`` never wrote. Guards the #2196 fix.
     """

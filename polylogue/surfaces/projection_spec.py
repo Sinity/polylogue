@@ -35,7 +35,7 @@ class BodyPolicy(str, Enum):
 
     FULL = "full"
     OMIT_TOOL_OUTPUTS = "omit-tool-outputs"
-    DIALOGUE_ONLY = "dialogue-only"
+    AUTHORED_DIALOGUE = "authored-dialogue"
     METADATA_ONLY = "metadata-only"
 
 
@@ -91,7 +91,7 @@ class ProjectionSpec(SurfacePayloadModel):
         if self.body_policy is BodyPolicy.OMIT_TOOL_OUTPUTS:
             exclusions.add("tool_result")
             exclusions.add("function_call_output")
-        if self.body_policy is BodyPolicy.DIALOGUE_ONLY:
+        if self.body_policy is BodyPolicy.AUTHORED_DIALOGUE:
             exclusions.update({"tool_use", "tool_result", "function_call", "function_call_output"})
             object.__setattr__(self, "include_roles", tuple(role for role in self.include_roles if role != "tool"))
         object.__setattr__(self, "exclude_block_kinds", tuple(sorted(exclusions)))
@@ -130,6 +130,7 @@ READ_VIEW_PROJECTION_FAMILIES: dict[str, tuple[EvidenceFamily, ...]] = {
     "context-image": (EvidenceFamily.CONTEXT, EvidenceFamily.MESSAGES, EvidenceFamily.ASSERTIONS),
     "neighbors": (EvidenceFamily.NEIGHBORS, EvidenceFamily.SESSIONS),
     "correlation": (EvidenceFamily.CORRELATION, EvidenceFamily.ACTIONS),
+    "temporal": (EvidenceFamily.TEMPORAL, EvidenceFamily.SESSIONS),
 }
 """Projection mapping for executable read views.
 

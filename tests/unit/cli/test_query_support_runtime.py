@@ -16,7 +16,7 @@ from polylogue.archive.query.search_hits import SessionSearchHit
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.archive.viewport.enums import ToolCategory
 from polylogue.cli import query_output, query_semantic, query_stats
-from polylogue.cli.query_actions import apply_modifiers, apply_transform, delete_sessions, resolve_stream_target
+from polylogue.cli.query_actions import apply_modifiers, delete_sessions, resolve_stream_target
 from polylogue.cli.query_contracts import QueryDeliveryTarget, QueryMutationSpec, QueryOutputSpec
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.enums import Provider
@@ -38,9 +38,6 @@ def _output_spec(output_format: str = "markdown") -> QueryOutputSpec:
         output_format=output_format,
         destinations=(QueryDeliveryTarget.parse("stdout"),),
         fields=None,
-        dialogue_only=False,
-        message_roles=(),
-        transform=None,
         list_mode=False,
         print_url=False,
     )
@@ -194,21 +191,6 @@ async def test_query_actions_cover_error_branches_and_abort_paths() -> None:
     await delete_sessions(env, many_sessions, _mutation(force=False))
     console_print = cast(MagicMock, env.ui.console.print)
     assert console_print.call_args_list[-1].args[0] == "Aborted."
-
-
-def test_apply_transform_covers_all_supported_variants() -> None:
-    session = make_conv(
-        id="conv-tools",
-        provider="claude-code",
-        messages=[
-            make_msg(role="assistant", text="Answer"),
-            make_msg(role="assistant", text="Thinking", is_thinking=True),
-        ],
-    )
-
-    assert len(apply_transform([session], "strip-tools")) == 1
-    assert len(apply_transform([session], "strip-thinking")) == 1
-    assert len(apply_transform([session], "strip-all")) == 1
 
 
 def test_query_semantic_matches_none_blocked_text_and_referenced_path() -> None:
@@ -400,12 +382,9 @@ async def test_query_output_helpers_cover_stream_dates_headers_and_rich_lists(tm
         origin="claude-code-session",
         display_date=_DateLike(),
         output_format="markdown",
-        dialogue_only=False,
-        message_roles=(Role.USER, Role.SYSTEM),
         message_limit=3,
-        stats={"total_messages": 4, "role_user_messages": 1, "role_system_messages": 1},
     )
-    assert "_Showing 2 selected-role messages (limit: 3) of 4 total_" in header
+    assert "_Showing up to 3 messages_" in header
 
     env = _env(plain=False)
     repo = SimpleNamespace(get_message_counts_batch=AsyncMock(return_value={"conv-1": 2}))

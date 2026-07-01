@@ -1838,11 +1838,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             }
             items.append(row)
 
+        route_state_name, route_state_reason = _session_list_state(total, filtered=spec.has_filters())
         result: dict[str, object] = {
             "items": items,
             "total": total,
             "limit": limit,
             "offset": offset,
+            "route_state": _route_readiness_payload(route_state_name, "/api/sessions", reason=route_state_reason),
         }
         if diagnostics is not None:
             result["diagnostics"] = diagnostics.model_dump(mode="json")

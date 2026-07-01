@@ -25,6 +25,7 @@ from polylogue.archive.viewport import (
     read_view_profile_payloads,
 )
 from polylogue.cli.read_view_handlers import (
+    READ_VIEW_HANDLERS,
     ReadViewInvocation,
     read_view_option_names,
     read_view_options_for_view,
@@ -621,7 +622,11 @@ def read_verb(
         )
         return
 
-    session_id = _resolve_query_action_session_id(env, request, operation="read", first_only=first_only)
+    handler = READ_VIEW_HANDLERS[primary_view]
+    session_id = None
+    exact_session_ref = _spec_is_exact_session_ref(request.query_spec())
+    if destination == "browser" or first_only or exact_session_ref or not handler.accepts_query_set:
+        session_id = _resolve_query_action_session_id(env, request, operation="read", first_only=first_only)
     effective_format = _effective_read_output_format(request, view=primary_view, output_format=output_format)
     explicit_options = _explicit_read_view_options(ctx)
     if destination == "browser":

@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import click
 import pytest
 
+from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID, READ_VIEW_PROFILES, read_view_choices
 from polylogue.cli import query_verbs, read_view_handlers
 from polylogue.cli.read_view_handlers import ReadViewInvocation
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
+from polylogue.config import Config
 from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec
 from polylogue.surfaces.payloads import PublicRefResolutionPayload
 
@@ -616,6 +619,67 @@ def test_read_view_rejects_format_outside_selected_profile() -> None:
                 out_path=None,
             ),
         )
+
+
+def test_read_view_temporal_projects_selected_summaries(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    config = Config(
+        archive_root=tmp_path,
+        db_path=tmp_path / "index.db",
+        render_root=tmp_path / "render",
+        sources=[],
+    )
+    env = SimpleNamespace(config=config)
+    summaries = [
+        SessionSummary.model_validate(
+            {
+                "id": "codex-session:abc",
+                "origin": "codex-session",
+                "title": "Temporal slice",
+                "created_at": datetime(2026, 6, 30, 8, 0, tzinfo=UTC),
+            }
+        ),
+        SessionSummary.model_validate(
+            {
+                "id": "claude-code-session:def",
+                "origin": "claude-code-session",
+                "title": "Follow-up",
+                "created_at": datetime(2026, 6, 30, 9, 0, tzinfo=UTC),
+            }
+        ),
+    ]
+
+    with (
+        patch("polylogue.cli.query._create_query_vector_provider", return_value=None),
+        patch(
+            "polylogue.archive.query.spec.SessionQuerySpec.list_summaries",
+            new=AsyncMock(return_value=summaries),
+        ) as list_summaries,
+    ):
+        read_view_handlers.run_read_view(
+            cast(AppEnv, env),
+            RootModeRequest.from_params({"query": ("repo:polylogue",), "limit": 2}),
+            ReadViewInvocation(
+                view="temporal",
+                session_id=None,
+                output_format="json",
+                destination="terminal",
+                out_path=None,
+            ),
+        )
+
+    list_summaries.assert_awaited_once()
+    payload = json.loads(capsys.readouterr().out)
+    window = payload["temporal_window"]
+    assert window["event_count"] == 2
+    assert window["family_counts"] == {"archive-session": 2}
+    assert window["kind_counts"] == {"session": 2}
+    assert [event["source_ref"] for event in window["events"]] == [
+        "session:codex-session:abc",
+        "session:claude-code-session:def",
+    ]
 
 
 def test_read_view_registry_builds_typed_view_options() -> None:

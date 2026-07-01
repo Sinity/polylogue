@@ -37,7 +37,7 @@ Body policies replace ad hoc flags:
 
 - `full`
 - `omit-tool-outputs`
-- `dialogue-only`
+- `authored-dialogue`
 - `metadata-only`
 
 `READ_VIEW_PROJECTION_FAMILIES` maps executable read views into this vocabulary

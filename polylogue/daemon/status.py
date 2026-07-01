@@ -590,11 +590,13 @@ def _raw_failure_info() -> dict[str, object]:
                 pass
             # Bounded failure samples (most recent 50), typed.
             samples: list[RawFailureSample] = []
+            raw_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(raw_sessions)").fetchall()}
+            acquired_order_column = "acquired_at_ms" if "acquired_at_ms" in raw_columns else "acquired_at"
             for row in conn.execute(
                 "SELECT raw_id, source_name, parse_error, validation_status, validation_error "
                 "FROM raw_sessions "
                 "WHERE parse_error IS NOT NULL OR validation_status = 'FAILED' "
-                "ORDER BY acquired_at DESC LIMIT 50"
+                f"ORDER BY {acquired_order_column} DESC LIMIT 50"
             ).fetchall():
                 parse_err = str(row[2] or "") if row[2] else ""
                 val_status = str(row[3] or "") if row[3] else ""

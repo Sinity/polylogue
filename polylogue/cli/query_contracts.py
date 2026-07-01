@@ -9,10 +9,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
-from polylogue.archive.message.roles import MessageRoleFilter, Role, normalize_message_roles
 from polylogue.archive.query.spec import SessionQuerySpec
-from polylogue.archive.semantic.content_projection import ContentProjectionSpec
-from polylogue.core.enums import MaterialOrigin
 from polylogue.errors import PolylogueError
 
 if TYPE_CHECKING:
@@ -23,7 +20,6 @@ QueryParamSource: TypeAlias = Mapping[str, object] | SessionQuerySpec
 QueryResult: TypeAlias = "Session | SessionSummary"
 
 QueryOutputFormat: TypeAlias = str
-QueryTransform: TypeAlias = str | None
 QueryDeliveryName: TypeAlias = Literal["stdout", "browser", "clipboard"]
 
 
@@ -48,23 +44,6 @@ def coerce_query_spec(params: QueryParamSource) -> SessionQuerySpec:
 def describe_query_filters(params: QueryParamSource) -> list[str]:
     """Describe active query filters for CLI feedback."""
     return coerce_query_spec(params).describe()
-
-
-def normalize_message_role_option(value: object) -> tuple[str, ...]:
-    """Normalize raw Click message-role values to canonical strings."""
-    return tuple(role.value for role in normalize_message_roles(value))
-
-
-def normalize_material_origin_option(value: object) -> tuple[str, ...]:
-    """Normalize raw Click material-origin values to canonical strings."""
-
-    if value is None or value == ():
-        return ()
-    raw_values = value if isinstance(value, (tuple, list, set, frozenset)) else (value,)
-    tokens: list[str] = []
-    for raw in raw_values:
-        tokens.extend(part.strip() for part in str(raw).split(",") if part.strip())
-    return tuple(MaterialOrigin.validate_filter_token(raw).value for raw in tokens)
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,13 +73,8 @@ class QueryOutputSpec:
     output_format: QueryOutputFormat
     destinations: tuple[QueryDeliveryTarget, ...]
     fields: str | None
-    dialogue_only: bool
-    message_roles: MessageRoleFilter
-    material_origins: tuple[MaterialOrigin, ...] = ()
-    transform: QueryTransform = None
     list_mode: bool = False
     print_url: bool = False
-    content_projection: ContentProjectionSpec = ContentProjectionSpec()
 
     @classmethod
     def from_params(cls, params: Mapping[str, object]) -> QueryOutputSpec:
@@ -112,16 +86,6 @@ class QueryOutputSpec:
             output_format=str(params.get("output_format") or "markdown"),
             destinations=destinations,
             fields=str(params["fields"]) if params.get("fields") is not None else None,
-            dialogue_only=bool(params.get("dialogue_only", False)),
-            message_roles=normalize_message_roles(params.get("message_role") or params.get("message_roles")),
-            material_origins=tuple(
-                MaterialOrigin.validate_filter_token(origin)
-                for origin in normalize_material_origin_option(
-                    params.get("material_origin") or params.get("material_origins")
-                )
-            ),
-            content_projection=ContentProjectionSpec.from_params(params),
-            transform=str(params["transform"]) if params.get("transform") is not None else None,
             list_mode=bool(params.get("list_mode", False)),
             print_url=bool(params.get("print_url", False)),
         )
@@ -135,19 +99,6 @@ class QueryOutputSpec:
 
     def destination_labels(self) -> tuple[str, ...]:
         return tuple(target.raw for target in self.destinations)
-
-    def effective_message_roles(self) -> MessageRoleFilter:
-        if self.message_roles:
-            return self.message_roles
-        if self.dialogue_only:
-            return (Role.USER, Role.ASSISTANT)
-        return ()
-
-    def filters_messages(self) -> bool:
-        return bool(self.effective_message_roles() or self.material_origins)
-
-    def filters_content(self) -> bool:
-        return self.content_projection.filters_content()
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,13 +206,7 @@ class QueryExecutionPlan:
         )
 
     def prefers_summary_list(self) -> bool:
-        return (
-            self.action == QueryAction.SHOW
-            and self.output.list_mode
-            and self.output.transform is None
-            and not self.output.filters_messages()
-            and not self.output.filters_content()
-        )
+        return self.action == QueryAction.SHOW and self.output.list_mode
 
     def prefers_summary_stats(self) -> bool:
         return self.action == QueryAction.STATS_BY and self.stats_dimension in {"origin", "month", "year", "day"}

@@ -33,7 +33,7 @@ Read only as deep as you need:
 | **Projection** | A derived view of stored evidence — e.g. a Run, ContextSnapshot, or ObservedEvent assembled from underlying rows. Projections are views, not new sources of truth. |
 | **Assertion** | An authored or transform-produced claim about a target (a session, message, or ref), carrying author, value, evidence, status, and visibility. The unifying substrate for user/agent overlays — tags, marks, corrections, notes, saved views. |
 | **Evidence ref / ObjectRef** | A typed pointer to a thing in the archive (a session, message, block, run, …) that a claim or report can cite, so any digest is traceable back to its backing rows. |
-| **Work packet / recovery digest** | A compact, shareable bundle summarizing what an agent session did — cost, repos touched, tools used, what to resume next — assembled from evidence, not free-typed. |
+| **Work packet / session digest** | A compact, shareable bundle summarizing what an agent session did — cost, repos touched, tools used, what to resume next — assembled from evidence, not free-typed. |
 | **Topology edge** | A typed cross-session parent link (continuation, fork, sidechain, subagent). Stored durably even when the parent is ingested out of order. |
 | **Logical session** | The resolved root of a session's parent chain. Continuations, forks, and subagent runs all roll up to one logical work session. |
 | **Context preamble** | A typed bundle composed from the archive — seed session, recent lineage, project state, and resume guidance — that a coding agent can inject at SessionStart as prior memory. Backs `read --view context` and the MCP `compose_context_preamble` / `compile_context` tools. |

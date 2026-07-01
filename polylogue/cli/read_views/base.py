@@ -105,6 +105,7 @@ class ReadViewHandler:
     default_format: str | None = None
     accepted_options: frozenset[ReadViewOptionName] = frozenset()
     option_builder: ReadViewOptionBuilder | None = None
+    accepts_query_set: bool = False
 
     def validate(self, invocation: ReadViewInvocation, request: RootModeRequest) -> None:
         """Validate cross-view selection rules before executing the handler."""

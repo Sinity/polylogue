@@ -304,16 +304,16 @@ benchmark_campaigns:
 
   - name: reader-api
     description: >
-      Reader HTTP API list/get/facets/context-pack/cost-rollup benchmark domain
+      Reader HTTP API list/get/facets/context-image/cost-rollup benchmark domain
     tests:
       - tests/benchmarks/test_reader_api.py
     status: active
 
-  - name: recovery-digest
+  - name: session-digest
     description: >
-      Deterministic recovery digest transform benchmark domain
+      Deterministic session digest transform benchmark domain
     tests:
-      - tests/benchmarks/test_recovery_digest.py
+      - tests/benchmarks/test_session_digest.py
     status: active
 
   - name: daemon-convergence

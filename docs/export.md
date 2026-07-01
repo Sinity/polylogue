@@ -65,18 +65,9 @@ polylogue --since yesterday read --all --format html
 
 ## Content Blocks
 
-Exports include all content blocks: text, thinking blocks, tool use, tool
-results, images, code blocks, and document references. Use output modifiers to
-filter:
-
-```bash
-polylogue --id <id> read --prose-only        # Only authored prose
-polylogue --id <id> read --no-tool-calls     # Strip tool call blocks
-polylogue --id <id> read --no-tool-outputs   # Strip tool result blocks
-polylogue --id <id> read --no-code-blocks    # Strip code blocks
-polylogue --id <id> read --no-file-reads     # Strip file read blocks
-polylogue --dialogue-only --id <id> read     # User/assistant messages only
-```
+Exports include all selected content blocks: text, thinking blocks, tool use,
+tool results, images, code blocks, and document references. Use query-unit
+expressions or explicit read views to narrow what is selected before export.
 
 ## Sharing Considerations
 
@@ -85,5 +76,5 @@ polylogue --dialogue-only --id <id> read     # User/assistant messages only
 - Cost estimates are approximate; API-reported token counts are exact where
   available.
 - Attachment references are preserved but binary blobs are not exported.
-- Use `--prose-only` or content filters to produce cleaner output for
+- Use query-unit filters or a narrower read view to produce cleaner output for
   non-technical audiences.

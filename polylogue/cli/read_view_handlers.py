@@ -42,7 +42,7 @@ from polylogue.cli.read_views.neighbors import (
     build_neighbor_options,
     run_read_neighbors,
 )
-from polylogue.cli.read_views.standard import run_read_summary_or_transcript
+from polylogue.cli.read_views.standard import run_read_summary_or_transcript, run_read_temporal
 from polylogue.cli.shared.types import AppEnv
 
 if TYPE_CHECKING:
@@ -50,8 +50,20 @@ if TYPE_CHECKING:
 
 
 READ_VIEW_HANDLERS: dict[str, ReadViewHandler] = {
-    "summary": ReadViewHandler("summary", "optional", run_read_summary_or_transcript, default_format="markdown"),
-    "transcript": ReadViewHandler("transcript", "optional", run_read_summary_or_transcript, default_format="markdown"),
+    "summary": ReadViewHandler(
+        "summary",
+        "optional",
+        run_read_summary_or_transcript,
+        default_format="markdown",
+        accepts_query_set=True,
+    ),
+    "transcript": ReadViewHandler(
+        "transcript",
+        "optional",
+        run_read_summary_or_transcript,
+        default_format="markdown",
+        accepts_query_set=True,
+    ),
     "messages": ReadViewHandler(
         "messages",
         "required",
@@ -99,6 +111,13 @@ READ_VIEW_HANDLERS: dict[str, ReadViewHandler] = {
         default_format="text",
         accepted_options=CORRELATION_READ_VIEW_OPTION_NAMES,
         option_builder=build_correlation_options,
+    ),
+    "temporal": ReadViewHandler(
+        "temporal",
+        "optional",
+        run_read_temporal,
+        default_format="markdown",
+        accepts_query_set=True,
     ),
 }
 

@@ -144,7 +144,7 @@ def assertion_candidate_review_affordances(
                 ),
                 availability=ActionAvailabilityPayload(
                     disabled_reason=disabled_reason,
-                    next_actions=("read", "context-pack"),
+                    next_actions=("read", "context-image"),
                 ),
             )
         )

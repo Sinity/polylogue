@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -431,16 +432,17 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
     readiness = tiers["derived_readiness"]
     assert readiness["checked"] is True
     assert readiness["source_check_available"] is True
-    assert readiness["counts"]["session_count"] == 2
+    assert readiness["counts"]["session_count"] == UNKNOWN_TABLE_COUNT
     assert readiness["counts"]["raw_link_count"] == 2
     assert readiness["counts"]["missing_raw_session_count"] == 1
-    assert readiness["counts"]["text_block_count"] == 1
-    assert readiness["counts"]["messages_fts_count"] == 1
+    assert readiness["counts"]["raw_materialization_debt_count"] == 0
+    assert readiness["counts"]["text_block_count"] == UNKNOWN_TABLE_COUNT
+    assert readiness["counts"]["messages_fts_count"] == UNKNOWN_TABLE_COUNT
     assert readiness["counts"]["messages_fts_exact_counts"] is False
-    assert readiness["counts"]["profile_row_count"] == 1
+    assert readiness["counts"]["profile_row_count"] == UNKNOWN_TABLE_COUNT
     assert readiness["counts"]["missing_profile_row_count"] == 1
-    assert readiness["counts"]["work_event_row_count"] == 1
-    assert readiness["counts"]["session_tag_count"] == 0
+    assert readiness["counts"]["work_event_row_count"] == UNKNOWN_TABLE_COUNT
+    assert readiness["counts"]["session_tag_count"] == UNKNOWN_TABLE_COUNT
     assert readiness["counts"]["action_count"] == 0
     assert readiness["counts"]["action_count_exact"] is False
     assert readiness["materialization_counts"]["session_profile"] == 1
@@ -451,9 +453,10 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
     assert readiness["ready"]["profile_rows_ready"] is False
     surfaces = readiness["surface_readiness"]
     assert surfaces["archive_sessions"]["ready"] is True
-    assert surfaces["archive_sessions"]["evidence"]["session_count"] == 2
+    assert surfaces["archive_sessions"]["evidence"]["session_count"] == UNKNOWN_TABLE_COUNT
     assert surfaces["raw_artifacts"]["ready"] is False
     assert surfaces["raw_artifacts"]["blockers"] == ["missing_source_raw_sessions"]
+    assert surfaces["raw_artifacts"]["evidence"]["raw_materialization_debt_count"] == 0
     assert surfaces["search"]["ready"] is True
     assert surfaces["search"]["evidence"]["messages_fts_exact_counts"] is False
     assert surfaces["session_profiles"]["ready"] is False
@@ -462,7 +465,7 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
     assert surfaces["timeline_work_events"]["ready"] is False
     assert surfaces["timeline_work_events"]["blockers"] == ["missing_work_events_materialization"]
     assert surfaces["tag_rollups"]["ready"] is True
-    assert surfaces["tag_rollups"]["evidence"]["session_tag_count"] == 0
+    assert surfaces["tag_rollups"]["evidence"]["session_tag_count"] == UNKNOWN_TABLE_COUNT
     assert surfaces["tool_usage"]["ready"] is True
     assert surfaces["tool_usage"]["evidence"]["action_count"] == 0
     assert surfaces["tool_usage"]["evidence"]["action_count_exact"] is False
@@ -477,6 +480,7 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
     assert expensive_payload["archive_tiers"]["tiers"]["source"]["integrity"] == "ok"
     assert expensive_payload["archive_tiers"]["derived_readiness"]["counts"]["messages_fts_exact_counts"] is True
     assert expensive_payload["archive_tiers"]["derived_readiness"]["counts"]["action_count_exact"] is True
+    assert expensive_payload["archive_tiers"]["derived_readiness"]["counts"]["session_count"] == 2
     assert tiers["tiers"]["source"]["table_counts"]["raw_sessions"] == 1
     assert tiers["tiers"]["index"]["table_counts"]["sessions"] == 2
     assert tiers["tiers"]["user"]["table_counts"]["assertions"] == 3
@@ -622,6 +626,59 @@ def test_daemon_workload_probe_reports_archive_source_path_churn(tmp_path: Path)
     assert source_plan["hazards"] == []
     assert any("idx_raw_sessions_source_path" in item for item in source_plan["plan"])
     assert any("idx_sessions_raw_id" in item for item in source_plan["plan"])
+
+
+def test_daemon_workload_probe_reports_raw_materialization_debt(tmp_path: Path) -> None:
+    db = tmp_path / "index.db"
+    source_path = tmp_path / "unmaterialized.jsonl"
+    source_path.write_text('{"sessionId":"native-1"}\n', encoding="utf-8")
+    for tier in (ArchiveTier.SOURCE, ArchiveTier.INDEX):
+        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                parsed_at_ms, validation_status, acquired_at_ms
+            ) VALUES ('raw-unmaterialized', 'codex-session', 'native-1', ?, ?, 10, 1, 'passed', 1)
+            """,
+            (str(source_path), b"x" * 32),
+        )
+    blob_path = tmp_path / "blob" / "78" / ("78" * 31)
+    blob_path.parent.mkdir(parents=True)
+    blob_path.write_bytes(b"x")
+
+    payload = probe(db)
+
+    readiness = payload["archive_tiers"]["derived_readiness"]
+    assert readiness["counts"]["raw_materialization_debt_count"] == 1
+    assert readiness["counts"]["raw_materialization_debt_group_count"] == 1
+    assert readiness["ready"]["raw_materialization_ready"] is False
+    assert readiness["surface_readiness"]["raw_artifacts"]["ready"] is False
+    assert readiness["surface_readiness"]["raw_artifacts"]["blockers"] == ["unmaterialized_raw_sessions"]
+
+
+def test_daemon_workload_probe_does_not_block_on_informational_raw_debt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = tmp_path / "index.db"
+    for tier in (ArchiveTier.SOURCE, ArchiveTier.INDEX):
+        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+
+    def fake_archive_debt_list(**_kwargs: object) -> object:
+        return SimpleNamespace(totals=SimpleNamespace(actionable=0, total=3))
+
+    monkeypatch.setattr("polylogue.operations.archive_debt.archive_debt_list", fake_archive_debt_list)
+
+    payload = probe(db)
+
+    readiness = payload["archive_tiers"]["derived_readiness"]
+    assert readiness["counts"]["raw_materialization_debt_count"] == 0
+    assert readiness["counts"]["raw_materialization_debt_group_count"] == 3
+    assert readiness["ready"]["raw_materialization_ready"] is True
+    assert readiness["surface_readiness"]["raw_artifacts"]["ready"] is True
+    assert readiness["surface_readiness"]["raw_artifacts"]["blockers"] == []
 
 
 def test_probe_payload_carries_stable_top_level_shape(tmp_path: Path) -> None:
@@ -802,7 +859,7 @@ def test_compare_computes_structured_delta(tmp_path: Path) -> None:
     source = tmp_path / "session.jsonl"
     _seed_minimal_archive(db, source)
 
-    before_payload = probe(db, exact_table_counts=True)
+    before_payload = probe(db, exact_table_counts=True, exact_derived_counts=True)
 
     # Simulate a convergence cycle that added a second raw + session +
     # ran a second live attempt.
@@ -846,7 +903,7 @@ def test_compare_computes_structured_delta(tmp_path: Path) -> None:
         cursor_fingerprint_read_bytes=0,
     )
 
-    after_payload = probe(db, exact_table_counts=True)
+    after_payload = probe(db, exact_table_counts=True, exact_derived_counts=True)
 
     diff = compare(before_payload, after_payload)
     assert diff["ok"] is True
@@ -869,7 +926,7 @@ def test_compare_reports_archive_derived_readiness_deltas(tmp_path: Path) -> Non
     db = tmp_path / "index.db"
     initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
 
-    before_payload = probe(db, exact_table_counts=True)
+    before_payload = probe(db, exact_table_counts=True, exact_derived_counts=True)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         conn.execute(
             """
@@ -879,7 +936,7 @@ def test_compare_reports_archive_derived_readiness_deltas(tmp_path: Path) -> Non
             """,
             (b"y" * 32,),
         )
-    after_payload = probe(db, exact_table_counts=True)
+    after_payload = probe(db, exact_table_counts=True, exact_derived_counts=True)
 
     diff = compare(before_payload, after_payload)
 

@@ -11,7 +11,7 @@ from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
-from polylogue.insights.transforms import compile_recovery_digest
+from polylogue.insights.transforms import compile_session_digest
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -866,10 +866,10 @@ def test_assertion_targets_various_ref_shapes(tmp_path: Path) -> None:
         conn.close()
 
 
-def test_recovery_digest_candidates_write_transform_candidate_assertions(tmp_path: Path) -> None:
+def test_session_digest_candidates_write_transform_candidate_assertions(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "user.db")
     try:
-        digest = compile_recovery_digest(_recovery_candidate_session())
+        digest = compile_session_digest(_recovery_candidate_session())
         assert digest.decision_candidates
 
         written = upsert_transform_candidate_assertions(
@@ -901,7 +901,7 @@ def test_recovery_digest_candidates_write_transform_candidate_assertions(tmp_pat
             assertion = mirrored_by_id[expected_id]
             assert assertion.assertion_id == expected_id
             assert assertion.kind == AssertionKind.TRANSFORM_CANDIDATE
-            assert assertion.scope_ref == "transform:recovery_digest_v0@v1"
+            assert assertion.scope_ref == "transform:session_digest_v0@v1"
             assert assertion.target_ref == "session:codex-session:assertion-demo"
             assert assertion.key == f"candidate/{candidate.kind}/{index}"
             assert assertion.value == {
@@ -909,11 +909,11 @@ def test_recovery_digest_candidates_write_transform_candidate_assertions(tmp_pat
                 "candidate_kind": candidate.kind,
                 "session_id": digest.session_id,
                 "source_origin": "codex-session",
-                "transform_id": "recovery_digest_v0",
+                "transform_id": "session_digest_v0",
                 "transform_version": 1,
             }
             assert assertion.body_text == candidate.text
-            assert assertion.author_ref == "transform:recovery_digest_v0@v1"
+            assert assertion.author_ref == "transform:session_digest_v0@v1"
             assert assertion.author_kind == "transform"
             assert assertion.evidence_refs == evidence_refs
             assert assertion.status == "candidate"
@@ -959,7 +959,7 @@ def test_recovery_digest_candidates_write_transform_candidate_assertions(tmp_pat
 def test_candidate_assertion_acceptance_creates_active_assertion_with_lineage(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "user.db")
     try:
-        digest = compile_recovery_digest(_recovery_candidate_session())
+        digest = compile_session_digest(_recovery_candidate_session())
         candidate = upsert_transform_candidate_assertions(conn, digest, now_ms=1_700_000_000_000)[0]
 
         result = judge_assertion_candidate(
@@ -996,7 +996,7 @@ def test_candidate_assertion_acceptance_creates_active_assertion_with_lineage(tm
 def test_candidate_assertion_rejection_preserves_reason_and_filtering(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "user.db")
     try:
-        digest = compile_recovery_digest(_recovery_candidate_session())
+        digest = compile_session_digest(_recovery_candidate_session())
         candidate = upsert_transform_candidate_assertions(conn, digest, now_ms=1_700_000_000_000)[0]
 
         result = judge_assertion_candidate(
@@ -1026,7 +1026,7 @@ def test_candidate_assertion_rejection_preserves_reason_and_filtering(tmp_path: 
 def test_candidate_assertion_defer_records_reason_without_promoting(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "user.db")
     try:
-        digest = compile_recovery_digest(_recovery_candidate_session())
+        digest = compile_session_digest(_recovery_candidate_session())
         candidate = upsert_transform_candidate_assertions(conn, digest, now_ms=1_700_000_000_000)[0]
 
         result = judge_assertion_candidate(
@@ -1064,7 +1064,7 @@ def test_candidate_assertion_defer_records_reason_without_promoting(tmp_path: Pa
 def test_candidate_assertion_supersede_records_replacement_and_lineage(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "user.db")
     try:
-        digest = compile_recovery_digest(_recovery_candidate_session())
+        digest = compile_session_digest(_recovery_candidate_session())
         candidate = upsert_transform_candidate_assertions(conn, digest, now_ms=1_700_000_000_000)[0]
 
         result = judge_assertion_candidate(
@@ -1100,7 +1100,7 @@ def test_candidate_assertion_supersede_records_replacement_and_lineage(tmp_path:
 def test_candidate_reviews_survive_remirror_without_becoming_authoritative(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "user.db")
     try:
-        digest = compile_recovery_digest(_recovery_candidate_session())
+        digest = compile_session_digest(_recovery_candidate_session())
         duplicate_digest = digest.model_copy(update={"decision_candidates": (digest.decision_candidates[0],) * 3})
         candidates = upsert_transform_candidate_assertions(
             conn,
