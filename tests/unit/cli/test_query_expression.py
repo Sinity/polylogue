@@ -3642,6 +3642,48 @@ class TestBooleanQueryExpression:
         assert row.cwd == "/realm/project/polylogue"
         assert row.context_snapshot_ref == "context-snapshot:codex-session:child-run:subagent_start"
 
+    def test_terminal_main_run_reads_sessions_without_materialization(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.surfaces.payloads import RunQueryRowPayload
+        from tests.infra.storage_records import SessionBuilder
+
+        archive_root = workspace_env["archive_root"]
+        index_db = archive_root / "index.db"
+        (
+            SessionBuilder(index_db, "main-run")
+            .provider("claude-code")
+            .git_repository_url("polylogue")
+            .git_branch("feature/main-run-source")
+            .title("source main run")
+            .add_message("m-run", role="user", text="Inspect the run query source.")
+            .save()
+        )
+
+        query = "runs where harness:claude-code AND role:main AND branch:feature/main-run-source"
+        source = parse_unit_source_expression(query)
+        assert source is not None
+
+        with sqlite3.connect(index_db) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM session_runs").fetchone()[0] == 0
+
+        with ArchiveStore.open_existing(archive_root) as archive:
+            envelope = query_unit_rows(archive, source, query=query, limit=10)
+
+        assert envelope.unit == "run"
+        assert len(envelope.items) == 1
+        row = envelope.items[0]
+        assert isinstance(row, RunQueryRowPayload)
+        assert row.session_id == "claude-code-session:ext-main-run"
+        assert row.run_ref == "run:claude-code-session:ext-main-run"
+        assert row.harness == "claude-code"
+        assert row.role == "main"
+        assert row.status == "completed"
+        assert row.confidence == "raw"
+        assert row.agent_ref == "agent:claude-code/main"
+        assert row.evidence_refs == ("claude-code-session:ext-main-run",)
+        assert row.context_snapshot_ref == "context-snapshot:claude-code-session:ext-main-run:session_start"
+
     def test_terminal_run_sort_by_time_orders_across_sessions(self, workspace_env: dict[str, Path]) -> None:
         """`runs | sort by time` orders by owning-session time, not per-session position.
 
@@ -3747,6 +3789,48 @@ class TestBooleanQueryExpression:
         # SQL terminal units now accept the full session-scoped field set.
         assert parse_unit_source_expression("context-snapshots where session.tool:bash AND boundary:session_start")
         assert parse_unit_source_expression("context-snapshots where session.path:polylogue AND boundary:session_start")
+
+    def test_terminal_context_snapshot_reads_sessions_without_materialization(
+        self, workspace_env: dict[str, Path]
+    ) -> None:
+        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.surfaces.payloads import ContextSnapshotQueryRowPayload
+        from tests.infra.storage_records import SessionBuilder
+
+        archive_root = workspace_env["archive_root"]
+        index_db = archive_root / "index.db"
+        (
+            SessionBuilder(index_db, "source-context")
+            .provider("codex")
+            .git_repository_url("polylogue")
+            .title("source context snapshot")
+            .add_message("m-context", role="user", text="Initial context prompt")
+            .save()
+        )
+
+        query = "context-snapshots where session.repo:polylogue AND boundary:session_start AND text:source-context"
+        source = parse_unit_source_expression(query)
+        assert source is not None
+
+        with sqlite3.connect(index_db) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM session_context_snapshots").fetchone()[0] == 0
+
+        with ArchiveStore.open_existing(archive_root) as archive:
+            envelope = query_unit_rows(archive, source, query=query, limit=10)
+
+        assert envelope.unit == "context-snapshot"
+        assert len(envelope.items) == 1
+        row = envelope.items[0]
+        assert isinstance(row, ContextSnapshotQueryRowPayload)
+        assert row.session_id == "codex-session:ext-source-context"
+        assert row.snapshot_ref == "context-snapshot:codex-session:ext-source-context:session_start"
+        assert row.run_ref == "run:codex-session:ext-source-context"
+        assert row.boundary == "session_start"
+        assert row.inheritance_mode == "unknown"
+        assert row.segment_refs == ("session:codex-session:ext-source-context",)
+        assert row.evidence_refs == ("codex-session:ext-source-context",)
+        assert row.metadata == {"source": "archive-session"}
 
     def test_sql_terminal_unit_rejects_unbound_session_predicate(
         self,

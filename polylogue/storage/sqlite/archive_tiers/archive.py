@@ -486,6 +486,215 @@ observed_events AS (
 """
 
 
+_SOURCE_RUN_RELATION_SQL = """
+WITH source_runs AS (
+    SELECT
+        'source' AS row_source,
+        'run:' || s0.session_id AS run_ref,
+        s0.session_id AS session_id,
+        0 AS position,
+        printf('%016d', COALESCE(s0.updated_at_ms, s0.created_at_ms, 0)) AS source_updated_at,
+        s0.session_id AS native_session_id,
+        s0.parent_session_id AS native_parent_session_id,
+        CASE WHEN s0.parent_session_id IS NOT NULL THEN 'run:' || s0.parent_session_id ELSE NULL END AS parent_run_ref,
+        'agent:' ||
+            CASE
+                WHEN s0.origin = 'codex-session' THEN 'codex'
+                WHEN s0.origin = 'claude-code-session' THEN 'claude-code'
+                WHEN s0.origin = 'chatgpt-export' THEN 'chatgpt'
+                WHEN s0.origin IN ('gemini-cli-session', 'hermes-session', 'antigravity-session') THEN 'local'
+                ELSE 'unknown'
+            END || '/main' AS agent_ref,
+        json_array('run:' || s0.session_id) AS lineage_refs_json,
+        s0.origin AS provider_origin,
+        CASE
+            WHEN s0.origin = 'codex-session' THEN 'codex'
+            WHEN s0.origin = 'claude-code-session' THEN 'claude-code'
+            WHEN s0.origin = 'chatgpt-export' THEN 'chatgpt'
+            WHEN s0.origin IN ('gemini-cli-session', 'hermes-session', 'antigravity-session') THEN 'local'
+            ELSE 'unknown'
+        END AS harness,
+        'main' AS role,
+        COALESCE(NULLIF(s0.title, ''), s0.session_id) AS title,
+        NULL AS cwd,
+        s0.git_branch AS git_branch,
+        CASE WHEN s0.message_count > 0 OR s0.tool_use_count > 0 THEN 'completed' ELSE 'unknown' END AS status,
+        'raw' AS confidence,
+        s0.session_id AS transcript_ref,
+        json_array(s0.session_id) AS evidence_refs_json,
+        'context-snapshot:' || s0.session_id || ':session_start' AS context_snapshot_ref,
+        trim(COALESCE(s0.title, '') || ' ' || COALESCE(s0.native_id, '') || ' ' || COALESCE(s0.git_branch, '')) AS search_text
+    FROM sessions s0
+),
+materialized_runs AS (
+    SELECT
+        'materialized' AS row_source,
+        r.run_ref,
+        r.session_id,
+        r.position,
+        r.source_updated_at,
+        r.native_session_id,
+        r.native_parent_session_id,
+        r.parent_run_ref,
+        r.agent_ref,
+        r.lineage_refs_json,
+        r.provider_origin,
+        r.harness,
+        r.role,
+        r.title,
+        r.cwd,
+        r.git_branch,
+        r.status,
+        r.confidence,
+        r.transcript_ref,
+        r.evidence_refs_json,
+        r.context_snapshot_ref,
+        r.search_text,
+        r.payload_json
+    FROM session_runs r
+    WHERE r.role <> 'main'
+        OR NOT EXISTS (
+            SELECT 1
+            FROM source_runs source
+            WHERE source.session_id = r.session_id
+        )
+),
+runs AS (
+    SELECT
+        row_source,
+        run_ref,
+        session_id,
+        position,
+        source_updated_at,
+        native_session_id,
+        native_parent_session_id,
+        parent_run_ref,
+        agent_ref,
+        lineage_refs_json,
+        provider_origin,
+        harness,
+        role,
+        title,
+        cwd,
+        git_branch,
+        status,
+        confidence,
+        transcript_ref,
+        evidence_refs_json,
+        context_snapshot_ref,
+        search_text,
+        NULL AS payload_json
+    FROM source_runs
+    UNION ALL
+    SELECT * FROM materialized_runs
+)
+"""
+
+
+_SOURCE_CONTEXT_SNAPSHOT_RELATION_SQL = """
+WITH source_context_snapshots AS (
+    SELECT
+        'source' AS row_source,
+        'context-snapshot:' || s0.session_id || ':session_start' AS snapshot_ref,
+        s0.session_id AS session_id,
+        'run:' || s0.session_id AS run_ref,
+        0 AS position,
+        printf('%016d', COALESCE(s0.updated_at_ms, s0.created_at_ms, 0)) AS source_updated_at,
+        'session_start' AS boundary,
+        'unknown' AS inheritance_mode,
+        json_array('session:' || s0.session_id) AS segment_refs_json,
+        json_array(s0.session_id) AS evidence_refs_json,
+        json_object('source', 'archive-session') AS metadata_json,
+        trim(COALESCE(s0.title, '') || ' ' || COALESCE(s0.native_id, '')) AS search_text
+    FROM sessions s0
+),
+materialized_context_snapshots AS (
+    SELECT
+        'materialized' AS row_source,
+        c.snapshot_ref,
+        c.session_id,
+        c.run_ref,
+        c.position,
+        c.source_updated_at,
+        c.boundary,
+        c.inheritance_mode,
+        c.segment_refs_json,
+        c.evidence_refs_json,
+        c.metadata_json,
+        c.search_text,
+        c.payload_json
+    FROM session_context_snapshots c
+    WHERE c.boundary <> 'session_start'
+        OR NOT EXISTS (
+            SELECT 1
+            FROM source_context_snapshots source
+            WHERE source.session_id = c.session_id
+        )
+),
+context_snapshots AS (
+    SELECT
+        row_source,
+        snapshot_ref,
+        session_id,
+        run_ref,
+        position,
+        source_updated_at,
+        boundary,
+        inheritance_mode,
+        segment_refs_json,
+        evidence_refs_json,
+        metadata_json,
+        search_text,
+        NULL AS payload_json
+    FROM source_context_snapshots
+    UNION ALL
+    SELECT * FROM materialized_context_snapshots
+)
+"""
+
+
+def _projected_run_from_query_row(row: sqlite3.Row) -> ProjectedRun:
+    if str(row["row_source"]) == "materialized":
+        return ProjectedRun.model_validate(json.loads(row["payload_json"]))
+    return ProjectedRun(
+        run_ref=ObjectRef.parse(str(row["run_ref"])),
+        native_session_id=str(row["native_session_id"]) if row["native_session_id"] is not None else None,
+        native_parent_session_id=str(row["native_parent_session_id"])
+        if row["native_parent_session_id"] is not None
+        else None,
+        parent_run_ref=ObjectRef.parse(str(row["parent_run_ref"])) if row["parent_run_ref"] is not None else None,
+        agent_ref=ObjectRef.parse(str(row["agent_ref"])) if row["agent_ref"] is not None else None,
+        lineage_refs=tuple(ObjectRef.parse(ref) for ref in _tuple_from_json_array(row["lineage_refs_json"])),
+        provider_origin=str(row["provider_origin"]),
+        harness=str(row["harness"]),  # type: ignore[arg-type]
+        role="main",
+        title=str(row["title"]),
+        cwd=str(row["cwd"]) if row["cwd"] is not None else None,
+        git_branch=str(row["git_branch"]) if row["git_branch"] is not None else None,
+        status=str(row["status"]),  # type: ignore[arg-type]
+        confidence="raw",
+        transcript_ref=EvidenceRef.parse(str(row["transcript_ref"])) if row["transcript_ref"] is not None else None,
+        evidence_refs=tuple(EvidenceRef.parse(ref) for ref in _tuple_from_json_array(row["evidence_refs_json"])),
+        context_snapshot_ref=ObjectRef.parse(str(row["context_snapshot_ref"]))
+        if row["context_snapshot_ref"] is not None
+        else None,
+    )
+
+
+def _context_snapshot_from_query_row(row: sqlite3.Row) -> ContextSnapshot:
+    if str(row["row_source"]) == "materialized":
+        return ContextSnapshot.model_validate(json.loads(row["payload_json"]))
+    return ContextSnapshot(
+        snapshot_ref=ObjectRef.parse(str(row["snapshot_ref"])),
+        run_ref=ObjectRef.parse(str(row["run_ref"])),
+        boundary="session_start",
+        inheritance_mode="unknown",
+        segment_refs=tuple(ObjectRef.parse(ref) for ref in _tuple_from_json_array(row["segment_refs_json"])),
+        evidence_refs=tuple(EvidenceRef.parse(ref) for ref in _tuple_from_json_array(row["evidence_refs_json"])),
+        metadata=dict(json.loads(str(row["metadata_json"] or "{}"))),
+    )
+
+
 def _observed_event_source_pushdown(predicate: QueryPredicate) -> tuple[str, list[object]]:
     clauses: list[str] = []
     params: list[object] = []
@@ -4626,7 +4835,7 @@ class ArchiveStore:
         sort: Literal["time"] | None = None,
         sort_direction: Literal["asc", "desc"] = "asc",
     ) -> list[ArchiveRunQueryRow]:
-        """Return materialized run rows matching a unit-scoped predicate."""
+        """Return run rows matching a unit-scoped predicate."""
 
         normalized_limit = max(int(limit), 0)
         normalized_offset = max(int(offset), 0)
@@ -4645,8 +4854,9 @@ class ArchiveStore:
             session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
         rows = self._conn.execute(
             f"""
-            SELECT r.session_id, s.origin, s.title, r.payload_json
-            FROM session_runs r
+            {_SOURCE_RUN_RELATION_SQL}
+            SELECT r.*, s.origin, s.title AS session_title
+            FROM runs r
             JOIN sessions s ON r.session_id = s.session_id
             WHERE {clause}
             {session_clause}
@@ -4659,8 +4869,8 @@ class ArchiveStore:
             ArchiveRunQueryRow(
                 session_id=str(row["session_id"]),
                 origin=str(row["origin"]),
-                title=str(row["title"]) if row["title"] is not None else None,
-                run=ProjectedRun.model_validate(json.loads(row["payload_json"])),
+                title=str(row["session_title"]) if row["session_title"] is not None else None,
+                run=_projected_run_from_query_row(row),
             )
             for row in rows
         ]
@@ -4726,7 +4936,7 @@ class ArchiveStore:
         sort: Literal["time"] | None = None,
         sort_direction: Literal["asc", "desc"] = "asc",
     ) -> list[ArchiveContextSnapshotQueryRow]:
-        """Return materialized context-snapshot rows matching a unit-scoped predicate."""
+        """Return context-snapshot rows matching a unit-scoped predicate."""
 
         normalized_limit = max(int(limit), 0)
         normalized_offset = max(int(offset), 0)
@@ -4745,8 +4955,9 @@ class ArchiveStore:
             session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
         rows = self._conn.execute(
             f"""
-            SELECT c.session_id, s.origin, s.title, c.payload_json
-            FROM session_context_snapshots c
+            {_SOURCE_CONTEXT_SNAPSHOT_RELATION_SQL}
+            SELECT c.*, s.origin, s.title AS session_title
+            FROM context_snapshots c
             JOIN sessions s ON c.session_id = s.session_id
             WHERE {clause}
             {session_clause}
@@ -4759,8 +4970,8 @@ class ArchiveStore:
             ArchiveContextSnapshotQueryRow(
                 session_id=str(row["session_id"]),
                 origin=str(row["origin"]),
-                title=str(row["title"]) if row["title"] is not None else None,
-                snapshot=ContextSnapshot.model_validate(json.loads(row["payload_json"])),
+                title=str(row["session_title"]) if row["session_title"] is not None else None,
+                snapshot=_context_snapshot_from_query_row(row),
             )
             for row in rows
         ]
