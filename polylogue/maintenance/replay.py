@@ -602,6 +602,7 @@ def _run_one_target(
                 provider=scope_filter.provider,
                 source_family=scope_filter.source_family,
                 source_root=scope_filter.source_root,
+                progress_callback=_emit_target_progress,
             )
         else:
             result = repair_fn(config, dry_run)

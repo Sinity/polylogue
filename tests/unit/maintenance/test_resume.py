@@ -246,6 +246,57 @@ def test_session_insight_progress_is_forwarded_within_target(
     assert snapshots[0].processed == 0
     assert snapshots[0].progress_amount == 17
     assert snapshots[-1].processed == 1
+
+
+def test_raw_materialization_progress_is_forwarded_within_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _make_config(tmp_path)
+    snapshots: list[ReplayProgress] = []
+
+    def repair_with_progress(
+        _config: Config,
+        _dry_run: bool,
+        *,
+        raw_artifact_id: str | None = None,
+        provider: str | None = None,
+        source_family: str | None = None,
+        source_root: Path | None = None,
+        progress_callback: Any = None,
+    ) -> RepairResult:
+        assert raw_artifact_id is None
+        assert provider is None
+        assert source_family is None
+        assert source_root is None
+        assert callable(progress_callback)
+        progress_callback(1, desc="raw_materialization: parsed raw 1/2")
+        progress_callback(2, desc="raw_materialization: parsed raw 2/2")
+        return _ok_result("raw_materialization", repaired=2)
+
+    monkeypatch.setattr("polylogue.maintenance.replay.repair_raw_materialization", repair_with_progress)
+    monkeypatch.setitem(
+        replay_module._REPLAY_DISPATCH,
+        "raw_materialization",
+        repair_with_progress,
+    )
+
+    op = execute_replay(
+        config,
+        targets=("raw_materialization",),
+        operation_id="op-raw-progress-inner",
+        progress_callback=snapshots.append,
+    )
+
+    assert op.status is BackfillStatus.COMPLETED
+    assert [snapshot.progress_desc for snapshot in snapshots] == [
+        "raw_materialization: parsed raw 1/2",
+        "raw_materialization: parsed raw 2/2",
+        None,
+    ]
+    assert [snapshot.progress_amount for snapshot in snapshots] == [1, 2, None]
+    assert snapshots[0].processed == 0
+    assert snapshots[-1].processed == 1
     assert snapshots[-1].cursor == CURSOR_DONE
 
 

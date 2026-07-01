@@ -1177,6 +1177,7 @@ def repair_raw_materialization(
     provider: str | None = None,
     source_family: str | None = None,
     source_root: Path | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> RepairResult:
     """Materialize replayable raw evidence into the index tier."""
     candidates = _raw_materialization_candidate_ids(
@@ -1222,10 +1223,26 @@ def repair_raw_materialization(
 
         backend = SQLiteBackend(db_path=config.archive_root / "index.db")
         repository = SessionRepository(backend=backend, archive_root=config.archive_root)
+        processed_total = 0
         try:
             service = ParsingService(repository=repository, archive_root=config.archive_root, config=config)
-            result = await service.parse_from_raw(raw_ids=raw_ids, force_write=False, repair_message_fts=False)
-            return len(result.processed_ids)
+            total = len(raw_ids)
+            for index, raw_id in enumerate(raw_ids, start=1):
+                if progress_callback is not None:
+                    progress_callback(
+                        index - 1,
+                        desc=f"raw_materialization: parsing raw {index}/{total} {raw_id[:12]}",
+                    )
+                result = await service.parse_from_raw(raw_ids=[raw_id], force_write=False, repair_message_fts=False)
+                processed_total += len(result.processed_ids)
+                if progress_callback is not None:
+                    progress_callback(
+                        index,
+                        desc=(
+                            f"raw_materialization: parsed raw {index}/{total} {raw_id[:12]} changed={processed_total}"
+                        ),
+                    )
+            return processed_total
         finally:
             await repository.close()
 
