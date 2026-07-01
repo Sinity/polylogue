@@ -10,6 +10,7 @@ from polylogue.surfaces.payloads import ArchiveDebtListPayload
 
 _DEBT_KINDS = ("archive-tier", "assertion-candidate", "convergence", "embedding", "fts", "raw-materialization")
 _DEBT_STATUSES = ("open", "actionable", "blocked", "classified")
+_DEFAULT_DEBT_STATUSES = ("open", "actionable", "blocked")
 
 
 @click.group("debt")
@@ -30,7 +31,7 @@ def debt_command() -> None:
     "statuses",
     type=click.Choice(_DEBT_STATUSES),
     multiple=True,
-    help="Restrict rows to one debt status. Repeatable.",
+    help="Restrict rows to one debt status. Repeatable. Defaults to unresolved statuses.",
 )
 @click.option("--only-actionable", is_flag=True, help="Only show rows with a direct operator action.")
 @click.option("--limit", "-l", type=int, default=None, help="Maximum rows to emit.")
@@ -53,10 +54,11 @@ def debt_list_command(
 ) -> None:
     """List archive debt across assertions, tiers, raw ingest, convergence, embedding, and FTS signals."""
     archive_root = active_index_db_path().parent
+    selected_statuses = statuses or _DEFAULT_DEBT_STATUSES
     payload = archive_debt_list(
         archive_root=archive_root,
         kinds=kinds,
-        statuses=statuses,
+        statuses=selected_statuses,
         only_actionable=only_actionable,
         limit=limit,
         exact_fts=exact_fts,

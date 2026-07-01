@@ -83,7 +83,7 @@ def test_debt_list_json_uses_shared_payload(
     assert payload["rows"][0]["debt_ref"] == "debt:embedding:catchup:backlog"
     assert captured["archive_root"] == tmp_path
     assert captured["kinds"] == ("embedding",)
-    assert captured["statuses"] == ()
+    assert captured["statuses"] == ("open", "actionable", "blocked")
 
 
 def test_debt_list_json_passes_status_filter(
