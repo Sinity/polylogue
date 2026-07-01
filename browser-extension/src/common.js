@@ -154,6 +154,63 @@
     });
   }
 
+  function firstMatch(selectors) {
+    for (const selector of selectors) {
+      const node = document.querySelector(selector);
+      if (node) return node;
+    }
+    return null;
+  }
+
+  function setComposerText(node, text) {
+    node.focus();
+    // ProseMirror / Lexical / contenteditable composers register input through
+    // beforeinput+input. execCommand("insertText") drives that path most
+    // reliably; selecting all first replaces any existing draft.
+    try {
+      const selection = window.getSelection();
+      if (selection) {
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+      const inserted = document.execCommand && document.execCommand("insertText", false, text);
+      if (inserted) return true;
+    } catch {
+      /* fall through to manual path */
+    }
+    // Fallback: set content directly and dispatch an input event.
+    if (typeof node.value === "string") {
+      node.value = text;
+    } else {
+      node.textContent = text;
+    }
+    node.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, data: text, inputType: "insertText" }));
+    return true;
+  }
+
+  // Deliver a post command into a provider composer. SAFETY: this fills the
+  // composer and only clicks send when command.submit === true. The default is a
+  // dry-run that leaves the drafted text in place without submitting, so an
+  // accidental dispatch never posts to a live thread.
+  async function postReplyToComposer({ command, composerSelectors, sendSelectors }) {
+    const observed_url = window.location.href;
+    const text = command && typeof command.text === "string" ? command.text : "";
+    if (!text) return { status: "failed", detail: "empty_text", observed_url };
+    const composer = firstMatch(composerSelectors);
+    if (!composer) return { status: "failed", detail: "composer_not_found", observed_url };
+    setComposerText(composer, text);
+    if (command.submit !== true) {
+      return { status: "submitted", detail: "dry_run_filled_not_sent", observed_url };
+    }
+    const sendButton = firstMatch(sendSelectors);
+    if (!sendButton) return { status: "failed", detail: "send_button_not_found", observed_url };
+    if (sendButton.disabled) return { status: "failed", detail: "send_button_disabled", observed_url };
+    sendButton.click();
+    return { status: "submitted", detail: "sent", observed_url };
+  }
+
   const existingCapture = window.polylogueCapture || {};
   window.polylogueCapture = {
     ...existingCapture,
@@ -161,6 +218,7 @@
     sessionIdFromUrl,
     capturePage: existingCapture.capturePage || null,
     fnv1a,
+    postReplyToComposer,
     refreshArchiveState,
     sendCapture,
     temporarySessionId,

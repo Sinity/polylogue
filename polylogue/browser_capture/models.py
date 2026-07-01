@@ -227,6 +227,108 @@ class BrowserCaptureErrorPayload(BaseModel):
     error: str
 
 
+BrowserPostProvider = Literal["chatgpt", "claude"]
+BrowserPostCommandStatus = Literal["pending", "dispatched", "submitted", "failed"]
+BrowserPostAckStatus = Literal["submitted", "failed"]
+
+
+class BrowserPostTarget(BaseModel):
+    """Where a post command should land.
+
+    ``conversation_id`` is the provider-native conversation id of an existing
+    thread, or the literal ``"new"`` to request a fresh thread. ``project_ref``
+    optionally pins the post to a provider project/workspace (e.g. a ChatGPT
+    ``g-p-<project>`` segment).
+    """
+
+    conversation_id: str = "new"
+    project_ref: str | None = None
+
+    @field_validator("conversation_id", mode="before")
+    @classmethod
+    def coerce_conversation_id(cls, value: object) -> str:
+        if value is None:
+            return "new"
+        text = str(value).strip()
+        return text or "new"
+
+
+class BrowserPostCommandRequest(BaseModel):
+    """Operator/agent request to enqueue an outbound post command."""
+
+    provider: BrowserPostProvider
+    target: BrowserPostTarget = Field(default_factory=BrowserPostTarget)
+    text: str
+    command_id: str | None = None
+    submit: bool = False
+
+    @field_validator("text")
+    @classmethod
+    def require_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("post command text must not be empty")
+        return value
+
+
+class BrowserPostCommand(BaseModel):
+    """A persisted outbound post command and its lifecycle state."""
+
+    polylogue_post_command_kind: Literal["browser_post_command"] = "browser_post_command"
+    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
+    command_id: str
+    provider: BrowserPostProvider
+    target: BrowserPostTarget
+    text: str
+    submit: bool = False
+    status: BrowserPostCommandStatus = "pending"
+    created_at: str
+    updated_at: str
+    dispatched_at: str | None = None
+    acked_at: str | None = None
+    detail: str | None = None
+    observed_url: str | None = None
+
+
+class BrowserPostCommandAckRequest(BaseModel):
+    """Extension-reported result for a dispatched post command."""
+
+    status: BrowserPostAckStatus
+    detail: str | None = None
+    observed_url: str | None = None
+
+
+class BrowserPostEnqueuedPayload(BaseModel):
+    """Response to ``POST /v1/post-commands``."""
+
+    ok: Literal[True] = True
+    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
+    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
+    command_id: str
+    provider: BrowserPostProvider
+    status: BrowserPostCommandStatus
+    submit: bool
+
+
+class BrowserPostCommandListPayload(BaseModel):
+    """Response to ``GET /v1/post-commands``."""
+
+    ok: Literal[True] = True
+    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
+    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
+    post_enabled: bool
+    commands: list[BrowserPostCommand] = Field(default_factory=list)
+
+
+class BrowserPostAckPayload(BaseModel):
+    """Response to ``POST /v1/post-commands/<command_id>/ack``."""
+
+    ok: Literal[True] = True
+    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
+    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
+    command_id: str
+    status: BrowserPostCommandStatus
+
+
 def looks_like_browser_capture(payload: object) -> bool:
     """Return whether a payload is a browser-capture envelope."""
     if not isinstance(payload, dict):
@@ -256,5 +358,15 @@ __all__ = [
     "BrowserCaptureSession",
     "BrowserCaptureSessionKind",
     "BrowserCaptureTurn",
+    "BrowserPostAckPayload",
+    "BrowserPostAckStatus",
+    "BrowserPostCommand",
+    "BrowserPostCommandAckRequest",
+    "BrowserPostCommandListPayload",
+    "BrowserPostCommandRequest",
+    "BrowserPostCommandStatus",
+    "BrowserPostEnqueuedPayload",
+    "BrowserPostProvider",
+    "BrowserPostTarget",
     "looks_like_browser_capture",
 ]

@@ -18,11 +18,21 @@ from polylogue.browser_capture.models import (
     BrowserCaptureAcceptedPayload,
     BrowserCaptureEnvelope,
     BrowserCaptureErrorPayload,
+    BrowserPostAckPayload,
+    BrowserPostCommandAckRequest,
+    BrowserPostCommandListPayload,
+    BrowserPostCommandRequest,
+    BrowserPostEnqueuedPayload,
 )
 from polylogue.browser_capture.receiver import (
     BrowserCaptureReceiverConfig,
+    BrowserPostDisabledError,
+    ack_post_command,
+    browser_post_enabled,
     capture_response_id,
+    enqueue_post_command,
     existing_capture_state,
+    poll_post_commands,
     receiver_status_payload,
     write_capture_envelope,
 )
@@ -204,30 +214,57 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 ),
             )
             return
+        if parsed.path == "/v1/post-commands":
+            params = parse_qs(parsed.query)
+            post_provider = params.get("provider", [""])[0] or None
+            commands = poll_post_commands(provider=post_provider, spool_path=self.server.config.spool_path)
+            self._send_json(
+                HTTPStatus.OK,
+                BrowserPostCommandListPayload(
+                    post_enabled=browser_post_enabled(),
+                    commands=commands,
+                ).model_dump(mode="json", exclude_none=True),
+            )
+            return
         self._safe_error(HTTPStatus.NOT_FOUND, "not_found")
 
     def do_POST(self) -> None:
         self._observe_request("POST", self._do_post)
 
-    def _do_post(self) -> None:
-        if self._reject_origin() or self._reject_token():
-            return
-        if urlparse(self.path).path != "/v1/browser-captures":
-            self._safe_error(HTTPStatus.NOT_FOUND, "not_found")
-            return
+    def _read_json_body(self) -> object | None:
+        """Read and parse a JSON request body, sending an error and returning None on failure."""
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_content_length")
-            return
+            return None
         if length <= 0 or length > MAX_BROWSER_CAPTURE_BODY_BYTES:
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_body_size")
-            return
+            return None
         try:
-            payload = json.loads(self.rfile.read(length))
+            parsed: object = json.loads(self.rfile.read(length))
         except json.JSONDecodeError:
             logger.warning("browser_capture.invalid_json", request_id=self._request_id())
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_json")
+            return None
+        return parsed
+
+    def _do_post(self) -> None:
+        if self._reject_origin() or self._reject_token():
+            return
+        path = urlparse(self.path).path
+        if path == "/v1/post-commands":
+            self._post_command_enqueue()
+            return
+        if path.startswith("/v1/post-commands/") and path.endswith("/ack"):
+            command_id = path[len("/v1/post-commands/") : -len("/ack")]
+            self._post_command_ack(command_id)
+            return
+        if path != "/v1/browser-captures":
+            self._safe_error(HTTPStatus.NOT_FOUND, "not_found")
+            return
+        payload = self._read_json_body()
+        if payload is None:
             return
         try:
             envelope = BrowserCaptureEnvelope.model_validate(payload)
@@ -260,6 +297,73 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 bytes_written=result.bytes_written,
                 replaced=result.replaced,
             ).model_dump(mode="json"),
+        )
+
+    def _post_command_enqueue(self) -> None:
+        payload = self._read_json_body()
+        if payload is None:
+            return
+        try:
+            request = BrowserPostCommandRequest.model_validate(payload)
+        except ValidationError:
+            logger.warning("browser_capture.invalid_post_command", request_id=self._request_id())
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_post_command")
+            return
+        try:
+            command = enqueue_post_command(request, spool_path=self.server.config.spool_path)
+        except BrowserPostDisabledError:
+            logger.warning("browser_capture.post_disabled", request_id=self._request_id())
+            self._safe_error(HTTPStatus.FORBIDDEN, "post_disabled")
+            return
+        except OSError as exc:
+            logger.warning("browser_capture.post_enqueue_failed", request_id=self._request_id(), error=repr(exc))
+            self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
+            return
+        logger.debug(
+            "browser_capture.post_command_enqueued",
+            request_id=self._request_id(),
+            command_id=command.command_id,
+            provider=command.provider,
+            submit=command.submit,
+        )
+        self._send_json(
+            HTTPStatus.ACCEPTED,
+            BrowserPostEnqueuedPayload(
+                command_id=command.command_id,
+                provider=command.provider,
+                status=command.status,
+                submit=command.submit,
+            ).model_dump(mode="json"),
+        )
+
+    def _post_command_ack(self, command_id: str) -> None:
+        payload = self._read_json_body()
+        if payload is None:
+            return
+        try:
+            ack = BrowserPostCommandAckRequest.model_validate(payload)
+        except ValidationError:
+            logger.warning("browser_capture.invalid_post_ack", request_id=self._request_id())
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_post_ack")
+            return
+        try:
+            command = ack_post_command(command_id, ack, spool_path=self.server.config.spool_path)
+        except OSError as exc:
+            logger.warning("browser_capture.post_ack_failed", request_id=self._request_id(), error=repr(exc))
+            self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
+            return
+        if command is None:
+            self._safe_error(HTTPStatus.NOT_FOUND, "unknown_command")
+            return
+        logger.debug(
+            "browser_capture.post_command_acked",
+            request_id=self._request_id(),
+            command_id=command.command_id,
+            status=command.status,
+        )
+        self._send_json(
+            HTTPStatus.OK,
+            BrowserPostAckPayload(command_id=command.command_id, status=command.status).model_dump(mode="json"),
         )
 
 

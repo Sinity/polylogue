@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 import orjson
 
@@ -18,12 +20,24 @@ from polylogue.browser_capture.models import (
     BrowserCaptureArchiveStatePayload,
     BrowserCaptureEnvelope,
     BrowserCaptureReceiverStatusPayload,
+    BrowserPostCommand,
+    BrowserPostCommandAckRequest,
+    BrowserPostCommandRequest,
 )
 from polylogue.core.hashing import hash_text_short
 from polylogue.paths import archive_root as default_archive_root
 from polylogue.paths import browser_capture_spool_root
 
 _SAFE_TOKEN = re.compile(r"[^A-Za-z0-9._-]+")
+
+#: Environment flag that must equal ``"1"`` before the receiver will enqueue or
+#: dispatch any outbound post command. Default OFF: the posting capability is a
+#: high-authority action (it writes into a live ChatGPT/Claude thread through the
+#: extension), so it cannot fire by accident — an operator must opt in explicitly.
+BROWSER_POST_ENABLED_ENV = "POLYLOGUE_BROWSER_POST_ENABLED"
+
+#: Subdirectory of the capture spool that holds queued post commands.
+POST_COMMAND_QUEUE_DIRNAME = "post-commands"
 
 
 @dataclass(frozen=True, slots=True)
@@ -417,14 +431,155 @@ def existing_capture_state(
     ).model_dump(mode="json", exclude_none=True)
 
 
+class BrowserPostDisabledError(RuntimeError):
+    """Raised when a post command is requested while posting is disabled."""
+
+
+def browser_post_enabled() -> bool:
+    """Return whether outbound posting is enabled via the env safety flag."""
+    return os.environ.get(BROWSER_POST_ENABLED_ENV, "") == "1"
+
+
+def post_command_queue_root(spool_path: Path | None = None) -> Path:
+    """Return the directory that holds queued outbound post commands."""
+    root = spool_path if spool_path is not None else BrowserCaptureReceiverConfig.default().spool_path
+    return root / POST_COMMAND_QUEUE_DIRNAME
+
+
+def _post_command_path(root: Path, command_id: str) -> Path:
+    return root / f"{_safe_token(command_id)}.json"
+
+
+def _atomic_write_json(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = orjson.dumps(payload, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS)
+    with tempfile.NamedTemporaryFile("wb", dir=path.parent, prefix=f".{path.name}.", delete=False) as handle:
+        temp_path = Path(handle.name)
+        handle.write(raw)
+        handle.write(b"\n")
+    temp_path.replace(path)
+
+
+def _write_post_command(root: Path, command: BrowserPostCommand) -> Path:
+    target = _post_command_path(root, command.command_id)
+    _atomic_write_json(target, command.model_dump(mode="json", exclude_none=True))
+    return target
+
+
+def _read_post_command(path: Path) -> BrowserPostCommand | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    try:
+        return BrowserPostCommand.model_validate(payload)
+    except Exception:
+        return None
+
+
+def enqueue_post_command(
+    request: BrowserPostCommandRequest,
+    *,
+    spool_path: Path | None = None,
+) -> BrowserPostCommand:
+    """Persist an outbound post command in the queue.
+
+    Raises :class:`BrowserPostDisabledError` unless the
+    ``POLYLOGUE_BROWSER_POST_ENABLED=1`` safety flag is set, so the capability
+    cannot fire by accident.
+    """
+    if not browser_post_enabled():
+        raise BrowserPostDisabledError(f"outbound posting is disabled; set {BROWSER_POST_ENABLED_ENV}=1 to enable")
+    root = post_command_queue_root(spool_path)
+    command_id = _safe_token(request.command_id) if request.command_id else uuid4().hex
+    now = datetime.now(UTC).isoformat()
+    command = BrowserPostCommand(
+        command_id=command_id,
+        provider=request.provider,
+        target=request.target,
+        text=request.text,
+        submit=request.submit,
+        status="pending",
+        created_at=now,
+        updated_at=now,
+    )
+    _write_post_command(root, command)
+    return command
+
+
+def poll_post_commands(
+    *,
+    provider: str | None = None,
+    spool_path: Path | None = None,
+    claim: bool = True,
+) -> list[BrowserPostCommand]:
+    """Return pending post commands, optionally claiming them (pending -> dispatched).
+
+    Returns an empty list when posting is disabled, so a manually-placed queue
+    file is never dispatched while the safety flag is off. Claiming a command
+    prevents a subsequent poll from re-dispatching it; an unacked dispatched
+    command is intentionally not auto-retried.
+    """
+    if not browser_post_enabled():
+        return []
+    root = post_command_queue_root(spool_path)
+    if not root.exists():
+        return []
+    commands: list[BrowserPostCommand] = []
+    for path in sorted(root.glob("*.json")):
+        command = _read_post_command(path)
+        if command is None or command.status != "pending":
+            continue
+        if provider is not None and command.provider != provider:
+            continue
+        if claim:
+            now = datetime.now(UTC).isoformat()
+            command.status = "dispatched"
+            command.dispatched_at = now
+            command.updated_at = now
+            _write_post_command(root, command)
+        commands.append(command)
+    return commands
+
+
+def ack_post_command(
+    command_id: str,
+    ack: BrowserPostCommandAckRequest,
+    *,
+    spool_path: Path | None = None,
+) -> BrowserPostCommand | None:
+    """Record the extension's result for a dispatched post command."""
+    root = post_command_queue_root(spool_path)
+    path = _post_command_path(root, command_id)
+    command = _read_post_command(path)
+    if command is None:
+        return None
+    now = datetime.now(UTC).isoformat()
+    command.status = ack.status
+    command.detail = ack.detail
+    command.observed_url = ack.observed_url
+    command.acked_at = now
+    command.updated_at = now
+    _write_post_command(root, command)
+    return command
+
+
 __all__ = [
+    "BROWSER_POST_ENABLED_ENV",
+    "POST_COMMAND_QUEUE_DIRNAME",
     "BrowserCaptureReceiverConfig",
     "BrowserCaptureWriteResult",
+    "BrowserPostDisabledError",
+    "ack_post_command",
+    "browser_post_enabled",
     "capture_artifact_ref",
     "capture_response_id",
     "_is_extension_origin_pattern",
     "capture_artifact_path",
+    "enqueue_post_command",
     "existing_capture_state",
+    "poll_post_commands",
+    "post_command_queue_root",
     "receiver_status_payload",
     "write_capture_envelope",
 ]

@@ -12,7 +12,14 @@ from dataclasses import dataclass
 from typing import Literal
 
 BrowserCaptureAuthPolicy = Literal["extension_origin", "bearer_if_web_origin", "bearer_if_configured"]
-BrowserCaptureRouteKind = Literal["status", "archive_state", "capture_ingest"]
+BrowserCaptureRouteKind = Literal[
+    "status",
+    "archive_state",
+    "capture_ingest",
+    "post_command_enqueue",
+    "post_command_poll",
+    "post_command_ack",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +62,39 @@ BROWSER_CAPTURE_ROUTE_CONTRACTS: tuple[BrowserCaptureRouteContract, ...] = (
         "BrowserCaptureEnvelope",
         "BrowserCaptureAcceptedPayload | BrowserCaptureErrorPayload",
         "Accepts captures and returns a receiver-local artifact ref; extra web origins require bearer auth.",
+    ),
+    BrowserCaptureRouteContract(
+        "POST",
+        "/v1/post-commands",
+        "post_command_enqueue",
+        "bearer_if_web_origin",
+        "BrowserPostCommandRequest",
+        "BrowserPostEnqueuedPayload | BrowserCaptureErrorPayload",
+        (
+            "Enqueues an outbound post command. Refused with 403 unless "
+            "POLYLOGUE_BROWSER_POST_ENABLED=1 (default OFF safety guard)."
+        ),
+    ),
+    BrowserCaptureRouteContract(
+        "GET",
+        "/v1/post-commands",
+        "post_command_poll",
+        "bearer_if_configured",
+        "optional provider query parameter",
+        "BrowserPostCommandListPayload",
+        (
+            "Extension polls for pending post commands and claims them "
+            "(pending -> dispatched). Returns an empty command list when posting is disabled."
+        ),
+    ),
+    BrowserCaptureRouteContract(
+        "POST",
+        "/v1/post-commands/{command_id}/ack",
+        "post_command_ack",
+        "bearer_if_web_origin",
+        "BrowserPostCommandAckRequest",
+        "BrowserPostAckPayload | BrowserCaptureErrorPayload",
+        "Extension reports the post result (submitted|failed); updates the queued command.",
     ),
 )
 
