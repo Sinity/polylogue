@@ -342,6 +342,13 @@ def _usage_counter_line(counters: object) -> str:
 @click.option("--tool", help="Only entries for this normalized tool name")
 @click.option("--mcp-server", help="Only entries for this MCP server prefix")
 @click.option("--action-kind", help="Only entries for this action kind")
+@click.option(
+    "--basis",
+    type=click.Choice(["tool-use-blocks", "observed-events"]),
+    default="tool-use-blocks",
+    show_default=True,
+    help="Underlying projection for the rollup.",
+)
 @click.option("--limit", "-l", "-n", type=int, default=20, help="Max tools to show")
 @click.option(
     "--json",
@@ -365,12 +372,13 @@ def tools_command(
     tool: str | None,
     mcp_server: str | None,
     action_kind: str | None,
+    basis: str,
     limit: int,
     output_format: str,
 ) -> None:
-    """Show tool usage rollups from the canonical actions view."""
+    """Show tool usage rollups from archive projections."""
     env: AppEnv = ctx.obj
-    run_coroutine_sync(_tools(env, origin, tool, mcp_server, action_kind, limit, output_format))
+    run_coroutine_sync(_tools(env, origin, tool, mcp_server, action_kind, basis, limit, output_format))
 
 
 async def _tools(
@@ -379,6 +387,7 @@ async def _tools(
     tool: str | None,
     mcp_server: str | None,
     action_kind: str | None,
+    basis: str,
     limit: int,
     output_format: str = "text",
 ) -> None:
@@ -395,17 +404,27 @@ async def _tools(
         limit=limit,
     )
     with ArchiveStore.open_existing(env.config.archive_root) as archive:
-        rows = archive.list_tool_call_count_rows(query)
+        if basis == "observed-events":
+            rows = archive.list_tool_observed_event_count_rows(query)
+            kind = "tool_observed_event_counts"
+            detail = "tool_finished_observed_events"
+            count_key = "event_count"
+        else:
+            rows = archive.list_tool_call_count_rows(query)
+            kind = "tool_call_counts"
+            detail = "tool_use_block_call_counts"
+            count_key = "call_count"
     if output_format == "json":
         payload = {
-            "kind": "tool_call_counts",
-            "detail_level": "call_counts",
+            "kind": kind,
+            "detail_level": detail,
             "archive_root": str(env.config.archive_root),
             "filters": {
                 "origin": origin,
                 "tool": tool,
                 "mcp_server": mcp_server,
                 "action_kind": action_kind,
+                "basis": basis,
                 "limit": limit,
             },
             "items": rows,
@@ -417,16 +436,33 @@ async def _tools(
         env.ui.console.print("No tool invocations found.")
         return
 
-    env.ui.console.print("\n[bold]Tool call counts[/bold]")
-    env.ui.console.print("  detail: call_counts; use `analyze insights tool-usage` for exact coverage/detail fields")
-    header = f"{'origin':18s}  {'tool':38s}  {'kind':14s}  {'calls':>7s}"
+    title = "Tool observed-event counts" if basis == "observed-events" else "Tool call counts"
+    env.ui.console.print(f"\n[bold]{title}[/bold]")
+    if basis == "observed-events":
+        env.ui.console.print("  detail: tool_finished observed events; counts tool outcomes, not raw tool_use blocks")
+        header = f"{'origin':18s}  {'tool':38s}  {'kind':14s}  {'status':10s}  {'events':>7s}"
+    else:
+        env.ui.console.print(
+            "  detail: tool_use block call counts; use `analyze insights tool-usage` for exact coverage/detail fields"
+        )
+        header = f"{'origin':18s}  {'tool':38s}  {'kind':14s}  {'calls':>7s}"
     env.ui.console.print(header)
     env.ui.console.print("-" * len(header))
     for row in rows:
         source_name = str(row["source_name"])
         tool_name = str(row["normalized_tool_name"])
         action_kind_value = str(row["action_kind"])
-        call_count = int(str(row["call_count"]))
-        env.ui.console.print(
-            f"{source_name[:18]:18s}  {tool_name[:38]:38s}  {action_kind_value[:14]:14s}  {call_count:7d}"
-        )
+        count = int(str(row[count_key]))
+        if basis == "observed-events":
+            status = str(row["status"])
+            env.ui.console.print(
+                f"{source_name[:18]:18s}  "
+                f"{tool_name[:38]:38s}  "
+                f"{action_kind_value[:14]:14s}  "
+                f"{status[:10]:10s}  "
+                f"{count:7d}"
+            )
+        else:
+            env.ui.console.print(
+                f"{source_name[:18]:18s}  {tool_name[:38]:38s}  {action_kind_value[:14]:14s}  {count:7d}"
+            )

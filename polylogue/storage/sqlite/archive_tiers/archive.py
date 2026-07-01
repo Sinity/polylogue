@@ -1712,6 +1712,66 @@ class ArchiveStore:
             for row in rows
         ]
 
+    def list_tool_observed_event_count_rows(
+        self, query: ToolUsageInsightQuery | None = None
+    ) -> list[dict[str, object]]:
+        """Tool outcome rollups from the materialized observed-event projection."""
+        request = query or ToolUsageInsightQuery()
+        where = ["e.kind = 'tool_finished'"]
+        params: list[object] = []
+        origin = _origin_for_tool_usage_filter(request.provider)
+        if origin:
+            where.append("s.origin = ?")
+            params.append(origin)
+        tool_expr = "COALESCE(NULLIF(json_extract(e.payload_json, '$.tool_name'), ''), 'unknown')"
+        handler_expr = "COALESCE(NULLIF(json_extract(e.payload_json, '$.handler_kind'), ''), 'unknown')"
+        status_expr = "COALESCE(NULLIF(json_extract(e.payload_json, '$.status'), ''), 'unknown')"
+        if request.tool:
+            where.append(f"LOWER({tool_expr}) = LOWER(?)")
+            params.append(request.tool)
+        if request.mcp_server:
+            where.append(f"LOWER({tool_expr}) LIKE ?")
+            params.append(f"mcp__{request.mcp_server.lower()}__%")
+        if request.action_kind:
+            where.append(f"{handler_expr} = ?")
+            params.append(request.action_kind)
+        if request.limit is not None:
+            limit_clause = "LIMIT ? OFFSET ?"
+            params.extend((request.limit, request.offset))
+        elif request.offset:
+            limit_clause = "LIMIT -1 OFFSET ?"
+            params.append(request.offset)
+        else:
+            limit_clause = ""
+        rows = self._conn.execute(
+            f"""
+            SELECT
+                s.origin AS origin,
+                {tool_expr} AS normalized_tool_name,
+                {handler_expr} AS action_kind,
+                {status_expr} AS status,
+                COUNT(*) AS event_count
+            FROM session_observed_events e
+            JOIN sessions s ON s.session_id = e.session_id
+            WHERE {" AND ".join(where)}
+            GROUP BY s.origin, normalized_tool_name, action_kind, status
+            ORDER BY event_count DESC, s.origin ASC, normalized_tool_name ASC, status ASC
+            {limit_clause}
+            """,
+            tuple(params),
+        ).fetchall()
+        return [
+            {
+                "source_name": _provider_for_origin(str(row["origin"])).value,
+                "origin": str(row["origin"] or "unknown-export"),
+                "normalized_tool_name": str(row["normalized_tool_name"] or "unknown"),
+                "action_kind": str(row["action_kind"] or "unknown"),
+                "status": str(row["status"] or "unknown"),
+                "event_count": int(row["event_count"] or 0),
+            }
+            for row in rows
+        ]
+
     def _tool_usage_rows(self, query: ToolUsageInsightQuery | None = None) -> list[ToolUsageRow]:
         request = query or ToolUsageInsightQuery()
         where: list[str] = []

@@ -16,6 +16,8 @@ Covers four shapes:
 
 from __future__ import annotations
 
+import json
+import sqlite3
 from pathlib import Path
 from typing import cast
 
@@ -29,6 +31,7 @@ from polylogue.insights.tool_usage import (
     build_tool_usage_insight,
     extract_mcp_server,
 )
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.queries.tool_usage import (
     ToolUsageProviderCoverageRow,
     ToolUsageRow,
@@ -421,6 +424,96 @@ class TestListToolUsageInsightsEndToEnd:
         [insight] = await archive.list_tool_usage_insights(ToolUsageInsightQuery(offset=1, limit=1))
 
         assert [entry.normalized_tool_name for entry in insight.entries] == ["beta"]
+
+    async def test_observed_event_tool_counts_use_materialized_projection(self, tmp_path: Path) -> None:
+        archive = _archive(tmp_path)
+        db_path = archive.archive_root / "index.db"
+        (
+            SessionBuilder(db_path, "cc-1")
+            .provider("claude-code")
+            .title("CC")
+            .add_message("cc-1-msg", role="assistant", text="Tools")
+            .save()
+        )
+        session_id = "claude-code-session:ext-cc-1"
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.executemany(
+                """
+                INSERT INTO session_observed_events (
+                    event_ref, session_id, run_ref, position, kind, summary,
+                    delivery_state, payload_json, search_text
+                ) VALUES (?, ?, ?, ?, 'tool_finished', ?, 'observed', ?, ?)
+                """,
+                [
+                    (
+                        "event:1",
+                        session_id,
+                        "run:cc-1",
+                        1,
+                        "serena ok",
+                        json.dumps(
+                            {
+                                "tool_name": "mcp__serena__find_symbol",
+                                "handler_kind": "mcp",
+                                "status": "ok",
+                            }
+                        ),
+                        "serena ok",
+                    ),
+                    (
+                        "event:2",
+                        session_id,
+                        "run:cc-1",
+                        2,
+                        "serena failed",
+                        json.dumps(
+                            {
+                                "tool_name": "mcp__serena__find_symbol",
+                                "handler_kind": "mcp",
+                                "status": "failed",
+                            }
+                        ),
+                        "serena failed",
+                    ),
+                    (
+                        "event:3",
+                        session_id,
+                        "run:cc-1",
+                        3,
+                        "read ok",
+                        json.dumps({"tool_name": "Read", "handler_kind": "file_read", "status": "ok"}),
+                        "read ok",
+                    ),
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with ArchiveStore.open_existing(archive.archive_root) as store:
+            rows = store.list_tool_observed_event_count_rows(
+                ToolUsageInsightQuery(provider="claude-code-session", mcp_server="serena", limit=5)
+            )
+
+        assert rows == [
+            {
+                "source_name": "claude-code",
+                "origin": "claude-code-session",
+                "normalized_tool_name": "mcp__serena__find_symbol",
+                "action_kind": "mcp",
+                "status": "failed",
+                "event_count": 1,
+            },
+            {
+                "source_name": "claude-code",
+                "origin": "claude-code-session",
+                "normalized_tool_name": "mcp__serena__find_symbol",
+                "action_kind": "mcp",
+                "status": "ok",
+                "event_count": 1,
+            },
+        ]
 
     async def test_empty_archive_returns_envelope_with_no_gaps(self, tmp_path: Path) -> None:
         result = await _archive(tmp_path).list_tool_usage_insights(ToolUsageInsightQuery())

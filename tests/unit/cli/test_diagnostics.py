@@ -119,12 +119,18 @@ async def test_turns_reports_duration_thinking_tools_and_characters(monkeypatch:
     assert re.search(r"\b2\b", row)
 
 
-class _FakeToolCallCountStore:
-    def __init__(self, rows: list[dict[str, object]]) -> None:
-        self.rows = rows
+class _FakeToolCountStore:
+    def __init__(
+        self,
+        call_rows: list[dict[str, object]],
+        event_rows: list[dict[str, object]] | None = None,
+    ) -> None:
+        self.call_rows = call_rows
+        self.event_rows = event_rows or []
         self.queries: list[ToolUsageInsightQuery] = []
+        self.event_queries: list[ToolUsageInsightQuery] = []
 
-    def __enter__(self) -> _FakeToolCallCountStore:
+    def __enter__(self) -> _FakeToolCountStore:
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -132,14 +138,22 @@ class _FakeToolCallCountStore:
 
     def list_tool_call_count_rows(self, query: ToolUsageInsightQuery | None = None) -> list[dict[str, object]]:
         self.queries.append(query or ToolUsageInsightQuery())
-        return self.rows
+        return self.call_rows
+
+    def list_tool_observed_event_count_rows(
+        self,
+        query: ToolUsageInsightQuery | None = None,
+    ) -> list[dict[str, object]]:
+        self.event_queries.append(query or ToolUsageInsightQuery())
+        return self.event_rows
 
 
-def _patch_tool_call_count_store(
+def _patch_tool_count_store(
     monkeypatch: pytest.MonkeyPatch,
-    rows: list[dict[str, object]],
-) -> _FakeToolCallCountStore:
-    store = _FakeToolCallCountStore(rows)
+    call_rows: list[dict[str, object]],
+    event_rows: list[dict[str, object]] | None = None,
+) -> _FakeToolCountStore:
+    store = _FakeToolCountStore(call_rows, event_rows)
     monkeypatch.setattr(ArchiveStore, "open_existing", classmethod(lambda cls, archive_root: store))
     return store
 
@@ -147,7 +161,7 @@ def _patch_tool_call_count_store(
 @pytest.mark.asyncio
 async def test_tools_renders_tool_usage_insight(monkeypatch: pytest.MonkeyPatch) -> None:
     env = _env()
-    _patch_tool_call_count_store(
+    _patch_tool_count_store(
         monkeypatch,
         [
             {
@@ -167,19 +181,70 @@ async def test_tools_renders_tool_usage_insight(monkeypatch: pytest.MonkeyPatch)
         ],
     )
 
-    await diagnostics._tools(env, origin=None, tool=None, mcp_server=None, action_kind=None, limit=5)
+    await diagnostics._tools(
+        env,
+        origin=None,
+        tool=None,
+        mcp_server=None,
+        action_kind=None,
+        basis="tool-use-blocks",
+        limit=5,
+    )
 
     rendered = "\n".join(call.args[0] for call in _console_print(env).call_args_list if call.args)
     assert "Tool call counts" in rendered
-    assert "detail: call_counts" in rendered
+    assert "detail: tool_use block call counts" in rendered
     assert "bash" in rendered
     assert "read" in rendered
 
 
 @pytest.mark.asyncio
+async def test_tools_renders_observed_event_basis(monkeypatch: pytest.MonkeyPatch) -> None:
+    env = _env()
+    _patch_tool_count_store(
+        monkeypatch,
+        [],
+        [
+            {
+                "source_name": "claude-code",
+                "origin": "claude-code-session",
+                "normalized_tool_name": "mcp__serena__find_symbol",
+                "action_kind": "mcp",
+                "status": "ok",
+                "event_count": 4,
+            },
+            {
+                "source_name": "claude-code",
+                "origin": "claude-code-session",
+                "normalized_tool_name": "mcp__serena__find_symbol",
+                "action_kind": "mcp",
+                "status": "failed",
+                "event_count": 1,
+            },
+        ],
+    )
+
+    await diagnostics._tools(
+        env,
+        origin=None,
+        tool=None,
+        mcp_server="serena",
+        action_kind=None,
+        basis="observed-events",
+        limit=5,
+    )
+
+    rendered = "\n".join(call.args[0] for call in _console_print(env).call_args_list if call.args)
+    assert "Tool observed-event counts" in rendered
+    assert "tool_finished observed events" in rendered
+    assert "mcp__serena__find_symbol" in rendered
+    assert "failed" in rendered
+
+
+@pytest.mark.asyncio
 async def test_tools_passes_filters_to_tool_usage_insight(monkeypatch: pytest.MonkeyPatch) -> None:
     env = _env()
-    store = _patch_tool_call_count_store(monkeypatch, [])
+    store = _patch_tool_count_store(monkeypatch, [])
 
     await diagnostics._tools(
         env,
@@ -187,6 +252,7 @@ async def test_tools_passes_filters_to_tool_usage_insight(monkeypatch: pytest.Mo
         tool="mcp__serena__find_symbol",
         mcp_server="serena",
         action_kind="tool_use",
+        basis="tool-use-blocks",
         limit=5,
     )
 
@@ -202,8 +268,16 @@ async def test_tools_passes_filters_to_tool_usage_insight(monkeypatch: pytest.Mo
 @pytest.mark.asyncio
 async def test_tools_reports_empty_archives(monkeypatch: pytest.MonkeyPatch) -> None:
     env = _env()
-    _patch_tool_call_count_store(monkeypatch, [])
+    _patch_tool_count_store(monkeypatch, [])
 
-    await diagnostics._tools(env, origin=None, tool=None, mcp_server=None, action_kind=None, limit=5)
+    await diagnostics._tools(
+        env,
+        origin=None,
+        tool=None,
+        mcp_server=None,
+        action_kind=None,
+        basis="tool-use-blocks",
+        limit=5,
+    )
 
     assert _console_print(env).call_args.args[0] == "No tool invocations found."
