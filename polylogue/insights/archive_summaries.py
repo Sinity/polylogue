@@ -33,7 +33,7 @@ class _DayAggregateBucket:
     total_words: int = 0
     work_event_breakdown: Counter[str] = field(default_factory=Counter)
     repos_active: set[str] = field(default_factory=set)
-    providers: Counter[str] = field(default_factory=Counter)
+    origins: Counter[str] = field(default_factory=Counter)
     rows: list[DaySessionSummaryRecord] = field(default_factory=list)
 
 
@@ -118,7 +118,7 @@ def _aggregate_day_buckets(
         bucket.total_words += row.total_words
         bucket.work_event_breakdown.update(row.work_event_breakdown)
         bucket.repos_active.update(str(name) for name in row.repos_active if str(name).strip())
-        bucket.providers[row.source_name] += row.session_count
+        bucket.origins[row.source_name] += row.session_count
         bucket.rows.append(row)
     return grouped
 
@@ -143,7 +143,7 @@ def _aggregate_day_summaries(
             total_words=bucket.total_words,
             work_event_breakdown=dict(bucket.work_event_breakdown),
             repos_active=tuple(sorted(bucket.repos_active)),
-            providers=dict(bucket.providers),
+            providers=dict(bucket.origins),
         )
         summaries.append((day, summary, bucket.rows))
     return summaries

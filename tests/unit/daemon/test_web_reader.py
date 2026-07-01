@@ -32,6 +32,7 @@ from contextlib import contextmanager
 from http.server import HTTPServer
 from pathlib import Path
 from typing import cast
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -81,6 +82,20 @@ def test_query_spec_param_builder_uses_canonical_query_fields() -> None:
     assert result["max_words"] == 100
     assert result["similar_session_id"] == "codex-session:seed"
     assert result["filter_has_tool_use"] is True
+
+
+def test_web_reader_archive_root_rejects_schema_mismatch(tmp_path: Path) -> None:
+    from polylogue.daemon.http import _web_reader_archive_root
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute("PRAGMA user_version = 1")
+
+    with patch("polylogue.paths.archive_root", return_value=tmp_path):
+        assert _web_reader_archive_root() is None
 
 
 def _materialize_run_projection(index_db: Path) -> None:

@@ -485,6 +485,15 @@ def reader_anchor(target_type: Literal["session", "message"], target_id: object)
     return f"{prefix}-{safe_id or 'target'}"
 
 
+def _parse_optional_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
 def reader_session_actions() -> dict[str, ReaderActionAvailabilityPayload]:
     """Default action contract for session-level reader targets."""
     return {
@@ -617,6 +626,58 @@ class SessionMessagePayload(SurfacePayloadModel):
             attachment_refs=attachment_refs,
             raw_id=raw_id,
             source_path=source_path,
+        )
+
+    @classmethod
+    def from_archive_row(cls, message: Any, *, session_id: object) -> SessionMessagePayload:
+        """Project an ``ArchiveMessageRow`` into the canonical reader payload.
+
+        Archive-backed MCP/resource paths read split-tier row DTOs directly
+        instead of hydrating domain ``Message`` objects. Keep their message
+        envelope identical by mapping those row fields here, not in each
+        surface adapter.
+        """
+
+        message_id = str(message.message_id)
+        blocks = tuple(message.blocks)
+        text = "\n\n".join(str(block.text) for block in blocks if block.text)
+        content_blocks: list[dict[str, object]] = []
+        for block in blocks:
+            row: dict[str, object] = {
+                "type": str(getattr(block, "block_type", "")),
+                "text": str(getattr(block, "text", "") or ""),
+                "block_id": str(getattr(block, "block_id", "") or ""),
+            }
+            for source_name, target_name in (
+                ("tool_name", "tool_name"),
+                ("tool_id", "tool_id"),
+                ("semantic_type", "semantic_type"),
+            ):
+                value = getattr(block, source_name, None)
+                if value:
+                    row[target_name] = str(value)
+            content_blocks.append(row)
+        attachment_refs = tuple(
+            str(getattr(attachment, "attachment_id", ""))
+            for attachment in getattr(message, "attachments", ())
+            if getattr(attachment, "attachment_id", None)
+        )
+        return cls(
+            id=message_id,
+            role=normalize_role(getattr(message, "role", "")),
+            text=text,
+            target_ref=TargetRefPayload.message(session_id=session_id, message_id=message_id),
+            anchor=reader_anchor("message", message_id),
+            timestamp=_parse_optional_datetime(getattr(message, "occurred_at", None)),
+            message_type=str(getattr(message, "message_type", "message") or "message"),
+            material_origin=str(getattr(message, "material_origin", "unknown") or "unknown"),
+            content_blocks=content_blocks,
+            parent_id=getattr(message, "parent_message_id", None),
+            branch_index=int(getattr(message, "variant_index", 0) or 0),
+            has_paste=bool(getattr(message, "has_paste", False)),
+            has_tool_use=bool(getattr(message, "has_tool_use", False)),
+            has_thinking=bool(getattr(message, "has_thinking", False)),
+            attachment_refs=attachment_refs,
         )
 
 

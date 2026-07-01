@@ -341,6 +341,46 @@ def test_browser_capture_prefers_raw_claude_ai_payload_when_present() -> None:
     assert parsed_session.messages[1].model_name == "claude-native"
 
 
+def test_browser_capture_raw_claude_ai_uses_content_when_text_empty() -> None:
+    payload = _capture_payload()
+    session = payload["session"]
+    assert isinstance(session, dict)
+    session["provider"] = "claude-ai"
+    session["provider_session_id"] = "claude-conv-123"
+    payload["raw_provider_payload"] = {
+        "uuid": "claude-native-conv",
+        "name": "Native Claude title",
+        "created_at": "2026-04-24T00:00:00+00:00",
+        "updated_at": "2026-04-24T00:00:01+00:00",
+        "chat_messages": [
+            {
+                "uuid": "claude-u1",
+                "sender": "human",
+                "text": "",
+                "content": [{"type": "text", "text": "Native Claude user from content"}],
+                "created_at": "2026-04-24T00:00:00+00:00",
+            },
+            {
+                "uuid": "claude-a1",
+                "sender": "assistant",
+                "text": "",
+                "content": [{"type": "text", "text": "Native Claude answer from content"}],
+                "created_at": "2026-04-24T00:00:01+00:00",
+            },
+        ],
+    }
+
+    parsed = parse_payload(Provider.CLAUDE_AI, payload, "fallback")
+
+    assert len(parsed) == 1
+    parsed_session = parsed[0]
+    assert [message.provider_message_id for message in parsed_session.messages] == ["claude-u1", "claude-a1"]
+    assert [message.text for message in parsed_session.messages] == [
+        "Native Claude user from content",
+        "Native Claude answer from content",
+    ]
+
+
 def test_browser_capture_raw_claude_ai_without_id_uses_envelope_session_id() -> None:
     payload = _capture_payload()
     session = payload["session"]

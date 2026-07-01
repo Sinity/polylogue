@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from polylogue.archive.session.documents import SessionPhaseDocument, WorkEventDocument
 from polylogue.insights.confidence import ConfidenceBand
@@ -63,11 +63,7 @@ class SessionEvidencePayload(ArchiveInsightModel):
     total_duration_ms: int = 0
     wall_duration_ms: int = 0
     tool_active_duration_ms: int = 0
-    workflow_shape: str = "unknown"
-    workflow_shape_confidence: float = 0.0
     workflow_shape_features: dict[str, object] = Field(default_factory=dict)
-    terminal_state: str = "unknown"
-    terminal_state_confidence: float = 0.0
     terminal_state_evidence: dict[str, object] = Field(default_factory=dict)
     cost_is_estimated: bool = False
     compaction_count: int = 0
@@ -202,7 +198,8 @@ class SessionEnrichmentPayload(ArchiveInsightModel):
     # #1687: goal-driven session detection from /goal command in first user message.
     is_goal_session: bool = False
     goal_text: str | None = None
-    goal_outcome: str | None = None  # completed / failed / abandoned / timed_out
+    # Boundary-derived posture, not task-success judgment.
+    goal_outcome: str | None = None
 
 
 def _normalize_timed_documents(value: object) -> object:
@@ -266,12 +263,25 @@ class ThreadPayload(ArchiveInsightModel):
     total_messages: int = 0
     total_cost_usd: float = 0.0
     wall_duration_ms: int = 0
-    provider_breakdown: dict[str, int] = Field(default_factory=dict)
+    origin_breakdown: dict[str, int] = Field(default_factory=dict)
     work_event_breakdown: dict[str, int] = Field(default_factory=dict)
     confidence: float = 0.0
     support_level: ConfidenceBand = ConfidenceBand.WEAK
     support_signals: tuple[str, ...] = ()
     member_evidence: tuple[ThreadMemberEvidencePayload, ...] = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_provider_breakdown(cls, data: object) -> object:
+        if isinstance(data, Mapping) and "origin_breakdown" not in data and "provider_breakdown" in data:
+            updated = dict(data)
+            updated["origin_breakdown"] = updated["provider_breakdown"]
+            return updated
+        return data
+
+    @property
+    def provider_breakdown(self) -> dict[str, int]:
+        return self.origin_breakdown
 
 
 class DaySessionSummaryPayload(ArchiveInsightModel):
@@ -286,7 +296,20 @@ class DaySessionSummaryPayload(ArchiveInsightModel):
     total_words: int = 0
     work_event_breakdown: dict[str, int] = Field(default_factory=dict)
     repos_active: tuple[str, ...] = ()
-    providers: dict[str, int] = Field(default_factory=dict)
+    origins: dict[str, int] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_providers(cls, data: object) -> object:
+        if isinstance(data, Mapping) and "origins" not in data and "providers" in data:
+            updated = dict(data)
+            updated["origins"] = updated["providers"]
+            return updated
+        return data
+
+    @property
+    def providers(self) -> dict[str, int]:
+        return self.origins
 
 
 class WeekSessionSummaryPayload(ArchiveInsightModel):

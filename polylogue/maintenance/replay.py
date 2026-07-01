@@ -45,7 +45,7 @@ from typing import Final
 from polylogue.config import Config
 from polylogue.core.json import JSONDocument, dumps, json_document, loads
 from polylogue.logging import get_logger
-from polylogue.maintenance.failure_routing import route_failure_sample
+from polylogue.maintenance.failure_routing import resolve_maintenance_failures, route_failure_sample
 from polylogue.maintenance.invalidation import InvalidationReason
 from polylogue.maintenance.planner import (
     BackfillKind,
@@ -66,6 +66,7 @@ from polylogue.storage.repair import (
     offline_maintenance_blockers,
     repair_dangling_fts,
     repair_empty_sessions,
+    repair_message_embeddings,
     repair_message_type_backfill,
     repair_orphaned_attachments,
     repair_orphaned_blobs,
@@ -117,6 +118,7 @@ _REPLAY_DISPATCH: Final[dict[str, _RepairFn]] = {
     "dangling_fts": repair_dangling_fts,
     "message_type_backfill": repair_message_type_backfill,
     "raw_materialization": repair_raw_materialization,
+    "message_embeddings": repair_message_embeddings,
     "wal_checkpoint": repair_wal_checkpoint,
     "orphaned_messages": repair_orphaned_messages,
     "empty_sessions": repair_empty_sessions,
@@ -592,6 +594,12 @@ def _run_one_target(
                 session_ids=scope_filter.session_ids,
                 progress_callback=_emit_target_progress,
             )
+        elif target_name == "raw_materialization" and repair_fn is repair_raw_materialization:
+            result = repair_raw_materialization(
+                config,
+                dry_run,
+                raw_artifact_id=scope_filter.raw_artifact_id,
+            )
         else:
             result = repair_fn(config, dry_run)
     except (RuntimeError, sqlite3.Error) as exc:
@@ -614,6 +622,9 @@ def _run_one_target(
 
     state.results.append(result.to_dict())
     state.repaired_total += result.repaired_count
+    if result.success:
+        resolved_kinds = (UnsupportedReplayTargetError.__name__,) if dry_run else ()
+        resolve_maintenance_failures(config.archive_root, target=target_name, kinds=resolved_kinds)
     if not result.success:
         # Repair functions can report failure without raising. Surface
         # that as a typed sample too so the FAILED state carries a

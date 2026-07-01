@@ -102,9 +102,52 @@ def test_import_command_stages_local_path_before_daemon_request(
     # staged inbox path AND actionable next-step guidance. The old
     # "polylogue ops status" message was misleading (status doesn't show
     # recent completed operations); #1679 replaced it with journalctl
-    # for live progress and polylogue analyze to verify the import landed.
+    # for live progress. Convergence/readiness checks should point at daemon
+    # and archive status surfaces, not a generic analyze command.
     assert str(staged) in result.output
-    assert "polylogue analyze" in result.output
+    assert "polylogued status" in result.output
+    assert "polylogue status --full" in result.output
+
+
+def test_import_command_uses_daemon_url_env_by_default(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """Dev-loop imports must not stage into one archive and schedule another daemon."""
+    from click.testing import CliRunner
+
+    from polylogue.cli.click_app import cli
+
+    source = tmp_path / "source.jsonl"
+    source.write_text('{"type":"session"}\n')
+    monkeypatch.setenv("POLYLOGUE_DAEMON_URL", "http://127.0.0.1:9876")
+
+    captured: dict[str, Any] = {}
+
+    def fake_urlopen(req: Request, timeout: int) -> _FakeDaemonResponse:
+        captured["request"] = req
+        assert req.data is not None
+        staged_path = json.loads(cast("bytes", req.data).decode("utf-8"))["path"]
+        return _FakeDaemonResponse(
+            {
+                "ok": True,
+                "operation_id": "import-source.jsonl",
+                "kind": "import",
+                "status": "pending",
+                "path": staged_path,
+                "message": "scheduled",
+            }
+        )
+
+    with patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen):
+        result = CliRunner().invoke(cli, ["import", str(source)])
+
+    assert result.exit_code == 0, result.output
+    request = cast("Request", captured["request"])
+    assert request.full_url == "http://127.0.0.1:9876/api/ingest"
+    assert "Daemon:       http://127.0.0.1:9876" in result.output
+    assert (workspace_env["archive_root"] / "inbox" / source.name).is_file()
 
 
 def test_import_demo_materializes_fixture_world_before_daemon_request(
@@ -151,7 +194,8 @@ def test_import_demo_materializes_fixture_world_before_daemon_request(
     assert body == {"path": str(staged)}
     assert captured["timeout"] == 5
     assert str(staged) in result.output
-    assert "polylogue analyze" in result.output
+    assert "polylogued status" in result.output
+    assert "polylogue status --full" in result.output
 
 
 def test_import_demo_wait_verifies_after_daemon_acceptance(

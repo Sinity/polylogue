@@ -47,6 +47,28 @@ def _status(
     )
 
 
+def test_session_insight_repair_count_uses_public_phase_status_key() -> None:
+    statuses = {
+        "session_profile_rows": _status(),
+        "session_work_events": _status(),
+        "session_work_events_fts": _status(),
+        "session_phases": _status(pending_rows=2),
+        "threads": _status(),
+        "threads_fts": _status(),
+        "session_tag_rollups": _status(),
+    }
+
+    assert repair_mod.session_insight_repair_count(statuses) == 2
+
+    legacy_statuses = dict(statuses)
+    legacy_statuses["session_phase_inference"] = legacy_statuses.pop("session_phases")
+    assert repair_mod.session_insight_repair_count(legacy_statuses) == 0
+
+    legacy_statuses = dict(statuses)
+    legacy_statuses["session_work_event_inference"] = legacy_statuses.pop("session_work_events")
+    assert repair_mod.session_insight_repair_count(legacy_statuses) == 0
+
+
 def test_preview_counts_from_archive_debt_include_healthy_preview_targets_only() -> None:
     statuses = {
         "session_insights": repair_mod.ArchiveDebtStatus(
@@ -195,6 +217,54 @@ def test_raw_materialization_preview_counts_replayable_rows_without_erasing_miss
     assert "1 raw rows blocked by missing blobs" in result.detail
 
 
+def test_raw_materialization_raw_artifact_filter_counts_only_target(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    blob_store = BlobStore(tmp_path / "blob")
+    target_raw_id, target_size = blob_store.write_from_bytes(b'{"mapping":{"target":{}}}')
+    other_raw_id, other_size = blob_store.write_from_bytes(b'{"mapping":{"other":{}}}')
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.executemany(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (
+                    target_raw_id,
+                    "chatgpt-export",
+                    "native-target",
+                    "target.json",
+                    0,
+                    bytes.fromhex(target_raw_id),
+                    target_size,
+                    1,
+                ),
+                (
+                    other_raw_id,
+                    "chatgpt-export",
+                    "native-other",
+                    "other.json",
+                    0,
+                    bytes.fromhex(other_raw_id),
+                    other_size,
+                    2,
+                ),
+            ),
+        )
+        source_conn.commit()
+
+    broad = repair_mod.repair_raw_materialization(config, dry_run=True)
+    scoped = repair_mod.repair_raw_materialization(config, dry_run=True, raw_artifact_id=target_raw_id)
+
+    assert broad.repaired_count == 2
+    assert scoped.repaired_count == 1
+    assert f"replay {1:,} raw rows" in scoped.detail
+
+
 def test_raw_materialization_defers_batch_fts_then_repairs_once(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -233,7 +303,11 @@ def test_raw_materialization_defers_batch_fts_then_repairs_once(
             detail="repaired 7 FTS rows",
         )
 
-    monkeypatch.setattr(repair_mod, "_raw_materialization_candidate_ids", lambda _config: (["raw-1"], 0))
+    def fake_candidate_ids(_config: Config, *, raw_artifact_id: str | None = None) -> tuple[list[str], int]:
+        calls["raw_artifact_id"] = raw_artifact_id
+        return ["raw-1"], 0
+
+    monkeypatch.setattr(repair_mod, "_raw_materialization_candidate_ids", fake_candidate_ids)
     monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", FakeParsingService)
     monkeypatch.setattr("polylogue.storage.repository.SessionRepository", FakeRepository)
     monkeypatch.setattr("polylogue.storage.sqlite.async_sqlite.SQLiteBackend", FakeBackend)
@@ -250,6 +324,7 @@ def test_raw_materialization_defers_batch_fts_then_repairs_once(
         "repair_message_fts": False,
     }
     assert calls["fts_dry_run"] is False
+    assert calls["raw_artifact_id"] is None
     assert calls["closed"] is True
 
 

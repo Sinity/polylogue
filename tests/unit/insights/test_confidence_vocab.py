@@ -153,3 +153,27 @@ def test_repo_inference_strength_returns_typed_band() -> None:
         repo_names: tuple[str, ...] = ("a",)
 
     assert repo_inference_strength(cast(SessionProfile, _WithRepos())) is ConfidenceBand.STRONG
+
+
+def test_profile_support_level_ignores_phase_compat_confidence() -> None:
+    """Phase rows are evidence intervals; their legacy confidence cannot boost
+    profile inference support."""
+
+    from typing import cast
+
+    from polylogue.archive.session.session_profile import SessionProfile
+    from polylogue.storage.insights.session.profiles import profile_support_level
+
+    class _Phase:
+        confidence: float = 0.99
+        duration_ms: int = 60_000
+
+    class _Profile:
+        repo_paths: tuple[str, ...] = ()
+        repo_names: tuple[str, ...] = ()
+        file_paths_touched: tuple[str, ...] = ()
+        cwd_paths: tuple[str, ...] = ()
+        work_events: tuple[object, ...] = ()
+        phases: tuple[object, ...] = (_Phase(),)
+
+    assert profile_support_level(cast(SessionProfile, _Profile())) is ConfidenceBand.WEAK

@@ -201,6 +201,30 @@ class TestFormatMetricsExpositionShape:
         assert 'polylogue_archive_blocker{blocker="missing_archive_tiers"} 1' in body
         assert 'polylogue_archive_blocker{blocker="missing_backup_required_tier:source"} 1' in body
 
+    def test_archive_storage_metrics_gate_runtime_readiness_on_schema_match(self, tmp_path: Path) -> None:
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+        for filename, tier in (
+            ("source.db", ArchiveTier.SOURCE),
+            ("index.db", ArchiveTier.INDEX),
+            ("embeddings.db", ArchiveTier.EMBEDDINGS),
+            ("user.db", ArchiveTier.USER),
+            ("ops.db", ArchiveTier.OPS),
+        ):
+            initialize_archive_database(tmp_path / filename, tier)
+        with sqlite3.connect(tmp_path / "index.db") as conn:
+            conn.execute("PRAGMA user_version = 1")
+
+        body = format_metrics(tmp_path / "index.db")
+
+        assert 'polylogue_archive_storage_ready{state="archive_runtime"} 0' in body
+        assert 'polylogue_archive_storage_ready{state="final_shape"} 1' in body
+        assert 'polylogue_archive_active_store{store="archive_file_set"} 1' in body
+        assert "polylogue_archive_ready 0" in body
+        assert "polylogue_archive_blocker_count 1" in body
+        assert 'polylogue_archive_blocker{blocker="schema_mismatch:index"} 1' in body
+
     def test_no_unknown_label_escaping(self, tmp_path: Path) -> None:
         """Quotes/backslashes inside label values must be escaped."""
         from polylogue.daemon.metrics import _escape_label_value

@@ -510,6 +510,45 @@ def test_daemon_workload_probe_reports_layout_ready_for_clean_five_tier_archive(
     }
 
 
+def test_daemon_workload_probe_does_not_claim_derived_ready_on_schema_mismatch(tmp_path: Path) -> None:
+    db = tmp_path / "index.db"
+    for tier in ArchiveTier:
+        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+    with sqlite3.connect(db) as conn:
+        conn.execute("PRAGMA user_version = 1")
+
+    payload = probe(db, exact_table_counts=True)
+
+    tiers = payload["archive_tiers"]
+    assert tiers["schema_mismatches"] == ["index"]
+    layout = tiers["layout_readiness"]
+    assert layout["archive_ready"] is False
+    assert "schema_mismatch:index" in layout["blockers"]
+    assert "derived_readiness_unchecked:schema_mismatch:index" in layout["blockers"]
+    assert "user_overlay_unchecked:schema_mismatch:index" in layout["blockers"]
+    assert layout["evidence"]["derived_readiness_checked"] is False
+    assert layout["evidence"]["derived_surface_count"] == 0
+    assert layout["evidence"]["user_overlay_checked"] is False
+
+    readiness = tiers["derived_readiness"]
+    assert readiness == {
+        "checked": False,
+        "reason": "schema_mismatch:index",
+        "source_check_available": False,
+        "counts": {},
+        "materialization_counts": {},
+        "missing_materialization_counts": {},
+        "ready": {},
+        "surface_readiness": {},
+    }
+    assert tiers["user_overlay_orphans"] == {
+        "checked": False,
+        "reason": "schema_mismatch:index",
+        "orphan_session_reference_counts": {},
+        "total_orphan_session_references": 0,
+    }
+
+
 def test_daemon_workload_probe_reports_archive_source_path_churn(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     source_path = "/tmp/live-session.jsonl"

@@ -38,7 +38,7 @@ _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 _PROBE_ONLY_EXACT_MESSAGE_ROW_LIMIT = 100_000
 
 
-def _raw_materialization_candidate_ids(config: Config) -> tuple[list[str], int]:
+def _raw_materialization_candidate_ids(config: Config, *, raw_artifact_id: str | None = None) -> tuple[list[str], int]:
     """Return replayable raw ids plus missing-blob debt count.
 
     Raw evidence is the durable source of truth, but a raw row whose
@@ -55,8 +55,13 @@ def _raw_materialization_candidate_ids(config: Config) -> tuple[list[str], int]:
     with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
         conn.row_factory = sqlite3.Row
         conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
+        params: list[object] = []
+        raw_filter = ""
+        if raw_artifact_id is not None:
+            raw_filter = "AND r.raw_id = ?"
+            params.append(raw_artifact_id)
         rows = conn.execute(
-            """
+            f"""
             SELECT r.raw_id, r.origin, r.native_id, r.source_path, r.blob_hash
             FROM raw_sessions AS r
             LEFT JOIN index_tier.sessions AS s_by_raw ON s_by_raw.raw_id = r.raw_id
@@ -72,8 +77,10 @@ def _raw_materialization_candidate_ids(config: Config) -> tuple[list[str], int]:
                 AND r.parsed_at_ms IS NOT NULL
                 AND r.parse_error IS NULL
               )
+              {raw_filter}
             ORDER BY r.acquired_at_ms DESC, r.raw_id ASC
-            """
+            """,
+            params,
         ).fetchall()
         for row in rows:
             if _raw_materialized_by_source_path_native(conn, row):
@@ -427,9 +434,9 @@ def _table_has_more_than(conn: sqlite3.Connection, table_name: str, row_limit: i
 def session_insight_repair_count(derived_statuses: dict[str, DerivedModelStatus]) -> int:
     keys = [
         "session_profile_rows",
-        "session_work_event_inference",
-        "session_work_event_inference_fts",
-        "session_phase_inference",
+        "session_work_events",
+        "session_work_events_fts",
+        "session_phases",
         "threads",
         "threads_fts",
         "session_tag_rollups",
@@ -1116,9 +1123,14 @@ def preview_dangling_fts(*, count: int) -> RepairResult:
     )
 
 
-def repair_raw_materialization(config: Config, dry_run: bool = False) -> RepairResult:
+def repair_raw_materialization(
+    config: Config,
+    dry_run: bool = False,
+    *,
+    raw_artifact_id: str | None = None,
+) -> RepairResult:
     """Materialize replayable raw evidence into the index tier."""
-    raw_ids, missing_blobs = _raw_materialization_candidate_ids(config)
+    raw_ids, missing_blobs = _raw_materialization_candidate_ids(config, raw_artifact_id=raw_artifact_id)
     if dry_run:
         detail = f"Would: replay {len(raw_ids):,} raw rows into index.db"
         if missing_blobs:

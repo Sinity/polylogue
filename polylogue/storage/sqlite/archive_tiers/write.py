@@ -356,6 +356,7 @@ def write_parsed_session_to_archive(
         )
         add_timing("index.session_upsert", t0)
         position_offset = 0
+        stale_attachment_ids: set[str] = set()
         t0 = time.perf_counter()
         if merge_append:
             row = conn.execute(
@@ -386,6 +387,7 @@ def write_parsed_session_to_archive(
             )
             add_timing("index.merge_prepare", t0)
         else:
+            stale_attachment_ids = _session_attachment_ids(conn, session_id)
             _replace_full_session_messages_and_blocks(
                 conn,
                 session,
@@ -432,7 +434,7 @@ def write_parsed_session_to_archive(
             session.attachments,
             position_offset=position_offset,
             duplicate_native_ids=duplicate_message_native_ids,
-            refresh_all_ref_counts=not merge_append,
+            refresh_attachment_ids=stale_attachment_ids,
         )
         add_timing("index.attachments", t0)
         t0 = time.perf_counter()
@@ -1734,7 +1736,7 @@ def _write_attachments(
     *,
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
-    refresh_all_ref_counts: bool = True,
+    refresh_attachment_ids: set[str] | None = None,
 ) -> None:
     by_native_message_id = {
         message.provider_message_id: _message_id(
@@ -1799,19 +1801,10 @@ def _write_attachments(
         )
         ref_id = f"{message_id}:attachment:{ref_position}"
         _write_attachment_native_ids(conn, ref_id, attachment)
-    if refresh_all_ref_counts:
-        conn.execute(
-            """
-            UPDATE attachments
-            SET ref_count = (
-                SELECT COUNT(*) FROM attachment_refs WHERE attachment_refs.attachment_id = attachments.attachment_id
-            )
-            """
-        )
+    affected_attachment_ids = touched_attachment_ids | (refresh_attachment_ids or set())
+    if not affected_attachment_ids:
         return
-    if not touched_attachment_ids:
-        return
-    placeholders = ",".join("?" for _ in touched_attachment_ids)
+    placeholders = ",".join("?" for _ in affected_attachment_ids)
     conn.execute(
         f"""
         UPDATE attachments
@@ -1820,8 +1813,16 @@ def _write_attachments(
         )
         WHERE attachment_id IN ({placeholders})
         """,
-        tuple(sorted(touched_attachment_ids)),
+        tuple(sorted(affected_attachment_ids)),
     )
+
+
+def _session_attachment_ids(conn: sqlite3.Connection, session_id: str) -> set[str]:
+    rows = conn.execute(
+        "SELECT DISTINCT attachment_id FROM attachment_refs WHERE session_id = ?",
+        (session_id,),
+    ).fetchall()
+    return {str(row[0]) for row in rows}
 
 
 def _write_paste_spans(

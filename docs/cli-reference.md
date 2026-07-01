@@ -641,6 +641,7 @@ Usage: polylogue ops reset [OPTIONS]
     --source PATH      Tombstone all sessions from a source path
 
 Options:
+  --index            Delete only the rebuildable index tier
   --database         Delete the rebuildable SQLite tiers (preserves user.db)
   --include-user-db  Also delete the irreplaceable user.db tier (tags,
                      annotations, marks, notes). Destructive.

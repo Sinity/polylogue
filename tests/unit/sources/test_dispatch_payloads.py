@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from pathlib import Path
 
+from polylogue.config import Source
 from polylogue.core.enums import Provider
-from polylogue.sources.dispatch import _payload_record, _payload_sequence, parse_payload
+from polylogue.sources.dispatch import _payload_record, _payload_sequence, parse_payload, parse_stream_payload
+from polylogue.sources.source_parsing import iter_source_sessions_with_raw
 
 
 def test_payload_sequence_normalizes_streaming_decimals() -> None:
@@ -87,3 +90,89 @@ def test_parse_payload_unwraps_single_antigravity_metadata_list() -> None:
 
     assert len(from_dict) == 1
     assert len(from_list) == 1
+
+
+def test_parse_payload_splits_claude_code_aggregate_by_session_id() -> None:
+    payload = [
+        {"type": "summary", "leafUuid": "leaf-1", "summary": "Previous context"},
+        {
+            "type": "user",
+            "sessionId": "first-session",
+            "uuid": "first-user",
+            "timestamp": "2026-06-30T01:00:00Z",
+            "message": {"role": "user", "content": "first prompt"},
+        },
+        {
+            "type": "assistant",
+            "sessionId": "first-session",
+            "uuid": "first-assistant",
+            "timestamp": "2026-06-30T01:01:00Z",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "first reply"}]},
+        },
+        {
+            "type": "user",
+            "sessionId": "second-session",
+            "uuid": "second-user",
+            "timestamp": "2026-06-30T02:00:00Z",
+            "message": {"role": "user", "content": "second prompt"},
+        },
+        {
+            "type": "user",
+            "sessionId": "first-session",
+            "uuid": "first-user-later",
+            "timestamp": "2026-06-30T03:00:00Z",
+            "message": {"role": "user", "content": "first prompt later"},
+        },
+    ]
+
+    sessions = parse_payload(Provider.CLAUDE_CODE, payload, "aggregate-file")
+
+    assert [session.provider_session_id for session in sessions] == ["first-session", "second-session"]
+    assert [len(session.messages) for session in sessions] == [4, 1]
+    assert sessions[0].messages[0].message_type.value == "summary"
+    assert sessions[1].messages[0].text == "second prompt"
+
+
+def test_parse_stream_payload_splits_claude_code_aggregate_by_session_id() -> None:
+    payload = [
+        {
+            "type": "user",
+            "sessionId": "first-session",
+            "uuid": "first-user",
+            "message": {"role": "user", "content": "first prompt"},
+        },
+        {
+            "type": "user",
+            "sessionId": "second-session",
+            "uuid": "second-user",
+            "message": {"role": "user", "content": "second prompt"},
+        },
+        {
+            "type": "assistant",
+            "sessionId": "first-session",
+            "uuid": "first-assistant",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "first reply"}]},
+        },
+    ]
+
+    sessions = parse_stream_payload(Provider.CLAUDE_CODE, iter(payload), "aggregate-file")
+
+    assert [session.provider_session_id for session in sessions] == ["first-session", "second-session"]
+    assert [len(session.messages) for session in sessions] == [2, 1]
+
+
+def test_parse_one_source_path_treats_jsonl_text_json_wrappers_as_jsonl(tmp_path: Path) -> None:
+    source_path = tmp_path / "session.jsonl.txt.json"
+    source_path.write_text(
+        "\n".join(
+            (
+                '{"type":"user","sessionId":"first-session","uuid":"u1","message":{"role":"user","content":"one"}}',
+                '{"type":"user","sessionId":"second-session","uuid":"u2","message":{"role":"user","content":"two"}}',
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    rows = list(iter_source_sessions_with_raw(Source(name="claude-code", path=source_path), capture_raw=False))
+
+    assert [session.provider_session_id for _raw, session in rows] == ["first-session", "second-session"]

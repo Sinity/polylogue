@@ -104,6 +104,21 @@ class _RecoveryEventLike(Protocol):
     def summary(self) -> str: ...
 
     @property
+    def tool_name(self) -> str | None: ...
+
+    @property
+    def tool_id(self) -> str | None: ...
+
+    @property
+    def command(self) -> str | None: ...
+
+    @property
+    def handler_kind(self) -> str | None: ...
+
+    @property
+    def status(self) -> str | None: ...
+
+    @property
     def raw_refs(self) -> Sequence[_RawRefLike]: ...
 
 
@@ -164,6 +179,11 @@ class ObservedEvent(ArchiveInsightModel):
     subject_ref: ObjectRef | None = None
     object_refs: tuple[ObjectRef, ...] = ()
     evidence_refs: tuple[EvidenceRef, ...]
+    tool_name: str | None = None
+    tool_id: str | None = None
+    command: str | None = None
+    handler_kind: str | None = None
+    status: str | None = None
 
     @model_validator(mode="after")
     def _requires_evidence(self) -> ObservedEvent:
@@ -256,6 +276,11 @@ def build_run_projection(
                 subject_ref=ObjectRef(kind="message", object_id=evidence_refs[0].message_id or session_id),
                 object_refs=_tool_object_refs(tool),
                 evidence_refs=evidence_refs,
+                tool_name=tool.tool_name,
+                tool_id=tool.tool_id,
+                command=tool.command,
+                handler_kind=tool.handler_kind,
+                status=tool.status,
             )
         )
 
@@ -271,6 +296,11 @@ def build_run_projection(
                 summary=event.summary,
                 subject_ref=ObjectRef(kind="message", object_id=evidence_refs[0].message_id or session_id),
                 evidence_refs=evidence_refs,
+                tool_name=event.tool_name,
+                tool_id=event.tool_id,
+                command=event.command,
+                handler_kind=event.handler_kind,
+                status=event.status,
             )
         )
 
@@ -377,6 +407,8 @@ def _harness_for_origin(source_origin: str) -> RunHarness:
         return "claude-code"
     if source_origin == "chatgpt-export":
         return "chatgpt"
+    if source_origin in {"gemini-cli-session", "hermes-session", "antigravity-session"}:
+        return "local"
     return "unknown"
 
 

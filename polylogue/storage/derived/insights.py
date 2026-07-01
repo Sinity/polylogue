@@ -224,28 +224,28 @@ def _threads_status(metrics: Metrics) -> DerivedModelStatus:
 
 def build_timeline_statuses(metrics: Metrics) -> dict[str, DerivedModelStatus]:
     return {
-        "session_work_event_inference": _session_timeline_status(
+        "session_work_events": _session_timeline_status(
             metrics,
-            name="session_work_event_inference",
-            label="Session work-event inference",
+            name="session_work_events",
+            label="Session work events",
             ready_key="work_event_rows_ready",
             rows_key="work_event_rows",
             expected_rows_key="expected_work_event_rows",
             stale_key="stale_work_event_rows",
             orphan_key="orphan_work_event_rows",
         ),
-        "session_work_event_inference_fts": _fts_status(
+        "session_work_events_fts": _fts_status(
             metrics,
-            name="session_work_event_inference_fts",
-            label="Session work-event inference FTS",
+            name="session_work_events_fts",
+            label="Session work events FTS",
             ready_key="work_event_fts_ready",
             source_rows_key="work_event_rows",
             materialized_rows_key="work_event_fts_rows",
             duplicate_key="work_event_fts_duplicates",
         ),
-        "session_phase_inference": _session_timeline_status(
+        "session_phases": _session_timeline_status(
             metrics,
-            name="session_phase_inference",
+            name="session_phases",
             label="Session phase intervals",
             ready_key="phase_rows_ready",
             rows_key="phase_rows",

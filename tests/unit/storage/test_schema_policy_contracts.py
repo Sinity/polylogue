@@ -182,6 +182,14 @@ def test_read_only_archive_open_ensures_runtime_indexes(tmp_path: Path) -> None:
         conn.close()
 
 
+def test_read_only_archive_open_does_not_bootstrap_missing_tiers(tmp_path: Path) -> None:
+    """Read/status surfaces must not create an empty archive as a side effect."""
+    with pytest.raises(sqlite3.OperationalError):
+        ArchiveStore.open_existing(tmp_path, read_only=True).close()
+
+    assert not any(tmp_path.glob("*.db"))
+
+
 def test_future_schema_version_is_rejected(tmp_path: Path) -> None:
     """docs/internals.md § Schema Versioning Model: a DB whose version
     is *newer* than this runtime understands must be rejected.

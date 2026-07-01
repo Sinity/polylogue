@@ -229,6 +229,51 @@ def test_parse_chunked_prompt_preserves_reasoning_code_tool_results_and_attachme
     assert result.attachments[0].size_bytes == 12
 
 
+def test_parse_chunked_prompt_preserves_token_count_usage_events() -> None:
+    payload: JSONDocument = {
+        "id": "gemini-usage",
+        "displayName": "Gemini Usage",
+        "chunkedPrompt": {
+            "chunks": [
+                {
+                    "id": "msg-user",
+                    "role": "user",
+                    "text": "question",
+                    "tokenCount": 7,
+                    "createTime": "2026-01-01T00:00:01Z",
+                },
+                {
+                    "id": "msg-model",
+                    "role": "model",
+                    "text": "answer",
+                    "tokenCount": 11,
+                    "finishReason": "STOP",
+                    "model": "gemini-2.5-pro",
+                    "createTime": "2026-01-01T00:00:02Z",
+                },
+            ]
+        },
+    }
+
+    result = parse_chunked_prompt("gemini", payload, "fallback-id")
+
+    assert [event.event_type for event in result.session_events] == ["token_count", "token_count"]
+    assert result.session_events[0].source_message_provider_id == "msg-user"
+    assert result.session_events[0].timestamp == "2026-01-01T00:00:01Z"
+    assert result.session_events[0].payload == {
+        "type": "token_count",
+        "last_token_usage": {"input_tokens": 7},
+    }
+    assert result.session_events[1].source_message_provider_id == "msg-model"
+    assert result.session_events[1].timestamp == "2026-01-01T00:00:02Z"
+    assert result.session_events[1].payload == {
+        "type": "token_count",
+        "last_token_usage": {"output_tokens": 11},
+        "finish_reason": "STOP",
+        "model": "gemini-2.5-pro",
+    }
+
+
 def test_parse_chunked_prompt_preserves_attachment_only_chunks_and_chunk_timestamps() -> None:
     payload: JSONDocument = {
         "chunkedPrompt": {

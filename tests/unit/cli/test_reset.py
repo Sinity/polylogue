@@ -21,6 +21,7 @@ from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 # =============================================================================
 
 RESET_DELETION_CASES = [
+    ("--index", "index_db", "index database"),
     ("--database", "archive_db", "database"),
     ("--assets", "assets_dir", "assets"),
     ("--cache", "cache_dir", "cache"),
@@ -166,7 +167,7 @@ class TestResetCommandDeletion:
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
         # Set up appropriate paths based on path_attr
-        if path_attr == "archive_db":
+        if path_attr in {"archive_db", "index_db"}:
             archive_root = tmp_path / "archive"
             archive_root.mkdir()
             target_path = archive_root / "index.db"
@@ -259,6 +260,29 @@ class TestResetCommandDeletion:
         for path in [*rebuildable, user_db]:
             path.write_text("test database", encoding="utf-8")
         return rebuildable, user_db
+
+    def test_reset_index_deletes_only_index_tier(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``reset --index`` rebuilds the index tier without dropping raw or user evidence."""
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+        archive_root = tmp_path / "archive"
+        rebuildable, user_db = self._seed_archive_tiers(archive_root)
+        index_targets = {
+            archive_root / "index.db",
+            archive_root / "index.db-wal",
+            archive_root / "index.db-shm",
+        }
+        preserved = [path for path in [*rebuildable, user_db] if path not in index_targets]
+
+        with (
+            patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root),
+            patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
+        ):
+            result = CliRunner().invoke(cli, ["ops", "reset", "--index", "--yes"])
+
+        assert result.exit_code == 0
+        assert all(not path.exists() for path in index_targets)
+        assert all(path.exists() for path in preserved)
+        assert "index database" in result.output
 
     def test_reset_database_preserves_irreplaceable_user_db(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

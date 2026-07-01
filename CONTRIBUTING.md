@@ -97,8 +97,9 @@ not an in-place storage upgrade — it is a deletes-then-defines edit of `SCHEMA
 The PR body must replace any upgrade-path section with a
 **re-ingest plan**:
 
-- which user-visible archive operation triggers re-acquisition from
-  source (e.g. `polylogue ops reset --database && polylogued run`),
+- which user-visible archive operation triggers rebuild/re-acquisition from
+  source (e.g. `polylogue ops reset --index && polylogued run` for index-tier
+  schema bumps),
 - which downstream products (insights, blob store, FTS) are rebuilt
   automatically vs. needing explicit recomputation,
 - the expected end-user impact (rebuild time, disk usage, anything

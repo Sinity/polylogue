@@ -22,10 +22,16 @@ from unittest.mock import patch
 import pytest
 
 from polylogue.config import Config
+from polylogue.maintenance.failure_routing import (
+    count_maintenance_failures,
+    read_maintenance_failures,
+    route_failure_sample,
+)
 from polylogue.maintenance.models import MaintenanceCategory
 from polylogue.maintenance.planner import (
     MAX_FAILURE_SAMPLES,
     BackfillStatus,
+    FailureSample,
 )
 from polylogue.maintenance.replay import (
     UnsupportedReplayTargetError,
@@ -197,11 +203,9 @@ def test_replay_refuses_offline_repair_while_daemon_runs(monkeypatch: pytest.Mon
     assert "polylogued PID 1234 is running" in op.failure_samples.samples[0].message
 
 
-def test_unsupported_target_is_typed_failure_not_silent(tmp_path: Path) -> None:
+def test_unwired_target_is_typed_failure_not_silent(tmp_path: Path) -> None:
     config = _make_config(tmp_path)
 
-    # ``message_embeddings`` is in the catalog but intentionally not in
-    # the replay dispatch table — it is deferred to #828.
     with patch("polylogue.maintenance.replay._REPLAY_DISPATCH", {}):
         op = execute_replay(
             config,
@@ -215,12 +219,43 @@ def test_unsupported_target_is_typed_failure_not_silent(tmp_path: Path) -> None:
     assert sample.locator == "target:session_insights"
 
 
+def test_message_embeddings_replay_reports_daemon_owned_dormancy(tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+    route_failure_sample(
+        FailureSample(
+            kind=UnsupportedReplayTargetError.__name__,
+            locator="target:message_embeddings",
+            message="Target 'message_embeddings' is not yet wired",
+        ),
+        operation_id="op-old-unsupported",
+        archive_root=config.archive_root,
+        target="message_embeddings",
+    )
+
+    op = execute_replay(
+        config,
+        targets=("message_embeddings",),
+        operation_id="op-embeddings",
+        persist_state=False,
+    )
+
+    assert op.status is BackfillStatus.COMPLETED
+    assert op.affected_rows == 0
+    assert op.failure_samples.samples == ()
+    assert op.results[0]["name"] == "message_embeddings"
+    assert op.results[0]["success"] is True
+    assert "daemon-owned and dormant" in str(op.results[0]["detail"])
+    assert count_maintenance_failures(config.archive_root) == 0
+    assert read_maintenance_failures(config.archive_root) == []
+
+
 def test_supported_targets_cover_ac_required_set() -> None:
     """Replay supports the durable maintenance targets advertised in the catalog."""
     supported = set(supported_replay_targets())
     required = {
         "session_insights",
         "raw_materialization",
+        "message_embeddings",
         "message_type_backfill",
         "dangling_fts",
         "orphaned_blobs",

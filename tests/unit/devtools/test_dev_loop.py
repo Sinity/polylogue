@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import sys
 from pathlib import Path
 from typing import cast
@@ -9,6 +10,14 @@ from typing import cast
 import pytest
 
 from devtools import dev_loop
+
+
+def _expected_daemon_url_warning(api_port: int) -> str | None:
+    daemon_url = os.environ.get("POLYLOGUE_DAEMON_URL")
+    dev_loop_url = f"http://127.0.0.1:{api_port}"
+    if daemon_url and daemon_url != dev_loop_url:
+        return f"current POLYLOGUE_DAEMON_URL points at {daemon_url}; dev-loop commands will use {dev_loop_url}"
+    return None
 
 
 def test_system_service_status_reports_active_unit_archive_root(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -122,15 +131,23 @@ def test_build_dev_loop_status_uses_branch_local_paths_and_warnings(
     )
     assert f"PYTHONPATH={repo}" in payload["commands"]["run_daemon"]
     assert "from polylogue.daemon.cli import main; main()" in payload["commands"]["run_daemon"]
-    assert "run --api-port 9999 --port 9998" in payload["commands"]["run_daemon"]
+    assert "POLYLOGUE_DAEMON_URL=http://127.0.0.1:9999" in payload["commands"]["run_daemon"]
+    assert "XDG_DATA_HOME=" in payload["commands"]["run_daemon"]
+    assert "run --no-watch --api-port 9999 --port 9998" in payload["commands"]["run_daemon"]
+    assert "--spool" in payload["commands"]["run_daemon"]
     assert "polylogue ops status" in payload["commands"]["capture_cli_status"]
+    assert "POLYLOGUE_DAEMON_URL=http://127.0.0.1:9999" in payload["commands"]["capture_cli_status"]
     assert payload["commands"]["capture_cli_status"].endswith("terminal/polylogue-ops-status.typescript")
     assert payload["commands"]["terminal_tui_plan"].endswith("--tui-plan --json")
     assert payload["commands"]["launch_daemon"].startswith("devtools workspace dev-loop")
     assert "--archive-root" in payload["commands"]["launch_daemon"]
     assert "--log-dir" in payload["commands"]["launch_daemon"]
     assert payload["suggested_env"]["POLYLOGUE_ARCHIVE_ROOT"] == str(repo / ".local" / "dev-archive")
+    assert payload["suggested_env"]["POLYLOGUE_DAEMON_URL"] == "http://127.0.0.1:9999"
     assert payload["suggested_env"]["POLYLOGUE_DEV_LOOP_RUN_ID"] == payload["run_id"]
+    assert payload["suggested_env"]["XDG_DATA_HOME"].endswith("/xdg-data")
+    assert payload["archive_status"]["index_db_exists"] is False
+    assert payload["archive_status"]["schema_ready"] is False
     artifact_status = payload["artifact_status"]
     assert artifact_status["run_log_dir"]["state"] == "present"
     assert artifact_status["preflight_json"]["state"] == "present"
@@ -156,10 +173,14 @@ def test_build_dev_loop_status_uses_branch_local_paths_and_warnings(
     assert live_proof["authority"]["label"] == "operator-local-copied-profile-live-proof"
     assert live_proof["authority"]["cloud_safe"] is False
     assert live_proof["authority"]["requires_copied_profile"] is True
-    assert payload["warnings"] == [
+    expected_warnings = [
         "systemwide polylogued.service is active; stop it or use isolated ports before branch-local runs",
         "api port 9999 already has a listener",
+        "branch-local archive is not initialized; run the prepared launch/import path before using its counts",
     ]
+    if daemon_url_warning := _expected_daemon_url_warning(9999):
+        expected_warnings.append(daemon_url_warning)
+    assert payload["warnings"] == expected_warnings
 
 
 def test_build_dev_loop_status_marks_isolated_ports_without_service_warning(
@@ -200,9 +221,15 @@ def test_build_dev_loop_status_marks_isolated_ports_without_service_warning(
 
     assert payload["port_selection"] == "isolated"
     assert payload["run_id"] == "feature-dev-loop-abc1234-api9911-capture9912"
-    assert payload["warnings"] == []
+    expected_warnings = [
+        "branch-local archive is not initialized; run the prepared launch/import path before using its counts"
+    ]
+    if daemon_url_warning := _expected_daemon_url_warning(9911):
+        expected_warnings.append(daemon_url_warning)
+    assert payload["warnings"] == expected_warnings
     assert payload["suggested_env"]["POLYLOGUE_API_PORT"] == "9911"
     assert payload["suggested_env"]["POLYLOGUE_BROWSER_CAPTURE_PORT"] == "9912"
+    assert payload["suggested_env"]["POLYLOGUE_DAEMON_URL"] == "http://127.0.0.1:9911"
     prepare_command = payload["commands"]["prepare"]
     assert "--api-port 9911" in prepare_command
     assert "--browser-capture-port 9912" in prepare_command
@@ -210,9 +237,55 @@ def test_build_dev_loop_status_marks_isolated_ports_without_service_warning(
     assert "--log-dir" in prepare_command
     assert prepare_command.endswith("--prepare")
     assert payload["commands"]["prepare_isolated"] == "devtools workspace dev-loop --isolated-ports --prepare"
-    assert "--api-port 9911 --browser-capture-port 9912 --json" in payload["commands"]["save_preflight"]
+    assert "--api-port 9911 --browser-capture-port 9912 --archive-root" in payload["commands"]["save_preflight"]
+    assert "--log-dir" in payload["commands"]["save_preflight"]
+    assert payload["commands"]["save_preflight"].endswith("--json > " + payload["artifacts"]["preflight_json"])
     assert payload["plan"]["next_command_name"] == "launch_daemon"
     assert payload["plan"]["authority_levels"]["browser_live_proof"]["cloud_safe"] is False
+
+
+def test_build_dev_loop_status_reports_initialized_archive_counts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    archive = repo / ".local" / "dev-archive"
+    archive.mkdir(parents=True)
+    with sqlite3.connect(archive / "index.db") as conn:
+        conn.execute("PRAGMA user_version = 18")
+        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+        conn.execute("CREATE TABLE messages (message_id TEXT PRIMARY KEY)")
+        conn.executemany("INSERT INTO sessions VALUES (?)", [("s1",), ("s2",)])
+        conn.executemany("INSERT INTO messages VALUES (?)", [("m1",), ("m2",), ("m3",)])
+        conn.commit()
+    monkeypatch.setattr(dev_loop, "system_service_status", lambda: {"active": False})
+    monkeypatch.setattr(
+        dev_loop,
+        "port_status",
+        lambda port: {"port": port, "connectable": False, "owner_count": 0, "owners": []},
+    )
+    monkeypatch.setattr(
+        dev_loop, "_git_value", lambda args, *, cwd: "feature/dev-loop" if args[0] == "branch" else "abc1234"
+    )
+
+    payload = dev_loop.build_dev_loop_status(repo_root=repo, api_port=9911, browser_capture_port=9912)
+
+    assert payload["archive_status"] == {
+        "archive_root": str(archive),
+        "archive_root_exists": True,
+        "index_db": str(archive / "index.db"),
+        "index_db_exists": True,
+        "schema_ready": True,
+        "sessions_table_exists": True,
+        "session_count": 2,
+        "message_count": 3,
+        "user_version": 18,
+        "error": None,
+    }
+    expected_warnings = []
+    if daemon_url_warning := _expected_daemon_url_warning(9911):
+        expected_warnings.append(daemon_url_warning)
+    assert payload["warnings"] == expected_warnings
 
 
 def test_main_isolated_ports_allocates_free_ports(
@@ -249,7 +322,12 @@ def test_main_isolated_ports_allocates_free_ports(
     assert payload["port_selection"] == "isolated"
     assert payload["ports"]["api"]["port"] == 9921
     assert payload["ports"]["browser_capture"]["port"] == 9922
-    assert payload["warnings"] == []
+    expected_warnings = [
+        "branch-local archive is not initialized; run the prepared launch/import path before using its counts"
+    ]
+    if daemon_url_warning := _expected_daemon_url_warning(9921):
+        expected_warnings.append(daemon_url_warning)
+    assert payload["warnings"] == expected_warnings
     assert payload["commands"]["open_web_shell"] == "http://127.0.0.1:9921/"
 
 
@@ -933,6 +1011,10 @@ def test_cli_capture_runs_command_with_branch_local_artifacts(
     assert f"run_id={run_id}" in transcript_path.read_text(encoding="utf-8")
     env_payload = json.loads(env_path.read_text(encoding="utf-8"))
     assert env_payload["POLYLOGUE_ARCHIVE_ROOT"] == str(tmp_path / "archive")
+    assert env_payload["POLYLOGUE_DAEMON_URL"] == "http://127.0.0.1:8766"
+    assert env_payload["XDG_DATA_HOME"].endswith("/xdg-data")
+    assert env_payload["XDG_CACHE_HOME"].endswith("/xdg-cache")
+    assert env_payload["XDG_STATE_HOME"].endswith("/xdg-state")
     assert env_payload["POLYLOGUE_API_AUTH_TOKEN"] == "[redacted]"
     assert env_payload["POLYLOGUE_NOTIFICATION_EMAIL_PASSWORD"] == "[redacted]"
     assert json.loads(summary_path.read_text(encoding="utf-8"))["exit_code"] == 0
@@ -1191,13 +1273,18 @@ def test_daemon_launch_writes_branch_local_process_artifacts(
     env = launched["env"]
     assert isinstance(env, dict)
     assert env["POLYLOGUE_ARCHIVE_ROOT"] == str(archive_root)
+    assert env["POLYLOGUE_DAEMON_URL"] == "http://127.0.0.1:9876"
+    assert env["XDG_DATA_HOME"].endswith("/xdg-data")
     assert env["PYTHONPATH"].split(os.pathsep)[0] == str(Path(payload["preflight"]["repo_root"]))
     assert launched["cwd"] == Path(payload["preflight"]["repo_root"])
 
     artifacts = launch["artifacts"]
     assert Path(artifacts["pid"]).read_text(encoding="utf-8") == "4242\n"
     assert json.loads(Path(artifacts["summary"]).read_text(encoding="utf-8"))["pid"] == 4242
-    assert json.loads(Path(artifacts["env"]).read_text(encoding="utf-8"))["POLYLOGUE_API_PORT"] == "9876"
+    env_artifact = json.loads(Path(artifacts["env"]).read_text(encoding="utf-8"))
+    assert env_artifact["POLYLOGUE_API_PORT"] == "9876"
+    assert env_artifact["POLYLOGUE_DAEMON_URL"] == "http://127.0.0.1:9876"
+    assert env_artifact["XDG_DATA_HOME"].endswith("/xdg-data")
     assert Path(artifacts["log"]).read_text(encoding="utf-8").startswith("\n# dev-loop launch")
     event_rows = [
         json.loads(line) for line in Path(artifacts["events"]).read_text(encoding="utf-8").splitlines() if line.strip()

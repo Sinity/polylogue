@@ -123,6 +123,8 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
     assert storage["archive_root_matches_configured"] is True
     assert storage["archive_ready"] is True
     assert storage["final_shape_ready"] is True
+    assert storage["archive_schema_ready"] is True
+    assert storage["schema_mismatches"] == []
     assert storage["present_tiers"] == ["source", "index", "embeddings", "user", "ops"]
     tiers = cast(list[dict[str, object]], storage["tiers"])
     assert {tier["name"]: tier["user_version"] for tier in tiers} == {
@@ -132,6 +134,57 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
         "user": USER_SCHEMA_VERSION,
         "ops": 1,
     }
+    assert {tier["name"]: tier["version_status"] for tier in tiers} == {
+        "source": "ok",
+        "index": "ok",
+        "embeddings": "ok",
+        "user": "ok",
+        "ops": "ok",
+    }
+
+
+def test_polylogued_status_json_reports_schema_mismatch_not_ready(tmp_path: Path) -> None:
+    for filename, tier in (
+        ("source.db", ArchiveTier.SOURCE),
+        ("index.db", ArchiveTier.INDEX),
+        ("embeddings.db", ArchiveTier.EMBEDDINGS),
+        ("user.db", ArchiveTier.USER),
+        ("ops.db", ArchiveTier.OPS),
+    ):
+        initialize_archive_database(tmp_path / filename, tier)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute("PRAGMA user_version = 1")
+
+    with (
+        patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+        patch("polylogue.daemon.status.db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status.index_db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status.default_sources", return_value=()),
+    ):
+        result = CliRunner().invoke(main, ["status", "--format", "json"])
+
+    assert result.exit_code == 0
+    payload = loads(result.output)
+    assert isinstance(payload, dict)
+    storage_raw = payload["archive_storage"]
+    assert isinstance(storage_raw, dict)
+    storage = cast(dict[str, object], storage_raw)
+    assert storage["active_store"] == "archive_file_set"
+    assert storage["archive_ready"] is False
+    assert storage["final_shape_ready"] is True
+    assert storage["archive_schema_ready"] is False
+    assert storage["schema_mismatches"] == ["index"]
+    tiers = cast(list[dict[str, object]], storage["tiers"])
+    index_tier = next(tier for tier in tiers if tier["name"] == "index")
+    assert index_tier["user_version"] == 1
+    assert index_tier["expected_user_version"] == INDEX_SCHEMA_VERSION
+    assert index_tier["version_status"] == "mismatch"
+    components_raw = payload["component_readiness"]
+    assert isinstance(components_raw, dict)
+    components = cast(dict[str, dict[str, object]], components_raw)
+    archive_component = components["archive_storage"]
+    assert archive_component["state"] == "blocked"
+    assert archive_component["repair_hint"] == "polylogue ops reset --index && polylogued run"
 
 
 def test_polylogued_status_plain_reports_archive_storage(tmp_path: Path) -> None:
@@ -148,6 +201,33 @@ def test_polylogued_status_plain_reports_archive_storage(tmp_path: Path) -> None
 
     assert result.exit_code == 0
     assert "Storage: archive_file_set (source, index); missing embeddings, user, ops" in result.output
+
+
+def test_polylogued_status_plain_reports_schema_mismatch(tmp_path: Path) -> None:
+    for filename, tier in (
+        ("source.db", ArchiveTier.SOURCE),
+        ("index.db", ArchiveTier.INDEX),
+        ("embeddings.db", ArchiveTier.EMBEDDINGS),
+        ("user.db", ArchiveTier.USER),
+        ("ops.db", ArchiveTier.OPS),
+    ):
+        initialize_archive_database(tmp_path / filename, tier)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute("PRAGMA user_version = 1")
+
+    with (
+        patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+        patch("polylogue.daemon.status.db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status.index_db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status.default_sources", return_value=()),
+    ):
+        result = CliRunner().invoke(main, ["status"])
+
+    assert result.exit_code == 0
+    assert (
+        "Storage: archive_file_set (source, index, embeddings, user, ops); final split complete; schema mismatch index"
+        in result.output
+    )
 
 
 @pytest.mark.contract

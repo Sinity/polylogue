@@ -23,6 +23,7 @@ from .common import (
     _message_model_effort,
     _message_model_name,
     extract_messages_from_chat_messages,
+    extract_text_from_segments,
     normalize_timestamp,
 )
 
@@ -190,17 +191,18 @@ def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     message_position = 0
     for msg in conv.chat_messages:
         timestamp = normalize_timestamp(msg.created_at)
-        if msg.text:
-            raw_message = msg.model_dump()
-            raw_content = raw_message.get("content")
+        raw_message = msg.model_dump()
+        raw_content = raw_message.get("content")
+        text = msg.text or (extract_text_from_segments(raw_content) if isinstance(raw_content, list) else None)
+        if text:
             content_blocks = content_blocks_from_segments(raw_content) if isinstance(raw_content, list) else []
-            if not content_blocks and msg.text:
-                content_blocks = [ParsedContentBlock(type=BlockType.TEXT, text=msg.text)]
+            if not content_blocks:
+                content_blocks = [ParsedContentBlock(type=BlockType.TEXT, text=text)]
             messages.append(
                 ParsedMessage(
                     provider_message_id=msg.uuid,
                     role=msg.role_normalized,
-                    text=msg.text,
+                    text=text,
                     timestamp=timestamp,
                     blocks=content_blocks,
                     position=message_position,

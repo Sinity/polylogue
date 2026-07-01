@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json as _json
 import time
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime
@@ -162,8 +163,9 @@ def _workflow_shape(
     }
     if dispatch_count:
         return "subagent_dispatch", 0.92, features
-    if facts.total_messages <= 8 and tool_ratio < 0.1:
-        return "chat", 0.76, features
+    if tool_ratio < 0.1 and (user_count or assistant_count):
+        confidence = 0.76 if facts.total_messages <= 8 else 0.72
+        return "chat", confidence, features
     if read_count >= 3 and edit_count == 0 and user_count <= 2:
         return "batch_review", 0.82, features
     if (edit_count > 0 or run_count >= 3) and tool_ratio >= 0.2 and facts.total_messages >= 10:
@@ -178,21 +180,58 @@ _TOOL_OUTPUT_TYPES = {"function_call_output", "custom_tool_call_output", "web_se
 _ERROR_MARKERS = ("error", "failed", "failure", "traceback", "exception", "panic")
 
 
+def _tool_block_id(block: object) -> str | None:
+    if not isinstance(block, dict):
+        return None
+    for key in ("tool_id", "tool_use_id", "id", "call_id"):
+        value = block.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _pending_tool_blocks(session: Session) -> int:
+    uses: Counter[str] = Counter()
+    results: Counter[str] = Counter()
+    unidentified_uses = 0
+    unidentified_results = 0
+    for message in session.messages:
+        for block in message.blocks:
+            if not isinstance(block, dict):
+                continue
+            block_type = str(block.get("type") or "").strip().lower()
+            if block_type == "tool_use":
+                tool_id = _tool_block_id(block)
+                if tool_id is None:
+                    unidentified_uses += 1
+                else:
+                    uses[tool_id] += 1
+            elif block_type == "tool_result":
+                tool_id = _tool_block_id(block)
+                if tool_id is None:
+                    unidentified_results += 1
+                else:
+                    results[tool_id] += 1
+    pending_identified = sum(max(count - results.get(tool_id, 0), 0) for tool_id, count in uses.items())
+    pending_unidentified = max(unidentified_uses - unidentified_results, 0)
+    return pending_identified + pending_unidentified
+
+
 def _terminal_state(
     session: Session, analysis: SessionAnalysis
 ) -> tuple[str, float, dict[str, int | float | str | None]]:
-    pending_actions = [action for action in analysis.facts.actions if action.output_text is None]
-    if pending_actions:
-        return "tool_left", 0.9, {"pending_tool_count": len(pending_actions)}
-    trailing_error_action_id: str | None = None
+    pending_block_count = _pending_tool_blocks(session)
+    if pending_block_count:
+        return "tool_left", 0.9, {"pending_tool_count": pending_block_count}
+    latest_error_action_id: str | None = None
     for action in analysis.facts.actions:
         output_text = (action.output_text or "").lower()
         if any(marker in output_text for marker in _ERROR_MARKERS):
-            trailing_error_action_id = action.action_id
+            latest_error_action_id = action.action_id
 
     pending: set[str] = set()
     pending_without_id = 0
-    trailing_error_event_id: str | None = None
+    latest_error_event_id: str | None = None
     for event in sorted(session.session_events, key=lambda item: item.event_index):
         event_type = str(event.event_type).strip().lower()
         call_id_value = event.payload.get("call_id")
@@ -209,7 +248,7 @@ def _terminal_state(
                 pending.discard(call_id)
             status = str(event.payload.get("status") or "").lower()
             if status in {"error", "failed", "failure"}:
-                trailing_error_event_id = str(event.id)
+                latest_error_event_id = str(event.id)
     if pending or pending_without_id:
         return "tool_left", 0.9, {"pending_tool_count": len(pending) + pending_without_id}
 
@@ -217,16 +256,20 @@ def _terminal_state(
         message for message in analysis.facts.message_facts if message.text.strip() and not message.is_protocol_artifact
     ]
     last = meaningful[-1] if meaningful else None
-    if trailing_error_action_id is not None:
-        return "error_left", 0.78, {"action_id": trailing_error_action_id}
-    if trailing_error_event_id is not None:
-        return "error_left", 0.78, {"event_id": trailing_error_event_id}
     if last is None:
+        if latest_error_action_id is not None:
+            return "error_left", 0.78, {"action_id": latest_error_action_id}
+        if latest_error_event_id is not None:
+            return "error_left", 0.78, {"event_id": latest_error_event_id}
         return "unknown", 0.1, {}
     text_lower = last.text.lower()
     if last.is_candidate_human_authored:
         return "question_left", 0.72, {"message_id": last.message_id}
     if last.is_assistant and any(marker in text_lower for marker in _ERROR_MARKERS):
+        if latest_error_action_id is not None:
+            return "error_left", 0.78, {"action_id": latest_error_action_id}
+        if latest_error_event_id is not None:
+            return "error_left", 0.78, {"event_id": latest_error_event_id}
         return "error_left", 0.7, {"message_id": last.message_id}
     if last.is_assistant:
         return "clean_finish", 0.68, {"message_id": last.message_id}

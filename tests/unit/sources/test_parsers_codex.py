@@ -384,6 +384,85 @@ class TestMessageParsing:
         assert len(result.messages) == 1
         assert result.messages[0].text == "query"
 
+    def test_envelope_message_uses_wrapper_timestamp(self) -> None:
+        payload = [
+            {
+                "type": "response_item",
+                "timestamp": "2026-06-30T03:26:22.762Z",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "timed query"}],
+                },
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        assert len(result.messages) == 1
+        assert result.messages[0].timestamp == "2026-06-30T03:26:22.762Z"
+        assert result.created_at is None
+        assert result.updated_at == "2026-06-30T03:26:22.762Z"
+
+    def test_envelope_message_inner_timestamp_beats_wrapper_timestamp(self) -> None:
+        payload = [
+            {
+                "type": "response_item",
+                "timestamp": "2026-06-30T03:26:22.762Z",
+                "payload": {
+                    "type": "message",
+                    "timestamp": "2026-06-30T03:27:00.000Z",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "timed query"}],
+                },
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        assert len(result.messages) == 1
+        assert result.messages[0].timestamp == "2026-06-30T03:27:00.000Z"
+        assert result.updated_at == "2026-06-30T03:27:00.000Z"
+
+    def test_event_user_message_uses_wrapper_timestamp(self) -> None:
+        payload = [
+            {
+                "type": "event_msg",
+                "timestamp": "2026-06-30T03:26:22.762Z",
+                "payload": {
+                    "type": "user_message",
+                    "client_id": "client-1",
+                    "message": "please inspect the parser",
+                },
+            }
+        ]
+
+        result = parse(payload, "fallback")
+
+        assert len(result.messages) == 1
+        assert result.messages[0].timestamp == "2026-06-30T03:26:22.762Z"
+        assert result.updated_at == "2026-06-30T03:26:22.762Z"
+
+    def test_tool_message_uses_wrapper_timestamp(self) -> None:
+        payload = [
+            {
+                "type": "response_item",
+                "timestamp": "2026-06-30T03:26:22.762Z",
+                "payload": {
+                    "type": "function_call",
+                    "call_id": "call-1",
+                    "name": "shell",
+                    "arguments": {"cmd": "date"},
+                },
+            }
+        ]
+
+        result = parse(payload, "fallback")
+
+        assert len(result.messages) == 1
+        assert result.messages[0].timestamp == "2026-06-30T03:26:22.762Z"
+        assert result.updated_at == "2026-06-30T03:26:22.762Z"
+
     def test_event_user_message_materializes_when_no_response_duplicate(self) -> None:
         payload = [
             {
@@ -601,6 +680,44 @@ class TestMessageParsing:
         assert result.messages[1].input_tokens == 1
         assert result.messages[1].output_tokens == 20
         assert result.messages[1].duration_ms == 750
+
+    def test_message_usage_accepts_codex_event_aliases(self) -> None:
+        payload = [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "done"}],
+                "usage": {
+                    "inputTokenCount": 10,
+                    "outputTokenCount": 4,
+                    "cached_input_tokens": 3,
+                    "cache_write_input_tokens": 2,
+                },
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "again"}],
+                "usage": {
+                    "input_tokens": 11,
+                    "output_tokens": 5,
+                    "cached_tokens": 7,
+                    "cache_creation_input_tokens": 6,
+                },
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        assert len(result.messages) == 2
+        assert result.messages[0].input_tokens == 10
+        assert result.messages[0].output_tokens == 4
+        assert result.messages[0].cache_read_tokens == 3
+        assert result.messages[0].cache_write_tokens == 2
+        assert result.messages[1].input_tokens == 11
+        assert result.messages[1].output_tokens == 5
+        assert result.messages[1].cache_read_tokens == 7
+        assert result.messages[1].cache_write_tokens == 6
 
 
 # =============================================================================
@@ -939,9 +1056,11 @@ class TestEdgeCases:
         assert len(result.messages) == 2
         assert [message.position for message in result.messages] == [0, 1]
         assert result.active_leaf_message_provider_id == "call_1"
+        assert result.messages[0].message_type is MessageType.TOOL_USE
         assert result.messages[0].blocks[0].type == "tool_use"
         assert result.messages[0].blocks[0].tool_name == "exec_command"
         assert result.messages[0].blocks[0].tool_input == {"cmd": "git status"}
+        assert result.messages[1].message_type is MessageType.TOOL_RESULT
         assert result.messages[1].blocks[0].type == "tool_result"
 
     def test_event_msg_token_count_preserves_current_model_and_usage_extras(self) -> None:

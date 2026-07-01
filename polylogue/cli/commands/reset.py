@@ -41,6 +41,7 @@ _REBUILDABLE_ARCHIVE_DATABASES = (
 # ``reset --database`` preserves it unless the operator opts in explicitly.
 _USER_ARCHIVE_DATABASE = ("user database", "user.db")
 _ARCHIVE_DATABASES = (*_REBUILDABLE_ARCHIVE_DATABASES, _USER_ARCHIVE_DATABASE)
+_INDEX_ARCHIVE_DATABASE = ("index database", "index.db")
 
 
 def _archive_root() -> Path:
@@ -77,6 +78,21 @@ def _archive_database_targets(*, include_user_db: bool = False) -> list[tuple[st
             sidecar = path.with_name(f"{path.name}{suffix}")
             if sidecar.exists():
                 targets.append((f"{name} {suffix}", sidecar))
+    return targets
+
+
+def _archive_index_targets() -> list[tuple[str, Path]]:
+    """Resolve only the rebuildable index tier files for schema rebuilds."""
+    root = _archive_root()
+    name, filename = _INDEX_ARCHIVE_DATABASE
+    path = root / filename
+    targets: list[tuple[str, Path]] = []
+    if path.exists():
+        targets.append((name, path))
+    for suffix in ("-wal", "-shm"):
+        sidecar = path.with_name(f"{path.name}{suffix}")
+        if sidecar.exists():
+            targets.append((f"{name} {suffix}", sidecar))
     return targets
 
 
@@ -190,6 +206,7 @@ def _archive_session_ids_from_source(source_path: Path) -> list[str]:
 
 
 @click.command("reset")
+@click.option("--index", "index", is_flag=True, help="Delete only the rebuildable index tier")
 @click.option("--database", is_flag=True, help="Delete the rebuildable SQLite tiers (preserves user.db)")
 @click.option(
     "--include-user-db",
@@ -213,6 +230,7 @@ def _archive_session_ids_from_source(source_path: Path) -> list[str]:
 @click.pass_obj
 def reset_command(
     env: AppEnv,
+    index: bool,
     database: bool,
     include_user_db: bool,
     blob: bool,
@@ -258,13 +276,15 @@ def reset_command(
         )
         return
 
-    if not (database or blob or assets or cache or auth):
+    if not (index or database or blob or assets or cache or auth):
         fail(
             "reset",
-            "Specify at least one target (e.g., --database, --assets, --cache, --auth) or use --all",
+            "Specify at least one target (e.g., --index, --database, --assets, --cache, --auth) or use --all",
         )
 
     targets = []
+    if index:
+        targets.extend(_archive_index_targets())
     if database:
         targets.extend(_archive_database_targets(include_user_db=include_user_db))
         if not include_user_db and _user_db_present():
@@ -296,6 +316,7 @@ def reset_command(
         last_source = state_home() / "last-source.json"
         if last_source.exists():
             targets.append(("last-source state", last_source))
+    targets = _dedupe_targets(targets)
 
     if not targets:
         env.ui.console.print("Nothing to reset (no files exist for selected targets).")
@@ -330,6 +351,18 @@ def reset_command(
             env.ui.console.print(f"  Failed to delete {name}: {exc}")
 
     env.ui.console.print(f"\nReset complete: {deleted} item(s) deleted.")
+
+
+def _dedupe_targets(targets: list[tuple[str, Path]]) -> list[tuple[str, Path]]:
+    seen: set[Path] = set()
+    deduped: list[tuple[str, Path]] = []
+    for name, path in targets:
+        resolved = path.resolve(strict=False)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        deduped.append((name, path))
+    return deduped
 
 
 __all__ = ["reset_command"]

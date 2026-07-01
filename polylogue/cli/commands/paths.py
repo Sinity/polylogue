@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import contextlib
 import json
+import sqlite3
 from pathlib import Path
 
 import click
 
 from polylogue.storage import archive_layout
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 @click.command("paths")
@@ -49,9 +52,13 @@ def paths_command(output_format: str) -> None:
         "ops": ops_db,
         "user": user_db,
     }
+    tier_versions = _tier_version_status(tier_paths)
     present_tiers = [name for name, path in tier_paths.items() if path.exists()]
     missing_tiers = [name for name, path in tier_paths.items() if not path.exists()]
-    archive_ready = source_db.exists() and db.exists()
+    archive_schema_ready = all(
+        tier_versions[name]["version_status"] == "ok" for name in ("source", "index", "embeddings", "ops", "user")
+    )
+    archive_ready = source_db.exists() and db.exists() and archive_schema_ready
     final_shape_ready = not missing_tiers
     missing_backup_required = [tier for tier in archive_layout.BACKUP_REQUIRED_TIERS if tier in missing_tiers]
     layout_blockers = archive_layout.archive_layout_blockers(
@@ -91,8 +98,10 @@ def paths_command(output_format: str) -> None:
             "storage_layout": storage_layout,
             "archive_ready": archive_ready,
             "final_shape_ready": final_shape_ready,
+            "archive_schema_ready": archive_schema_ready,
             "archive_layout_ready": archive_layout_ready,
             "archive_layout_blockers": layout_blockers,
+            "archive_tier_versions": tier_versions,
             "present_tiers": present_tiers,
             "missing_tiers": missing_tiers,
             "source_database_path": str(source_db),
@@ -130,15 +139,17 @@ def paths_command(output_format: str) -> None:
     _print_line("Storage layout", storage_layout, extra=layout_extra)
     layout_status_extra = "ready" if archive_layout_ready else f"blocked={','.join(layout_blockers)}"
     _print_line("Archive layout", "ready" if archive_layout_ready else "not ready", extra=layout_status_extra)
-    _print_line("Source DB", str(source_db), extra=_size_fmt(source_db) if source_db.exists() else "not found")
-    _print_line("Index DB", str(db), extra=_size_fmt(db) if db.exists() else "not found")
+    schema_extra = "ready" if archive_schema_ready else _schema_blocker_text(tier_versions)
+    _print_line("Archive schema", "ready" if archive_schema_ready else "not ready", extra=schema_extra)
+    _print_line("Source DB", str(source_db), extra=_tier_extra("source", source_db, tier_versions))
+    _print_line("Index DB", str(db), extra=_tier_extra("index", db, tier_versions))
     _print_line(
         "Embeddings DB",
         str(embeddings_db),
-        extra=_size_fmt(embeddings_db) if embeddings_db.exists() else "not found",
+        extra=_tier_extra("embeddings", embeddings_db, tier_versions),
     )
-    _print_line("Ops DB", str(ops_db), extra=_size_fmt(ops_db) if ops_db.exists() else "not found")
-    _print_line("User DB", str(user_db), extra=_size_fmt(user_db) if user_db.exists() else "not found")
+    _print_line("Ops DB", str(ops_db), extra=_tier_extra("ops", ops_db, tier_versions))
+    _print_line("User DB", str(user_db), extra=_tier_extra("user", user_db, tier_versions))
     if active_db != db:
         _print_line("Active DB", str(active_db), extra=_size_fmt(active_db) if active_db.exists() else "not found")
     _print_line("Config file", str(toml_path), extra="exists" if toml_path.exists() else "not found")
@@ -157,6 +168,65 @@ def paths_command(output_format: str) -> None:
 
 
 # ── helpers ────────────────────────────────────────────────────────
+
+_TIER_ENUM_BY_NAME = {
+    "source": ArchiveTier.SOURCE,
+    "index": ArchiveTier.INDEX,
+    "embeddings": ArchiveTier.EMBEDDINGS,
+    "ops": ArchiveTier.OPS,
+    "user": ArchiveTier.USER,
+}
+
+
+def _tier_version_status(tier_paths: dict[str, Path]) -> dict[str, dict[str, object]]:
+    status: dict[str, dict[str, object]] = {}
+    for name, path in tier_paths.items():
+        expected = ARCHIVE_VERSION_BY_TIER[_TIER_ENUM_BY_NAME[name]]
+        user_version = _read_user_version(path) if path.exists() else None
+        if not path.exists():
+            version_status = "missing"
+        elif user_version == expected:
+            version_status = "ok"
+        elif user_version is None:
+            version_status = "invalid"
+        else:
+            version_status = "mismatch"
+        status[name] = {
+            "path": str(path),
+            "exists": path.exists(),
+            "user_version": user_version,
+            "expected_user_version": expected,
+            "version_status": version_status,
+        }
+    return status
+
+
+def _read_user_version(path: Path) -> int | None:
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+            row = conn.execute("PRAGMA user_version").fetchone()
+    except sqlite3.Error:
+        return None
+    return int(row[0] or 0) if row is not None else 0
+
+
+def _tier_extra(name: str, path: Path, tier_versions: dict[str, dict[str, object]]) -> str:
+    if not path.exists():
+        return "not found"
+    info = tier_versions[name]
+    version = info["user_version"]
+    expected = info["expected_user_version"]
+    version_status = info["version_status"]
+    return f"{_size_fmt(path)}; v{version}/{expected} {version_status}"
+
+
+def _schema_blocker_text(tier_versions: dict[str, dict[str, object]]) -> str:
+    blockers = [
+        f"{name}:{info['version_status']}({info['user_version']}/{info['expected_user_version']})"
+        for name, info in tier_versions.items()
+        if info["version_status"] != "ok"
+    ]
+    return "blocked=" + ",".join(blockers)
 
 
 def _detect_bind_mounts(archive: Path, out: list[dict[str, object]]) -> None:

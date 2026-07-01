@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from polylogue.storage.insights.session.profiles import (
     assistant_turn_texts,
     blocker_texts,
     build_session_profile_record,
+    profile_enrichment_search_text,
     profile_evidence_payload,
     profile_inference_payload,
     profile_inference_search_text,
@@ -47,7 +49,22 @@ def _enrichment_session() -> Session:
                     {
                         "type": "tool_use",
                         "tool_name": "Read",
+                        "tool_id": "read-1",
                         "tool_input": {"file_path": str(APP_PATH)},
+                    }
+                ],
+            ),
+            make_msg(
+                id="a1-result",
+                role="assistant",
+                provider=Provider.CLAUDE_CODE,
+                text="Read completed.",
+                timestamp=datetime(2026, 4, 2, 10, 1, 30, tzinfo=timezone.utc),
+                blocks=[
+                    {
+                        "type": "tool_result",
+                        "tool_id": "read-1",
+                        "text": "file contents",
                     }
                 ],
             ),
@@ -75,7 +92,9 @@ def test_session_enrichment_payload_reuses_text_band_outputs() -> None:
 
     assert payload.intent_summary == user_turn_texts(analysis)[0]
     assert payload.outcome_summary == assistant_turn_texts(analysis)[-1]
-    assert payload.blockers == blocker_texts(analysis)
+    assert payload.blockers == ()
+    unresolved_payload = session_enrichment_payload(replace(profile, terminal_state="error_left"), analysis)
+    assert unresolved_payload.blockers == blocker_texts(analysis)
     assert payload.input_band_summary == {
         "user_turns": 1,
         "assistant_turns": 1,
@@ -93,6 +112,51 @@ def test_session_enrichment_payload_reuses_text_band_outputs() -> None:
         "heuristic_work_events",
         "assistant_outcome_text",
     )
+
+
+def test_session_enrichment_maps_goal_outcome_from_terminal_state() -> None:
+    session = make_conv(
+        id="conv-goal-outcome",
+        provider=Provider.CLAUDE_CODE,
+        title="Goal",
+        messages=[
+            make_msg(
+                id="u1",
+                role="user",
+                provider=Provider.CLAUDE_CODE,
+                text="/goal fix the session-profile outcome mapping",
+                material_origin=MaterialOrigin.HUMAN_AUTHORED,
+            ),
+            make_msg(
+                id="a1",
+                role="assistant",
+                provider=Provider.CLAUDE_CODE,
+                text="Finished the mapping.",
+                material_origin=MaterialOrigin.ASSISTANT_AUTHORED,
+            ),
+        ],
+    )
+    analysis = build_session_analysis(session)
+    profile = build_session_profile(session, analysis=analysis)
+
+    outcomes: dict[str, str | None] = {}
+    for terminal_state in ("clean_finish", "error_left", "question_left", "tool_left", "agent_hanging", "unknown"):
+        variant = profile.__class__.from_dict({**profile.to_dict(), "terminal_state": terminal_state})
+        outcomes[terminal_state] = session_enrichment_payload(variant, analysis).goal_outcome
+
+    assert outcomes == {
+        "clean_finish": "ended_cleanly",
+        "error_left": "ended_with_error",
+        "question_left": "awaiting_user",
+        "tool_left": "pending_tool",
+        "agent_hanging": "inactive_pending",
+        "unknown": None,
+    }
+    payload = session_enrichment_payload(profile, analysis)
+    search_text = profile_enrichment_search_text(profile, payload)
+    assert payload.goal_text == "/goal fix the session-profile outcome mapping"
+    assert "ended_cleanly" in search_text
+    assert "session-profile outcome mapping" in search_text
 
 
 def test_session_enrichment_ignores_provider_user_runtime_protocol() -> None:
@@ -250,6 +314,31 @@ def test_session_profile_record_exposes_tool_active_duration() -> None:
     assert record.inference_payload.tool_active_minutes == 3.0
 
 
+def test_session_profile_evidence_payload_exposes_token_cost_fields() -> None:
+    profile = build_session_profile(_enrichment_session())
+    profile = profile.__class__.from_dict(
+        {
+            **profile.to_dict(),
+            "total_input_tokens": 1200,
+            "total_output_tokens": 340,
+            "total_cache_read_tokens": 500,
+            "total_cache_write_tokens": 60,
+            "total_credit_cost": 0.42,
+            "cost_provenance": "provider_reported",
+        }
+    )
+
+    record = build_session_profile_record(profile)
+
+    assert record.total_input_tokens == 1200
+    assert record.evidence_payload.total_input_tokens == 1200
+    assert record.evidence_payload.total_output_tokens == 340
+    assert record.evidence_payload.total_cache_read_tokens == 500
+    assert record.evidence_payload.total_cache_write_tokens == 60
+    assert record.evidence_payload.total_credit_cost == 0.42
+    assert record.evidence_payload.cost_provenance == "provider_reported"
+
+
 def test_session_profile_record_exposes_shape_and_terminal_state() -> None:
     profile = build_session_profile(_enrichment_session())
     profile = profile.__class__.from_dict(
@@ -270,8 +359,14 @@ def test_session_profile_record_exposes_shape_and_terminal_state() -> None:
     assert record.terminal_state == "clean_finish"
     assert record.evidence_payload.workflow_shape_features == {"edit_count": 1, "tool_ratio": 0.4}
     assert record.evidence_payload.terminal_state_evidence == {"message_id": "a2"}
+    assert "workflow_shape" not in record.evidence_payload.model_dump()
+    assert "terminal_state" not in record.evidence_payload.model_dump()
     assert record.inference_payload.workflow_shape == "agentic_loop"
     assert record.inference_payload.terminal_state == "clean_finish"
+    assert "agentic_loop" not in record.evidence_search_text
+    assert "clean_finish" not in record.evidence_search_text
+    assert "agentic_loop" in record.inference_search_text
+    assert "clean_finish" in record.inference_search_text
     assert "agentic_loop" in record.search_text
     assert "clean_finish" in record.search_text
 

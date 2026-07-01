@@ -56,8 +56,11 @@ class Polylogue(PolylogueArchiveMixin, PolylogueEmbeddingsMixin, PolylogueInsigh
 
         from polylogue.paths import archive_root as _archive_root
 
+        explicit_archive_root = archive_root is not None
         if archive_root is None:
             archive_root = _archive_root()
+        if db_path is None and explicit_archive_root:
+            db_path = archive_root / "index.db"
 
         if db_path is not None:
             self._config = Config(

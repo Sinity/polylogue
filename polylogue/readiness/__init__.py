@@ -50,10 +50,10 @@ _DERIVED_MODEL_READINESS_CHECKS: tuple[tuple[str, str], ...] = (
     ("retrieval_inference", "retrieval_inference"),
     ("retrieval_enrichment", "retrieval_enrichment"),
     ("session_profile_rows", "session_profile_rows"),
-    ("session_work_event_inference", "session_work_event_inference"),
-    ("session_work_event_inference_fts", "session_work_event_inference_fts"),
+    ("session_work_events", "session_work_events"),
+    ("session_work_events_fts", "session_work_events_fts"),
     ("session_tag_rollups", "session_tag_rollups"),
-    ("session_phase_inference", "session_phase_inference"),
+    ("session_phases", "session_phases"),
 )
 
 
@@ -117,22 +117,12 @@ def _open_readiness_probe_connection(db_path: Path) -> Iterator[sqlite3.Connecti
     """Open a read-only probe connection over the archive."""
     from polylogue.storage.sqlite.connection import READ_DB_TIMEOUT
 
-    if not db_path.exists():
-        _bootstrap_archive_root(db_path)
-
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=READ_DB_TIMEOUT)
     conn.row_factory = sqlite3.Row
     try:
         yield conn
     finally:
         conn.close()
-
-
-def _bootstrap_archive_root(db_path: Path) -> None:
-    """Ensure an archive root exists at ``db_path``'s parent."""
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-    ArchiveStore.open_existing(db_path.parent, read_only=False).close()
 
 
 def _module_available(module_name: str) -> bool:
@@ -598,7 +588,7 @@ def run_runtime_readiness(config: Config) -> ReadinessReport:
                         VerifyStatus.ERROR,
                         summary=(
                             f"schema version {current} is not expected v{INDEX_SCHEMA_VERSION}; "
-                            "rebuild from source with `polylogue ops reset --database && polylogued run`"
+                            "rebuild from source with `polylogue ops reset --index && polylogued run`"
                         ),
                     )
                 )

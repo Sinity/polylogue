@@ -30,6 +30,29 @@ def test_explain_import_path_reports_codex_parser_and_counts(tmp_path: Path) -> 
     assert payload.entries[0].produced.session_refs
 
 
+def test_explain_import_path_treats_jsonl_text_json_wrappers_as_jsonl(tmp_path: Path) -> None:
+    target = tmp_path / "aggregate.jsonl.txt.json"
+    target.write_text(
+        "\n".join(
+            (
+                '{"type":"user","sessionId":"first-session","uuid":"u1","message":{"role":"user","content":"one"}}',
+                '{"type":"user","sessionId":"second-session","uuid":"u2","message":{"role":"user","content":"two"}}',
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    payload = explain_import_path(target, source_name="claude-code")
+
+    assert payload.produced.sessions == 2
+    assert payload.entries[0].detected_origin == "claude-code-session"
+    assert payload.entries[0].parser_mode == "grouped_records"
+    assert payload.entries[0].produced.session_refs == (
+        "session:claude-code:first-session",
+        "session:claude-code:second-session",
+    )
+
+
 def test_explain_import_path_reports_malformed_json_as_skip(tmp_path: Path) -> None:
     target = tmp_path / "broken.json"
     target.write_text("{not json", encoding="utf-8")

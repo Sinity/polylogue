@@ -14,8 +14,6 @@ from polylogue.cli.commands.status import (
     _BUILTIN_DAEMON_URL,
     _archive_cli_route_status,
     _archive_facade_route_status,
-    _archive_missing_materialization,
-    _archive_missing_rows,
     _archive_one_tier_status,
     _archive_primary_tier_count,
     _archive_readiness_counts,
@@ -33,6 +31,8 @@ from polylogue.cli.commands.status import (
     _table_exists,
 )
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 class TestDefaultDaemonUrl:
@@ -196,9 +196,11 @@ class TestArchiveRuntimePathStatus:
         result = _archive_runtime_path_status()
         assert result["checked"] is True
 
-    def test_archive_runtime_ready_when_no_blockers(self) -> None:
-        """archive_runtime_ready is True when no unsupported primary methods."""
+    def test_archive_routing_ready_when_no_blockers(self) -> None:
+        """archive_routing_ready is True when no unsupported primary methods."""
         result = _archive_runtime_path_status()
+        assert result["archive_routing_ready"] is True
+        # Kept as a compatibility alias for older status consumers.
         assert result["archive_runtime_ready"] is True
         assert result["final_shape_blockers"] == []
 
@@ -648,137 +650,15 @@ class TestDirectArchiveCounts:
             conn.close()
 
 
-class TestArchiveMissingRows:
-    """Tests for _archive_missing_rows()."""
-
-    def test_nonexistent_table_counts_all_sessions(self, tmp_path: Path) -> None:
-        """When table missing, returns count of all sessions."""
-        db_path = tmp_path / "test.db"
-        conn = sqlite3.connect(db_path)
-        try:
-            conn.execute("CREATE TABLE sessions (session_id INTEGER PRIMARY KEY)")
-            conn.execute("INSERT INTO sessions VALUES (1), (2), (3)")
-            conn.commit()
-            result = _archive_missing_rows(conn, "profiles", "session_id")
-            assert result == 3
-        finally:
-            conn.close()
-
-    def test_all_sessions_covered(self, tmp_path: Path) -> None:
-        """When all sessions are covered, returns 0."""
-        db_path = tmp_path / "test.db"
-        conn = sqlite3.connect(db_path)
-        try:
-            conn.execute("CREATE TABLE sessions (session_id INTEGER PRIMARY KEY)")
-            conn.execute("CREATE TABLE profiles (session_id INTEGER PRIMARY KEY)")
-            conn.execute("INSERT INTO sessions VALUES (1), (2), (3)")
-            conn.execute("INSERT INTO profiles VALUES (1), (2), (3)")
-            conn.commit()
-            result = _archive_missing_rows(conn, "profiles", "session_id")
-            assert result == 0
-        finally:
-            conn.close()
-
-    def test_partial_coverage(self, tmp_path: Path) -> None:
-        """Counts sessions not covered in the table."""
-        db_path = tmp_path / "test.db"
-        conn = sqlite3.connect(db_path)
-        try:
-            conn.execute("CREATE TABLE sessions (session_id INTEGER PRIMARY KEY)")
-            conn.execute("CREATE TABLE profiles (session_id INTEGER PRIMARY KEY)")
-            conn.execute("INSERT INTO sessions VALUES (1), (2), (3), (4)")
-            conn.execute("INSERT INTO profiles VALUES (1), (3)")
-            conn.commit()
-            result = _archive_missing_rows(conn, "profiles", "session_id")
-            assert result == 2  # sessions 2 and 4 are missing
-        finally:
-            conn.close()
-
-
-class TestArchiveMissingMaterialization:
-    """Tests for _archive_missing_materialization()."""
-
-    def test_nonexistent_table_counts_all_sessions(self, tmp_path: Path) -> None:
-        """When table missing, returns count of all sessions."""
-        db_path = tmp_path / "test.db"
-        conn = sqlite3.connect(db_path)
-        try:
-            conn.execute("CREATE TABLE sessions (session_id INTEGER PRIMARY KEY)")
-            conn.execute("INSERT INTO sessions VALUES (1), (2), (3)")
-            conn.commit()
-            result = _archive_missing_materialization(conn, "session_profile")
-            assert result == 3
-        finally:
-            conn.close()
-
-    def test_all_sessions_materialized(self, tmp_path: Path) -> None:
-        """When all sessions have materializations, returns 0."""
-        db_path = tmp_path / "test.db"
-        conn = sqlite3.connect(db_path)
-        try:
-            conn.execute("CREATE TABLE sessions (session_id INTEGER PRIMARY KEY)")
-            conn.execute(
-                "CREATE TABLE insight_materialization (session_id INTEGER, insight_type TEXT, PRIMARY KEY (session_id, insight_type))"
-            )
-            conn.execute("INSERT INTO sessions VALUES (1), (2), (3)")
-            conn.execute(
-                "INSERT INTO insight_materialization VALUES (1, 'session_profile'), (2, 'session_profile'), (3, 'session_profile')"
-            )
-            conn.commit()
-            result = _archive_missing_materialization(conn, "session_profile")
-            assert result == 0
-        finally:
-            conn.close()
-
-    def test_partial_materialization(self, tmp_path: Path) -> None:
-        """Counts sessions without the specific insight type."""
-        db_path = tmp_path / "test.db"
-        conn = sqlite3.connect(db_path)
-        try:
-            conn.execute("CREATE TABLE sessions (session_id INTEGER PRIMARY KEY)")
-            conn.execute(
-                "CREATE TABLE insight_materialization (session_id INTEGER, insight_type TEXT, PRIMARY KEY (session_id, insight_type))"
-            )
-            conn.execute("INSERT INTO sessions VALUES (1), (2), (3), (4)")
-            conn.execute("INSERT INTO insight_materialization VALUES (1, 'session_profile'), (3, 'session_profile')")
-            conn.commit()
-            result = _archive_missing_materialization(conn, "session_profile")
-            assert result == 2  # sessions 2 and 4
-        finally:
-            conn.close()
-
-    def test_multiple_insight_types(self, tmp_path: Path) -> None:
-        """Different insight types are tracked separately."""
-        db_path = tmp_path / "test.db"
-        conn = sqlite3.connect(db_path)
-        try:
-            conn.execute("CREATE TABLE sessions (session_id INTEGER PRIMARY KEY)")
-            conn.execute(
-                "CREATE TABLE insight_materialization (session_id INTEGER, insight_type TEXT, PRIMARY KEY (session_id, insight_type))"
-            )
-            conn.execute("INSERT INTO sessions VALUES (1), (2), (3)")
-            conn.execute(
-                "INSERT INTO insight_materialization VALUES (1, 'session_profile'), (2, 'work_events'), (3, 'session_profile')"
-            )
-            conn.commit()
-            # Check work_events: only session 2 has it, so sessions 1 and 3 are missing
-            result = _archive_missing_materialization(conn, "work_events")
-            assert result == 2
-        finally:
-            conn.close()
-
-
 class TestArchiveReadinessCounts:
     """Tests for _archive_readiness_counts()."""
 
     def test_basic_counts_with_empty_archive(self, tmp_path: Path) -> None:
         """Counts all zeros for empty archive."""
         db_path = tmp_path / "test.db"
+        initialize_archive_database(db_path, ArchiveTier.INDEX)
         conn = sqlite3.connect(db_path)
         try:
-            conn.execute("CREATE TABLE sessions (session_id INTEGER PRIMARY KEY)")
-            conn.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY)")
-            conn.commit()
             result = _archive_readiness_counts(conn, source_conn=None, source_check_available=False)
             assert result["session_count"] == 0
             assert result["message_count"] == 0
@@ -789,12 +669,27 @@ class TestArchiveReadinessCounts:
     def test_counts_with_data(self, tmp_path: Path) -> None:
         """Counts correctly with data present."""
         db_path = tmp_path / "test.db"
+        initialize_archive_database(db_path, ArchiveTier.INDEX)
         conn = sqlite3.connect(db_path)
         try:
-            conn.execute("CREATE TABLE sessions (session_id INTEGER PRIMARY KEY, raw_id TEXT)")
-            conn.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY)")
-            conn.execute("INSERT INTO sessions VALUES (1, 'raw1'), (2, 'raw2')")
-            conn.execute("INSERT INTO messages VALUES (1), (2), (3)")
+            conn.execute(
+                """
+                INSERT INTO sessions (native_id, origin, raw_id, content_hash)
+                VALUES (?, 'codex-session', ?, ?), (?, 'codex-session', ?, ?)
+                """,
+                ("native-1", "raw1", b"1" * 32, "native-2", "raw2", b"2" * 32),
+            )
+            conn.executemany(
+                """
+                INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash)
+                VALUES (?, ?, ?, 'user', 'message', ?)
+                """,
+                [
+                    ("codex-session:native-1", "m1", 0, b"a" * 32),
+                    ("codex-session:native-1", "m2", 1, b"b" * 32),
+                    ("codex-session:native-2", "m3", 0, b"c" * 32),
+                ],
+            )
             conn.commit()
             result = _archive_readiness_counts(conn, source_conn=None, source_check_available=False)
             assert result["session_count"] == 2
@@ -807,13 +702,31 @@ class TestArchiveReadinessCounts:
         """Detects sessions with raw_id that don't exist in source."""
         db_path = tmp_path / "test.db"
         source_path = tmp_path / "source.db"
+        initialize_archive_database(db_path, ArchiveTier.INDEX)
+        initialize_archive_database(source_path, ArchiveTier.SOURCE)
         conn = sqlite3.connect(db_path)
         source_conn = sqlite3.connect(source_path)
         try:
-            conn.execute("CREATE TABLE sessions (session_id INTEGER PRIMARY KEY, raw_id TEXT)")
-            source_conn.execute("CREATE TABLE raw_sessions (raw_id TEXT PRIMARY KEY)")
-            conn.execute("INSERT INTO sessions VALUES (1, 'raw1'), (2, 'raw2'), (3, 'raw3')")
-            source_conn.execute("INSERT INTO raw_sessions VALUES ('raw1'), ('raw2')")
+            conn.execute(
+                """
+                INSERT INTO sessions (native_id, origin, raw_id, content_hash)
+                VALUES
+                    ('native-1', 'codex-session', 'raw1', ?),
+                    ('native-2', 'codex-session', 'raw2', ?),
+                    ('native-3', 'codex-session', 'raw3', ?)
+                """,
+                (b"1" * 32, b"2" * 32, b"3" * 32),
+            )
+            source_conn.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+                ) VALUES
+                    ('raw1', 'codex-session', 'native-1', 'one.jsonl', 0, ?, 32, 1),
+                    ('raw2', 'codex-session', 'native-2', 'two.jsonl', 0, ?, 32, 2)
+                """,
+                (bytes.fromhex("1" * 64), bytes.fromhex("2" * 64)),
+            )
             conn.commit()
             source_conn.commit()
             result = _archive_readiness_counts(conn, source_conn=source_conn, source_check_available=True)
@@ -976,6 +889,56 @@ class TestArchiveStatusSurfaces:
         assert "missing_work_events_materialization" in result["timeline_work_events"]["blockers"]
         assert result["timeline_phases"]["ready"] is False
         assert "missing_phases_materialization" in result["timeline_phases"]["blockers"]
+
+    def test_timeline_surfaces_block_on_stale_or_mismatched_rows(self) -> None:
+        """Timeline surfaces use canonical readiness shape, not materialization presence alone."""
+        counts: dict[str, int] = {
+            "session_count": 2,
+            "raw_link_count": 0,
+            "missing_raw_session_count": 0,
+            "message_count": 1,
+            "text_block_count": 1,
+            "messages_fts_count": 1,
+            "profile_row_count": 2,
+            "missing_profile_row_count": 0,
+            "missing_session_profile_materialization": 0,
+            "work_event_row_count": 1,
+            "expected_work_event_row_count": 3,
+            "stale_work_event_row_count": 1,
+            "orphan_work_event_row_count": 0,
+            "missing_work_events_materialization": 0,
+            "phase_row_count": 4,
+            "expected_phase_row_count": 2,
+            "stale_phase_row_count": 0,
+            "orphan_phase_row_count": 1,
+            "missing_phases_materialization": 0,
+            "thread_count": 1,
+            "root_thread_count": 2,
+            "stale_thread_count": 1,
+            "orphan_thread_count": 0,
+            "missing_thread_materialization": 0,
+            "action_count": 0,
+            "missing_latency_materialization": 0,
+        }
+
+        result = _archive_status_surfaces(counts, source_check_available=True)
+
+        assert result["timeline_work_events"]["ready"] is False
+        assert result["timeline_work_events"]["blockers"] == [
+            "stale_work_event_row_count",
+            "work_event_row_mismatch",
+        ]
+        assert result["timeline_work_events"]["evidence"]["expected_work_event_row_count"] == 3
+        assert result["timeline_phases"]["ready"] is False
+        assert result["timeline_phases"]["blockers"] == [
+            "orphan_phase_row_count",
+            "phase_row_mismatch",
+        ]
+        assert result["threads"]["ready"] is False
+        assert result["threads"]["blockers"] == [
+            "stale_thread_count",
+            "thread_root_mismatch",
+        ]
 
     def test_all_surfaces_present(self) -> None:
         """All expected surfaces are present in result."""

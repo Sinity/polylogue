@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 import click
 
 from polylogue.cli.shared.types import AppEnv
+from polylogue.storage.insights.session.status import session_insight_status_sync
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -415,10 +416,14 @@ def _archive_runtime_path_status() -> dict[str, Any]:
     ]
     index_primary_methods = [method for method in ("rebuild_index",) if method in unsupported_primary_methods]
     ingest_write_mode = "archive" if not ingest_primary_methods else "unsupported"
+    routing_ready = not final_shape_blockers
     return {
         "checked": True,
         "source": "static_facade_route_catalog",
-        "archive_runtime_ready": not final_shape_blockers,
+        "archive_routing_ready": routing_ready,
+        # Compatibility alias for older status consumers. This is a static
+        # route/catalog check, not live archive convergence or schema health.
+        "archive_runtime_ready": routing_ready,
         "primary_ingest_store": "archive_file_set" if not ingest_primary_methods else "unavailable",
         "ingest_write_mode": ingest_write_mode,
         "archive_ingest_write_targets": ["source.db", "index.db"] if not ingest_primary_methods else [],
@@ -541,6 +546,7 @@ def _archive_readiness_counts(
             for row in conn.execute("SELECT raw_id FROM sessions WHERE raw_id IS NOT NULL").fetchall()
             if str(row[0]) not in raw_ids
         )
+    insight_status = session_insight_status_sync(conn, verify_freshness=True)
     return {
         "session_count": session_count,
         "raw_link_count": raw_link_count,
@@ -552,150 +558,163 @@ def _archive_readiness_counts(
         "messages_fts_count": _fast_count(conn, "SELECT COUNT(*) FROM messages_fts")
         if _table_exists(conn, "messages_fts")
         else 0,
-        "profile_row_count": _fast_count(conn, "SELECT COUNT(*) FROM session_profiles")
-        if _table_exists(conn, "session_profiles")
-        else 0,
-        "missing_profile_row_count": _archive_missing_rows(conn, "session_profiles", "session_id"),
-        "work_event_row_count": _fast_count(conn, "SELECT COUNT(*) FROM session_work_events")
-        if _table_exists(conn, "session_work_events")
-        else 0,
-        "phase_row_count": _fast_count(conn, "SELECT COUNT(*) FROM session_phases")
-        if _table_exists(conn, "session_phases")
-        else 0,
-        "thread_count": _fast_count(conn, "SELECT COUNT(*) FROM threads") if _table_exists(conn, "threads") else 0,
+        "profile_row_count": insight_status.profile_row_count,
+        "missing_profile_row_count": insight_status.missing_profile_row_count,
+        "stale_profile_row_count": insight_status.stale_profile_row_count,
+        "orphan_profile_row_count": insight_status.orphan_profile_row_count,
+        "work_event_row_count": insight_status.work_event_inference_count,
+        "expected_work_event_row_count": insight_status.expected_work_event_inference_count,
+        "stale_work_event_row_count": insight_status.stale_work_event_inference_count,
+        "orphan_work_event_row_count": insight_status.orphan_work_event_inference_count,
+        "phase_row_count": insight_status.phase_inference_count,
+        "expected_phase_row_count": insight_status.expected_phase_inference_count,
+        "stale_phase_row_count": insight_status.stale_phase_inference_count,
+        "orphan_phase_row_count": insight_status.orphan_phase_inference_count,
+        "thread_count": insight_status.thread_count,
+        "root_thread_count": insight_status.root_threads,
+        "stale_thread_count": insight_status.stale_thread_count,
+        "orphan_thread_count": insight_status.orphan_thread_count,
         "action_count": _fast_count(conn, "SELECT COUNT(*) FROM actions") if _table_exists(conn, "actions") else 0,
-        "missing_session_profile_materialization": _archive_missing_materialization(conn, "session_profile"),
-        "missing_work_events_materialization": _archive_missing_materialization(conn, "work_events"),
-        "missing_phases_materialization": _archive_missing_materialization(conn, "phases"),
-        "missing_thread_materialization": _archive_missing_materialization(conn, "thread"),
-        "missing_latency_materialization": _archive_missing_materialization(conn, "latency"),
+        "missing_session_profile_materialization": insight_status.missing_session_profile_materialization_count,
+        "missing_work_events_materialization": insight_status.missing_work_event_materialization_count,
+        "missing_phases_materialization": insight_status.missing_phase_materialization_count,
+        "missing_thread_materialization": insight_status.missing_thread_materialization_count,
+        "missing_latency_materialization": insight_status.missing_latency_materialization_count,
     }
-
-
-def _archive_missing_rows(conn: sqlite3.Connection, table: str, column: str) -> int:
-    if not _table_exists(conn, table):
-        return _fast_count(conn, "SELECT COUNT(*) FROM sessions")
-    return _fast_count(
-        conn,
-        f"""
-        SELECT COUNT(*)
-        FROM sessions AS s
-        WHERE NOT EXISTS (
-            SELECT 1 FROM {table} AS t WHERE t.{column} = s.session_id
-        )
-        """,
-    )
-
-
-def _archive_missing_materialization(conn: sqlite3.Connection, insight_type: str) -> int:
-    if not _table_exists(conn, "insight_materialization"):
-        return _fast_count(conn, "SELECT COUNT(*) FROM sessions")
-    return _fast_count(
-        conn,
-        """
-        SELECT COUNT(*)
-        FROM sessions AS s
-        WHERE NOT EXISTS (
-            SELECT 1
-            FROM insight_materialization AS m
-            WHERE m.insight_type = ? AND m.session_id = s.session_id
-        )
-        """,
-        (insight_type,),
-    )
 
 
 def _archive_status_surfaces(counts: dict[str, int], *, source_check_available: bool) -> dict[str, dict[str, Any]]:
     def surface(*, ready: bool | None, blockers: list[str], evidence: dict[str, int | bool]) -> dict[str, Any]:
         return {"ready": ready, "blockers": blockers, "evidence": evidence}
 
+    def count(key: str, default: int = 0) -> int:
+        return int(counts.get(key, default))
+
+    def present_blockers(*keys: str) -> list[str]:
+        return [key for key in keys if count(key) != 0]
+
+    def mismatch_blocker(actual_key: str, expected_key: str, blocker: str) -> list[str]:
+        expected = count(expected_key, count(actual_key))
+        return [blocker] if count(actual_key) != expected else []
+
     raw_blockers: list[str] = []
     raw_ready: bool | None
     if not source_check_available:
         raw_ready = None
         raw_blockers.append("source_tier_unavailable")
-    elif counts["missing_raw_session_count"]:
+    elif count("missing_raw_session_count"):
         raw_ready = False
         raw_blockers.append("missing_source_raw_sessions")
     else:
         raw_ready = True
 
-    search_blockers = (
-        ["messages_fts_row_mismatch"] if counts["text_block_count"] != counts["messages_fts_count"] else []
-    )
+    search_blockers = ["messages_fts_row_mismatch"] if count("text_block_count") != count("messages_fts_count") else []
     profile_blockers: list[str] = []
-    if counts["missing_profile_row_count"]:
+    if count("missing_profile_row_count"):
         profile_blockers.append("missing_profile_rows")
-    if counts["missing_session_profile_materialization"]:
-        profile_blockers.append("missing_session_profile_materialization")
+    profile_blockers.extend(
+        present_blockers(
+            "missing_session_profile_materialization",
+            "stale_profile_row_count",
+            "orphan_profile_row_count",
+        )
+    )
 
     def materialized(name: str) -> tuple[bool, list[str]]:
         key = f"missing_{name}_materialization"
-        missing = counts[key]
+        missing = count(key)
         return (missing == 0, [] if missing == 0 else [key])
 
-    work_ready, work_blockers = materialized("work_events")
-    phase_ready, phase_blockers = materialized("phases")
-    thread_ready, thread_blockers = materialized("thread")
+    work_blockers = present_blockers(
+        "missing_work_events_materialization",
+        "stale_work_event_row_count",
+        "orphan_work_event_row_count",
+    )
+    work_blockers.extend(
+        mismatch_blocker("work_event_row_count", "expected_work_event_row_count", "work_event_row_mismatch")
+    )
+    phase_blockers = present_blockers(
+        "missing_phases_materialization",
+        "stale_phase_row_count",
+        "orphan_phase_row_count",
+    )
+    phase_blockers.extend(mismatch_blocker("phase_row_count", "expected_phase_row_count", "phase_row_mismatch"))
+    thread_blockers = present_blockers(
+        "missing_thread_materialization",
+        "stale_thread_count",
+        "orphan_thread_count",
+    )
+    thread_blockers.extend(mismatch_blocker("thread_count", "root_thread_count", "thread_root_mismatch"))
     latency_ready, latency_blockers = materialized("latency")
 
     return {
         "archive_sessions": surface(
             ready=True,
             blockers=[],
-            evidence={"session_count": counts["session_count"], "message_count": counts["message_count"]},
+            evidence={"session_count": count("session_count"), "message_count": count("message_count")},
         ),
         "raw_artifacts": surface(
             ready=raw_ready,
             blockers=raw_blockers,
             evidence={
                 "source_check_available": source_check_available,
-                "raw_link_count": counts["raw_link_count"],
-                "missing_raw_session_count": counts["missing_raw_session_count"],
+                "raw_link_count": count("raw_link_count"),
+                "missing_raw_session_count": count("missing_raw_session_count"),
             },
         ),
         "search": surface(
             ready=not search_blockers,
             blockers=search_blockers,
             evidence={
-                "text_block_count": counts["text_block_count"],
-                "messages_fts_count": counts["messages_fts_count"],
+                "text_block_count": count("text_block_count"),
+                "messages_fts_count": count("messages_fts_count"),
             },
         ),
         "session_profiles": surface(
             ready=not profile_blockers,
             blockers=profile_blockers,
             evidence={
-                "profile_row_count": counts["profile_row_count"],
-                "missing_profile_row_count": counts["missing_profile_row_count"],
-                "missing_materialization_count": counts["missing_session_profile_materialization"],
+                "profile_row_count": count("profile_row_count"),
+                "missing_profile_row_count": count("missing_profile_row_count"),
+                "missing_materialization_count": count("missing_session_profile_materialization"),
+                "stale_profile_row_count": count("stale_profile_row_count"),
+                "orphan_profile_row_count": count("orphan_profile_row_count"),
             },
         ),
         "timeline_work_events": surface(
-            ready=work_ready,
+            ready=not work_blockers,
             blockers=work_blockers,
             evidence={
-                "work_event_row_count": counts["work_event_row_count"],
-                "missing_materialization_count": counts["missing_work_events_materialization"],
+                "work_event_row_count": count("work_event_row_count"),
+                "expected_work_event_row_count": count("expected_work_event_row_count", count("work_event_row_count")),
+                "missing_materialization_count": count("missing_work_events_materialization"),
+                "stale_work_event_row_count": count("stale_work_event_row_count"),
+                "orphan_work_event_row_count": count("orphan_work_event_row_count"),
             },
         ),
         "timeline_phases": surface(
-            ready=phase_ready,
+            ready=not phase_blockers,
             blockers=phase_blockers,
             evidence={
-                "phase_row_count": counts["phase_row_count"],
-                "missing_materialization_count": counts["missing_phases_materialization"],
+                "phase_row_count": count("phase_row_count"),
+                "expected_phase_row_count": count("expected_phase_row_count", count("phase_row_count")),
+                "missing_materialization_count": count("missing_phases_materialization"),
+                "stale_phase_row_count": count("stale_phase_row_count"),
+                "orphan_phase_row_count": count("orphan_phase_row_count"),
             },
         ),
         "threads": surface(
-            ready=thread_ready,
+            ready=not thread_blockers,
             blockers=thread_blockers,
             evidence={
-                "thread_count": counts["thread_count"],
-                "missing_materialization_count": counts["missing_thread_materialization"],
+                "thread_count": count("thread_count"),
+                "root_thread_count": count("root_thread_count", count("thread_count")),
+                "missing_materialization_count": count("missing_thread_materialization"),
+                "stale_thread_count": count("stale_thread_count"),
+                "orphan_thread_count": count("orphan_thread_count"),
             },
         ),
-        "tool_usage": surface(ready=True, blockers=[], evidence={"action_count": counts["action_count"]}),
+        "tool_usage": surface(ready=True, blockers=[], evidence={"action_count": count("action_count")}),
         "latency_profiles": surface(
             ready=latency_ready,
             blockers=latency_blockers,
@@ -1591,7 +1610,7 @@ def _render_archive_cli_routes(env: AppEnv, routing: dict[str, Any]) -> None:
 
 
 def _render_archive_runtime_paths(env: AppEnv, status: dict[str, Any]) -> None:
-    ready = bool(status.get("archive_runtime_ready", False))
+    ready = bool(status.get("archive_routing_ready", status.get("archive_runtime_ready", False)))
     color = "green" if ready else "yellow"
     mode = status.get("ingest_write_mode", "unknown")
     targets = list(status.get("archive_ingest_write_targets") or [])
@@ -1601,7 +1620,7 @@ def _render_archive_runtime_paths(env: AppEnv, status: dict[str, Any]) -> None:
     index_store = status.get("index_rebuild_store", "unknown")
     blockers = list(status.get("final_shape_blockers") or [])
     env.ui.console.print(
-        f"  Archive runtime paths: [{color}]ingest={mode}{target_suffix}, rebuild_index={index_store}; "
+        f"  Archive routing paths: [{color}]ingest={mode}{target_suffix}, rebuild_index={index_store}; "
         f"{len(blockers)} blockers{archive_tier_suffix}[/{color}]"
     )
     facade_counts = status.get("facade_tier_route_counts") or {}

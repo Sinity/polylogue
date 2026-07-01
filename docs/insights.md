@@ -56,11 +56,15 @@ Optional filters: `--first-message-since`, `--first-message-until`,
 
 The merged profile tier also includes probabilistic enrichment fields:
 `enrichment.intent_summary`, `enrichment.outcome_summary`,
-`enrichment.blockers`, `enrichment.confidence`,
+`enrichment.blockers`, `enrichment.goal_text`,
+`enrichment.goal_outcome`, `enrichment.confidence`,
 `enrichment.support_level`, and `enrichment.support_signals`. These fields are
 derived summaries over the session profile evidence and should be interpreted
-through the confidence/support fields, not as raw archive facts. The evidence
-and inference tiers intentionally omit the enrichment payload.
+through the confidence/support fields, not as raw archive facts.
+`enrichment.goal_outcome` is a boundary-derived posture such as
+`ended_cleanly`, `ended_with_error`, `awaiting_user`, or `pending_tool`; it is
+not a task-success judgment. The evidence and inference tiers intentionally
+omit the enrichment payload.
 
 The storage column `engaged_duration_ms` is message-clustered wall clock: it
 sums phase intervals separated by no more than the fixed five-minute idle
@@ -87,7 +91,8 @@ provenance and provider fidelity.
 
 `workflow_shape` is a threshold classifier over observable session features:
 tool-call density, read/edit/run/subagent mix, compaction count, thinking ratio,
-and user/assistant turn counts. `chat` means a short low-tool session;
+and user/assistant turn counts. `chat` means low-tool dialogue, whether short
+or sustained;
 `exploratory` means mixed read/search/tool activity without a strong edit loop;
 `agentic_loop` means sustained tool use with edits or repeated commands;
 `subagent_dispatch` means Task/subagent-style delegation is present;

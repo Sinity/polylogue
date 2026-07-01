@@ -491,6 +491,33 @@ def test_build_session_profile_classifies_subagent_dispatch_shape() -> None:
     assert profile.workflow_shape_features["dispatch_count"] == 1
 
 
+def test_build_session_profile_classifies_long_low_tool_dialogue_as_chat() -> None:
+    messages = [
+        make_msg(
+            id=f"m{index}",
+            role="user" if index % 2 else "assistant",
+            origin=Provider.CLAUDE_CODE,
+            text=f"Discussion turn {index}",
+            material_origin=(MaterialOrigin.HUMAN_AUTHORED if index % 2 else MaterialOrigin.ASSISTANT_AUTHORED),
+        )
+        for index in range(1, 13)
+    ]
+    session = make_conv(
+        id="conv-long-low-tool-dialogue",
+        origin=Provider.CLAUDE_CODE,
+        title="Long dialogue",
+        messages=messages,
+    )
+
+    profile = build_session_profile(session)
+
+    assert profile.workflow_shape == "chat"
+    assert profile.workflow_shape_confidence >= 0.7
+    assert profile.workflow_shape_features["tool_call_count"] == 0
+    assert profile.workflow_shape_features["user_turn_count"] == 6
+    assert profile.workflow_shape_features["assistant_turn_count"] == 6
+
+
 def test_build_session_profile_terminal_state_detects_unanswered_user_turn() -> None:
     session = make_conv(
         id="conv-question-left",
@@ -526,6 +553,74 @@ def test_build_session_profile_terminal_state_detects_pending_tool() -> None:
                 payload={"call_id": "call-1", "name": "exec_command"},
             ),
         ),
+    )
+
+    profile = build_session_profile(session)
+
+    assert profile.terminal_state == "tool_left"
+    assert profile.terminal_state_evidence == {"pending_tool_count": 1}
+
+
+def test_build_session_profile_terminal_state_ignores_paired_tool_blocks() -> None:
+    session = make_conv(
+        id="conv-paired-tool-blocks",
+        origin=Provider.CLAUDE_CODE,
+        title="Paired tool blocks",
+        messages=[
+            make_msg(id="u1", role="user", origin=Provider.CLAUDE_CODE, text="Run the tests."),
+            make_msg(
+                id="a1",
+                role="assistant",
+                origin=Provider.CLAUDE_CODE,
+                text="I will run them.",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_id": "tool-1",
+                        "tool_name": "Bash",
+                        "tool_input": {"command": "pytest -q"},
+                    }
+                ],
+            ),
+            make_msg(
+                id="t1",
+                role="tool",
+                origin=Provider.CLAUDE_CODE,
+                text="passed",
+                blocks=[{"type": "tool_result", "tool_id": "tool-1", "text": "passed"}],
+            ),
+            make_msg(id="a2", role="assistant", origin=Provider.CLAUDE_CODE, text="Tests passed."),
+        ],
+    )
+
+    profile = build_session_profile(session)
+
+    assert profile.terminal_state == "clean_finish"
+    assert profile.terminal_state_evidence == {"message_id": "a2"}
+
+
+def test_build_session_profile_terminal_state_detects_unpaired_tool_block() -> None:
+    session = make_conv(
+        id="conv-unpaired-tool-block",
+        origin=Provider.CLAUDE_CODE,
+        title="Unpaired tool block",
+        messages=[
+            make_msg(id="u1", role="user", origin=Provider.CLAUDE_CODE, text="Run the tests."),
+            make_msg(
+                id="a1",
+                role="assistant",
+                origin=Provider.CLAUDE_CODE,
+                text="I will run them.",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_id": "tool-1",
+                        "tool_name": "Bash",
+                        "tool_input": {"command": "pytest -q"},
+                    }
+                ],
+            ),
+        ],
     )
 
     profile = build_session_profile(session)
@@ -571,6 +666,48 @@ def test_build_session_profile_terminal_state_detects_provider_error() -> None:
 
     assert profile.terminal_state == "error_left"
     assert profile.terminal_state_evidence == {"event_id": "conv-error-left:event-1"}
+
+
+def test_build_session_profile_terminal_state_ignores_recovered_tool_error() -> None:
+    session = make_conv(
+        id="conv-recovered-error",
+        origin=Provider.CLAUDE_CODE,
+        title="Recovered error",
+        messages=[
+            make_msg(id="u1", role="user", origin=Provider.CLAUDE_CODE, text="Read the missing file, then recover."),
+            make_msg(
+                id="a1",
+                role="assistant",
+                origin=Provider.CLAUDE_CODE,
+                text="The first read failed, so I used the fallback path.",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_id": "tool-1",
+                        "tool_name": "Read",
+                        "tool_input": {"file_path": "/tmp/missing"},
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_id": "tool-1",
+                        "text": "error: file not found",
+                        "is_error": True,
+                    },
+                ],
+            ),
+            make_msg(
+                id="a2",
+                role="assistant",
+                origin=Provider.CLAUDE_CODE,
+                text="Recovered with the fallback path and finished cleanly.",
+            ),
+        ],
+    )
+
+    profile = build_session_profile(session)
+
+    assert profile.terminal_state == "clean_finish"
+    assert profile.terminal_state_evidence == {"message_id": "a2"}
 
 
 def test_build_session_profile_ignores_unpaired_tool_windows() -> None:

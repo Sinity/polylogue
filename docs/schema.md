@@ -199,11 +199,12 @@ on-disk `PRAGMA user_version` is compared against its tier constant:
 - **Version match**: open as-is.
 - **Anything else** (older or newer): the database is **rejected**.
 
-A version mismatch is resolved by re-acquiring from source, not by patching the
-file in place. The operator moves the archive aside and re-ingests:
+A version mismatch is resolved by rebuilding the affected tier from source, not
+by patching the file in place. For index-tier schema bumps, the operator moves
+the index tier aside and re-ingests:
 
 ```bash
-polylogue ops reset --database && polylogued run
+polylogue ops reset --index && polylogued run
 ```
 
 Schema bumps are deletes-then-defines edits of the owning tier DDL, never

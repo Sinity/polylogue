@@ -69,6 +69,21 @@ def test_profile_inference_payload_serializes_fallback_reasons() -> None:
     assert FallbackReason.ENGAGED_DURATION_SESSION_TOTAL in payload.fallback_reasons
 
 
+def test_profile_inference_fallback_reasons_do_not_classify_phase_intervals() -> None:
+    class _Phase:
+        tool_counts: dict[str, int] = {}
+        duration_ms: int = 60_000
+
+    class _P:
+        work_events: tuple[object, ...] = ()
+        phases: tuple[object, ...] = (_Phase(),)
+
+    reasons = profile_inference_fallback_reasons(_P())  # type: ignore[arg-type]
+
+    assert FallbackReason.ALL_PHASES_HEURISTIC not in reasons
+    assert FallbackReason.NO_WORK_EVENTS_AND_NO_PHASES not in reasons
+
+
 def test_session_enrichment_payload_serializes_fallback_reasons() -> None:
     profile = _stub_profile_no_events()
     payload = session_enrichment_payload(profile, None)  # type: ignore[arg-type]

@@ -275,16 +275,12 @@ def _workflow_weight(shape: str) -> float:
 def _profile_terminal_state(profile: SessionProfileInsight) -> str:
     if profile.inference is not None and profile.inference.terminal_state != "unknown":
         return profile.inference.terminal_state
-    if profile.evidence is not None:
-        return profile.evidence.terminal_state
     return "unknown"
 
 
 def _profile_workflow_shape(profile: SessionProfileInsight) -> str:
     if profile.inference is not None and profile.inference.workflow_shape != "unknown":
         return profile.inference.workflow_shape
-    if profile.evidence is not None:
-        return profile.evidence.workflow_shape
     return "unknown"
 
 

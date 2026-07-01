@@ -109,6 +109,10 @@ def _record_timestamp(record: dict[str, object]) -> str | int | float | None:
     return value if isinstance(value, str | int | float) else None
 
 
+def _message_timestamp(record: dict[str, object], message_record: dict[str, object]) -> str | int | float | None:
+    return _record_timestamp(message_record) or _record_timestamp(record)
+
+
 def _record_instructions(record: dict[str, object]) -> str | None:
     value = record.get("instructions")
     return value if isinstance(value, str) else None
@@ -179,9 +183,14 @@ def _turn_context_payload(payload: dict[str, object]) -> dict[str, object]:
 def _token_usage(record: dict[str, object]) -> dict[str, int]:
     usage = _dict_record(record.get("usage")) or _dict_record(record.get("tokens")) or record
     return {
-        "input_tokens": _int_value(usage.get("input_tokens")),
-        "output_tokens": _int_value(usage.get("output_tokens")),
-        "cache_read_tokens": _int_value(usage.get("cache_read_tokens") or usage.get("cache_read_input_tokens")),
+        "input_tokens": _int_value(usage.get("input_tokens") or usage.get("inputTokenCount")),
+        "output_tokens": _int_value(usage.get("output_tokens") or usage.get("outputTokenCount")),
+        "cache_read_tokens": _int_value(
+            usage.get("cache_read_tokens")
+            or usage.get("cache_read_input_tokens")
+            or usage.get("cached_input_tokens")
+            or usage.get("cached_tokens")
+        ),
         "cache_write_tokens": _int_value(
             usage.get("cache_write_tokens")
             or usage.get("cache_creation_input_tokens")
@@ -322,10 +331,16 @@ def _codex_material_origin(role: Role, message_type: MessageType, text: str | No
     return material_origin
 
 
-def _codex_tool_message(record: dict[str, object], *, index: int, position: int) -> ParsedMessage | None:
+def _codex_tool_message(
+    record: dict[str, object],
+    *,
+    index: int,
+    position: int,
+    timestamp_fallback: str | int | float | None = None,
+) -> ParsedMessage | None:
     payload = _record_payload(record)
     record_type = _record_type(record)
-    timestamp = _iso_or_none(_record_timestamp(record))
+    timestamp = _iso_or_none(_record_timestamp(record) or timestamp_fallback)
     if record_type in {"function_call", "custom_tool_call", "tool_search_call", "web_search_call", "local_shell_call"}:
         tool_name = payload.get("name")
         if not isinstance(tool_name, str) or not tool_name:
@@ -338,6 +353,14 @@ def _codex_tool_message(record: dict[str, object], *, index: int, position: int)
             raw_arguments = payload.get("input")
         if raw_arguments is None:
             raw_arguments = payload.get("action")
+        blocks = [
+            ParsedContentBlock(
+                type=BlockType.TOOL_USE,
+                tool_name=tool_name,
+                tool_id=str(tool_id) if tool_id else None,
+                tool_input=_tool_input_from_arguments(raw_arguments),
+            )
+        ]
         return ParsedMessage(
             provider_message_id=str(payload.get("id") or tool_id or f"function-call-{index}"),
             role=Role.ASSISTANT,
@@ -346,14 +369,7 @@ def _codex_tool_message(record: dict[str, object], *, index: int, position: int)
             position=position,
             variant_index=0,
             is_active_path=True,
-            blocks=[
-                ParsedContentBlock(
-                    type=BlockType.TOOL_USE,
-                    tool_name=tool_name,
-                    tool_id=str(tool_id) if tool_id else None,
-                    tool_input=_tool_input_from_arguments(raw_arguments),
-                )
-            ],
+            blocks=blocks,
         )
     if record_type in {"function_call_output", "custom_tool_call_output", "tool_search_output", "web_search_output"}:
         tool_id = payload.get("call_id") or payload.get("id")
@@ -383,6 +399,15 @@ def _codex_tool_message(record: dict[str, object], *, index: int, position: int)
                 if isinstance(raw_exit, int) and not isinstance(raw_exit, bool):
                     exit_code = raw_exit
                     is_error = raw_exit != 0
+        blocks = [
+            ParsedContentBlock(
+                type=BlockType.TOOL_RESULT,
+                tool_id=str(tool_id) if tool_id else None,
+                text=output_text,
+                is_error=is_error,
+                exit_code=exit_code,
+            )
+        ]
         return ParsedMessage(
             provider_message_id=str(payload.get("id") or tool_id or f"function-call-output-{index}"),
             role=Role.TOOL,
@@ -391,15 +416,7 @@ def _codex_tool_message(record: dict[str, object], *, index: int, position: int)
             position=position,
             variant_index=0,
             is_active_path=True,
-            blocks=[
-                ParsedContentBlock(
-                    type=BlockType.TOOL_RESULT,
-                    tool_id=str(tool_id) if tool_id else None,
-                    text=output_text,
-                    is_error=is_error,
-                    exit_code=exit_code,
-                )
-            ],
+            blocks=blocks,
         )
     return None
 
@@ -432,6 +449,7 @@ def _codex_event_message(
     index: int,
     position: int,
     response_signatures: set[tuple[str, str]],
+    timestamp_fallback: str | int | float | None = None,
 ) -> ParsedMessage | None:
     record_type = _record_type(record)
     if record_type not in {"user_message", "agent_message"}:
@@ -447,7 +465,7 @@ def _codex_event_message(
         provider_message_id=str(record.get("client_id") or record.get("id") or f"{record_type}-{index}"),
         role=role,
         text=text,
-        timestamp=_iso_or_none(_record_timestamp(record)),
+        timestamp=_iso_or_none(_record_timestamp(record) or timestamp_fallback),
         position=position,
         variant_index=0,
         is_active_path=True,
@@ -658,7 +676,13 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
                         payload=event_payload,
                     )
                 )
-                tool_message = _codex_tool_message(inner, index=idx, position=message_position)
+                timestamp_fallback = _record_timestamp(record)
+                tool_message = _codex_tool_message(
+                    inner,
+                    index=idx,
+                    position=message_position,
+                    timestamp_fallback=timestamp_fallback,
+                )
                 if tool_message is not None:
                     messages.append(tool_message)
                     message_position += 1
@@ -668,6 +692,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
                     index=idx,
                     position=message_position,
                     response_signatures=response_signatures,
+                    timestamp_fallback=timestamp_fallback,
                 )
                 if event_message is not None:
                     messages.append(event_message)
@@ -707,7 +732,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
             raw_role = _effective_role(message_record)
             content = _effective_content(message_record)
             text = extract_codex_text(content)
-            timestamp_pair = parse_timestamp_pair(_record_timestamp(message_record))
+            timestamp_pair = parse_timestamp_pair(_message_timestamp(record, message_record))
             timestamp = timestamp_pair[1] if timestamp_pair is not None else None
 
             content_blocks = content_blocks_from_segments(content)

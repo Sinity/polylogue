@@ -275,7 +275,9 @@ def test_session_insight_status_requires_latency_rows_for_ready_profiles() -> No
             );
             CREATE TABLE insight_materialization (
                 insight_type TEXT NOT NULL,
-                session_id TEXT NOT NULL
+                session_id TEXT NOT NULL,
+                materializer_version INTEGER NOT NULL,
+                source_sort_key_ms INTEGER
             );
 
             INSERT INTO sessions (session_id, parent_session_id, sort_key_ms, updated_at_ms)
@@ -311,14 +313,16 @@ def test_session_insight_status_requires_latency_rows_for_ready_profiles() -> No
                 ('ready', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 1.0),
                 ('stale-latency', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 2.5);
 
-            INSERT INTO insight_materialization (insight_type, session_id)
+            INSERT INTO insight_materialization (
+                insight_type, session_id, materializer_version, source_sort_key_ms
+            )
             VALUES
-                ('session_profile', 'ready'),
-                ('session_profile', 'missing-latency'),
-                ('session_profile', 'stale-latency'),
-                ('latency', 'ready'),
-                ('latency', 'missing-latency'),
-                ('latency', 'stale-latency');
+                ('session_profile', 'ready', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 1000),
+                ('session_profile', 'missing-latency', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 2000),
+                ('session_profile', 'stale-latency', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 3000),
+                ('latency', 'ready', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 1000),
+                ('latency', 'missing-latency', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 2000),
+                ('latency', 'stale-latency', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 3000);
             """
         )
 
@@ -334,7 +338,7 @@ def test_session_insight_status_requires_latency_rows_for_ready_profiles() -> No
 def test_status_tracks_run_projection_materialization_ledger() -> None:
     with sqlite3.connect(":memory:") as conn:
         conn.executescript(
-            """
+            f"""
             CREATE TABLE sessions (
                 session_id TEXT PRIMARY KEY,
                 parent_session_id TEXT,
@@ -346,7 +350,9 @@ def test_status_tracks_run_projection_materialization_ledger() -> None:
             CREATE TABLE session_context_snapshots (session_id TEXT NOT NULL);
             CREATE TABLE insight_materialization (
                 insight_type TEXT NOT NULL,
-                session_id TEXT NOT NULL
+                session_id TEXT NOT NULL,
+                materializer_version INTEGER NOT NULL,
+                source_sort_key_ms INTEGER
             );
 
             INSERT INTO sessions (session_id, parent_session_id, sort_key_ms, updated_at_ms)
@@ -354,11 +360,13 @@ def test_status_tracks_run_projection_materialization_ledger() -> None:
             INSERT INTO session_runs (session_id) VALUES ('ready');
             INSERT INTO session_observed_events (session_id) VALUES ('ready');
             INSERT INTO session_context_snapshots (session_id) VALUES ('ready');
-            INSERT INTO insight_materialization (insight_type, session_id)
+            INSERT INTO insight_materialization (
+                insight_type, session_id, materializer_version, source_sort_key_ms
+            )
             VALUES
-                ('runs', 'ready'),
-                ('observed_events', 'ready'),
-                ('context_snapshots', 'ready');
+                ('runs', 'ready', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 1000),
+                ('observed_events', 'ready', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 1000),
+                ('context_snapshots', 'ready', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 1000);
             """
         )
 
@@ -374,6 +382,77 @@ def test_status_tracks_run_projection_materialization_ledger() -> None:
     assert ready.context_snapshot_rows_ready is True
     assert stale.missing_run_materialization_count == 1
     assert stale.run_rows_ready is False
+
+
+def test_status_tracks_work_and_phase_staleness_from_materialization_ledger() -> None:
+    with sqlite3.connect(":memory:") as conn:
+        conn.executescript(
+            f"""
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                parent_session_id TEXT,
+                sort_key_ms INTEGER,
+                updated_at_ms INTEGER
+            );
+            CREATE TABLE session_profiles (
+                session_id TEXT PRIMARY KEY,
+                source_name TEXT,
+                canonical_session_date TEXT,
+                first_message_at TEXT,
+                last_message_at TEXT,
+                source_updated_at TEXT,
+                evidence_payload_json TEXT,
+                tags_json TEXT,
+                auto_tags_json TEXT,
+                materialized_at TEXT,
+                materializer_version INTEGER NOT NULL,
+                source_sort_key REAL,
+                work_event_count INTEGER NOT NULL,
+                phase_count INTEGER NOT NULL
+            );
+            CREATE TABLE session_work_events (session_id TEXT NOT NULL);
+            CREATE TABLE session_phases (session_id TEXT NOT NULL);
+            CREATE TABLE insight_materialization (
+                insight_type TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                materializer_version INTEGER NOT NULL,
+                source_sort_key_ms INTEGER
+            );
+
+            INSERT INTO sessions (session_id, parent_session_id, sort_key_ms, updated_at_ms)
+            VALUES ('stale-work', NULL, 1000, 1777636800000),
+                   ('stale-phase', NULL, 2000, 1777636800000);
+            INSERT INTO session_profiles (
+                session_id, source_name, canonical_session_date, first_message_at, last_message_at,
+                source_updated_at, evidence_payload_json, tags_json, auto_tags_json, materialized_at,
+                materializer_version, source_sort_key, work_event_count, phase_count
+            ) VALUES
+                (
+                    'stale-work', 'codex', '2026-05-01', NULL, NULL,
+                    '2026-05-01T12:00:00Z', '{{}}', '[]', '[]', '2026-05-01T12:00:00Z',
+                    {SESSION_INSIGHT_MATERIALIZER_VERSION}, 1.0, 1, 0
+                ),
+                (
+                    'stale-phase', 'codex', '2026-05-01', NULL, NULL,
+                    '2026-05-01T12:00:00Z', '{{}}', '[]', '[]', '2026-05-01T12:00:00Z',
+                    {SESSION_INSIGHT_MATERIALIZER_VERSION}, 2.0, 0, 1
+                );
+            INSERT INTO session_work_events (session_id) VALUES ('stale-work');
+            INSERT INTO session_phases (session_id) VALUES ('stale-phase');
+            INSERT INTO insight_materialization (
+                insight_type, session_id, materializer_version, source_sort_key_ms
+            ) VALUES
+                ('work_events', 'stale-work', {SESSION_INSIGHT_MATERIALIZER_VERSION - 1}, 1000),
+                ('phases', 'stale-phase', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 1001);
+            """
+        )
+
+        status = session_insight_status_sync(conn)
+
+    assert status.stale_work_event_inference_count == 1
+    assert status.work_event_inference_rows_ready is False
+    assert status.stale_phase_inference_count == 1
+    assert status.phase_inference_rows_ready is False
 
 
 async def test_status_sync_and_async_match_when_product_tables_are_absent(tmp_path: Path) -> None:

@@ -85,6 +85,7 @@ from polylogue.storage.insights.session.runtime import (
     SESSION_INSIGHT_MATERIALIZATION_TYPES,
     SessionInsightStatusSnapshot,
 )
+from polylogue.storage.insights.session.status import session_insight_status_sync
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.search.query_support import normalize_fts5_query
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
@@ -449,8 +450,13 @@ class ArchiveStore:
 
     @classmethod
     def open_existing(cls, archive_root: Path, *, read_only: bool = True, read_timeout: float = 5.0) -> ArchiveStore:
-        """Open archive tier files, bootstrapping the five-tier root for writes."""
-        initialize = not read_only or cls._needs_tier_bootstrap(archive_root)
+        """Open archive tier files.
+
+        Read-only opens never bootstrap missing tiers; read/status surfaces must
+        not create an empty archive and then report it as usable. Writers opt
+        into bootstrap by passing ``read_only=False``.
+        """
+        initialize = not read_only
         return cls(archive_root, initialize=initialize, read_only=read_only, read_timeout=read_timeout)
 
     @staticmethod
@@ -941,10 +947,10 @@ class ArchiveStore:
             (thread_id,),
         ).fetchall()
         session_ids = tuple(str(session["session_id"]) for session in session_rows)
-        provider_breakdown: dict[str, int] = {}
+        origin_breakdown: dict[str, int] = {}
         for session in session_rows:
-            provider = _provider_for_origin(str(session["origin"])).value
-            provider_breakdown[provider] = provider_breakdown.get(provider, 0) + 1
+            session_origin = str(session["origin"])
+            origin_breakdown[session_origin] = origin_breakdown.get(session_origin, 0) + 1
         start_ms = min(
             (
                 timestamp_ms
@@ -1002,7 +1008,7 @@ class ArchiveStore:
             total_messages=sum(int(session["message_count"] or 0) for session in session_rows),
             total_cost_usd=sum(float(session["profile_total_cost_usd"] or 0.0) for session in session_rows),
             wall_duration_ms=max(end_ms - start_ms, 0) if start_ms is not None and end_ms is not None else 0,
-            provider_breakdown=provider_breakdown,
+            origin_breakdown=origin_breakdown,
             confidence=1.0 if session_rows else 0.0,
             support_level=ConfidenceBand.STRONG if len(session_rows) > 1 else ConfidenceBand.MODERATE,
             support_signals=lineage_signals,
@@ -1604,7 +1610,7 @@ class ArchiveStore:
                 logical_session_count=int(row["logical_session_count"] or 0),
                 explicit_count=int(row["explicit_count"] or 0),
                 auto_count=int(row["auto_count"] or 0),
-                provider_breakdown=_tag_provider_breakdown(
+                origin_breakdown=_tag_origin_breakdown(
                     self._conn, str(row["tag"]), clause, filter_params, self._tags_relation
                 ),
                 repo_breakdown=_tag_repo_breakdown(
@@ -1851,7 +1857,7 @@ class ArchiveStore:
                     since_ms=since_ms,
                     until_ms=until_ms,
                 ),
-                provider_breakdown=_coverage_provider_breakdown(
+                origin_breakdown=_coverage_origin_breakdown(
                     self._conn,
                     str(row["bucket"]),
                     bucket_format,
@@ -2569,143 +2575,7 @@ class ArchiveStore:
 
     def session_insight_status(self) -> SessionInsightStatusSnapshot:
         """Return readiness for session insight tables."""
-        total_sessions = _count_rows(self._conn, "sessions")
-        profile_rows = _count_rows(self._conn, "session_profiles")
-        latency_rows = _count_rows(self._conn, "session_latency_profiles")
-        work_event_rows = _count_rows(self._conn, "session_work_events")
-        phase_rows = _count_rows(self._conn, "session_phases")
-        run_rows = _count_rows(self._conn, "session_runs")
-        observed_event_rows = _count_rows(self._conn, "session_observed_events")
-        context_snapshot_rows = _count_rows(self._conn, "session_context_snapshots")
-        thread_rows = _count_rows(self._conn, "threads")
-        tag_rows = _count_rows(self._conn, "session_tags")
-        root_threads = _count_scalar(
-            self._conn,
-            """
-            SELECT COUNT(*)
-            FROM sessions
-            WHERE parent_session_id IS NULL
-               OR parent_session_id = ''
-               OR parent_session_id = session_id
-            """,
-        )
-        missing_profiles = _count_scalar(
-            self._conn,
-            """
-            SELECT COUNT(*)
-            FROM sessions AS s
-            WHERE NOT EXISTS (
-                SELECT 1 FROM session_profiles AS p WHERE p.session_id = s.session_id
-            )
-            """,
-        )
-        orphan_profiles = _count_scalar(
-            self._conn,
-            """
-            SELECT COUNT(*)
-            FROM session_profiles AS p
-            WHERE NOT EXISTS (
-                SELECT 1 FROM sessions AS s WHERE s.session_id = p.session_id
-            )
-            """,
-        )
-        orphan_work_events = _count_scalar(
-            self._conn,
-            """
-            SELECT COUNT(*)
-            FROM session_work_events AS e
-            WHERE NOT EXISTS (
-                SELECT 1 FROM sessions AS s WHERE s.session_id = e.session_id
-            )
-            """,
-        )
-        orphan_phases = _count_scalar(
-            self._conn,
-            """
-            SELECT COUNT(*)
-            FROM session_phases AS ph
-            WHERE NOT EXISTS (
-                SELECT 1 FROM sessions AS s WHERE s.session_id = ph.session_id
-            )
-            """,
-        )
-        expected_work_events = _count_scalar(
-            self._conn,
-            "SELECT COALESCE(SUM(work_event_count), 0) FROM session_profiles",
-        )
-        expected_phases = _count_scalar(
-            self._conn,
-            "SELECT COALESCE(SUM(phase_count), 0) FROM session_profiles",
-        )
-        stale_work_event_profiles = _count_scalar(
-            self._conn,
-            """
-            SELECT COUNT(*)
-            FROM session_profiles AS p
-            WHERE p.work_event_count != (
-                SELECT COUNT(*) FROM session_work_events AS e WHERE e.session_id = p.session_id
-            )
-            """,
-        )
-        stale_phase_profiles = _count_scalar(
-            self._conn,
-            """
-            SELECT COUNT(*)
-            FROM session_profiles AS p
-            WHERE p.phase_count != (
-                SELECT COUNT(*) FROM session_phases AS ph WHERE ph.session_id = p.session_id
-            )
-            """,
-        )
-        missing_materialization = _archive_missing_materialization_counts(self._conn)
-        return SessionInsightStatusSnapshot(
-            total_sessions=total_sessions,
-            root_threads=root_threads,
-            profile_row_count=profile_rows,
-            latency_profile_row_count=latency_rows,
-            work_event_inference_count=work_event_rows,
-            phase_inference_count=phase_rows,
-            run_count=run_rows,
-            observed_event_count=observed_event_rows,
-            context_snapshot_count=context_snapshot_rows,
-            thread_count=thread_rows,
-            tag_rollup_count=tag_rows,
-            missing_profile_row_count=missing_profiles,
-            missing_session_profile_materialization_count=missing_materialization["session_profile"],
-            orphan_profile_row_count=orphan_profiles,
-            missing_latency_materialization_count=missing_materialization["latency"],
-            missing_work_event_materialization_count=missing_materialization["work_events"],
-            expected_work_event_inference_count=expected_work_events,
-            stale_work_event_inference_count=stale_work_event_profiles,
-            orphan_work_event_inference_count=orphan_work_events,
-            missing_phase_materialization_count=missing_materialization["phases"],
-            expected_phase_inference_count=expected_phases,
-            stale_phase_inference_count=stale_phase_profiles,
-            orphan_phase_inference_count=orphan_phases,
-            missing_run_materialization_count=missing_materialization["runs"],
-            missing_observed_event_materialization_count=missing_materialization["observed_events"],
-            missing_context_snapshot_materialization_count=missing_materialization["context_snapshots"],
-            missing_thread_materialization_count=missing_materialization["thread"],
-            stale_thread_count=missing_materialization["thread"],
-            expected_tag_rollup_count=tag_rows,
-            profile_rows_ready=(
-                missing_profiles == 0 and orphan_profiles == 0 and missing_materialization["session_profile"] == 0
-            ),
-            latency_profile_rows_ready=missing_materialization["latency"] == 0 and latency_rows == profile_rows,
-            work_event_inference_rows_ready=(
-                missing_materialization["work_events"] == 0
-                and stale_work_event_profiles == 0
-                and orphan_work_events == 0
-            ),
-            phase_inference_rows_ready=(
-                missing_materialization["phases"] == 0 and stale_phase_profiles == 0 and orphan_phases == 0
-            ),
-            run_rows_ready=missing_materialization["runs"] == 0,
-            observed_event_rows_ready=missing_materialization["observed_events"] == 0,
-            context_snapshot_rows_ready=missing_materialization["context_snapshots"] == 0,
-            threads_ready=missing_materialization["thread"] == 0 and thread_rows == root_threads,
-            tag_rollups_ready=tag_rows > 0 or total_sessions == 0,
-        )
+        return session_insight_status_sync(self._conn)
 
     def insight_readiness_report(self, query: InsightReadinessQuery | None = None) -> InsightReadinessReport:
         """Return public insight readiness from tables."""
@@ -6539,7 +6409,8 @@ def _provider_coverage_from_archive_row(row: sqlite3.Row) -> ArchiveCoverageInsi
     assistant_word_sum = int(row["assistant_word_sum"] or 0)
     sessions_with_tools = int(row["sessions_with_tools"] or 0)
     sessions_with_thinking = int(row["sessions_with_thinking"] or 0)
-    source_name = _provider_for_origin(str(row["origin"])).value
+    origin = str(row["origin"])
+    source_name = _provider_for_origin(origin).value
     return ArchiveCoverageInsight(
         group_by="provider",
         bucket=source_name,
@@ -6925,7 +6796,7 @@ def _coverage_repos_active(
     return tuple(str(row["repo"]) for row in rows if row["repo"])
 
 
-def _coverage_provider_breakdown(
+def _coverage_origin_breakdown(
     conn: sqlite3.Connection,
     bucket: str,
     bucket_format: str,
@@ -6951,7 +6822,7 @@ def _coverage_provider_breakdown(
         """,
         params,
     ).fetchall()
-    return {_provider_for_origin(str(row["origin"])).value: int(row["count"] or 0) for row in rows}
+    return {str(row["origin"]): int(row["count"] or 0) for row in rows}
 
 
 def _archive_missing_materialization_counts(conn: sqlite3.Connection) -> dict[str, int]:
@@ -7032,7 +6903,7 @@ def _profile_or_session_timestamp_ms(row: sqlite3.Row, *, profile_column: str, s
     return int(session_timestamp) if isinstance(session_timestamp, int) else None
 
 
-def _tag_provider_breakdown(
+def _tag_origin_breakdown(
     conn: sqlite3.Connection,
     tag: str,
     clause: str,
@@ -7051,7 +6922,7 @@ def _tag_provider_breakdown(
         """,
         tag_params,
     ).fetchall()
-    return {_provider_for_origin(str(row["origin"])).value: int(row["count"] or 0) for row in rows}
+    return {str(row["origin"]): int(row["count"] or 0) for row in rows}
 
 
 def _tag_repo_breakdown(

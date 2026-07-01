@@ -117,6 +117,17 @@ def classify_text_message_type(text: str | None) -> MessageType | None:
     return None
 
 
+def classify_block_message_type(block_types: tuple[BlockType, ...]) -> MessageType | None:
+    """Classify messages whose semantic type is carried by structured blocks."""
+    if not block_types:
+        return None
+    if all(block_type is BlockType.TOOL_RESULT for block_type in block_types):
+        return MessageType.TOOL_RESULT
+    if any(block_type is BlockType.TOOL_USE for block_type in block_types):
+        return MessageType.TOOL_USE
+    return None
+
+
 def classify_material_origin(
     *,
     role: Role,
@@ -164,6 +175,7 @@ def classify_material_origin(
 
 
 __all__ = [
+    "classify_block_message_type",
     "classify_material_origin",
     "classify_text_message_type",
     "strip_leading_system_reminders",

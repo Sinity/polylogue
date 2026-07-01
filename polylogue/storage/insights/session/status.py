@@ -256,12 +256,14 @@ EXPECTED_WORK_EVENT_COUNT_SQL = "SELECT COALESCE(SUM(work_event_count), 0) FROM 
 EXPECTED_PHASE_COUNT_SQL = "SELECT COALESCE(SUM(phase_count), 0) FROM session_profiles"
 STALE_WORK_EVENT_COUNT_SQL = f"""
     SELECT COUNT(*)
-    FROM session_work_events swe
-    JOIN sessions c ON c.session_id = swe.session_id
+    FROM sessions c
+    JOIN insight_materialization im
+      ON im.session_id = c.session_id
+     AND im.insight_type = ?
     WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
       AND (
-           swe.materializer_version != ?
-        OR ABS(COALESCE(swe.source_sort_key, 0.0) - COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0)) > 0.000001
+           im.materializer_version != ?
+        OR ABS(COALESCE(im.source_sort_key_ms, 0) - COALESCE(c.sort_key_ms, 0)) > 0
       )
 """
 ORPHAN_SESSION_WORK_EVENT_COUNT_SQL = """
@@ -272,10 +274,12 @@ ORPHAN_SESSION_WORK_EVENT_COUNT_SQL = """
 """
 STALE_SESSION_PHASE_COUNT_SQL = """
     SELECT COUNT(*)
-    FROM session_phases sph
-    JOIN sessions c ON c.session_id = sph.session_id
-    WHERE sph.materializer_version != ?
-       OR ABS(COALESCE(sph.source_sort_key, 0.0) - COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0)) > 0.000001
+    FROM sessions c
+    JOIN insight_materialization im
+      ON im.session_id = c.session_id
+     AND im.insight_type = ?
+    WHERE im.materializer_version != ?
+       OR ABS(COALESCE(im.source_sort_key_ms, 0) - COALESCE(c.sort_key_ms, 0)) > 0
 """
 ORPHAN_SESSION_PHASE_COUNT_SQL = """
     SELECT COUNT(*)
@@ -548,9 +552,9 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
     ),
     SessionInsightCountDescriptor(
         count_key="stale_work_event_inference_count",
-        table_key="session_work_events",
+        table_key="insight_materialization",
         sql=STALE_WORK_EVENT_COUNT_SQL,
-        params=(SESSION_INSIGHT_MATERIALIZER_VERSION,),
+        params=("work_events", SESSION_INSIGHT_MATERIALIZER_VERSION),
         requires_freshness=True,
     ),
     SessionInsightCountDescriptor(
@@ -561,9 +565,9 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
     ),
     SessionInsightCountDescriptor(
         count_key="stale_phase_inference_count",
-        table_key="session_phases",
+        table_key="insight_materialization",
         sql=STALE_SESSION_PHASE_COUNT_SQL,
-        params=(SESSION_INSIGHT_MATERIALIZER_VERSION,),
+        params=("phases", SESSION_INSIGHT_MATERIALIZER_VERSION),
         requires_freshness=True,
     ),
     SessionInsightCountDescriptor(

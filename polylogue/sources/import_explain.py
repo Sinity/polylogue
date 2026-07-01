@@ -23,7 +23,7 @@ from polylogue.sources.decoder_zip import (
     open_bounded_zip_entry,
 )
 from polylogue.sources.decoders import _decode_json_bytes, _iter_json_stream
-from polylogue.sources.dispatch import GROUP_PROVIDERS, detect_provider, parse_payload
+from polylogue.sources.dispatch import GROUP_PROVIDERS, detect_provider, is_jsonl_source_path, parse_payload
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.source_walk import _resolve_source_paths
 from polylogue.surfaces.payloads import (
@@ -34,7 +34,6 @@ from polylogue.surfaces.payloads import (
     ImportSkippedRowPayload,
 )
 
-_JSONL_SUFFIXES = (".jsonl", ".jsonl.txt", ".ndjson")
 _SUPPORTED_ENTRY_SUFFIXES = (".json", ".jsonl", ".jsonl.txt", ".ndjson")
 
 
@@ -591,8 +590,7 @@ def _explain_bytes(
 
 
 def _load_payload(raw_bytes: bytes, stream_name: str) -> JSONValue:
-    lower = stream_name.lower()
-    if lower.endswith(_JSONL_SUFFIXES):
+    if is_jsonl_source_path(stream_name):
         return list(_iter_json_stream(BytesIO(raw_bytes), stream_name))
     text = _decode_json_bytes(raw_bytes)
     if text is None:

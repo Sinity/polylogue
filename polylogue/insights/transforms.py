@@ -264,6 +264,11 @@ class RecoveryEvent(ArchiveInsightModel):
     ]
     summary: str
     raw_refs: tuple[TransformRawRef, ...]
+    tool_name: str | None = None
+    tool_id: str | None = None
+    command: str | None = None
+    handler_kind: str | None = None
+    status: str | None = None
 
     @model_validator(mode="after")
     def _requires_raw_refs(self) -> RecoveryEvent:
@@ -1672,6 +1677,7 @@ def _extract_events(session: Session, messages: Sequence[Message]) -> Iterable[R
                 handler_kind=handler_kind,
                 status=status,
                 tool_name=tool_name,
+                tool_id=tool_id,
                 command=command,
                 exit_code=exit_code,
                 ref=_block_ref(session, message, index, block),
@@ -1703,6 +1709,7 @@ def _outcome_event(
     handler_kind: str,
     status: Literal["ok", "failed", "unknown"],
     tool_name: str,
+    tool_id: str | None,
     command: str | None,
     exit_code: int | None,
     ref: TransformRawRef,
@@ -1719,7 +1726,16 @@ def _outcome_event(
     else:
         kind = "command_succeeded" if success else "command_failed"
         verb = "succeeded" if success else "failed"
-    return RecoveryEvent(kind=kind, summary=f"{label} {verb}{exit_suffix}", raw_refs=(ref,))
+    return RecoveryEvent(
+        kind=kind,
+        summary=f"{label} {verb}{exit_suffix}",
+        raw_refs=(ref,),
+        tool_name=tool_name,
+        tool_id=tool_id,
+        command=command,
+        handler_kind=handler_kind,
+        status=status,
+    )
 
 
 def _extract_run_state(session: Session, messages: Sequence[Message]) -> RunStateSummary | None:

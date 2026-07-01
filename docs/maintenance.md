@@ -50,7 +50,7 @@ Maintenance targets are grouped into four scopes:
 | `derived` (derived_repair) | repair | no | `session_insights`, `action_read_model`, `dangling_fts`, `message_type_backfill`, `message_embeddings` |
 | `retrieval` (database_maintenance) | repair | no | `wal_checkpoint` |
 | `archive_cleanup` | cleanup | **yes** | `orphaned_messages`, `orphaned_content_blocks`, `empty_sessions`, `orphaned_attachments`, `orphaned_blobs` |
-| `backfill` | repair | no | column/row backfills surfaced by the planner (currently subsumed by `derived`). Re-acquiring raw artifacts from source is not a maintenance target: re-ingest (`polylogue ops reset --database && polylogued run`) re-acquires from the source archives. |
+| `backfill` | repair | no | column/row backfills surfaced by the planner (currently subsumed by `derived`). Re-acquiring raw artifacts from source is not a maintenance target: index-tier re-ingest (`polylogue ops reset --index && polylogued run`) rebuilds from preserved source evidence. |
 
 The canonical target list is enforced by
 `polylogue/maintenance/targets.py`. The CLI `--target` option's

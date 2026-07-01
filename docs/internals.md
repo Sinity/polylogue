@@ -98,11 +98,11 @@ schema shape:
   - **Empty file** (`user_version == 0`): bootstrap fresh.
   - **Version match**: open as-is.
   - **Anything else** (older or newer): the database is rejected.
-- **Mismatch → re-ingest from source.** Polylogue does not patch an
-  out-of-band shape into the canonical one. The operator moves the
-  database aside and runs `polylogue ops reset --database && polylogued run`,
-  which re-acquires from the source archives and rebuilds the canonical
-  archive.
+- **Mismatch → rebuild the affected tier from source.** Polylogue does not
+  patch an out-of-band shape into the canonical one. For index-tier schema
+  bumps, the operator moves the index database aside with
+  `polylogue ops reset --index && polylogued run`, preserving `source.db`,
+  `user.db`, and other durable tiers while rebuilding the canonical index.
 - Schema bumps are deletes-then-defines, never deltas. A schema change
   edits the owning tier DDL/version and documents the re-ingest expectation.
   No upgrade helpers are added for the bump.
@@ -116,7 +116,7 @@ schema shape:
   from result text. Now they are read from structure: NULL means unknown
   (default), never a fabricated positive. This is additive — existing rows
   read NULL until rebuilt. Rebuild from source evidence
-  (`polylogue ops reset --database && polylogued run`).
+  (`polylogue ops reset --index && polylogued run`).
 - Index schema version 15 makes `idx_messages_session_sortkey` an expression
   index — `(session_id, (occurred_at_ms IS NULL), occurred_at_ms, message_id)`
   (#2475 perf audit). The keyset/paginated message reads order by
@@ -127,7 +127,7 @@ schema shape:
   (expensive on multi-thousand-message sessions). The expression index matches
   the ORDER BY exactly and plans as a covering-index scan with no temp sort
   (verified via EXPLAIN QUERY PLAN). Rebuild from source evidence
-  (`polylogue ops reset --database && polylogued run`).
+  (`polylogue ops reset --index && polylogued run`).
 - Index schema version 14 hardens lineage normalization (#2467 audit).
   `session_links.branch_point_message_id` is no longer a FK with `ON DELETE SET
   NULL`: a parent's full-replace re-ingest (`DELETE FROM messages` then re-INSERT)
@@ -154,7 +154,7 @@ schema shape:
   (`get_messages`, `read_archive_session_envelope`) compose the parent transcript
   up to the branch point + the child's own tail, so each real message is stored
   once while the full logical transcript is still served. Existing index tiers
-  must be rebuilt from source evidence (`polylogue ops reset --database &&
+  must be rebuilt from source evidence (`polylogue ops reset --index &&
   polylogued run`); `source.db` is untouched, so this is a derived-index rebuild
   with no user-data impact. (The matching parser detection of Codex
   `forked_from_id`/`thread_spawn` and Claude `agent-acompact-*` shipped
@@ -168,7 +168,7 @@ schema shape:
   per-query recovery-transform scan. They are derived/rebuildable, not a new
   source of truth; the durable evidence stays `session_events` + `messages` +
   `topology_edges`. Existing index tiers must be rebuilt from source evidence
-  (`polylogue ops reset --database && polylogued run`).
+  (`polylogue ops reset --index && polylogued run`).
 - Index schema version 10 adds a role-leading `idx_messages_role` index so
   daemon `/api/facets` can compute global role counts without scanning the
   session-role compound index and spilling to a temp B-tree. Existing index

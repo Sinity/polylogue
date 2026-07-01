@@ -157,6 +157,12 @@ class ParsedMessage(BaseModel):
             parsed = parse_timestamp(self.timestamp)
             if parsed is not None:
                 self.occurred_at_ms = int(parsed.timestamp() * 1000)
+        if self.message_type is MessageType.MESSAGE:
+            from polylogue.archive.message.artifacts import classify_block_message_type
+
+            block_message_type = classify_block_message_type(tuple(block.type for block in self.blocks))
+            if block_message_type is not None:
+                self.message_type = block_message_type
         if self.material_origin is MaterialOrigin.UNKNOWN:
             from polylogue.archive.message.artifacts import classify_material_origin
 

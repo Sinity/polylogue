@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sqlite3
@@ -239,7 +240,6 @@ def _raw_materialization_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]
                  AND s_by_native.origin = r.origin
                  AND s_by_native.native_id = r.native_id
                 WHERE s_by_raw.raw_id IS NULL
-                  AND s_by_native.native_id IS NULL
                   AND NOT (
                     r.validation_status = 'skipped'
                     AND r.parsed_at_ms IS NOT NULL
@@ -249,28 +249,63 @@ def _raw_materialization_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]
                 """
             )
         )
-        missing_rows = [
-            row
-            for row in candidate_rows
-            if row["parse_error"] or not _raw_materialized_by_source_path_native(conn, row)
-        ]
+        embedded_coverage: dict[str, tuple[int, int]] = {}
+        grouped: dict[tuple[str, str], list[sqlite3.Row]] = {}
+        for row in candidate_rows:
+            if row["parse_error"]:
+                category = _raw_materialization_category(conn, row, archive_root)
+            elif (
+                _raw_materialized_by_native_id(conn, row)
+                or _raw_materialized_by_source_path_native(conn, row)
+                or _raw_materialized_by_embedded_session_ids(conn, row)
+            ):
+                category = "materialized-alias"
+            else:
+                category = _raw_materialization_category(conn, row, archive_root)
+            if category == "aggregate-partial-materialization":
+                embedded_ids = _embedded_source_path_session_ids(row)
+                embedded_coverage[str(row["raw_id"])] = _embedded_session_materialization_counts(
+                    conn, str(row["origin"] or ""), embedded_ids
+                )
+            grouped.setdefault((str(row["origin"]), category), []).append(row)
     except sqlite3.Error:
         return []
     finally:
         conn.close()
 
-    if not missing_rows:
+    if not grouped:
         return []
-
-    grouped: dict[tuple[str, str], list[sqlite3.Row]] = {}
-    for row in missing_rows:
-        category = _raw_materialization_category(row, archive_root)
-        grouped.setdefault((str(row["origin"]), category), []).append(row)
 
     rows: list[ArchiveDebtRowPayload] = []
     for (origin, category), group_rows in grouped.items():
-        rows.append(_raw_materialization_debt_row(archive_root, origin=origin, category=category, rows=group_rows))
+        rows.append(
+            _raw_materialization_debt_row(
+                archive_root,
+                origin=origin,
+                category=category,
+                rows=group_rows,
+                embedded_coverage=embedded_coverage,
+            )
+        )
     return rows
+
+
+def _raw_materialized_by_native_id(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
+    origin = str(row["origin"] or "")
+    native_id = row["native_id"]
+    if not origin or native_id is None:
+        return False
+    existing = conn.execute(
+        """
+        SELECT 1
+        FROM index_tier.sessions
+        WHERE origin = ?
+          AND native_id = ?
+        LIMIT 1
+        """,
+        (origin, str(native_id)),
+    ).fetchone()
+    return existing is not None
 
 
 def _raw_materialized_by_source_path_native(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
@@ -293,6 +328,15 @@ def _raw_materialized_by_source_path_native(conn: sqlite3.Connection, row: sqlit
     return False
 
 
+def _raw_materialized_by_embedded_session_ids(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
+    embedded_ids = _embedded_source_path_session_ids(row)
+    if not embedded_ids:
+        return False
+    return _embedded_session_materialization_counts(conn, str(row["origin"] or ""), embedded_ids)[1] == len(
+        embedded_ids
+    )
+
+
 def _source_path_native_id_candidates(source_path: str) -> tuple[str, ...]:
     if not source_path:
         return ()
@@ -312,14 +356,139 @@ def _source_path_native_id_candidates(source_path: str) -> tuple[str, ...]:
     return tuple(candidates)
 
 
-def _raw_materialization_category(row: sqlite3.Row, archive_root: Path) -> str:
+def _raw_materialization_category(conn: sqlite3.Connection, row: sqlite3.Row, archive_root: Path) -> str:
     if not _raw_blob_path(archive_root, row).exists():
         return "missing-blob"
     if row["parse_error"]:
         return "parse-failed"
     if row["parsed_at_ms"] is not None:
+        if _parsed_non_session_artifact_reason(archive_root, row) is not None:
+            return "parsed-non-session-artifact"
+        embedded_ids = _embedded_source_path_session_ids(row)
+        if embedded_ids:
+            total, materialized = _embedded_session_materialization_counts(conn, str(row["origin"] or ""), embedded_ids)
+            if materialized and materialized < total:
+                return "aggregate-partial-materialization"
         return "parsed-without-session"
     return "parse-pending"
+
+
+def _parsed_non_session_artifact_reason(archive_root: Path, row: sqlite3.Row) -> str | None:
+    source_path = str(row["source_path"] or "")
+    if _source_path_is_known_sidecar(source_path):
+        return "source-path sidecar"
+    leading_objects = _raw_jsonl_leading_objects(_raw_blob_path(archive_root, row), limit=8)
+    first_types = tuple(value for item in leading_objects if isinstance((value := item.get("type")), str) and value)
+    if not leading_objects:
+        return None
+    origin = str(row["origin"] or "")
+    if origin == "claude-code-session":
+        if first_types and set(first_types) <= {"file-history-snapshot", "progress"}:
+            return "Claude Code file-history snapshot"
+        if first_types and first_types[0] in {"custom-title", "started"}:
+            return f"Claude Code {first_types[0]} sidecar"
+        first_keys = set(leading_objects[0])
+        if {"sessionId", "projectHash", "startTime", "lastUpdated", "kind"} <= first_keys:
+            return "Claude Code metadata-only session descriptor"
+    if origin == "codex-session" and set(first_types) == {"session_meta"}:
+        return "Codex metadata-only session file"
+    return None
+
+
+def _source_path_is_known_sidecar(source_path: str) -> bool:
+    if not source_path:
+        return False
+    return any(
+        marker in source_path
+        for marker in (
+            "/analysis/",
+            "/subagents/workflows/",
+            "/history.jsonl",
+            "/sessions-index.json",
+        )
+    )
+
+
+def _raw_jsonl_leading_types(path: Path, *, limit: int) -> tuple[str, ...]:
+    return tuple(
+        value
+        for item in _raw_jsonl_leading_objects(path, limit=limit)
+        if isinstance((value := item.get("type")), str) and value
+    )
+
+
+def _raw_jsonl_leading_objects(path: Path, *, limit: int) -> tuple[dict[str, Any], ...]:
+    objects: list[dict[str, Any]] = []
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    payload = json.loads(stripped)
+                except json.JSONDecodeError:
+                    return ()
+                if not isinstance(payload, dict):
+                    continue
+                objects.append(payload)
+                if len(objects) >= limit:
+                    break
+    except OSError:
+        return ()
+    return tuple(objects)
+
+
+def _embedded_source_path_session_ids(row: sqlite3.Row) -> tuple[str, ...]:
+    if row["parse_error"] or row["parsed_at_ms"] is None:
+        return ()
+    if str(row["origin"] or "") != "claude-code-session":
+        return ()
+    source_path = str(row["source_path"] or "")
+    if not source_path or not _source_artifact_exists(source_path):
+        return ()
+    path = Path(source_path)
+    session_ids: list[str] = []
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    payload = json.loads(stripped)
+                except json.JSONDecodeError:
+                    return ()
+                if not isinstance(payload, dict):
+                    continue
+                session_id = payload.get("sessionId")
+                if isinstance(session_id, str) and session_id and session_id not in session_ids:
+                    session_ids.append(session_id)
+    except OSError:
+        return ()
+    return tuple(session_ids)
+
+
+def _embedded_session_materialization_counts(
+    conn: sqlite3.Connection, origin: str, session_ids: tuple[str, ...]
+) -> tuple[int, int]:
+    if not origin or not session_ids:
+        return (0, 0)
+    materialized = 0
+    for session_id in session_ids:
+        existing = conn.execute(
+            """
+            SELECT 1
+            FROM index_tier.sessions
+            WHERE origin = ?
+              AND native_id = ?
+            LIMIT 1
+            """,
+            (origin, session_id),
+        ).fetchone()
+        if existing is not None:
+            materialized += 1
+    return (len(session_ids), materialized)
 
 
 def _raw_materialization_debt_row(
@@ -328,6 +497,7 @@ def _raw_materialization_debt_row(
     origin: str,
     category: str,
     rows: list[sqlite3.Row],
+    embedded_coverage: Mapping[str, tuple[int, int]],
 ) -> ArchiveDebtRowPayload:
     count = len(rows)
     sample_rows = rows[:5]
@@ -370,6 +540,27 @@ def _raw_materialization_debt_row(
                 description="Pass one of the sampled source paths to inspect parser routing.",
             ),
         )
+    elif category == "aggregate-partial-materialization":
+        severity = "warning"
+        stage = "parse"
+        coverage_parts: list[str] = []
+        for row in sample_rows:
+            total, materialized = embedded_coverage.get(str(row["raw_id"]), (0, 0))
+            if total:
+                coverage_parts.append(f"{materialized}/{total} embedded session id(s) materialized")
+        coverage_text = "; ".join(coverage_parts) if coverage_parts else "embedded session coverage unavailable"
+        summary = f"{count} {origin} aggregate raw artifact(s) are only partially materialized"
+        details = (
+            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size} bytes. "
+            f"Sample coverage: {coverage_text}. Inspect parser/source coverage rather than replaying the raw row blindly."
+        )
+        actions = (
+            ArchiveDebtActionPayload(
+                label="Inspect aggregate source coverage",
+                command=("polylogue", "import", "--explain"),
+                description="Pass one of the sampled aggregate source paths and compare embedded session ids with indexed sessions.",
+            ),
+        )
     elif category == "parsed-without-session":
         severity = "warning"
         stage = "parse"
@@ -385,6 +576,28 @@ def _raw_materialization_debt_row(
                 description="Pass one of the sampled source paths to force the normal acquisition/parse path.",
             ),
         )
+    elif category == "materialized-alias":
+        severity = "info"
+        status = "open"
+        stage = "parse"
+        summary = f"{count} {origin} raw artifact(s) materialized through native/source aliases"
+        details = (
+            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size} bytes. "
+            "These rows do not join by raw_id, but the same logical sessions are already present by provider native id "
+            "or by a source-path-derived native id. They reconcile raw/index counts and should not be replayed blindly."
+        )
+        actions = ()
+    elif category == "parsed-non-session-artifact":
+        severity = "info"
+        status = "open"
+        stage = "parse"
+        summary = f"{count} {origin} raw artifact(s) parsed as non-session artifacts"
+        details = (
+            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size} bytes. "
+            "These source rows are recognized sidecars or metadata-only records, not transcript sessions, so replaying "
+            "them should not be expected to create index sessions."
+        )
+        actions = ()
     else:
         severity = "warning"
         stage = "parse"

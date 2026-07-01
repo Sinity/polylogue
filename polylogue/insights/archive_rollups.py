@@ -45,7 +45,7 @@ class _TagAggregateBucket:
     logical_session_ids: set[str] = field(default_factory=set)
     explicit_count: int = 0
     auto_count: int = 0
-    provider_breakdown: Counter[str] = field(default_factory=Counter)
+    origin_breakdown: Counter[str] = field(default_factory=Counter)
     repo_breakdown: Counter[str] = field(default_factory=Counter)
     rows: list[SessionTagRollupRecord] = field(default_factory=list)
 
@@ -120,7 +120,7 @@ def aggregate_session_tag_rollup_insights(
         bucket.logical_session_ids.update(row.logical_session_ids)
         bucket.explicit_count += row.explicit_count
         bucket.auto_count += row.auto_count
-        bucket.provider_breakdown[row.source_name] += row.session_count
+        bucket.origin_breakdown[row.source_name] += row.session_count
         bucket.repo_breakdown.update(row.repo_breakdown)
         bucket.rows.append(row)
 
@@ -133,7 +133,7 @@ def aggregate_session_tag_rollup_insights(
                 logical_session_count=len(bucket.logical_session_ids),
                 explicit_count=bucket.explicit_count,
                 auto_count=bucket.auto_count,
-                provider_breakdown=dict(bucket.provider_breakdown),
+                origin_breakdown=dict(bucket.origin_breakdown),
                 repo_breakdown=dict(bucket.repo_breakdown),
                 provenance=records_provenance(bucket.rows),
             )

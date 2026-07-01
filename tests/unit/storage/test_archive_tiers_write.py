@@ -2011,6 +2011,106 @@ def test_merge_append_without_attachments_does_not_refresh_all_attachment_counts
     assert append_changes < 80
 
 
+def test_full_replace_without_attachments_does_not_refresh_all_attachment_counts(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    unrelated_attachment_count = 120
+    for i in range(unrelated_attachment_count):
+        write_parsed_session_to_archive(
+            conn,
+            ParsedSession(
+                source_name=Provider.CHATGPT,
+                provider_session_id=f"full-replace-attachment-neighbor-{i}",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=f"neighbor attachment {i}")],
+                    )
+                ],
+                attachments=[
+                    ParsedAttachment(
+                        provider_attachment_id=f"att-{i}",
+                        message_provider_id="m1",
+                        name=f"neighbor-{i}.txt",
+                        mime_type="text/plain",
+                        path=f"neighbor-{i}.txt",
+                    )
+                ],
+            ),
+        )
+    first = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-full-replace-no-attachments",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                text="baseline without attachments",
+            )
+        ],
+    )
+    second = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-full-replace-no-attachments",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                text="replacement without attachments",
+            )
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, first)
+    before_changes = conn.total_changes
+    write_parsed_session_to_archive(conn, second)
+    replace_changes = conn.total_changes - before_changes
+
+    assert conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0] == unrelated_attachment_count
+    assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0] == 1
+    assert replace_changes < 80
+
+
+def test_full_replace_refreshes_removed_attachment_ref_counts(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    att1 = ParsedAttachment(
+        provider_attachment_id="att-1",
+        message_provider_id="m1",
+        name="first.txt",
+        mime_type="text/plain",
+        path="first.txt",
+    )
+    att2 = ParsedAttachment(
+        provider_attachment_id="att-2",
+        message_provider_id="m2",
+        name="second.txt",
+        mime_type="text/plain",
+        path="second.txt",
+    )
+    session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="chatgpt-replace-attachment-count",
+        messages=[
+            ParsedMessage(provider_message_id="m1", role=Role.USER, text="one"),
+            ParsedMessage(provider_message_id="m2", role=Role.USER, text="two"),
+        ],
+        attachments=[att1, att2],
+    )
+    replacement = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="chatgpt-replace-attachment-count",
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="one updated")],
+        attachments=[att1],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, session)
+    att2_id = archive_tier_write._attachment_id(session_id, att2)
+    write_parsed_session_to_archive(conn, replacement)
+
+    assert conn.execute("SELECT ref_count FROM attachments WHERE attachment_id = ?", (att2_id,)).fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?", (att2_id,)).fetchone()[0] == 0
+
+
 def test_provider_usage_rollup_clears_stale_message_pricing(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     session = ParsedSession(
