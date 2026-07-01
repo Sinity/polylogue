@@ -56,6 +56,8 @@ should follow the bootstrap below without needing chat context.
 - `scripts/devloop-wait` — record wait state plus useful foreground work while
   a long command runs.
 - `scripts/devloop-ahead` — print useful foreground work prompts.
+- `scripts/devloop-integration` — summarize commits ahead of master and emit a
+  subagent-ready PR-clustering prompt for long-running branch integration.
 - `scripts/devloop-meta` — record process failure/self-improvement audits.
 - `scripts/devloop-handoff` — write the latest handoff note inside the
   conductor packet.

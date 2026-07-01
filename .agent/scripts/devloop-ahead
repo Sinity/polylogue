@@ -33,11 +33,16 @@ Useful foreground lanes while a long Polylogue command runs:
    lane will not contend for the same checkout/database/heavy command.
    Output: prompt or dispatched audit, not vague parallelism.
 
-5. Verification lane
+5. Integration lane
+   Run .agent/scripts/devloop-integration --subagent-prompt to keep the
+   long-running branch clustered into PR-shaped replay groups.
+   Output: commit-cluster plan, candidate PR branches, or dry-run replay script.
+
+6. Verification lane
    Prepare the next narrow proof command, expected claim, and failure classifier.
    Output: command ready to run when the pending job returns.
 
-6. Velocity/meta lane
+7. Velocity/meta lane
    Run devloop-status/velocity, inspect pressure, or record a meta-audit when
    repeated friction is visible.
    Output: smaller future wait, less root/schema/daemon ambiguity, or a tripwire.

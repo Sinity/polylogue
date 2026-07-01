@@ -35,6 +35,7 @@ canonical_devloop_scripts=(
   devloop-demo
   devloop-focus
   devloop-handoff
+  devloop-integration
   devloop-log
   devloop-meta
   devloop-refresh-demos
@@ -82,6 +83,7 @@ required_scaffold=(
   "$repo/.agent/scripts/devloop-refresh-events"
   "$repo/.agent/scripts/devloop-refresh-demos"
   "$repo/.agent/scripts/devloop-focus"
+  "$repo/.agent/scripts/devloop-integration"
   "$repo/.agent/scripts/devloop-baseline"
   "$repo/.agent/scripts/devloop-demo"
   "$repo/.agent/scripts/devloop-meta"

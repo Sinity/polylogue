@@ -171,6 +171,8 @@ as a radar during Direction and at substantial checkpoints:
 4. `.agent/includes/` carries durable conventions and architecture direction.
 5. `.agent/archive/conductor-history/` carries older audit/debt notes for
    archaeology only.
+6. `.agent/scripts/devloop-integration` shows how far the long-running branch is
+   ahead of master and emits the read-heavy subagent prompt for PR clustering.
 
 Use this scoring order when choosing between candidates:
 
@@ -184,10 +186,45 @@ Use this scoring order when choosing between candidates:
   daemon confusion, test friction, or scaffold drift?
 - **Scope discipline:** Can the slice be proven with a narrow command and a
   live artifact without turning into an unbounded refactor?
+- **Integration pressure:** Are there enough ahead commits that the workbench
+  should be clustered into PR-shaped replay groups before more unrelated work
+  lands?
 
 If the current active slice is vague, do a Meta transition and repair the radar:
 write a sharper `ACTIVE-LOOP.md` next action, add a `DEMO-RADAR.md` entry, or
 turn a recurring friction into an executable review/velocity check.
+
+## Integration Lane
+
+The long-running devloop branch is an integration workbench, not the final
+history shape. Keep integration planning active enough that work can move to
+master en masse without archaeology.
+
+Use:
+
+```bash
+.agent/scripts/devloop-integration
+.agent/scripts/devloop-integration --subagent-prompt
+```
+
+The branch integration target is PR-shaped:
+
+1. Start candidate PR branches from current `origin/master`.
+2. Group related workbench commits by product/change intent.
+3. Replay each group in order, squashing only within that coherent group.
+4. Write durable PR titles and bodies with Summary, Problem, Solution, and
+   Verification.
+5. Prove the PR branches compose back to the workbench state, or state the exact
+   residual diff/dependency.
+
+This lane is suitable for a read-heavy subagent: it can cluster commits, draft
+PR bodies, identify dependencies, flag overbroad claims, and write a dry-run
+replay script. The main devloop owns branch creation, conflict resolution,
+verification, pushing, and PR creation.
+
+Run the integration lane during Direction or Velocity when commits ahead of
+master are accumulating across unrelated slices, and during wait windows when
+the pending proof does not need the same checkout or archive.
 
 ## Heavy Work
 
@@ -209,10 +246,11 @@ If a command may run longer than a minute, record an active wait state:
 
 Waiting is active loop time. Immediately pick one foreground lane from
 `.agent/scripts/devloop-ahead`: adjacent source audit, artifact/demo, backlog
-radar, subagent/audit prompt, next verification, or velocity/meta. Rotate focus
-deliberately: Proof -> Velocity for resource/tool friction, Proof -> Artifact
-for artifact writing, Proof -> Evidence for adjacent source/runtime inspection,
-or Proof -> Direction when the pending result is likely to close the slice.
+radar, subagent/audit prompt, integration planning, next verification, or
+velocity/meta. Rotate focus deliberately: Proof -> Velocity for resource/tool
+friction, Proof -> Artifact for artifact writing, Proof -> Evidence for
+adjacent source/runtime inspection, or Proof -> Direction when the pending
+result is likely to close the slice.
 
 Ahead work must not create hidden contention. Do not start another heavy
 archive/test/build job against the same checkout/archive while a proof is

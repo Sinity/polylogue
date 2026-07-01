@@ -167,3 +167,28 @@ or live capture, maintain logs and handoffs, and reprioritize by evidence.
 - Treat `devloop-review` ignore-policy checks as load-bearing: tracked scaffold
   must survive checkout, while active loop state and demos stay local/current.
 - `/realm/inbox` is staging only. The devloop must not depend on it.
+
+## Integration Lane
+
+This devloop runs on a long-lived workbench branch. That is acceptable only if
+integration stays visible and PR-shaped.
+
+Use:
+
+```bash
+.agent/scripts/devloop-integration
+.agent/scripts/devloop-integration --subagent-prompt
+```
+
+The intended flow is:
+
+1. cluster ahead commits by related product/change intent;
+2. create candidate PR branches from current `origin/master`;
+3. cherry-pick or replay each cluster, squash within that coherent cluster, and
+   write strong PR titles/bodies;
+4. prove the PR branches compose back to the workbench state, or preserve the
+   exact residual diff/dependency.
+
+The clustering/planning part is a good read-heavy subagent lane. Final replay,
+verification, push, and PR creation stay with the main devloop unless the
+operator explicitly delegates them.
