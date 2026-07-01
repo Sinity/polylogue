@@ -37,7 +37,11 @@ start_focus = sys.argv[3]
 text = path.read_text()
 replacements = {
     "Current Slice": f"Current Slice\n\n{title}",
-    "Current Focus": f"Current Focus\n\nFocus: {start_focus} -> Evidence",
+    "Current Focus": (
+        f"Current Focus\n\nFocus: {start_focus} -> Evidence\n\n"
+        f"Trigger: {title}\n\n"
+        "Decision: Gather current evidence, choose the narrow proof, and record the next material focus switch."
+    ),
     "Accepted Warnings": (
         "Accepted Warnings\n\n"
         "None recorded for this slice. If `devloop-review` warnings are consciously accepted, "
