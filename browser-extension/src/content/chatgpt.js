@@ -385,6 +385,36 @@
     capture().then(sendResponse).catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
     return true;
   });
+  // Outbound posting (reverse channel). Selectors target the ChatGPT composer
+  // as of 2026-06 and need live re-verification when the UI changes: composer is
+  // the ProseMirror contenteditable #prompt-textarea (verified live). The submit
+  // button has NO data-testid="send-button" in the current UI — it is the
+  // composer-submit slot (class composer-submit-button-color); its aria-label is
+  // "Start Voice"/dictation when empty and becomes a send label only with text,
+  // so match by the submit-slot class first, aria-label last.
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message.type !== "polylogue.postReply") return false;
+    window.polylogueCapture
+      .postReplyToComposer({
+        command: message.command,
+        composerSelectors: [
+          "#prompt-textarea",
+          'div[contenteditable="true"]#prompt-textarea',
+          'form div[contenteditable="true"]'
+        ],
+        sendSelectors: [
+          "button.composer-submit-button-color",
+          'button[data-testid="composer-send-button"]',
+          'button[data-testid="send-button"]',
+          'button[aria-label*="Send" i]'
+        ]
+      })
+      .then(sendResponse)
+      .catch((error) =>
+        sendResponse({ status: "failed", detail: String(error.message || error), observed_url: window.location.href })
+      );
+    return true;
+  });
   new MutationObserver(scheduleCapture).observe(document.documentElement, {
     childList: true,
     subtree: true,

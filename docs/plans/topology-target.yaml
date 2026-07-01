@@ -179,7 +179,7 @@ files:
     owner: archive-filter
     reason: archive-domain filter semantics
   - path: polylogue/archive/filter/filters.py
-    loc: 137
+    loc: 154
     target: polylogue/archive/filter/filters.py
     owner: archive-filter
     reason: archive-domain filter semantics
@@ -284,8 +284,13 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/archive_execution.py
-    loc: 614
+    loc: 650
     target: polylogue/archive/query/archive_execution.py
+    owner: archive-query
+    reason: archive-domain query semantics
+  - path: polylogue/archive/query/attached_units.py
+    loc: 141
+    target: polylogue/archive/query/attached_units.py
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/completions.py
@@ -294,7 +299,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/expression.py
-    loc: 2714
+    loc: 2860
     target: polylogue/archive/query/expression.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -389,7 +394,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/spec.py
-    loc: 598
+    loc: 604
     target: polylogue/archive/query/spec.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -515,7 +520,7 @@ files:
     owner: archive-session
     reason: archive-domain semantics
   - path: polylogue/archive/session/domain_models.py
-    loc: 98
+    loc: 106
     target: polylogue/archive/session/domain_models.py
     owner: archive-session
     reason: archive-domain semantics
@@ -657,19 +662,19 @@ files:
     target: polylogue/browser_capture/identity.py
     owner: stable
   - path: polylogue/browser_capture/models.py
-    loc: 260
+    loc: 372
     target: polylogue/browser_capture/models.py
     owner: stable
   - path: polylogue/browser_capture/receiver.py
-    loc: 430
+    loc: 601
     target: polylogue/browser_capture/receiver.py
     owner: stable
   - path: polylogue/browser_capture/route_contracts.py
-    loc: 76
+    loc: 131
     target: polylogue/browser_capture/route_contracts.py
     owner: stable
   - path: polylogue/browser_capture/server.py
-    loc: 293
+    loc: 412
     target: polylogue/browser_capture/server.py
     owner: stable
   - path: polylogue/cli/__init__.py
@@ -681,7 +686,7 @@ files:
     target: polylogue/cli/__main__.py
     owner: stable
   - path: polylogue/cli/archive_query.py
-    loc: 1921
+    loc: 1983
     target: polylogue/cli/archive_query.py
     owner: stable
   - path: polylogue/cli/bulk_export.py
@@ -1172,7 +1177,7 @@ files:
     target: polylogue/daemon/blob_integrity_alerts.py
     owner: stable
   - path: polylogue/daemon/browser_capture.py
-    loc: 52
+    loc: 124
     target: polylogue/daemon/browser_capture.py
     owner: stable
   - path: polylogue/daemon/catchup_status.py
