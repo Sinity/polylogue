@@ -52,6 +52,8 @@ should follow the bootstrap below without needing chat context.
   `devloop-handoff`, `devloop-ahead`, and `devloop-velocity` — executable loop
   gates, speed diagnostics, and foreground work prompts.
 - `scratch/README.md` — tracked routing rules for ignored scratch material.
+- `archive/` — ignored archaeology only. It is not a startup surface and should
+  not receive current state, generated proofs, or demos.
 - `tools/` — small helper scripts.
 
 ## Rule

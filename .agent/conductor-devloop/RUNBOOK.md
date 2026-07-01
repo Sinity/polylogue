@@ -154,7 +154,12 @@ turn a recurring friction into an executable review/velocity check.
 Before a daemon/import/test run, state the proof claim and expected duration.
 While it runs, use `.agent/scripts/devloop-ahead`; do not stack conflicting
 heavy jobs. If a command is slow, first check archive root, duplicate daemons,
-schema, and stage timings.
+schema, stage timings, and `devloop-status` pressure output.
+
+If `devloop-status` reports `live_performance_proof_blocked`, do not claim
+latency or throughput from broad archive probes in that window. Use source
+review, focused tests, query plans, or wait until borg/materialization/D-state
+pressure clears.
 
 If a command may run longer than a minute, record an active wait state:
 

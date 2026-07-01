@@ -10,6 +10,20 @@ git_branch="$(git -C "$repo" branch --show-current 2>/dev/null || true)"
 git_head="$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || true)"
 git_tracked_changes="$(git -C "$repo" status --porcelain --untracked-files=no 2>/dev/null | sed '/^$/d' | wc -l)"
 git_untracked_changes="$(git -C "$repo" status --porcelain --untracked-files=all 2>/dev/null | awk '$1 == "??" {count++} END {print count + 0}')"
+pressure_rows="$(
+  ps -eo pid=,stat=,pcpu=,pmem=,comm=,args= \
+    | awk '
+      $5 == "awk" {next}
+      /borg create/ {print; next}
+      /lynchpin.analysis materialize/ {print; next}
+      /devtools verify|devtools test|pytest|polylogue import|nix build|nix develop --command/ {print; next}
+    ' \
+    || true
+)"
+performance_blocked="false"
+if printf '%s\n' "$pressure_rows" | grep -Eq 'borg create|lynchpin.analysis materialize'; then
+  performance_blocked="true"
+fi
 
 if [ "$format" = "--json" ]; then
   index_version=""
@@ -32,11 +46,11 @@ if [ "$format" = "--json" ]; then
   devloop_sub_state="$(systemctl --user show polylogued-devloop.service -p SubState --value 2>/dev/null || true)"
   polylogued_rows="$(ps -eo pid=,args= | awk '$3 ~ /\/polylogued$/ && $4 == "run" {print}' || true)"
   worktree_gc_json="$(devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"
-  python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$source_version" "$raw_rows" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$worktree_gc_json" <<'PY'
+  python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$source_version" "$raw_rows" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$worktree_gc_json" "$pressure_rows" "$performance_blocked" <<'PY'
 import json
 import sys
 
-repo, current, archive_root, git_branch, git_head, git_tracked_changes, git_untracked_changes, index_version, sessions, messages, source_version, raw_rows, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows, worktree_gc_json = sys.argv[1:]
+repo, current, archive_root, git_branch, git_head, git_tracked_changes, git_untracked_changes, index_version, sessions, messages, source_version, raw_rows, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows, worktree_gc_json, pressure_rows, performance_blocked = sys.argv[1:]
 
 def int_or_none(value: str):
     try:
@@ -80,6 +94,10 @@ print(json.dumps({
         "safe_count": int_or_none(str(worktree_gc.get("safe_count", ""))),
         "blocked_count": int_or_none(str(worktree_gc.get("blocked_count", ""))),
     },
+    "pressure": {
+        "live_performance_proof_blocked": performance_blocked == "true",
+        "active_heavy_rows": [line for line in pressure_rows.splitlines() if line],
+    },
 }, indent=2, sort_keys=True))
 PY
   exit 0
@@ -105,6 +123,18 @@ if [ -f "$archive_root/source.db" ]; then
   source_version="$(sqlite3 "$archive_root/source.db" 'PRAGMA user_version;' 2>/dev/null || true)"
   raw_rows="$(sqlite3 "$archive_root/source.db" 'SELECT COUNT(*) FROM raw_sessions;' 2>/dev/null || true)"
   printf 'source: v%s raw_sessions=%s\n' "${source_version:-?}" "${raw_rows:-?}"
+fi
+
+printf '\n== pressure ==\n'
+if [ -n "$pressure_rows" ]; then
+  if [ "$performance_blocked" = "true" ]; then
+    printf 'live performance proof: blocked by active host pressure\n'
+  else
+    printf 'live performance proof: caution; heavy-ish work active\n'
+  fi
+  printf '%s\n' "$pressure_rows"
+else
+  printf 'live performance proof: no obvious heavy blockers\n'
 fi
 
 printf '\n== daemon ==\n'

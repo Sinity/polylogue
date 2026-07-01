@@ -17,6 +17,10 @@ This is the cadence rubric for the indefinite Polylogue conductor loop.
   before interpreting counts.
 - Prefer narrow verification while the host is under RAM/IO pressure. Record
   killed/interrupted runs as host/runtime facts, not product proof.
+- Treat `devloop-status` pressure output as the live-timing gate. If borg,
+  materialization, broad tests, or D-state I/O are active, live latency and
+  throughput probes are not admissible proof; use query plans/focused tests or
+  wait for the pressure window to close.
 
 ## Acceleration Rules
 

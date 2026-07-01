@@ -83,6 +83,10 @@ or live capture, maintain logs and handoffs, and reprioritize by evidence.
 - Treat `devloop-status` git fields as part of the start gate: branch, HEAD,
   tracked-change count, and untracked-change count tell you whether you are
   resuming a clean branch, local process edit, or product slice.
+- Treat `devloop-status` pressure fields as proof routing, not trivia. If
+  `live_performance_proof_blocked` is true, do not claim live latency or
+  throughput from broad archive probes; use source review, focused tests, query
+  plans, or wait until borg/materialization pressure clears.
 - Treat `devloop-review` ignore-policy checks as load-bearing: tracked scaffold
   must survive checkout, while active loop state and demos stay local/current.
 - `/realm/inbox` is staging only. The devloop must not depend on it.
