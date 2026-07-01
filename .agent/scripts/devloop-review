@@ -238,7 +238,7 @@ else
   ok "devloop-meta requires explicit audit fields"
 fi
 
-meta_start_terms=("devloop" "conductor" "convention")
+meta_start_terms=("meta" "process" "scaffold" "devloop" "conductor" "convention")
 missing_meta_start_terms=()
 for term in "${meta_start_terms[@]}"; do
   if ! grep -Eiq "$term" "$repo/.agent/scripts/devloop-start"; then
@@ -249,7 +249,7 @@ if [ "${#missing_meta_start_terms[@]}" -gt 0 ]; then
   warn "devloop-start does not infer Meta for all convention/process titles"
   printf '%s\n' "${missing_meta_start_terms[@]}"
 else
-  ok "devloop-start infers Meta for devloop/conductor/convention titles"
+  ok "devloop-start infers Meta for process/conductor/convention titles"
 fi
 
 script_name_diff="$(
