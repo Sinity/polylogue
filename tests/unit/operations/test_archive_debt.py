@@ -371,6 +371,14 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
 
     payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
 
+    assert payload.totals.total == 4
+    assert payload.totals.affected_total == 6
+    assert payload.totals.affected_critical == 1
+    assert payload.totals.affected_warning == 1
+    assert payload.totals.affected_info == 4
+    assert payload.totals.affected_actionable == 2
+    assert payload.totals.affected_open == 4
+
     by_ref = {row.debt_ref: row for row in payload.rows}
     missing_blob = by_ref["debt:raw-materialization:codex-session:missing-blob"]
     assert missing_blob.severity == "critical"

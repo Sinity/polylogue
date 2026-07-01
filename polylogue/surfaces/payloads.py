@@ -346,6 +346,13 @@ class ArchiveDebtTotalsPayload(SurfacePayloadModel):
     info: int = 0
     actionable: int = 0
     blocked: int = 0
+    affected_total: int = 0
+    affected_critical: int = 0
+    affected_warning: int = 0
+    affected_info: int = 0
+    affected_actionable: int = 0
+    affected_blocked: int = 0
+    affected_open: int = 0
 
 
 class ArchiveDebtListPayload(SurfacePayloadModel):

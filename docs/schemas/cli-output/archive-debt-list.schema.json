@@ -197,6 +197,41 @@
           "title": "Actionable",
           "type": "integer"
         },
+        "affected_actionable": {
+          "default": 0,
+          "title": "Affected Actionable",
+          "type": "integer"
+        },
+        "affected_blocked": {
+          "default": 0,
+          "title": "Affected Blocked",
+          "type": "integer"
+        },
+        "affected_critical": {
+          "default": 0,
+          "title": "Affected Critical",
+          "type": "integer"
+        },
+        "affected_info": {
+          "default": 0,
+          "title": "Affected Info",
+          "type": "integer"
+        },
+        "affected_open": {
+          "default": 0,
+          "title": "Affected Open",
+          "type": "integer"
+        },
+        "affected_total": {
+          "default": 0,
+          "title": "Affected Total",
+          "type": "integer"
+        },
+        "affected_warning": {
+          "default": 0,
+          "title": "Affected Warning",
+          "type": "integer"
+        },
         "blocked": {
           "default": 0,
           "title": "Blocked",

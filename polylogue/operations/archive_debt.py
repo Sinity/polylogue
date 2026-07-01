@@ -946,6 +946,9 @@ def _fts_rows(index_db: Path, *, exact: bool) -> list[ArchiveDebtRowPayload]:
 
 
 def _totals(rows: list[ArchiveDebtRowPayload]) -> ArchiveDebtTotalsPayload:
+    def affected_count(row: ArchiveDebtRowPayload) -> int:
+        return int(row.affected_count or 0)
+
     return ArchiveDebtTotalsPayload(
         total=len(rows),
         critical=sum(1 for row in rows if row.severity == "critical"),
@@ -953,6 +956,13 @@ def _totals(rows: list[ArchiveDebtRowPayload]) -> ArchiveDebtTotalsPayload:
         info=sum(1 for row in rows if row.severity == "info"),
         actionable=sum(1 for row in rows if row.status == "actionable"),
         blocked=sum(1 for row in rows if row.status == "blocked"),
+        affected_total=sum(affected_count(row) for row in rows),
+        affected_critical=sum(affected_count(row) for row in rows if row.severity == "critical"),
+        affected_warning=sum(affected_count(row) for row in rows if row.severity == "warning"),
+        affected_info=sum(affected_count(row) for row in rows if row.severity == "info"),
+        affected_actionable=sum(affected_count(row) for row in rows if row.status == "actionable"),
+        affected_blocked=sum(affected_count(row) for row in rows if row.status == "blocked"),
+        affected_open=sum(affected_count(row) for row in rows if row.status == "open"),
     )
 
 
