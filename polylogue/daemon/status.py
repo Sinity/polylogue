@@ -1904,9 +1904,13 @@ def build_daemon_status(
     fts_readiness = FTSReadiness(
         indexed_surface=str(fts.get("indexed_surface", "messages_fts")),
         messages_ready=bool(fts.get("messages_ready", False)),
+        session_work_events_ready=bool(fts.get("session_work_events_ready", False)),
+        threads_ready=bool(fts.get("threads_ready", False)),
+        invariant_ready=bool(fts.get("invariant_ready", False)),
         message_indexed_count=_safe_int(fts.get("message_indexed_count", 0)),
         message_indexable_count=_safe_int(fts.get("message_indexable_count", 0)),
         coverage_pct=_safe_float(fts.get("coverage_pct")),
+        surfaces=cast(dict[str, dict[str, int | bool | str | None]], fts.get("surfaces", {})),
     )
     embedding_readiness = EmbeddingReadiness(
         embedding_enabled=bool(embedding_info.get("embedding_enabled", False)),

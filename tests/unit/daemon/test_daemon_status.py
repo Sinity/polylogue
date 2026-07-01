@@ -893,7 +893,26 @@ def test_daemon_status_payload_reuses_bounded_probe_results(tmp_path: Path) -> N
         }
     )
     blob_info = Mock(return_value=0)
-    fts_info = Mock(return_value={"messages_ready": True})
+    fts_info = Mock(
+        return_value={
+            "indexed_surface": "messages_fts",
+            "messages_ready": True,
+            "session_work_events_ready": True,
+            "threads_ready": True,
+            "invariant_ready": True,
+            "message_indexed_count": 4,
+            "message_indexable_count": 4,
+            "coverage_pct": 100.0,
+            "surfaces": {
+                "messages_fts": {
+                    "ready": True,
+                    "source_rows": 4,
+                    "indexed_rows": 4,
+                    "missing_rows": 0,
+                }
+            },
+        }
+    )
     freshness_info = Mock(return_value={"sessions_with_profiles": 3, "total_sessions": 4})
 
     with (
@@ -914,6 +933,17 @@ def test_daemon_status_payload_reuses_bounded_probe_results(tmp_path: Path) -> N
     fts_readiness = payload["fts_readiness"]
     assert isinstance(fts_readiness, dict)
     assert fts_readiness["messages_ready"] is True
+    assert fts_readiness["session_work_events_ready"] is True
+    assert fts_readiness["threads_ready"] is True
+    assert fts_readiness["invariant_ready"] is True
+    assert fts_readiness["message_indexed_count"] == 4
+    assert fts_readiness["message_indexable_count"] == 4
+    assert fts_readiness["coverage_pct"] == 100.0
+    surfaces = fts_readiness["surfaces"]
+    assert isinstance(surfaces, dict)
+    messages_surface = surfaces["messages_fts"]
+    assert isinstance(messages_surface, dict)
+    assert messages_surface["ready"] is True
     assert db_info.call_count == 1
     assert blob_info.call_count == 1
     assert fts_info.call_count == 1
