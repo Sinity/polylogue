@@ -10,7 +10,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.config import Config
+from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.sources import origin_from_provider
 from polylogue.logging import get_logger
 from polylogue.maintenance.models import DerivedModelStatus, MaintenanceCategory
 from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
@@ -38,7 +40,20 @@ _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 _PROBE_ONLY_EXACT_MESSAGE_ROW_LIMIT = 100_000
 
 
-def _raw_materialization_candidate_ids(config: Config, *, raw_artifact_id: str | None = None) -> tuple[list[str], int]:
+def _raw_materialization_origin_from_provider(provider: str | None) -> str | None:
+    if provider is None:
+        return None
+    return origin_from_provider(Provider.from_string(provider)).value
+
+
+def _raw_materialization_candidate_ids(
+    config: Config,
+    *,
+    raw_artifact_id: str | None = None,
+    provider: str | None = None,
+    source_family: str | None = None,
+    source_root: Path | None = None,
+) -> tuple[list[str], int]:
     """Return replayable raw ids plus missing-blob debt count.
 
     Raw evidence is the durable source of truth, but a raw row whose
@@ -60,6 +75,19 @@ def _raw_materialization_candidate_ids(config: Config, *, raw_artifact_id: str |
         if raw_artifact_id is not None:
             raw_filter = "AND r.raw_id = ?"
             params.append(raw_artifact_id)
+        origin_filter = ""
+        provider_origin = _raw_materialization_origin_from_provider(provider)
+        if provider_origin is not None:
+            origin_filter += " AND r.origin = ?"
+            params.append(provider_origin)
+        if source_family is not None:
+            origin_filter += " AND r.origin = ?"
+            params.append(source_family)
+        source_root_filter = ""
+        if source_root is not None:
+            normalized_root = str(source_root).rstrip("/")
+            source_root_filter = " AND (r.source_path = ? OR r.source_path LIKE ?)"
+            params.extend((normalized_root, f"{normalized_root}/%"))
         rows = conn.execute(
             f"""
             SELECT r.raw_id, r.origin, r.native_id, r.source_path, r.blob_hash
@@ -78,6 +106,8 @@ def _raw_materialization_candidate_ids(config: Config, *, raw_artifact_id: str |
                 AND r.parse_error IS NULL
               )
               {raw_filter}
+              {origin_filter}
+              {source_root_filter}
             ORDER BY r.acquired_at_ms DESC, r.raw_id ASC
             """,
             params,
@@ -1128,9 +1158,18 @@ def repair_raw_materialization(
     dry_run: bool = False,
     *,
     raw_artifact_id: str | None = None,
+    provider: str | None = None,
+    source_family: str | None = None,
+    source_root: Path | None = None,
 ) -> RepairResult:
     """Materialize replayable raw evidence into the index tier."""
-    raw_ids, missing_blobs = _raw_materialization_candidate_ids(config, raw_artifact_id=raw_artifact_id)
+    raw_ids, missing_blobs = _raw_materialization_candidate_ids(
+        config,
+        raw_artifact_id=raw_artifact_id,
+        provider=provider,
+        source_family=source_family,
+        source_root=source_root,
+    )
     if dry_run:
         detail = f"Would: replay {len(raw_ids):,} raw rows into index.db"
         if missing_blobs:

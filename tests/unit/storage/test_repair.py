@@ -265,6 +265,66 @@ def test_raw_materialization_raw_artifact_filter_counts_only_target(tmp_path: Pa
     assert f"replay {1:,} raw rows" in scoped.detail
 
 
+def test_raw_materialization_scope_filters_count_only_matching_raw_rows(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    blob_store = BlobStore(tmp_path / "blob")
+    claude_raw_id, claude_size = blob_store.write_from_bytes(b'{"parentUuid":null,"sessionId":"claude-a"}')
+    codex_raw_id, codex_size = blob_store.write_from_bytes(b'{"items":[]}')
+    other_root_raw_id, other_root_size = blob_store.write_from_bytes(b'{"parentUuid":null,"sessionId":"claude-b"}')
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.executemany(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (
+                    claude_raw_id,
+                    "claude-code-session",
+                    "claude-a",
+                    "/captures/claude/a.jsonl",
+                    0,
+                    bytes.fromhex(claude_raw_id),
+                    claude_size,
+                    1,
+                ),
+                (
+                    codex_raw_id,
+                    "codex-session",
+                    "codex-a",
+                    "/captures/codex/a.jsonl",
+                    0,
+                    bytes.fromhex(codex_raw_id),
+                    codex_size,
+                    2,
+                ),
+                (
+                    other_root_raw_id,
+                    "claude-code-session",
+                    "claude-b",
+                    "/elsewhere/claude/b.jsonl",
+                    0,
+                    bytes.fromhex(other_root_raw_id),
+                    other_root_size,
+                    3,
+                ),
+            ),
+        )
+        source_conn.commit()
+
+    by_provider = repair_mod.repair_raw_materialization(config, dry_run=True, provider="claude-code")
+    by_family = repair_mod.repair_raw_materialization(config, dry_run=True, source_family="codex-session")
+    by_root = repair_mod.repair_raw_materialization(config, dry_run=True, source_root=Path("/captures/claude"))
+
+    assert by_provider.repaired_count == 2
+    assert by_family.repaired_count == 1
+    assert by_root.repaired_count == 1
+
+
 def test_raw_materialization_defers_batch_fts_then_repairs_once(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

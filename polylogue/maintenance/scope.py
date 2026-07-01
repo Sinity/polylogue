@@ -19,13 +19,13 @@ The filter dimensions match the ones #996 AC #1 names explicitly:
 * ``failure_kind`` — restrict to attempts that failed with one kind;
 * ``parser_version`` — restrict to one parser/materializer version.
 
-The filter is intentionally *advisory* at the repair-fn boundary: a
-filter that mentions a dimension the underlying repair function does
-not know how to honor passes through, and the repair fn does its
-usual full-scope work. Only :func:`MaintenanceScopeFilter.is_empty`
-guarantees a fast path. Each repair fn that learns to narrow its scope
-based on a filter dimension is the call that pins that dimension's
-contract.
+The filter is intentionally *target-owned* at the repair-fn boundary:
+each repair fn declares which dimensions it knows how to honor and must
+not advertise narrower operator behavior than it actually applies. For
+example, raw materialization honors ``provider``, ``source_family``,
+``source_root``, and ``raw_artifact_id`` because broadening those would
+replay unrelated source rows. Other dimensions remain advisory until a
+target pins their contract.
 
 The filter round-trips through :meth:`MaintenanceScopeFilter.to_dict`
 / :meth:`MaintenanceScopeFilter.from_dict` so the CLI ``--output-format

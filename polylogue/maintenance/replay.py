@@ -599,6 +599,9 @@ def _run_one_target(
                 config,
                 dry_run,
                 raw_artifact_id=scope_filter.raw_artifact_id,
+                provider=scope_filter.provider,
+                source_family=scope_filter.source_family,
+                source_root=scope_filter.source_root,
             )
         else:
             result = repair_fn(config, dry_run)
