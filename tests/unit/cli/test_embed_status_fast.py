@@ -329,7 +329,7 @@ def test_status_json_reports_manual_backfill_when_config_disabled_but_partial(tm
     assert payload["daemon_stage_enabled"] is False
     assert payload["next_action"] == {
         "code": "continue_backfill",
-        "command": "polylogue ops embed backfill --max-sessions 10",
+        "command": "polylogue ops embed backfill --yes --max-sessions 10",
         "reason": (
             "Manual embedding coverage exists, but daemon convergence is disabled; "
             "continue bounded backfill or enable daemon catch-up."
@@ -590,7 +590,7 @@ def test_status_text_prints_manual_backfill_when_config_disabled_but_partial(tmp
     output = _run_status_text(db_anchor, cfg=_Cfg(embedding_enabled=False, voyage_api_key="vk-live"))
 
     assert "Next action:           continue_backfill" in output
-    assert "Command:               polylogue ops embed backfill --max-sessions 10" in output
+    assert "Command:               polylogue ops embed backfill --yes --max-sessions 10" in output
 
 
 def test_status_text_prints_daemon_catchup_when_enabled(tmp_path: Path) -> None:
@@ -600,7 +600,7 @@ def test_status_text_prints_daemon_catchup_when_enabled(tmp_path: Path) -> None:
     output = _run_status_text(db_path, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
     assert "Next action:           drain_backlog" in output
-    assert "Command:               polylogue ops embed backfill --max-sessions 10" in output
+    assert "Command:               polylogue ops embed backfill --yes --max-sessions 10" in output
 
 
 def test_status_json_reports_ready_next_action(tmp_path: Path) -> None:

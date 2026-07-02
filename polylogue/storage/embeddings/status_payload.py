@@ -379,7 +379,7 @@ def _next_action(
         if embedded_sessions > 0 and pending_sessions > 0:
             return {
                 "code": "continue_backfill",
-                "command": "polylogue ops embed backfill --max-sessions 10",
+                "command": "polylogue ops embed backfill --yes --max-sessions 10",
                 "reason": (
                     "Manual embedding coverage exists, but daemon convergence is disabled; "
                     "continue bounded backfill or enable daemon catch-up."
@@ -399,13 +399,13 @@ def _next_action(
     if stale_messages > 0:
         return {
             "code": "refresh_stale",
-            "command": "polylogue ops embed backfill --max-sessions 10",
+            "command": "polylogue ops embed backfill --yes --max-sessions 10",
             "reason": "Existing vectors are stale for at least one message.",
         }
     if pending_sessions > 0:
         return {
             "code": "drain_backlog",
-            "command": "polylogue ops embed backfill --max-sessions 10",
+            "command": "polylogue ops embed backfill --yes --max-sessions 10",
             "reason": "Embedding convergence is enabled and pending sessions remain.",
         }
     if retrieval_ready:

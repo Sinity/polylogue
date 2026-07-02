@@ -455,7 +455,7 @@ class TestNoArchiveStatus:
             "retrieval_ready": True,
             "next_action": {
                 "code": "refresh_stale",
-                "command": "polylogue ops embed backfill --max-sessions 10",
+                "command": "polylogue ops embed backfill --yes --max-sessions 10",
                 "reason": "Existing vectors are stale for at least one message.",
             },
         }
@@ -481,7 +481,7 @@ class TestNoArchiveStatus:
         assert readiness["counts"]["stale_messages"] == 4
         assert readiness["counts"]["retrieval_ready"] is True
         assert readiness["caveats"] == []
-        assert readiness["repair_hint"] == "polylogue ops embed backfill --max-sessions 10"
+        assert readiness["repair_hint"] == "polylogue ops embed backfill --yes --max-sessions 10"
 
     def test_direct_status_json_maps_archive_surface_component_readiness(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
