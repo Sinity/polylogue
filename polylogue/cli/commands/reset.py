@@ -28,7 +28,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_suppression
 
-# Rebuildable tiers: re-acquired from source on the next ``polylogued run``.
+# Rebuildable tiers: replayed from preserved source evidence by maintenance.
 # Deleting these is the supported "move aside and re-ingest" reset path.
 _REBUILDABLE_ARCHIVE_DATABASES = (
     ("source database", "source.db"),
@@ -290,7 +290,8 @@ def reset_command(
         if not include_user_db and _user_db_present():
             env.ui.console.print(
                 "Preserving user.db (irreplaceable: tags, annotations, marks, saved views, "
-                "notes). Rebuildable tiers will be re-acquired on the next `polylogued run`. "
+                "notes). Rebuild index.db from preserved source evidence with "
+                "`polylogue ops maintenance rebuild-index`. "
                 "Pass --include-user-db to delete user.db too."
             )
     if blob:
@@ -351,6 +352,8 @@ def reset_command(
             env.ui.console.print(f"  Failed to delete {name}: {exc}")
 
     env.ui.console.print(f"\nReset complete: {deleted} item(s) deleted.")
+    if index or database:
+        env.ui.console.print("Next: run `polylogue ops maintenance rebuild-index` to replay source.db into index.db.")
 
 
 def _dedupe_targets(targets: list[tuple[str, Path]]) -> list[tuple[str, Path]]:

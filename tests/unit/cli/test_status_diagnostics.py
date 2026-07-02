@@ -66,6 +66,7 @@ class TestDiagnoseSchemaMismatch:
         assert diag.kind == "schema_mismatch"
         assert "99" in diag.headline
         assert "polylogue ops reset" in diag.next_action
+        assert "polylogue ops maintenance rebuild-index" in diag.next_action
 
     def test_schema_match_returns_none_for_this_probe(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         data_home, _ = _set_xdg(monkeypatch, tmp_path)
