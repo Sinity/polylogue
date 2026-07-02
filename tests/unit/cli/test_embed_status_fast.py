@@ -208,6 +208,32 @@ def test_status_json_reports_archive_embedding_metadata_without_detail(tmp_path:
     assert payload["embedding_dimensions"] == {"1024": 1} or payload["embedding_dimensions"] == {1024: 1}
 
 
+def test_status_json_uses_uniform_metadata_probe_when_grouping_times_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_anchor = tmp_path / "custom.sqlite"
+    _seed_archive_file_set_from_archive_tiers(tmp_path / "index.db")
+    real_rows_with_timeout = status_payload_mod._rows_with_timeout
+
+    def fake_rows_with_timeout(
+        conn: sqlite3.Connection,
+        sql: str,
+        *,
+        timeout_ms: int,
+        params: tuple[object, ...] = (),
+    ) -> list[sqlite3.Row | tuple[object, ...]] | None:
+        if "GROUP BY" in sql and "message_embeddings_meta" in sql:
+            return None
+        return real_rows_with_timeout(conn, sql, timeout_ms=timeout_ms, params=params)
+
+    monkeypatch.setattr(status_payload_mod, "_rows_with_timeout", fake_rows_with_timeout)
+
+    payload = _run_status(db_anchor, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+
+    assert payload["embedding_models"] == {"voyage-4": 1}
+    assert payload["embedding_dimensions"] == {"1024": 1} or payload["embedding_dimensions"] == {1024: 1}
+
+
 def test_status_json_uses_status_ledger_for_archive_embedded_sessions(tmp_path: Path) -> None:
     index_db = tmp_path / "index.db"
     embeddings_db = tmp_path / "embeddings.db"

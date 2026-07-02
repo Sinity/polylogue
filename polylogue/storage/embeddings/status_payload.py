@@ -180,6 +180,7 @@ def _rows_with_timeout(
     sql: str,
     *,
     timeout_ms: int,
+    params: tuple[object, ...] = (),
 ) -> list[sqlite3.Row | tuple[object, ...]] | None:
     """Return query rows, or ``None`` when the live archive cannot answer quickly."""
 
@@ -192,7 +193,7 @@ def _rows_with_timeout(
 
     conn.set_progress_handler(_interrupt_when_expired, 10_000)
     try:
-        rows = conn.execute(sql).fetchall()
+        rows = conn.execute(sql, params).fetchall()
     except sqlite3.OperationalError as exc:
         message = str(exc).lower()
         if is_missing_table_error(exc):
@@ -203,6 +204,50 @@ def _rows_with_timeout(
     finally:
         conn.set_progress_handler(None, 0)
     return list(rows)
+
+
+def _uniform_embedding_metadata_counts(
+    conn: sqlite3.Connection,
+    meta_table: str,
+    *,
+    embedded_messages: int,
+    timeout_ms: int,
+) -> tuple[dict[str, int], dict[int, int]]:
+    """Return metadata counts when one model/dimension can be proved quickly."""
+    if embedded_messages <= 0:
+        return {}, {}
+    sample_rows = _rows_with_timeout(
+        conn,
+        f"""
+        SELECT model, dimension
+        FROM {meta_table}
+        WHERE model IS NOT NULL
+          AND dimension IS NOT NULL
+        LIMIT 1
+        """,
+        timeout_ms=timeout_ms,
+    )
+    if not sample_rows:
+        return {}, {}
+    model = str(sample_rows[0][0])
+    dimension = _payload_int(sample_rows[0][1])
+    differing_rows = _rows_with_timeout(
+        conn,
+        f"""
+        SELECT 1
+        FROM {meta_table}
+        WHERE model IS NULL
+           OR dimension IS NULL
+           OR model != ?
+           OR dimension != ?
+        LIMIT 1
+        """,
+        timeout_ms=timeout_ms,
+        params=(model, dimension),
+    )
+    if differing_rows is None or differing_rows:
+        return {}, {}
+    return {model: embedded_messages}, {dimension: embedded_messages}
 
 
 def _iso_from_epoch_ms(value: object) -> str | None:
@@ -496,6 +541,13 @@ def _archive_embedding_status_payload(
                 dimension_counts = {
                     _payload_int(row[0]): _payload_int(row[1]) for row in dimension_rows if row[0] is not None
                 }
+            if (model_rows is None or dimension_rows is None) and (not model_counts or not dimension_counts):
+                model_counts, dimension_counts = _uniform_embedding_metadata_counts(
+                    conn,
+                    meta_table,
+                    embedded_messages=embedded_messages,
+                    timeout_ms=METADATA_SUMMARY_TIMEOUT_MS,
+                )
         if include_detail and has_messages:
             messages_ref = archive_embedding_messages_table_ref(conn, alias="m")
             embeddable_where = archive_embeddable_message_where("m")
