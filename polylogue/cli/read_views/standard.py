@@ -7,6 +7,7 @@ import time
 import webbrowser
 from collections.abc import Callable, Mapping
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
@@ -16,6 +17,7 @@ from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.cli.read_views.base import ReadViewInvocation, deliver_content, execute_query_request
+from polylogue.cli.read_views.streaming_markdown import stream_exact_session_markdown
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
@@ -71,6 +73,21 @@ def run_read_summary_or_transcript(env: AppEnv, request: RootModeRequest, invoca
     """Standard query/list renderer used by summary and transcript views."""
 
     fmt = invocation.output_format or "markdown"
+    if (
+        invocation.view == "transcript"
+        and invocation.destination == "file"
+        and invocation.session_id is not None
+        and fmt == "markdown"
+        and invocation.out_path
+        and stream_exact_session_markdown(
+            env.config.archive_root,
+            invocation.session_id,
+            Path(invocation.out_path),
+            prose_only=False,
+        )
+    ):
+        env.ui.console.print(f"Wrote to {invocation.out_path}")
+        return
     updated = _request_for_standard_read(request, invocation).with_param_updates(output_format=fmt)
     if invocation.destination in ("stdout", "terminal"):
         execute_query_request(env, updated)
@@ -91,6 +108,20 @@ def run_read_dialogue(env: AppEnv, request: RootModeRequest, invocation: ReadVie
 
     del request
     assert invocation.session_id is not None
+    if (
+        invocation.destination == "file"
+        and (invocation.output_format or "markdown") == "markdown"
+        and invocation.out_path
+        and invocation.projection_spec is None
+        and stream_exact_session_markdown(
+            env.config.archive_root,
+            invocation.session_id,
+            Path(invocation.out_path),
+            prose_only=True,
+        )
+    ):
+        env.ui.console.print(f"Wrote to {invocation.out_path}")
+        return
     projection = invocation.projection_spec.projection if invocation.projection_spec is not None else None
     session = run_coroutine_sync(
         env.polylogue.get_session(invocation.session_id, content_projection=ContentProjectionSpec.prose_only())
