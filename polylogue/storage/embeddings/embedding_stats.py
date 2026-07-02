@@ -10,6 +10,7 @@ import aiosqlite
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
 from polylogue.storage.embeddings.sql import (
     DIMENSION_COUNTS_SQL,
+    ELIGIBLE_SESSIONS_SQL,
     EMBEDDED_AT_BOUNDS_SQL,
     EMBEDDED_SESSIONS_SQL,
     EMBEDDING_FAILURE_COUNT_SQL,
@@ -142,86 +143,94 @@ def _dimension_counts(rows: list[sqlite3.Row]) -> dict[int, int]:
 
 def _base_parts_sync(conn: sqlite3.Connection, *, detail: bool) -> _EmbeddingStatsParts:
     sessions_exist = table_exists_sync(conn, "sessions")
+    status_exists = table_exists_sync(conn, "embedding_status")
     if not detail:
         return _EmbeddingStatsParts(
             bounds=None,
             model_rows=[],
             dimension_rows=[],
-            embedded_sessions=optional_count_sync(conn, EMBEDDED_SESSIONS_SQL),
+            embedded_sessions=optional_count_sync(conn, EMBEDDED_SESSIONS_SQL) if status_exists else 0,
             embedded_messages=embedded_message_count_sync(conn),
-            pending_sessions=optional_count_sync(conn, PENDING_SESSIONS_SQL),
+            pending_sessions=(
+                optional_count_sync(conn, PENDING_SESSIONS_SQL)
+                if status_exists
+                else optional_count_sync(conn, ELIGIBLE_SESSIONS_SQL)
+            ),
             pending_messages=0,
             stale_messages=0,
             missing_provenance=0,
             sessions_exist=sessions_exist,
-            failure_count=optional_count_sync(conn, EMBEDDING_FAILURE_COUNT_SQL),
+            failure_count=optional_count_sync(conn, EMBEDDING_FAILURE_COUNT_SQL) if status_exists else 0,
             total_message_count=0,
         )
+    total_messages = optional_count_sync(conn, TOTAL_MESSAGES_SQL)
     return _EmbeddingStatsParts(
         bounds=optional_row_sync(conn, EMBEDDED_AT_BOUNDS_SQL),
         model_rows=optional_rows_sync(conn, MODEL_COUNTS_SQL),
         dimension_rows=optional_rows_sync(conn, DIMENSION_COUNTS_SQL),
-        embedded_sessions=optional_count_sync(conn, EMBEDDED_SESSIONS_SQL),
+        embedded_sessions=optional_count_sync(conn, EMBEDDED_SESSIONS_SQL) if status_exists else 0,
         embedded_messages=embedded_message_count_sync(conn),
-        pending_sessions=optional_count_sync(conn, PENDING_SESSIONS_SQL),
-        pending_messages=optional_count_sync(conn, PENDING_MESSAGES_SQL),
+        pending_sessions=(
+            optional_count_sync(conn, PENDING_SESSIONS_SQL)
+            if status_exists
+            else optional_count_sync(conn, ELIGIBLE_SESSIONS_SQL)
+        ),
+        pending_messages=optional_count_sync(conn, PENDING_MESSAGES_SQL) if status_exists else total_messages,
         stale_messages=optional_count_sync(conn, STALE_MESSAGES_SQL),
         missing_provenance=optional_count_sync(conn, MISSING_META_MESSAGES_SQL),
         sessions_exist=sessions_exist,
-        failure_count=optional_count_sync(conn, EMBEDDING_FAILURE_COUNT_SQL),
-        total_message_count=optional_count_sync(conn, TOTAL_MESSAGES_SQL),
+        failure_count=optional_count_sync(conn, EMBEDDING_FAILURE_COUNT_SQL) if status_exists else 0,
+        total_message_count=total_messages,
     )
 
 
 async def _base_parts_async(conn: aiosqlite.Connection, *, detail: bool) -> _EmbeddingStatsParts:
     sessions_exist = await table_exists_async(conn, "sessions")
+    status_exists = await table_exists_async(conn, "embedding_status")
     if not detail:
         return _EmbeddingStatsParts(
             bounds=None,
             model_rows=[],
             dimension_rows=[],
-            embedded_sessions=await optional_count_async(conn, EMBEDDED_SESSIONS_SQL),
+            embedded_sessions=await optional_count_async(conn, EMBEDDED_SESSIONS_SQL) if status_exists else 0,
             embedded_messages=await embedded_message_count_async(conn),
-            pending_sessions=await optional_count_async(conn, PENDING_SESSIONS_SQL),
+            pending_sessions=(
+                await optional_count_async(conn, PENDING_SESSIONS_SQL)
+                if status_exists
+                else await optional_count_async(conn, ELIGIBLE_SESSIONS_SQL)
+            ),
             pending_messages=0,
             stale_messages=0,
             missing_provenance=0,
             sessions_exist=sessions_exist,
-            failure_count=await optional_count_async(conn, EMBEDDING_FAILURE_COUNT_SQL),
+            failure_count=await optional_count_async(conn, EMBEDDING_FAILURE_COUNT_SQL) if status_exists else 0,
             total_message_count=0,
         )
+    total_messages = await optional_count_async(conn, TOTAL_MESSAGES_SQL)
     return _EmbeddingStatsParts(
         bounds=await optional_row_async(conn, EMBEDDED_AT_BOUNDS_SQL),
         model_rows=await optional_rows_async(conn, MODEL_COUNTS_SQL),
         dimension_rows=await optional_rows_async(conn, DIMENSION_COUNTS_SQL),
-        embedded_sessions=await optional_count_async(conn, EMBEDDED_SESSIONS_SQL),
+        embedded_sessions=await optional_count_async(conn, EMBEDDED_SESSIONS_SQL) if status_exists else 0,
         embedded_messages=await embedded_message_count_async(conn),
-        pending_sessions=await optional_count_async(conn, PENDING_SESSIONS_SQL),
-        pending_messages=await optional_count_async(conn, PENDING_MESSAGES_SQL),
+        pending_sessions=(
+            await optional_count_async(conn, PENDING_SESSIONS_SQL)
+            if status_exists
+            else await optional_count_async(conn, ELIGIBLE_SESSIONS_SQL)
+        ),
+        pending_messages=await optional_count_async(conn, PENDING_MESSAGES_SQL) if status_exists else total_messages,
         stale_messages=await optional_count_async(conn, STALE_MESSAGES_SQL),
         missing_provenance=await optional_count_async(conn, MISSING_META_MESSAGES_SQL),
         sessions_exist=sessions_exist,
-        failure_count=await optional_count_async(conn, EMBEDDING_FAILURE_COUNT_SQL),
-        total_message_count=await optional_count_async(conn, TOTAL_MESSAGES_SQL),
+        failure_count=await optional_count_async(conn, EMBEDDING_FAILURE_COUNT_SQL) if status_exists else 0,
+        total_message_count=total_messages,
     )
 
 
 def _with_total_sessions(parts: _EmbeddingStatsParts, total_sessions: int) -> _EmbeddingStatsParts:
-    pending_sessions = max(
-        parts.pending_sessions,
-        total_sessions - parts.embedded_sessions,
-    )
-    pending_messages = parts.pending_messages
-    if parts.total_message_count > 0:
-        pending_messages = max(
-            parts.pending_messages,
-            parts.total_message_count - parts.embedded_messages if pending_sessions > 0 else 0,
-        )
     return replace(
         parts,
         total_sessions=total_sessions,
-        pending_sessions=pending_sessions,
-        pending_messages=pending_messages,
     )
 
 
