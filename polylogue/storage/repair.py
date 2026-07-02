@@ -294,6 +294,49 @@ def _resolve_convergence_debt(
         )
 
 
+def _resolve_session_insight_convergence_debt(
+    *,
+    ops_db: Path,
+    session_ids: tuple[str, ...] | None,
+) -> None:
+    """Clear proven session-insight convergence debt after maintenance repair."""
+    if not ops_db.exists():
+        return
+    try:
+        with sqlite3.connect(ops_db) as conn:
+            table_exists = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='convergence_debt'"
+            ).fetchone()
+            if not table_exists:
+                return
+            if session_ids is None:
+                conn.execute(
+                    """
+                    DELETE FROM convergence_debt
+                    WHERE stage = 'insights'
+                      AND target_type = 'session_id'
+                    """
+                )
+            else:
+                for session_id in session_ids:
+                    conn.execute(
+                        """
+                        DELETE FROM convergence_debt
+                        WHERE stage = 'insights'
+                          AND target_type = 'session_id'
+                          AND target_id = ?
+                        """,
+                        (session_id,),
+                    )
+            conn.commit()
+    except sqlite3.Error as exc:
+        logger.warning(
+            "session_insight_convergence_debt_resolve_failed",
+            session_ids=session_ids,
+            error=str(exc),
+        )
+
+
 def _session_insight_materializer_version() -> int:
     from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 
@@ -1175,6 +1218,11 @@ def repair_session_insights(
             # A narrowed rebuild only attests its own slice; do not
             # demand global readiness for a scope-filtered call.
             success = True if session_ids is not None else assess_session_insight_repairs(refreshed).row_debt == 0
+            if success:
+                _resolve_session_insight_convergence_debt(
+                    ops_db=config.archive_root / "ops.db",
+                    session_ids=session_ids,
+                )
             return _repair_result(
                 "session_insights",
                 repaired_count=rebuilt_count,

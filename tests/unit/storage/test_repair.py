@@ -1017,6 +1017,87 @@ def test_repair_session_insights_dry_run_reports_scoped_rebuild(
     assert result.detail == "Would: rebuild session insights for 3 scoped session(s)"
 
 
+def test_repair_session_insights_clears_scoped_convergence_debt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute(
+            """
+            CREATE TABLE convergence_debt (
+                debt_id TEXT PRIMARY KEY,
+                stage TEXT NOT NULL,
+                target_type TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'failed' CHECK(status IN ('failed', 'deferred')),
+                priority INTEGER NOT NULL DEFAULT 0,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                next_retry_at TEXT,
+                materializer_version TEXT,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                UNIQUE(stage, target_type, target_id)
+            )
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO convergence_debt (
+                debt_id, stage, target_type, target_id, status, priority,
+                attempts, last_error, next_retry_at, materializer_version,
+                created_at_ms, updated_at_ms
+            )
+            VALUES (?, ?, 'session_id', ?, 'deferred', 0, 1, 'quiet window', NULL, NULL, 1, 1)
+            """,
+            (
+                ("debt-1", "insights", "codex-session:target"),
+                ("debt-2", "insights", "codex-session:other"),
+                ("debt-3", "fts", "codex-session:target"),
+            ),
+        )
+
+    class FakeArchive:
+        def session_insight_status(self) -> SessionInsightStatusSnapshot:
+            return _ready_session_insight_status()
+
+        def __enter__(self) -> FakeArchive:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
+        lambda _archive_root, read_only=False: FakeArchive(),
+    )
+    monkeypatch.setattr(
+        "polylogue.api.archive._rebuild_archive_session_insights",
+        lambda _archive, **_kwargs: SessionInsightCounts(profiles=1),
+    )
+
+    result = repair_mod.repair_session_insights(
+        _config(tmp_path),
+        dry_run=False,
+        session_ids=("codex-session:target",),
+    )
+
+    assert result.success is True
+    assert result.repaired_count == 1
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        rows = conn.execute(
+            """
+            SELECT stage, target_id
+            FROM convergence_debt
+            ORDER BY debt_id
+            """
+        ).fetchall()
+
+    assert rows == [
+        ("insights", "codex-session:other"),
+        ("fts", "codex-session:target"),
+    ]
+
+
 def test_repair_session_insights_uses_candidate_session_ids(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
