@@ -1369,29 +1369,21 @@ def repair_raw_materialization(
         try:
             service = ParsingService(repository=repository, archive_root=config.archive_root, config=config)
             total = len(executable_raw_ids)
-            for index, raw_id in enumerate(executable_raw_ids, start=1):
-                raw_size = candidates.raw_blob_bytes.get(raw_id, 0)
-                size_suffix = f" size={_format_bytes(raw_size)}" if raw_size else ""
-                if progress_callback is not None:
-                    progress_callback(
-                        index - 1,
-                        desc=f"raw_materialization: parsing raw {index}/{total} {raw_id[:12]}{size_suffix}",
-                    )
-                result = await service.parse_from_raw(
-                    raw_ids=[raw_id],
-                    progress_callback=progress_callback,
-                    force_write=False,
-                    repair_message_fts=False,
+            if progress_callback is not None:
+                progress_callback(0, desc=f"raw_materialization: parsing {total:,} raw rows")
+            result = await service.parse_from_raw(
+                raw_ids=executable_raw_ids,
+                progress_callback=progress_callback,
+                force_write=False,
+                repair_message_fts=False,
+            )
+            processed_total += len(result.processed_ids)
+            failure_total += result.parse_failures
+            if progress_callback is not None:
+                progress_callback(
+                    total,
+                    desc=f"raw_materialization: parsed {total:,} raw rows changed={processed_total}",
                 )
-                processed_total += len(result.processed_ids)
-                failure_total += result.parse_failures
-                if progress_callback is not None:
-                    progress_callback(
-                        index,
-                        desc=(
-                            f"raw_materialization: parsed raw {index}/{total} {raw_id[:12]} changed={processed_total}"
-                        ),
-                    )
             return processed_total, failure_total
         finally:
             await repository.close()

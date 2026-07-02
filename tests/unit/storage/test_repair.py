@@ -4,6 +4,7 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -262,6 +263,70 @@ def test_raw_materialization_replays_parsed_rows_when_index_is_empty(tmp_path: P
     assert result.metrics["raw_materialization_candidate_count"] == 1.0
     assert result.metrics["raw_materialization_already_parsed_count"] == 1.0
     assert "already parsed but not materialized" in result.detail
+
+
+def test_raw_materialization_replay_uses_batch_parse_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    blob_store = BlobStore(tmp_path / "blob")
+    first_raw_id, first_size = blob_store.write_from_bytes(b'{"mapping":{"first":{}}}')
+    second_raw_id, second_size = blob_store.write_from_bytes(b'{"mapping":{"second":{}}}')
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.executemany(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (
+                    first_raw_id,
+                    "chatgpt-export",
+                    "native-first",
+                    "first.json",
+                    0,
+                    bytes.fromhex(first_raw_id),
+                    first_size,
+                    1,
+                ),
+                (
+                    second_raw_id,
+                    "chatgpt-export",
+                    "native-second",
+                    "second.json",
+                    0,
+                    bytes.fromhex(second_raw_id),
+                    second_size,
+                    2,
+                ),
+            ),
+        )
+        source_conn.commit()
+
+    calls: list[list[str]] = []
+
+    class FakeParsingService:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        async def parse_from_raw(self, *, raw_ids: list[str], **_kwargs: object) -> object:
+            calls.append(list(raw_ids))
+            return SimpleNamespace(processed_ids=set(raw_ids), parse_failures=0)
+
+    import polylogue.pipeline.services.parsing as parsing_module
+
+    monkeypatch.setattr(parsing_module, "ParsingService", FakeParsingService)
+
+    result = repair_mod.repair_raw_materialization(config)
+
+    assert result.success is True
+    assert result.repaired_count == 2
+    assert calls == [[second_raw_id, first_raw_id]]
 
 
 def test_raw_materialization_raw_artifact_filter_counts_only_target(tmp_path: Path) -> None:
