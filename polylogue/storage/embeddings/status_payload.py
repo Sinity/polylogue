@@ -8,6 +8,7 @@ and render in their own dialect.
 from __future__ import annotations
 
 import sqlite3
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -29,6 +30,9 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 if TYPE_CHECKING:
     from polylogue.config import Config
+
+DETAIL_QUERY_TIMEOUT_MS = 2_000
+STATUS_READ_BUSY_TIMEOUT_MS = 1_000
 
 
 class _HasConfig(Protocol):
@@ -138,6 +142,33 @@ def _scalar_int(conn: sqlite3.Connection, sql: str) -> int:
         if is_missing_table_error(exc):
             return 0
         raise
+    if row is None:
+        return 0
+    return _payload_int(row[0])
+
+
+def _scalar_int_with_timeout(conn: sqlite3.Connection, sql: str, *, timeout_ms: int) -> int | None:
+    """Return an exact scalar count, or ``None`` when the live archive cannot answer quickly."""
+
+    from polylogue.storage.embeddings.support import is_missing_table_error
+
+    deadline = time.monotonic() + (timeout_ms / 1000.0)
+
+    def _interrupt_when_expired() -> int:
+        return 1 if time.monotonic() >= deadline else 0
+
+    conn.set_progress_handler(_interrupt_when_expired, 10_000)
+    try:
+        row = conn.execute(sql).fetchone()
+    except sqlite3.OperationalError as exc:
+        message = str(exc).lower()
+        if is_missing_table_error(exc):
+            return 0
+        if "interrupted" in message or "locked" in message or "busy" in message:
+            return None
+        raise
+    finally:
+        conn.set_progress_handler(None, 0)
     if row is None:
         return 0
     return _payload_int(row[0])
@@ -355,7 +386,8 @@ def _archive_embedding_status_payload(
     index_db = _archive_index_path(db_path)
     if index_db is None:
         return None
-    conn = open_readonly_connection(index_db)
+    conn = open_readonly_connection(index_db, timeout=STATUS_READ_BUSY_TIMEOUT_MS / 1000.0)
+    conn.execute(f"PRAGMA busy_timeout = {STATUS_READ_BUSY_TIMEOUT_MS}")
     try:
         if not _table_exists(conn, "sessions"):
             return None
@@ -376,14 +408,21 @@ def _archive_embedding_status_payload(
         session_state = count_archive_embedding_session_state(conn, status_table=status_table, rebuild=False)
         embedded_sessions = session_state.embedded_sessions if has_status else 0
         pending_sessions = session_state.pending_sessions
-        if has_meta:
+        if has_status:
             embedded_messages = _scalar_int(
+                conn,
+                f"SELECT COALESCE(SUM(message_count_embedded), 0) FROM {status_table}",
+            )
+        elif has_meta:
+            exact_embedded_messages = _scalar_int_with_timeout(
                 conn,
                 f"""
                 SELECT COUNT(*)
                 FROM {meta_table}
                 """,
+                timeout_ms=DETAIL_QUERY_TIMEOUT_MS,
             )
+            embedded_messages = exact_embedded_messages if exact_embedded_messages is not None else 0
         else:
             embedded_messages = 0
         failure_count = (
@@ -392,6 +431,7 @@ def _archive_embedding_status_payload(
             else 0
         )
         pending_messages = 0
+        pending_messages_exact = include_detail
         stale_messages = 0
         missing_provenance = 0
         oldest_embedded_at: str | None = None
@@ -401,7 +441,14 @@ def _archive_embedding_status_payload(
         if include_detail and has_messages:
             messages_ref = archive_embedding_messages_table_ref(conn, alias="m")
             embeddable_where = archive_embeddable_message_where("m")
-            total_messages = _scalar_int(conn, f"SELECT COUNT(*) FROM {messages_ref} WHERE {embeddable_where}")
+            total_messages = _scalar_int_with_timeout(
+                conn,
+                f"SELECT COUNT(*) FROM {messages_ref} WHERE {embeddable_where}",
+                timeout_ms=DETAIL_QUERY_TIMEOUT_MS,
+            )
+            if total_messages is None:
+                total_messages = 0
+                pending_messages_exact = False
             if has_meta and embedded_messages == 0:
                 pending_messages = total_messages
             elif has_meta:
@@ -409,7 +456,7 @@ def _archive_embedding_status_payload(
                 meta_missing_column = "em.message_id"
                 status_join = f"LEFT JOIN {status_table} e ON e.session_id = m.session_id" if has_status else ""
                 status_reindex_clause = "OR COALESCE(e.needs_reindex, 0) = 1" if has_status else ""
-                pending_messages = _scalar_int(
+                exact_pending_messages = _scalar_int_with_timeout(
                     conn,
                     f"""
                     SELECT COUNT(*)
@@ -423,17 +470,23 @@ def _archive_embedding_status_payload(
                         {status_reindex_clause}
                       )
                     """,
+                    timeout_ms=DETAIL_QUERY_TIMEOUT_MS,
                 )
+                if exact_pending_messages is None:
+                    pending_messages = 0
+                    pending_messages_exact = False
+                else:
+                    pending_messages = exact_pending_messages
             else:
                 pending_messages = total_messages
             if has_meta and embedded_messages == 0:
                 missing_provenance = 0
                 stale_messages = 0
-            elif has_meta:
+            elif has_meta and pending_messages_exact:
                 meta_join = "ON em.message_id = m.message_id"
                 meta_missing_column = "em.message_id"
                 if vector_table:
-                    missing_provenance = _scalar_int(
+                    exact_missing_provenance = _scalar_int_with_timeout(
                         conn,
                         f"""
                         SELECT COUNT(*)
@@ -442,53 +495,67 @@ def _archive_embedding_status_payload(
                           ON em.message_id = me.message_id
                         WHERE em.message_id IS NULL
                         """,
+                        timeout_ms=DETAIL_QUERY_TIMEOUT_MS,
                     )
-                stale_messages = _scalar_int(
-                    conn,
-                    f"""
-                    SELECT COUNT(*)
-                    FROM {messages_ref}
-                    JOIN {meta_table} em {meta_join}
-                    WHERE {embeddable_where}
-                      AND (
-                        COALESCE(em.needs_reindex, 0) = 1
-                        OR (em.content_hash IS NOT NULL AND em.content_hash != m.content_hash)
-                      )
-                    """,
-                )
-                bounds = conn.execute(
-                    f"""
-                    SELECT MIN(embedded_at_ms), MAX(embedded_at_ms)
-                    FROM {meta_table}
-                    """
-                ).fetchone()
-                if bounds is not None:
-                    oldest_embedded_at = _iso_from_epoch_ms(bounds[0])
-                    newest_embedded_at = _iso_from_epoch_ms(bounds[1])
-                model_counts = {
-                    str(row[0]): _payload_int(row[1])
-                    for row in conn.execute(
+                    if exact_missing_provenance is None:
+                        missing_provenance = 0
+                        pending_messages_exact = False
+                    else:
+                        missing_provenance = exact_missing_provenance
+                if pending_messages_exact:
+                    exact_stale_messages = _scalar_int_with_timeout(
+                        conn,
                         f"""
-                        SELECT model, COUNT(*)
-                        FROM {meta_table}
-                        GROUP BY model
-                        ORDER BY COUNT(*) DESC, model ASC
-                        """
-                    ).fetchall()
-                    if row[0] is not None
-                }
-                dimension_counts = {
-                    _payload_int(row[0]): _payload_int(row[1])
-                    for row in conn.execute(
+                        SELECT COUNT(*)
+                        FROM {messages_ref}
+                        JOIN {meta_table} em {meta_join}
+                        WHERE {embeddable_where}
+                          AND (
+                            COALESCE(em.needs_reindex, 0) = 1
+                            OR (em.content_hash IS NOT NULL AND em.content_hash != m.content_hash)
+                          )
+                        """,
+                        timeout_ms=DETAIL_QUERY_TIMEOUT_MS,
+                    )
+                    if exact_stale_messages is None:
+                        stale_messages = 0
+                        pending_messages_exact = False
+                    else:
+                        stale_messages = exact_stale_messages
+                if pending_messages_exact:
+                    bounds = conn.execute(
                         f"""
-                        SELECT dimension, COUNT(*)
+                        SELECT MIN(embedded_at_ms), MAX(embedded_at_ms)
                         FROM {meta_table}
-                        GROUP BY dimension
-                        ORDER BY COUNT(*) DESC, dimension ASC
                         """
-                    ).fetchall()
-                    if row[0] is not None
-                }
+                    ).fetchone()
+                    if bounds is not None:
+                        oldest_embedded_at = _iso_from_epoch_ms(bounds[0])
+                        newest_embedded_at = _iso_from_epoch_ms(bounds[1])
+                    model_counts = {
+                        str(row[0]): _payload_int(row[1])
+                        for row in conn.execute(
+                            f"""
+                            SELECT model, COUNT(*)
+                            FROM {meta_table}
+                            GROUP BY model
+                            ORDER BY COUNT(*) DESC, model ASC
+                            """
+                        ).fetchall()
+                        if row[0] is not None
+                    }
+                    dimension_counts = {
+                        _payload_int(row[0]): _payload_int(row[1])
+                        for row in conn.execute(
+                            f"""
+                            SELECT dimension, COUNT(*)
+                            FROM {meta_table}
+                            GROUP BY dimension
+                            ORDER BY COUNT(*) DESC, dimension ASC
+                            """
+                        ).fetchall()
+                        if row[0] is not None
+                    }
         stats = EmbeddingStatsSnapshot(
             embedded_sessions=embedded_sessions,
             embedded_messages=embedded_messages,
@@ -518,7 +585,7 @@ def _archive_embedding_status_payload(
         total_sessions=total_sessions,
         stats=stats,
         latest_catchup_run=latest_catchup_run,
-        pending_messages_exact=include_detail,
+        pending_messages_exact=pending_messages_exact,
     )
 
 

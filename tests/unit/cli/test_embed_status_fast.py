@@ -12,6 +12,7 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.commands.embed import embed_command
+from polylogue.storage.embeddings import status_payload as status_payload_mod
 from polylogue.storage.embeddings.progress import (
     CatchupRunStart,
     finish_embedding_catchup_run,
@@ -193,6 +194,87 @@ def test_status_json_reads_archive_file_set_from_archive_index(tmp_path: Path) -
     assert payload["embedding_coverage_percent"] == 50.0
     assert payload["embedding_models"] == {"voyage-4": 1}
     assert payload["embedding_dimensions"] == {"1024": 1} or payload["embedding_dimensions"] == {1024: 1}
+
+
+def test_status_json_uses_status_ledger_for_archive_embedded_sessions(tmp_path: Path) -> None:
+    index_db = tmp_path / "index.db"
+    embeddings_db = tmp_path / "embeddings.db"
+    with sqlite3.connect(index_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                authored_user_message_count INTEGER NOT NULL DEFAULT 0,
+                assistant_message_count INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE messages (
+                message_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'user',
+                message_type TEXT NOT NULL DEFAULT 'message',
+                material_origin TEXT NOT NULL DEFAULT 'human_authored',
+                word_count INTEGER NOT NULL DEFAULT 8,
+                content_hash BLOB NOT NULL
+            );
+            INSERT INTO sessions VALUES ('codex-session:complete', 20, 20);
+            INSERT INTO sessions VALUES ('codex-session:pending', 3, 1);
+            INSERT INTO messages (message_id, session_id, content_hash)
+            VALUES ('codex-session:complete:m1', 'codex-session:complete', x'01');
+            INSERT INTO messages (message_id, session_id, content_hash)
+            VALUES ('codex-session:pending:m1', 'codex-session:pending', x'02');
+            """
+        )
+    with sqlite3.connect(embeddings_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE message_embeddings_meta (
+                message_id TEXT PRIMARY KEY,
+                model TEXT NOT NULL,
+                dimension INTEGER NOT NULL,
+                embedded_at_ms INTEGER NOT NULL,
+                content_hash BLOB,
+                needs_reindex INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE embedding_status (
+                session_id TEXT PRIMARY KEY,
+                origin TEXT NOT NULL,
+                message_count_embedded INTEGER NOT NULL DEFAULT 0,
+                needs_reindex INTEGER NOT NULL DEFAULT 0,
+                error_message TEXT
+            );
+            INSERT INTO embedding_status VALUES ('codex-session:complete', 'codex-session', 1, 0, NULL);
+            """
+        )
+
+    payload = _run_status(tmp_path / "custom.sqlite", cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+
+    assert payload["embedded_sessions"] == 1
+    assert payload["pending_sessions"] == 1
+    assert payload["embedding_coverage_percent"] == 50.0
+
+
+def test_status_json_detail_falls_back_when_exact_pending_count_times_out(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_anchor = tmp_path / "custom.sqlite"
+    _seed_archive_file_set_from_archive_tiers(tmp_path / "index.db")
+    original_scalar = status_payload_mod._scalar_int_with_timeout
+
+    def fake_scalar_int_with_timeout(conn: sqlite3.Connection, sql: str, *, timeout_ms: int) -> int | None:
+        if "LEFT JOIN embeddings.message_embeddings_meta" in sql and "LEFT JOIN embeddings.embedding_status" in sql:
+            return None
+        return original_scalar(conn, sql, timeout_ms=timeout_ms)
+
+    monkeypatch.setattr(status_payload_mod, "_scalar_int_with_timeout", fake_scalar_int_with_timeout)
+
+    payload = _run_status(db_anchor, "--detail", cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+
+    assert payload["status"] == "partial"
+    assert payload["pending_sessions"] == 1
+    assert payload["pending_messages"] is None
+    assert payload["pending_messages_exact"] is False
+    assert payload["retrieval_ready"] is True
 
 
 def test_status_json_reports_manual_backfill_when_config_disabled_but_partial(tmp_path: Path) -> None:

@@ -436,6 +436,54 @@ def count_archive_embedding_session_state(
     if not _table_exists(conn, "messages"):
         return ArchiveEmbeddingSessionState(eligible_sessions=0, embedded_sessions=0, pending_sessions=0)
 
+    aggregate_expr = _archive_session_embeddable_count_expression(conn)
+    if aggregate_expr is not None:
+        if rebuild or not status_table:
+            row = conn.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM sessions s
+                WHERE {aggregate_expr} > 0
+                """
+            ).fetchone()
+            eligible = int(row[0] or 0) if row is not None else 0
+            return ArchiveEmbeddingSessionState(
+                eligible_sessions=eligible,
+                embedded_sessions=0,
+                pending_sessions=eligible,
+            )
+
+        row = conn.execute(
+            f"""
+            SELECT
+                COUNT(*) AS eligible_sessions,
+                SUM(
+                    CASE
+                        WHEN e.session_id IS NOT NULL
+                         AND e.needs_reindex = 0
+                        THEN 1 ELSE 0
+                    END
+                ) AS embedded_sessions,
+                SUM(
+                    CASE
+                        WHEN e.session_id IS NULL
+                          OR e.needs_reindex = 1
+                        THEN 1 ELSE 0
+                    END
+                ) AS pending_sessions
+            FROM sessions s
+            LEFT JOIN {status_table} e ON e.session_id = s.session_id
+            WHERE {aggregate_expr} > 0
+            """
+        ).fetchone()
+        if row is None:
+            return ArchiveEmbeddingSessionState(eligible_sessions=0, embedded_sessions=0, pending_sessions=0)
+        return ArchiveEmbeddingSessionState(
+            eligible_sessions=int(row[0] or 0),
+            embedded_sessions=int(row[1] or 0),
+            pending_sessions=int(row[2] or 0),
+        )
+
     if rebuild or not status_table:
         row = conn.execute(
             f"""
