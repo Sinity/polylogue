@@ -502,6 +502,22 @@ def test_pending_window_honors_max_messages() -> None:
         conn.close()
 
 
+def test_pending_window_skips_session_larger_than_max_messages() -> None:
+    conn = sqlite3.connect(":memory:")
+    try:
+        _setup_minimal_embedding_db(conn)
+        _insert_session(conn, "conv-oversize", message_count=5)
+        _insert_session(conn, "conv-fit", message_count=2)
+        conn.commit()
+
+        pending = select_pending_session_window(conn, max_messages=3)
+
+        assert [item.session_id for item in pending] == ["conv-fit"]
+        assert sum(item.message_count for item in pending) == 2
+    finally:
+        conn.close()
+
+
 def test_pending_window_uses_sessions_message_count() -> None:
     conn = sqlite3.connect(":memory:")
     try:
@@ -549,6 +565,25 @@ def test_pending_archive_window_honors_min_messages() -> None:
         pending = select_pending_archive_session_window(conn, status_table="", min_messages=3)
 
         assert [item.session_id for item in pending] == ["substantial"]
+    finally:
+        conn.close()
+
+
+def test_pending_archive_window_skips_session_larger_than_max_messages() -> None:
+    conn = sqlite3.connect(":memory:")
+    try:
+        _setup_minimal_embedding_db(conn)
+        conn.execute("ALTER TABLE sessions ADD COLUMN sort_key_ms INTEGER")
+        _insert_session(conn, "oversize", message_count=5)
+        _insert_session(conn, "fit", message_count=2)
+        conn.execute("UPDATE sessions SET sort_key_ms = 2 WHERE session_id = 'oversize'")
+        conn.execute("UPDATE sessions SET sort_key_ms = 1 WHERE session_id = 'fit'")
+        conn.commit()
+
+        pending = select_pending_archive_session_window(conn, status_table="", max_messages=3)
+
+        assert [item.session_id for item in pending] == ["fit"]
+        assert sum(item.message_count for item in pending) == 2
     finally:
         conn.close()
 

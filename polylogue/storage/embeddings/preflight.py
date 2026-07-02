@@ -315,6 +315,7 @@ def preflight_payload(report: PreflightReport) -> dict[str, object]:
         "max_sessions": report.max_sessions,
         "max_messages": report.max_messages,
         "max_cost_usd": report.max_cost_usd,
+        "min_messages": report.min_messages,
         "pricing": {
             "estimated_tokens_per_message": ESTIMATED_TOKENS_PER_MESSAGE,
             "cost_usd_per_1m_tokens": VOYAGE_4_COST_PER_1M_TOKENS,

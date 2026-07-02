@@ -226,6 +226,8 @@ def select_pending_session_window(
             message_count = _row_int(row, 2, "message_count")
             if max_sessions is not None and len(pending) >= max_sessions:
                 return pending
+            if max_messages is not None and message_count > max_messages:
+                continue
             if max_messages is not None and pending and message_total + message_count > max_messages:
                 return pending
             pending.append(
@@ -325,6 +327,8 @@ def select_pending_archive_session_window(
                 continue
             if max_sessions is not None and len(pending) >= max_sessions:
                 return pending
+            if max_messages is not None and estimated_count > max_messages:
+                continue
             if max_messages is not None and pending and message_total + estimated_count > max_messages:
                 return pending
             pending.append(PendingSession(session_id=session_id, title=title, message_count=estimated_count))
