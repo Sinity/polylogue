@@ -9,6 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from polylogue.archive.raw_materialization import parsed_non_session_artifact_reason
 from polylogue.config import Config
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import JSONDocument, json_document
@@ -156,6 +157,8 @@ def _raw_materialization_candidate_ids(
         for row in rows:
             if _raw_materialized_by_source_path_native(conn, row):
                 continue
+            if _raw_materialization_parsed_non_session_artifact(config.archive_root, row):
+                continue
             blob_hash = row["blob_hash"].hex() if isinstance(row["blob_hash"], bytes) else str(row["blob_hash"])
             if blob_store.exists(blob_hash):
                 raw_id = str(row["raw_id"])
@@ -203,6 +206,24 @@ def _raw_materialized_by_source_path_native(conn: sqlite3.Connection, row: sqlit
         if existing is not None:
             return True
     return False
+
+
+def _raw_materialization_parsed_non_session_artifact(archive_root: Path, row: sqlite3.Row) -> bool:
+    keys = set(row.keys())
+    parse_error = row["parse_error"] if "parse_error" in keys else None
+    parsed_at_ms = row["parsed_at_ms"] if "parsed_at_ms" in keys else None
+    blob_hash = row["blob_hash"] if "blob_hash" in keys else None
+    if parse_error or parsed_at_ms is None:
+        return False
+    return (
+        parsed_non_session_artifact_reason(
+            archive_root=archive_root,
+            origin=str(row["origin"] or ""),
+            source_path=str(row["source_path"] or ""),
+            blob_hash=blob_hash,
+        )
+        is not None
+    )
 
 
 def _source_path_native_id_candidates(source_path: str) -> tuple[str, ...]:
@@ -1288,6 +1309,17 @@ def repair_raw_materialization(
     if oversized_stream_safe_raw_ids:
         metrics["raw_materialization_stream_oversized_count"] = float(len(oversized_stream_safe_raw_ids))
     if dry_run:
+        if not raw_ids:
+            detail = "Raw materialization ready"
+            if missing_blobs:
+                detail += f"; {missing_blobs:,} raw rows blocked by missing blobs"
+            return _repair_result(
+                "raw_materialization",
+                repaired_count=0,
+                success=missing_blobs == 0,
+                detail=detail,
+                metrics=metrics,
+            )
         byte_detail = ""
         if raw_ids:
             byte_detail = (
@@ -1360,7 +1392,15 @@ def repair_raw_materialization(
             service = ParsingService(repository=repository, archive_root=config.archive_root, config=config)
             total = len(executable_raw_ids)
             if progress_callback is not None:
-                progress_callback(0, desc=f"raw_materialization: parsing {total:,} raw rows")
+                if total == 1:
+                    raw_id = executable_raw_ids[0]
+                    raw_size = candidates.raw_blob_bytes.get(raw_id, 0)
+                    progress_callback(
+                        0,
+                        desc=(f"raw_materialization: parsing raw 1/1 {raw_id} size={_format_bytes(raw_size)}"),
+                    )
+                else:
+                    progress_callback(0, desc=f"raw_materialization: parsing {total:,} raw rows")
             result = await service.parse_from_raw(
                 raw_ids=executable_raw_ids,
                 progress_callback=progress_callback,
