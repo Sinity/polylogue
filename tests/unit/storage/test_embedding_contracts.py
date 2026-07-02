@@ -553,6 +553,29 @@ def test_pending_archive_window_honors_min_messages() -> None:
         conn.close()
 
 
+def test_pending_archive_window_does_not_reselect_completed_status_with_lower_actual_count() -> None:
+    conn = sqlite3.connect(":memory:")
+    try:
+        _setup_minimal_embedding_db(conn)
+        # The archive selector orders by sort_key_ms; the minimal DDL omits it.
+        conn.execute("ALTER TABLE sessions ADD COLUMN sort_key_ms INTEGER")
+        _insert_session(conn, "completed", message_count=5)
+        conn.execute(
+            """
+            INSERT INTO embedding_status (
+                session_id, message_count_embedded, needs_reindex, error_message
+            ) VALUES ('completed', 1, 0, NULL)
+            """
+        )
+        conn.commit()
+
+        pending = select_pending_archive_session_window(conn, status_table="embedding_status", min_messages=3)
+
+        assert pending == []
+    finally:
+        conn.close()
+
+
 def test_no_message_session_records_clean_status(tmp_path: Path) -> None:
     db_path = tmp_path / "archive.sqlite"
     _setup_minimal_embedding_file(db_path)
