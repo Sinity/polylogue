@@ -421,11 +421,12 @@ def test_embedding_status_lifecycle(
 
         # Seed embedding_status rows
         for conv_id, last_embedded, needs_reindex, error_msg in seed_rows:
+            message_count_embedded = 1 if last_embedded is not None and needs_reindex == 0 and error_msg is None else 0
             conn.execute(
                 "INSERT INTO embedding_status "
-                "(session_id, last_embedded_at, needs_reindex, error_message) "
-                "VALUES (?, ?, ?, ?)",
-                (conv_id, last_embedded, needs_reindex, error_msg),
+                "(session_id, message_count_embedded, last_embedded_at, needs_reindex, error_message) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (conv_id, message_count_embedded, last_embedded, needs_reindex, error_msg),
             )
         conn.commit()
 
