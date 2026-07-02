@@ -273,10 +273,29 @@ def select_pending_archive_session_window(
 
     if status_table is None:
         status_table = "embedding_status" if _table_exists(conn, "embedding_status") else ""
-    aggregate_expr = _archive_session_embeddable_count_expression(conn)
-    status_select = "e.session_id, e.needs_reindex" if status_table else "NULL, NULL"
+    exact_count_cte = _archive_session_embeddable_count_cte(conn)
+    aggregate_expr = None if exact_count_cte is not None else _archive_session_embeddable_count_expression(conn)
+    status_select = "e.session_id, e.needs_reindex, e.message_count_embedded" if status_table else "NULL, NULL, NULL"
     join_clause = f"LEFT JOIN {status_table} e ON e.session_id = s.session_id" if status_table else ""
-    if aggregate_expr is None:
+    count_join = ""
+    if exact_count_cte is not None:
+        count_select = "ec.embeddable_message_count AS estimated_message_count"
+        count_join = "JOIN embeddable_counts ec ON ec.session_id = s.session_id"
+        floor_filter = "AND ec.embeddable_message_count >= ?" if min_messages is not None else ""
+        if min_messages is not None:
+            params.append(min_messages)
+        pending_filter = (
+            ""
+            if rebuild or not status_table
+            else """
+              AND (
+                    e.session_id IS NULL
+                 OR e.needs_reindex = 1
+                 OR e.message_count_embedded < ec.embeddable_message_count
+              )
+            """
+        )
+    elif aggregate_expr is None:
         count_select = "NULL AS estimated_message_count"
         floor_filter = ""
         pending_filter = ""
@@ -292,13 +311,16 @@ def select_pending_archive_session_window(
               AND (
                     e.session_id IS NULL
                  OR e.needs_reindex = 1
+                 OR e.message_count_embedded < {aggregate_expr}
               )
             """
-        )
+        ).format(aggregate_expr=aggregate_expr)
     cursor = conn.execute(
         f"""
+        {exact_count_cte or ""}
         SELECT s.session_id, s.title, {status_select}, {count_select}
         FROM sessions s
+        {count_join}
         {join_clause}
         WHERE 1 = 1
           {id_filter}
@@ -318,12 +340,19 @@ def select_pending_archive_session_window(
             title = None if title_value is None else str(title_value)
             status_session_id = _row_value(row, 2, "status_session_id")
             needs_reindex = _row_int(row, 3, "needs_reindex") if status_session_id is not None else 0
-            estimated_count = _row_int(row, 4, "estimated_message_count")
+            message_count_embedded = _row_int(row, 4, "message_count_embedded") if status_session_id is not None else 0
+            estimated_count = _row_int(row, 5, "estimated_message_count")
             if estimated_count <= 0:
                 continue
             if min_messages is not None and estimated_count < min_messages:
                 continue
-            if not (rebuild or not status_table or status_session_id is None or needs_reindex == 1):
+            if not (
+                rebuild
+                or not status_table
+                or status_session_id is None
+                or needs_reindex == 1
+                or message_count_embedded < estimated_count
+            ):
                 continue
             if max_sessions is not None and len(pending) >= max_sessions:
                 return pending
@@ -440,15 +469,7 @@ def archive_embedding_messages_table_ref(conn: sqlite3.Connection, *, alias: str
 
 
 def _archive_session_embeddable_count_expression(conn: sqlite3.Connection) -> str | None:
-    """Return a cheap session-level estimate for authored prose candidates.
-
-    The canonical index stores authored-user and assistant message aggregates on
-    ``sessions``. Those counts are the right first-order selector for paid
-    embedding windows: they exclude protocol/tool/context messages without
-    walking the multi-million-row ``messages`` table. Minimal legacy test
-    fixtures may only have ``message_count``; in that case the caller can still
-    use the coarse aggregate or fall back to exact message scans.
-    """
+    """Return a minimal-fixture fallback when exact message columns are absent."""
 
     columns = _table_columns(conn, "sessions")
     if {"authored_user_message_count", "assistant_message_count"}.issubset(columns):
@@ -456,6 +477,24 @@ def _archive_session_embeddable_count_expression(conn: sqlite3.Connection) -> st
     if "message_count" in columns:
         return "COALESCE(s.message_count, 0)"
     return None
+
+
+def _archive_session_embeddable_count_cte(conn: sqlite3.Connection) -> str | None:
+    """Return exact per-session prose counts for canonical archive indexes."""
+
+    message_columns = _table_columns(conn, "messages")
+    required_columns = {"session_id", "message_type", "role", "material_origin", "word_count"}
+    if not required_columns.issubset(message_columns):
+        return None
+    messages_ref = archive_embedding_messages_table_ref(conn, alias="m")
+    return f"""
+        WITH embeddable_counts AS (
+            SELECT m.session_id, COUNT(*) AS embeddable_message_count
+            FROM {messages_ref}
+            WHERE {archive_embeddable_message_where("m")}
+            GROUP BY m.session_id
+        )
+    """
 
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:

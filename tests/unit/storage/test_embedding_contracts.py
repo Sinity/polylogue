@@ -589,7 +589,7 @@ def test_pending_archive_window_skips_session_larger_than_max_messages() -> None
         conn.close()
 
 
-def test_pending_archive_window_does_not_reselect_completed_status_with_lower_actual_count() -> None:
+def test_pending_archive_window_reselects_status_with_lower_actual_count() -> None:
     conn = sqlite3.connect(":memory:")
     try:
         _setup_minimal_embedding_db(conn)
@@ -607,7 +607,43 @@ def test_pending_archive_window_does_not_reselect_completed_status_with_lower_ac
 
         pending = select_pending_archive_session_window(conn, status_table="embedding_status", min_messages=3)
 
-        assert pending == []
+        assert [item.session_id for item in pending] == ["completed"]
+        assert pending[0].message_count == 5
+    finally:
+        conn.close()
+
+
+def test_pending_archive_window_counts_only_embeddable_prose() -> None:
+    conn = sqlite3.connect(":memory:")
+    try:
+        _setup_minimal_embedding_db(conn)
+        conn.execute("ALTER TABLE sessions ADD COLUMN sort_key_ms INTEGER")
+        conn.execute(
+            """
+            INSERT INTO sessions (session_id, origin, title, updated_at_ms, message_count, content_hash, sort_key_ms)
+            VALUES ('mixed', 'unknown-export', 'mixed', 1, 4, 'hash-mixed', 1)
+            """
+        )
+        rows = [
+            ("m-user", "mixed", "user prose", "user", "message", "human_authored", 2),
+            ("m-assistant", "mixed", "assistant prose", "assistant", "message", "assistant_authored", 2),
+            ("m-context", "mixed", "runtime context", "user", "message", "context_generated", 2),
+            ("m-tool", "mixed", "tool output", "tool", "tool_result", "tool_result", 2),
+        ]
+        conn.executemany(
+            """
+            INSERT INTO messages (
+                message_id, session_id, text, role, message_type, material_origin, word_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        conn.commit()
+
+        pending = select_pending_archive_session_window(conn, status_table="", min_messages=1)
+
+        assert [item.session_id for item in pending] == ["mixed"]
+        assert pending[0].message_count == 2
     finally:
         conn.close()
 
