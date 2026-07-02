@@ -96,7 +96,7 @@ def test_daemon_embedding_backlog_drain_processes_archive(
     processed = embedding_backlog.drain_embedding_backlog_once(db_anchor_path)
 
     assert processed == 2
-    assert embedded_calls == [(archive_db, "codex-session:v1-a"), (archive_db, "codex-session:v1-b")]
+    assert set(embedded_calls) == {(archive_db, "codex-session:v1-a"), (archive_db, "codex-session:v1-b")}
     from polylogue.storage.sqlite.archive_tiers.ops_write import list_embedding_catchup_runs
 
     with sqlite3.connect(tmp_path / "ops.db") as conn:

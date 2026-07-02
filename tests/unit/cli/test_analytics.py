@@ -9,10 +9,12 @@ import pytest
 from polylogue import Polylogue
 from polylogue.core.enums import MaterialOrigin
 from polylogue.insights.archive import ArchiveCoverageInsight, ArchiveCoverageInsightQuery
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.storage_records import SessionBuilder
 
 
 def _archive(tmp_path: Path) -> Polylogue:
+    initialize_active_archive_root(tmp_path)
     return Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
 
 

@@ -139,34 +139,7 @@ def test_read_direct_ref_emits_shared_resolution_payload(capsys: pytest.CaptureF
     with patch("polylogue.cli.query_verbs.run_coroutine_sync", return_value=payload) as run_sync:
         wrapped_read(
             ctx=child,
-            view="summary",
-            destination="terminal",
-            output_format="json",
-            out_path=None,
-            all_matches=False,
-            limit=None,
-            offset=0,
-            window_hours=24,
-            repo_path=None,
-            since_hours=2,
-            confidence_threshold=0.3,
-            github_api=True,
-            otlp=False,
-            related_limit=5,
-            project_path=None,
-            project_repo=None,
-            since=None,
-            until=None,
-            context_origin=None,
-            context_query=None,
-            max_sessions=5,
-            max_tokens=None,
-            include_assertions=False,
-            no_redact=False,
-            fields=None,
-            first_only=False,
-            show_views=False,
-            ref="session:abc",
+            **_read_verb_kwargs(view="summary", output_format="json", ref="session:abc"),
         )
 
     run_sync.assert_called_once()
@@ -422,6 +395,10 @@ def _read_verb_kwargs(**overrides: object) -> dict[str, object]:
         "view": "summary",
         "destination": "terminal",
         "output_format": None,
+        "render_expr": None,
+        "projection_expr": None,
+        "render_layout": None,
+        "timestamp_policy": None,
         "out_path": None,
         "all_matches": False,
         "limit": None,
@@ -617,8 +594,7 @@ def test_read_verb_context_image_invokes_pack_view() -> None:
     delivered = deliver.call_args.args[1]
     assert "- Selection query: cost" in delivered
     assert "- Selection limit: 3" in delivered
-    assert "- Projection families: context, messages, assertions" in delivered
-    assert "- Body policy: authored-dialogue" in delivered
+    assert "- Projection redact paths: true" in delivered
     assert "- Render: markdown to terminal" in delivered
     assert "- Render layout: context-image" in delivered
     assert "- Render timestamps: include-available" in delivered
@@ -767,7 +743,7 @@ def test_continue_verb_compiles_context_from_query_unit_recipe() -> None:
 
     child.obj.polylogue = SimpleNamespace(compile_context=compile_context, get_session=get_session)
     with (
-        patch("polylogue.cli.query_verbs.deliver_content") as deliver,
+        patch("polylogue.cli.query_verbs._deliver_content") as deliver,
     ):
         wrapped(child, **_continue_verb_kwargs(destination="clipboard"))
 

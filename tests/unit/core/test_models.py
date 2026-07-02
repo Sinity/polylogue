@@ -360,6 +360,8 @@ class TestMessageFromRecord:
                 "tool_name": "Read",
                 "tool_id": "tool-1",
                 "tool_input": {"file_path": "/workspace/polylogue/README.md"},
+                "tool_result_is_error": None,
+                "tool_result_exit_code": None,
                 "media_type": None,
                 "metadata": {"path": "/workspace/polylogue/README.md"},
                 "semantic_type": "file_read",

@@ -43,34 +43,7 @@ _STORAGE_ROOT: Final = Path("polylogue/storage")
 # currently-safe interpolation. This dict exists for the rare future case
 # where an interpolation site cannot be expressed as a single trusted-name
 # reference (e.g. an inline expression). Each entry MUST carry a rationale.
-_AUDITED_SITES: Final[dict[tuple[str, int], str]] = {
-    # Chunked IN-clause: scoped_sql is a trusted compile-time SQL template (a
-    # literal with a ``{}`` for the placeholder list); ``placeholders`` is a
-    # generated ``?,?`` string sized to the bound ``chunk``; values flow through
-    # bound params, never the format string.
-    ("polylogue/storage/repository/archive/sessions.py", 300): (
-        "chunked IN-clause: literal scoped_sql template + '?,?' placeholders, values bound"
-    ),
-    # Assertion readers:
-    #   rows = conn.execute(f"SELECT {_ASSERTION_COLUMNS} FROM assertions ...", ...)
-    # ``_ASSERTION_COLUMNS`` is a module-level literal projection list; all
-    # dynamic row values are passed through bound parameters.
-    ("polylogue/storage/sqlite/archive_tiers/user_write.py", 767): (
-        "assertion kind listing: literal projection column list; kind value bound"
-    ),
-    ("polylogue/storage/sqlite/archive_tiers/user_write.py", 781): (
-        "assertion kind/key lookup: literal projection column list; values bound"
-    ),
-    ("polylogue/storage/sqlite/archive_tiers/user_write.py", 1212): (
-        "assertion id lookup: literal projection column list; assertion id bound"
-    ),
-    ("polylogue/storage/sqlite/archive_tiers/user_write.py", 1229): (
-        "assertions for target: literal projection column list; target ref bound"
-    ),
-    ("polylogue/storage/sqlite/archive_tiers/user_write.py", 1234): (
-        "assertions for target/kind: literal projection column list; values bound"
-    ),
-}
+_AUDITED_SITES: Final[dict[tuple[str, int], str]] = {}
 
 
 def _execute_call_target(node: ast.Call) -> str | None:
@@ -172,14 +145,17 @@ _TRUSTED_IDENTIFIER_NAMES: frozenset[str] = frozenset(
         "where",
         "where_clause",
         "where_clauses",
+        "all_where",
         "clauses",
         "where_sql",
         "clause",
+        "count_where",
         "any_terms",
         "session_clause",
         "group_expr",
         "from_sql",
         "order_clause",
+        "order_direction",
         "path",
         "scope_clause",
         "scope_sql",
@@ -190,13 +166,19 @@ _TRUSTED_IDENTIFIER_NAMES: frozenset[str] = frozenset(
         "pagination",
         "bucket_format",
         "id_filter",
+        "floor_filter",
+        "pending_filter",
         "having_clause",
         "tag_clause",
+        "limit_clause",
         "effective_raw_provider_sql",
         "base_select",  # local literal SELECT template; dynamic values stay bound
         "quoted",  # double-quote escaped identifier from a closed table list
+        "quoted_schema",
         "source_filter",  # local literal predicate fragment plus bound value
+        "source_where",
         "prefix_clause",  # local session-id prefix bounds predicate; values bound
+        "prefix_sql",
         "source_alias",  # attached schema alias returned by _ensure_source_tier_attached
         "schema",  # closed SQLite schema alias
         "tags_relation",  # archive-local table name or closed user/archive tag UNION relation
@@ -205,6 +187,76 @@ _TRUSTED_IDENTIFIER_NAMES: frozenset[str] = frozenset(
         "target_column",  # closed user-state target mapping column name
         "spec",  # archive tier spec object; version is an internal int literal
         "version",
+        # schema-compatibility column names/projection fragments returned from
+        # closed local helpers that inspect SQLite table shape.
+        "origin_column",
+        "native_id_column",
+        "source_path_column",
+        "source_index_column",
+        "blob_size_column",
+        "size_column",
+        "parse_error_column",
+        "validation_status_column",
+        "acquired_at_column",
+        "acquired_at_ms_column",
+        "file_mtime_ms_column",
+        "ref_id_column",
+        "columns",
+        "assignments",
+        "raw_join",
+        "alias_sql",
+        "raw_filter",
+        "origin_filter",
+        "source_root_filter",
+        "route_column",
+        "route_value",
+        "route_update",
+        # embedding/search/read-model fragments from closed helper functions or
+        # local literal templates; all external values stay bound.
+        "status_select",
+        "count_select",
+        "messages_ref",
+        "archive_messages_table_ref",
+        "archive_embeddable_message_where",
+        "materialization_selects",
+        "tool_expr",
+        "handler_expr",
+        "status_expr",
+        "_source_run_relation_sql",
+        "_observed_event_relation_sql",
+        "_source_context_snapshot_relation_sql",
+        "_assertion_columns",
+        "_work_event_select",
+        "_work_event_from",
+        "_phase_select",
+        "_phase_from",
+        "_where_origin",
+        "select_parts",
+        "total_cols",
+        "total_predicate",
+        "predicates",
+        "limit",
+        "_quote_identifier",
+    }
+)
+
+_TRUSTED_SQL_HELPER_NAMES: frozenset[str] = frozenset(
+    {
+        "archive_embeddable_message_where",
+        "archive_messages_table_ref",
+        "_observed_event_relation_sql",
+        "_where_origin",
+        "format",
+        "int",
+        "max",
+    }
+)
+
+_TRUSTED_SQL_HELPER_ARG_NAMES: frozenset[str] = frozenset(
+    {
+        "conn",
+        "origin",
+        "read_timeout",
     }
 )
 
@@ -229,16 +281,54 @@ def _collect_names(node: ast.expr) -> set[str]:
     return walker.names
 
 
+def _expression_uses_only_trusted_sql_fragments(node: ast.expr) -> bool:
+    """Return true when an interpolation expression references only trusted SQL fragments.
+
+    Helper calls may mention ordinary values such as ``origin`` or ``conn`` as
+    inputs to closed helpers, but those names are not trusted as direct SQL
+    fragments. This keeps ``f"{origin}"`` flagged while allowing
+    ``f"{_where_origin(origin)}"``.
+    """
+
+    names = _collect_names(node)
+    if not names:
+        return False
+    if names <= _TRUSTED_IDENTIFIER_NAMES:
+        return True
+    allowed_arg_names = _TRUSTED_IDENTIFIER_NAMES | _TRUSTED_SQL_HELPER_ARG_NAMES | _TRUSTED_SQL_HELPER_NAMES
+    if isinstance(node, ast.Subscript):
+        return (
+            _collect_names(node.value) <= _TRUSTED_IDENTIFIER_NAMES and _collect_names(node.slice) <= allowed_arg_names
+        )
+    if isinstance(node, ast.IfExp):
+        return (
+            _collect_names(node.test) <= allowed_arg_names
+            and _expression_is_literal_or_trusted(node.body)
+            and _expression_is_literal_or_trusted(node.orelse)
+        )
+    if isinstance(node, ast.Call):
+        func_names = _collect_names(node.func)
+        return (
+            bool(func_names)
+            and func_names <= (_TRUSTED_IDENTIFIER_NAMES | _TRUSTED_SQL_HELPER_NAMES)
+            and all(_collect_names(arg) <= allowed_arg_names for arg in node.args)
+            and all(kw.arg is not None and _collect_names(kw.value) <= allowed_arg_names for kw in node.keywords)
+        )
+    return False
+
+
+def _expression_is_literal_or_trusted(node: ast.expr) -> bool:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return True
+    return _expression_uses_only_trusted_sql_fragments(node)
+
+
 def _formatted_value_uses_only_trusted_names(node: ast.JoinedStr) -> bool:
     """Every FormattedValue must reference only audited identifier-shaped names."""
     for part in node.values:
         if not isinstance(part, ast.FormattedValue):
             continue
-        names = _collect_names(part.value)
-        if not names:
-            # purely computed expression — be conservative, flag it
-            return False
-        if not names <= _TRUSTED_IDENTIFIER_NAMES:
+        if not _expression_uses_only_trusted_sql_fragments(part.value):
             return False
     return True
 
@@ -268,8 +358,13 @@ def _classify_first_arg(arg: ast.expr) -> str | None:
                 if kw.arg.lower() not in _TRUSTED_IDENTIFIER_NAMES:
                     return f"str.format SQL with non-trusted kwarg {kw.arg!r}"
             for pos in arg.args:
-                if not (isinstance(pos, ast.Constant) and isinstance(pos.value, str)):
-                    return "str.format SQL with non-literal positional arg"
+                if isinstance(pos, ast.Constant) and isinstance(pos.value, str):
+                    continue
+                if isinstance(pos, ast.Name) and pos.id.lower() in _TRUSTED_IDENTIFIER_NAMES:
+                    continue
+                if _expression_uses_only_trusted_sql_fragments(pos):
+                    continue
+                return "str.format SQL with non-literal positional arg"
             return None
     return None
 

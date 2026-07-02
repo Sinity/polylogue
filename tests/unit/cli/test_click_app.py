@@ -397,7 +397,7 @@ def test_query_action_read_explain_uses_local_read_format(cli_runner: CliRunner)
     [
         (
             ["select", "--limit", "5", "--print", "title"],
-            {"action": "select", "limit": 5, "print_field": "title"},
+            {"action": "select", "limit": 5, "print_field": "json", "format": "json"},
         ),
         (
             ["continue"],
@@ -881,13 +881,20 @@ class TestCliSetup:
             cli_runner.invoke(cli, ["--plain"], catch_exceptions=False)
         mock_log.assert_called_once_with(verbose=False)
 
-    def test_plain_flag_creates_plain_ui(self, cli_runner: CliRunner) -> None:
+    def test_plain_flag_configures_lazy_app_env(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
+        from polylogue.cli.shared.types import AppEnv
 
-        with patch("polylogue.cli.click_app.create_ui") as mock_ui, patch("polylogue.cli.click_app._show_stats"):
-            mock_ui.return_value = MagicMock()
+        captured_env: dict[str, object] = {}
+
+        def capture_env(env: object, **_: object) -> None:
+            captured_env["env"] = env
+
+        with patch("polylogue.cli.click_app._show_stats", side_effect=capture_env):
             cli_runner.invoke(cli, ["--plain"], catch_exceptions=False)
-        mock_ui.assert_called_once_with(True)
+        env = captured_env.get("env")
+        assert isinstance(env, AppEnv)
+        assert env._plain is True
 
     def test_plain_mode_auto_detection_does_not_announce(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli

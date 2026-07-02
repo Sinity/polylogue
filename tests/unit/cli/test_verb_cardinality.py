@@ -116,6 +116,10 @@ class TestReadVerbCardinality:
             view=view,
             destination="terminal",
             output_format=None,
+            render_expr=None,
+            projection_expr=None,
+            render_layout=None,
+            timestamp_policy=None,
             out_path=None,
             all_matches=all_matches,
             limit=None,
@@ -139,6 +143,7 @@ class TestReadVerbCardinality:
             no_redact=False,
             fields=None,
             first_only=first_only,
+            show_spec=False,
             show_views=False,
         )
 

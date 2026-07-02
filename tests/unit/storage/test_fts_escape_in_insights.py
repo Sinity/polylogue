@@ -40,49 +40,64 @@ async def _make_work_events_db() -> aiosqlite.Connection:
     conn.row_factory = sqlite3.Row
     await conn.executescript(
         """
-        CREATE TABLE session_work_events (
-            event_id TEXT PRIMARY KEY,
+        CREATE TABLE sessions (
+            session_id TEXT PRIMARY KEY,
+            origin TEXT NOT NULL
+        );
+        CREATE TABLE insight_materialization (
+            insight_type TEXT NOT NULL,
             session_id TEXT NOT NULL,
-            materializer_version INTEGER NOT NULL DEFAULT 5,
-            materialized_at TEXT NOT NULL,
-            source_updated_at TEXT,
-            source_sort_key REAL,
-            source_name TEXT NOT NULL,
-            event_index INTEGER NOT NULL,
-            heuristic_label TEXT NOT NULL,
+            materializer_version INTEGER NOT NULL,
+            materialized_at_ms INTEGER NOT NULL,
+            source_updated_at_ms INTEGER,
+            source_sort_key_ms INTEGER,
+            input_high_water_mark_ms INTEGER,
+            input_high_water_mark_source TEXT,
+            input_row_count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(insight_type, session_id)
+        );
+        CREATE TABLE session_work_events (
+            event_id TEXT GENERATED ALWAYS AS (session_id || ':work_event:' || position) STORED UNIQUE,
+            session_id TEXT NOT NULL,
+            position INTEGER NOT NULL,
+            work_event_type TEXT NOT NULL,
+            summary TEXT NOT NULL,
             confidence REAL NOT NULL DEFAULT 0,
             start_index INTEGER NOT NULL DEFAULT 0,
             end_index INTEGER NOT NULL DEFAULT 0,
-            start_time TEXT,
-            end_time TEXT,
+            started_at_ms INTEGER,
+            ended_at_ms INTEGER,
             duration_ms INTEGER NOT NULL DEFAULT 0,
-            canonical_session_date TEXT,
-            summary TEXT NOT NULL,
-            file_paths_json TEXT,
-            tools_used_json TEXT,
-            evidence_payload_json TEXT NOT NULL DEFAULT '{}',
-            inference_payload_json TEXT NOT NULL DEFAULT '{}',
+            file_paths_json TEXT NOT NULL DEFAULT '[]',
+            tools_used_json TEXT NOT NULL DEFAULT '[]',
+            input_high_water_mark TEXT,
+            input_high_water_mark_source TEXT,
+            evidence_json TEXT NOT NULL DEFAULT '{}',
+            inference_json TEXT NOT NULL DEFAULT '{}',
             search_text TEXT NOT NULL,
-            inference_version INTEGER NOT NULL DEFAULT 1,
-            inference_family TEXT NOT NULL DEFAULT 'heuristic'
+            PRIMARY KEY(session_id, position)
         );
         CREATE VIRTUAL TABLE session_work_events_fts USING fts5(
             event_id UNINDEXED,
             session_id UNINDEXED,
-            source_name UNINDEXED,
-            heuristic_label UNINDEXED,
+            work_event_type UNINDEXED,
             text,
             tokenize='unicode61'
         );
         CREATE TRIGGER session_work_events_fts_ai AFTER INSERT ON session_work_events BEGIN SELECT 1; END;
         CREATE TRIGGER session_work_events_fts_ad AFTER DELETE ON session_work_events BEGIN SELECT 1; END;
         CREATE TRIGGER session_work_events_fts_au AFTER UPDATE ON session_work_events BEGIN SELECT 1; END;
-        INSERT INTO session_work_events_fts (event_id, session_id, source_name, heuristic_label, text)
-        VALUES ('e1', 'c1', 'claude-code', 'edit', 'hello world');
+        INSERT INTO sessions (session_id, origin)
+        VALUES ('c1', 'claude-code-session');
+        INSERT INTO insight_materialization (
+            insight_type, session_id, materializer_version, materialized_at_ms,
+            source_sort_key_ms, input_row_count
+        ) VALUES ('work_events', 'c1', 5, 1767225600000, 1767225600000, 1);
         INSERT INTO session_work_events (
-            event_id, session_id, materialized_at, source_name, event_index,
-            heuristic_label, summary, search_text
-        ) VALUES ('e1', 'c1', '2026-01-01T00:00:00Z', 'claude-code', 0, 'edit', 'hello', 'hello world');
+            session_id, position, work_event_type, summary, started_at_ms, search_text
+        ) VALUES ('c1', 0, 'edit', 'hello', 1767225600000, 'hello world');
+        INSERT INTO session_work_events_fts (event_id, session_id, work_event_type, text)
+        VALUES ('c1:work_event:0', 'c1', 'edit', 'hello world');
         """
     )
     await conn.commit()
