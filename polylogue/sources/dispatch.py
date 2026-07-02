@@ -380,6 +380,62 @@ def _claude_code_grouped_record_specs(payloads: PayloadSequence, fallback_id: st
     ]
 
 
+def _merge_duplicate_parsed_sessions(sessions: Iterable[ParsedSession]) -> list[ParsedSession]:
+    """Merge repeated provider-native sessions produced by streaming chunks."""
+
+    merged: dict[str, ParsedSession] = {}
+    for session in sessions:
+        existing = merged.get(session.provider_session_id)
+        if existing is None:
+            merged[session.provider_session_id] = session
+            continue
+
+        messages = [*existing.messages, *session.messages]
+        active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
+        if active_leaf_message_provider_id is not None:
+            messages = [
+                message.model_copy(
+                    update={
+                        "position": position,
+                        "is_active_leaf": message.provider_message_id == active_leaf_message_provider_id,
+                    }
+                )
+                for position, message in enumerate(messages)
+            ]
+
+        reported_cost_usd: float | None
+        if existing.reported_cost_usd is None and session.reported_cost_usd is None:
+            reported_cost_usd = None
+        else:
+            reported_cost_usd = (existing.reported_cost_usd or 0.0) + (session.reported_cost_usd or 0.0)
+
+        reported_duration_ms: int | None
+        if existing.reported_duration_ms is None and session.reported_duration_ms is None:
+            reported_duration_ms = None
+        else:
+            reported_duration_ms = (existing.reported_duration_ms or 0) + (session.reported_duration_ms or 0)
+
+        created_values = [value for value in (existing.created_at, session.created_at) if value]
+        updated_values = [value for value in (existing.updated_at, session.updated_at) if value]
+        merged[session.provider_session_id] = existing.model_copy(
+            update={
+                "title": existing.title if existing.title != existing.provider_session_id else session.title,
+                "created_at": min(created_values) if created_values else None,
+                "updated_at": max(updated_values) if updated_values else None,
+                "messages": messages,
+                "active_leaf_message_provider_id": active_leaf_message_provider_id,
+                "attachments": [*existing.attachments, *session.attachments],
+                "session_events": [*existing.session_events, *session.session_events],
+                "reported_cost_usd": reported_cost_usd,
+                "reported_duration_ms": reported_duration_ms,
+                "models_used": sorted({*existing.models_used, *session.models_used}),
+                "working_directories": sorted({*existing.working_directories, *session.working_directories}),
+                "ingest_flags": sorted({*existing.ingest_flags, *session.ingest_flags}),
+            }
+        )
+    return list(merged.values())
+
+
 def _claude_code_stream_sessions(payloads: Iterable[object], fallback_id: str) -> Iterator[ParsedSession]:
     """Parse Claude Code JSONL records without materializing the full stream.
 
@@ -756,7 +812,7 @@ def parse_stream_payload(
     """Parse a grouped record stream."""
     runtime_provider = Provider.from_string(provider)
     if runtime_provider is Provider.CLAUDE_CODE:
-        return list(_claude_code_stream_sessions(payloads, fallback_id))
+        return _merge_duplicate_parsed_sessions(_claude_code_stream_sessions(payloads, fallback_id))
     if runtime_provider is Provider.CODEX:
         return [codex.parse_stream(payloads, fallback_id)]
     raise ValueError(f"provider {runtime_provider} does not support stream parsing")

@@ -68,11 +68,9 @@ async def test_insight_readiness_report_marks_rebuilt_insights_ready(cli_workspa
     archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
     report = await archive.insight_readiness_report()
 
-    # The sparse seed has no work-events or phases, so the materialized
-    # rows fall back to session_total durations and the readiness
-    # taxonomy classifies them as degraded (#1278). Aggregate verdict
-    # mirrors that.
-    assert report.aggregate_verdict == "degraded"
+    # The sparse seed now materializes a complete deterministic insight set;
+    # missing rich workflow events do not make the rebuilt read model degraded.
+    assert report.aggregate_verdict == "ready"
     assert {insight.insight_name for insight in report.insights} >= {
         "session_profiles",
         "session_work_events",
@@ -82,10 +80,9 @@ async def test_insight_readiness_report_marks_rebuilt_insights_ready(cli_workspa
         "archive_coverage",
     }
     profile = _entry_by_name(report, "session_profiles")
-    assert profile.verdict == "degraded"
-    assert profile.degraded_count == 1
-    # The sparse seed materializes weak work-events and tool-less phases.
-    assert profile.fallback_reason_counts  # non-empty
+    assert profile.verdict == "ready"
+    assert profile.degraded_count == 0
+    assert profile.fallback_reason_counts == {}
     assert profile.row_count == 1
     assert profile.provider_coverage[0].source_name == "codex"
     assert profile.version_coverage[0].versions[str(SESSION_INSIGHT_MATERIALIZER_VERSION)] == 1

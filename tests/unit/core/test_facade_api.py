@@ -19,6 +19,7 @@ from polylogue.insights.archive import (
     SessionTagRollupQuery,
     ThreadInsightQuery,
 )
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.storage_records import SessionBuilder
 
@@ -78,8 +79,9 @@ LIST_CONV_FILTERS: list[ListSessionsCase] = [
 ]
 
 
-def _archive(tmp_path: Path, db_name: str = "test.db") -> Polylogue:
-    return Polylogue(archive_root=tmp_path, db_path=tmp_path / db_name)
+def _archive(tmp_path: Path) -> Polylogue:
+    initialize_active_archive_root(tmp_path)
+    return Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
 
 
 class TestPolylogueInitialization:

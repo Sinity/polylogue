@@ -2071,7 +2071,7 @@ class TestReaderViewProfiles:
         projection = cast(dict[str, object], projection_spec["projection"])
         render = cast(dict[str, object], projection_spec["render"])
         assert projection_selection["refs"] == [f"session:{C1}"]
-        assert projection["families"] == ["context", "messages", "assertions"]
+        assert projection["families"] == ["context", "messages"]
         assert projection["body_policy"] == "authored-dialogue"
         assert {"tool_use", "tool_result", "function_call", "function_call_output"} <= set(
             cast(list[str], projection["exclude_block_kinds"])

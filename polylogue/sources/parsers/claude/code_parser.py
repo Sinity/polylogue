@@ -332,8 +332,6 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
         message_type = _message_type_from_code_record(item, text)
         if envelope_role is Role.SYSTEM and message_type is MessageType.MESSAGE:
             message_type = MessageType.CONTEXT
-        if not text and not content_blocks and record_type != "summary":
-            continue
         # Claude Code records carry per-message token usage at
         # ``record.message.usage``; propagate so MaterializedMessage and the
         # downstream cost estimator see real numbers instead of zeros.
@@ -358,6 +356,14 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
             content_blocks=content_blocks,
         ):
             material_origin = MaterialOrigin.HUMAN_AUTHORED
+        if not text and not content_blocks and record_type != "summary":
+            keep_empty_human_turn = (
+                resolved_role is Role.USER
+                and message_type is MessageType.MESSAGE
+                and material_origin is MaterialOrigin.HUMAN_AUTHORED
+            )
+            if not keep_empty_human_turn:
+                continue
         # Paste markers only appear in user prompts; restricting detection to the
         # user role avoids false positives from assistant text that quotes a marker.
         paste_spans = _detect_paste_spans(text) if resolved_role == Role.USER else []

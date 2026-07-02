@@ -700,6 +700,7 @@ class TestArchiveGenericToolSurfaces:
                     },
                 ],
             )
+        _materialize_run_projection(archive_root / "index.db")
         with (
             patch("polylogue.mcp.server._get_config") as mock_get_config,
             patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,

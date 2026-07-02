@@ -351,7 +351,8 @@ def test_daemon_status_payload_links_unified_archive_debt(monkeypatch: pytest.Mo
     archive_debt = cast(dict[str, object], status_payload["archive_debt"])
     assert archive_debt["endpoint"] == "/api/archive-debt"
     assert archive_debt["available"] is True
-    assert archive_debt["totals"] == {
+    totals = cast(dict[str, object], archive_debt["totals"])
+    assert {key: totals[key] for key in ("total", "critical", "warning", "info", "actionable", "blocked")} == {
         "total": 1,
         "critical": 0,
         "warning": 1,

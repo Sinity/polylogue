@@ -273,7 +273,9 @@ async def test_polylogue_products_mixin_forwards_all_product_calls(tmp_path: Pat
         assert await harness.get_thread_insight("thread-1") == "thread"
         assert await harness.list_thread_insights() == ["threads"]
         assert await harness.list_archive_coverage_insights() == ["coverage"]
-        assert await harness.list_tool_usage_insights() == ["tool-usage"]
+        tool_usage = await harness.list_tool_usage_insights()
+        assert len(tool_usage) == 1
+        assert tool_usage[0].insight_kind == "tool_usage"
         assert await harness.list_session_cost_insights() == []
         assert await harness.list_cost_rollup_insights() == []
         assert await harness.list_archive_debt_insights() == ["debt"]
@@ -286,6 +288,6 @@ async def test_polylogue_products_mixin_forwards_all_product_calls(tmp_path: Pat
     archive.get_thread_insight.assert_called_once_with("thread-1")
     archive.list_thread_insights.assert_called_once()
     archive.list_archive_coverage_insights.assert_called_once()
-    archive.list_tool_usage_insights.assert_called_once()
+    archive.list_tool_usage_insights.assert_not_called()
     archive.list_session_cost_insights.assert_called()  # also called by cost-rollup derivation
     archive.list_archive_debt_insights.assert_called_once()

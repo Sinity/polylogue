@@ -242,6 +242,12 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         mcp_names=("retrieval_lane",),
     ),
     QueryFieldDescriptor(
+        name="with_units",
+        spec_attr="with_units",
+        spec_description=_label("with", _join_comma),
+        selection_filter=False,
+    ),
+    QueryFieldDescriptor(
         name="referenced_path",
         spec_attr="referenced_path",
         plan_attr="referenced_path",
@@ -514,7 +520,7 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         sql_param="has_paste",
         requires_stats_join=True,
         blocks_simple_message_hit=True,
-        mcp_names=("has_paste",),
+        mcp_names=("has_paste_evidence",),
     ),
     QueryFieldDescriptor(
         name="typed_only",

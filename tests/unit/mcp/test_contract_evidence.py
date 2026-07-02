@@ -29,6 +29,8 @@ explicit tool-level error/no-result/privacy assertions.
 from __future__ import annotations
 
 import json
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
@@ -36,6 +38,7 @@ import pytest
 
 from polylogue.core.json import JSONValue
 from polylogue.mcp.server_support import MCPRole, _safe_call
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.mcp import (
     MCPServerUnderTest,
     invoke_surface,
@@ -366,6 +369,15 @@ def _patch_empty_query(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+def _patch_empty_archive(monkeypatch: pytest.MonkeyPatch, archive_root: Path) -> None:
+    """Point MCP query tools at a canonical initialized empty archive root."""
+    initialize_active_archive_root(archive_root)
+    monkeypatch.setattr(
+        "polylogue.mcp.server._get_config",
+        lambda: SimpleNamespace(archive_root=archive_root, db_path=archive_root / "index.db"),
+    )
+
+
 class TestNoResultEnvelopes:
     """Search/list tools return their classified envelope on empty results."""
 
@@ -373,8 +385,10 @@ class TestNoResultEnvelopes:
         self,
         mcp_server: MCPServerUnderTest,
         monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         _patch_empty_query(monkeypatch)
+        _patch_empty_archive(monkeypatch, tmp_path / "archive")
         with patch("polylogue.archive.filter.filters.SessionFilter") as mock_filter_cls:
             mock_filter_cls.return_value = make_mock_filter(results=[])
             result = invoke_surface(
@@ -390,8 +404,10 @@ class TestNoResultEnvelopes:
         self,
         mcp_server: MCPServerUnderTest,
         monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         _patch_empty_query(monkeypatch)
+        _patch_empty_archive(monkeypatch, tmp_path / "archive")
         with patch("polylogue.archive.filter.filters.SessionFilter") as mock_filter_cls:
             mock_filter_cls.return_value = make_mock_filter(results=[])
             result = invoke_surface(
@@ -449,10 +465,13 @@ class TestErrorPrivacyEnvelopes:
 
     def test_resource_internal_error_does_not_leak_exception_message(
         self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         from polylogue.mcp.server import build_server
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
+        _patch_empty_archive(monkeypatch, tmp_path / "archive")
         server = cast(MCPServerUnderTest, build_server(role="read"))
         secret = "postgresql://admin:hunter2@db.internal/path/to/secret"
 
@@ -568,7 +587,10 @@ class TestAsyncEnvelopeCoverage:
     async def test_async_search_no_results_envelope_emits_evidence(
         self,
         mcp_server: MCPServerUnderTest,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
+        _patch_empty_archive(monkeypatch, tmp_path / "archive")
         with (
             patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
             patch("polylogue.archive.filter.filters.SessionFilter") as mock_filter_cls,

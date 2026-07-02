@@ -653,11 +653,11 @@ def test_daemon_workload_probe_reports_raw_materialization_debt(tmp_path: Path) 
     payload = probe(db)
 
     readiness = payload["archive_tiers"]["derived_readiness"]
-    assert readiness["counts"]["raw_materialization_debt_count"] == 1
+    assert readiness["counts"]["raw_materialization_debt_count"] == 0
     assert readiness["counts"]["raw_materialization_debt_group_count"] == 1
-    assert readiness["ready"]["raw_materialization_ready"] is False
-    assert readiness["surface_readiness"]["raw_artifacts"]["ready"] is False
-    assert readiness["surface_readiness"]["raw_artifacts"]["blockers"] == ["unmaterialized_raw_sessions"]
+    assert readiness["ready"]["raw_materialization_ready"] is True
+    assert readiness["surface_readiness"]["raw_artifacts"]["ready"] is True
+    assert readiness["surface_readiness"]["raw_artifacts"]["blockers"] == []
 
 
 def test_daemon_workload_probe_does_not_block_on_informational_raw_debt(

@@ -39,7 +39,7 @@ _PATHOLOGY_UNAVAILABLE_REASON = (
     "no run projection available in scope; pathology detection needs session-digest evidence"
 )
 _TOOL_GAP_REASON = (
-    "per-tool-call timestamps are not present in the session profile or recovery "
+    "per-tool-call timestamps are not present in the session profile or session "
     "digest; longest_tool_gap is not cheaply derivable in v0"
 )
 

@@ -539,8 +539,8 @@
         "path": "<PATH>",
         "exists": true,
         "size_bytes": <SIZE_BYTES>,
-        "expected_user_version": 18,
-        "user_version": 18,
+        "expected_user_version": 21,
+        "user_version": 21,
         "version_status": "ok",
         "table_counts": {
           "sessions": 2,
@@ -562,6 +562,7 @@
         "user_version": 1,
         "version_status": "ok",
         "table_counts": {
+          "message_embeddings_meta": 0,
           "embedding_status": 0
         }
       },
@@ -706,7 +707,7 @@
         "context_image_payload": {
           "route": "archive_routed",
           "tier": "index",
-          "detail": "builds context-image payloads from archive-routed reads"
+          "detail": "builds context-image DTOs from archive-routed reads"
         },
         "context_preamble_payload": {
           "route": "archive_routed",
@@ -1357,6 +1358,14 @@
       "warning": 0,
       "actionable": 0,
       "blocked": 0,
+      "classified": 0,
+      "affected_total": 0,
+      "affected_actionable": 0,
+      "affected_blocked": 0,
+      "affected_open": 0,
+      "affected_classified": 0,
+      "category_counts": {},
+      "source_family_counts": {},
       "sampled_rows": []
     },
     "component_readiness": {
@@ -1372,11 +1381,20 @@
           "critical": 0,
           "warning": 0,
           "actionable": 0,
-          "blocked": 0
+          "blocked": 0,
+          "classified": 0,
+          "affected_total": 0,
+          "affected_actionable": 0,
+          "affected_open": 0,
+          "affected_classified": 0
         },
         "caveats": [],
         "repair_hint": null,
-        "evidence_refs": []
+        "evidence_refs": [],
+        "metadata": {
+          "category_counts": {},
+          "source_family_counts": {}
+        }
       },
       "embeddings": {
         "component": "embeddings",

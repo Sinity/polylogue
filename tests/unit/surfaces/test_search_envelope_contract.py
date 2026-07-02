@@ -52,6 +52,7 @@ REQUIRED_ENVELOPE_FIELDS: frozenset[str] = frozenset(
         "ranking_policy_version",
         "action_affordances",
         "diagnostics",
+        "route_state",
     }
 )
 
