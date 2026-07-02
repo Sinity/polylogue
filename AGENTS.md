@@ -1204,6 +1204,13 @@ schema shape:
 - Schema bumps are deletes-then-defines, never deltas. A schema change
   edits the owning tier DDL/version and documents the re-ingest expectation.
   No upgrade helpers are added for the bump.
+- Index schema version 22 adds `idx_blocks_tool_result_outcome`, a partial
+  index over structured `tool_result` outcome fields. Claim-vs-evidence and
+  action-outcome reads anchor on provider-reported `is_error` / non-zero
+  `exit_code` rather than assistant prose; without an outcome-leading index,
+  large archives must scan the whole tool-result block set before pairing
+  actions. Existing index tiers must be rebuilt from source evidence
+  (`polylogue ops reset --index && polylogued run`).
 - Index schema version 21 adds `idx_messages_embedding_prose`, a partial
   covering index for authored prose messages eligible for paid embeddings:
   standard `message` rows from `user`/`assistant` roles, with
@@ -1947,6 +1954,7 @@ These are the commands worth remembering during normal repo work:
 | Command | Description |
 | --- | --- |
 | `devtools workspace affordance-usage` | Analyze agent affordance/tool usage from archive tool-use rows. |
+| `devtools workspace claim-vs-evidence` | Build a structured failure follow-up claim-vs-evidence demo. |
 | `devtools workspace cli-surface-audit` | Capture a current-curated CLI surface audit demo. |
 | `devtools workspace demo-shelf` | Refresh or verify current demo shelf indexes. |
 | `devtools workspace deployment-smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |

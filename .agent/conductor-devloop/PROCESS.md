@@ -67,3 +67,50 @@ the conductor packet.
 Source review proves shape. Focused tests prove parser/storage semantics. CLI,
 MCP, API, and daemon probes prove surface contracts. Real archive demos prove
 operator value. Broad `devtools verify` proves phase readiness, not every edit.
+
+## External-Proof Campaigns
+
+A campaign is a bounded goal whose terminal state is an externally legible
+artifact — one a stranger with no repo context can read, believe, and (via the
+seeded demo path) run. Campaigns outrank open-ended substrate slices; enabler
+substrate work is in scope only when the specific campaign artifact would be
+false or fragile without it.
+
+Current campaign sequence (operator direction; supersede only with recorded
+evidence, never delete as duplicate):
+
+1. Claim-vs-evidence finding — commit `af4915d11` was the first bounded
+   slice, not the terminal state. Finding-grade requires: stated sample
+   frame; Codex/GPT coverage (the action evidence lane, not only
+   `tool_result` rows); ambiguous-bucket characterization; benign-recovery
+   vs consequential-silence split; acknowledge-later sensitivity window;
+   marker precision/recall calibrated on a hand-labeled sample; seeded
+   stranger-runnable demo.
+2. agent-forensics regeneration with all-provider repricing (per-provenance
+   or all-provider headline; cache-inclusion disambiguated).
+3. Handoff-pack two-arm uplift experiment (pack arm vs raw-ref arm, same
+   continuation task, measured).
+
+Campaign rules:
+
+- **Capabilities may not be silos; demos may.** A demo/report/finding
+  artifact is a derivative product — a particular application of Polylogue —
+  and its packaging (README, charts, narrative, a devtools wrapper) is a
+  legitimate one-off. The FACTS it relies on are not: any fact a finding
+  needs (e.g. action outcome fields, failure follow-up classification) must
+  land as composable product capability — a unit field, projection, or
+  rendering primitive the product keeps — not as bespoke table-reads that
+  leave the product no more expressive than before. Test: after the demo
+  ships, can the next differently-shaped question about the same facts be
+  answered by composition, without another script?
+- **Cold-reader gate.** A campaign artifact reaches terminal state only
+  after a fresh agent, given ONLY the artifact directory, can state what it
+  proves, name its sample frame and caveats, and reproduce it. Record the
+  cold-read as part of the demo packet.
+- **Slice closure is not campaign closure.** Committing a bounded slice
+  does not retire the campaign; the campaign stays the top of the priority
+  frame until its terminal state is recorded.
+- **Operator-direction preservation.** Sections marked as operator
+  direction (priority frames, queued campaign directives, operator-sourced
+  backlog items) are superseded with a recorded rationale in the operating
+  log, never deleted as duplicates during sync/cleanup.
