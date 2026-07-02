@@ -541,6 +541,36 @@ def test_source_iteration_preserves_claude_attachment_metadata_contract(tmp_path
     assert attachment.name == "notes.txt"
 
 
+def test_source_iteration_preserves_claude_extracted_attachment_payload(tmp_path: Path) -> None:
+    payload = {
+        "chat_messages": [
+            make_claude_chat_message(
+                "msg-1",
+                "assistant",
+                "Files",
+                attachments=[
+                    {
+                        "id": "file-1",
+                        "name": "notes.txt",
+                        "size": 12,
+                        "mimeType": "text/plain",
+                        "extracted_content": "hello notes",
+                    }
+                ],
+            )
+        ]
+    }
+    source_file = tmp_path / "claude.json"
+    source_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    sessions = list(iter_source_sessions(Source(name="inbox", path=source_file)))
+
+    attachment = sessions[0].attachments[0]
+    assert attachment.provider_attachment_id == "file-1"
+    assert attachment.inline_bytes == b"hello notes"
+    assert attachment.size_bytes == 12
+
+
 def test_iter_source_sessions_handles_empty_directories_contract(tmp_path: Path) -> None:
     cursor_state: CursorStatePayload = _empty_cursor_state()
 

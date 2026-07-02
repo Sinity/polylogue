@@ -19,6 +19,7 @@ from polylogue.sources.parsers.base import (
     ParsedMessage,
     ParsedSession,
 )
+from polylogue.sources.parsers.claude import parse_ai
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -104,3 +105,60 @@ def test_attachment_without_bytes_is_marked_unfetched_not_faked(
     assert row["acquisition_status"] == "unfetched"
     assert row["blob_hash"] is None
     assert row["byte_count"] == 4096
+
+
+def test_claude_extracted_attachment_content_is_acquired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = BlobStore(tmp_path / "blob")
+    monkeypatch.setattr("polylogue.storage.blob_store.get_blob_store", lambda: store)
+
+    session = parse_ai(
+        {
+            "uuid": "claude-attachment-session",
+            "name": "Attachment payload",
+            "chat_messages": [
+                {
+                    "uuid": "m0",
+                    "sender": "human",
+                    "text": "Please read this.",
+                    "attachments": [
+                        {
+                            "file_name": "notes.md",
+                            "file_type": "text/markdown",
+                            "file_size": 11,
+                            "extracted_content": "hello notes",
+                        }
+                    ],
+                    "files": [
+                        {
+                            "file_uuid": "remote-file-1",
+                            "file_name": "remote.tar.gz",
+                            "size_bytes": 1024,
+                        }
+                    ],
+                }
+            ],
+        },
+        "fallback",
+    )
+    conn = _connect(tmp_path / "index.db")
+
+    write_parsed_session_to_archive(conn, session)
+
+    rows = conn.execute(
+        """
+        SELECT display_name, blob_hash, byte_count, acquisition_status
+        FROM attachments
+        ORDER BY display_name
+        """
+    ).fetchall()
+    by_name = {str(row["display_name"]): row for row in rows}
+    acquired = by_name["notes.md"]
+    assert acquired["acquisition_status"] == "acquired"
+    assert acquired["byte_count"] == len(b"hello notes")
+    assert bytes(acquired["blob_hash"]) == hashlib.sha256(b"hello notes").digest()
+    assert store.read_all(hashlib.sha256(b"hello notes").hexdigest()) == b"hello notes"
+
+    remote = by_name["remote.tar.gz"]
+    assert remote["acquisition_status"] == "unfetched"
+    assert remote["blob_hash"] is None
+    assert remote["byte_count"] == 1024

@@ -151,6 +151,12 @@ def attachment_from_meta(meta: object, message_id: str | None, index: int) -> Pa
         except ValueError:
             size_bytes = None
     mime_type = meta.get("mimeType") or meta.get("mime_type") or meta.get("content_type") or meta.get("file_type")
+    inline_bytes = None
+    extracted_content = meta.get("extracted_content")
+    if isinstance(extracted_content, str):
+        inline_bytes = extracted_content.encode("utf-8")
+        if size_bytes is None:
+            size_bytes = len(inline_bytes)
     # #1252: promote native identifiers when present. claude-code/codex
     # attachments arrive via OAuth-authenticated session/export.
     file_id_raw = meta.get("file_id") or meta.get("fileId") or meta.get("file_uuid")
@@ -165,6 +171,7 @@ def attachment_from_meta(meta: object, message_id: str | None, index: int) -> Pa
         provider_file_id=str(file_id_raw) if isinstance(file_id_raw, str) and file_id_raw else None,
         provider_drive_id=str(drive_id_raw) if isinstance(drive_id_raw, str) and drive_id_raw else None,
         upload_origin="oauth",
+        inline_bytes=inline_bytes,
     )
 
 

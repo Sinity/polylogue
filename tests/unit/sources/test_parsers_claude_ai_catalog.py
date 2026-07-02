@@ -208,7 +208,9 @@ def test_claude_rich_segments_and_attachment_fields_are_preserved() -> None:
     assert session.attachments[0].name == "report.pdf"
     assert session.attachments[0].size_bytes == 42
     assert session.attachments[0].mime_type == "application/pdf"
+    assert session.attachments[0].inline_bytes == b"report text"
     assert session.attachments[1].provider_attachment_id == "file-1"
+    assert session.attachments[1].inline_bytes is None
 
 
 # ---------------------------------------------------------------------------
