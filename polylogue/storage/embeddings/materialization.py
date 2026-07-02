@@ -271,11 +271,16 @@ def select_pending_archive_session_window(
 
     if status_table is None:
         status_table = "embedding_status" if _table_exists(conn, "embedding_status") else ""
+    aggregate_expr = _archive_session_embeddable_count_expression(conn)
     status_select = "e.session_id, e.needs_reindex, e.message_count_embedded" if status_table else "NULL, NULL, NULL"
     join_clause = f"LEFT JOIN {status_table} e ON e.session_id = s.session_id" if status_table else ""
+    if aggregate_expr is None:
+        count_select = "NULL AS estimated_message_count"
+    else:
+        count_select = f"{aggregate_expr} AS estimated_message_count"
     cursor = conn.execute(
         f"""
-        SELECT s.session_id, s.title, {status_select}
+        SELECT s.session_id, s.title, {status_select}, {count_select}
         FROM sessions s
         {join_clause}
         WHERE 1 = 1
@@ -295,6 +300,11 @@ def select_pending_archive_session_window(
             status_session_id = _row_value(row, 2, "status_session_id")
             needs_reindex = _row_int(row, 3, "needs_reindex") if status_session_id is not None else 0
             embedded_count = _row_int(row, 4, "message_count_embedded") if status_session_id is not None else 0
+            estimated_count = _row_int(row, 5, "estimated_message_count")
+            if estimated_count <= 0:
+                continue
+            if min_messages is not None and estimated_count < min_messages:
+                continue
             message_count = count_archive_session_embeddable_messages(conn, session_id)
             if message_count <= 0:
                 continue
@@ -324,11 +334,7 @@ def count_archive_session_embeddable_messages(conn: sqlite3.Connection, session_
 
     if not _table_exists(conn, "messages"):
         return 0
-    messages_ref = (
-        "messages AS m INDEXED BY idx_messages_session_material_origin"
-        if _index_exists(conn, "idx_messages_session_material_origin")
-        else archive_messages_table_ref(conn, alias="m")
-    )
+    messages_ref = archive_embedding_messages_table_ref(conn, alias="m")
     row = conn.execute(
         f"""
         SELECT COUNT(*)
@@ -414,6 +420,41 @@ def archive_messages_table_ref(conn: sqlite3.Connection, *, alias: str) -> str:
     if _index_exists(conn, "idx_messages_message_type"):
         return f"messages AS {alias} INDEXED BY idx_messages_message_type"
     return f"messages AS {alias}"
+
+
+def archive_embedding_messages_table_ref(conn: sqlite3.Connection, *, alias: str) -> str:
+    if _index_exists(conn, "idx_messages_embedding_prose"):
+        return f"messages AS {alias} INDEXED BY idx_messages_embedding_prose"
+    if _index_exists(conn, "idx_messages_session_material_origin"):
+        return f"messages AS {alias} INDEXED BY idx_messages_session_material_origin"
+    return archive_messages_table_ref(conn, alias=alias)
+
+
+def _archive_session_embeddable_count_expression(conn: sqlite3.Connection) -> str | None:
+    """Return a cheap session-level estimate for authored prose candidates.
+
+    The canonical index stores authored-user and assistant message aggregates on
+    ``sessions``. Those counts are the right first-order selector for paid
+    embedding windows: they exclude protocol/tool/context messages without
+    walking the multi-million-row ``messages`` table. Minimal legacy test
+    fixtures may only have ``message_count``; in that case the caller can still
+    use the coarse aggregate or fall back to exact message scans.
+    """
+
+    columns = _table_columns(conn, "sessions")
+    if {"authored_user_message_count", "assistant_message_count"}.issubset(columns):
+        return "COALESCE(s.authored_user_message_count, 0) + COALESCE(s.assistant_message_count, 0)"
+    if "message_count" in columns:
+        return "COALESCE(s.message_count, 0)"
+    return None
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    except sqlite3.Error:
+        return set()
+    return {str(row[1]) for row in rows}
 
 
 def mark_all_archive_sessions_needs_reindex(index_db_path: Path) -> None:
@@ -522,11 +563,7 @@ def embed_archive_session_sync(
         ).fetchone()
         if session is None:
             return EmbedSessionOutcome(status="not_found", session_id=session_id)
-        messages_ref = (
-            "messages AS m INDEXED BY idx_messages_session_material_origin"
-            if _index_exists(index_conn, "idx_messages_session_material_origin")
-            else archive_messages_table_ref(index_conn, alias="m")
-        )
+        messages_ref = archive_embedding_messages_table_ref(index_conn, alias="m")
         rows = index_conn.execute(
             f"""
             SELECT m.message_id, m.role, m.content_hash, m.material_origin, m.message_type,
@@ -797,6 +834,7 @@ __all__ = [
     "EmbedSingleStatus",
     "PendingSession",
     "archive_embeddable_message_where",
+    "archive_embedding_messages_table_ref",
     "archive_messages_table_ref",
     "count_archive_embedding_session_state",
     "count_archive_session_embeddable_messages",

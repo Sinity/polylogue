@@ -106,6 +106,15 @@ schema shape:
 - Schema bumps are deletes-then-defines, never deltas. A schema change
   edits the owning tier DDL/version and documents the re-ingest expectation.
   No upgrade helpers are added for the bump.
+- Index schema version 21 adds `idx_messages_embedding_prose`, a partial
+  covering index for authored prose messages eligible for paid embeddings:
+  standard `message` rows from `user`/`assistant` roles, with
+  `human_authored`/`assistant_authored` material origin and positive word
+  count. Embedding preflight, status detail, and archive-session embedding
+  reads use this index when present so cost windows do not scan unrelated tool,
+  protocol, context-pack, or runtime rows in large archives. Existing index
+  tiers must be rebuilt from source evidence
+  (`polylogue ops reset --index && polylogued run`).
 - Index schema version 20 adds `idx_blocks_type_tool`, an expression index on
   `(block_type, COALESCE(NULLIF(LOWER(tool_name), ''), 'unknown'))`, so tool
   family rollups can resolve exact tool names and MCP-server prefixes without

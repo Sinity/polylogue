@@ -794,7 +794,7 @@ def test_archive_embedding_only_sends_authored_prose_to_provider(tmp_path: Path)
 
 def test_archive_embedding_error_records_retryable_status(tmp_path: Path) -> None:
     from polylogue.archive.message.roles import Role
-    from polylogue.core.enums import BlockType, Provider
+    from polylogue.core.enums import BlockType, MaterialOrigin, Provider
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -815,6 +815,7 @@ def test_archive_embedding_error_records_retryable_status(tmp_path: Path) -> Non
                         role=Role.USER,
                         text=long_text,
                         blocks=[ParsedContentBlock(type=BlockType.TEXT, text=long_text)],
+                        material_origin=MaterialOrigin.HUMAN_AUTHORED,
                     )
                 ],
             )

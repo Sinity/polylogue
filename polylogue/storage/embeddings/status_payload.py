@@ -16,7 +16,7 @@ from typing_extensions import TypedDict
 
 from polylogue.storage.embeddings.materialization import (
     archive_embeddable_message_where,
-    archive_messages_table_ref,
+    archive_embedding_messages_table_ref,
     count_archive_embedding_session_state,
 )
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
@@ -380,7 +380,7 @@ def _archive_embedding_status_payload(
         model_counts: dict[str, int] = {}
         dimension_counts: dict[int, int] = {}
         if include_detail and has_messages:
-            messages_ref = archive_messages_table_ref(conn, alias="m")
+            messages_ref = archive_embedding_messages_table_ref(conn, alias="m")
             embeddable_where = archive_embeddable_message_where("m")
             total_messages = _scalar_int(conn, f"SELECT COUNT(*) FROM {messages_ref} WHERE {embeddable_where}")
             if has_meta and embedded_messages == 0:
