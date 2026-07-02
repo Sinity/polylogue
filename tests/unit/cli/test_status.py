@@ -21,6 +21,7 @@ from polylogue.cli.commands.status import (
     _show_daemon_status,
     _show_direct_json,
     _show_direct_status,
+    _show_status_json,
     status_command,
 )
 from polylogue.cli.shared.types import AppEnv
@@ -38,6 +39,20 @@ class _CapturingConsole:
 
     def print(self, *args: object, **kwargs: object) -> None:
         self.calls.append(" ".join(str(a) for a in args))
+
+
+class _FakeDaemonResponse:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self._payload = payload
+
+    def __enter__(self) -> _FakeDaemonResponse:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return json.dumps(self._payload).encode("utf-8")
 
 
 def _make_app_env() -> AppEnv:
@@ -255,34 +270,9 @@ class TestNoArchiveStatus:
         assert payload["archive_tiers"]["index"]["expected_user_version"] == ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]
         assert payload["archive_tiers"]["index"]["version_status"] == "mismatch"
         assert payload["archive_tiers"]["index"]["table_counts"]["sessions"] == 1
-        assert payload["archive_facade_routes"]["checked"] is True
-        assert payload["archive_facade_routes"]["unsupported_method_count"] == 0
-        assert payload["archive_facade_routes"]["unsupported_methods"] == []
-        assert payload["archive_facade_routes"]["routes"]["query_sessions"]["route"] == "archive_routed"
-        assert payload["archive_facade_routes"]["routes"]["count_sessions"]["route"] == "archive_routed"
-        assert payload["archive_facade_routes"]["routes"]["get_session"]["route"] == "archive_routed"
-        assert payload["archive_cli_routes"]["checked"] is True
-        assert payload["archive_cli_routes"]["unsupported_command_count"] == 0
-        assert payload["archive_cli_routes"]["routes"]["ops.state.blackboard.post"]["tier"] == "user"
-        assert payload["archive_cli_routes"]["routes"]["reset.database"]["route"] == "archive_direct"
-        assert payload["archive_runtime_paths"]["archive_routing_ready"] is True
-        assert payload["archive_runtime_paths"]["archive_runtime_ready"] is True
-        assert payload["archive_runtime_paths"]["primary_ingest_store"] == "archive_file_set"
-        assert payload["archive_runtime_paths"]["ingest_write_mode"] == "archive"
-        assert payload["archive_runtime_paths"]["archive_ingest_write_targets"] == ["source.db", "index.db"]
-        assert payload["archive_runtime_paths"]["archive_tier_targets"] == [
-            "source.db",
-            "index.db",
-            "embeddings.db",
-            "user.db",
-            "ops.db",
-        ]
-        assert payload["archive_runtime_paths"]["facade_tier_route_counts"]["source"] >= 1
-        assert payload["archive_runtime_paths"]["facade_tier_route_counts"]["index"] >= 1
-        assert payload["archive_runtime_paths"]["facade_tier_route_counts"]["user"] >= 1
-        assert payload["archive_runtime_paths"]["cli_tier_route_counts"] == {"source": 2, "user": 3}
-        assert payload["archive_runtime_paths"]["index_rebuild_store"] == "index_db"
-        assert payload["archive_runtime_paths"]["unsupported_primary_methods"] == []
+        assert "archive_facade_routes" not in payload
+        assert "archive_cli_routes" not in payload
+        assert "archive_runtime_paths" not in payload
         assert payload["sessions"] == 1
         assert payload["messages"] == 3
         assert payload["raw_records"] == 2
@@ -954,6 +944,113 @@ class TestNoArchiveStatus:
         )
 
         assert "FTS: [green]100.0% indexed[/green]" in _combined_calls(env)
+
+    def test_daemon_status_json_is_compact_by_default(self) -> None:
+        env = _make_app_env()
+        full_payload = {
+            "ok": True,
+            "daemon_liveness": True,
+            "checked_at": "2026-07-02T17:00:00+00:00",
+            "component_readiness": {
+                "search": {
+                    "component": "search",
+                    "state": "ready",
+                    "counts": {"messages_fts_count": 5},
+                }
+            },
+            "live_ingest_attempts": {
+                "running_count": 0,
+                "recent": [
+                    {
+                        "attempt_id": "attempt-1",
+                        "status": "completed",
+                        "stage": "idle",
+                        "worker_completed_count": 4,
+                        "worker_total_count": 4,
+                        "large_debug_payload": "x" * 1000,
+                    }
+                ],
+            },
+            "archive_debt": {
+                "available": True,
+                "totals": {"total": 1},
+                "rows": [{"debt_ref": "debt-1", "summary": "large raw row"}],
+            },
+            "raw_materialization_readiness": {
+                "total": 1,
+                "sampled_rows": [{"raw_id": "raw-1"}],
+            },
+            "live_cursor": {"failing_files": ["large"]},
+            "catchup": {"debug": True},
+            "convergence": {"debug": True},
+            "failing_files": ["large"],
+            "last_ingestion_batch": {"debug": True},
+        }
+
+        _show_status_json(env, full_payload)
+
+        payload = json.loads(_combined_calls(env))
+        assert payload["source"] == "daemon"
+        assert payload["daemon_liveness"] is True
+        assert payload["component_readiness"]["search"]["state"] == "ready"
+        assert payload["ingest"]["latest"]["attempt_id"] == "attempt-1"
+        assert "large_debug_payload" not in payload["ingest"]["latest"]
+        assert payload["archive_debt"]["row_count"] == 1
+        assert "rows" not in payload["archive_debt"]
+        assert "sampled_rows" not in payload["raw_materialization_readiness"]
+        for heavy_key in ("live_cursor", "catchup", "convergence", "failing_files", "last_ingestion_batch"):
+            assert heavy_key not in payload
+
+    def test_daemon_status_json_full_preserves_raw_payload(self) -> None:
+        env = _make_app_env()
+        full_payload = {
+            "daemon_liveness": True,
+            "live_cursor": {"tracked_file_count": 2},
+            "archive_debt": {"rows": [{"debt_ref": "debt-1"}]},
+        }
+
+        _show_status_json(env, full_payload, full=True)
+
+        assert json.loads(_combined_calls(env)) == full_payload
+
+    def test_status_command_full_json_preserves_daemon_payload(self) -> None:
+        env = _make_app_env()
+        full_payload = {
+            "daemon_liveness": True,
+            "live_cursor": {"tracked_file_count": 2},
+            "archive_debt": {"rows": [{"debt_ref": "debt-1"}]},
+        }
+
+        with patch("polylogue.cli.commands.status.urlopen", return_value=_FakeDaemonResponse(full_payload)):
+            result = CliRunner().invoke(
+                status_command,
+                ["--daemon-url", "http://127.0.0.1:8765", "--json", "--full"],
+                obj=env,
+            )
+
+        assert result.exit_code == 0
+        assert json.loads(_combined_calls(env)) == full_payload
+
+    def test_status_command_default_json_compacts_daemon_payload(self) -> None:
+        env = _make_app_env()
+        full_payload = {
+            "daemon_liveness": True,
+            "live_cursor": {"tracked_file_count": 2},
+            "archive_debt": {"rows": [{"debt_ref": "debt-1"}]},
+        }
+
+        with patch("polylogue.cli.commands.status.urlopen", return_value=_FakeDaemonResponse(full_payload)):
+            result = CliRunner().invoke(
+                status_command,
+                ["--daemon-url", "http://127.0.0.1:8765", "--json"],
+                obj=env,
+            )
+
+        assert result.exit_code == 0
+        payload = json.loads(_combined_calls(env))
+        assert payload["source"] == "daemon"
+        assert "live_cursor" not in payload
+        assert "rows" not in payload["archive_debt"]
 
     def test_direct_json_no_archive(self) -> None:
         """_show_direct_json when DB does not exist produces valid JSON."""

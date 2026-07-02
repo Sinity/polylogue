@@ -899,7 +899,7 @@ def _ops_workload_status(active_root: Path, *, now_ms: int) -> dict[str, Any]:
     "include_archive_readiness",
     is_flag=True,
     default=False,
-    help="Run exact archive-readiness probes in direct SQLite fallback status.",
+    help="Emit full daemon/direct JSON details and run exact archive-readiness probes in direct SQLite fallback.",
 )
 @click.pass_obj
 def status_command(
@@ -942,7 +942,7 @@ def status_command(
         return
 
     if output_format == "json":
-        _show_status_json(env, result)
+        _show_status_json(env, result, full=include_archive_readiness)
     else:
         _show_daemon_status(env, result)
 
@@ -1045,9 +1045,173 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
             env.ui.console.print(f"\n  [dim]Checked: {checked}[/dim]")
 
 
-def _show_status_json(env: AppEnv, status: dict[str, Any]) -> None:
+def _show_status_json(env: AppEnv, status: dict[str, Any], *, full: bool = False) -> None:
     """Machine-readable JSON status output."""
-    env.ui.console.print(json.dumps(status, indent=2, default=str))
+    payload = status if full else _compact_status_payload(status, source="daemon")
+    env.ui.console.print(json.dumps(payload, indent=2, default=str))
+
+
+def _compact_status_payload(status: dict[str, Any], *, source: str) -> dict[str, Any]:
+    """Return the operator-facing status JSON without debug-heavy subtrees."""
+    payload: dict[str, Any] = {
+        "ok": status.get("ok", bool(status.get("daemon_liveness"))),
+        "source": source,
+        "daemon_liveness": bool(status.get("daemon_liveness", False)),
+        "full_status_command": "polylogue ops status --json --full",
+    }
+    for key in (
+        "checked_at",
+        "archive_root",
+        "active_archive_root",
+        "active_archive_root_matches_configured",
+        "db_exists",
+        "active_db_path",
+        "config_exists",
+        "config_path",
+        "sessions",
+        "messages",
+        "raw_records",
+        "next_action",
+    ):
+        if key in status:
+            payload[key] = status[key]
+
+    status_snapshot = status.get("status_snapshot")
+    if isinstance(status_snapshot, dict):
+        payload["status_snapshot"] = status_snapshot
+
+    component_readiness = status.get("component_readiness")
+    if isinstance(component_readiness, dict):
+        payload["component_readiness"] = component_readiness
+
+    archive_tiers = status.get("archive_tiers")
+    if isinstance(archive_tiers, dict):
+        payload["archive_tiers"] = archive_tiers
+
+    storage = _compact_storage_status(status)
+    if storage:
+        payload["storage"] = storage
+
+    ingest = _compact_ingest_status(status)
+    if ingest:
+        payload["ingest"] = ingest
+
+    archive_debt = _compact_archive_debt_status(status.get("archive_debt"))
+    if archive_debt:
+        payload["archive_debt"] = archive_debt
+
+    raw_materialization = _compact_mapping_without(
+        status.get("raw_materialization_readiness"),
+        {"sampled_rows"},
+    )
+    if raw_materialization:
+        payload["raw_materialization_readiness"] = raw_materialization
+
+    embedding_readiness = _compact_mapping_without(
+        status.get("embedding_readiness"),
+        {"embedding_latest_catchup_run"},
+    )
+    if embedding_readiness:
+        payload["embedding_readiness"] = embedding_readiness
+
+    raw_failures = _compact_raw_failure_status(status)
+    if raw_failures:
+        payload["raw_failures"] = raw_failures
+
+    if "diagnostic" in status:
+        payload["diagnostic"] = status["diagnostic"]
+
+    return payload
+
+
+def _compact_mapping_without(value: Any, heavy_keys: set[str]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {key: item for key, item in value.items() if key not in heavy_keys}
+
+
+def _compact_storage_status(status: dict[str, Any]) -> dict[str, Any]:
+    storage: dict[str, Any] = {}
+    archive_storage = status.get("archive_storage")
+    if isinstance(archive_storage, dict):
+        for key in ("state", "active_store", "active_tier_role", "present_tiers", "missing_tiers", "blockers"):
+            if key in archive_storage:
+                storage[key] = archive_storage[key]
+    for key in (
+        "db_path",
+        "db_size_bytes",
+        "wal_size_bytes",
+        "blob_dir_size_bytes",
+        "disk_free_bytes",
+        "active_db_path",
+    ):
+        if key in status:
+            storage[key] = status[key]
+    return storage
+
+
+def _compact_ingest_status(status: dict[str, Any]) -> dict[str, Any]:
+    live = status.get("live_ingest_attempts")
+    if isinstance(live, dict):
+        ingest: dict[str, Any] = {}
+        for key in (
+            "total",
+            "running_count",
+            "completed_count",
+            "failed_count",
+            "stale_running_count",
+            "stuck_running_count",
+        ):
+            if key in live:
+                ingest[key] = live[key]
+        recent = live.get("recent")
+        if isinstance(recent, list) and recent:
+            latest = recent[0]
+            if isinstance(latest, dict):
+                ingest["latest"] = {
+                    key: latest[key]
+                    for key in (
+                        "attempt_id",
+                        "status",
+                        "stage",
+                        "started_at",
+                        "updated_at",
+                        "completed_at",
+                        "worker_completed_count",
+                        "worker_total_count",
+                    )
+                    if key in latest
+                }
+        return ingest
+    workload = status.get("ingest_workload")
+    if isinstance(workload, dict):
+        return workload
+    return {}
+
+
+def _compact_archive_debt_status(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    compact = {key: item for key, item in value.items() if key != "rows"}
+    if value.get("rows") is not None:
+        rows = value.get("rows")
+        compact["row_count"] = len(rows) if isinstance(rows, list) else None
+    return compact
+
+
+def _compact_raw_failure_status(status: dict[str, Any]) -> dict[str, Any]:
+    keys = {
+        "parse": "raw_parse_failures",
+        "validation": "raw_validation_failures",
+        "quarantined": "raw_quarantined",
+        "maintenance": "raw_maintenance_failures",
+        "detection_warnings": "raw_detection_warnings",
+    }
+    failures = {label: status[key] for label, key in keys.items() if key in status}
+    samples = status.get("raw_failure_samples")
+    if isinstance(samples, list):
+        failures["sample_count"] = len(samples)
+    return failures
 
 
 def _show_daemon_status_unavailable_json(env: AppEnv) -> None:
@@ -1058,7 +1222,7 @@ def _show_daemon_status_unavailable_json(env: AppEnv) -> None:
             "reason": "api_status_timeout",
         },
     }
-    env.ui.console.print(json.dumps(payload, indent=2, default=str))
+    env.ui.console.print(json.dumps(_compact_status_payload(payload, source="daemon"), indent=2, default=str))
 
 
 def _show_daemon_status_unavailable(env: AppEnv, *, compact: bool = False) -> None:
@@ -1136,7 +1300,8 @@ def _show_direct_json(env: AppEnv, *, include_archive_readiness: bool = False) -
                 conn.close()
         except Exception as exc:
             payload["error"] = str(exc)
-    env.ui.console.print(json.dumps(payload, indent=2, default=str))
+    output = payload if include_archive_readiness else _compact_status_payload(payload, source="direct")
+    env.ui.console.print(json.dumps(output, indent=2, default=str))
 
 
 def _direct_component_readiness(

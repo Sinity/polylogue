@@ -368,7 +368,7 @@ class TestAnalyzeJsonContract:
 
 
 class TestStatusJsonContract:
-    """ops status --format json emits raw JSON (no envelope — direct archive query)."""
+    """ops status --format json emits a valid status JSON object."""
 
     @pytest.mark.contract
     def test_status_json_daemon_not_running(
