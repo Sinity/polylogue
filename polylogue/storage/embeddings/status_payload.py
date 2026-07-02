@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from polylogue.config import Config
 
 DETAIL_QUERY_TIMEOUT_MS = 2_000
+METADATA_SUMMARY_TIMEOUT_MS = 5_000
 STATUS_READ_BUSY_TIMEOUT_MS = 1_000
 
 
@@ -172,6 +173,36 @@ def _scalar_int_with_timeout(conn: sqlite3.Connection, sql: str, *, timeout_ms: 
     if row is None:
         return 0
     return _payload_int(row[0])
+
+
+def _rows_with_timeout(
+    conn: sqlite3.Connection,
+    sql: str,
+    *,
+    timeout_ms: int,
+) -> list[sqlite3.Row | tuple[object, ...]] | None:
+    """Return query rows, or ``None`` when the live archive cannot answer quickly."""
+
+    from polylogue.storage.embeddings.support import is_missing_table_error
+
+    deadline = time.monotonic() + (timeout_ms / 1000.0)
+
+    def _interrupt_when_expired() -> int:
+        return 1 if time.monotonic() >= deadline else 0
+
+    conn.set_progress_handler(_interrupt_when_expired, 10_000)
+    try:
+        rows = conn.execute(sql).fetchall()
+    except sqlite3.OperationalError as exc:
+        message = str(exc).lower()
+        if is_missing_table_error(exc):
+            return []
+        if "interrupted" in message or "locked" in message or "busy" in message:
+            return None
+        raise
+    finally:
+        conn.set_progress_handler(None, 0)
+    return list(rows)
 
 
 def _iso_from_epoch_ms(value: object) -> str | None:
@@ -438,6 +469,33 @@ def _archive_embedding_status_payload(
         newest_embedded_at: str | None = None
         model_counts: dict[str, int] = {}
         dimension_counts: dict[int, int] = {}
+        if has_meta:
+            model_rows = _rows_with_timeout(
+                conn,
+                f"""
+                SELECT model, COUNT(*)
+                FROM {meta_table}
+                GROUP BY model
+                ORDER BY COUNT(*) DESC, model ASC
+                """,
+                timeout_ms=METADATA_SUMMARY_TIMEOUT_MS,
+            )
+            if model_rows is not None:
+                model_counts = {str(row[0]): _payload_int(row[1]) for row in model_rows if row[0] is not None}
+            dimension_rows = _rows_with_timeout(
+                conn,
+                f"""
+                SELECT dimension, COUNT(*)
+                FROM {meta_table}
+                GROUP BY dimension
+                ORDER BY COUNT(*) DESC, dimension ASC
+                """,
+                timeout_ms=METADATA_SUMMARY_TIMEOUT_MS,
+            )
+            if dimension_rows is not None:
+                dimension_counts = {
+                    _payload_int(row[0]): _payload_int(row[1]) for row in dimension_rows if row[0] is not None
+                }
         if include_detail and has_messages:
             messages_ref = archive_embedding_messages_table_ref(conn, alias="m")
             embeddable_where = archive_embeddable_message_where("m")
@@ -532,30 +590,6 @@ def _archive_embedding_status_payload(
                     if bounds is not None:
                         oldest_embedded_at = _iso_from_epoch_ms(bounds[0])
                         newest_embedded_at = _iso_from_epoch_ms(bounds[1])
-                    model_counts = {
-                        str(row[0]): _payload_int(row[1])
-                        for row in conn.execute(
-                            f"""
-                            SELECT model, COUNT(*)
-                            FROM {meta_table}
-                            GROUP BY model
-                            ORDER BY COUNT(*) DESC, model ASC
-                            """
-                        ).fetchall()
-                        if row[0] is not None
-                    }
-                    dimension_counts = {
-                        _payload_int(row[0]): _payload_int(row[1])
-                        for row in conn.execute(
-                            f"""
-                            SELECT dimension, COUNT(*)
-                            FROM {meta_table}
-                            GROUP BY dimension
-                            ORDER BY COUNT(*) DESC, dimension ASC
-                            """
-                        ).fetchall()
-                        if row[0] is not None
-                    }
         stats = EmbeddingStatsSnapshot(
             embedded_sessions=embedded_sessions,
             embedded_messages=embedded_messages,
