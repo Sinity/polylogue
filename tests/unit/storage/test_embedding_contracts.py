@@ -672,6 +672,47 @@ def test_pending_archive_window_does_not_treat_aggregate_overcount_as_stale(
         conn.close()
 
 
+def test_pending_archive_window_filters_zero_rollups_before_session_limit() -> None:
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                origin TEXT NOT NULL DEFAULT 'unknown-export',
+                title TEXT,
+                sort_key_ms INTEGER,
+                authored_user_message_count INTEGER NOT NULL DEFAULT 0,
+                assistant_message_count INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE messages (
+                message_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'user',
+                message_type TEXT NOT NULL DEFAULT 'message',
+                material_origin TEXT NOT NULL DEFAULT 'human_authored',
+                word_count INTEGER NOT NULL DEFAULT 8
+            );
+            CREATE TABLE embedding_status (
+                session_id TEXT PRIMARY KEY,
+                message_count_embedded INTEGER NOT NULL DEFAULT 0,
+                needs_reindex INTEGER NOT NULL DEFAULT 0,
+                error_message TEXT
+            );
+            INSERT INTO sessions VALUES ('zero-newest', 'codex-session', 'zero', 3, 0, 0);
+            INSERT INTO sessions VALUES ('zero-next', 'codex-session', 'zero', 2, 0, 0);
+            INSERT INTO sessions VALUES ('eligible', 'codex-session', 'eligible', 1, 1, 1);
+            """
+        )
+
+        pending = select_pending_archive_session_window(conn, status_table="embedding_status", max_sessions=1)
+
+        assert [item.session_id for item in pending] == ["eligible"]
+        assert pending[0].message_count == 2
+    finally:
+        conn.close()
+
+
 def test_pending_archive_window_counts_only_embeddable_prose() -> None:
     conn = sqlite3.connect(":memory:")
     try:

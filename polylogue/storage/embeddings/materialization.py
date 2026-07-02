@@ -288,9 +288,9 @@ def select_pending_archive_session_window(
         count_select = (
             f"{aggregate_expr} AS estimated_message_count" if aggregate_expr else "NULL AS estimated_message_count"
         )
-        floor_filter = f"AND {aggregate_expr} >= ?" if aggregate_expr and min_messages is not None else ""
+        floor_filter = f"AND {aggregate_expr} >= ?" if aggregate_expr else ""
         if floor_filter:
-            params.append(min_messages)
+            params.append(max(1, min_messages or 1))
         max_message_filter = f"AND {aggregate_expr} <= ?" if aggregate_expr and max_messages is not None else ""
         if max_message_filter:
             params.append(max_messages)
@@ -310,9 +310,8 @@ def select_pending_archive_session_window(
         pending_filter = ""
     else:
         count_select = f"{aggregate_expr} AS estimated_message_count"
-        floor_filter = f"AND {aggregate_expr} >= ?" if min_messages is not None else ""
-        if min_messages is not None:
-            params.append(min_messages)
+        floor_filter = f"AND {aggregate_expr} >= ?"
+        params.append(max(1, min_messages or 1))
         max_message_filter = f"AND {aggregate_expr} <= ?" if max_messages is not None else ""
         if max_message_filter:
             params.append(max_messages)
