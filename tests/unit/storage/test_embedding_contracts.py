@@ -625,8 +625,16 @@ def test_pending_archive_window_counts_only_embeddable_prose() -> None:
             """
         )
         rows = [
-            ("m-user", "mixed", "user prose", "user", "message", "human_authored", 2),
-            ("m-assistant", "mixed", "assistant prose", "assistant", "message", "assistant_authored", 2),
+            ("m-user", "mixed", "user prose long enough", "user", "message", "human_authored", 2),
+            (
+                "m-assistant",
+                "mixed",
+                "assistant prose long enough",
+                "assistant",
+                "message",
+                "assistant_authored",
+                2,
+            ),
             ("m-context", "mixed", "runtime context", "user", "message", "context_generated", 2),
             ("m-tool", "mixed", "tool output", "tool", "tool_result", "tool_result", 2),
         ]
@@ -643,7 +651,47 @@ def test_pending_archive_window_counts_only_embeddable_prose() -> None:
         pending = select_pending_archive_session_window(conn, status_table="", min_messages=1)
 
         assert [item.session_id for item in pending] == ["mixed"]
-        assert pending[0].message_count == 2
+        # Missing-status sessions use the cheap aggregate as a conservative
+        # budget estimate; exact text-floor counts are reserved for deciding
+        # whether an existing clean status row is stale.
+        assert pending[0].message_count == 4
+    finally:
+        conn.close()
+
+
+def test_pending_archive_window_matches_materialization_text_floor() -> None:
+    conn = sqlite3.connect(":memory:")
+    try:
+        _setup_minimal_embedding_db(conn)
+        conn.execute("ALTER TABLE sessions ADD COLUMN sort_key_ms INTEGER")
+        conn.execute(
+            """
+            INSERT INTO sessions (session_id, origin, title, updated_at_ms, message_count, content_hash, sort_key_ms)
+            VALUES ('mixed', 'unknown-export', 'mixed', 1, 3, 'hash-mixed', 1)
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO messages (
+                message_id, session_id, text, role, message_type, material_origin, word_count
+            ) VALUES (?, 'mixed', ?, 'user', 'message', 'human_authored', 1)
+            """,
+            [
+                ("m-long", "long enough authored prose"),
+                ("m-short-a", "tiny"),
+                ("m-short-b", "brief"),
+            ],
+        )
+        conn.execute(
+            """
+            INSERT INTO embedding_status (
+                session_id, message_count_embedded, needs_reindex, error_message
+            ) VALUES ('mixed', 1, 0, NULL)
+            """
+        )
+        conn.commit()
+
+        assert select_pending_archive_session_window(conn, status_table="embedding_status") == []
     finally:
         conn.close()
 

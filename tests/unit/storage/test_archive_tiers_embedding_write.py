@@ -11,9 +11,11 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.embedding_write import (
     ArchiveEmbeddingMeta,
     ArchiveEmbeddingStatus,
+    ArchiveEmbeddingWrite,
     mark_session_embedding_error,
     read_embedding_status,
     upsert_message_embedding,
+    upsert_message_embeddings,
 )
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -76,6 +78,34 @@ def test_archive_tiers_embedding_writer_upserts_vector_meta_and_status(tmp_path:
     assert status.needs_reindex is False
     assert status.error_message is None
     assert isinstance(status.last_embedded_at_ms, int)
+
+
+def test_archive_tiers_embedding_writer_batches_message_upserts(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "embeddings.db")
+    session_id = "codex-session:codex-embedding"
+    trace: list[str] = []
+    conn.set_trace_callback(trace.append)
+
+    upsert_message_embeddings(
+        conn,
+        [
+            ArchiveEmbeddingWrite(
+                message_id=f"{session_id}:m{index}",
+                session_id=session_id,
+                origin=Origin.CODEX_SESSION,
+                embedding=[0.01] * EMBEDDING_DIMENSION,
+                model="voyage-4",
+                embedded_at_ms=1_767_225_700_000,
+                content_hash=bytes([index]) * 32,
+            )
+            for index in range(3)
+        ],
+    )
+
+    transaction_events = [statement for statement in trace if statement.startswith("BEGIN") or statement == "COMMIT"]
+    assert transaction_events == ["BEGIN ", "COMMIT"]
+    assert conn.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0] == 3
+    assert conn.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 3
 
 
 def test_archive_tiers_embedding_writer_records_reindexable_errors(tmp_path: Path) -> None:

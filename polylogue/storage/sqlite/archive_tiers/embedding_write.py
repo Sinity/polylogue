@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from polylogue.core.enums import Origin
@@ -30,6 +31,17 @@ class ArchiveEmbeddingMeta:
     needs_reindex: bool
 
 
+@dataclass(frozen=True, slots=True)
+class ArchiveEmbeddingWrite:
+    message_id: str
+    session_id: str
+    origin: Origin | str
+    embedding: list[float]
+    model: str
+    embedded_at_ms: int
+    content_hash: bytes
+
+
 def upsert_message_embedding(
     conn: sqlite3.Connection,
     *,
@@ -42,35 +54,65 @@ def upsert_message_embedding(
     content_hash: bytes | None = None,
 ) -> ArchiveEmbeddingMeta:
     """Upsert one message vector plus its reproducibility metadata."""
-    if len(embedding) != EMBEDDING_DIMENSION:
-        raise ValueError(f"embedding must have {EMBEDDING_DIMENSION} dimensions")
     if content_hash is None:
         raise ValueError("content_hash is required for message embedding metadata")
-    origin_value = _enum_value(origin)
-    with conn:
-        conn.execute("DELETE FROM message_embeddings WHERE message_id = ?", (message_id,))
-        conn.execute(
-            """
-            INSERT INTO message_embeddings (message_id, embedding, session_id, origin)
-            VALUES (?, ?, ?, ?)
-            """,
-            (message_id, _serialize_f32(embedding), session_id, origin_value),
-        )
-        conn.execute(
-            """
-            INSERT INTO message_embeddings_meta (
-                message_id, model, dimension, content_hash, embedded_at_ms, needs_reindex
-            ) VALUES (?, ?, ?, ?, ?, 0)
-            ON CONFLICT(message_id) DO UPDATE SET
-                model = excluded.model,
-                dimension = excluded.dimension,
-                content_hash = excluded.content_hash,
-                embedded_at_ms = excluded.embedded_at_ms,
-                needs_reindex = 0
-            """,
-            (message_id, model, EMBEDDING_DIMENSION, content_hash, embedded_at_ms),
-        )
+    upsert_message_embeddings(
+        conn,
+        [
+            ArchiveEmbeddingWrite(
+                message_id=message_id,
+                session_id=session_id,
+                origin=origin,
+                embedding=embedding,
+                model=model,
+                embedded_at_ms=embedded_at_ms,
+                content_hash=content_hash,
+            )
+        ],
+    )
     return read_embedding_meta(conn, message_id)
+
+
+def upsert_message_embeddings(
+    conn: sqlite3.Connection,
+    writes: Sequence[ArchiveEmbeddingWrite],
+) -> None:
+    """Upsert message vectors and metadata in one transaction."""
+    for write in writes:
+        if len(write.embedding) != EMBEDDING_DIMENSION:
+            raise ValueError(f"embedding must have {EMBEDDING_DIMENSION} dimensions")
+
+    with conn:
+        for write in writes:
+            origin_value = _enum_value(write.origin)
+            conn.execute("DELETE FROM message_embeddings WHERE message_id = ?", (write.message_id,))
+            conn.execute(
+                """
+                INSERT INTO message_embeddings (message_id, embedding, session_id, origin)
+                VALUES (?, ?, ?, ?)
+                """,
+                (write.message_id, _serialize_f32(write.embedding), write.session_id, origin_value),
+            )
+            conn.execute(
+                """
+                INSERT INTO message_embeddings_meta (
+                    message_id, model, dimension, content_hash, embedded_at_ms, needs_reindex
+                ) VALUES (?, ?, ?, ?, ?, 0)
+                ON CONFLICT(message_id) DO UPDATE SET
+                    model = excluded.model,
+                    dimension = excluded.dimension,
+                    content_hash = excluded.content_hash,
+                    embedded_at_ms = excluded.embedded_at_ms,
+                    needs_reindex = 0
+                """,
+                (
+                    write.message_id,
+                    write.model,
+                    EMBEDDING_DIMENSION,
+                    write.content_hash,
+                    write.embedded_at_ms,
+                ),
+            )
 
 
 def mark_session_embedding_error(
@@ -150,8 +192,10 @@ def _enum_value(value: object) -> str:
 __all__ = [
     "ArchiveEmbeddingMeta",
     "ArchiveEmbeddingStatus",
+    "ArchiveEmbeddingWrite",
     "mark_session_embedding_error",
     "read_embedding_meta",
     "read_embedding_status",
     "upsert_message_embedding",
+    "upsert_message_embeddings",
 ]

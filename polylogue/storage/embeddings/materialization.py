@@ -274,14 +274,32 @@ def select_pending_archive_session_window(
     if status_table is None:
         status_table = "embedding_status" if _table_exists(conn, "embedding_status") else ""
     exact_counts_available = _archive_session_embeddable_counts_available(conn)
-    aggregate_expr = None if exact_counts_available else _archive_session_embeddable_count_expression(conn)
+    aggregate_expr = _archive_session_embeddable_count_expression(conn)
     status_select = (
         "e.session_id AS status_session_id, e.needs_reindex, e.message_count_embedded"
         if status_table
         else "NULL AS status_session_id, NULL AS needs_reindex, NULL AS message_count_embedded"
     )
     join_clause = f"LEFT JOIN {status_table} e ON e.session_id = s.session_id" if status_table else ""
-    if exact_counts_available or aggregate_expr is None:
+    if exact_counts_available:
+        count_select = (
+            f"{aggregate_expr} AS estimated_message_count" if aggregate_expr else "NULL AS estimated_message_count"
+        )
+        floor_filter = f"AND {aggregate_expr} >= ?" if aggregate_expr and min_messages is not None else ""
+        if floor_filter:
+            params.append(min_messages)
+        pending_filter = (
+            ""
+            if rebuild or not status_table or aggregate_expr is None
+            else """
+              AND (
+                    e.session_id IS NULL
+                 OR e.needs_reindex = 1
+                 OR e.message_count_embedded < {aggregate_expr}
+              )
+            """
+        ).format(aggregate_expr=aggregate_expr or "0")
+    elif aggregate_expr is None:
         count_select = "NULL AS estimated_message_count"
         floor_filter = ""
         pending_filter = ""
@@ -325,11 +343,15 @@ def select_pending_archive_session_window(
             status_session_id = _row_value(row, 2, "status_session_id")
             needs_reindex = _row_int(row, 3, "needs_reindex") if status_session_id is not None else 0
             message_count_embedded = _row_int(row, 4, "message_count_embedded") if status_session_id is not None else 0
-            estimated_count = (
-                count_archive_session_embeddable_messages(conn, session_id)
-                if exact_counts_available
-                else _row_int(row, 5, "estimated_message_count")
+            estimated_count = _row_int(row, 5, "estimated_message_count")
+            needs_exact_count = (
+                exact_counts_available
+                and status_session_id is not None
+                and needs_reindex == 0
+                and message_count_embedded > 0
             )
+            if needs_exact_count:
+                estimated_count = count_archive_session_embeddable_messages(conn, session_id)
             if estimated_count <= 0:
                 continue
             if min_messages is not None and estimated_count < min_messages:
@@ -360,13 +382,43 @@ def count_archive_session_embeddable_messages(conn: sqlite3.Connection, session_
 
     if not _table_exists(conn, "messages"):
         return 0
-    messages_ref = archive_embedding_messages_table_ref(conn, alias="m")
+    if _archive_message_blocks_available(conn):
+        messages_ref = archive_embedding_messages_table_ref(conn, alias="m")
+        blocks_ref = (
+            "blocks AS b INDEXED BY idx_blocks_session_position"
+            if _index_exists(conn, "idx_blocks_session_position")
+            else "blocks AS b"
+        )
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM (
+                SELECT m.message_id, GROUP_CONCAT(b.text, char(10) || char(10)) AS text
+                FROM {messages_ref}
+                LEFT JOIN {blocks_ref}
+                  ON b.session_id = m.session_id
+                 AND b.message_id = m.message_id
+                 AND b.block_type = 'text'
+                 AND b.text IS NOT NULL
+                WHERE {archive_embeddable_message_where("m")}
+                  AND m.session_id = ?
+                GROUP BY m.message_id, m.position, m.variant_index
+                HAVING LENGTH(TRIM(COALESCE(text, ''))) >= 20
+            ) embeddable_messages
+            """,
+            (session_id,),
+        ).fetchone()
+        return int(row[0] or 0) if row is not None else 0
+    text_filter = ""
+    if "text" in _table_columns(conn, "messages"):
+        text_filter = "AND LENGTH(TRIM(COALESCE(m.text, ''))) >= 20"
     row = conn.execute(
         f"""
         SELECT COUNT(*)
-        FROM {messages_ref}
+        FROM messages AS m
         WHERE {archive_embeddable_message_where("m")}
           AND m.session_id = ?
+          {text_filter}
         """,
         (session_id,),
     ).fetchone()
@@ -473,6 +525,12 @@ def _archive_session_embeddable_counts_available(conn: sqlite3.Connection) -> bo
     message_columns = _table_columns(conn, "messages")
     required_columns = {"session_id", "message_type", "role", "material_origin", "word_count"}
     return required_columns.issubset(message_columns)
+
+
+def _archive_message_blocks_available(conn: sqlite3.Connection) -> bool:
+    block_columns = _table_columns(conn, "blocks")
+    required_columns = {"session_id", "message_id", "block_type", "text"}
+    return required_columns.issubset(block_columns)
 
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -636,19 +694,27 @@ def embed_archive_session_sync(
         if len(embeddings) != len(embeddable):
             raise RuntimeError("embedding provider returned a mismatched vector count")
         now_ms = int(datetime.now(UTC).timestamp() * 1000)
-        from polylogue.storage.sqlite.archive_tiers.embedding_write import upsert_message_embedding
+        from polylogue.storage.sqlite.archive_tiers.embedding_write import (
+            ArchiveEmbeddingWrite,
+            upsert_message_embeddings,
+        )
 
+        writes: list[ArchiveEmbeddingWrite] = []
         for row, embedding in zip(embeddable, embeddings, strict=True):
-            upsert_message_embedding(
-                embeddings_conn,
-                message_id=str(row["message_id"]),
-                session_id=session_id,
-                origin=str(session["origin"]),
-                embedding=embedding,
-                model=text_provider.model,
-                embedded_at_ms=now_ms,
-                content_hash=bytes(row["content_hash"]) if row["content_hash"] is not None else None,
+            if row["content_hash"] is None:
+                raise ValueError("content_hash is required for message embedding metadata")
+            writes.append(
+                ArchiveEmbeddingWrite(
+                    message_id=str(row["message_id"]),
+                    session_id=session_id,
+                    origin=str(session["origin"]),
+                    embedding=embedding,
+                    model=text_provider.model,
+                    embedded_at_ms=now_ms,
+                    content_hash=bytes(row["content_hash"]),
+                )
             )
+        upsert_message_embeddings(embeddings_conn, writes)
         _record_archive_embedding_success(
             embeddings_conn,
             session_id=session_id,
