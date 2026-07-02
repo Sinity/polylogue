@@ -15,7 +15,7 @@ fi
 
 label="${1:-baseline}"
 safe_label="$(printf '%s' "$label" | tr -cs '[:alnum:]_.-' '-' | sed 's/^-//; s/-$//')"
-repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
+repo="${POLYLOGUE_REPO:-$(git rev-parse --show-toplevel 2>/dev/null || printf /realm/project/polylogue)}"
 archive_root="${POLYLOGUE_ARCHIVE_ROOT:-/home/sinity/.local/share/polylogue}"
 current="${POLYLOGUE_AGENT_CURRENT:-$repo/.agent/conductor-devloop}"
 cd "$repo"

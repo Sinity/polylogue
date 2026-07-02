@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
+repo="${POLYLOGUE_REPO:-$(git rev-parse --show-toplevel 2>/dev/null || printf /realm/project/polylogue)}"
 demo_root="${POLYLOGUE_DEMO_ROOT:-$repo/.agent/demos}"
 mode="write"
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then

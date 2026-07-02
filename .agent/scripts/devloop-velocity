@@ -35,7 +35,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
+repo="${POLYLOGUE_REPO:-$(git rev-parse --show-toplevel 2>/dev/null || printf /realm/project/polylogue)}"
 current="${POLYLOGUE_AGENT_CURRENT:-$repo/.agent/conductor-devloop}"
 log="$current/OPERATING-LOG.md"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

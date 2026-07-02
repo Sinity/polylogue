@@ -12,7 +12,8 @@ EOF
   exit 0
 fi
 
-root="${POLYLOGUE_AGENT_LOG_ROOT:-/realm/project/polylogue/.agent/conductor-devloop}"
+repo="${POLYLOGUE_REPO:-$(git rev-parse --show-toplevel 2>/dev/null || printf /realm/project/polylogue)}"
+root="${POLYLOGUE_AGENT_LOG_ROOT:-$repo/.agent/conductor-devloop}"
 log="$root/OPERATING-LOG.md"
 events="$root/EVENTS.jsonl"
 

@@ -12,7 +12,7 @@ polylogued_process_rows() {
 }
 
 polylogued_devloop_rows() {
-  repo="${1:-/realm/project/polylogue}"
+  repo="${1:-${POLYLOGUE_REPO:-$(git rev-parse --show-toplevel 2>/dev/null || printf /realm/project/polylogue)}}"
   polylogued_process_rows \
     | awk -v repo="$repo" '
       index($0, repo "/.venv/bin/python") > 0 {print; next}
@@ -22,7 +22,7 @@ polylogued_devloop_rows() {
 }
 
 polylogued_non_devloop_rows() {
-  repo="${1:-/realm/project/polylogue}"
+  repo="${1:-${POLYLOGUE_REPO:-$(git rev-parse --show-toplevel 2>/dev/null || printf /realm/project/polylogue)}}"
   polylogued_process_rows \
     | awk -v repo="$repo" '
       index($0, repo "/.venv/bin/python") > 0 {next}
