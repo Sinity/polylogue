@@ -17,6 +17,7 @@ import yaml
 @dataclass(frozen=True, slots=True)
 class ReadPackageProjection:
     max_tokens: int | None = None
+    body_full: bool = False
     body_limit: int | None = None
     body_offset: int | None = None
     edge_limit: int | None = None
@@ -28,6 +29,7 @@ class ReadPackageProjection:
             key: value
             for key, value in {
                 "max_tokens": self.max_tokens,
+                "body_full": self.body_full if self.body_full else None,
                 "body_limit": self.body_limit,
                 "body_offset": self.body_offset,
                 "edge_limit": self.edge_limit,
@@ -43,9 +45,13 @@ class ReadPackageProjection:
         )
         if len(limit_values) > 1:
             raise ValueError("projection may set only one of body_limit, edge_limit, or neighbor_limit")
+        if self.body_full and self.body_limit is not None:
+            raise ValueError("projection may not set both body_full and body_limit")
         args: list[str] = []
         if self.max_tokens is not None:
             args.extend(("--max-tokens", str(self.max_tokens)))
+        if self.body_full:
+            args.append("--full")
         if limit_values:
             args.extend(("--limit", str(limit_values[0])))
         if self.body_offset is not None:
@@ -113,6 +119,14 @@ def _expect_optional_positive_int(value: object, label: str) -> int | None:
     return value
 
 
+def _expect_optional_bool(value: object, label: str) -> bool:
+    if value is None:
+        return False
+    if not isinstance(value, bool):
+        raise ValueError(f"{label} must be a boolean")
+    return value
+
+
 def _read_projection(data: dict[str, Any], label: str) -> ReadPackageProjection:
     if "max_tokens" in data:
         raise ValueError(f"{label}.max_tokens moved under {label}.projection.max_tokens")
@@ -120,6 +134,7 @@ def _read_projection(data: dict[str, Any], label: str) -> ReadPackageProjection:
     projection = _expect_mapping(raw, f"{label}.projection")
     allowed = {
         "max_tokens",
+        "body_full",
         "body_limit",
         "body_offset",
         "edge_limit",
@@ -131,6 +146,7 @@ def _read_projection(data: dict[str, Any], label: str) -> ReadPackageProjection:
         raise ValueError(f"{label}.projection has unsupported key(s): {', '.join(unknown)}")
     result = ReadPackageProjection(
         max_tokens=_expect_optional_positive_int(projection.get("max_tokens"), f"{label}.projection.max_tokens"),
+        body_full=_expect_optional_bool(projection.get("body_full"), f"{label}.projection.body_full"),
         body_limit=_expect_optional_positive_int(projection.get("body_limit"), f"{label}.projection.body_limit"),
         body_offset=_expect_optional_positive_int(projection.get("body_offset"), f"{label}.projection.body_offset"),
         edge_limit=_expect_optional_positive_int(projection.get("edge_limit"), f"{label}.projection.edge_limit"),

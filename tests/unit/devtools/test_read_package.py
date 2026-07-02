@@ -199,6 +199,13 @@ def test_read_package_projection_limit_options_share_cli_limit_flag(tmp_path: Pa
                         "projection": {"body_limit": 7, "body_offset": 2},
                     },
                     {
+                        "name": "full-messages",
+                        "view": "messages",
+                        "format": "json",
+                        "path": "full-messages.json",
+                        "projection": {"body_full": True},
+                    },
+                    {
                         "name": "chronicle",
                         "view": "chronicle",
                         "format": "json",
@@ -221,8 +228,10 @@ def test_read_package_projection_limit_options_share_cli_limit_flag(tmp_path: Pa
     plan = build_read_package_plan(spec, session_id="019f", out_dir=tmp_path / "out")
 
     assert plan[0].argv[8:12] == ("--limit", "7", "--offset", "2")
-    assert plan[1].argv[8:10] == ("--limit", "3")
-    assert plan[2].argv[8:12] == ("--limit", "4", "--window-hours", "12")
+    assert plan[1].artifact.projection.as_payload() == {"body_full": True}
+    assert plan[1].argv[8:9] == ("--full",)
+    assert plan[2].argv[8:10] == ("--limit", "3")
+    assert plan[3].argv[8:12] == ("--limit", "4", "--window-hours", "12")
 
 
 def test_read_package_rejects_multiple_projection_limit_families(tmp_path: Path) -> None:
@@ -245,6 +254,52 @@ def test_read_package_rejects_multiple_projection_limit_families(tmp_path: Path)
     )
 
     with pytest.raises(ValueError, match="projection may set only one"):
+        load_read_package_spec(spec_path)
+
+
+def test_read_package_rejects_body_full_with_body_limit(tmp_path: Path) -> None:
+    spec_path = tmp_path / "package.json"
+    spec_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "artifacts": [
+                    {
+                        "name": "bad",
+                        "view": "messages",
+                        "format": "json",
+                        "path": "bad.json",
+                        "projection": {"body_full": True, "body_limit": 7},
+                    },
+                ],
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="projection may not set both body_full and body_limit"):
+        load_read_package_spec(spec_path)
+
+
+def test_read_package_rejects_non_boolean_body_full(tmp_path: Path) -> None:
+    spec_path = tmp_path / "package.json"
+    spec_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "artifacts": [
+                    {
+                        "name": "bad",
+                        "view": "messages",
+                        "format": "json",
+                        "path": "bad.json",
+                        "projection": {"body_full": "yes"},
+                    },
+                ],
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match=r"artifacts\[0\]\.projection\.body_full must be a boolean"):
         load_read_package_spec(spec_path)
 
 
