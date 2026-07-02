@@ -100,7 +100,11 @@ _MESSAGES_DDL = """
     CREATE TABLE IF NOT EXISTS messages (
         message_id       TEXT PRIMARY KEY,
         session_id  TEXT NOT NULL,
-        text             TEXT
+        text             TEXT,
+        role             TEXT NOT NULL DEFAULT 'user',
+        message_type     TEXT NOT NULL DEFAULT 'message',
+        material_origin  TEXT NOT NULL DEFAULT 'human_authored',
+        word_count       INTEGER NOT NULL DEFAULT 6
     );
 """
 
@@ -134,7 +138,11 @@ def _insert_session(conn: sqlite3.Connection, session_id: str, *, message_count:
     )
     for index in range(message_count):
         conn.execute(
-            "INSERT INTO messages (message_id, session_id, text) VALUES (?, ?, ?)",
+            """
+            INSERT INTO messages (
+                message_id, session_id, text, role, message_type, material_origin, word_count
+            ) VALUES (?, ?, ?, 'user', 'message', 'human_authored', 6)
+            """,
             (f"{session_id}-msg-{index}", session_id, "long enough message text for embedding"),
         )
 

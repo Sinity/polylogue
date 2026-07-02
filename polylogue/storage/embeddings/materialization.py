@@ -269,34 +269,17 @@ def select_pending_archive_session_window(
         id_filter = f"AND s.session_id IN ({placeholders})"
         params.extend(unique_ids)
 
-    min_filter = ""
-    if min_messages is not None:
-        min_filter = "AND COALESCE(ec.message_count, 0) >= ?"
-        params.append(int(min_messages))
-
     if status_table is None:
         status_table = "embedding_status" if _table_exists(conn, "embedding_status") else ""
-    where_clause = (
-        "1 = 1"
-        if rebuild or not status_table
-        else "(e.session_id IS NULL OR e.needs_reindex = 1 OR e.message_count_embedded < COALESCE(ec.message_count, 0))"
-    )
+    status_select = "e.session_id, e.needs_reindex, e.message_count_embedded" if status_table else "NULL, NULL, NULL"
     join_clause = f"LEFT JOIN {status_table} e ON e.session_id = s.session_id" if status_table else ""
     cursor = conn.execute(
         f"""
-        WITH embeddable_counts AS (
-            SELECT m.session_id, COUNT(*) AS message_count
-            FROM {archive_messages_table_ref(conn, alias="m")}
-            WHERE {archive_embeddable_message_where("m")}
-            GROUP BY m.session_id
-        )
-        SELECT s.session_id, s.title, COALESCE(ec.message_count, 0) AS message_count
+        SELECT s.session_id, s.title, {status_select}
         FROM sessions s
-        JOIN embeddable_counts ec ON ec.session_id = s.session_id
         {join_clause}
-        WHERE {where_clause}
+        WHERE 1 = 1
           {id_filter}
-          {min_filter}
         ORDER BY (s.sort_key_ms IS NULL), s.sort_key_ms DESC, s.session_id
         """,
         tuple(params),
@@ -309,7 +292,22 @@ def select_pending_archive_session_window(
             session_id = str(_row_value(row, 0, "session_id"))
             title_value = _row_value(row, 1, "title")
             title = None if title_value is None else str(title_value)
-            message_count = _row_int(row, 2, "message_count")
+            status_session_id = _row_value(row, 2, "status_session_id")
+            needs_reindex = _row_int(row, 3, "needs_reindex") if status_session_id is not None else 0
+            embedded_count = _row_int(row, 4, "message_count_embedded") if status_session_id is not None else 0
+            message_count = count_archive_session_embeddable_messages(conn, session_id)
+            if message_count <= 0:
+                continue
+            if min_messages is not None and message_count < min_messages:
+                continue
+            if not (
+                rebuild
+                or not status_table
+                or status_session_id is None
+                or needs_reindex == 1
+                or embedded_count < message_count
+            ):
+                continue
             if max_sessions is not None and len(pending) >= max_sessions:
                 return pending
             if max_messages is not None and pending and message_total + message_count > max_messages:
@@ -319,6 +317,28 @@ def select_pending_archive_session_window(
             if max_messages is not None and message_total >= max_messages:
                 return pending
     return pending
+
+
+def count_archive_session_embeddable_messages(conn: sqlite3.Connection, session_id: str) -> int:
+    """Count authored-prose messages eligible for embedding in one session."""
+
+    if not _table_exists(conn, "messages"):
+        return 0
+    messages_ref = (
+        "messages AS m INDEXED BY idx_messages_session_material_origin"
+        if _index_exists(conn, "idx_messages_session_material_origin")
+        else archive_messages_table_ref(conn, alias="m")
+    )
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*)
+        FROM {messages_ref}
+        WHERE {archive_embeddable_message_where("m")}
+          AND m.session_id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+    return int(row[0] or 0) if row is not None else 0
 
 
 def count_archive_embedding_session_state(
@@ -497,21 +517,27 @@ def embed_archive_session_sync(
         if not loaded:
             raise RuntimeError("archive embedding materialization requires sqlite-vec") from error
         session = index_conn.execute(
-            "SELECT session_id, origin, title FROM sessions WHERE session_id = ?",
+            "SELECT session_id, origin, title, message_count FROM sessions WHERE session_id = ?",
             (session_id,),
         ).fetchone()
         if session is None:
             return EmbedSessionOutcome(status="not_found", session_id=session_id)
+        messages_ref = (
+            "messages AS m INDEXED BY idx_messages_session_material_origin"
+            if _index_exists(index_conn, "idx_messages_session_material_origin")
+            else archive_messages_table_ref(index_conn, alias="m")
+        )
         rows = index_conn.execute(
-            """
+            f"""
             SELECT m.message_id, m.role, m.content_hash, m.material_origin, m.message_type,
                    GROUP_CONCAT(b.text, char(10) || char(10)) AS text
-            FROM messages m
+            FROM {messages_ref}
             LEFT JOIN blocks b
               ON b.message_id = m.message_id
              AND b.block_type = 'text'
              AND b.text IS NOT NULL
             WHERE m.session_id = ?
+              AND {archive_embeddable_message_where("m")}
             GROUP BY m.message_id, m.role, m.content_hash, m.material_origin, m.message_type, m.position, m.variant_index
             ORDER BY m.position, m.variant_index
             """,
@@ -522,7 +548,7 @@ def embed_archive_session_sync(
                 embeddings_conn, session_id=session_id, origin=str(session["origin"]), message_count=0
             )
             return EmbedSessionOutcome(
-                status="no_messages",
+                status="no_messages" if int(session["message_count"] or 0) <= 0 else "no_embeddable_messages",
                 session_id=session_id,
                 title=None if session["title"] is None else str(session["title"]),
             )
@@ -773,6 +799,7 @@ __all__ = [
     "archive_embeddable_message_where",
     "archive_messages_table_ref",
     "count_archive_embedding_session_state",
+    "count_archive_session_embeddable_messages",
     "embed_session_sync",
     "embed_archive_session_sync",
     "iter_pending_sessions",
