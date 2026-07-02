@@ -108,3 +108,18 @@ def test_structured_failure_followups_aggregates_ref_backed_samples() -> None:
     assert [item["classification"] for item in stratified["acknowledged"]] == ["acknowledged"]
     assert [item["classification"] for item in stratified["silent_proceed"]] == ["silent_proceed"]
     assert [item["classification"] for item in stratified["ambiguous"]] == ["ambiguous", "ambiguous"]
+
+
+def test_structured_failure_followups_can_bound_failed_outcomes() -> None:
+    conn = _build_failure_followup_db()
+
+    result = agent_forensics._structured_failure_followups(conn, failed_outcome_limit=2)
+
+    assert result["failed_outcome_limit"] == 2
+    assert result["totals"] == {
+        "failed_outcomes": 2,
+        "acknowledged": 1,
+        "silent_proceed": 1,
+        "ambiguous": 0,
+        "classified_outcomes": 2,
+    }

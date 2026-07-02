@@ -488,6 +488,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace claim-vs-evidence",
+        "workspace",
+        "Build a structured failure follow-up claim-vs-evidence demo.",
+        "devtools.claim_vs_evidence",
+        use_when=(
+            "Produce a fast, bounded report over structured tool failures and the immediately following "
+            "assistant turn, using tool_result is_error/exit_code as the evidence anchor instead of "
+            "prose-mined outcome claims."
+        ),
+        examples=(
+            "devtools workspace claim-vs-evidence --json",
+            "devtools workspace claim-vs-evidence --limit 5000 --out-dir .agent/demos/claim-vs-evidence",
+        ),
+    ),
+    CommandSpec(
         "workspace read-package",
         "workspace",
         "Render a declarative package of Polylogue read artifacts.",

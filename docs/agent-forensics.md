@@ -16,6 +16,9 @@ any archive and reproduce the report.
 # Against your archive (defaults to $POLYLOGUE_ARCHIVE_ROOT, then the XDG dir):
 python scripts/agent_forensics.py --archive ~/.local/share/polylogue --out ./forensics
 
+# Fast focused claim-vs-evidence packet for the current demo shelf:
+devtools workspace claim-vs-evidence --limit 5000 --out-dir .agent/demos/claim-vs-evidence --json
+
 # Reproduce against the synthetic demo archive (no private data):
 polylogue demo seed --root /tmp/demo-archive --force --with-overlays --format json
 python scripts/agent_forensics.py --archive /tmp/demo-archive --out ./forensics-demo
@@ -47,12 +50,18 @@ The report renders in any Markdown viewer; the SVG charts embed inline on GitHub
   estimate, not official) and frames the API-vs-plan value gap.
 - **Model evolution** — tokens/month by top model.
 - **Workflow shape** — work-event types and session-length distribution.
+- **Structured failure follow-up** — the current claim-vs-evidence proof:
+  structured tool failures (`is_error=1` or non-zero `exit_code`) are the
+  evidence anchor, and only the immediately following assistant turn is
+  classified for explicit acknowledgment markers. Silent-proceed rates are
+  reported as conservative lower bounds; ambiguous rows stay in the denominator.
 
 ## Accuracy notes
 
 Numbers are read directly from the archive's materialized analytics tables
 (`session_model_usage`, `session_provider_usage_events`, `session_work_events`,
-`sessions`). Two accounting traps the tool handles explicitly:
+`sessions`, `actions`, `messages`, `blocks`). Three accounting traps the tool
+handles explicitly:
 
 1. **Per-event deltas vs cumulative totals.** `session_provider_usage_events`
    carries both `last_*` (per-event delta) and `total_*` (cumulative running
@@ -61,6 +70,10 @@ Numbers are read directly from the archive's materialized analytics tables
 2. **Cost provenance.** Only `priced` rows have a real `cost_usd`. Pairing that
    cost with the all-provenance token total would misstate both, so they are
    reported separately.
+3. **Failure claims.** The structured failure follow-up section does not infer a
+   successful or failed outcome from assistant prose. It anchors on structured
+   tool-result fields and treats the next assistant message as a lexical
+   acknowledgment signal only.
 
 ## Privacy
 

@@ -243,7 +243,7 @@ def _scalar(conn: sqlite3.Connection, sql: str, default: Any = 0) -> Any:
 # --------------------------------------------------------------------------- #
 
 
-def analyze(conn: sqlite3.Connection) -> dict[str, Any]:
+def analyze(conn: sqlite3.Connection, *, failure_followup_limit: int | None = None) -> dict[str, Any]:
     f: dict[str, Any] = {}
 
     # 1. Scale & span -------------------------------------------------------- #
@@ -380,7 +380,10 @@ def analyze(conn: sqlite3.Connection) -> dict[str, Any]:
         f["msg_max"] = msg_counts[-1]
         f["msg_hist"] = _log_histogram([float(x) for x in msg_counts])
     if _has_table(conn, "actions") and _has_table(conn, "blocks"):
-        f["structured_failure_followups"] = _structured_failure_followups(conn)
+        f["structured_failure_followups"] = _structured_failure_followups(
+            conn,
+            failed_outcome_limit=failure_followup_limit,
+        )
     return f
 
 
@@ -422,12 +425,22 @@ def _classify_failed_followup(text: str | None) -> str:
     return "silent_proceed"
 
 
-def _structured_failure_followups(conn: sqlite3.Connection, *, sample_limit: int = 20) -> dict[str, object]:
+def _structured_failure_followups(
+    conn: sqlite3.Connection,
+    *,
+    sample_limit: int = 20,
+    failed_outcome_limit: int | None = None,
+) -> dict[str, object]:
     """Return adjacency-anchored follow-up stats for failed tool outcomes."""
 
+    limit_clause = ""
+    params: tuple[int, ...] = ()
+    if failed_outcome_limit is not None:
+        limit_clause = "ORDER BY session_id, position LIMIT ?"
+        params = (failed_outcome_limit,)
     rows = conn.execute(
-        """
-        WITH failed AS (
+        f"""
+        WITH failed_all AS (
             SELECT
                 a.session_id,
                 a.message_id,
@@ -441,6 +454,11 @@ def _structured_failure_followups(conn: sqlite3.Connection, *, sample_limit: int
             JOIN messages AS m ON m.message_id = a.message_id
             WHERE COALESCE(a.is_error, 0) = 1
                OR (a.exit_code IS NOT NULL AND a.exit_code != 0)
+        ),
+        failed AS (
+            SELECT *
+            FROM failed_all
+            {limit_clause}
         ),
         next_message AS (
             SELECT
@@ -479,6 +497,7 @@ def _structured_failure_followups(conn: sqlite3.Connection, *, sample_limit: int
             model_name,
             n.next_message_id
         """,
+        params,
     ).fetchall()
 
     by_tool: dict[str, dict[str, int]] = {}
@@ -543,6 +562,7 @@ def _structured_failure_followups(conn: sqlite3.Connection, *, sample_limit: int
             "failed tool outcomes are structured rows where is_error=1 or exit_code!=0; "
             "classification inspects only the next assistant turn for explicit failure acknowledgment markers"
         ),
+        "failed_outcome_limit": failed_outcome_limit,
         "totals": totals,
         "by_tool": ranked(by_tool),
         "by_model": ranked(by_model),
@@ -874,6 +894,14 @@ def build_report(f: dict[str, Any], out_dir: Path, *, archive_label: str) -> str
                 "the denominator instead of being forced into either class. Treat this as the "
                 "structured core plus a lexical acknowledgment heuristic, not an LLM judgment."
             )
+            limit = followups.get("failed_outcome_limit")
+            if isinstance(limit, int):
+                md.append("")
+                md.append(
+                    f"This run is bounded to the first **{_fmt_int(limit)}** structured failed outcome(s) "
+                    "in deterministic archive order. Use the same command without "
+                    "`--failure-followup-limit` for a deliberate whole-archive scan."
+                )
             md.append("")
             ack = int(totals.get("acknowledged", 0)) if isinstance(totals, dict) else 0
             silent = int(totals.get("silent_proceed", 0)) if isinstance(totals, dict) else 0
@@ -968,14 +996,25 @@ def main() -> None:
         "--archive", default=None, help="Archive root or index.db path (default: $POLYLOGUE_ARCHIVE_ROOT or XDG)."
     )
     ap.add_argument("--out", default="agent-forensics", help="Output directory for report.md and charts/.")
+    ap.add_argument(
+        "--failure-followup-limit",
+        type=int,
+        default=None,
+        help=(
+            "Bound structured failure follow-up classification to the first N failed outcomes. "
+            "Other report sections still run their normal archive-wide aggregates."
+        ),
+    )
     args = ap.parse_args()
+    if args.failure_followup_limit is not None and args.failure_followup_limit <= 0:
+        ap.error("--failure-followup-limit must be positive")
 
     index_db = resolve_index_db(args.archive)
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     conn = connect_ro(index_db)
     try:
-        findings = analyze(conn)
+        findings = analyze(conn, failure_followup_limit=args.failure_followup_limit)
     finally:
         conn.close()
     followups = findings.get("structured_failure_followups")
