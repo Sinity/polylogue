@@ -138,6 +138,7 @@ class EmbeddingMetricState(TypedDict):
 class ArchiveEmbeddingRunState(TypedDict):
     status: str
     scanned_sessions: int
+    embedded_sessions: int
     embedded_messages: int
     error_count: int
     estimated_cost_usd: float
@@ -730,7 +731,7 @@ def _archive_embedding_state(conn: sqlite3.Connection, *, ops_db: Path | None = 
         "latest_rebuild": "false",
         "latest_planned_sessions": latest["scanned_sessions"] if latest is not None else 0,
         "latest_processed_sessions": latest["scanned_sessions"] if latest is not None else 0,
-        "latest_embedded_sessions": 0,
+        "latest_embedded_sessions": latest["embedded_sessions"] if latest is not None else 0,
         "latest_skipped_sessions": 0,
         "latest_error_count": latest["error_count"] if latest is not None else 0,
         "latest_planned_messages": 0,
@@ -761,8 +762,9 @@ def _archive_latest_embedding_run_state(ops_db: Path | None) -> ArchiveEmbedding
     return {
         "status": run.status,
         "scanned_sessions": run.scanned_sessions,
+        "embedded_sessions": run.embedded_sessions,
         "embedded_messages": run.embedded_messages,
-        "error_count": 1 if run.error_message else 0,
+        "error_count": run.error_count,
         "estimated_cost_usd": float(run.estimated_cost_usd or 0.0),
     }
 

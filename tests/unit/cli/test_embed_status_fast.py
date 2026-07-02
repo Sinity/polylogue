@@ -327,6 +327,8 @@ def test_status_json_reads_latest_catchup_from_ops_db(tmp_path: Path) -> None:
             started_at_ms=1_767_225_700_000,
             finished_at_ms=1_767_225_705_000,
             scanned_sessions=2,
+            embedded_sessions=2,
+            error_count=0,
             embedded_messages=4,
             estimated_cost_usd=0.001,
         )
@@ -337,6 +339,8 @@ def test_status_json_reads_latest_catchup_from_ops_db(tmp_path: Path) -> None:
     assert latest["run_id"] == "v1-run"
     assert latest["status"] == "completed"
     assert latest["processed_sessions"] == 2
+    assert latest["embedded_sessions"] == 2
+    assert latest["error_count"] == 0
     assert latest["embedded_messages"] == 4
     assert latest["estimated_cost_usd"] == 0.001
 

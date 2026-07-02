@@ -37,6 +37,8 @@ class ArchiveEmbeddingCatchupRun:
     status: str
     origin: str | None
     scanned_sessions: int
+    embedded_sessions: int
+    error_count: int
     embedded_messages: int
     estimated_cost_usd: float | None
     error_message: str | None
@@ -493,6 +495,8 @@ def upsert_embedding_catchup_run(
     status: str,
     origin: Origin | str | None = None,
     scanned_sessions: int = 0,
+    embedded_sessions: int = 0,
+    error_count: int = 0,
     embedded_messages: int = 0,
     estimated_cost_usd: float | None = None,
     error_message: str | None = None,
@@ -500,6 +504,7 @@ def upsert_embedding_catchup_run(
     """Create or replace one ``embedding_catchup_runs`` row and return ``run_id``."""
     if run_id is None:
         run_id = str(uuid.uuid4())
+    _ensure_embedding_catchup_run_outcome_columns(conn)
     conn.execute(
         """
         INSERT INTO embedding_catchup_runs (
@@ -509,17 +514,21 @@ def upsert_embedding_catchup_run(
             status,
             origin,
             scanned_sessions,
+            embedded_sessions,
+            error_count,
             embedded_messages,
             estimated_cost_usd,
             error_message
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (run_id) DO UPDATE SET
             started_at_ms = excluded.started_at_ms,
             finished_at_ms = excluded.finished_at_ms,
             status = excluded.status,
             origin = excluded.origin,
             scanned_sessions = excluded.scanned_sessions,
+            embedded_sessions = excluded.embedded_sessions,
+            error_count = excluded.error_count,
             embedded_messages = excluded.embedded_messages,
             estimated_cost_usd = excluded.estimated_cost_usd,
             error_message = excluded.error_message
@@ -531,6 +540,8 @@ def upsert_embedding_catchup_run(
             status,
             _origin_value(origin),
             scanned_sessions,
+            embedded_sessions,
+            error_count,
             embedded_messages,
             estimated_cost_usd,
             error_message,
@@ -546,12 +557,14 @@ def list_embedding_catchup_runs(
     status: str | None = None,
 ) -> tuple[ArchiveEmbeddingCatchupRun, ...]:
     """Return embedding catchup runs ordered by newest start first."""
+    outcome_columns = _embedding_catchup_run_outcome_columns(conn)
     query = """
         SELECT
             run_id, started_at_ms, finished_at_ms, status, origin,
-            scanned_sessions, embedded_messages, estimated_cost_usd, error_message
+            scanned_sessions, {embedded_sessions}, {error_count},
+            embedded_messages, estimated_cost_usd, error_message
         FROM embedding_catchup_runs
-    """
+    """.format(**outcome_columns)
     params: tuple[object, ...] = ()
     if status is not None:
         query += " WHERE status = ?"
@@ -563,19 +576,42 @@ def list_embedding_catchup_runs(
 
 def read_embedding_catchup_run(conn: sqlite3.Connection, run_id: str) -> ArchiveEmbeddingCatchupRun:
     """Read one embedding catchup run by ``run_id``."""
+    outcome_columns = _embedding_catchup_run_outcome_columns(conn)
     row = conn.execute(
         """
         SELECT
             run_id, started_at_ms, finished_at_ms, status, origin,
-            scanned_sessions, embedded_messages, estimated_cost_usd, error_message
+            scanned_sessions, {embedded_sessions}, {error_count},
+            embedded_messages, estimated_cost_usd, error_message
         FROM embedding_catchup_runs
         WHERE run_id = ?
-        """,
+        """.format(**outcome_columns),
         (run_id,),
     ).fetchone()
     if row is None:
         raise KeyError(run_id)
     return ArchiveEmbeddingCatchupRun(*row)
+
+
+def _ensure_embedding_catchup_run_outcome_columns(conn: sqlite3.Connection) -> None:
+    existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(embedding_catchup_runs)")}
+    additions = {
+        "embedded_sessions": "INTEGER NOT NULL DEFAULT 0 CHECK(embedded_sessions >= 0)",
+        "error_count": "INTEGER NOT NULL DEFAULT 0 CHECK(error_count >= 0)",
+    }
+    for name, definition in additions.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE embedding_catchup_runs ADD COLUMN {name} {definition}")
+
+
+def _embedding_catchup_run_outcome_columns(conn: sqlite3.Connection) -> dict[str, str]:
+    existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(embedding_catchup_runs)")}
+    return {
+        "embedded_sessions": "embedded_sessions" if "embedded_sessions" in existing else "0 AS embedded_sessions",
+        "error_count": "error_count"
+        if "error_count" in existing
+        else "CASE WHEN error_message IS NULL THEN 0 ELSE 1 END AS error_count",
+    }
 
 
 def upsert_otlp_span(

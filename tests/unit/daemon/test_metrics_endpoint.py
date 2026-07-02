@@ -353,8 +353,8 @@ class TestFormatMetricsReadsArchiveState:
                 ],
             )
             conn.executemany(
-                "INSERT INTO sessions (session_id) VALUES (?)",
-                [("conv-embedded",), ("conv-pending",), ("conv-missing-status",)],
+                "INSERT INTO sessions (session_id, message_count) VALUES (?, ?)",
+                [("conv-embedded", 1), ("conv-pending", 1), ("conv-missing-status", 1)],
             )
             conn.executemany(
                 "INSERT INTO messages (message_id, session_id) VALUES (?, ?)",
@@ -388,8 +388,8 @@ class TestFormatMetricsReadsArchiveState:
     def _seed_catchup_run(ops_db: Path) -> None:
         """Seed an embedding catch-up run into the archive ops tier.
 
-        Archive file-sets store catch-up runs in ops.db and tracks a reduced field set
-        (scanned_sessions / embedded_messages / cost / error), so the daemon
+        Archive file-sets store catch-up runs in ops.db and track the run outcome
+        counts (scanned/embedded/error sessions, embedded messages, cost), so the daemon
         metrics read them from there rather than from the index db.
         """
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -404,6 +404,8 @@ class TestFormatMetricsReadsArchiveState:
                 finished_at_ms=2,
                 status="cancelled",
                 scanned_sessions=3,
+                embedded_sessions=2,
+                error_count=1,
                 embedded_messages=2,
                 estimated_cost_usd=0.003,
                 error_message="max errors reached (1)",
@@ -600,14 +602,12 @@ class TestFormatMetricsReadsArchiveState:
         assert 'polylogue_embedding_status_state{status="partial"} 1' in body
         assert 'polylogue_embedding_status_state{status="complete"} 0' in body
         assert "polylogue_embedding_retrieval_ready 1" in body
-        # Archive catch-up runs track a reduced field set (scanned/embedded
-        # messages/cost/error) and do not persist rebuild mode, planned/skipped
-        # session breakdowns, or planned message counts — the metric reflects
-        # exactly what the ops tier stores.
+        # Archive catch-up runs track outcome session counts but not rebuild
+        # mode, planned/skipped breakdowns, or planned message counts.
         assert 'polylogue_embedding_latest_catchup_run_info{rebuild="false",status="cancelled"} 1' in body
         assert 'polylogue_embedding_latest_catchup_sessions{state="planned"} 3' in body
         assert 'polylogue_embedding_latest_catchup_sessions{state="processed"} 3' in body
-        assert 'polylogue_embedding_latest_catchup_sessions{state="embedded"} 0' in body
+        assert 'polylogue_embedding_latest_catchup_sessions{state="embedded"} 2' in body
         assert 'polylogue_embedding_latest_catchup_sessions{state="skipped"} 0' in body
         assert 'polylogue_embedding_latest_catchup_sessions{state="failed"} 1' in body
         assert 'polylogue_embedding_latest_catchup_messages{state="planned"} 0' in body
@@ -681,6 +681,8 @@ class TestFormatMetricsReadsArchiveState:
                 started_at_ms=1_767_225_700_000,
                 finished_at_ms=1_767_225_701_000,
                 scanned_sessions=2,
+                embedded_sessions=2,
+                error_count=0,
                 embedded_messages=4,
                 estimated_cost_usd=0.001,
             )
@@ -696,6 +698,7 @@ class TestFormatMetricsReadsArchiveState:
         assert 'polylogue_embedding_status_state{status="partial"} 1' in body
         assert 'polylogue_embedding_latest_catchup_run_info{rebuild="false",status="completed"} 1' in body
         assert 'polylogue_embedding_latest_catchup_sessions{state="processed"} 2' in body
+        assert 'polylogue_embedding_latest_catchup_sessions{state="embedded"} 2' in body
         assert 'polylogue_embedding_latest_catchup_messages{state="embedded"} 4' in body
         assert "polylogue_embedding_latest_catchup_estimated_cost_usd 0.001" in body
         assert 'polylogue_archive_sessions_total{source="codex-session"} 2' in body

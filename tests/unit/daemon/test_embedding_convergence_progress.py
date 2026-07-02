@@ -104,6 +104,8 @@ def test_daemon_embedding_backlog_drain_processes_archive(
     assert len(runs) == 1
     assert runs[0].status == "completed"
     assert runs[0].scanned_sessions == 2
+    assert runs[0].embedded_sessions == 2
+    assert runs[0].error_count == 0
     assert runs[0].embedded_messages == 4
 
 

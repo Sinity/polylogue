@@ -117,6 +117,8 @@ CREATE TABLE IF NOT EXISTS embedding_catchup_runs (
     status              TEXT NOT NULL CHECK(status IN ('running', 'completed', 'failed', 'cancelled')),
     origin              TEXT CHECK ({nullable_check("origin", Origin)}),
     scanned_sessions    INTEGER NOT NULL DEFAULT 0 CHECK(scanned_sessions >= 0),
+    embedded_sessions   INTEGER NOT NULL DEFAULT 0 CHECK(embedded_sessions >= 0),
+    error_count         INTEGER NOT NULL DEFAULT 0 CHECK(error_count >= 0),
     embedded_messages   INTEGER NOT NULL DEFAULT 0 CHECK(embedded_messages >= 0),
     estimated_cost_usd  REAL,
     error_message       TEXT
