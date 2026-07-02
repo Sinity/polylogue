@@ -1016,6 +1016,26 @@ def _missing_index_raw_ids(root: Path) -> list[str]:
     return [str(row[0]) for row in rows]
 
 
+def _filter_raw_ids_by_max_blob_size(root: Path, raw_ids: list[str], max_blob_mb: float | None) -> list[str]:
+    if max_blob_mb is None or not raw_ids:
+        return raw_ids
+    max_bytes = int(max_blob_mb * 1024 * 1024)
+    source_db = root / "source.db"
+    placeholders = ",".join("?" for _ in raw_ids)
+    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT raw_id
+            FROM raw_sessions
+            WHERE raw_id IN ({placeholders})
+              AND blob_size <= ?
+            ORDER BY acquired_at_ms, raw_id
+            """,
+            (*raw_ids, max_bytes),
+        ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
 async def _rebuild_index_from_source(
     config: Config,
     *,
@@ -1080,6 +1100,18 @@ async def _rebuild_index_from_source(
     help="Replay only source raw rows that do not yet have index.sessions rows.",
 )
 @click.option(
+    "--raw-id",
+    "raw_ids",
+    multiple=True,
+    help="Replay a specific source raw_id. May be supplied multiple times.",
+)
+@click.option(
+    "--max-blob-mb",
+    type=float,
+    default=None,
+    help="Bound an explicit replay selection to raw rows at or below this blob size.",
+)
+@click.option(
     "--force-write",
     is_flag=True,
     help="Rewrite sessions even when the parsed content hash matches existing index rows.",
@@ -1101,6 +1133,8 @@ def rebuild_index_command(
     batch_size: int,
     workers: int | None,
     only_missing: bool,
+    raw_ids: tuple[str, ...],
+    max_blob_mb: float | None,
     force_write: bool,
     no_materialize: bool,
     output_format: str,
@@ -1117,16 +1151,21 @@ def rebuild_index_command(
         raise click.BadParameter("batch size must be positive", param_hint="--batch-size")
     if workers is not None and workers <= 0:
         raise click.BadParameter("workers must be positive", param_hint="--workers")
+    if raw_ids and only_missing:
+        raise click.UsageError("--raw-id cannot be combined with --only-missing")
+    if max_blob_mb is not None and max_blob_mb <= 0:
+        raise click.BadParameter("max blob size must be positive", param_hint="--max-blob-mb")
+    if max_blob_mb is not None and not raw_ids and not only_missing:
+        raise click.UsageError("--max-blob-mb requires --only-missing or --raw-id")
 
     root = archive_root()
     raw_count = _count_source_raw_sessions(root)
-    raw_ids = _missing_index_raw_ids(root) if only_missing else None
-    selected_raw_count = len(raw_ids) if raw_ids is not None else raw_count
     if raw_count == 0:
         payload = {
             "archive_root": str(root),
             "raw_session_count": 0,
             "selected_raw_count": 0,
+            "skipped_by_blob_limit_count": 0,
             "status": "empty-source",
             "materialized": False,
         }
@@ -1136,11 +1175,21 @@ def rebuild_index_command(
             click.echo(f"Archive root: {root}")
             click.echo("No source.db raw_sessions rows found.")
         return
+    selected_raw_ids = (
+        list(dict.fromkeys(raw_ids)) if raw_ids else _missing_index_raw_ids(root) if only_missing else None
+    )
+    unfiltered_selected_raw_count = len(selected_raw_ids) if selected_raw_ids is not None else raw_count
+    selected_raw_ids = (
+        _filter_raw_ids_by_max_blob_size(root, selected_raw_ids, max_blob_mb) if selected_raw_ids is not None else None
+    )
+    selected_raw_count = len(selected_raw_ids) if selected_raw_ids is not None else raw_count
+    skipped_by_blob_limit_count = unfiltered_selected_raw_count - selected_raw_count
     if only_missing and selected_raw_count == 0 and no_materialize:
         payload = {
             "archive_root": str(root),
             "raw_session_count": raw_count,
             "selected_raw_count": 0,
+            "skipped_by_blob_limit_count": 0,
             "only_missing": True,
             "status": "ok",
             "materialized": False,
@@ -1174,7 +1223,7 @@ def rebuild_index_command(
     result = asyncio.run(
         _rebuild_index_from_source(
             config,
-            raw_ids=raw_ids,
+            raw_ids=selected_raw_ids,
             raw_batch_size=batch_size,
             ingest_workers=workers,
             force_write=force_write,
@@ -1187,7 +1236,10 @@ def rebuild_index_command(
         "archive_root": str(root),
         "raw_session_count": raw_count,
         "selected_raw_count": selected_raw_count,
+        "skipped_by_blob_limit_count": skipped_by_blob_limit_count,
         "only_missing": only_missing,
+        "raw_id_count": len(raw_ids),
+        "max_blob_mb": max_blob_mb,
         "batch_size": batch_size,
         "workers": workers,
         "force_write": force_write,
@@ -1206,6 +1258,10 @@ def rebuild_index_command(
     click.echo(f"Raw rows:     {raw_count:,}")
     if only_missing:
         click.echo(f"Selected:     {selected_raw_count:,} missing raw row(s)")
+    elif raw_ids:
+        click.echo(f"Selected:     {selected_raw_count:,} explicit raw row(s)")
+    if skipped_by_blob_limit_count:
+        click.echo(f"Blob limit:   skipped {skipped_by_blob_limit_count:,} raw row(s)")
     click.echo(f"Parsed:       {result['processed_session_count']:,} changed session(s)")
     click.echo(f"Batches:      {result['batch_count']:,}")
     click.echo(f"Failures:     {result['parse_failure_count']:,}")
