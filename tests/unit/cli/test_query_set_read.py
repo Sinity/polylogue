@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import patch
@@ -11,11 +12,14 @@ from click.testing import CliRunner
 
 from polylogue.archive.models import Session
 from polylogue.archive.query.spec import SessionQuerySpec
+from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.cli import query_set_read, query_verbs
 from polylogue.cli.click_app import cli
 from polylogue.cli.read_view_handlers import ReadViewInvocation
+from polylogue.cli.read_views.query_set import run_query_set_read_view
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
+from polylogue.surfaces.projection_spec import projection_from_views
 from tests.infra.builders import make_conv, make_msg
 
 
@@ -79,13 +83,85 @@ def test_run_query_set_read_separates_markdown_with_horizontal_rule() -> None:
     assert text.count("\n---\n") == 1
 
 
+def test_dialogue_query_set_view_uses_prose_projection() -> None:
+    captured: dict[str, object] = {}
+
+    def _capture(*args: object, **kwargs: object) -> None:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+    with patch("polylogue.cli.query_set_read.run_query_set_read", side_effect=_capture):
+        runner = CliRunner()
+        with runner.isolation():
+            run_query_set_read_view(
+                _stub_env([]),
+                _request(limit=1),
+                view="dialogue",
+                output_format=None,
+                fields=None,
+                destination="terminal",
+                out_path=None,
+            )
+
+    kwargs = cast(dict[str, object], captured["kwargs"])
+    projection = kwargs["content_projection"]
+    assert kwargs["output_format"] == "markdown"
+    assert isinstance(projection, ContentProjectionSpec)
+    assert projection.filters_content()
+    assert kwargs["renderer"] is not None
+
+
+def test_dialogue_query_set_renderer_applies_projection_spec() -> None:
+    captured: dict[str, object] = {}
+    session = make_conv(
+        id="session-1",
+        messages=[
+            make_msg(id="user-1", role="user", text="one two", material_origin="human_authored"),
+            make_msg(id="assistant-1", role="assistant", text="three four", material_origin="assistant_authored"),
+        ],
+    )
+
+    def _capture(*args: object, **kwargs: object) -> None:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+    with patch("polylogue.cli.query_set_read.run_query_set_read", side_effect=_capture):
+        runner = CliRunner()
+        with runner.isolation():
+            run_query_set_read_view(
+                _stub_env([session]),
+                _request(limit=1),
+                view="dialogue",
+                output_format="json",
+                fields=None,
+                destination="terminal",
+                out_path=None,
+                projection_spec=projection_from_views(("dialogue",), max_tokens=3),
+            )
+
+    renderer = cast(dict[str, object], captured["kwargs"])["renderer"]
+    assert callable(renderer)
+    payload = json.loads(renderer(session, "json", None))
+    assert payload["message_count"] == 2
+    assert payload["rendered_message_count"] == 1
+    assert payload["projection"]["max_tokens"] == 3
+    assert [message["id"] for message in payload["messages"]] == ["user-1"]
+
+
 def test_read_all_registered_and_dispatches_via_root_cli() -> None:
     """Smoke: ``read --all`` routes to query-set read via the read verb."""
     convs = [make_conv(id="a", title="Smoke", messages=[make_msg(text="hi")])]
 
     captured: dict[str, object] = {}
 
-    def _capture(env: object, request: RootModeRequest, *, output_format: str, fields: str | None) -> None:
+    def _capture(
+        env: object,
+        request: RootModeRequest,
+        *,
+        output_format: str,
+        fields: str | None,
+        **_: object,
+    ) -> None:
         captured["env"] = env
         captured["request"] = request
         captured["output_format"] = output_format
@@ -146,7 +222,187 @@ def test_read_spec_emits_composed_projection_contract() -> None:
         "format": "json",
         "destination": "stdout",
         "layout": "context-image",
+        "timestamps": "include-available",
     }
+
+
+def test_read_spec_accepts_explicit_render_layout() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--plain",
+            "repo:polylogue",
+            "read",
+            "--view",
+            "temporal,chronicle",
+            "--render-layout",
+            "standard",
+            "--spec",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["render"]["layout"] == "standard"
+    assert payload["projection"]["families"] == ["temporal", "sessions", "chronicle", "messages"]
+
+
+def test_read_spec_accepts_explicit_timestamp_policy() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--plain",
+            "repo:polylogue",
+            "read",
+            "--view",
+            "temporal",
+            "--timestamps",
+            "omit",
+            "--spec",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["render"]["timestamps"] == "omit"
+    assert payload["projection"]["families"] == ["temporal", "sessions"]
+
+
+def test_read_spec_accepts_render_expression() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--plain",
+            "repo:polylogue",
+            "read",
+            "--view",
+            "temporal,chronicle",
+            "--render",
+            "layout:context-image,timestamps:omit,format:json,destination:stdout",
+            "--spec",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["render"]["layout"] == "context-image"
+    assert payload["render"]["timestamps"] == "omit"
+    assert payload["render"]["format"] == "json"
+    assert payload["render"]["destination"] == "stdout"
+    assert payload["projection"]["families"] == ["temporal", "sessions", "chronicle", "messages"]
+
+
+def test_read_spec_accepts_projection_expression() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--plain",
+            "repo:polylogue",
+            "read",
+            "--view",
+            "context-image",
+            "--projection",
+            "max-tokens:1234,redact-paths:false,include-assertions:true",
+            "--spec",
+            "--format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["projection"]["max_tokens"] == 1234
+    assert payload["projection"]["redact_paths"] is False
+    assert payload["projection"]["include_assertions"] is True
+    assert "assertions" in payload["projection"]["families"]
+
+
+def test_read_spec_rejects_conflicting_projection_expression_alias() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--plain",
+            "repo:polylogue",
+            "read",
+            "--view",
+            "context-image",
+            "--projection",
+            "max-tokens:1234",
+            "--max-tokens",
+            "999",
+            "--spec",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 2
+    assert "Conflicting projection max_tokens" in result.output
+
+
+def test_read_spec_rejects_conflicting_render_expression_alias() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--plain",
+            "repo:polylogue",
+            "read",
+            "--view",
+            "temporal",
+            "--render",
+            "timestamps:omit",
+            "--timestamps",
+            "include-available",
+            "--spec",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 2
+    assert "Conflicting render timestamps" in result.output
+
+
+def test_read_spec_to_file_writes_composed_projection_contract(tmp_path: Path) -> None:
+    out_path = tmp_path / "projection-spec.json"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--plain",
+            "--origin",
+            "claude-code-session",
+            "repo:polylogue",
+            "read",
+            "--view",
+            "temporal,chronicle",
+            "--format",
+            "json",
+            "--to",
+            "file",
+            "--out",
+            str(out_path),
+            "--limit",
+            "8",
+            "--spec",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Wrote to" in result.output
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert payload["selection"]["query"] == "repo:polylogue"
+    assert payload["render"]["destination"] == "file"
+    assert payload["render"]["out"] == str(out_path)
 
 
 def test_read_spec_moves_standalone_chronicle_limit_to_projection_policy() -> None:
@@ -174,6 +430,31 @@ def test_read_spec_moves_standalone_chronicle_limit_to_projection_policy() -> No
     assert "limit" not in payload["selection"]
     assert payload["projection"]["edge_limit"] == 3
     assert payload["projection"]["body_policy"] == "authored-dialogue"
+
+
+def test_read_spec_maps_dialogue_to_authored_dialogue_projection() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--plain",
+            "--id",
+            "codex-session:abc",
+            "read",
+            "--view",
+            "dialogue",
+            "--format",
+            "markdown",
+            "--spec",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["projection"]["families"] == ["messages", "blocks"]
+    assert payload["projection"]["body_policy"] == "authored-dialogue"
+    assert payload["render"]["timestamps"] == "include-available"
 
 
 def test_read_spec_moves_standalone_message_window_to_projection_policy() -> None:
@@ -278,8 +559,63 @@ def test_read_spec_records_context_image_selector_fields() -> None:
         "project_repo": "github.com/Sinity/polylogue",
         "limit": 3,
     }
-    assert payload["projection"]["families"] == ["context", "messages", "assertions"]
+    assert payload["projection"]["families"] == ["context", "messages"]
+    assert payload["projection"]["body_policy"] == "authored-dialogue"
+    assert payload["projection"]["redact_paths"] is True
+    assert payload["projection"]["include_assertions"] is False
+    assert {"tool_use", "tool_result", "function_call", "function_call_output"} <= set(
+        payload["projection"]["exclude_block_kinds"]
+    )
     assert payload["render"]["layout"] == "context-image"
+
+
+def test_read_spec_records_context_image_redaction_policy() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--plain",
+            "read",
+            "--view",
+            "context-image",
+            "--format",
+            "json",
+            "--query",
+            "route contracts",
+            "--no-redact",
+            "--spec",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["projection"]["redact_paths"] is False
+
+
+def test_read_spec_records_context_image_assertion_policy() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--plain",
+            "read",
+            "--view",
+            "context-image",
+            "--format",
+            "json",
+            "--query",
+            "route contracts",
+            "--include-assertions",
+            "--spec",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["projection"]["families"] == ["context", "messages", "assertions"]
+    assert payload["projection"]["include_assertions"] is True
 
 
 def test_read_handler_invocation_carries_projection_spec() -> None:

@@ -6,11 +6,13 @@ import asyncio
 import re
 import sqlite3
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from polylogue.config import Config
+from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.logging import get_logger
 from polylogue.maintenance.models import DerivedModelStatus, MaintenanceCategory
 from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
@@ -21,6 +23,7 @@ from polylogue.maintenance.targets import (
     build_maintenance_target_catalog,
 )
 from polylogue.protocols import ProgressCallback
+from polylogue.sources.dispatch import is_stream_record_provider
 from polylogue.storage.blob_repair import count_orphaned_blobs_sync, repair_orphaned_blobs_data
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.insights.session.repair_assessment import (
@@ -36,22 +39,74 @@ from polylogue.storage.message_type_backfill import (
 logger = get_logger(__name__)
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 _PROBE_ONLY_EXACT_MESSAGE_ROW_LIMIT = 100_000
+RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES = 1024 * 1024 * 1024
 
 
-def _raw_materialization_candidate_ids(config: Config, *, raw_artifact_id: str | None = None) -> tuple[list[str], int]:
+def _format_bytes(value: int) -> str:
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    amount = float(max(value, 0))
+    for unit in units:
+        if amount < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(amount)} B"
+            return f"{amount:.1f} {unit}"
+        amount /= 1024
+    return f"{int(amount)} B"
+
+
+@dataclass(frozen=True)
+class RawMaterializationCandidates:
+    raw_ids: list[str]
+    missing_blobs: int
+    already_parsed: int
+    raw_blob_bytes: dict[str, int] = field(default_factory=dict)
+    raw_origins: dict[str, str] = field(default_factory=dict)
+    raw_source_paths: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def total_blob_bytes(self) -> int:
+        return sum(self.raw_blob_bytes.get(raw_id, 0) for raw_id in self.raw_ids)
+
+    @property
+    def max_blob_bytes(self) -> int:
+        return max((self.raw_blob_bytes.get(raw_id, 0) for raw_id in self.raw_ids), default=0)
+
+
+def _raw_materialization_origin_from_provider(provider: str | None) -> str | None:
+    if provider is None:
+        return None
+    return origin_from_provider(Provider.from_string(provider)).value
+
+
+def _raw_materialization_candidate_ids(
+    config: Config,
+    *,
+    raw_artifact_id: str | None = None,
+    provider: str | None = None,
+    source_family: str | None = None,
+    source_root: Path | None = None,
+) -> RawMaterializationCandidates:
     """Return replayable raw ids plus missing-blob debt count.
 
     Raw evidence is the durable source of truth, but a raw row whose
     content-addressed blob is absent cannot be reparsed without outside
     evidence. Keep those rows as debt instead of mutating or deleting them.
+    Broad repair only queues acquired-but-unparsed rows. An explicit scope
+    (raw artifact, provider/origin, source family, or source root) may queue
+    already-parsed non-materialized rows because that is a deliberate bounded
+    replay, not a blind archive-wide retry.
     """
     source_db = config.archive_root / "source.db"
     index_db = config.archive_root / "index.db"
     if not source_db.exists() or not index_db.exists():
-        return [], 0
+        return RawMaterializationCandidates([], 0, 0)
     blob_store = BlobStore(config.archive_root / "blob")
     raw_ids: list[str] = []
+    raw_blob_bytes: dict[str, int] = {}
+    raw_origins: dict[str, str] = {}
+    raw_source_paths: dict[str, str] = {}
     missing_blobs = 0
+    already_parsed = 0
     with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
         conn.row_factory = sqlite3.Row
         conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
@@ -60,9 +115,26 @@ def _raw_materialization_candidate_ids(config: Config, *, raw_artifact_id: str |
         if raw_artifact_id is not None:
             raw_filter = "AND r.raw_id = ?"
             params.append(raw_artifact_id)
+        origin_filter = ""
+        provider_origin = _raw_materialization_origin_from_provider(provider)
+        if provider_origin is not None:
+            origin_filter += " AND r.origin = ?"
+            params.append(provider_origin)
+        if source_family is not None:
+            origin_filter += " AND r.origin = ?"
+            params.append(source_family)
+        source_root_filter = ""
+        if source_root is not None:
+            normalized_root = str(source_root).rstrip("/")
+            source_root_filter = " AND (r.source_path = ? OR r.source_path LIKE ?)"
+            params.extend((normalized_root, f"{normalized_root}/%"))
+        include_already_parsed = any(
+            value is not None for value in (raw_artifact_id, provider_origin, source_family, source_root)
+        )
+        parsed_filter = "" if include_already_parsed else "AND r.parsed_at_ms IS NULL"
         rows = conn.execute(
             f"""
-            SELECT r.raw_id, r.origin, r.native_id, r.source_path, r.blob_hash
+            SELECT r.raw_id, r.origin, r.native_id, r.source_path, r.blob_hash, r.blob_size, r.parsed_at_ms
             FROM raw_sessions AS r
             LEFT JOIN index_tier.sessions AS s_by_raw ON s_by_raw.raw_id = r.raw_id
             LEFT JOIN index_tier.sessions AS s_by_native
@@ -72,12 +144,15 @@ def _raw_materialization_candidate_ids(config: Config, *, raw_artifact_id: str |
             WHERE s_by_raw.raw_id IS NULL
               AND s_by_native.native_id IS NULL
               AND r.parse_error IS NULL
+              {parsed_filter}
               AND NOT (
-                r.validation_status = 'skipped'
+                COALESCE(r.validation_status, '') = 'skipped'
                 AND r.parsed_at_ms IS NOT NULL
                 AND r.parse_error IS NULL
               )
               {raw_filter}
+              {origin_filter}
+              {source_root_filter}
             ORDER BY r.acquired_at_ms DESC, r.raw_id ASC
             """,
             params,
@@ -87,10 +162,31 @@ def _raw_materialization_candidate_ids(config: Config, *, raw_artifact_id: str |
                 continue
             blob_hash = row["blob_hash"].hex() if isinstance(row["blob_hash"], bytes) else str(row["blob_hash"])
             if blob_store.exists(blob_hash):
-                raw_ids.append(str(row["raw_id"]))
+                raw_id = str(row["raw_id"])
+                raw_ids.append(raw_id)
+                raw_origins[raw_id] = str(row["origin"] or "")
+                raw_source_paths[raw_id] = str(row["source_path"] or "")
+                blob_size = row["blob_size"]
+                if isinstance(blob_size, int):
+                    raw_blob_bytes[raw_id] = blob_size
+                if row["parsed_at_ms"] is not None:
+                    already_parsed += 1
             else:
                 missing_blobs += 1
-    return raw_ids, missing_blobs
+    return RawMaterializationCandidates(
+        raw_ids,
+        missing_blobs,
+        already_parsed,
+        raw_blob_bytes,
+        raw_origins,
+        raw_source_paths,
+    )
+
+
+def _raw_materialization_stream_safe(candidates: RawMaterializationCandidates, raw_id: str) -> bool:
+    origin = Origin.from_string(candidates.raw_origins.get(raw_id))
+    provider = provider_from_origin(origin)
+    return is_stream_record_provider(candidates.raw_source_paths.get(raw_id), provider)
 
 
 def _raw_materialized_by_source_path_native(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
@@ -195,6 +291,17 @@ def _session_insight_requires_archive_wide_rebuild(status: object) -> bool:
             "orphan_latency_profile_row_count",
             "orphan_work_event_inference_count",
             "orphan_phase_inference_count",
+            "stale_day_summary_count",
+        )
+    )
+
+
+def _session_insight_aggregate_debt_count(status: object) -> int:
+    return sum(
+        int(getattr(status, attr, 0) or 0)
+        for attr in (
+            "missing_thread_materialization_count",
+            "stale_thread_count",
             "orphan_thread_count",
             "stale_tag_rollup_count",
             "stale_day_summary_count",
@@ -218,9 +325,12 @@ def _targeted_session_insight_rebuild_ids(
             FROM insight_materialization AS m
             WHERE m.insight_type = ?
               AND m.session_id = s.session_id
+              AND m.materializer_version = ?
+              AND ABS(COALESCE(m.source_sort_key_ms, 0) - COALESCE(s.sort_key_ms, 0)) = 0
         )
         """
         for _insight_type in SESSION_INSIGHT_MATERIALIZATION_TYPES
+        if _insight_type != "thread"
     )
     materializer_version = _session_insight_materializer_version()
     rows = conn.execute(
@@ -271,7 +381,12 @@ def _targeted_session_insight_rebuild_ids(
         (
             materializer_version,
             materializer_version,
-            *SESSION_INSIGHT_MATERIALIZATION_TYPES,
+            *(
+                value
+                for insight_type in SESSION_INSIGHT_MATERIALIZATION_TYPES
+                if insight_type != "thread"
+                for value in (insight_type, materializer_version)
+            ),
         ),
     ).fetchall()
     return tuple(str(row["session_id"] if isinstance(row, sqlite3.Row) else row[0]) for row in rows)
@@ -316,6 +431,7 @@ class RepairResult:
     repaired_count: int
     success: bool
     detail: str = ""
+    metrics: dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> JSONDocument:
         return json_document(
@@ -326,6 +442,7 @@ class RepairResult:
                 "repaired_count": self.repaired_count,
                 "success": self.success,
                 "detail": self.detail,
+                "metrics": dict(self.metrics),
             }
         )
 
@@ -508,6 +625,7 @@ def _repair_result(
     repaired_count: int,
     success: bool,
     detail: str,
+    metrics: dict[str, float] | None = None,
 ) -> RepairResult:
     spec = _maintenance_target_spec(target_name)
     return RepairResult(
@@ -517,6 +635,7 @@ def _repair_result(
         repaired_count=repaired_count,
         success=success,
         detail=detail,
+        metrics=dict(metrics or {}),
     )
 
 
@@ -962,6 +1081,7 @@ def repair_session_insights(
     """
     from polylogue.api.archive import _rebuild_archive_session_insights
     from polylogue.paths import active_index_db_path
+    from polylogue.storage.insights.session.rebuild import refresh_session_insight_aggregates_sync
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     try:
@@ -969,6 +1089,7 @@ def repair_session_insights(
         with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
             status = archive.session_insight_status()
             assessment = assess_session_insight_repairs(status)
+            aggregate_debt = _session_insight_aggregate_debt_count(status)
             targeted_session_ids = (
                 None
                 if session_ids is not None or assessment.row_debt == 0
@@ -984,13 +1105,15 @@ def repair_session_insights(
                         else f"Would: rebuild session insights for {pending:,} scoped session(s)"
                     )
                 elif targeted_session_ids is not None:
-                    pending = len(targeted_session_ids)
+                    pending = len(targeted_session_ids) + aggregate_debt
                     detail = (
                         "Would: session insights already ready"
                         if pending == 0
                         else (
                             "Would: rebuild session insights for "
-                            f"{pending:,} candidate session(s) to repair {assessment.row_debt:,} debt row(s)"
+                            f"{len(targeted_session_ids):,} candidate session(s)"
+                            f" and refresh {aggregate_debt:,} aggregate/thread-materialization debt row(s)"
+                            f" to repair {assessment.row_debt:,} total debt row(s)"
                         )
                     )
                 elif assessment.row_debt == 0:
@@ -1025,13 +1148,12 @@ def repair_session_insights(
             )
             rebuilt_count = rebuilt.total()
             refreshed = archive.session_insight_status()
-            if session_ids is None and assess_session_insight_repairs(refreshed).row_debt > 0:
-                rebuilt = _rebuild_archive_session_insights(
-                    archive,
-                    session_ids=None,
+            if session_ids is None and _session_insight_aggregate_debt_count(refreshed) > 0:
+                aggregate_counts = refresh_session_insight_aggregates_sync(
+                    archive._conn,
                     progress_callback=progress_callback,
                 )
-                rebuilt_count += rebuilt.total()
+                rebuilt_count += aggregate_counts.total()
                 refreshed = archive.session_insight_status()
             # A narrowed rebuild only attests its own slice; do not
             # demand global readiness for a scope-filtered call.
@@ -1128,11 +1250,73 @@ def repair_raw_materialization(
     dry_run: bool = False,
     *,
     raw_artifact_id: str | None = None,
+    provider: str | None = None,
+    source_family: str | None = None,
+    source_root: Path | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> RepairResult:
     """Materialize replayable raw evidence into the index tier."""
-    raw_ids, missing_blobs = _raw_materialization_candidate_ids(config, raw_artifact_id=raw_artifact_id)
+    candidates = _raw_materialization_candidate_ids(
+        config,
+        raw_artifact_id=raw_artifact_id,
+        provider=provider,
+        source_family=source_family,
+        source_root=source_root,
+    )
+    raw_ids = candidates.raw_ids
+    missing_blobs = candidates.missing_blobs
+    metrics = {
+        "raw_materialization_candidate_count": float(len(raw_ids)),
+        "raw_materialization_missing_blob_count": float(missing_blobs),
+        "raw_materialization_already_parsed_count": float(candidates.already_parsed),
+        "raw_materialization_total_blob_bytes": float(candidates.total_blob_bytes),
+        "raw_materialization_max_blob_bytes": float(candidates.max_blob_bytes),
+    }
+    oversized_candidate_raw_ids = [
+        raw_id
+        for raw_id in raw_ids
+        if candidates.raw_blob_bytes.get(raw_id, 0) > RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
+    ]
+    oversized_stream_safe_raw_ids = [
+        raw_id for raw_id in oversized_candidate_raw_ids if _raw_materialization_stream_safe(candidates, raw_id)
+    ]
+    oversized_stream_safe_raw_id_set = set(oversized_stream_safe_raw_ids)
+    oversized_raw_ids = [
+        raw_id for raw_id in oversized_candidate_raw_ids if raw_id not in oversized_stream_safe_raw_id_set
+    ]
+    oversized_raw_id_set = set(oversized_raw_ids)
+    executable_raw_ids = [raw_id for raw_id in raw_ids if raw_id not in oversized_raw_id_set]
+    if oversized_raw_ids:
+        metrics["raw_materialization_oversized_count"] = float(len(oversized_raw_ids))
+        metrics["raw_materialization_execute_blob_limit_bytes"] = float(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)
+    if oversized_stream_safe_raw_ids:
+        metrics["raw_materialization_stream_oversized_count"] = float(len(oversized_stream_safe_raw_ids))
     if dry_run:
-        detail = f"Would: replay {len(raw_ids):,} raw rows into index.db"
+        byte_detail = ""
+        if raw_ids:
+            byte_detail = (
+                f"; queued raw payload bytes total={_format_bytes(candidates.total_blob_bytes)}, "
+                f"largest={_format_bytes(candidates.max_blob_bytes)}"
+            )
+        oversized_detail = ""
+        if oversized_raw_ids:
+            oversized_detail = (
+                f"; {len(oversized_raw_ids):,} raw rows exceed actual replay limit "
+                f"{_format_bytes(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)}"
+            )
+        if oversized_stream_safe_raw_ids:
+            oversized_detail += (
+                f"; {len(oversized_stream_safe_raw_ids):,} oversized stream-record raw rows can use streaming replay"
+            )
+        if candidates.already_parsed:
+            detail = (
+                f"Would: replay {len(raw_ids):,} raw rows into index.db "
+                f"({candidates.already_parsed:,} already parsed but not materialized)"
+            )
+        else:
+            detail = f"Would: replay {len(raw_ids):,} acquired-but-unparsed raw rows into index.db"
+        detail += byte_detail
+        detail += oversized_detail
         if missing_blobs:
             detail += f"; {missing_blobs:,} raw rows blocked by missing blobs"
         return _repair_result(
@@ -1140,6 +1324,7 @@ def repair_raw_materialization(
             repaired_count=len(raw_ids),
             success=True,
             detail=detail,
+            metrics=metrics,
         )
     if not raw_ids:
         detail = "Raw materialization ready"
@@ -1150,40 +1335,101 @@ def repair_raw_materialization(
             repaired_count=0,
             success=missing_blobs == 0,
             detail=detail,
+            metrics=metrics,
+        )
+    if not executable_raw_ids:
+        return _repair_result(
+            "raw_materialization",
+            repaired_count=0,
+            success=False,
+            detail=(
+                f"Raw materialization blocked: {len(oversized_raw_ids):,} raw rows exceed actual replay limit "
+                f"{_format_bytes(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)}; "
+                f"largest={_format_bytes(candidates.max_blob_bytes)}. Use a streaming provider-specific "
+                "repair path before replaying these rows."
+            ),
+            metrics=metrics,
         )
 
-    async def _run() -> int:
+    async def _run() -> tuple[int, int]:
         from polylogue.pipeline.services.parsing import ParsingService
         from polylogue.storage.repository import SessionRepository
         from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
         backend = SQLiteBackend(db_path=config.archive_root / "index.db")
         repository = SessionRepository(backend=backend, archive_root=config.archive_root)
+        processed_total = 0
+        failure_total = 0
         try:
             service = ParsingService(repository=repository, archive_root=config.archive_root, config=config)
-            result = await service.parse_from_raw(raw_ids=raw_ids, force_write=False, repair_message_fts=False)
-            return len(result.processed_ids)
+            total = len(executable_raw_ids)
+            for index, raw_id in enumerate(executable_raw_ids, start=1):
+                raw_size = candidates.raw_blob_bytes.get(raw_id, 0)
+                size_suffix = f" size={_format_bytes(raw_size)}" if raw_size else ""
+                if progress_callback is not None:
+                    progress_callback(
+                        index - 1,
+                        desc=f"raw_materialization: parsing raw {index}/{total} {raw_id[:12]}{size_suffix}",
+                    )
+                result = await service.parse_from_raw(
+                    raw_ids=[raw_id],
+                    progress_callback=progress_callback,
+                    force_write=False,
+                    repair_message_fts=False,
+                )
+                processed_total += len(result.processed_ids)
+                failure_total += result.parse_failures
+                if progress_callback is not None:
+                    progress_callback(
+                        index,
+                        desc=(
+                            f"raw_materialization: parsed raw {index}/{total} {raw_id[:12]} changed={processed_total}"
+                        ),
+                    )
+            return processed_total, failure_total
         finally:
             await repository.close()
 
     try:
-        processed = asyncio.run(_run())
+        processed, failures = asyncio.run(_run())
     except Exception as exc:
         return _repair_result(
             "raw_materialization",
             repaired_count=0,
             success=False,
             detail=f"Failed to materialize raw evidence: {exc}",
+            metrics=metrics,
         )
-    fts_result = repair_dangling_fts(config, dry_run=False)
-    detail = f"Replayed {len(raw_ids):,} raw rows; {processed:,} sessions changed; {fts_result.detail}"
+    metrics["raw_materialization_parse_failure_count"] = float(failures)
+    metrics["raw_materialization_session_change_count"] = float(processed)
+    if candidates.already_parsed:
+        detail = (
+            f"Replayed {len(executable_raw_ids):,} raw rows "
+            f"({candidates.already_parsed:,} already parsed but not materialized); "
+            f"{processed:,} sessions changed; message FTS left to ingest triggers or the FTS maintenance stage"
+        )
+    else:
+        detail = (
+            f"Replayed {len(executable_raw_ids):,} acquired-but-unparsed raw rows; "
+            f"{processed:,} sessions changed; message FTS left to ingest triggers or the FTS maintenance stage"
+        )
     if missing_blobs:
         detail += f"; {missing_blobs:,} raw rows remain blocked by missing blobs"
+    if oversized_raw_ids:
+        detail += (
+            f"; {len(oversized_raw_ids):,} raw rows remain blocked by replay limit "
+            f"{_format_bytes(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)}"
+        )
+    if oversized_stream_safe_raw_ids:
+        detail += f"; {len(oversized_stream_safe_raw_ids):,} oversized stream-record raw rows used streaming replay"
+    if failures:
+        detail += f"; {failures:,} raw rows failed during parse/write"
     return _repair_result(
         "raw_materialization",
         repaired_count=processed,
-        success=missing_blobs == 0 and fts_result.success,
+        success=missing_blobs == 0 and failures == 0 and not oversized_raw_ids,
         detail=detail,
+        metrics=metrics,
     )
 
 

@@ -13,7 +13,7 @@ analysis can share the same vocabulary.
 
 ## Why This Exists
 
-The legacy cleanup work removed public recovery/dialogue/tool-output flags, but
+Recent cleanup removed public recovery/dialogue/tool-output flags, but
 `read --view` still mixes several concepts in one option namespace:
 
 - view selection;
@@ -29,8 +29,9 @@ reintroducing special recovery/export/read silos.
 
 - `SelectionSpec` carries refs, query text, origin, time bounds, and limit.
 - `ProjectionSpec` carries evidence families, field selection, body policy,
-  role/block filters, token budget, and redaction policy.
-- `RenderSpec` carries format, destination, layout, and file output path.
+  role/block filters, token budget, assertion inclusion, and redaction policy.
+- `RenderSpec` carries format, destination, layout, timestamp policy, and file
+  output path.
 - `QueryProjectionSpec` composes all three.
 
 Body policies replace ad hoc flags:
@@ -53,6 +54,11 @@ failure-recovery concept, not a read view.
 `QueryProjectionSpec` JSON document. It is an introspection/proof surface: it
 does not execute the read, and it makes the selection/projection/render split
 visible before deeper handler wiring.
+
+Timestamp handling is render policy. `render.timestamps=include-available`
+means timestamp-bearing renderers preserve source timestamps where the selected
+evidence carries them; it is not a claim that every selected row has timestamp
+coverage.
 
 ## Next Wiring
 

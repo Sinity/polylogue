@@ -149,6 +149,20 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
         "operations": [],
         "last_ingestion_batch": None,
         "fts_readiness": fts_payload,
+        "raw_materialization_readiness": {
+            "available": False,
+            "total": 0,
+            "critical": 0,
+            "warning": 0,
+            "actionable": 0,
+            "blocked": 0,
+            "affected_total": 0,
+            "affected_actionable": 0,
+            "affected_open": 0,
+            "category_counts": {},
+            "source_family_counts": {},
+            "sampled_rows": [],
+        },
         "embedding_readiness": {},
         "memory": {},
         "health": {},
@@ -195,6 +209,12 @@ def _minimal_component_readiness(payload: Mapping[str, object]) -> dict[str, obj
             browser_state,
         ),
         "archive_storage": _minimal_component("archive_storage", "archive", "unknown", "minimal snapshot"),
+        "raw_materialization": _minimal_component(
+            "raw_materialization",
+            "archive",
+            "unknown",
+            "minimal snapshot",
+        ),
         "daemon_ingest": _minimal_component("daemon_ingest", "daemon", "unknown", "minimal snapshot"),
         "embeddings": _minimal_component("embeddings", "semantic", "unknown", "minimal snapshot"),
         "search": _minimal_component(
@@ -239,7 +259,7 @@ def get_status_snapshot_payload() -> JSONDocument:
     return _minimal_status_payload(refresh_in_progress=_REFRESH_LOCK.locked())
 
 
-def refresh_status_snapshot(*, payload: JSONDocument | None = None) -> StatusSnapshot:
+def refresh_status_snapshot(*, payload: JSONDocument | None = None, rich: bool = True) -> StatusSnapshot:
     """Refresh the global daemon status snapshot if no refresh is in progress."""
     global _SNAPSHOT
     if not _REFRESH_LOCK.acquire(blocking=False):
@@ -257,7 +277,12 @@ def refresh_status_snapshot(*, payload: JSONDocument | None = None) -> StatusSna
         refresh_error: str | None = None
         try:
             if payload is None:
-                payload = _minimal_status_payload()
+                if rich:
+                    from polylogue.daemon.status import daemon_status_payload
+
+                    payload = daemon_status_payload()
+                else:
+                    payload = _minimal_status_payload()
         except Exception as exc:
             refresh_error = str(exc)
             payload = _minimal_status_payload(refresh_error=refresh_error)

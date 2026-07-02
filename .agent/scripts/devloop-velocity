@@ -1,0 +1,369 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+Usage: .agent/scripts/devloop-velocity [--record] [--top N]
+
+Summarize devloop speed from existing scaffold evidence: archive state, active
+focus, recent elapsed log gaps, longest logged gaps, and currently active
+heavy-ish processes. This is a velocity diagnostic, not a product proof.
+
+Use --record during Meta/process slices to write the latest report under
+.agent/task-history/velocity-latest.txt and append a concise operating-log
+entry. The report path is local ignored state; it is not a conductor mirror.
+EOF
+  exit 0
+fi
+
+top=8
+record=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --record)
+      record=1
+      shift
+      ;;
+    --top)
+      top="${2:-8}"
+      shift 2
+      ;;
+    *)
+      printf 'unknown argument: %s\n' "$1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
+current="${POLYLOGUE_AGENT_CURRENT:-$repo/.agent/conductor-devloop}"
+log="$current/OPERATING-LOG.md"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=.agent/scripts/lib-devloop
+source "$script_dir/lib-devloop"
+
+cd "$repo"
+
+if [ "$record" -eq 1 ]; then
+  report="$repo/.agent/task-history/velocity-latest.txt"
+  mkdir -p "$(dirname "$report")"
+  "$0" --top "$top" > "$report"
+  cat "$report"
+  summary="$(
+    python3 - "$report" <<'PY'
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+interesting_prefixes = (
+    "root=",
+    "index=",
+    "source=",
+    "daemon=",
+    "agent_packet=",
+    "transitions=",
+    "proof_direct_skips=",
+    "rows=",
+    "recent50=",
+)
+lines = [
+    line
+    for line in text.splitlines()
+    if line.startswith(interesting_prefixes)
+]
+print("\n".join(lines[:20]))
+PY
+  )"
+  "$repo/.agent/scripts/devloop-log" "velocity-audit" "Loop phase: reflect
+Focus: Meta -> Velocity
+Trigger: devloop-velocity --record
+Primary aim: make devloop speed, focus-mode cadence, packet growth, and task-history friction inspectable during the Meta slice.
+Evidence touched: $report
+Action taken: recorded the latest velocity report outside the conductor packet and refreshed generated event sidecar.
+Artifact/proof: devloop-velocity completed and wrote $report.
+Velocity note: ${summary:-velocity report recorded; no compact summary lines parsed}
+Next decision: use the audit to choose a small executable process improvement or return to Direction."
+  "$repo/.agent/scripts/devloop-sync" >/dev/null
+  exit 0
+fi
+
+printf '== archive ==\n'
+status_json="$(".agent/scripts/devloop-status" --json 2>/dev/null)"
+STATUS_JSON="$status_json" python3 - <<'PY'
+import json, sys
+import os
+try:
+    data = json.loads(os.environ["STATUS_JSON"])
+except json.JSONDecodeError:
+    sys.exit(1)
+print(f"root={data.get('archive_root')}")
+idx = data.get("index", {})
+src = data.get("source", {})
+daemon = data.get("daemon", {})
+print("index=" f"v{idx.get('schema_version')} " f"sessions={idx.get('sessions')} " f"messages={idx.get('messages')}")
+print(f"source=v{src.get('schema_version')} raw_sessions={src.get('raw_sessions')}")
+daemon_state = "running" if daemon.get("polylogued") else daemon.get("devloop_state")
+print(
+    f"daemon={daemon_state} "
+    f"service={daemon.get('devloop_state')} "
+    f"prod={daemon.get('prod_state')}"
+)
+packet = data.get("agent_packet", {})
+print(
+    "agent_packet="
+    f"bytes={packet.get('bytes')} files={packet.get('files')} "
+    f"log_bytes={packet.get('operating_log_bytes')} "
+    f"events_bytes={packet.get('events_jsonl_bytes')}"
+)
+PY
+
+printf '\n== active focus ==\n'
+if [ -f "$current/ACTIVE-LOOP.md" ]; then
+  rg -n '^(Focus|Trigger|Decision|Next Action):' "$current/ACTIVE-LOOP.md" || true
+else
+  printf 'missing ACTIVE-LOOP.md\n'
+fi
+
+printf '\n== recent elapsed gaps ==\n'
+if [ -f "$log" ]; then
+  rg '^(## [0-9]{4}-|Elapsed:|Elapsed since previous entry:)' "$log" \
+    | tail -40 \
+    | python3 -c '
+import re, sys
+entries = []
+current = None
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if line.startswith("## "):
+        current = line[3:]
+    elif line.startswith("Elapsed") and current:
+        entries.append((current, line))
+for title, elapsed in entries[-12:]:
+    print(f"{elapsed} :: {title}")
+'
+else
+  printf 'missing OPERATING-LOG.md\n'
+fi
+
+printf '\n== longest logged minute gaps ==\n'
+if [ -f "$log" ]; then
+  python3 - "$log" "$top" <<'PY'
+import re
+import sys
+
+path = sys.argv[1]
+top = int(sys.argv[2])
+entries: list[tuple[int, str, str]] = []
+current = ""
+
+def minutes(line: str) -> int | None:
+    m = re.search(r"Elapsed(?: since previous entry)?:\s*(?:(\d+)h\s*)?(\d+)m", line)
+    if not m:
+        return None
+    return int(m.group(1) or 0) * 60 + int(m.group(2))
+
+with open(path, encoding="utf-8") as handle:
+    for raw in handle:
+        line = raw.rstrip("\n")
+        if line.startswith("## "):
+            current = line[3:]
+        elif line.startswith("Elapsed"):
+            mins = minutes(line)
+            if mins is not None and current:
+                entries.append((mins, line, current))
+
+for mins, elapsed, title in sorted(entries, reverse=True)[:top]:
+    print(f"{mins:4d}m | {elapsed} :: {title}")
+PY
+else
+  printf 'missing OPERATING-LOG.md\n'
+fi
+
+printf '\n== focus transition audit ==\n'
+if [ -f "$log" ]; then
+  DEVLOOP_FOCUS_EDGES="$(devloop_focus_edges)" python3 - "$log" <<'PY'
+import os
+import re
+import sys
+from collections import Counter
+
+path = sys.argv[1]
+entries: list[tuple[str, str]] = []
+title = ""
+body: list[str] = []
+with open(path, encoding="utf-8") as handle:
+    for raw in handle:
+        line = raw.rstrip("\n")
+        if line.startswith("## "):
+            if title:
+                entries.append((title, "\n".join(body)))
+            title = line[3:]
+            body = []
+        elif title:
+            body.append(line)
+if title:
+    entries.append((title, "\n".join(body)))
+
+transitions: list[tuple[str, str, str, str]] = []
+for title, body_text in entries:
+    for line in body_text.splitlines():
+        match = re.match(r"Focus: ([A-Za-z]+) -> ([A-Za-z]+)$", line)
+        if match:
+            transitions.append((title, body_text, match.group(1), match.group(2)))
+
+expected_edges = {
+    tuple(line.split(":", 1))
+    for line in os.environ.get("DEVLOOP_FOCUS_EDGES", "").splitlines()
+    if ":" in line
+}
+if not expected_edges:
+    raise SystemExit("missing DEVLOOP_FOCUS_EDGES")
+edge_counts = Counter((src, dst) for _, _body, src, dst in transitions)
+print(f"transitions={len(transitions)}")
+for (src, dst), count in edge_counts.most_common():
+    print(f"{src}->{dst}: {count}")
+
+unattributed_edges: list[tuple[str, str, str]] = []
+attributed_edges: list[tuple[str, str, str]] = []
+for item_title, item_body, src, dst in transitions:
+    if (src, dst) in expected_edges:
+        continue
+    lowered = item_body.lower()
+    if "historical focus anomaly" in lowered or "intentional focus anomaly" in lowered:
+        attributed_edges.append((item_title, src, dst))
+    else:
+        unattributed_edges.append((item_title, src, dst))
+if unattributed_edges:
+    print("unattributed_unexpected_edges:")
+    for item_title, src, dst in unattributed_edges[-8:]:
+        print(f"  {src}->{dst} :: {item_title}")
+if attributed_edges:
+    print("attributed_unexpected_edges:")
+    for item_title, src, dst in attributed_edges[-8:]:
+        print(f"  {src}->{dst} :: {item_title}")
+
+proof_exits = Counter(dst for _, _body, src, dst in transitions if src == "Proof")
+if proof_exits:
+    print("proof_exits=" + ", ".join(f"{dst}:{count}" for dst, count in proof_exits.most_common()))
+    direct_skip_items = [
+        (title, dst)
+        for title, _body, src, dst in transitions
+        if src == "Proof" and dst not in {"Artifact", "Velocity"}
+    ]
+    direct_skips = len(direct_skip_items)
+    if direct_skips:
+        print(
+            f"proof_direct_skips={direct_skips} "
+            "(audit whether proof claims skipped artifact or velocity closure)"
+        )
+        print("proof_direct_skip_details:")
+        for item_title, dst in direct_skip_items[-8:]:
+            print(f"  Proof->{dst} :: {item_title}")
+
+recent = transitions[-8:]
+if recent:
+    print("recent:")
+    for item_title, _body, src, dst in recent:
+        print(f"  {src}->{dst} :: {item_title}")
+PY
+else
+  printf 'missing OPERATING-LOG.md\n'
+fi
+
+printf '\n== task-history signal ==\n'
+task_history="$repo/.agent/task-history/tasks.jsonl"
+if [ -f "$task_history" ]; then
+  python3 - "$task_history" "$top" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+from statistics import mean
+
+path = Path(sys.argv[1])
+top = int(sys.argv[2])
+rows: list[dict[str, object]] = []
+for raw in path.read_text(encoding="utf-8").splitlines():
+    if not raw.strip():
+        continue
+    try:
+        row = json.loads(raw)
+    except json.JSONDecodeError:
+        continue
+    if isinstance(row, dict):
+        rows.append(row)
+
+def command(row: dict[str, object]) -> str:
+    value = row.get("command")
+    return value if isinstance(value, str) else ""
+
+def args(row: dict[str, object]) -> list[str]:
+    value = row.get("args")
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return []
+
+def duration(row: dict[str, object]) -> float:
+    value = row.get("duration_ms")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+def exit_code(row: dict[str, object]) -> int:
+    value = row.get("exit_code")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+def is_internal_probe(row: dict[str, object]) -> bool:
+    return command(row) == "workspace worktree-gc" and args(row) == ["--json"]
+
+signal = [row for row in rows if not is_internal_probe(row)]
+internal_count = len(rows) - len(signal)
+print(f"rows={len(rows)} signal_rows={len(signal)} ignored_internal_probe_rows={internal_count}")
+if signal:
+    recent_window = signal[-50:]
+    exits = Counter(exit_code(row) for row in recent_window)
+    avg_ms = mean(duration(row) for row in recent_window)
+    print(
+        "recent50="
+        f"failures={sum(count for code, count in exits.items() if code != 0)} "
+        f"avg_ms={avg_ms:.0f} "
+        "exit_codes="
+        + ",".join(f"{code}:{count}" for code, count in sorted(exits.items()))
+    )
+    print("top_commands:")
+    for name, count in Counter(command(row) for row in signal).most_common(top):
+        print(f"  {count:4d}x {name}")
+    failures = [row for row in signal if exit_code(row) != 0][-min(top, 8):]
+    if failures:
+        print("recent_failures:")
+        for row in failures:
+            arg_text = " ".join(args(row))
+            print(
+                f"  {row.get('timestamp')} exit={exit_code(row)} "
+                f"{command(row)} {arg_text}".rstrip()
+            )
+    slow = sorted(signal, key=duration, reverse=True)[: min(top, 8)]
+    if slow:
+        print("slowest:")
+        for row in slow:
+            arg_text = " ".join(args(row))
+            print(
+                f"  {duration(row):8.0f}ms exit={exit_code(row)} "
+                f"{command(row)} {arg_text}".rstrip()
+            )
+PY
+else
+  printf 'missing task history\n'
+fi
+
+printf '\n== active heavy-ish processes ==\n'
+pgrep -af 'devtools verify|devtools test|pytest|polylogue import|polylogued run|nix build|nix develop --command|borg create' || true

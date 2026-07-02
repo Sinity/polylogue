@@ -36,7 +36,26 @@ from polylogue.archive.stats import ArchiveStats
 from polylogue.core.dates import parse_date
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONValue, require_json_value
+from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.core.sources import origin_from_provider
+from polylogue.insights.affordance_usage import (
+    clean_patterns as _clean_affordance_patterns,
+)
+from polylogue.insights.affordance_usage import (
+    evidence_kind_for_row as _affordance_evidence_kind,
+)
+from polylogue.insights.affordance_usage import (
+    family_for_text as _affordance_family_for_text,
+)
+from polylogue.insights.affordance_usage import (
+    like_param as _affordance_like_param,
+)
+from polylogue.insights.affordance_usage import (
+    matched_by_row as _affordance_matched_by,
+)
+from polylogue.insights.affordance_usage import (
+    normalized_tool_name_for_row as _affordance_normalized_tool_name,
+)
 from polylogue.insights.archive import (
     ArchiveCoverageInsight,
     ArchiveDebtInsight,
@@ -319,7 +338,7 @@ class ArchiveAssertionQueryRow:
 
 @dataclass(frozen=True, slots=True)
 class ArchiveRunQueryRow:
-    """Terminal query projection over materialized ``session_runs`` rows."""
+    """Terminal query projection over source-derived or materialized run rows."""
 
     session_id: str
     origin: str
@@ -329,7 +348,7 @@ class ArchiveRunQueryRow:
 
 @dataclass(frozen=True, slots=True)
 class ArchiveObservedEventQueryRow:
-    """Terminal query projection over materialized ``session_observed_events`` rows."""
+    """Terminal query projection over observed events from materialized or source rows."""
 
     session_id: str
     origin: str
@@ -339,7 +358,7 @@ class ArchiveObservedEventQueryRow:
 
 @dataclass(frozen=True, slots=True)
 class ArchiveContextSnapshotQueryRow:
-    """Terminal query projection over materialized ``session_context_snapshots`` rows."""
+    """Terminal query projection over source-derived or materialized context rows."""
 
     session_id: str
     origin: str
@@ -355,6 +374,467 @@ class ArchiveQueryUnitAggregateRow:
     group_by: str | None
     group_key: str | None
     count: int
+
+
+_OBSERVED_EVENT_RELATION_SQL = """
+WITH session_started_base AS (
+    SELECT
+        'source' AS row_source,
+        'observed-event:' || s0.session_id || ':session_started' AS event_ref,
+        s0.session_id AS session_id,
+        'run:' || s0.session_id AS run_ref,
+        0 AS position,
+        printf('%016d', COALESCE(s0.created_at_ms, s0.updated_at_ms, 0)) AS source_updated_at,
+        'session_started' AS kind,
+        COALESCE(NULLIF(s0.title, ''), s0.session_id) AS summary,
+        'observed' AS delivery_state,
+        'session:' || s0.session_id AS subject_ref,
+        json_array('session:' || s0.session_id) AS object_refs_json,
+        json_array(s0.session_id) AS evidence_refs_json,
+        json_object('origin', s0.origin, 'native_id', s0.native_id) AS payload_json,
+        trim(COALESCE(s0.title, '') || ' ' || COALESCE(s0.native_id, '') || ' ' || COALESCE(s0.origin, '')) AS search_text,
+        NULL AS subject_message_id,
+        NULL AS tool_use_position,
+        NULL AS result_message_id,
+        NULL AS result_position
+    FROM sessions s0
+),
+tool_finished_base AS (
+    SELECT
+        'source' AS row_source,
+        'observed-event:' || u.block_id || ':tool_finished' AS event_ref,
+        u.session_id AS session_id,
+        'run:' || u.session_id AS run_ref,
+        u.rowid AS position,
+        NULL AS source_updated_at,
+        'tool_finished' AS kind,
+        COALESCE(NULLIF(u.tool_name, ''), 'unknown') AS tool_name,
+        u.tool_id AS tool_id,
+        u.tool_command AS command,
+        u.message_id AS subject_message_id,
+        u.position AS tool_use_position,
+        r.message_id AS result_message_id,
+        r.position AS result_position,
+        CASE
+            WHEN COALESCE(NULLIF(LOWER(u.tool_name), ''), 'unknown') >= 'mcp__'
+                AND COALESCE(NULLIF(LOWER(u.tool_name), ''), 'unknown') < 'mcp_`'
+                THEN 'mcp'
+            WHEN COALESCE(u.tool_command, '') <> '' THEN 'shell'
+            ELSE COALESCE(NULLIF(u.semantic_type, ''), 'tool_use')
+        END AS handler_kind,
+        CASE
+            WHEN r.tool_result_exit_code IS NOT NULL
+                THEN CASE WHEN r.tool_result_exit_code = 0 THEN 'ok' ELSE 'failed' END
+            WHEN r.tool_result_is_error = 1 THEN 'failed'
+            WHEN r.tool_result_is_error = 0 THEN 'ok'
+            ELSE 'unknown'
+        END AS status,
+        CASE
+            WHEN u.tool_id IS NOT NULL AND u.tool_id <> ''
+                THEN json_array('tool-call:' || u.session_id || ':' || u.tool_id)
+            ELSE '[]'
+        END AS object_refs_json,
+        json_array(
+            u.session_id || '::' || u.message_id || '::' || u.position,
+            r.session_id || '::' || r.message_id || '::' || r.position
+        ) AS evidence_refs_json,
+        trim(COALESCE(u.search_text, '') || ' ' || COALESCE(r.search_text, '')) AS search_text
+    FROM blocks u
+    JOIN blocks r
+        ON r.session_id = u.session_id
+        AND r.tool_id = u.tool_id
+        AND r.block_type = 'tool_result'
+    WHERE u.block_type = 'tool_use'
+        AND u.tool_id IS NOT NULL
+        AND u.tool_id <> ''
+        AND ({source_where})
+),
+source_observed_events AS (
+    SELECT * FROM session_started_base
+    UNION ALL
+    SELECT
+        row_source,
+        event_ref,
+        session_id,
+        run_ref,
+        position,
+        source_updated_at,
+        kind,
+        tool_name || ' [' || handler_kind || '] (' || status || ')'
+            || CASE WHEN COALESCE(command, '') <> '' THEN ' - ' || command ELSE '' END AS summary,
+        'observed' AS delivery_state,
+        'message:' || subject_message_id AS subject_ref,
+        object_refs_json,
+        evidence_refs_json,
+        json_object(
+            'tool_name', tool_name,
+            'tool_id', tool_id,
+            'command', command,
+            'handler_kind', handler_kind,
+            'status', status
+        ) AS payload_json,
+        search_text,
+        subject_message_id,
+        tool_use_position,
+        result_message_id,
+        result_position
+    FROM tool_finished_base
+),
+materialized_observed_events AS (
+    SELECT
+        'materialized' AS row_source,
+        e.event_ref,
+        e.session_id,
+        e.run_ref,
+        e.position,
+        e.source_updated_at,
+        e.kind,
+        e.summary,
+        e.delivery_state,
+        e.subject_ref,
+        e.object_refs_json,
+        e.evidence_refs_json,
+        e.payload_json,
+        e.search_text,
+        NULL AS subject_message_id,
+        NULL AS tool_use_position,
+        NULL AS result_message_id,
+        NULL AS result_position
+    FROM session_observed_events e
+    WHERE e.kind NOT IN ('session_started', 'tool_finished')
+        OR NOT EXISTS (
+            SELECT 1
+            FROM source_observed_events source
+            WHERE source.session_id = e.session_id
+                AND source.kind = e.kind
+        )
+),
+observed_events AS (
+    SELECT * FROM source_observed_events
+    UNION ALL
+    SELECT * FROM materialized_observed_events
+)
+"""
+
+
+_SOURCE_RUN_RELATION_SQL = """
+WITH source_runs AS (
+    SELECT
+        'source' AS row_source,
+        'run:' || s0.session_id AS run_ref,
+        s0.session_id AS session_id,
+        0 AS position,
+        printf('%016d', COALESCE(s0.updated_at_ms, s0.created_at_ms, 0)) AS source_updated_at,
+        s0.session_id AS native_session_id,
+        s0.parent_session_id AS native_parent_session_id,
+        CASE WHEN s0.parent_session_id IS NOT NULL THEN 'run:' || s0.parent_session_id ELSE NULL END AS parent_run_ref,
+        'agent:' ||
+            CASE
+                WHEN s0.origin = 'codex-session' THEN 'codex'
+                WHEN s0.origin = 'claude-code-session' THEN 'claude-code'
+                WHEN s0.origin = 'chatgpt-export' THEN 'chatgpt'
+                WHEN s0.origin IN ('gemini-cli-session', 'hermes-session', 'antigravity-session') THEN 'local'
+                ELSE 'unknown'
+            END || '/main' AS agent_ref,
+        json_array('run:' || s0.session_id) AS lineage_refs_json,
+        s0.origin AS provider_origin,
+        CASE
+            WHEN s0.origin = 'codex-session' THEN 'codex'
+            WHEN s0.origin = 'claude-code-session' THEN 'claude-code'
+            WHEN s0.origin = 'chatgpt-export' THEN 'chatgpt'
+            WHEN s0.origin IN ('gemini-cli-session', 'hermes-session', 'antigravity-session') THEN 'local'
+            ELSE 'unknown'
+        END AS harness,
+        'main' AS role,
+        COALESCE(NULLIF(s0.title, ''), s0.session_id) AS title,
+        NULL AS cwd,
+        s0.git_branch AS git_branch,
+        CASE WHEN s0.message_count > 0 OR s0.tool_use_count > 0 THEN 'completed' ELSE 'unknown' END AS status,
+        'raw' AS confidence,
+        s0.session_id AS transcript_ref,
+        json_array(s0.session_id) AS evidence_refs_json,
+        'context-snapshot:' || s0.session_id || ':session_start' AS context_snapshot_ref,
+        trim(COALESCE(s0.title, '') || ' ' || COALESCE(s0.native_id, '') || ' ' || COALESCE(s0.git_branch, '')) AS search_text
+    FROM sessions s0
+),
+materialized_runs AS (
+    SELECT
+        'materialized' AS row_source,
+        r.run_ref,
+        r.session_id,
+        r.position,
+        r.source_updated_at,
+        r.native_session_id,
+        r.native_parent_session_id,
+        r.parent_run_ref,
+        r.agent_ref,
+        r.lineage_refs_json,
+        r.provider_origin,
+        r.harness,
+        r.role,
+        r.title,
+        r.cwd,
+        r.git_branch,
+        r.status,
+        r.confidence,
+        r.transcript_ref,
+        r.evidence_refs_json,
+        r.context_snapshot_ref,
+        r.search_text,
+        r.payload_json
+    FROM session_runs r
+    WHERE r.role <> 'main'
+        OR NOT EXISTS (
+            SELECT 1
+            FROM source_runs source
+            WHERE source.session_id = r.session_id
+        )
+),
+runs AS (
+    SELECT
+        row_source,
+        run_ref,
+        session_id,
+        position,
+        source_updated_at,
+        native_session_id,
+        native_parent_session_id,
+        parent_run_ref,
+        agent_ref,
+        lineage_refs_json,
+        provider_origin,
+        harness,
+        role,
+        title,
+        cwd,
+        git_branch,
+        status,
+        confidence,
+        transcript_ref,
+        evidence_refs_json,
+        context_snapshot_ref,
+        search_text,
+        NULL AS payload_json
+    FROM source_runs
+    UNION ALL
+    SELECT * FROM materialized_runs
+)
+"""
+
+
+_SOURCE_CONTEXT_SNAPSHOT_RELATION_SQL = """
+WITH source_context_snapshots AS (
+    SELECT
+        'source' AS row_source,
+        'context-snapshot:' || s0.session_id || ':session_start' AS snapshot_ref,
+        s0.session_id AS session_id,
+        'run:' || s0.session_id AS run_ref,
+        0 AS position,
+        printf('%016d', COALESCE(s0.updated_at_ms, s0.created_at_ms, 0)) AS source_updated_at,
+        'session_start' AS boundary,
+        'unknown' AS inheritance_mode,
+        json_array('session:' || s0.session_id) AS segment_refs_json,
+        json_array(s0.session_id) AS evidence_refs_json,
+        json_object('source', 'archive-session') AS metadata_json,
+        trim(COALESCE(s0.title, '') || ' ' || COALESCE(s0.native_id, '')) AS search_text
+    FROM sessions s0
+),
+materialized_context_snapshots AS (
+    SELECT
+        'materialized' AS row_source,
+        c.snapshot_ref,
+        c.session_id,
+        c.run_ref,
+        c.position,
+        c.source_updated_at,
+        c.boundary,
+        c.inheritance_mode,
+        c.segment_refs_json,
+        c.evidence_refs_json,
+        c.metadata_json,
+        c.search_text,
+        c.payload_json
+    FROM session_context_snapshots c
+    WHERE c.boundary <> 'session_start'
+        OR NOT EXISTS (
+            SELECT 1
+            FROM source_context_snapshots source
+            WHERE source.session_id = c.session_id
+        )
+),
+context_snapshots AS (
+    SELECT
+        row_source,
+        snapshot_ref,
+        session_id,
+        run_ref,
+        position,
+        source_updated_at,
+        boundary,
+        inheritance_mode,
+        segment_refs_json,
+        evidence_refs_json,
+        metadata_json,
+        search_text,
+        NULL AS payload_json
+    FROM source_context_snapshots
+    UNION ALL
+    SELECT * FROM materialized_context_snapshots
+)
+"""
+
+
+def _projected_run_from_query_row(row: sqlite3.Row) -> ProjectedRun:
+    if str(row["row_source"]) == "materialized":
+        return ProjectedRun.model_validate(json.loads(row["payload_json"]))
+    return ProjectedRun(
+        run_ref=ObjectRef.parse(str(row["run_ref"])),
+        native_session_id=str(row["native_session_id"]) if row["native_session_id"] is not None else None,
+        native_parent_session_id=str(row["native_parent_session_id"])
+        if row["native_parent_session_id"] is not None
+        else None,
+        parent_run_ref=ObjectRef.parse(str(row["parent_run_ref"])) if row["parent_run_ref"] is not None else None,
+        agent_ref=ObjectRef.parse(str(row["agent_ref"])) if row["agent_ref"] is not None else None,
+        lineage_refs=tuple(ObjectRef.parse(ref) for ref in _tuple_from_json_array(row["lineage_refs_json"])),
+        provider_origin=str(row["provider_origin"]),
+        harness=str(row["harness"]),  # type: ignore[arg-type]
+        role="main",
+        title=str(row["title"]),
+        cwd=str(row["cwd"]) if row["cwd"] is not None else None,
+        git_branch=str(row["git_branch"]) if row["git_branch"] is not None else None,
+        status=str(row["status"]),  # type: ignore[arg-type]
+        confidence="raw",
+        transcript_ref=EvidenceRef.parse(str(row["transcript_ref"])) if row["transcript_ref"] is not None else None,
+        evidence_refs=tuple(EvidenceRef.parse(ref) for ref in _tuple_from_json_array(row["evidence_refs_json"])),
+        context_snapshot_ref=ObjectRef.parse(str(row["context_snapshot_ref"]))
+        if row["context_snapshot_ref"] is not None
+        else None,
+    )
+
+
+def _context_snapshot_from_query_row(row: sqlite3.Row) -> ContextSnapshot:
+    if str(row["row_source"]) == "materialized":
+        return ContextSnapshot.model_validate(json.loads(row["payload_json"]))
+    return ContextSnapshot(
+        snapshot_ref=ObjectRef.parse(str(row["snapshot_ref"])),
+        run_ref=ObjectRef.parse(str(row["run_ref"])),
+        boundary="session_start",
+        inheritance_mode="unknown",
+        segment_refs=tuple(ObjectRef.parse(ref) for ref in _tuple_from_json_array(row["segment_refs_json"])),
+        evidence_refs=tuple(EvidenceRef.parse(ref) for ref in _tuple_from_json_array(row["evidence_refs_json"])),
+        metadata=dict(json.loads(str(row["metadata_json"] or "{}"))),
+    )
+
+
+def _observed_event_source_pushdown(predicate: QueryPredicate) -> tuple[str, list[object]]:
+    clauses: list[str] = []
+    params: list[object] = []
+    selective = False
+
+    def add_clause(clause: str, clause_params: list[object], *, is_selective: bool) -> None:
+        nonlocal selective
+        if clause:
+            clauses.append(f"({clause})")
+            params.extend(clause_params)
+            selective = selective or is_selective
+
+    def visit(current: QueryPredicate) -> bool:
+        if isinstance(current, QueryBoolPredicate):
+            if current.op != "and":
+                return False
+            return all(visit(child) for child in current.children)
+        if isinstance(current, QueryFieldPredicate):
+            field = current.bound_field_name(context="lowering observed-event source predicates")
+            if field == "kind":
+                add_clause("'tool_finished' = ?", ["tool_finished"], is_selective=False)
+                return "tool_finished" in {value.strip().lower() for value in current.values}
+            if field == "delivery_state":
+                add_clause("'observed' = ?", ["observed"], is_selective=False)
+                return "observed" in {value.strip().lower() for value in current.values}
+            if field == "tool":
+                normalized = tuple(value.strip().lower() for value in current.values if value.strip())
+                if not normalized:
+                    return True
+                if len(normalized) == 1:
+                    add_clause(
+                        "COALESCE(NULLIF(LOWER(u.tool_name), ''), 'unknown') = ?",
+                        [normalized[0]],
+                        is_selective=True,
+                    )
+                else:
+                    placeholders = ", ".join("?" for _ in normalized)
+                    add_clause(
+                        f"COALESCE(NULLIF(LOWER(u.tool_name), ''), 'unknown') IN ({placeholders})",
+                        list(normalized),
+                        is_selective=True,
+                    )
+                return True
+            if field == "handler":
+                normalized = tuple(value.strip().lower() for value in current.values if value.strip())
+                if not normalized:
+                    return True
+                handler_clauses: list[str] = []
+                handler_params: list[object] = []
+                for value in normalized:
+                    if value == "mcp":
+                        handler_clauses.append(
+                            "(COALESCE(NULLIF(LOWER(u.tool_name), ''), 'unknown') >= ? "
+                            "AND COALESCE(NULLIF(LOWER(u.tool_name), ''), 'unknown') < ?)"
+                        )
+                        handler_params.extend(["mcp__", "mcp_`"])
+                    elif value == "shell":
+                        handler_clauses.append("COALESCE(u.tool_command, '') <> ''")
+                    else:
+                        handler_clauses.append("COALESCE(NULLIF(u.semantic_type, ''), 'tool_use') = ?")
+                        handler_params.append(value)
+                add_clause(" OR ".join(handler_clauses), handler_params, is_selective=True)
+                return True
+            if field == "status":
+                status_expr = (
+                    "CASE "
+                    "WHEN r.tool_result_exit_code IS NOT NULL "
+                    "THEN CASE WHEN r.tool_result_exit_code = 0 THEN 'ok' ELSE 'failed' END "
+                    "WHEN r.tool_result_is_error = 1 THEN 'failed' "
+                    "WHEN r.tool_result_is_error = 0 THEN 'ok' "
+                    "ELSE 'unknown' END"
+                )
+                clause, clause_params = _in_or_equals_clause(status_expr, current.values, lower=True)
+                add_clause(clause, clause_params, is_selective=True)
+                return True
+        return True
+
+    supported = visit(predicate)
+    if not supported or not selective:
+        return "0=1", []
+    return " AND ".join(clauses) if clauses else "1=1", params
+
+
+def _tuple_from_json_array(value: object) -> tuple[str, ...]:
+    loaded = json.loads(str(value or "[]"))
+    if not isinstance(loaded, list):
+        return ()
+    return tuple(str(item) for item in loaded if item is not None)
+
+
+def _observed_event_from_query_row(row: sqlite3.Row) -> ObservedEvent:
+    if str(row["row_source"]) == "materialized":
+        return ObservedEvent.model_validate(json.loads(row["payload_json"]))
+    payload = json.loads(str(row["payload_json"] or "{}"))
+    return ObservedEvent(
+        event_ref=ObjectRef.parse(str(row["event_ref"])),
+        kind=str(row["kind"]),  # type: ignore[arg-type]
+        run_ref=ObjectRef.parse(str(row["run_ref"])),
+        summary=str(row["summary"]),
+        delivery_state="observed",
+        subject_ref=ObjectRef.parse(str(row["subject_ref"])),
+        object_refs=tuple(ObjectRef.parse(ref) for ref in _tuple_from_json_array(row["object_refs_json"])),
+        evidence_refs=tuple(EvidenceRef.parse(ref) for ref in _tuple_from_json_array(row["evidence_refs_json"])),
+        tool_name=str(payload["tool_name"]) if payload.get("tool_name") is not None else None,
+        tool_id=str(payload["tool_id"]) if payload.get("tool_id") is not None else None,
+        command=str(payload["command"]) if payload.get("command") is not None else None,
+        handler_kind=str(payload["handler_kind"]) if payload.get("handler_kind") is not None else None,
+        status=str(payload["status"]) if payload.get("status") is not None else None,
+    )
 
 
 def _query_unit_order_direction(direction: Literal["asc", "desc"]) -> Literal["ASC", "DESC"]:
@@ -414,11 +894,40 @@ def _query_unit_group_expression(unit: str, row_alias: str, group_by: str | None
             "visibility": f"COALESCE(NULLIF({row_alias}.visibility, ''), '{ASSERTION_DEFAULT_VISIBILITY}')",
             "author_kind": f"COALESCE(NULLIF({row_alias}.author_kind, ''), '{ASSERTION_DEFAULT_AUTHOR_KIND}')",
         },
+        "observed-event": {
+            "kind": f"COALESCE(NULLIF({row_alias}.kind, ''), 'unknown')",
+            "delivery_state": f"COALESCE(NULLIF({row_alias}.delivery_state, ''), 'unknown')",
+            "tool": f"COALESCE(NULLIF(json_extract({row_alias}.payload_json, '$.tool_name'), ''), 'unknown')",
+            "handler": f"COALESCE(NULLIF(json_extract({row_alias}.payload_json, '$.handler_kind'), ''), 'unknown')",
+            "status": f"COALESCE(NULLIF(json_extract({row_alias}.payload_json, '$.status'), ''), 'unknown')",
+        },
     }
     try:
         return unit_fields[unit][group_by]
     except KeyError as exc:
         raise ValueError(f"unsupported {unit} aggregate group field: {group_by}") from exc
+
+
+def _query_unit_group_uses_session(group_by: str | None) -> bool:
+    """Return whether an aggregate group expression needs the sessions alias."""
+
+    if group_by is None:
+        return False
+    return group_by.startswith("session.") or group_by in {"origin", "repo"}
+
+
+def _session_filter_is_active(session_filters: Mapping[str, object] | None) -> bool:
+    """Return whether normalized session filters contain a real constraint."""
+
+    if not session_filters:
+        return False
+    for value in session_filters.values():
+        if value is None or value is False or value == "":
+            continue
+        if isinstance(value, Sequence) and not isinstance(value, str | bytes) and len(value) == 0:
+            continue
+        return True
+    return False
 
 
 class ArchiveStore:
@@ -1650,20 +2159,421 @@ class ArchiveStore:
     def list_tool_usage_insights(self, query: ToolUsageInsightQuery | None = None) -> list[ToolUsageInsight]:
         """Aggregate tool-usage insights from action rows."""
         request = query or ToolUsageInsightQuery()
+        builder_request = _tool_usage_builder_query(request)
         insight = build_tool_usage_insight(
-            rows=self._tool_usage_rows(),
+            rows=self._tool_usage_rows(request),
             coverage_rows=self._tool_usage_provider_coverage_rows(),
-            query=request,
+            query=builder_request,
             materialized_at=datetime.now(UTC).isoformat(),
         )
         return [insight]
 
-    def _tool_usage_rows(self) -> list[ToolUsageRow]:
+    def list_tool_call_count_rows(self, query: ToolUsageInsightQuery | None = None) -> list[dict[str, object]]:
+        """Fast call-count-only tool rollups from tool-use blocks."""
+        request = query or ToolUsageInsightQuery()
+        where = ["b.block_type = 'tool_use'"]
+        params: list[object] = []
+        origin = _origin_for_tool_usage_filter(request.provider)
+        if origin:
+            where.append("s.origin = ?")
+            params.append(origin)
+        tool_expr = "COALESCE(NULLIF(LOWER(b.tool_name), ''), 'unknown')"
+        if request.tool:
+            where.append(f"{tool_expr} = LOWER(?)")
+            params.append(request.tool)
+        if request.mcp_server:
+            mcp_prefix = f"mcp__{request.mcp_server.lower()}__"
+            where.append(f"{tool_expr} >= ?")
+            where.append(f"{tool_expr} < ?")
+            params.append(mcp_prefix)
+            params.append(f"{mcp_prefix}\U0010ffff")
+        if request.action_kind:
+            where.append("COALESCE(NULLIF(b.semantic_type, ''), 'tool_use') = ?")
+            params.append(request.action_kind)
+        if request.since_ms is not None:
+            where.append("s.sort_key_ms >= ?")
+            params.append(request.since_ms)
+        if request.limit is not None:
+            limit_clause = "LIMIT ? OFFSET ?"
+            params.extend((request.limit, request.offset))
+        elif request.offset:
+            limit_clause = "LIMIT -1 OFFSET ?"
+            params.append(request.offset)
+        else:
+            limit_clause = ""
         rows = self._conn.execute(
-            """
+            f"""
             SELECT
                 s.origin AS origin,
-                COALESCE(NULLIF(LOWER(a.tool_name), ''), 'unknown') AS normalized_tool_name,
+                {tool_expr} AS normalized_tool_name,
+                COALESCE(NULLIF(b.semantic_type, ''), 'tool_use') AS action_kind,
+                COUNT(*) AS call_count
+            FROM blocks b
+            JOIN sessions s ON s.session_id = b.session_id
+            WHERE {" AND ".join(where)}
+            GROUP BY s.origin, normalized_tool_name, action_kind
+            ORDER BY call_count DESC, s.origin ASC, normalized_tool_name ASC
+            {limit_clause}
+            """,
+            tuple(params),
+        ).fetchall()
+        return [
+            {
+                "source_name": _provider_for_origin(str(row["origin"])).value,
+                "origin": str(row["origin"] or "unknown-export"),
+                "normalized_tool_name": str(row["normalized_tool_name"] or "unknown"),
+                "action_kind": str(row["action_kind"] or "tool_use"),
+                "call_count": int(row["call_count"] or 0),
+            }
+            for row in rows
+        ]
+
+    def list_tool_observed_event_count_rows(
+        self, query: ToolUsageInsightQuery | None = None
+    ) -> list[dict[str, object]]:
+        """Tool outcome rollups from canonical tool-use/result block evidence."""
+        request = query or ToolUsageInsightQuery()
+        where = ["u.block_type = 'tool_use'"]
+        params: list[object] = []
+        origin = _origin_for_tool_usage_filter(request.provider)
+        if origin:
+            where.append("s.origin = ?")
+            params.append(origin)
+        tool_expr = "COALESCE(NULLIF(LOWER(u.tool_name), ''), 'unknown')"
+        handler_expr = (
+            "CASE "
+            f"WHEN {tool_expr} >= 'mcp__' AND {tool_expr} < 'mcp__\U0010ffff' THEN 'mcp' "
+            "WHEN NULLIF(u.tool_command, '') IS NOT NULL THEN 'shell' "
+            "ELSE COALESCE(NULLIF(u.semantic_type, ''), 'tool_use') "
+            "END"
+        )
+        status_expr = (
+            "CASE "
+            "WHEN r.tool_result_exit_code IS NOT NULL "
+            "THEN CASE WHEN r.tool_result_exit_code = 0 THEN 'ok' ELSE 'failed' END "
+            "WHEN r.tool_result_is_error IS NOT NULL "
+            "THEN CASE WHEN r.tool_result_is_error = 1 THEN 'failed' ELSE 'ok' END "
+            "ELSE 'unknown' "
+            "END"
+        )
+        where.append("r.rowid IS NOT NULL")
+        if request.tool:
+            where.append(f"{tool_expr} = LOWER(?)")
+            params.append(request.tool)
+        if request.mcp_server:
+            mcp_prefix = f"mcp__{request.mcp_server.lower()}__"
+            where.append(f"{tool_expr} >= ?")
+            where.append(f"{tool_expr} < ?")
+            params.append(mcp_prefix)
+            params.append(f"{mcp_prefix}\U0010ffff")
+        if request.action_kind:
+            where.append(f"{handler_expr} = ?")
+            params.append(request.action_kind)
+        if request.since_ms is not None:
+            where.append("s.sort_key_ms >= ?")
+            params.append(request.since_ms)
+        if request.limit is not None:
+            limit_clause = "LIMIT ? OFFSET ?"
+            params.extend((request.limit, request.offset))
+        elif request.offset:
+            limit_clause = "LIMIT -1 OFFSET ?"
+            params.append(request.offset)
+        else:
+            limit_clause = ""
+        rows = self._conn.execute(
+            f"""
+            SELECT
+                s.origin AS origin,
+                {tool_expr} AS normalized_tool_name,
+                {handler_expr} AS action_kind,
+                {status_expr} AS status,
+                COUNT(*) AS event_count
+            FROM blocks u
+            JOIN sessions s ON s.session_id = u.session_id
+            LEFT JOIN blocks r
+                ON r.tool_id = u.tool_id
+               AND r.session_id = u.session_id
+               AND r.block_type = 'tool_result'
+            WHERE {" AND ".join(where)}
+            GROUP BY s.origin, normalized_tool_name, action_kind, status
+            ORDER BY event_count DESC, s.origin ASC, normalized_tool_name ASC, status ASC
+            {limit_clause}
+            """,
+            tuple(params),
+        ).fetchall()
+        return [
+            {
+                "source_name": _provider_for_origin(str(row["origin"])).value,
+                "origin": str(row["origin"] or "unknown-export"),
+                "normalized_tool_name": str(row["normalized_tool_name"] or "unknown"),
+                "action_kind": str(row["action_kind"] or "unknown"),
+                "status": str(row["status"] or "unknown"),
+                "event_count": int(row["event_count"] or 0),
+            }
+            for row in rows
+        ]
+
+    def list_tool_action_evidence_count_rows(
+        self,
+        query: ToolUsageInsightQuery | None = None,
+        *,
+        detail_patterns: tuple[str, ...] = (),
+        since_ms: int | None = None,
+    ) -> list[dict[str, object]]:
+        """Tool/affordance rollups from the canonical ``actions`` projection.
+
+        Unlike raw tool-use block counts, this basis can match command/path/input
+        details and then normalize generic shell rows into families such as
+        ``codebase-memory/command-detail``. The normalized grouping is a read
+        projection; raw tool names remain folded into the evidence kind and
+        matched-by fields rather than replacing source evidence.
+        """
+
+        request = query or ToolUsageInsightQuery()
+        where: list[str] = ["u.block_type = 'tool_use'"]
+        params: list[object] = []
+        origin = _origin_for_tool_usage_filter(request.provider)
+        if origin:
+            where.append("s.origin = ?")
+            params.append(origin)
+        tool_expr = "COALESCE(NULLIF(LOWER(u.tool_name), ''), 'unknown')"
+        if request.tool:
+            where.append(f"{tool_expr} = LOWER(?)")
+            params.append(request.tool)
+        tool_patterns: tuple[str, ...] = ()
+        if request.mcp_server:
+            tool_patterns = (f"mcp__{request.mcp_server.lower()}__",)
+            where.append(f"{tool_expr} >= ?")
+            where.append(f"{tool_expr} < ?")
+            params.append(tool_patterns[0])
+            params.append(f"{tool_patterns[0]}\U0010ffff")
+        if request.action_kind:
+            where.append("COALESCE(NULLIF(u.semantic_type, ''), 'tool_use') = ?")
+            params.append(request.action_kind)
+        effective_since_ms = since_ms if since_ms is not None else request.since_ms
+        if effective_since_ms is not None:
+            where.append("s.sort_key_ms >= ?")
+            params.append(effective_since_ms)
+        cleaned_details = _clean_affordance_patterns(detail_patterns)
+        fts_queries = tuple(
+            fts_query for pattern in cleaned_details if (fts_query := normalize_fts5_query(pattern)) is not None
+        )
+        if cleaned_details:
+            if not fts_queries:
+                return []
+            where.append(
+                "("
+                + " OR ".join("u.rowid IN (SELECT rowid FROM messages_fts WHERE text MATCH ?)" for _ in fts_queries)
+                + ")"
+            )
+            params.extend(fts_queries)
+            if (
+                not request.tool
+                and not request.mcp_server
+                and not request.action_kind
+                and (family := _affordance_family_for_text(" ".join(cleaned_details))) is not None
+            ):
+                return self._list_tool_action_detail_evidence_count_rows(
+                    where=where,
+                    params=tuple(params),
+                    family=family,
+                    detail_patterns=cleaned_details,
+                    limit=request.limit,
+                    offset=request.offset,
+                )
+
+        def fetch_rows() -> list[sqlite3.Row]:
+            return list(
+                self._conn.execute(
+                    f"""
+            SELECT
+                s.origin AS origin,
+                u.tool_name AS tool_name,
+                COALESCE(NULLIF(u.semantic_type, ''), 'tool_use') AS action_kind,
+                u.session_id AS session_id,
+                u.message_id AS message_id,
+                COALESCE(u.tool_command, '') || ' ' ||
+                    COALESCE(u.tool_path, '') || ' ' ||
+                    COALESCE(u.tool_input, '') AS match_detail,
+                r.tool_result_is_error AS is_error,
+                r.tool_result_exit_code AS exit_code
+            FROM blocks u
+            JOIN sessions s ON s.session_id = u.session_id
+            LEFT JOIN blocks r
+                ON r.tool_id = u.tool_id
+               AND r.session_id = u.session_id
+               AND r.block_type = 'tool_result'
+            {"WHERE " + " AND ".join(where) if where else ""}
+            """,
+                    tuple(params),
+                ).fetchall()
+            )
+
+        rows = fetch_rows()
+
+        buckets: dict[tuple[str, str, str, str, str], dict[str, object]] = {}
+        sessions: dict[tuple[str, str, str, str, str], set[str]] = {}
+        for row in rows:
+            source_name = _provider_for_origin(str(row["origin"])).value
+            public_row = {
+                "tool_name": str(row["tool_name"] or ""),
+                "match_detail": str(row["match_detail"] or ""),
+            }
+            if cleaned_details and not any(
+                pattern in str(public_row["match_detail"]).lower() for pattern in cleaned_details
+            ):
+                continue
+            normalized_tool_name = _affordance_normalized_tool_name(public_row)
+            evidence_kind = _affordance_evidence_kind(public_row)
+            matched_by = _affordance_matched_by(
+                public_row,
+                tool_patterns=tool_patterns,
+                detail_patterns=cleaned_details,
+            )
+            key = (
+                source_name,
+                str(row["origin"] or "unknown-export"),
+                normalized_tool_name,
+                str(row["action_kind"] or "tool_use"),
+                evidence_kind,
+            )
+            bucket = buckets.setdefault(
+                key,
+                {
+                    "source_name": source_name,
+                    "origin": str(row["origin"] or "unknown-export"),
+                    "normalized_tool_name": normalized_tool_name,
+                    "action_kind": str(row["action_kind"] or "tool_use"),
+                    "evidence_kind": evidence_kind,
+                    "matched_by": matched_by,
+                    "call_count": 0,
+                    "session_count": 0,
+                    "error_count": 0,
+                    "nonzero_exit_count": 0,
+                },
+            )
+            sessions.setdefault(key, set()).add(str(row["session_id"]))
+            bucket["call_count"] = int(str(bucket["call_count"])) + 1
+            bucket["error_count"] = int(str(bucket["error_count"])) + (1 if int(row["is_error"] or 0) == 1 else 0)
+            bucket["nonzero_exit_count"] = int(str(bucket["nonzero_exit_count"])) + (
+                1 if row["exit_code"] is not None and int(row["exit_code"] or 0) != 0 else 0
+            )
+        for key, bucket in buckets.items():
+            bucket["session_count"] = len(sessions.get(key, set()))
+        ordered = sorted(
+            buckets.values(),
+            key=lambda item: (
+                -int(str(item["call_count"])),
+                str(item["origin"]),
+                str(item["normalized_tool_name"]),
+                str(item["evidence_kind"]),
+            ),
+        )
+        offset = request.offset or 0
+        if request.limit is not None:
+            ordered = ordered[offset : offset + request.limit]
+        elif offset:
+            ordered = ordered[offset:]
+        return ordered
+
+    def _list_tool_action_detail_evidence_count_rows(
+        self,
+        *,
+        where: list[str],
+        params: tuple[object, ...],
+        family: str,
+        detail_patterns: tuple[str, ...],
+        limit: int | None,
+        offset: int,
+    ) -> list[dict[str, object]]:
+        """Fast grouped action-evidence rows for generic command detail matches."""
+
+        generic_tools = ("exec_command", "functions", "functions.exec_command", "bash", "shell", "client")
+        tool_expr = "COALESCE(NULLIF(LOWER(u.tool_name), ''), 'unknown')"
+        detail_expr = (
+            "LOWER(COALESCE(u.tool_command, '') || ' ' || "
+            "COALESCE(u.tool_path, '') || ' ' || COALESCE(u.tool_input, ''))"
+        )
+        detail_clauses = " OR ".join(f"{detail_expr} LIKE ? ESCAPE '\\'" for _ in detail_patterns)
+        all_where = [*where, f"({detail_clauses})", f"{tool_expr} IN ({', '.join('?' for _ in generic_tools)})"]
+        all_params: list[object] = [*params]
+        all_params.extend(_affordance_like_param(pattern) for pattern in detail_patterns)
+        all_params.extend(generic_tools)
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = "LIMIT ? OFFSET ?"
+            all_params.extend((limit, offset))
+        elif offset:
+            limit_clause = "LIMIT -1 OFFSET ?"
+            all_params.append(offset)
+        rows = self._conn.execute(
+            f"""
+            SELECT
+                s.origin AS origin,
+                COALESCE(NULLIF(u.semantic_type, ''), 'tool_use') AS action_kind,
+                COUNT(*) AS call_count,
+                COUNT(DISTINCT u.session_id) AS session_count,
+                SUM(CASE WHEN r.tool_result_is_error = 1 THEN 1 ELSE 0 END) AS error_count,
+                SUM(CASE WHEN r.tool_result_exit_code IS NOT NULL AND r.tool_result_exit_code != 0 THEN 1 ELSE 0 END)
+                    AS nonzero_exit_count
+            FROM blocks u
+            JOIN sessions s ON s.session_id = u.session_id
+            LEFT JOIN blocks r
+                ON r.tool_id = u.tool_id
+               AND r.session_id = u.session_id
+               AND r.block_type = 'tool_result'
+            WHERE {" AND ".join(all_where)}
+            GROUP BY s.origin, action_kind
+            ORDER BY call_count DESC, s.origin ASC, action_kind ASC
+            {limit_clause}
+            """,
+            tuple(all_params),
+        ).fetchall()
+        return [
+            {
+                "source_name": _provider_for_origin(str(row["origin"])).value,
+                "origin": str(row["origin"] or "unknown-export"),
+                "normalized_tool_name": f"{family}/command-detail",
+                "action_kind": str(row["action_kind"] or "tool_use"),
+                "evidence_kind": "command_detail",
+                "matched_by": "detail",
+                "call_count": int(row["call_count"] or 0),
+                "session_count": int(row["session_count"] or 0),
+                "error_count": int(row["error_count"] or 0),
+                "nonzero_exit_count": int(row["nonzero_exit_count"] or 0),
+            }
+            for row in rows
+        ]
+
+    def _tool_usage_rows(self, query: ToolUsageInsightQuery | None = None) -> list[ToolUsageRow]:
+        request = query or ToolUsageInsightQuery()
+        where: list[str] = []
+        params: list[object] = []
+        origin = _origin_for_tool_usage_filter(request.provider)
+        if origin:
+            where.append("s.origin = ?")
+            params.append(origin)
+        tool_expr = "COALESCE(NULLIF(LOWER(a.tool_name), ''), 'unknown')"
+        if request.tool:
+            where.append(f"{tool_expr} = LOWER(?)")
+            params.append(request.tool)
+        if request.mcp_server:
+            mcp_prefix = f"mcp__{request.mcp_server.lower()}__"
+            where.append(f"{tool_expr} >= ?")
+            where.append(f"{tool_expr} < ?")
+            params.append(mcp_prefix)
+            params.append(f"{mcp_prefix}\U0010ffff")
+        if request.action_kind:
+            where.append("COALESCE(NULLIF(a.semantic_type, ''), 'tool_use') = ?")
+            params.append(request.action_kind)
+        if request.since_ms is not None:
+            where.append("s.sort_key_ms >= ?")
+            params.append(request.since_ms)
+
+        sql = """
+            SELECT
+                s.origin AS origin,
+                {tool_expr} AS normalized_tool_name,
                 COALESCE(NULLIF(a.semantic_type, ''), 'tool_use') AS action_kind,
                 COUNT(*) AS call_count,
                 COUNT(DISTINCT s.session_id) AS session_count,
@@ -1673,9 +2583,26 @@ class ArchiveStore:
                 SUM(CASE WHEN a.output_text IS NOT NULL AND a.output_text != '' THEN 1 ELSE 0 END) AS output_text_calls
             FROM actions a
             JOIN sessions s ON s.session_id = a.session_id
+            {where_clause}
             GROUP BY s.origin, normalized_tool_name, action_kind
             ORDER BY call_count DESC, s.origin ASC, normalized_tool_name ASC
+            {limit_clause}
             """
+        if request.limit is not None:
+            limit_clause = "LIMIT ? OFFSET ?"
+            params.extend((request.limit, request.offset))
+        elif request.offset:
+            limit_clause = "LIMIT -1 OFFSET ?"
+            params.append(request.offset)
+        else:
+            limit_clause = ""
+        rows = self._conn.execute(
+            sql.format(
+                tool_expr=tool_expr,
+                where_clause=("WHERE " + " AND ".join(where)) if where else "",
+                limit_clause=limit_clause,
+            ),
+            tuple(params),
         ).fetchall()
         return [
             {
@@ -3561,6 +4488,7 @@ class ArchiveStore:
             "block": "b",
             "file": "f",
             "assertion": "a",
+            "observed-event": "e",
         }.get(unit)
         if row_alias is None:
             raise ValueError(f"Query unit {unit!r} is not wired to SQL aggregate counts")
@@ -3574,22 +4502,38 @@ class ArchiveStore:
                 offset=normalized_offset,
                 session_filters=session_filters,
             )
+        active_session_filters = _session_filter_is_active(session_filters)
+        needs_session = (
+            unit != "observed-event"
+            or active_session_filters
+            or _query_unit_group_uses_session(group_by)
+            or _predicate_uses_session_scope(predicate)
+        )
+        session_alias = "s" if needs_session else None
         group_expr = _query_unit_group_expression(unit, row_alias, group_by)
-        clause, params = _structural_predicate_clause(unit, row_alias, predicate, session_alias="s")
+        clause, params = _structural_predicate_clause(unit, row_alias, predicate, session_alias=session_alias)
         where_clause = clause or "1=1"
         session_clause = ""
         session_params: list[object] = []
-        if session_filters:
+        if needs_session and active_session_filters and session_filters is not None:
             session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
-        from_sql = {
+        from_sql_by_unit = {
             "message": "messages m JOIN sessions s ON s.session_id = m.session_id",
             "action": "actions a JOIN sessions s ON s.session_id = a.session_id",
             "block": "blocks b JOIN sessions s ON s.session_id = b.session_id",
             "assertion": "user_tier.assertions a LEFT JOIN sessions s ON a.target_ref = 'session:' || s.session_id",
-        }[unit]
+            "observed-event": "observed_events e JOIN sessions s ON s.session_id = e.session_id",
+        }
+        from_sql = "observed_events e" if unit == "observed-event" and not needs_session else from_sql_by_unit[unit]
         order_clause = _query_unit_aggregate_order(sort, sort_direction)
+        source_where = "0=1"
+        source_params: list[object] = []
+        if unit == "observed-event":
+            source_where, source_params = _observed_event_source_pushdown(predicate)
+        prefix_sql = _OBSERVED_EVENT_RELATION_SQL.format(source_where=source_where) if unit == "observed-event" else ""
         rows = self._conn.execute(
             f"""
+            {prefix_sql}
             SELECT {group_expr} AS group_key, COUNT(*) AS count
             FROM {from_sql}
             WHERE {where_clause}
@@ -3598,7 +4542,7 @@ class ArchiveStore:
             ORDER BY {order_clause}
             LIMIT ? OFFSET ?
             """,
-            [*params, *session_params, normalized_limit, normalized_offset],
+            [*source_params, *params, *session_params, normalized_limit, normalized_offset],
         ).fetchall()
         return [
             ArchiveQueryUnitAggregateRow(
@@ -4005,7 +4949,7 @@ class ArchiveStore:
         sort: Literal["time"] | None = None,
         sort_direction: Literal["asc", "desc"] = "asc",
     ) -> list[ArchiveRunQueryRow]:
-        """Return materialized run rows matching a unit-scoped predicate."""
+        """Return run rows matching a unit-scoped predicate."""
 
         normalized_limit = max(int(limit), 0)
         normalized_offset = max(int(offset), 0)
@@ -4024,8 +4968,9 @@ class ArchiveStore:
             session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
         rows = self._conn.execute(
             f"""
-            SELECT r.session_id, s.origin, s.title, r.payload_json
-            FROM session_runs r
+            {_SOURCE_RUN_RELATION_SQL}
+            SELECT r.*, s.origin, s.title AS session_title
+            FROM runs r
             JOIN sessions s ON r.session_id = s.session_id
             WHERE {clause}
             {session_clause}
@@ -4038,8 +4983,8 @@ class ArchiveStore:
             ArchiveRunQueryRow(
                 session_id=str(row["session_id"]),
                 origin=str(row["origin"]),
-                title=str(row["title"]) if row["title"] is not None else None,
-                run=ProjectedRun.model_validate(json.loads(row["payload_json"])),
+                title=str(row["session_title"]) if row["session_title"] is not None else None,
+                run=_projected_run_from_query_row(row),
             )
             for row in rows
         ]
@@ -4054,7 +4999,7 @@ class ArchiveStore:
         sort: Literal["time"] | None = None,
         sort_direction: Literal["asc", "desc"] = "asc",
     ) -> list[ArchiveObservedEventQueryRow]:
-        """Return materialized observed-event rows matching a unit-scoped predicate."""
+        """Return observed-event rows matching a unit-scoped predicate."""
 
         normalized_limit = max(int(limit), 0)
         normalized_offset = max(int(offset), 0)
@@ -4066,6 +5011,7 @@ class ArchiveStore:
             )
         else:
             order_by = "e.session_id, e.position, e.event_ref"
+        source_where, source_params = _observed_event_source_pushdown(predicate)
         clause, params = _structural_predicate_clause("observed-event", "e", predicate, session_alias="s")
         session_clause = ""
         session_params: list[object] = []
@@ -4073,22 +5019,23 @@ class ArchiveStore:
             session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
         rows = self._conn.execute(
             f"""
-            SELECT e.session_id, s.origin, s.title, e.payload_json
-            FROM session_observed_events e
+            {_OBSERVED_EVENT_RELATION_SQL.format(source_where=source_where)}
+            SELECT e.*, s.origin, s.title
+            FROM observed_events e
             JOIN sessions s ON e.session_id = s.session_id
             WHERE {clause}
             {session_clause}
             ORDER BY {order_by}
             LIMIT ? OFFSET ?
             """,
-            [*params, *session_params, normalized_limit, normalized_offset],
+            [*source_params, *params, *session_params, normalized_limit, normalized_offset],
         ).fetchall()
         return [
             ArchiveObservedEventQueryRow(
                 session_id=str(row["session_id"]),
                 origin=str(row["origin"]),
                 title=str(row["title"]) if row["title"] is not None else None,
-                event=ObservedEvent.model_validate(json.loads(row["payload_json"])),
+                event=_observed_event_from_query_row(row),
             )
             for row in rows
         ]
@@ -4103,7 +5050,7 @@ class ArchiveStore:
         sort: Literal["time"] | None = None,
         sort_direction: Literal["asc", "desc"] = "asc",
     ) -> list[ArchiveContextSnapshotQueryRow]:
-        """Return materialized context-snapshot rows matching a unit-scoped predicate."""
+        """Return context-snapshot rows matching a unit-scoped predicate."""
 
         normalized_limit = max(int(limit), 0)
         normalized_offset = max(int(offset), 0)
@@ -4122,8 +5069,9 @@ class ArchiveStore:
             session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
         rows = self._conn.execute(
             f"""
-            SELECT c.session_id, s.origin, s.title, c.payload_json
-            FROM session_context_snapshots c
+            {_SOURCE_CONTEXT_SNAPSHOT_RELATION_SQL}
+            SELECT c.*, s.origin, s.title AS session_title
+            FROM context_snapshots c
             JOIN sessions s ON c.session_id = s.session_id
             WHERE {clause}
             {session_clause}
@@ -4136,8 +5084,8 @@ class ArchiveStore:
             ArchiveContextSnapshotQueryRow(
                 session_id=str(row["session_id"]),
                 origin=str(row["origin"]),
-                title=str(row["title"]) if row["title"] is not None else None,
-                snapshot=ContextSnapshot.model_validate(json.loads(row["payload_json"])),
+                title=str(row["session_title"]) if row["session_title"] is not None else None,
+                snapshot=_context_snapshot_from_query_row(row),
             )
             for row in rows
         ]
@@ -4697,6 +5645,34 @@ def _origin_for_provider_value(provider: str | None) -> str | None:
     if provider is None:
         return None
     return origin_from_provider(Provider.from_string(provider)).value
+
+
+def _origin_for_tool_usage_filter(provider_or_origin: str | None) -> str | None:
+    if provider_or_origin is None:
+        return None
+    known_origin = {
+        "claude-code-session",
+        "codex-session",
+        "gemini-cli-session",
+        "hermes-session",
+        "antigravity-session",
+        "chatgpt-export",
+        "claude-ai-export",
+        "aistudio-drive",
+        "unknown-export",
+    }
+    if provider_or_origin in known_origin:
+        return provider_or_origin
+    return _origin_for_provider_value(provider_or_origin)
+
+
+def _tool_usage_builder_query(query: ToolUsageInsightQuery) -> ToolUsageInsightQuery:
+    origin = _origin_for_tool_usage_filter(query.provider)
+    updates: dict[str, object] = {"limit": None, "offset": 0}
+    if origin is None:
+        return query.model_copy(update=updates)
+    updates["provider"] = _provider_for_origin(origin).value
+    return query.model_copy(update=updates)
 
 
 def _session_origin(conn: sqlite3.Connection, session_id: str) -> str:
@@ -5346,6 +6322,20 @@ def _predicate_session_field(predicate: QueryFieldPredicate) -> str | None:
     return None
 
 
+def _predicate_uses_session_scope(predicate: QueryPredicate) -> bool:
+    """Return whether a structural predicate needs the sessions alias."""
+
+    if isinstance(predicate, QueryFieldPredicate):
+        return _predicate_session_field(predicate) is not None
+    if isinstance(predicate, QueryNotPredicate):
+        return _predicate_uses_session_scope(predicate.child)
+    if isinstance(predicate, QueryBoolPredicate):
+        return any(_predicate_uses_session_scope(child) for child in predicate.children)
+    return isinstance(
+        predicate, QueryTextPredicate | QueryExistsPredicate | QuerySequencePredicate | QueryLineagePredicate
+    )
+
+
 def _in_or_equals_clause(column: str, values: tuple[str, ...], *, lower: bool = False) -> tuple[str, list[object]]:
     normalized = tuple(value.strip().lower() if lower else value.strip() for value in values if value.strip())
     if not normalized:
@@ -5657,7 +6647,25 @@ def _observed_event_field_predicate_clause(
 ) -> tuple[str, list[object]]:
     field = predicate.bound_field_name(context="lowering observed-event predicates")
     if field in {"kind", "delivery_state"}:
-        return _in_or_equals_clause(f"{event_alias}.{field}", predicate.values, lower=True)
+        return _in_or_equals_clause(f"{event_alias}.{field}", predicate.values)
+    if field == "tool":
+        return _in_or_equals_clause(
+            f"json_extract({event_alias}.payload_json, '$.tool_name')",
+            predicate.values,
+            lower=True,
+        )
+    if field == "handler":
+        return _in_or_equals_clause(
+            f"json_extract({event_alias}.payload_json, '$.handler_kind')",
+            predicate.values,
+            lower=True,
+        )
+    if field == "status":
+        return _in_or_equals_clause(
+            f"json_extract({event_alias}.payload_json, '$.status')",
+            predicate.values,
+            lower=True,
+        )
     if field == "summary":
         return _like_clause(f"{event_alias}.summary", predicate.values)
     if field in {"subject", "subject_ref"}:
@@ -5846,12 +6854,23 @@ def _exists_predicate_clause(table_alias: str, predicate: QueryExistsPredicate) 
             params,
         )
     if predicate.unit in {"run", "observed-event", "context-snapshot"}:
-        run_projection_tables = {
-            "run": ("session_runs", "exists_runs"),
-            "observed-event": ("session_observed_events", "exists_observed_events"),
-            "context-snapshot": ("session_context_snapshots", "exists_context_snapshots"),
+        run_projection_relations: dict[str, tuple[str, str, str, list[object]]] = {
+            "run": (_SOURCE_RUN_RELATION_SQL, "runs", "exists_runs", []),
+            "context-snapshot": (
+                _SOURCE_CONTEXT_SNAPSHOT_RELATION_SQL,
+                "context_snapshots",
+                "exists_context_snapshots",
+                [],
+            ),
         }
-        table_name, row_alias = run_projection_tables[predicate.unit]
+        if predicate.unit == "observed-event":
+            source_where, source_params = _observed_event_source_pushdown(predicate.child)
+            prefix_sql = _OBSERVED_EVENT_RELATION_SQL.format(source_where=source_where)
+            relation_name = "observed_events"
+            row_alias = "exists_observed_events"
+            relation_params = source_params
+        else:
+            prefix_sql, relation_name, row_alias, relation_params = run_projection_relations[predicate.unit]
         child_clause, params = _structural_predicate_clause(
             predicate.unit,
             row_alias,
@@ -5861,13 +6880,14 @@ def _exists_predicate_clause(table_alias: str, predicate: QueryExistsPredicate) 
         return (
             f"""
             EXISTS (
+                {prefix_sql}
                 SELECT 1
-                FROM {table_name} {row_alias}
+                FROM {relation_name} {row_alias}
                 WHERE {row_alias}.session_id = {table_alias}.session_id
                   AND {child_clause}
             )
             """.strip(),
-            params,
+            [*relation_params, *params],
         )
     raise ValueError(f"unsupported structural query unit: {predicate.unit}")
 

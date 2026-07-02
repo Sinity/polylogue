@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sqlite3
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, cast
@@ -108,6 +109,14 @@ class RawMaterializationReadiness(BaseModel):
     warning: int = 0
     actionable: int = 0
     blocked: int = 0
+    classified: int = 0
+    affected_total: int = 0
+    affected_actionable: int = 0
+    affected_blocked: int = 0
+    affected_open: int = 0
+    affected_classified: int = 0
+    category_counts: dict[str, int] = Field(default_factory=dict)
+    source_family_counts: dict[str, int] = Field(default_factory=dict)
     sampled_rows: list[dict[str, object]] = Field(default_factory=list)
 
 
@@ -1609,37 +1618,9 @@ def _component_from_fts_readiness(readiness: FTSReadiness) -> ComponentReadiness
 def _component_from_raw_materialization_readiness(
     readiness: RawMaterializationReadiness,
 ) -> ComponentReadiness:
-    if not readiness.available:
-        state = CapabilityReadinessState.UNKNOWN
-        summary = "unknown"
-    elif readiness.total == 0:
-        state = CapabilityReadinessState.READY
-        summary = "ready"
-    elif readiness.blocked > 0:
-        state = CapabilityReadinessState.BLOCKED
-        summary = "raw evidence blocked"
-    elif readiness.critical > 0:
-        state = CapabilityReadinessState.POISONED
-        summary = "raw evidence not materialized"
-    else:
-        state = CapabilityReadinessState.STALE
-        summary = "raw evidence pending materialization"
-    return ComponentReadiness(
-        component="raw_materialization",
-        scope="archive",
-        state=state,
-        summary=summary,
-        counts={
-            "total": readiness.total,
-            "critical": readiness.critical,
-            "warning": readiness.warning,
-            "actionable": readiness.actionable,
-            "blocked": readiness.blocked,
-        },
-        repair_hint=None
-        if state == CapabilityReadinessState.READY
-        else ("polylogue ops debt list --kind raw-materialization"),
-    )
+    from polylogue.readiness.capability import component_from_raw_materialization_readiness
+
+    return component_from_raw_materialization_readiness(readiness.model_dump())
 
 
 def _component_from_insight_freshness(freshness: InsightFreshness) -> ComponentReadiness:
@@ -1811,6 +1792,24 @@ def _raw_materialization_readiness_info() -> RawMaterializationReadiness:
         return RawMaterializationReadiness(available=False)
 
     rows = [row for row in payload.rows if row.kind == "raw-materialization"]
+    affected_counts = [max(1, int(row.affected_count or 1)) for row in rows]
+    category_counts: Counter[str] = Counter()
+    source_family_counts: Counter[str] = Counter()
+    affected_actionable = 0
+    affected_blocked = 0
+    affected_open = 0
+    affected_classified = 0
+    for row, affected_count in zip(rows, affected_counts, strict=True):
+        category_counts[row.category or "unspecified"] += affected_count
+        source_family_counts[row.source_family or "unspecified"] += affected_count
+        if row.status == "actionable":
+            affected_actionable += affected_count
+        elif row.status == "blocked":
+            affected_blocked += affected_count
+        elif row.status == "classified":
+            affected_classified += affected_count
+        elif row.status == "open":
+            affected_open += affected_count
     return RawMaterializationReadiness(
         available=True,
         total=len(rows),
@@ -1818,6 +1817,14 @@ def _raw_materialization_readiness_info() -> RawMaterializationReadiness:
         warning=sum(1 for row in rows if row.severity == "warning"),
         actionable=sum(1 for row in rows if row.status == "actionable"),
         blocked=sum(1 for row in rows if row.status == "blocked"),
+        classified=sum(1 for row in rows if row.status == "classified"),
+        affected_total=sum(affected_counts),
+        affected_actionable=affected_actionable,
+        affected_blocked=affected_blocked,
+        affected_open=affected_open,
+        affected_classified=affected_classified,
+        category_counts=dict(sorted(category_counts.items())),
+        source_family_counts=dict(sorted(source_family_counts.items())),
         sampled_rows=[row.model_dump(mode="json", exclude_none=True) for row in rows[:5]],
     )
 
@@ -1897,9 +1904,13 @@ def build_daemon_status(
     fts_readiness = FTSReadiness(
         indexed_surface=str(fts.get("indexed_surface", "messages_fts")),
         messages_ready=bool(fts.get("messages_ready", False)),
+        session_work_events_ready=bool(fts.get("session_work_events_ready", False)),
+        threads_ready=bool(fts.get("threads_ready", False)),
+        invariant_ready=bool(fts.get("invariant_ready", False)),
         message_indexed_count=_safe_int(fts.get("message_indexed_count", 0)),
         message_indexable_count=_safe_int(fts.get("message_indexable_count", 0)),
         coverage_pct=_safe_float(fts.get("coverage_pct")),
+        surfaces=cast(dict[str, dict[str, int | bool | str | None]], fts.get("surfaces", {})),
     )
     embedding_readiness = EmbeddingReadiness(
         embedding_enabled=bool(embedding_info.get("embedding_enabled", False)),

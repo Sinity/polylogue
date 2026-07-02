@@ -173,6 +173,10 @@ class ExpressionCompileError(PolylogueError):
         self.field = field
 
 
+class UnsupportedSessionTerminalActionError(ExpressionCompileError):
+    """Raised when a session-source terminal action is not supported."""
+
+
 #: Recognized ``has:`` sub-tokens that map to boolean spec flags.
 #: Other values pass through to ``has_types``.
 _HAS_BOOL_MAP: dict[str, str] = {
@@ -277,6 +281,11 @@ QueryUnitPipelineStageKind = Literal[
 #: ``group by ... | count`` rollup. Future actions (read/analyze/bundle/
 #: postmortem) register their unit-level executors here as they land (#2006).
 QueryUnitTerminalAction = Literal["rows", "count"]
+SESSION_SOURCE_UNIT: Literal["sessions"] = "sessions"
+SessionTerminalAction = Literal["read", "analyze", "select", "mark", "delete", "continue"]
+SESSION_TERMINAL_ACTIONS: frozenset[SessionTerminalAction] = frozenset(
+    {"read", "analyze", "select", "mark", "delete", "continue"}
+)
 
 
 @dataclass(frozen=True)
@@ -442,6 +451,39 @@ class QueryUnitPipeline:
             result["offset"] = self.offset
         if result:
             payload["result"] = result
+        return payload
+
+
+@dataclass(frozen=True)
+class SessionQueryTerminalStage:
+    """Terminal action that emits or mutates the resolved session set."""
+
+    action: SessionTerminalAction
+    args: tuple[tuple[str, object], ...] = ()
+
+    def to_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {"kind": "terminal", "action": self.action}
+        if self.args:
+            payload["args"] = dict(self.args)
+        return payload
+
+
+@dataclass(frozen=True)
+class SessionQueryPipeline:
+    """Executable session-source pipeline for root query verbs."""
+
+    terminal: SessionQueryTerminalStage
+    predicate: QueryPredicate | None = None
+    source_unit: Literal["sessions"] = SESSION_SOURCE_UNIT
+
+    def to_payload(self) -> dict[str, object]:
+        source: dict[str, object] = {"unit": self.source_unit}
+        payload: dict[str, object] = {
+            "source": source,
+            "stages": [self.terminal.to_payload()],
+        }
+        if self.predicate is not None:
+            source["predicate"] = self.predicate.to_payload()
         return payload
 
 
@@ -2821,6 +2863,25 @@ def _compile_json_spec(raw: str) -> SessionQuerySpec:
         raise ExpressionCompileError(f"invalid spec fields: {exc}", field=None) from exc
 
 
+def build_session_terminal_pipeline(
+    action: str,
+    *,
+    args: tuple[tuple[str, object], ...] = (),
+    predicate: QueryPredicate | None = None,
+) -> SessionQueryPipeline:
+    """Build a typed session-source pipeline for a root query terminal verb."""
+    if action not in SESSION_TERMINAL_ACTIONS:
+        supported = ", ".join(sorted(SESSION_TERMINAL_ACTIONS))
+        raise UnsupportedSessionTerminalActionError(
+            f"unsupported session terminal action: {action!r}; supported actions: {supported}",
+            field=None,
+        )
+    return SessionQueryPipeline(
+        predicate=predicate,
+        terminal=SessionQueryTerminalStage(action=action, args=args),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public exports
 # ---------------------------------------------------------------------------
@@ -2829,6 +2890,7 @@ def _compile_json_spec(raw: str) -> SessionQuerySpec:
 __all__ = [
     "compile_expression",
     "compile_expression_into",
+    "build_session_terminal_pipeline",
     "CountQueryFieldInfo",
     "COUNT_QUERY_FIELD_REGISTRY",
     "count_query_fields",
@@ -2840,6 +2902,8 @@ __all__ = [
     "explain_expression",
     "ExpressionCompileError",
     "EXPRESSION_FIELD_REGISTRY",
+    "SESSION_SOURCE_UNIT",
+    "SESSION_TERMINAL_ACTIONS",
     "StructuralQueryUnitInfo",
     "STRUCTURAL_QUERY_UNIT_REGISTRY",
     "QueryExpressionExplainClause",
@@ -2858,6 +2922,9 @@ __all__ = [
     "QueryUnitTerminalAction",
     "QueryUnitTerminalStage",
     "QueryUnitTransformStage",
+    "SessionQueryPipeline",
+    "SessionQueryTerminalStage",
+    "SessionTerminalAction",
     "_HAS_BOOL_MAP",
     "parse_unit_source_expression",
     "parse_expression_ast",
@@ -2865,4 +2932,5 @@ __all__ = [
     "WITH_PROJECTION_SUPPORTED_UNITS",
     "structural_query_fields",
     "structural_query_units",
+    "UnsupportedSessionTerminalActionError",
 ]

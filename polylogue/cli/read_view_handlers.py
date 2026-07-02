@@ -7,6 +7,15 @@ from typing import TYPE_CHECKING
 import click
 
 from polylogue.archive.viewport import read_view_choices
+from polylogue.cli.read_view_registry import (
+    CHRONICLE_READ_VIEW_OPTION_NAMES,
+    CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES,
+    CONTEXT_READ_VIEW_OPTION_NAMES,
+    CORRELATION_READ_VIEW_OPTION_NAMES,
+    MESSAGE_READ_VIEW_OPTION_NAMES,
+    NEIGHBOR_READ_VIEW_OPTION_NAMES,
+    READ_VIEW_HANDLER_METADATA,
+)
 from polylogue.cli.read_views.base import (
     ReadViewChronicleOptions,
     ReadViewContextImageOptions,
@@ -18,37 +27,22 @@ from polylogue.cli.read_views.base import (
     ReadViewNeighborOptions,
     ReadViewOptions,
 )
-from polylogue.cli.read_views.chronicle import (
-    CHRONICLE_READ_VIEW_OPTION_NAMES,
-    build_chronicle_options,
-    run_read_chronicle,
-)
+from polylogue.cli.read_views.chronicle import build_chronicle_options, run_read_chronicle
 from polylogue.cli.read_views.context import (
-    CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES,
-    CONTEXT_READ_VIEW_OPTION_NAMES,
     build_context_image_options,
     build_context_options,
     run_read_context,
     run_read_context_image,
 )
-from polylogue.cli.read_views.correlation import (
-    CORRELATION_READ_VIEW_OPTION_NAMES,
-    build_correlation_options,
-    run_read_correlation,
-)
+from polylogue.cli.read_views.correlation import build_correlation_options, run_read_correlation
 from polylogue.cli.read_views.messages import (
-    MESSAGE_READ_VIEW_OPTION_NAMES,
     build_message_options,
     run_read_messages,
     run_read_raw,
 )
-from polylogue.cli.read_views.neighbors import (
-    NEIGHBOR_READ_VIEW_OPTION_NAMES,
-    build_neighbor_options,
-    run_read_neighbors,
-)
+from polylogue.cli.read_views.neighbors import build_neighbor_options, run_read_neighbors
 from polylogue.cli.read_views.query_set import run_query_set_read_view
-from polylogue.cli.read_views.standard import run_read_summary_or_transcript, run_read_temporal
+from polylogue.cli.read_views.standard import run_read_dialogue, run_read_summary_or_transcript, run_read_temporal
 from polylogue.cli.shared.types import AppEnv
 
 if TYPE_CHECKING:
@@ -67,6 +61,13 @@ READ_VIEW_HANDLERS: dict[str, ReadViewHandler] = {
         "transcript",
         "optional",
         run_read_summary_or_transcript,
+        default_format="markdown",
+        accepts_query_set=True,
+    ),
+    "dialogue": ReadViewHandler(
+        "dialogue",
+        "required",
+        run_read_dialogue,
         default_format="markdown",
         accepts_query_set=True,
     ),
@@ -175,14 +176,33 @@ def validate_read_view_handler_registry() -> None:
 
     profile_ids = set(read_view_choices())
     handler_ids = set(READ_VIEW_HANDLERS)
+    metadata_ids = set(READ_VIEW_HANDLER_METADATA)
     missing = sorted(profile_ids - handler_ids)
     extra = sorted(handler_ids - profile_ids)
-    if missing or extra:
+    metadata_missing = sorted(handler_ids - metadata_ids)
+    metadata_extra = sorted(metadata_ids - handler_ids)
+    metadata_mismatch = [
+        view_id
+        for view_id, handler in READ_VIEW_HANDLERS.items()
+        if view_id in READ_VIEW_HANDLER_METADATA
+        and (
+            handler.accepted_options != READ_VIEW_HANDLER_METADATA[view_id].accepted_options
+            or handler.session_policy != READ_VIEW_HANDLER_METADATA[view_id].session_policy
+            or handler.accepts_query_set != READ_VIEW_HANDLER_METADATA[view_id].accepts_query_set
+        )
+    ]
+    if missing or extra or metadata_missing or metadata_extra or metadata_mismatch:
         details: list[str] = []
         if missing:
             details.append(f"missing handlers: {', '.join(missing)}")
         if extra:
             details.append(f"handlers without profiles: {', '.join(extra)}")
+        if metadata_missing:
+            details.append(f"handlers without metadata: {', '.join(metadata_missing)}")
+        if metadata_extra:
+            details.append(f"metadata without handlers: {', '.join(metadata_extra)}")
+        if metadata_mismatch:
+            details.append(f"handler metadata mismatch: {', '.join(sorted(metadata_mismatch))}")
         raise RuntimeError("read-view handler registry drift: " + "; ".join(details))
 
 

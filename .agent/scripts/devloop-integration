@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: .agent/scripts/devloop-integration [--base <ref>] [--subagent-prompt]
+
+Summarize the long-running devloop branch as PR-shaped integration input.
+Read-only: does not create branches, cherry-pick, squash, push, or open PRs.
+
+Options:
+  --base <ref>        Default: origin/master if present, else master.
+  --subagent-prompt  Print a prompt for a read-heavy integration-planning subagent.
+  -h, --help         Show this help.
+
+Environment:
+  POLYLOGUE_INTEGRATION_WORKTREE_ROOT
+      Optional root for local PR-shaped replay worktrees.
+      Default: /realm/tmp/worktrees/polylogue-integration-first-wave
+EOF
+}
+
+base=""
+subagent_prompt=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --base)
+      base="${2:-}"
+      if [[ -z "$base" ]]; then
+        echo "devloop-integration: --base requires a ref" >&2
+        exit 2
+      fi
+      shift 2
+      ;;
+    --subagent-prompt)
+      subagent_prompt=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "devloop-integration: unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -z "$base" ]]; then
+  if git rev-parse --verify --quiet origin/master >/dev/null; then
+    base="origin/master"
+  else
+    base="master"
+  fi
+fi
+
+if ! git rev-parse --verify --quiet "$base" >/dev/null; then
+  echo "devloop-integration: base ref not found: $base" >&2
+  exit 2
+fi
+
+branch="$(git branch --show-current)"
+head="$(git rev-parse --short HEAD)"
+merge_base="$(git merge-base "$base" HEAD)"
+ahead_count="$(git rev-list --count "$merge_base"..HEAD)"
+dirty="$(git status --short | wc -l | tr -d ' ')"
+repo="$(git rev-parse --show-toplevel)"
+integration_root="${POLYLOGUE_INTEGRATION_WORKTREE_ROOT:-/realm/tmp/worktrees/polylogue-integration-first-wave}"
+replay_plan="$repo/.agent/task-history/integration-first-wave-replay-plan.md"
+integration_protocol="$repo/.agent/conductor-devloop/INTEGRATION.md"
+
+echo "== integration state =="
+echo "branch: ${branch:-detached}"
+echo "head: $head"
+echo "base: $base"
+echo "merge_base: $(git rev-parse --short "$merge_base")"
+echo "commits_ahead: $ahead_count"
+echo "dirty_paths: $dirty"
+echo
+
+echo "== semantic integration ledger =="
+if [[ -f "$integration_protocol" ]]; then
+  awk '
+    /^## Current Semantic Ledger$/ {printing=1; next}
+    /^## / && printing {exit}
+    printing {print}
+  ' "$integration_protocol" | sed '/^[[:space:]]*$/d'
+else
+  echo "missing: $integration_protocol"
+fi
+echo
+
+echo "== local PR-shaped replay state =="
+echo "worktree_root: $integration_root"
+if [[ -f "$replay_plan" ]]; then
+  echo "replay_plan: $replay_plan"
+else
+  echo "replay_plan: missing"
+fi
+if [[ ! -d "$integration_root" ]]; then
+  echo "local_branches: none"
+else
+  found=0
+  for path in "$integration_root"/*; do
+    [[ -d "$path" ]] || continue
+    if ! git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      continue
+    fi
+    found=1
+    local_branch="$(git -C "$path" branch --show-current || true)"
+    local_head="$(git -C "$path" rev-parse --short HEAD)"
+    local_dirty="$(git -C "$path" status --short | wc -l | tr -d ' ')"
+    printf '%s\tbranch=%s\thead=%s\tdirty_paths=%s\n' \
+      "$path" "${local_branch:-detached}" "$local_head" "$local_dirty"
+  done
+  if [[ "$found" == "0" ]]; then
+    echo "local_branches: none"
+  fi
+fi
+echo
+
+echo "== commits ahead of base =="
+if [[ "$ahead_count" == "0" ]]; then
+  echo "none"
+else
+  git log --reverse --format='%h%x09%s' "$merge_base"..HEAD
+fi
+echo
+
+cat <<'EOF'
+== integration contract ==
+Treat the long-running branch as an integration workbench. Periodically cluster
+ahead commits into PR-shaped branches from the current master base:
+
+1. Group commits by product/change intent, not chronology alone.
+2. Identify dependencies between groups.
+3. For each group, propose branch name, PR title, PR body, verification, and
+   commit-message body.
+4. Produce a dry-run replay plan that can recreate the PR branches from master
+   by cherry-picking/replaying the grouped commits.
+5. Prove the grouped PR branches compose back to the workbench state, or state
+   the exact residual diff/dependency.
+
+Subagents may do read-heavy clustering and draft replay scripts. The main
+devloop owns final branch creation, conflict resolution, verification, pushing,
+and PR creation.
+EOF
+
+if [[ "$subagent_prompt" == "1" ]]; then
+  cat <<EOF
+
+== subagent prompt ==
+You are auditing the Polylogue devloop integration workbench.
+
+Base ref: $base
+Workbench branch: ${branch:-detached}
+Workbench head: $head
+Merge base: $(git rev-parse --short "$merge_base")
+
+Task:
+Read the commits in \`$merge_base..HEAD\` and cluster them into PR-shaped
+integration groups. For each group, report:
+
+- commit hashes in replay order;
+- dependency on earlier groups, if any;
+- proposed branch name;
+- conventional PR title under 72 characters;
+- durable PR body with Summary, Problem, Solution, Verification;
+- exact narrow verification commands already run or still owed;
+- whether the group can be cherry-picked cleanly from \`$base\`;
+- a dry-run shell script fragment that creates the branch from \`$base\`,
+  cherry-picks/replays the group, and stops before push.
+
+Constraints:
+- This is read-heavy planning. Do not modify files, create branches, push, or
+  rewrite history.
+- Prefer fewer cohesive PRs over tiny PRs. Aim for roughly 50 workbench commits
+  per PR-shaped group when dependency boundaries allow it, but do not mix
+  unrelated product, scaffold, and demo-only changes.
+- Do not plan around passive CI waiting. Specify focused local proof and keep the
+  replay lane moving.
+- Flag any commit whose claim is too broad for its diff.
+- The main agent will own final replay, verification, and PR creation.
+EOF
+fi

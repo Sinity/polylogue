@@ -106,7 +106,7 @@ _ARCHIVE_OBSERVABILITY_TABLES: dict[ArchiveTier, tuple[str, ...]] = {
     ),
     ArchiveTier.EMBEDDINGS: (
         "message_embeddings",
-        "embeddings_meta",
+        "message_embeddings_meta",
         "embedding_status",
     ),
     ArchiveTier.USER: (

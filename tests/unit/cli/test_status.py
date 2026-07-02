@@ -541,15 +541,18 @@ class TestNoArchiveStatus:
                 ArchiveDebtRowPayload(
                     debt_ref="debt:raw-materialization:chatgpt-export:parsed-without-session",
                     kind="raw-materialization",
+                    category="parsed-without-session",
                     stage="parse",
                     subject_ref="raw-origin:chatgpt-export",
                     severity="warning",
                     status="actionable",
                     owner="daemon",
                     summary="4 chatgpt-export raw artifact(s) parsed but have no materialized session",
+                    affected_count=4,
+                    source_family="chatgpt-export",
                 ),
             ),
-            totals=ArchiveDebtTotalsPayload(total=1, warning=1, actionable=1),
+            totals=ArchiveDebtTotalsPayload(total=1, warning=1, actionable=1, affected_total=4, affected_actionable=4),
         )
         monkeypatch.setattr(
             "polylogue.operations.archive_debt.archive_debt_list",
@@ -575,6 +578,9 @@ class TestNoArchiveStatus:
         transforms = components["transforms"]
         assert payload["archive_readiness"] == archive_readiness
         assert payload["raw_materialization_readiness"]["total"] == 1
+        assert payload["raw_materialization_readiness"]["affected_total"] == 4
+        assert payload["raw_materialization_readiness"]["category_counts"] == {"parsed-without-session": 4}
+        assert payload["raw_materialization_readiness"]["source_family_counts"] == {"chatgpt-export": 4}
         assert archive["component"] == "archive_sessions"
         assert archive["scope"] == "archive"
         assert archive["state"] == "ready"
@@ -593,6 +599,10 @@ class TestNoArchiveStatus:
         assert raw_materialization["scope"] == "archive"
         assert raw_materialization["state"] == "stale"
         assert raw_materialization["counts"]["total"] == 1
+        assert raw_materialization["counts"]["affected_total"] == 4
+        assert raw_materialization["counts"]["affected_actionable"] == 4
+        assert raw_materialization["metadata"]["category_counts"] == {"parsed-without-session": 4}
+        assert raw_materialization["metadata"]["source_family_counts"] == {"chatgpt-export": 4}
         assert raw_materialization["repair_hint"] == "polylogue ops debt list --kind raw-materialization"
         assert assertions["scope"] == "user"
         assert assertions["state"] == "ready"

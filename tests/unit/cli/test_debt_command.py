@@ -27,9 +27,35 @@ def _payload(root: Path) -> ArchiveDebtListPayload:
                 status="actionable",
                 owner="daemon",
                 summary="3 session(s) pending embedding catch-up",
+                affected_count=3,
+                evidence_refs=("session:pending-1", "session:pending-2"),
+                caveats=("Evidence refs are sampled.",),
+            ),
+            ArchiveDebtRowPayload(
+                debt_ref="debt:raw-materialization:classified:sidecars",
+                kind="raw-materialization",
+                stage="source-index-join",
+                subject_ref="raw-materialization:classified",
+                severity="info",
+                status="classified",
+                owner="archive",
+                summary="2 raw evidence row(s) classified as non-session artifacts",
+                affected_count=2,
             ),
         ),
-        totals=ArchiveDebtTotalsPayload(total=1, warning=1, actionable=1),
+        totals=ArchiveDebtTotalsPayload(
+            total=2,
+            warning=1,
+            info=1,
+            actionable=1,
+            classified=1,
+            affected_total=5,
+            affected_warning=3,
+            affected_info=2,
+            affected_actionable=3,
+            affected_open=3,
+            affected_classified=2,
+        ),
     )
 
 
@@ -57,6 +83,32 @@ def test_debt_list_json_uses_shared_payload(
     assert payload["rows"][0]["debt_ref"] == "debt:embedding:catchup:backlog"
     assert captured["archive_root"] == tmp_path
     assert captured["kinds"] == ("embedding",)
+    assert captured["statuses"] == ("open", "actionable", "blocked")
+
+
+def test_debt_list_json_passes_status_filter(
+    cli_runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    index_db = tmp_path / "index.db"
+    index_db.touch()
+    captured: dict[str, object] = {}
+
+    def fake_archive_debt_list(**kwargs: object) -> ArchiveDebtListPayload:
+        captured.update(kwargs)
+        return _payload(tmp_path)
+
+    monkeypatch.setattr("polylogue.cli.commands.debt.active_index_db_path", lambda: index_db)
+    monkeypatch.setattr("polylogue.cli.commands.debt.archive_debt_list", fake_archive_debt_list)
+
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "debt", "list", "--status", "classified", "--format", "json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["statuses"] == ("classified",)
 
 
 def test_debt_list_text_renders_actionable_summary(
@@ -72,5 +124,13 @@ def test_debt_list_text_renders_actionable_summary(
     result = cli_runner.invoke(cli, ["--plain", "ops", "debt", "list"])
 
     assert result.exit_code == 0, result.output
-    assert "Archive debt: 1 row(s)" in result.output
+    assert "Archive debt: 2 row(s)" in result.output
+    assert "actionable=1 blocked=0 classified=1" in result.output
+    assert (
+        "affected=5 affected_warning=3 affected_actionable=3 affected_open=3 affected_blocked=0 affected_classified=2"
+    ) in result.output
     assert "3 session(s) pending embedding catch-up" in result.output
+    assert "affected_count=3" in result.output
+    assert "evidence: session:pending-1" in result.output
+    assert "evidence: session:pending-2" in result.output
+    assert "caveat: Evidence refs are sampled." in result.output

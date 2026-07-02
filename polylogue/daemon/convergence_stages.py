@@ -615,7 +615,7 @@ def _embedding_config_enabled() -> bool:
 def _reconcile_embedding_config_change(conn: sqlite3.Connection) -> None:
     """Detect model/dimension config changes and mark rows for reindex.
 
-    When the configured model differs from what is stored in embeddings_meta,
+    When the configured model differs from what is stored in message_embeddings_meta,
     all embedding_status rows are marked ``needs_reindex = 1``. When the
     configured dimension differs, the vec0 table is also dropped so it can
     be recreated with the new dimension.
@@ -627,22 +627,18 @@ def _reconcile_embedding_config_change(conn: sqlite3.Connection) -> None:
     configured_model = cfg.embedding_model
     configured_dimension = cfg.embedding_dimension
 
-    if not _table_exists(conn, "embeddings_meta") or not _table_exists(conn, "embedding_status"):
+    if not _table_exists(conn, "message_embeddings_meta") or not _table_exists(conn, "embedding_status"):
         return
 
     # Check stored model
-    stored_models = conn.execute(
-        "SELECT DISTINCT model FROM embeddings_meta WHERE target_type='message' ORDER BY model"
-    ).fetchall()
+    stored_models = conn.execute("SELECT DISTINCT model FROM message_embeddings_meta ORDER BY model").fetchall()
     stored_model = str(stored_models[0][0]) if stored_models else None
 
     model_changed = stored_model is not None and stored_model != configured_model
     dimension_changed = False
 
     if stored_model is not None:
-        stored_dim_row = conn.execute(
-            "SELECT dimension FROM embeddings_meta WHERE target_type='message' LIMIT 1"
-        ).fetchone()
+        stored_dim_row = conn.execute("SELECT dimension FROM message_embeddings_meta LIMIT 1").fetchone()
         if stored_dim_row:
             stored_dimension = int(stored_dim_row[0])
             dimension_changed = stored_dimension != configured_dimension
@@ -667,7 +663,7 @@ def _reconcile_embedding_config_change(conn: sqlite3.Connection) -> None:
 
 
 def _stored_dim_from_meta(conn: sqlite3.Connection) -> int:
-    row = conn.execute("SELECT dimension FROM embeddings_meta WHERE target_type='message' LIMIT 1").fetchone()
+    row = conn.execute("SELECT dimension FROM message_embeddings_meta LIMIT 1").fetchone()
     return int(row[0]) if row else 0
 
 

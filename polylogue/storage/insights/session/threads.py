@@ -291,6 +291,58 @@ def _group_profile_records_by_root(
     return grouped
 
 
+def _repair_profile_parent_ids(
+    records: Sequence[SessionProfileRecord],
+    parent_ids_by_session: dict[str, str | None],
+) -> list[SessionProfileRecord]:
+    repaired: list[SessionProfileRecord] = []
+    for record in records:
+        parent_id = parent_ids_by_session.get(str(record.session_id))
+        if parent_id and not record.evidence_payload.parent_id:
+            repaired.append(
+                record.model_copy(
+                    update={
+                        "evidence_payload": record.evidence_payload.model_copy(
+                            update={"parent_id": parent_id, "is_continuation": True}
+                        )
+                    }
+                )
+            )
+        else:
+            repaired.append(record)
+    return repaired
+
+
+def _parent_ids_for_sessions_sync(
+    conn: sqlite3.Connection,
+    session_ids: Sequence[str],
+) -> dict[str, str | None]:
+    if not session_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in session_ids)
+    rows = conn.execute(
+        f"SELECT session_id, parent_session_id FROM sessions WHERE session_id IN ({placeholders})",
+        tuple(session_ids),
+    ).fetchall()
+    return {str(row["session_id"]): str(row["parent_session_id"]) if row["parent_session_id"] else None for row in rows}
+
+
+async def _parent_ids_for_sessions_async(
+    conn: aiosqlite.Connection,
+    session_ids: Sequence[str],
+) -> dict[str, str | None]:
+    if not session_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in session_ids)
+    rows = await (
+        await conn.execute(
+            f"SELECT session_id, parent_session_id FROM sessions WHERE session_id IN ({placeholders})",
+            tuple(session_ids),
+        )
+    ).fetchall()
+    return {str(row["session_id"]): str(row["parent_session_id"]) if row["parent_session_id"] else None for row in rows}
+
+
 def _thread_records_from_profile_records(
     profile_records: Sequence[SessionProfileRecord],
 ) -> dict[str, ThreadRecord]:
@@ -336,7 +388,8 @@ def load_thread_profile_records_by_root_sync(
             root_chunk,
         ).fetchall()
         for root_id, records in _group_profile_records_by_root(rows, root_ids=root_chunk).items():
-            grouped[root_id].extend(records)
+            parent_ids = _parent_ids_for_sessions_sync(conn, [str(record.session_id) for record in records])
+            grouped[root_id].extend(_repair_profile_parent_ids(records, parent_ids))
     return grouped
 
 
@@ -357,7 +410,8 @@ async def load_thread_profile_records_by_root_async(
             )
         ).fetchall()
         for root_id, records in _group_profile_records_by_root(rows, root_ids=root_chunk).items():
-            grouped[root_id].extend(records)
+            parent_ids = await _parent_ids_for_sessions_async(conn, [str(record.session_id) for record in records])
+            grouped[root_id].extend(_repair_profile_parent_ids(records, parent_ids))
     return grouped
 
 

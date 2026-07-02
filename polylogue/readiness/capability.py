@@ -152,6 +152,79 @@ def component_from_archive_debt(status: ArchiveDebtStatus, *, scope: str = "arch
     )
 
 
+def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | None) -> ComponentReadiness:
+    payload = readiness or {}
+    available = bool(payload.get("available", False))
+    total = int(payload.get("total") or 0)
+    critical = int(payload.get("critical") or 0)
+    warning = int(payload.get("warning") or 0)
+    actionable = int(payload.get("actionable") or 0)
+    blocked = int(payload.get("blocked") or 0)
+    classified = int(payload.get("classified") or 0)
+    affected_total = int(payload.get("affected_total") or 0)
+    affected_actionable = int(payload.get("affected_actionable") or 0)
+    affected_open = int(payload.get("affected_open") or 0)
+    affected_classified = int(payload.get("affected_classified") or 0)
+    if not available:
+        state = CapabilityReadinessState.UNKNOWN
+        summary = "unknown"
+    elif total == 0:
+        state = CapabilityReadinessState.READY
+        summary = "ready"
+    elif blocked > 0:
+        state = CapabilityReadinessState.BLOCKED
+        summary = "raw evidence blocked"
+    elif critical > 0:
+        state = CapabilityReadinessState.POISONED
+        summary = "raw evidence not materialized"
+    elif warning > 0 or actionable > 0 or affected_actionable > 0:
+        state = CapabilityReadinessState.STALE
+        summary = "raw evidence pending materialization"
+    elif classified > 0 or affected_classified > 0:
+        state = CapabilityReadinessState.READY
+        summary = "raw evidence classified; no materialization debt"
+    else:
+        state = CapabilityReadinessState.DEGRADED
+        summary = "raw evidence classified as non-actionable"
+    caveats: tuple[str, ...]
+    if state is CapabilityReadinessState.READY and (classified > 0 or affected_classified > 0):
+        caveats = ("raw_index_join_gaps_classified_not_materialization_debt",)
+    elif state is CapabilityReadinessState.DEGRADED:
+        caveats = ("raw_index_join_gaps_classified_not_replayable",)
+    elif state is CapabilityReadinessState.BLOCKED:
+        caveats = ("raw_materialization_blocked",)
+    elif state is CapabilityReadinessState.POISONED:
+        caveats = ("raw_materialization_critical_debt",)
+    else:
+        caveats = ()
+    return ComponentReadiness(
+        component="raw_materialization",
+        scope="archive",
+        state=state,
+        summary=summary,
+        counts={
+            "total": total,
+            "critical": critical,
+            "warning": warning,
+            "actionable": actionable,
+            "blocked": blocked,
+            "classified": classified,
+            "affected_total": affected_total,
+            "affected_actionable": affected_actionable,
+            "affected_open": affected_open,
+            "affected_classified": affected_classified,
+        },
+        caveats=caveats,
+        metadata={
+            "category_counts": dict(payload.get("category_counts") or {}),
+            "source_family_counts": dict(payload.get("source_family_counts") or {}),
+        },
+        repair_hint=None
+        if state == CapabilityReadinessState.READY
+        else "polylogue ops debt list --kind raw-materialization",
+    )
+
+
 def component_from_embedding_payload(payload: Mapping[str, Any]) -> ComponentReadiness:
     if not bool(payload.get("config_enabled")):
         state = CapabilityReadinessState.MISSING
@@ -418,5 +491,6 @@ __all__ = [
     "component_from_insight_entry",
     "component_from_operation_status",
     "component_from_outcome_check",
+    "component_from_raw_materialization_readiness",
     "component_from_transform_registry",
 ]

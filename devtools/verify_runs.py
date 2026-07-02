@@ -27,6 +27,8 @@ CURRENT_RUN_PATH = VERIFY_CACHE / "current-run.json"
 CURRENT_RESOURCES_PATH = VERIFY_CACHE / "current-pytest-resources.jsonl"
 CURRENT_POSTMORTEM_PATH = VERIFY_CACHE / "current-pytest-postmortem.json"
 CURRENT_EVENTS_DIR = VERIFY_CACHE / "current-pytest-events"
+DEFAULT_BASETEMP_SIZE_SAMPLE_INTERVAL_S = 15.0
+BASETEMP_SIZE_SAMPLE_INTERVAL_ENV = "POLYLOGUE_VERIFY_BASETEMP_SIZE_INTERVAL_S"
 
 
 def utc_now() -> str:
@@ -409,6 +411,25 @@ class ResourceSampler:
         self.peak_process_count = 0
         self.last_sample: dict[str, Any] | None = None
         self._basetemp = pytest_basetemp_path(root=root, run_id=run_id, env=env)
+        self._basetemp_size_interval_s = _basetemp_size_sample_interval_s(env)
+        self._last_basetemp_size_sample_at: float | None = None
+        self._last_basetemp_size_kb: int | None = None
+
+    def _sample_basetemp_size_kb(self, *, event: str) -> int | None:
+        """Return basetemp size without recursively walking it every sample."""
+        if self._basetemp_size_interval_s <= 0:
+            return None
+        now = time.monotonic()
+        should_sample = (
+            self._last_basetemp_size_sample_at is None
+            or self._last_basetemp_size_kb is None
+            or event in {"started", "finished"}
+            or now - self._last_basetemp_size_sample_at >= self._basetemp_size_interval_s
+        )
+        if should_sample:
+            self._last_basetemp_size_kb = _dir_size_kb(self._basetemp)
+            self._last_basetemp_size_sample_at = now
+        return self._last_basetemp_size_kb
 
     def sample(self, *, event: str) -> dict[str, Any]:
         pids = process_tree(self.root_pid)
@@ -455,7 +476,7 @@ class ResourceSampler:
             "pressure_memory": _pressure("memory"),
             "shm": _fs_usage(Path("/dev/shm")),
             "basetemp": str(self._basetemp),
-            "basetemp_size_kb": _dir_size_kb(self._basetemp),
+            "basetemp_size_kb": self._sample_basetemp_size_kb(event=event),
             "top_processes": sorted(processes, key=lambda row: int(row.get("rss_kb") or 0), reverse=True)[:8],
         }
         self.sample_count += 1
@@ -477,6 +498,15 @@ class ResourceSampler:
             "peak_process_count": self.peak_process_count,
             "last_resource_sample": self.last_sample,
         }
+
+
+def _basetemp_size_sample_interval_s(env: dict[str, str]) -> float:
+    raw = env.get(BASETEMP_SIZE_SAMPLE_INTERVAL_ENV)
+    if raw is None or raw.strip() == "":
+        return DEFAULT_BASETEMP_SIZE_SAMPLE_INTERVAL_S
+    with contextlib.suppress(ValueError):
+        return max(0.0, float(raw))
+    return DEFAULT_BASETEMP_SIZE_SAMPLE_INTERVAL_S
 
 
 def classify_pytest_result(

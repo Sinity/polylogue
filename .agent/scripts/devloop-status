@@ -1,0 +1,596 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+Usage: .agent/scripts/devloop-status [--json|--quick|--focus]
+
+Print the live Polylogue devloop status: git state, active loop state,
+conductor packet size, archive schema/counts/convergence, daemon state,
+worktree state, and pressure signals.
+
+Modes:
+  --json     Full machine-readable status for scripts and review gates.
+  --quick    Skip slower detailed ops/worktree probes during host pressure.
+  --focus    Print only the current slice, focus, next action, git, and packet.
+EOF
+  exit 0
+fi
+
+repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
+archive_root="${POLYLOGUE_ARCHIVE_ROOT:-/home/sinity/.local/share/polylogue}"
+current="${POLYLOGUE_AGENT_CURRENT:-$repo/.agent/conductor-devloop}"
+format="text"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json|--quick|--focus)
+      format="$1"
+      shift
+      ;;
+    *)
+      printf 'unknown argument: %s\n' "$1" >&2
+      exit 2
+      ;;
+  esac
+done
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=.agent/scripts/lib-devloop
+source "$script_dir/lib-devloop"
+packet_bytes="$(du -sb "$current" 2>/dev/null | awk '{print $1}' || printf '')"
+packet_files="$(find "$current" -maxdepth 1 -type f 2>/dev/null | wc -l | tr -d ' ')"
+packet_dirs="$(find "$current" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"
+operating_log_bytes="$(wc -c <"$current/OPERATING-LOG.md" 2>/dev/null || printf '')"
+events_bytes="$(wc -c <"$current/EVENTS.jsonl" 2>/dev/null || printf '')"
+
+git_branch="$(git -C "$repo" branch --show-current 2>/dev/null || true)"
+git_head="$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || true)"
+git_tracked_changes="$(git -C "$repo" status --porcelain --untracked-files=no 2>/dev/null | sed '/^$/d' | wc -l)"
+git_untracked_changes="$(git -C "$repo" status --porcelain --untracked-files=all 2>/dev/null | awk '$1 == "??" {count++} END {print count + 0}')"
+pressure_rows="$(
+  ps -eo pid=,stat=,pcpu=,pmem=,comm=,args= \
+    | awk '
+      $5 == "awk" {next}
+      /borg create/ {print; next}
+      /lynchpin.analysis materialize/ {print; next}
+      /devtools verify|devtools test|pytest|polylogue import|nix build|nix develop --command/ {print; next}
+    ' \
+    || true
+)"
+performance_blocked="false"
+if printf '%s\n' "$pressure_rows" | grep -Eq 'borg create|lynchpin.analysis materialize'; then
+  performance_blocked="true"
+fi
+
+raw_materialization_debt_payload() {
+  polylogue ops debt list \
+    --kind raw-materialization \
+    --status open \
+    --status actionable \
+    --status blocked \
+    --status classified \
+    --format json 2>/dev/null || true
+}
+
+if [ "$format" = "--focus" ]; then
+  printf '== polylogue devloop focus ==\n'
+  printf 'repo: %s\n' "$repo"
+  printf 'current: %s\n' "$current"
+  printf 'git: branch=%s head=%s tracked_changes=%s untracked_changes=%s\n' \
+    "${git_branch:-unknown}" "${git_head:-unknown}" "$git_tracked_changes" "$git_untracked_changes"
+  printf 'agent_packet: bytes=%s files=%s dirs=%s operating_log_bytes=%s events_jsonl_bytes=%s\n' \
+    "${packet_bytes:-?}" "${packet_files:-?}" "${packet_dirs:-?}" "${operating_log_bytes:-?}" "${events_bytes:-?}"
+  if [ -f "$current/ACTIVE-LOOP.md" ]; then
+    awk '
+      /^## Current Slice$/ {section="slice"; print ""; print "-- current slice --"; next}
+      /^## Current Focus$/ {section="focus"; print ""; print "-- current focus --"; next}
+      /^## Next Action$/ {section="next"; print ""; print "-- next action --"; next}
+      /^## / {section=""}
+      section && NF {print}
+    ' "$current/ACTIVE-LOOP.md" | sed -n '1,80p'
+  else
+    printf '\nmissing ACTIVE-LOOP.md\n'
+  fi
+  printf '\npressure: live_performance_proof_blocked=%s\n' "$performance_blocked"
+  exit 0
+fi
+
+if [ "$format" = "--json" ]; then
+  index_version=""
+  sessions=""
+  messages=""
+  observed_events=""
+  source_version=""
+  raw_rows=""
+  raw_materialization_debt=""
+  raw_materialization_replayable=""
+  ops_status_json=""
+  raw_debt_json=""
+  if [ -f "$archive_root/index.db" ]; then
+    index_version="$(sqlite3 "$archive_root/index.db" 'PRAGMA user_version;' 2>/dev/null || true)"
+    sessions="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM sessions;' 2>/dev/null || true)"
+    messages="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM messages;' 2>/dev/null || true)"
+    observed_events="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM session_observed_events;' 2>/dev/null || true)"
+  fi
+  if [ -f "$archive_root/source.db" ]; then
+    source_version="$(sqlite3 "$archive_root/source.db" 'PRAGMA user_version;' 2>/dev/null || true)"
+    raw_rows="$(sqlite3 "$archive_root/source.db" 'SELECT COUNT(*) FROM raw_sessions;' 2>/dev/null || true)"
+  fi
+  if [ -f "$archive_root/source.db" ] && [ -f "$archive_root/index.db" ]; then
+    raw_materialization_debt="$(
+      sqlite3 "$archive_root/source.db" "
+        ATTACH '$archive_root/index.db' AS idx;
+        SELECT COUNT(*)
+        FROM raw_sessions r
+        LEFT JOIN idx.sessions s ON s.raw_id = r.raw_id
+        WHERE COALESCE(r.validation_status, '') != 'skipped'
+          AND s.session_id IS NULL;
+      " 2>/dev/null || true
+    )"
+    raw_materialization_replayable="$(
+      sqlite3 "$archive_root/source.db" "
+        ATTACH '$archive_root/index.db' AS idx;
+        SELECT COUNT(*)
+        FROM raw_sessions r
+        LEFT JOIN idx.sessions s_by_raw ON s_by_raw.raw_id = r.raw_id
+        LEFT JOIN idx.sessions s_by_native
+          ON r.native_id IS NOT NULL
+         AND s_by_native.origin = r.origin
+         AND s_by_native.native_id = r.native_id
+        WHERE s_by_raw.raw_id IS NULL
+          AND s_by_native.native_id IS NULL
+          AND COALESCE(r.validation_status, '') != 'skipped'
+          AND r.parse_error IS NULL
+          AND r.parsed_at_ms IS NULL;
+      " 2>/dev/null || true
+    )"
+  fi
+  ops_status_json="$(polylogue ops status --format json 2>/dev/null || true)"
+  raw_debt_json="$(raw_materialization_debt_payload)"
+  prod_state="$(systemctl --user show polylogued.service -p ActiveState --value 2>/dev/null || true)"
+  prod_sub_state="$(systemctl --user show polylogued.service -p SubState --value 2>/dev/null || true)"
+  devloop_state="$(systemctl --user show polylogued-devloop.service -p ActiveState --value 2>/dev/null || true)"
+  devloop_sub_state="$(systemctl --user show polylogued-devloop.service -p SubState --value 2>/dev/null || true)"
+  polylogued_rows="$(polylogued_process_rows)"
+  polylogued_devloop_rows="$(polylogued_devloop_rows "$repo")"
+  polylogued_non_devloop_rows="$(polylogued_non_devloop_rows "$repo")"
+  worktree_gc_json="$(POLYLOGUE_TASK_HISTORY_DISABLE=1 devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"
+  python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$observed_events" "$source_version" "$raw_rows" "$raw_materialization_debt" "$raw_materialization_replayable" "$ops_status_json" "$raw_debt_json" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$polylogued_devloop_rows" "$polylogued_non_devloop_rows" "$worktree_gc_json" "$pressure_rows" "$performance_blocked" "$packet_bytes" "$packet_files" "$packet_dirs" "$operating_log_bytes" "$events_bytes" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+repo, current, archive_root, git_branch, git_head, git_tracked_changes, git_untracked_changes, index_version, sessions, messages, observed_events, source_version, raw_rows, raw_materialization_debt, raw_materialization_replayable, ops_status_json, raw_debt_json, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows, polylogued_devloop_rows, polylogued_non_devloop_rows, worktree_gc_json, pressure_rows, performance_blocked, packet_bytes, packet_files, packet_dirs, operating_log_bytes, events_bytes = sys.argv[1:]
+
+def int_or_none(value: str):
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+try:
+    worktree_gc = json.loads(worktree_gc_json)
+except json.JSONDecodeError:
+    worktree_gc = {}
+
+def devloop_process_info(rows_text: str) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    for line in rows_text.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split(None, 5)
+        if not parts:
+            continue
+        pid = int_or_none(parts[0])
+        args = parts[5] if len(parts) >= 6 else line
+        spool = None
+        run_dir = None
+        tokens = args.split()
+        for index, token in enumerate(tokens):
+            if token == "--spool" and index + 1 < len(tokens):
+                spool = tokens[index + 1]
+                run_dir = str(Path(spool).parent)
+                break
+        records.append({"pid": pid, "run_dir": run_dir, "spool": spool, "args": args})
+    return records
+
+try:
+    ops_status = json.loads(ops_status_json) if ops_status_json else {}
+except json.JSONDecodeError:
+    ops_status = {}
+raw_readiness = ops_status.get("raw_materialization_readiness") or {}
+raw_component = (ops_status.get("component_readiness") or {}).get("raw_materialization") or {}
+raw_materialization_join_gaps = int_or_none(raw_materialization_debt)
+raw_materialization_debt_count = raw_materialization_join_gaps
+try:
+    raw_debt = json.loads(raw_debt_json) if raw_debt_json else {}
+except json.JSONDecodeError:
+    raw_debt = {}
+if raw_debt:
+    totals = raw_debt.get("totals") or {}
+    rows = raw_debt.get("rows") or []
+    category_counts: dict[str, int] = {}
+    source_family_counts: dict[str, int] = {}
+    for row in rows:
+        affected = int(row.get("affected_count") or 0)
+        category = row.get("category") or "unspecified"
+        source_family = row.get("source_family") or "unspecified"
+        category_counts[category] = category_counts.get(category, 0) + affected
+        source_family_counts[source_family] = source_family_counts.get(source_family, 0) + affected
+    raw_materialization_debt_count = sum(
+        int(totals.get(key) or 0)
+        for key in ("affected_actionable", "affected_blocked", "affected_open")
+    )
+    raw_readiness = {
+        "available": True,
+        "total": totals.get("total"),
+        "critical": totals.get("critical"),
+        "warning": totals.get("warning"),
+        "actionable": totals.get("actionable"),
+        "blocked": totals.get("blocked"),
+        "classified": totals.get("classified"),
+        "affected_total": totals.get("affected_total"),
+        "affected_actionable": totals.get("affected_actionable"),
+        "affected_open": totals.get("affected_open"),
+        "affected_blocked": totals.get("affected_blocked"),
+        "affected_classified": totals.get("affected_classified"),
+        "category_counts": dict(sorted(category_counts.items())),
+        "source_family_counts": dict(sorted(source_family_counts.items())),
+        "sampled_rows": rows[:5],
+    }
+    if (totals.get("affected_total") or 0) == 0:
+        raw_state = "ready"
+    elif (totals.get("blocked") or 0) and not (totals.get("actionable") or 0):
+        raw_state = "blocked"
+    elif (totals.get("classified") or 0) and not (totals.get("affected_open") or 0) and not (totals.get("affected_actionable") or 0):
+        raw_state = "ready"
+    elif not (totals.get("affected_actionable") or 0) and not (totals.get("critical") or 0) and not (totals.get("warning") or 0):
+        raw_state = "degraded"
+    else:
+        raw_state = "stale"
+    if raw_state == "ready" and (totals.get("classified") or 0):
+        raw_summary = "raw evidence classified; no materialization debt"
+    else:
+        raw_summary = {
+            "ready": "ready",
+            "blocked": "raw evidence blocked",
+            "degraded": "raw evidence classified as non-actionable",
+            "stale": "raw evidence pending materialization",
+        }[raw_state]
+    raw_component = {
+        "component": "raw_materialization",
+        "scope": "archive",
+        "state": raw_state,
+        "summary": raw_summary,
+        "counts": {
+            key: value
+            for key, value in totals.items()
+            if key in {
+                "total",
+                "critical",
+                "warning",
+                "actionable",
+                "blocked",
+                "classified",
+                "affected_total",
+                "affected_actionable",
+                "affected_open",
+                "affected_blocked",
+                "affected_classified",
+            }
+        },
+        "metadata": {
+            "category_counts": dict(sorted(category_counts.items())),
+            "source_family_counts": dict(sorted(source_family_counts.items())),
+        },
+        "repair_hint": None if raw_state == "ready" else "polylogue ops debt list --kind raw-materialization",
+    }
+
+def active_section(text: str, heading: str) -> str | None:
+    marker = f"## {heading}"
+    start = text.find(marker)
+    if start == -1:
+        return None
+    next_start = text.find("\n## ", start + 1)
+    if next_start == -1:
+        next_start = len(text)
+    section = text[start + len(marker):next_start].strip()
+    return section or None
+
+active_loop_path = Path(current) / "ACTIVE-LOOP.md"
+active_loop = {
+    "current_slice": None,
+    "focus": None,
+    "next_action": None,
+}
+if active_loop_path.exists():
+    active_text = active_loop_path.read_text(encoding="utf-8")
+    active_loop["current_slice"] = active_section(active_text, "Current Slice")
+    focus = active_section(active_text, "Current Focus")
+    if focus:
+        active_loop["focus"] = next(
+            (line.strip() for line in focus.splitlines() if line.strip().startswith("Focus: ")),
+            focus.splitlines()[0].strip() if focus.splitlines() else None,
+        )
+    active_loop["next_action"] = active_section(active_text, "Next Action")
+
+print(json.dumps({
+    "repo": repo,
+    "current": current,
+    "archive_root": archive_root,
+    "git": {
+        "branch": git_branch,
+        "head": git_head,
+        "tracked_changes": int_or_none(git_tracked_changes),
+        "untracked_changes": int_or_none(git_untracked_changes),
+    },
+    "index": {
+        "schema_version": int_or_none(index_version),
+        "sessions": int_or_none(sessions),
+        "messages": int_or_none(messages),
+        "observed_events": int_or_none(observed_events),
+    },
+    "source": {
+        "schema_version": int_or_none(source_version),
+        "raw_sessions": int_or_none(raw_rows),
+    },
+    "convergence": {
+        "raw_materialization_join_gaps": raw_materialization_join_gaps,
+        "raw_materialization_debt": raw_materialization_debt_count,
+        "raw_materialization_replayable": int_or_none(raw_materialization_replayable),
+        "raw_materialization_readiness": raw_readiness or None,
+        "raw_materialization_component": raw_component or None,
+    },
+    "daemon": {
+        "prod_state": prod_state,
+        "prod_sub_state": prod_sub_state,
+        "devloop_state": devloop_state,
+        "devloop_sub_state": devloop_sub_state,
+        "polylogued": [line for line in polylogued_rows.splitlines() if line],
+        "polylogued_devloop": [line for line in polylogued_devloop_rows.splitlines() if line],
+        "polylogued_devloop_info": devloop_process_info(polylogued_devloop_rows),
+        "polylogued_non_devloop": [line for line in polylogued_non_devloop_rows.splitlines() if line],
+    },
+    "agent_packet": {
+        "path": current,
+        "bytes": int_or_none(packet_bytes),
+        "files": int_or_none(packet_files),
+        "dirs": int_or_none(packet_dirs),
+        "operating_log_bytes": int_or_none(operating_log_bytes),
+        "events_jsonl_bytes": int_or_none(events_bytes),
+    },
+    "worktrees": {
+        "total_count": int_or_none(str(worktree_gc.get("total_count", ""))),
+        "safe_count": int_or_none(str(worktree_gc.get("safe_count", ""))),
+        "blocked_count": int_or_none(str(worktree_gc.get("blocked_count", ""))),
+    },
+    "pressure": {
+        "live_performance_proof_blocked": performance_blocked == "true",
+        "active_heavy_rows": [line for line in pressure_rows.splitlines() if line],
+    },
+    "active_loop": active_loop,
+    "next_action": active_loop["next_action"],
+}, indent=2, sort_keys=True))
+PY
+  exit 0
+fi
+
+printf '== polylogue devloop status ==\n'
+printf 'repo: %s\n' "$repo"
+printf 'current: %s\n' "$current"
+printf 'archive_root: %s\n' "$archive_root"
+printf 'git: branch=%s head=%s tracked_changes=%s untracked_changes=%s\n' \
+  "${git_branch:-unknown}" "${git_head:-unknown}" "$git_tracked_changes" "$git_untracked_changes"
+printf 'agent_packet: bytes=%s files=%s dirs=%s operating_log_bytes=%s events_jsonl_bytes=%s\n' \
+  "${packet_bytes:-?}" "${packet_files:-?}" "${packet_dirs:-?}" "${operating_log_bytes:-?}" "${events_bytes:-?}"
+if [ -f "$current/ACTIVE-LOOP.md" ]; then
+  current_slice="$(
+    awk '
+      /^## Current Slice$/ {capture=1; next}
+      /^## / && capture {exit}
+      capture && NF {print; exit}
+    ' "$current/ACTIVE-LOOP.md"
+  )"
+  current_focus="$(
+    awk '
+      /^## Current Focus$/ {capture=1; next}
+      /^## / && capture {exit}
+      capture && /^Focus: / {print; exit}
+    ' "$current/ACTIVE-LOOP.md"
+  )"
+  next_action="$(
+    awk '
+      /^## Next Action$/ {capture=1; next}
+      /^## / && capture {exit}
+      capture && NF {print; exit}
+    ' "$current/ACTIVE-LOOP.md"
+  )"
+  printf 'active_loop: slice=%s %s\n' "${current_slice:-unknown}" "${current_focus:-focus=unknown}"
+  printf 'next_action: %s\n' "${next_action:-unknown}"
+fi
+
+if [ -f "$archive_root/index.db" ]; then
+  version="$(sqlite3 "$archive_root/index.db" 'PRAGMA user_version;' 2>/dev/null || true)"
+  sessions="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM sessions;' 2>/dev/null || true)"
+  messages="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM messages;' 2>/dev/null || true)"
+  observed_events="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM session_observed_events;' 2>/dev/null || true)"
+  printf 'index: v%s sessions=%s messages=%s observed_events=%s\n' \
+    "${version:-?}" "${sessions:-?}" "${messages:-?}" "${observed_events:-?}"
+else
+  printf 'index: missing\n'
+fi
+
+if [ -f "$archive_root/source.db" ]; then
+  source_version="$(sqlite3 "$archive_root/source.db" 'PRAGMA user_version;' 2>/dev/null || true)"
+  raw_rows="$(sqlite3 "$archive_root/source.db" 'SELECT COUNT(*) FROM raw_sessions;' 2>/dev/null || true)"
+  printf 'source: v%s raw_sessions=%s\n' "${source_version:-?}" "${raw_rows:-?}"
+fi
+
+if [ -f "$archive_root/source.db" ] && [ -f "$archive_root/index.db" ]; then
+  raw_materialization_debt="$(
+    sqlite3 "$archive_root/source.db" "
+      ATTACH '$archive_root/index.db' AS idx;
+      SELECT COUNT(*)
+      FROM raw_sessions r
+      LEFT JOIN idx.sessions s ON s.raw_id = r.raw_id
+      WHERE COALESCE(r.validation_status, '') != 'skipped'
+        AND s.session_id IS NULL;
+    " 2>/dev/null || true
+  )"
+  raw_materialization_replayable="$(
+    sqlite3 "$archive_root/source.db" "
+      ATTACH '$archive_root/index.db' AS idx;
+      SELECT COUNT(*)
+      FROM raw_sessions r
+      LEFT JOIN idx.sessions s_by_raw ON s_by_raw.raw_id = r.raw_id
+      LEFT JOIN idx.sessions s_by_native
+        ON r.native_id IS NOT NULL
+       AND s_by_native.origin = r.origin
+       AND s_by_native.native_id = r.native_id
+      WHERE s_by_raw.raw_id IS NULL
+        AND s_by_native.native_id IS NULL
+        AND COALESCE(r.validation_status, '') != 'skipped'
+        AND r.parse_error IS NULL
+        AND r.parsed_at_ms IS NULL;
+    " 2>/dev/null || true
+  )"
+  printf 'convergence: raw_materialization_join_gaps=%s replayable_acquired_unparsed=%s\n' \
+    "${raw_materialization_debt:-?}" "${raw_materialization_replayable:-?}"
+  raw_debt_json="$(raw_materialization_debt_payload)"
+  if [ -n "$raw_debt_json" ]; then
+    python3 - "$raw_debt_json" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+
+try:
+    payload = json.loads(sys.argv[1])
+except json.JSONDecodeError:
+    raise SystemExit(0)
+
+totals = payload.get("totals") or {}
+rows = payload.get("rows") or []
+if not totals:
+    raise SystemExit(0)
+category_counts: dict[str, int] = {}
+source_family_counts: dict[str, int] = {}
+for row in rows:
+    affected = int(row.get("affected_count") or 0)
+    category = row.get("category") or "unspecified"
+    source_family = row.get("source_family") or "unspecified"
+    category_counts[category] = category_counts.get(category, 0) + affected
+    source_family_counts[source_family] = source_family_counts.get(source_family, 0) + affected
+if (totals.get("affected_total") or 0) == 0:
+    state = "ready"
+elif (totals.get("blocked") or 0) and not (totals.get("actionable") or 0):
+    state = "blocked"
+elif (totals.get("classified") or 0) and not (totals.get("affected_open") or 0) and not (totals.get("affected_actionable") or 0):
+    state = "ready"
+elif not (totals.get("affected_actionable") or 0) and not (totals.get("critical") or 0) and not (totals.get("warning") or 0):
+    state = "degraded"
+else:
+    state = "stale"
+print(
+    "raw_materialization_status: "
+    f"rows={totals.get('total')} "
+    f"affected={totals.get('affected_total')} "
+    f"actionable={totals.get('affected_actionable')} "
+    f"blocked={totals.get('affected_blocked')} "
+    f"classified={totals.get('affected_classified')} "
+    f"open={totals.get('affected_open')} "
+    f"state={state}"
+)
+if category_counts:
+    rendered = ", ".join(f"{name}={count}" for name, count in sorted(category_counts.items()))
+    print(f"raw_materialization_categories: {rendered}")
+if source_family_counts:
+    rendered = ", ".join(f"{name}={count}" for name, count in sorted(source_family_counts.items()))
+    print(f"raw_materialization_source_families: {rendered}")
+PY
+  fi
+fi
+
+printf '\n== pressure ==\n'
+if [ -n "$pressure_rows" ]; then
+  if [ "$performance_blocked" = "true" ]; then
+    printf 'live performance proof: blocked by active host pressure\n'
+  else
+    printf 'live performance proof: caution; heavy-ish work active\n'
+  fi
+  printf '%s\n' "$pressure_rows"
+else
+  printf 'live performance proof: no obvious heavy blockers\n'
+fi
+
+printf '\n== daemon ==\n'
+prod_active_state="$(systemctl --user show polylogued.service -p ActiveState --value 2>/dev/null || true)"
+prod_sub_state="$(systemctl --user show polylogued.service -p SubState --value 2>/dev/null || true)"
+devloop_active_state="$(systemctl --user show polylogued-devloop.service -p ActiveState --value 2>/dev/null || true)"
+devloop_sub_state="$(systemctl --user show polylogued-devloop.service -p SubState --value 2>/dev/null || true)"
+printf 'prod polylogued.service: %s/%s\n' "${prod_active_state:-unknown}" "${prod_sub_state:-unknown}"
+printf 'devloop polylogued-devloop.service: %s/%s\n' "${devloop_active_state:-unknown}" "${devloop_sub_state:-unknown}"
+devloop_rows="$(polylogued_devloop_rows "$repo")"
+non_devloop_rows="$(polylogued_non_devloop_rows "$repo")"
+if [ -n "$devloop_rows" ]; then
+  printf 'devloop polylogued process:\n%s\n' "$devloop_rows"
+  python3 - "$devloop_rows" <<'PY'
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+for line in sys.argv[1].splitlines():
+    parts = line.split(None, 5)
+    if not parts:
+        continue
+    args = parts[5] if len(parts) >= 6 else line
+    tokens = args.split()
+    for index, token in enumerate(tokens):
+        if token == "--spool" and index + 1 < len(tokens):
+            spool = Path(tokens[index + 1])
+            print(f"devloop run_dir: {spool.parent}")
+            print(f"devloop spool: {spool}")
+            break
+PY
+else
+  printf 'devloop polylogued process: none\n'
+fi
+if [ -n "$non_devloop_rows" ]; then
+  printf 'non-devloop polylogued process:\n%s\n' "$non_devloop_rows"
+fi
+
+printf '\n== worktrees ==\n'
+if [ "$format" = "--quick" ]; then
+  printf 'skipped in --quick mode; run full status or devtools workspace worktree-gc --json for details\n'
+else
+  worktree_gc_json="$(POLYLOGUE_TASK_HISTORY_DISABLE=1 devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"
+  python3 - "$worktree_gc_json" <<'PY'
+import json
+import sys
+
+try:
+    data = json.loads(sys.argv[1])
+except json.JSONDecodeError:
+    print("worktree-gc: unavailable")
+    raise SystemExit(0)
+
+total = data.get("total_count")
+safe = data.get("safe_count")
+blocked = data.get("blocked_count")
+print(f"agent worktrees: total={total} safe={safe} blocked={blocked}")
+blocked_items = [item for item in data.get("worktrees", []) if not item.get("safe")]
+dirty = [item for item in blocked_items if item.get("blocked_reason") == "dirty"]
+unmerged = [item for item in blocked_items if item.get("blocked_reason") == "branch-not-merged"]
+if dirty:
+    print(f"dirty_blocked={len(dirty)}")
+if unmerged:
+    print(f"unmerged_blocked={len(unmerged)}")
+PY
+fi
+
+printf '\n== active loop ==\n'
+if [ -f "$current/ACTIVE-LOOP.md" ]; then
+  sed -n '1,90p' "$current/ACTIVE-LOOP.md"
+else
+  printf 'missing ACTIVE-LOOP.md\n'
+fi

@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+Usage: .agent/scripts/devloop-refresh-events
+
+Regenerate conductor-devloop/EVENTS.jsonl from OPERATING-LOG.md. This is a
+derived local sidecar for machine analysis; OPERATING-LOG.md remains the human
+source window.
+EOF
+  exit 0
+fi
+
+root="${POLYLOGUE_AGENT_LOG_ROOT:-/realm/project/polylogue/.agent/conductor-devloop}"
+log="$root/OPERATING-LOG.md"
+events="$root/EVENTS.jsonl"
+
+if [ ! -f "$log" ]; then
+  printf 'missing operating log: %s\n' "$log" >&2
+  exit 1
+fi
+
+python3 - "$log" "$events" <<'PY'
+from __future__ import annotations
+
+import json
+import re
+import sys
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+log_path = Path(sys.argv[1])
+events_path = Path(sys.argv[2])
+heading_re = re.compile(
+    r"^## (?P<date>\d{4}-\d{2}-\d{2}) (?P<time>\d{2}:\d{2}:\d{2}) (?P<tz>[A-Z]+) [—-] (?P<title>.+)$"
+)
+tz_by_name = {"CEST": ZoneInfo("Europe/Warsaw"), "CET": ZoneInfo("Europe/Warsaw")}
+
+records: list[dict[str, object]] = []
+current: dict[str, object] | None = None
+body_lines: list[str] = []
+
+
+def flush() -> None:
+    if current is None:
+        return
+    body = "\n".join(body_lines).strip()
+    elapsed = ""
+    lines = body.splitlines()
+    if lines and lines[0].startswith("Elapsed: "):
+        elapsed = lines[0].removeprefix("Elapsed: ").strip()
+    current["body"] = body
+    current["elapsed"] = elapsed
+    records.append(dict(current))
+
+
+for line in log_path.read_text(encoding="utf-8").splitlines():
+    match = heading_re.match(line)
+    if match is not None:
+        flush()
+        body_lines = []
+        tz_name = match.group("tz")
+        tz = tz_by_name.get(tz_name, ZoneInfo("Europe/Warsaw"))
+        occurred = datetime.fromisoformat(f"{match.group('date')}T{match.group('time')}").replace(tzinfo=tz)
+        current = {
+            "schema_version": 1,
+            "occurred_at": f"{match.group('date')} {match.group('time')} {tz_name}",
+            "epoch_s": int(occurred.timestamp()),
+            "title": match.group("title").strip(),
+            "source": "devloop-log",
+        }
+        continue
+    if current is not None:
+        body_lines.append(line)
+
+flush()
+events_path.parent.mkdir(parents=True, exist_ok=True)
+events_path.write_text(
+    "".join(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in records),
+    encoding="utf-8",
+)
+print(f"refreshed {events_path} from {log_path} ({len(records)} events)")
+PY

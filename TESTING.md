@@ -100,9 +100,11 @@ process group if the step exceeds `POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S` (default
 45 minutes) or produces no output for
 `POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S` (default 10 minutes).
 `POLYLOGUE_VERIFY_RESOURCE_INTERVAL_S` controls resource sampling cadence
-(default 2 seconds). Set these timeout variables to `0` only for an explicit
-diagnostic run where an unusually long full-suite pass is expected and
-supervised.
+(default 2 seconds). Basetemp size is a recursive filesystem walk, so it is
+sampled less frequently; `POLYLOGUE_VERIFY_BASETEMP_SIZE_INTERVAL_S` controls
+that cadence (default 15 seconds, `0` disables the size walk). Set timeout
+variables to `0` only for an explicit diagnostic run where an unusually long
+full-suite pass is expected and supervised.
 
 Selection artifacts preserve exact selected/deselected counts but sample node
 IDs by default (`POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT`, default 500) so

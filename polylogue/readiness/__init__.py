@@ -32,6 +32,7 @@ from polylogue.readiness.capability import (
     component_from_insight_entry,
     component_from_operation_status,
     component_from_outcome_check,
+    component_from_raw_materialization_readiness,
     component_from_transform_registry,
 )
 from polylogue.storage.repair import ArchiveDebtStatus
@@ -817,6 +818,7 @@ __all__ = [
     "component_from_insight_entry",
     "component_from_operation_status",
     "component_from_outcome_check",
+    "component_from_raw_materialization_readiness",
     "component_from_transform_registry",
     "quick_readiness_summary",
     "get_readiness",

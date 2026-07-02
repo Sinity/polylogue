@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Shared helpers for Polylogue devloop scripts. Source this file; do not run it.
+
+polylogued_process_rows() {
+  ps -eo pid=,comm=,args= \
+    | awk '
+      $2 ~ /^(awk|grep|rg|sed|zsh|bash)$/ {next}
+      /\/polylogued run( |$)/ {print; next}
+      /polylogue[.]daemon[.]cli/ && /main[;]/ && / run( |$)/ {print; next}
+    ' \
+    || true
+}
+
+polylogued_devloop_rows() {
+  repo="${1:-/realm/project/polylogue}"
+  polylogued_process_rows \
+    | awk -v repo="$repo" '
+      index($0, repo "/.venv/bin/python") > 0 {print; next}
+      /polylogued-devloop[.]service/ {print; next}
+      /--api-port 8766/ {print; next}
+    '
+}
+
+polylogued_non_devloop_rows() {
+  repo="${1:-/realm/project/polylogue}"
+  polylogued_process_rows \
+    | awk -v repo="$repo" '
+      index($0, repo "/.venv/bin/python") > 0 {next}
+      /polylogued-devloop[.]service/ {next}
+      /--api-port 8766/ {next}
+      {print}
+    '
+}
+
+devloop_focus_modes() {
+  cat <<'EOF'
+Direction
+Evidence
+Construction
+Proof
+Artifact
+Velocity
+Meta
+EOF
+}
+
+devloop_focus_edges() {
+  cat <<'EOF'
+Direction:Evidence
+Direction:Construction
+Direction:Artifact
+Direction:Proof
+Direction:Meta
+Evidence:Construction
+Evidence:Proof
+Evidence:Artifact
+Evidence:Velocity
+Evidence:Meta
+Construction:Proof
+Construction:Meta
+Proof:Artifact
+Proof:Velocity
+Proof:Evidence
+Proof:Direction
+Proof:Meta
+Artifact:Velocity
+Artifact:Direction
+Artifact:Meta
+Artifact:Proof
+Velocity:Direction
+Velocity:Evidence
+Velocity:Artifact
+Velocity:Meta
+Meta:Meta
+Meta:Evidence
+Meta:Construction
+Meta:Proof
+Meta:Artifact
+Meta:Velocity
+Meta:Direction
+EOF
+}
+
+devloop_focus_edge_allowed() {
+  devloop_focus_edges | grep -Fxq "${1:-}:${2:-}"
+}

@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+Usage: .agent/scripts/devloop-baseline [label]
+
+Capture a timestamped lightweight baseline for the Polylogue devloop: archive
+root/counts/schema, daemon state, git state, memory/pressure, and likely
+loop-affecting processes. The output is local task-history evidence, not a
+product artifact or scratch research note.
+EOF
+  exit 0
+fi
+
+label="${1:-baseline}"
+safe_label="$(printf '%s' "$label" | tr -cs '[:alnum:]_.-' '-' | sed 's/^-//; s/-$//')"
+repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
+archive_root="${POLYLOGUE_ARCHIVE_ROOT:-/home/sinity/.local/share/polylogue}"
+current="${POLYLOGUE_AGENT_CURRENT:-$repo/.agent/conductor-devloop}"
+cd "$repo"
+
+timestamp="$(date --iso-8601=seconds)"
+stamp="$(date +%Y%m%dT%H%M%S%z)"
+out_dir="$repo/.agent/task-history/live-baselines"
+out="$out_dir/${stamp}-${safe_label:-baseline}.md"
+mkdir -p "$out_dir"
+
+{
+  printf '# Polylogue Devloop Baseline\n\n'
+  printf -- '- captured: `%s`\n' "$timestamp"
+  printf -- '- label: `%s`\n' "$label"
+  printf -- '- repo: `%s`\n' "$repo"
+  printf -- '- branch: `%s`\n' "$(git branch --show-current 2>/dev/null || true)"
+  printf -- '- archive_root: `%s`\n' "$archive_root"
+  printf '\n## Archive\n\n```json\n'
+  .agent/scripts/devloop-status --json || true
+  printf '```\n\n## Git\n\n```text\n'
+  git status --short || true
+  printf '```\n\n## Daemon Units\n\n```text\n'
+  systemctl --user status polylogued-devloop.service --no-pager --lines=12 2>&1 || true
+  printf '\n'
+  systemctl --user status polylogued.service --no-pager --lines=12 2>&1 || true
+  printf '```\n\n## Memory\n\n```text\n'
+  free -h || true
+  printf '```\n\n## Pressure\n\n```text\n'
+  printf 'memory: '; tr '\n' ' ' </proc/pressure/memory; printf '\n'
+  printf 'io:     '; tr '\n' ' ' </proc/pressure/io; printf '\n'
+  printf '```\n\n## Loop-Affecting Processes\n\n```text\n'
+  ps -eo pid,ppid,stat,etime,rss,comm,args --sort=-rss \
+    | rg 'codex|claude|serena|codebase-memory|polylogued|devtools|pytest|ruff|mypy|nix|chrome|kitty' \
+    | sed -n '1,50p' || true
+  printf '```\n'
+} >"$out"
+
+printf '%s\n' "$out"

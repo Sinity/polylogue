@@ -194,9 +194,17 @@ class TestPlannerHonorsFilter:
             dry_run: bool = False,
             *,
             raw_artifact_id: str | None = None,
+            provider: str | None = None,
+            source_family: str | None = None,
+            source_root: Path | None = None,
+            progress_callback: object | None = None,
         ) -> repair_mod.RepairResult:
             captured["dry_run"] = dry_run
             captured["raw_artifact_id"] = raw_artifact_id
+            captured["provider"] = provider
+            captured["source_family"] = source_family
+            captured["source_root"] = source_root
+            captured["progress_callback"] = callable(progress_callback)
             return repair_mod._repair_result(
                 "raw_materialization",
                 repaired_count=1,
@@ -211,13 +219,26 @@ class TestPlannerHonorsFilter:
             config,
             targets=("raw_materialization",),
             persist_state=False,
-            scope_filter=MaintenanceScopeFilter(raw_artifact_id="raw-1"),
+            scope_filter=MaintenanceScopeFilter(
+                provider="claude-code",
+                source_family="claude-code-session",
+                source_root=tmp_path / "sources",
+                raw_artifact_id="raw-1",
+            ),
         )
 
         assert operation.status is BackfillStatus.COMPLETED
-        assert captured == {"dry_run": False, "raw_artifact_id": "raw-1"}
+        assert captured == {
+            "dry_run": False,
+            "provider": "claude-code",
+            "source_family": "claude-code-session",
+            "source_root": tmp_path / "sources",
+            "raw_artifact_id": "raw-1",
+            "progress_callback": True,
+        }
         assert operation.scope is not None
         assert operation.scope.filter.raw_artifact_id == "raw-1"
+        assert operation.scope.filter.source_family == "claude-code-session"
 
 
 class TestCrossSurfaceFilterParity:

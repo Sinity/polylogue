@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import polylogue.storage.insights.session.rebuild as rebuild_mod
 from polylogue.storage.insights.session.aggregates import refresh_async_provider_day_aggregates
 from polylogue.storage.insights.session.rebuild import (
     _SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS,
@@ -18,6 +19,7 @@ from polylogue.storage.insights.session.refresh import (
     _refresh_thread_roots_async,
 )
 from polylogue.storage.insights.session.repair_assessment import assess_session_insight_repairs
+from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
@@ -758,6 +760,68 @@ def test_targeted_session_insight_rebuild_splits_large_message_batches(
     assert chunk_profile_counts == [1, 2]
 
 
+def test_large_session_rebuild_uses_bounded_degraded_profile(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "large-session-degraded.db"
+    native = "conv-large-bounded"
+    session_id = _sid(native, "codex-session")
+    with open_connection(db_path) as conn:
+        store_records(
+            session=make_session(native, source_name="codex", title="Large bounded profile"),
+            messages=[
+                make_message(f"{native}:msg-1", native, text="first prompt"),
+                make_message(f"{native}:msg-2", native, role="assistant", text="answer"),
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        conn.execute(
+            """
+            UPDATE sessions
+            SET message_count = ?, word_count = ?, tool_use_count = ?, thinking_count = ?
+            WHERE session_id = ?
+            """,
+            (50, 1234, 7, 3, session_id),
+        )
+        conn.commit()
+
+        monkeypatch.setattr(rebuild_mod, "_SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD", 10)
+        counts = rebuild_session_insights_sync(conn, session_ids=[session_id])
+        profile = conn.execute(
+            "SELECT * FROM session_profiles WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        work_events = conn.execute(
+            "SELECT COUNT(*) FROM session_work_events WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()[0]
+        markers = {
+            str(row["insight_type"]): int(row["materializer_version"])
+            for row in conn.execute(
+                "SELECT insight_type, materializer_version FROM insight_materialization WHERE session_id = ?",
+                (session_id,),
+            ).fetchall()
+        }
+
+    assert counts.profiles == 1
+    assert counts.work_events == 0
+    assert counts.phases == 0
+    assert profile["workflow_shape"] == "bounded_large_session"
+    assert profile["message_count"] == 50
+    assert profile["word_count"] == 1234
+    assert profile["tool_use_count"] == 7
+    assert "large_session_bounded" in profile["inference_payload_json"]
+    assert "large_session_bounded" in profile["enrichment_payload_json"]
+    assert work_events == 0
+    assert markers["session_profile"] == SESSION_INSIGHT_MATERIALIZER_VERSION
+    assert markers["latency"] == SESSION_INSIGHT_MATERIALIZER_VERSION
+    assert markers["work_events"] == SESSION_INSIGHT_MATERIALIZER_VERSION
+    assert markers["phases"] == SESSION_INSIGHT_MATERIALIZER_VERSION
+    assert markers["thread"] == SESSION_INSIGHT_MATERIALIZER_VERSION
+
+
 def test_full_rebuild_commits_incrementally_and_prunes_orphans(tmp_path: Path) -> None:
     """Bounded-WAL full rebuild (#2458) must:
 
@@ -900,9 +964,9 @@ def test_full_rebuild_restores_thread_spine_membership_and_markers(tmp_path: Pat
     child_id = _sid("conv-child", "claude-code-session")
     with open_connection(db_path) as conn:
         thread_markers = {
-            str(row["session_id"])
+            str(row["session_id"]): int(row["materializer_version"])
             for row in conn.execute(
-                "SELECT session_id FROM insight_materialization WHERE insight_type = 'thread'"
+                "SELECT session_id, materializer_version FROM insight_materialization WHERE insight_type = 'thread'"
             ).fetchall()
         }
         members = {
@@ -918,7 +982,10 @@ def test_full_rebuild_restores_thread_spine_membership_and_markers(tmp_path: Pat
         ).fetchone()["created_at_ms"]
 
     # (a) continuation member carries its own 'thread' marker, not only the root.
-    assert thread_markers == {root_id, child_id}
+    assert thread_markers == {
+        root_id: SESSION_INSIGHT_MATERIALIZER_VERSION,
+        child_id: SESSION_INSIGHT_MATERIALIZER_VERSION,
+    }
     # (b) membership join repopulated and created_at_ms re-derived (not zeroed).
     assert members == {root_id, child_id}
     assert created_at_ms > 0

@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+Usage: .agent/scripts/devloop-sync
+
+Refresh generated conductor state: compact the active operating-log window,
+regenerate EVENTS.jsonl and demo indexes, remove obsolete packet mirrors, and
+write MANIFEST.md plus devloop-script-hashes.tsv. Does not mirror to /realm/inbox.
+EOF
+  exit 0
+fi
+
+repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
+packet="${POLYLOGUE_CONDUCTOR_PACKET:-$repo/.agent/conductor-devloop}"
+
+mkdir -p "$packet"
+
+"$repo/.agent/tools/conductor_compact.py" --root "$packet" >/dev/null
+"$repo/.agent/scripts/devloop-refresh-events" >/dev/null
+"$repo/.agent/scripts/devloop-refresh-demos" >/dev/null
+
+rm -rf "$packet/scripts"
+rm -f "$packet/agent.README.md" "$packet/scratch.README.md"
+
+script_manifest="$packet/devloop-script-hashes.tsv"
+find "$repo/.agent/scripts" -maxdepth 1 -type f \( -name 'devloop-*' -o -name 'lib-devloop' \) -print0 \
+  | sort -z \
+  | xargs -0 sha256sum \
+  | awk -v repo="$repo/" '{sub(repo, "", $2); print $2 "\t" $1}' \
+  > "$script_manifest"
+
+{
+  printf '# Polylogue Conductor Packet\n\n'
+  printf 'Synced: %s\n\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+  printf 'Canonical dir: `%s`\n\n' "$packet"
+  printf 'Generated files:\n\n'
+  find "$packet" -maxdepth 1 -type f -printf '- %f\n' | sort
+  printf '\nTracked script hashes are listed in `devloop-script-hashes.tsv`.\n'
+} > "$packet/MANIFEST.md"
+
+printf 'refreshed conductor packet at %s\n' "$packet"

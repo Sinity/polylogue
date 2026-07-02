@@ -305,7 +305,7 @@ ArchiveDebtKind = Literal[
     "raw-materialization",
 ]
 ArchiveDebtSeverity = Literal["info", "warning", "critical"]
-ArchiveDebtStatus = Literal["open", "actionable", "blocked"]
+ArchiveDebtStatus = Literal["open", "actionable", "blocked", "classified"]
 
 
 class ArchiveDebtActionPayload(SurfacePayloadModel):
@@ -317,16 +317,18 @@ class ArchiveDebtActionPayload(SurfacePayloadModel):
 
 
 class ArchiveDebtRowPayload(SurfacePayloadModel):
-    """One actionable archive debt row from an operational readiness provider."""
+    """One archive debt/readiness row from an operational provider."""
 
     debt_ref: str
     kind: ArchiveDebtKind
+    category: str | None = None
     stage: str
     subject_ref: str
     severity: ArchiveDebtSeverity
     status: ArchiveDebtStatus = "open"
     owner: str
     summary: str
+    affected_count: int | None = None
     details: str | None = None
     source_family: str | None = None
     observed_at: str | None = None
@@ -345,6 +347,15 @@ class ArchiveDebtTotalsPayload(SurfacePayloadModel):
     info: int = 0
     actionable: int = 0
     blocked: int = 0
+    classified: int = 0
+    affected_total: int = 0
+    affected_critical: int = 0
+    affected_warning: int = 0
+    affected_info: int = 0
+    affected_actionable: int = 0
+    affected_blocked: int = 0
+    affected_open: int = 0
+    affected_classified: int = 0
 
 
 class ArchiveDebtListPayload(SurfacePayloadModel):
@@ -355,6 +366,65 @@ class ArchiveDebtListPayload(SurfacePayloadModel):
     archive_root: str
     rows: tuple[ArchiveDebtRowPayload, ...]
     totals: ArchiveDebtTotalsPayload
+    caveats: tuple[str, ...] = ()
+
+
+ToolCountBasis = Literal["tool-use-blocks", "observed-events", "actions"]
+ToolCountKind = Literal["tool_call_counts", "tool_observed_event_counts", "tool_action_evidence_counts"]
+ToolCountDetailLevel = Literal[
+    "tool_use_block_call_counts",
+    "tool_finished_observed_events",
+    "canonical_action_evidence_counts",
+]
+
+
+class ToolCountFiltersPayload(SurfacePayloadModel):
+    """Filters applied to `polylogue analyze tools --format json`."""
+
+    origin: str | None = None
+    tool: str | None = None
+    mcp_server: str | None = None
+    action_kind: str | None = None
+    detail_patterns: tuple[str, ...] = ()
+    days: int | None = None
+    basis: ToolCountBasis
+    limit: int
+
+
+class ToolCountRowPayload(SurfacePayloadModel):
+    """One grouped tool count row from a declared archive projection basis."""
+
+    source_name: str
+    origin: str
+    normalized_tool_name: str
+    action_kind: str
+    evidence_kind: str | None = None
+    matched_by: str | None = None
+    call_count: int | None = None
+    session_count: int | None = None
+    error_count: int | None = None
+    nonzero_exit_count: int | None = None
+    status: str | None = None
+    event_count: int | None = None
+
+
+class ToolCountPayload(SurfacePayloadModel):
+    """Structured output for `polylogue analyze tools --format json`."""
+
+    kind: ToolCountKind
+    detail_level: ToolCountDetailLevel
+    archive_root: str
+    filters: ToolCountFiltersPayload
+    items: tuple[ToolCountRowPayload, ...]
+
+
+class ToolFamilyComparisonPayload(SurfacePayloadModel):
+    """Multi-basis evidence comparison for one tool/affordance family."""
+
+    kind: Literal["tool_family_evidence_comparison"]
+    archive_root: str
+    family: str
+    bases: tuple[ToolCountPayload, ...]
     caveats: tuple[str, ...] = ()
 
 

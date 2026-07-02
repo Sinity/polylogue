@@ -106,6 +106,24 @@ schema shape:
 - Schema bumps are deletes-then-defines, never deltas. A schema change
   edits the owning tier DDL/version and documents the re-ingest expectation.
   No upgrade helpers are added for the bump.
+- Index schema version 20 adds `idx_blocks_type_tool`, an expression index on
+  `(block_type, COALESCE(NULLIF(LOWER(tool_name), ''), 'unknown'))`, so tool
+  family rollups can resolve exact tool names and MCP-server prefixes without
+  scanning every `tool_use` block in large archives. The `analyze tools`
+  lowerers use range predicates for MCP prefixes to match the index expression.
+  Existing index tiers must be rebuilt from source evidence
+  (`polylogue ops reset --index && polylogued run`).
+- Index schema version 19 adds expression indexes for materialized
+  `session_observed_events` tool outcome payload fields. The terminal query DSL
+  can now ask questions such as
+  `observed-events where kind:tool_finished | group by handler | count`; on
+  large archives the v18 shape filtered by `kind` and then built temporary
+  B-trees over JSON-extracted `tool_name`, `handler_kind`, or `status` values.
+  The v19 indexes key `(kind, COALESCE(NULLIF(json_extract(payload_json,
+  '$.<field>'), ''), 'unknown'))` for `tool_name`, `handler_kind`, and
+  `status`, matching the SQL lowerer's group expressions. Existing index tiers
+  must be rebuilt from source evidence (`polylogue ops reset --index &&
+  polylogued run`).
 - Index schema version 16 captures structured tool-result outcomes (the
   "keystone"). `blocks` gains `tool_result_is_error` (0/1, nullable) and
   `tool_result_exit_code` (nullable INTEGER); the `actions` view exposes them
@@ -163,12 +181,15 @@ schema shape:
   read-model tables — `session_runs`, `session_observed_events`, and
   `session_context_snapshots` — recomputed by the session-insight materializer
   (`compile_session_digest(...).run_projection`) exactly like `session_profiles`.
-  They give the `run` / `observed-event` / `context-snapshot` query units a
-  durable SQL-backed lowerer (terminal rows, `exists`, and sort) instead of the
-  per-query session-digest scan. They are derived/rebuildable, not a new
-  source of truth; the durable evidence stays `session_events` + `messages` +
-  `topology_edges`. Existing index tiers must be rebuilt from source evidence
-  (`polylogue ops reset --index && polylogued run`).
+  They are derived/rebuildable enrichments, not the only query substrate:
+  terminal `run` / `observed-event` / `context-snapshot` queries also synthesize
+  cheap local rows directly from `sessions` and `blocks` (main runs,
+  `session_started`, tool-finished outcomes, and session-start context
+  snapshots). The durable evidence stays `session_events` + `messages` +
+  `topology_edges`, and materialized rows are retained only where they encode
+  richer non-local projections that are not cheap to lower directly. Existing
+  index tiers must be rebuilt from source evidence (`polylogue ops reset --index
+  && polylogued run`).
 - Index schema version 10 adds a role-leading `idx_messages_role` index so
   daemon `/api/facets` can compute global role counts without scanning the
   session-role compound index and spilling to a temp B-tree. Existing index

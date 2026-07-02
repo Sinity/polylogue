@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from io import BytesIO
 from itertools import islice
@@ -29,6 +29,7 @@ GROUP_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX, Provider.GEMI
 STREAM_RECORD_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX})
 DRIVE_LIKE_PROVIDERS = frozenset({Provider.GEMINI, Provider.DRIVE})
 _MAX_PARSE_DEPTH = 10
+_NO_LOOKAHEAD = object()
 
 PayloadRecord: TypeAlias = JSONDocument
 PayloadSequence: TypeAlias = list[JSONValue]
@@ -379,6 +380,69 @@ def _claude_code_grouped_record_specs(payloads: PayloadSequence, fallback_id: st
     ]
 
 
+def _claude_code_stream_sessions(payloads: Iterable[object], fallback_id: str) -> Iterator[ParsedSession]:
+    """Parse Claude Code JSONL records without materializing the full stream.
+
+    The eager ``parse_payload`` path preserves the strongest non-contiguous
+    grouping semantics for already-materialized payloads. Raw JSONL ingest and
+    repair, however, can be multi-GiB; for that path we split only on contiguous
+    ``sessionId`` changes and feed each group to the provider parser as an
+    iterator. That keeps memory proportional to the parsed session currently
+    being written rather than to every raw JSON record in the source blob.
+    """
+
+    iterator = iter(payloads)
+    lookahead: object = _NO_LOOKAHEAD
+    pending_prefix: list[object] = []
+    first_group = True
+
+    def next_item() -> object:
+        nonlocal lookahead
+        if lookahead is not _NO_LOOKAHEAD:
+            item = lookahead
+            lookahead = _NO_LOOKAHEAD
+            return item
+        return next(iterator)
+
+    while True:
+        try:
+            first = next_item()
+        except StopIteration:
+            if pending_prefix:
+                yield claude.parse_code_stream(iter(pending_prefix), fallback_id)
+            return
+
+        first_record = _payload_record(first)
+        first_session_id = optional_string(first_record.get("sessionId")) if first_record is not None else None
+        if first_session_id is None:
+            pending_prefix.append(first)
+            continue
+
+        group_session_id = first_session_id
+        group_fallback_id = fallback_id if first_group else group_session_id
+        first_group = False
+        prefix = pending_prefix
+        pending_prefix = []
+
+        def group_records(
+            prefix: list[object] = prefix,
+            first: object = first,
+            group_session_id: str = group_session_id,
+        ) -> Iterator[object]:
+            nonlocal lookahead
+            yield from prefix
+            yield first
+            for item in iterator:
+                record = _payload_record(item)
+                session_id = optional_string(record.get("sessionId")) if record is not None else None
+                if session_id is not None and session_id != group_session_id:
+                    lookahead = item
+                    return
+                yield item
+
+        yield claude.parse_code_stream(group_records(), group_fallback_id)
+
+
 def _bundle_record_specs(
     provider: Provider,
     payloads: PayloadSequence,
@@ -692,13 +756,7 @@ def parse_stream_payload(
     """Parse a grouped record stream."""
     runtime_provider = Provider.from_string(provider)
     if runtime_provider is Provider.CLAUDE_CODE:
-        normalized_payloads = _payload_sequence(list(payloads))
-        if normalized_payloads is None:
-            return []
-        sessions: list[ParsedSession] = []
-        for spec in _claude_code_grouped_record_specs(normalized_payloads, fallback_id):
-            sessions.extend(_parse_lowered_spec(spec))
-        return sessions
+        return list(_claude_code_stream_sessions(payloads, fallback_id))
     if runtime_provider is Provider.CODEX:
         return [codex.parse_stream(payloads, fallback_id)]
     raise ValueError(f"provider {runtime_provider} does not support stream parsing")

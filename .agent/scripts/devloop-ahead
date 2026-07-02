@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+Usage: .agent/scripts/devloop-ahead
+
+Print useful foreground work suggestions while a long Polylogue command runs.
+This script is read-only.
+EOF
+  exit 0
+fi
+
+cat <<'EOF'
+Useful foreground lanes while a long Polylogue command runs:
+
+1. Adjacent source audit
+   Inspect the exact slow/changed call sites, sibling lowerers, tests, and docs.
+   Output: one concrete patch candidate or "no adjacent drift found."
+
+2. Artifact/demo lane
+   Update .agent/demos with current rerun commands, archive root/schema/counts,
+   caveats, and stale-artifact removals.
+   Output: refreshed demo artifact or manifest/catalog update.
+
+3. Backlog/radar lane
+   Add or sharpen DEMO-RADAR/ACTIVE-LOOP next decisions from current evidence.
+   Output: ranked next slice candidates with why-now and proof command.
+
+4. Subagent/audit lane
+   Prepare a narrow audit prompt for another agent or issue lane: owned files,
+   question, evidence to inspect, and expected artifact. Launch only when the
+   lane will not contend for the same checkout/database/heavy command.
+   Output: prompt or dispatched audit, not vague parallelism.
+
+5. Integration lane
+   Run .agent/scripts/devloop-integration --subagent-prompt to keep the
+   long-running branch clustered into PR-shaped replay groups.
+   Output: commit-cluster plan, candidate PR branches, or dry-run replay script.
+
+6. Verification lane
+   Prepare the next narrow proof command, expected claim, and failure classifier.
+   Output: command ready to run when the pending job returns.
+
+7. Velocity/meta lane
+   Run devloop-status/velocity, inspect pressure, or record a meta-audit when
+   repeated friction is visible.
+   Output: smaller future wait, less root/schema/daemon ambiguity, or a clearer
+   positive process check.
+
+Pick one lane per wait window. Do not start another heavy archive/test/build
+job against the same checkout or archive just to look busy.
+EOF

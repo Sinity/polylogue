@@ -327,6 +327,17 @@ def test_archive_tiers_messages_have_role_leading_facet_index(tmp_path: Path) ->
     assert columns == ["role"]
 
 
+def test_archive_tiers_blocks_have_tool_family_index(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    _apply_tier(conn, ArchiveTier.INDEX)
+
+    indexes = {row["name"] for row in conn.execute("PRAGMA index_list('blocks')").fetchall()}
+    assert "idx_blocks_type_tool" in indexes
+
+    columns = [row["name"] for row in conn.execute("PRAGMA index_xinfo('idx_blocks_type_tool')").fetchall()]
+    assert columns[:2] == ["block_type", None]
+
+
 def test_archive_tier_specs_capture_file_and_backup_policy() -> None:
     assert {tier: spec.filename for tier, spec in ARCHIVE_TIER_SPECS.items()} == {
         ArchiveTier.SOURCE: "source.db",

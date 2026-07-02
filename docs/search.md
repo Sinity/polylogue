@@ -143,13 +143,17 @@ currently support `sort by time [asc|desc]`,
 and `offset N` for SQL-backed terminal rows (`messages`, `actions`, `blocks`,
 `files`, `assertions`). Query-string limits narrow the surface limit instead of expanding
 caller/API caps, and query-string offsets are added to the caller offset.
-`runs`, `observed-events`, and `context-snapshots` are now SQL-backed terminal
-rows over the materialized run-projection tables (`session_runs`,
-`session_observed_events`, `session_context_snapshots`); they support
-`sort by time`, `limit`, and `offset` and are usable as `exists run(...)` /
-`exists observed-event(...)` / `exists context-snapshot(...)` session selectors.
-They do not yet expose `group by | count` aggregation (no aggregate lowerer), so
-aggregate stages on these units fail with a typed error rather than broadening.
+`runs`, `observed-events`, and `context-snapshots` are SQL-backed terminal rows
+over source-derived archive relations plus any non-duplicate materialized
+projection enrichments. Main runs, `session_started` events, tool-finished
+events, and session-start context snapshots are computed directly from
+`sessions` and `blocks`; richer digest-derived rows can still come from
+`session_runs`, `session_observed_events`, and `session_context_snapshots`.
+These units support `sort by time`, `limit`, and `offset` and are usable as
+`exists run(...)` / `exists observed-event(...)` /
+`exists context-snapshot(...)` session selectors. They do not yet expose
+`group by | count` aggregation (no aggregate lowerer), so aggregate stages on
+these units fail with a typed error rather than broadening.
 Pipeline syntax is terminal-row syntax: session-selector surfaces reject piped
 queries, including aggregate stages like `group by role | count`, instead of
 dropping those stages and widening the query to `exists message(...)`.
@@ -359,15 +363,15 @@ with action counts and first/last tool-use refs. It is not a global filesystem
 inventory and does not claim that a file still exists on disk.
 
 `runs`, `observed-events`, and `context-snapshots` are SQL-backed row sources
-over the materialized run-projection tables (`session_runs`,
-`session_observed_events`, `session_context_snapshots`), which the session-insight
-materializer recomputes from each session's run-projection evidence.
-They are both terminal unit sources (`runs where ...`) and `exists run(...)` /
-`exists observed-event(...)` / `exists context-snapshot(...)` session selectors,
-and they accept the full SQL-backed session filter surface (`session.action`,
-`session.tool`, `session.path`, `session.has`, …). They support `sort by time`,
-`limit`, and `offset`; they do not yet expose `group by | count` aggregation, so
-aggregate stages on these units fail with a typed error rather than broadening.
+over source-derived archive relations, with materialized projection tables used
+only for richer non-duplicate rows that are not cheap local projections of
+`sessions` and `blocks`. They are both terminal unit sources (`runs where ...`)
+and `exists run(...)` / `exists observed-event(...)` /
+`exists context-snapshot(...)` session selectors, and they accept the full
+SQL-backed session filter surface (`session.action`, `session.tool`,
+`session.path`, `session.has`, …). They support `sort by time`, `limit`, and
+`offset`; they do not yet expose `group by | count` aggregation, so aggregate
+stages on these units fail with a typed error rather than broadening.
 
 Session filters such as `--origin`, `--tag`, `--repo`, `--since`, and `--until`
 still narrow the owning sessions before rows are returned. Session-only actions
@@ -498,7 +502,7 @@ can resolve deliberately when the operator wants to inspect source evidence.
 | `--has-tool-use` | Only sessions with tool calls |
 | `--has-thinking` | Only sessions with reasoning/thinking blocks |
 | `--has-paste` | Only sessions with paste evidence |
-| `--typed-only` | Only typed (non-pasted) content |
+| `--typed-only` | Only sessions without paste evidence |
 | `--has`, `--has-type` | Filter by content type: `thinking`, `tools`, `summary`, `attachments` |
 
 ### Message stats

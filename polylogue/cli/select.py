@@ -79,6 +79,11 @@ def render_select_row(row: SelectSessionRow, print_field: SelectPrintField) -> s
     return dumps(row.to_json())
 
 
+def render_select_rows(rows: list[SelectSessionRow], print_field: SelectPrintField) -> str:
+    """Render one or more selector rows for noninteractive output."""
+    return "\n".join(render_select_row(row, print_field) for row in rows)
+
+
 def _fzf_input(rows: list[SelectSessionRow]) -> str:
     return "\n".join(f"{row.session_id}\t{row.label}\t{row.preview}" for row in rows)
 
@@ -205,11 +210,8 @@ async def async_run_select(
     selected = choose_select_row(env, rows)
     if selected is None:
         if rows:
-            click.echo(
-                "Selection required for multiple sessions; narrow the query or run in an interactive terminal.",
-                err=True,
-            )
-            raise SystemExit(1)
+            click.echo(render_select_rows(rows, print_field))
+            return
         click.echo("No sessions matched.", err=True)
         raise SystemExit(2)
     click.echo(render_select_row(selected, print_field))
@@ -231,6 +233,7 @@ __all__ = [
     "async_run_select",
     "choose_select_row",
     "render_select_row",
+    "render_select_rows",
     "run_select",
     "select_session_rows",
     "select_row_from_result",

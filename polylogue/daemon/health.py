@@ -1146,6 +1146,26 @@ def check_health(*, tiers: set[HealthTier] | None = None) -> DaemonHealth:
     )
 
 
+def resolve_health_tiers(tier_str: str) -> set[HealthTier]:
+    """Resolve a comma-separated health tier setting.
+
+    Invalid or empty tier strings fall back to the cheap FAST tier. That keeps
+    polled health surfaces bounded unless an operator explicitly opts into
+    MEDIUM or EXPENSIVE checks.
+    """
+    tier_map = {
+        "fast": HealthTier.FAST,
+        "medium": HealthTier.MEDIUM,
+        "expensive": HealthTier.EXPENSIVE,
+    }
+    tiers: set[HealthTier] = set()
+    for tier in tier_str.split(","):
+        normalized = tier.strip().lower()
+        if normalized in tier_map:
+            tiers.add(tier_map[normalized])
+    return tiers or {HealthTier.FAST}
+
+
 def format_health_lines(health: DaemonHealth) -> list[str]:
     """Render health status as plain-text lines."""
     lines: list[str] = []
@@ -1202,4 +1222,5 @@ __all__ = [
     "_check_schema_version_fast",
     "check_health",
     "format_health_lines",
+    "resolve_health_tiers",
 ]

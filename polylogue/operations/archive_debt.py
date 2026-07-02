@@ -11,10 +11,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from polylogue.core.enums import Origin
+from polylogue.core.sources import provider_from_origin
 from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
 from polylogue.daemon.embedding_readiness import embedding_readiness_info
 from polylogue.daemon.fts_status import fts_readiness_info
 from polylogue.maintenance.targets import MAINTENANCE_TARGET_NAMES
+from polylogue.sources.dispatch import is_stream_record_provider
+from polylogue.storage.repair import RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.user_write import list_assertion_candidates
 from polylogue.surfaces.payloads import (
@@ -39,6 +43,7 @@ def archive_debt_list(
     *,
     archive_root: Path,
     kinds: Iterable[str] | None = None,
+    statuses: Iterable[str] | None = None,
     only_actionable: bool = False,
     limit: int | None = None,
     exact_fts: bool = False,
@@ -46,6 +51,7 @@ def archive_debt_list(
     """Return a unified archive debt report across current readiness providers."""
     generated_at = datetime.now(UTC).isoformat()
     selected_kinds = _selected_kinds(kinds)
+    selected_statuses = _selected_statuses(statuses)
     index_db = archive_root / "index.db"
     rows: list[ArchiveDebtRowPayload] = []
 
@@ -65,6 +71,8 @@ def archive_debt_list(
         rows.extend(_fts_rows(index_db, exact=exact_fts))
 
     rows = sorted(rows, key=_row_sort_key)
+    if selected_statuses is not None:
+        rows = [row for row in rows if row.status in selected_statuses]
     if only_actionable:
         rows = [row for row in rows if row.status == "actionable"]
     if limit is not None:
@@ -86,6 +94,13 @@ def _selected_kinds(kinds: Iterable[str] | None) -> set[str] | None:
     if kinds is None:
         return None
     selected = {kind for kind in kinds if kind}
+    return selected or None
+
+
+def _selected_statuses(statuses: Iterable[str] | None) -> set[str] | None:
+    if statuses is None:
+        return None
+    selected = {status for status in statuses if status}
     return selected or None
 
 
@@ -254,12 +269,10 @@ def _raw_materialization_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]
         for row in candidate_rows:
             if row["parse_error"]:
                 category = _raw_materialization_category(conn, row, archive_root)
-            elif (
-                _raw_materialized_by_native_id(conn, row)
-                or _raw_materialized_by_source_path_native(conn, row)
-                or _raw_materialized_by_embedded_session_ids(conn, row)
-            ):
+            elif _raw_materialized_by_native_id(conn, row) or _raw_materialized_by_source_path_native(conn, row):
                 category = "materialized-alias"
+            elif _raw_materialized_by_embedded_session_ids(conn, row):
+                continue
             else:
                 category = _raw_materialization_category(conn, row, archive_root)
             if category == "aggregate-partial-materialization":
@@ -369,6 +382,8 @@ def _raw_materialization_category(conn: sqlite3.Connection, row: sqlite3.Row, ar
             total, materialized = _embedded_session_materialization_counts(conn, str(row["origin"] or ""), embedded_ids)
             if materialized and materialized < total:
                 return "aggregate-partial-materialization"
+        if _parsed_session_shape_reason(archive_root, row) is not None:
+            return "parsed-session-unmaterialized"
         return "parsed-without-session"
     return "parse-pending"
 
@@ -393,6 +408,109 @@ def _parsed_non_session_artifact_reason(archive_root: Path, row: sqlite3.Row) ->
     if origin == "codex-session" and set(first_types) == {"session_meta"}:
         return "Codex metadata-only session file"
     return None
+
+
+def _parsed_session_shape_reason(archive_root: Path, row: sqlite3.Row) -> str | None:
+    origin = str(row["origin"] or "")
+    blob_path = _raw_blob_path(archive_root, row)
+    if origin == "codex-session":
+        first_types = _raw_jsonl_leading_types(blob_path, limit=200)
+        if "session_meta" in first_types and (
+            "response_item" in first_types or "event_msg" in first_types or "turn_context" in first_types
+        ):
+            return "Codex session event stream"
+    if origin == "gemini-cli-session":
+        payload = _raw_json_document(blob_path)
+        if (
+            isinstance(payload, dict)
+            and isinstance(payload.get("sessionId"), str)
+            and _gemini_messages_are_session_shaped(payload.get("messages"))
+        ):
+            return "Gemini CLI chat session"
+    if origin == "chatgpt-export":
+        payload = _raw_json_document(blob_path)
+        if (
+            isinstance(payload, dict)
+            and payload.get("polylogue_capture_kind") == "browser_llm_session"
+            and isinstance(payload.get("session"), dict)
+            and isinstance(payload.get("raw_provider_payload"), dict)
+        ):
+            return "ChatGPT browser-capture session"
+    return None
+
+
+def _parsed_session_native_ids(archive_root: Path, row: sqlite3.Row) -> tuple[str, ...]:
+    if row["parse_error"] or row["parsed_at_ms"] is None:
+        return ()
+    if _parsed_session_shape_reason(archive_root, row) is None:
+        return ()
+    origin = str(row["origin"] or "")
+    blob_path = _raw_blob_path(archive_root, row)
+    ids: list[str] = []
+
+    def add(value: object) -> None:
+        if isinstance(value, str) and value and value not in ids:
+            ids.append(value)
+
+    if origin == "codex-session":
+        for item in _raw_jsonl_leading_objects(blob_path, limit=200):
+            if item.get("type") != "session_meta":
+                continue
+            payload = item.get("payload")
+            if isinstance(payload, dict):
+                add(payload.get("id"))
+            add(item.get("id"))
+            if ids:
+                break
+    elif origin == "gemini-cli-session":
+        payload = _raw_json_document(blob_path)
+        if isinstance(payload, dict):
+            add(payload.get("id"))
+            add(payload.get("sessionId"))
+    elif origin == "chatgpt-export":
+        payload = _raw_json_document(blob_path)
+        if isinstance(payload, dict):
+            session = payload.get("session")
+            if isinstance(session, dict):
+                add(session.get("provider_session_id"))
+                add(session.get("id"))
+                add(session.get("conversation_id"))
+            raw_provider_payload = payload.get("raw_provider_payload")
+            if isinstance(raw_provider_payload, dict):
+                add(raw_provider_payload.get("conversation_id"))
+            add(payload.get("conversation_id"))
+
+    if not ids and row["native_id"] is not None:
+        add(row["native_id"])
+    return tuple(ids)
+
+
+def _sample_parsed_session_native_ids(archive_root: Path, rows: Iterable[sqlite3.Row]) -> tuple[str, ...]:
+    ids: list[str] = []
+    for row in rows:
+        for native_id in _parsed_session_native_ids(archive_root, row):
+            if native_id not in ids:
+                ids.append(native_id)
+            if len(ids) >= 5:
+                return tuple(ids)
+    return tuple(ids)
+
+
+def _raw_json_document(path: Path) -> Any:
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            return json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _gemini_messages_are_session_shaped(messages: object) -> bool:
+    if not isinstance(messages, list):
+        return False
+    seen_types = {
+        value for item in messages[:200] if isinstance(item, dict) and isinstance((value := item.get("type")), str)
+    }
+    return bool(seen_types & {"user", "gemini"})
 
 
 def _source_path_is_known_sidecar(source_path: str) -> bool:
@@ -491,6 +609,23 @@ def _embedded_session_materialization_counts(
     return (len(session_ids), materialized)
 
 
+def _format_bytes(value: int) -> str:
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    amount = float(max(value, 0))
+    for unit in units:
+        if amount < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(amount):,} B"
+            return f"{amount:.1f} {unit} ({value:,} bytes)"
+        amount /= 1024
+    return f"{value:,} bytes"
+
+
+def _raw_materialization_row_stream_safe(*, origin: str, row: sqlite3.Row) -> bool:
+    provider = provider_from_origin(Origin.from_string(origin))
+    return is_stream_record_provider(str(row["source_path"] or ""), provider)
+
+
 def _raw_materialization_debt_row(
     archive_root: Path,
     *,
@@ -502,6 +637,14 @@ def _raw_materialization_debt_row(
     count = len(rows)
     sample_rows = rows[:5]
     max_blob_size = max(_int_value(row["blob_size"]) or 0 for row in rows)
+    max_blob_size_text = _format_bytes(max_blob_size)
+    oversized_rows = [
+        row for row in rows if (_int_value(row["blob_size"]) or 0) > RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
+    ]
+    stream_safe_oversized_rows = [
+        row for row in oversized_rows if _raw_materialization_row_stream_safe(origin=origin, row=row)
+    ]
+    blocked_oversized_count = len(oversized_rows) - len(stream_safe_oversized_rows)
     validation_counts = _count_values(row["validation_status"] for row in rows)
     source_available = any(_source_artifact_exists(str(row["source_path"])) for row in rows)
     severity: ArchiveDebtSeverity
@@ -516,7 +659,7 @@ def _raw_materialization_debt_row(
         stage = "raw-blob"
         summary = f"{count} {origin} raw artifact(s) reference missing blob payloads"
         details = (
-            f"Max raw payload size: {max_blob_size} bytes; validation states: "
+            f"Max raw payload size: {max_blob_size_text}; validation states: "
             f"{_format_counts(validation_counts)}. Re-acquire from source before parsing."
         )
         actions = (
@@ -530,9 +673,7 @@ def _raw_materialization_debt_row(
         severity = "critical"
         stage = "parse"
         summary = f"{count} {origin} raw artifact(s) failed before materializing sessions"
-        details = (
-            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size} bytes."
-        )
+        details = f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size_text}."
         actions = (
             ArchiveDebtActionPayload(
                 label="Inspect source artifacts",
@@ -551,7 +692,7 @@ def _raw_materialization_debt_row(
         coverage_text = "; ".join(coverage_parts) if coverage_parts else "embedded session coverage unavailable"
         summary = f"{count} {origin} aggregate raw artifact(s) are only partially materialized"
         details = (
-            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size} bytes. "
+            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size_text}. "
             f"Sample coverage: {coverage_text}. Inspect parser/source coverage rather than replaying the raw row blindly."
         )
         actions = (
@@ -563,37 +704,77 @@ def _raw_materialization_debt_row(
         )
     elif category == "parsed-without-session":
         severity = "warning"
+        status = "open"
         stage = "parse"
         summary = f"{count} {origin} raw artifact(s) parsed but have no materialized session"
         details = (
-            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size} bytes. "
-            "These may be duplicate/empty exports, but they need an auditable skip reason."
+            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size_text}. "
+            "These rows already passed parsing, so blind replay is not the primary repair. They need an auditable "
+            "skip reason or parser/materialization classification."
+        )
+        actions = ()
+    elif category == "parsed-session-unmaterialized":
+        severity = "warning"
+        status = "open"
+        stage = "parse"
+        sample_raw_id = str(sample_rows[0]["raw_id"]) if sample_rows else ""
+        sample_session_ids = _sample_parsed_session_native_ids(archive_root, sample_rows)
+        shape_reasons = sorted(
+            {reason for row in sample_rows if (reason := _parsed_session_shape_reason(archive_root, row)) is not None}
+        )
+        shape_text = "; ".join(shape_reasons) if shape_reasons else "session-shaped source payload"
+        sample_session_text = (
+            f" Sample parsed session native id(s): {', '.join(sample_session_ids)}." if sample_session_ids else ""
+        )
+        summary = f"{count} {origin} session-shaped raw artifact(s) parsed without materialized sessions"
+        details = (
+            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size_text}. "
+            f"Sample source shapes: {shape_text}.{sample_session_text} "
+            "These rows need parser/materialization classification, not blind replay."
         )
         actions = (
             ArchiveDebtActionPayload(
-                label="Re-import source artifacts",
-                command=("polylogue", "import"),
-                description="Pass one of the sampled source paths to force the normal acquisition/parse path.",
+                label="Explain parser output",
+                command=("polylogue", "import", "--explain"),
+                description="Pass one of the sampled source paths and compare produced session refs with index materialization.",
+            ),
+            ArchiveDebtActionPayload(
+                label="Preview targeted raw replay",
+                command=(
+                    "polylogue",
+                    "ops",
+                    "maintenance",
+                    "run",
+                    "--target",
+                    "raw_materialization",
+                    "--raw-artifact",
+                    sample_raw_id,
+                    "--dry-run",
+                ),
+                description=(
+                    "Preview reparsing one sampled session-shaped raw artifact. Broad raw-materialization repair stays "
+                    "limited to acquired-but-unparsed rows."
+                ),
             ),
         )
     elif category == "materialized-alias":
         severity = "info"
-        status = "open"
+        status = "classified"
         stage = "parse"
         summary = f"{count} {origin} raw artifact(s) materialized through native/source aliases"
         details = (
-            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size} bytes. "
+            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size_text}. "
             "These rows do not join by raw_id, but the same logical sessions are already present by provider native id "
             "or by a source-path-derived native id. They reconcile raw/index counts and should not be replayed blindly."
         )
         actions = ()
     elif category == "parsed-non-session-artifact":
         severity = "info"
-        status = "open"
+        status = "classified"
         stage = "parse"
         summary = f"{count} {origin} raw artifact(s) parsed as non-session artifacts"
         details = (
-            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size} bytes. "
+            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size_text}. "
             "These source rows are recognized sidecars or metadata-only records, not transcript sessions, so replaying "
             "them should not be expected to create index sessions."
         )
@@ -601,39 +782,85 @@ def _raw_materialization_debt_row(
     else:
         severity = "warning"
         stage = "parse"
+        sample_raw_id = str(sample_rows[0]["raw_id"]) if sample_rows else ""
         summary = f"{count} {origin} raw artifact(s) are acquired but not yet parsed"
-        details = (
-            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size} bytes."
-        )
-        actions = (
-            ArchiveDebtActionPayload(
-                label="Run daemon ingest",
-                command=("polylogued", "run"),
-            ),
-        )
+        details = f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size_text}."
+        if blocked_oversized_count:
+            status = "blocked"
+            details += (
+                f" Actual replay is blocked by the {_format_bytes(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)} "
+                f"raw-materialization execution limit for {blocked_oversized_count:,} non-stream-safe oversized row(s)."
+            )
+            actions = (
+                ArchiveDebtActionPayload(
+                    label="Preview targeted raw replay",
+                    command=(
+                        "polylogue",
+                        "ops",
+                        "maintenance",
+                        "run",
+                        "--target",
+                        "raw_materialization",
+                        "--raw-artifact",
+                        sample_raw_id,
+                        "--dry-run",
+                    ),
+                    description="Preview byte size and candidate count; actual replay remains blocked for non-stream-safe oversized rows.",
+                ),
+            )
+        else:
+            if stream_safe_oversized_rows:
+                details += (
+                    f" {len(stream_safe_oversized_rows):,} oversized row(s) are stream-record JSONL sources and can use "
+                    "the streaming raw-materialization path."
+                )
+            actions = (
+                ArchiveDebtActionPayload(
+                    label="Run daemon ingest",
+                    command=("polylogued", "run"),
+                ),
+                ArchiveDebtActionPayload(
+                    label="Preview targeted raw replay",
+                    command=(
+                        "polylogue",
+                        "ops",
+                        "maintenance",
+                        "run",
+                        "--target",
+                        "raw_materialization",
+                        "--raw-artifact",
+                        sample_raw_id,
+                        "--dry-run",
+                    ),
+                    description="Preview reparsing one sampled acquired raw artifact before running a broad repair.",
+                ),
+            )
 
     return ArchiveDebtRowPayload(
         debt_ref=f"debt:raw-materialization:{origin}:{category}",
         kind="raw-materialization",
+        category=category,
         stage=stage,
         subject_ref=f"raw-origin:{origin}",
         severity=severity,
         status=status,
         owner="daemon",
         summary=summary,
+        affected_count=count,
         details=details,
         source_family=origin,
         evidence_refs=tuple(_raw_materialization_evidence_refs(archive_root, sample_rows)),
         caveats=(
             "Rows are grouped by origin and failure category; evidence refs include at most five sampled raw artifacts.",
         ),
-        actions=actions if status == "actionable" else (),
+        actions=actions,
     )
 
 
 def _raw_materialization_evidence_refs(archive_root: Path, rows: list[sqlite3.Row]) -> list[str]:
     refs: list[str] = []
     for row in rows:
+        origin = str(row["origin"] or "")
         raw_id = str(row["raw_id"])
         refs.append(f"raw:{raw_id}")
         source_path = str(row["source_path"] or "")
@@ -641,6 +868,8 @@ def _raw_materialization_evidence_refs(archive_root: Path, rows: list[sqlite3.Ro
             refs.append(f"file:{source_path}")
         blob_path = _raw_blob_path(archive_root, row)
         refs.append(f"blob:{blob_path}")
+        for native_id in _parsed_session_native_ids(archive_root, row):
+            refs.append(f"parsed-session-native-id:{origin}:{native_id}")
     return refs
 
 
@@ -944,6 +1173,9 @@ def _fts_rows(index_db: Path, *, exact: bool) -> list[ArchiveDebtRowPayload]:
 
 
 def _totals(rows: list[ArchiveDebtRowPayload]) -> ArchiveDebtTotalsPayload:
+    def affected_count(row: ArchiveDebtRowPayload) -> int:
+        return int(row.affected_count or 0)
+
     return ArchiveDebtTotalsPayload(
         total=len(rows),
         critical=sum(1 for row in rows if row.severity == "critical"),
@@ -951,12 +1183,21 @@ def _totals(rows: list[ArchiveDebtRowPayload]) -> ArchiveDebtTotalsPayload:
         info=sum(1 for row in rows if row.severity == "info"),
         actionable=sum(1 for row in rows if row.status == "actionable"),
         blocked=sum(1 for row in rows if row.status == "blocked"),
+        classified=sum(1 for row in rows if row.status == "classified"),
+        affected_total=sum(affected_count(row) for row in rows),
+        affected_critical=sum(affected_count(row) for row in rows if row.severity == "critical"),
+        affected_warning=sum(affected_count(row) for row in rows if row.severity == "warning"),
+        affected_info=sum(affected_count(row) for row in rows if row.severity == "info"),
+        affected_actionable=sum(affected_count(row) for row in rows if row.status == "actionable"),
+        affected_blocked=sum(affected_count(row) for row in rows if row.status == "blocked"),
+        affected_open=sum(affected_count(row) for row in rows if row.status == "open"),
+        affected_classified=sum(affected_count(row) for row in rows if row.status == "classified"),
     )
 
 
 def _row_sort_key(row: ArchiveDebtRowPayload) -> tuple[int, int, str, str]:
     severity_order = {"critical": 0, "warning": 1, "info": 2}
-    status_order = {"actionable": 0, "blocked": 1, "open": 2}
+    status_order = {"actionable": 0, "blocked": 1, "open": 2, "classified": 3}
     return (
         severity_order[row.severity],
         status_order[row.status],

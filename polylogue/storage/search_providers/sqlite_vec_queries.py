@@ -84,9 +84,9 @@ class SqliteVecQueryMixin:
                 )
                 conn.execute(
                     """
-                    INSERT OR REPLACE INTO embeddings_meta (
-                        target_id, target_type, model, dimension, embedded_at, content_hash
-                    ) VALUES (?, 'message', ?, ?, datetime('now'), ?)
+                    INSERT OR REPLACE INTO message_embeddings_meta (
+                        message_id, model, dimension, embedded_at_ms, content_hash, needs_reindex
+                    ) VALUES (?, ?, ?, CAST(strftime('%s', 'now') AS INTEGER) * 1000, ?, 0)
                     """,
                     (
                         msg.message_id,

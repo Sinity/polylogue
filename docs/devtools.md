@@ -167,10 +167,15 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
+| `devtools workspace affordance-usage` | Analyze agent affordance/tool usage from archive tool-use rows. |
+| `devtools workspace cli-surface-audit` | Capture a current-curated CLI surface audit demo. |
+| `devtools workspace demo-shelf` | Refresh or verify current demo shelf indexes. |
 | `devtools workspace deployment-smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
 | `devtools workspace dev-loop` | Preflight branch-local daemon, web-shell, and browser-capture development loops. |
 | `devtools workspace failure-context` | Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope. |
+| `devtools workspace read-package` | Render a declarative package of Polylogue read artifacts. |
 | `devtools workspace tasks` | Record and query local agent task execution history. |
+| `devtools workspace temporal-archive-aggregates` | Build run-projection aggregate artifacts from the active archive. |
 | `devtools workspace temporal-devloop` | Compose git and operating-log events into a temporal evidence window. |
 | `devtools workspace temporal-read-profile` | Measure read --view temporal phase timings on the active archive. |
 | `devtools workspace worktree-gc` | Safe worktree garbage collection — list and remove merged, squash-equivalent, or abandoned git worktrees. |

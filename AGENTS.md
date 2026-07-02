@@ -525,9 +525,11 @@ process group if the step exceeds `POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S` (default
 45 minutes) or produces no output for
 `POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S` (default 10 minutes).
 `POLYLOGUE_VERIFY_RESOURCE_INTERVAL_S` controls resource sampling cadence
-(default 2 seconds). Set these timeout variables to `0` only for an explicit
-diagnostic run where an unusually long full-suite pass is expected and
-supervised.
+(default 2 seconds). Basetemp size is a recursive filesystem walk, so it is
+sampled less frequently; `POLYLOGUE_VERIFY_BASETEMP_SIZE_INTERVAL_S` controls
+that cadence (default 15 seconds, `0` disables the size walk). Set timeout
+variables to `0` only for an explicit diagnostic run where an unusually long
+full-suite pass is expected and supervised.
 
 Selection artifacts preserve exact selected/deselected counts but sample node
 IDs by default (`POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT`, default 500) so
@@ -992,7 +994,7 @@ full permission audit trail (PermissionRequest/PermissionDenied).
 Vector embeddings for semantic search, powered by Voyage AI (`voyage-4`,
 1024 dimensions) via SQLite-vec (`vec0` virtual table):
 
-- **Storage**: `message_embeddings` (vec0), `embeddings_meta`, `embedding_status`
+- **Storage**: `message_embeddings` (vec0), `message_embeddings_meta`, `embedding_status`
 - **Search**: `--similar` flag triggers pure vector search; hybrid mode combines
   FTS5 + vector via Reciprocal Rank Fusion
 - **Integration**: Daemon-side post-ingest and ambient catch-up embedding is
@@ -1202,6 +1204,24 @@ schema shape:
 - Schema bumps are deletes-then-defines, never deltas. A schema change
   edits the owning tier DDL/version and documents the re-ingest expectation.
   No upgrade helpers are added for the bump.
+- Index schema version 20 adds `idx_blocks_type_tool`, an expression index on
+  `(block_type, COALESCE(NULLIF(LOWER(tool_name), ''), 'unknown'))`, so tool
+  family rollups can resolve exact tool names and MCP-server prefixes without
+  scanning every `tool_use` block in large archives. The `analyze tools`
+  lowerers use range predicates for MCP prefixes to match the index expression.
+  Existing index tiers must be rebuilt from source evidence
+  (`polylogue ops reset --index && polylogued run`).
+- Index schema version 19 adds expression indexes for materialized
+  `session_observed_events` tool outcome payload fields. The terminal query DSL
+  can now ask questions such as
+  `observed-events where kind:tool_finished | group by handler | count`; on
+  large archives the v18 shape filtered by `kind` and then built temporary
+  B-trees over JSON-extracted `tool_name`, `handler_kind`, or `status` values.
+  The v19 indexes key `(kind, COALESCE(NULLIF(json_extract(payload_json,
+  '$.<field>'), ''), 'unknown'))` for `tool_name`, `handler_kind`, and
+  `status`, matching the SQL lowerer's group expressions. Existing index tiers
+  must be rebuilt from source evidence (`polylogue ops reset --index &&
+  polylogued run`).
 - Index schema version 16 captures structured tool-result outcomes (the
   "keystone"). `blocks` gains `tool_result_is_error` (0/1, nullable) and
   `tool_result_exit_code` (nullable INTEGER); the `actions` view exposes them
@@ -1259,12 +1279,15 @@ schema shape:
   read-model tables — `session_runs`, `session_observed_events`, and
   `session_context_snapshots` — recomputed by the session-insight materializer
   (`compile_session_digest(...).run_projection`) exactly like `session_profiles`.
-  They give the `run` / `observed-event` / `context-snapshot` query units a
-  durable SQL-backed lowerer (terminal rows, `exists`, and sort) instead of the
-  per-query session-digest scan. They are derived/rebuildable, not a new
-  source of truth; the durable evidence stays `session_events` + `messages` +
-  `topology_edges`. Existing index tiers must be rebuilt from source evidence
-  (`polylogue ops reset --index && polylogued run`).
+  They are derived/rebuildable enrichments, not the only query substrate:
+  terminal `run` / `observed-event` / `context-snapshot` queries also synthesize
+  cheap local rows directly from `sessions` and `blocks` (main runs,
+  `session_started`, tool-finished outcomes, and session-start context
+  snapshots). The durable evidence stays `session_events` + `messages` +
+  `topology_edges`, and materialized rows are retained only where they encode
+  richer non-local projections that are not cheap to lower directly. Existing
+  index tiers must be rebuilt from source evidence (`polylogue ops reset --index
+  && polylogued run`).
 - Index schema version 10 adds a role-leading `idx_messages_role` index so
   daemon `/api/facets` can compute global role counts without scanning the
   session-role compound index and spilling to a temp B-tree. Existing index
@@ -1914,10 +1937,15 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
+| `devtools workspace affordance-usage` | Analyze agent affordance/tool usage from archive tool-use rows. |
+| `devtools workspace cli-surface-audit` | Capture a current-curated CLI surface audit demo. |
+| `devtools workspace demo-shelf` | Refresh or verify current demo shelf indexes. |
 | `devtools workspace deployment-smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
 | `devtools workspace dev-loop` | Preflight branch-local daemon, web-shell, and browser-capture development loops. |
 | `devtools workspace failure-context` | Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope. |
+| `devtools workspace read-package` | Render a declarative package of Polylogue read artifacts. |
 | `devtools workspace tasks` | Record and query local agent task execution history. |
+| `devtools workspace temporal-archive-aggregates` | Build run-projection aggregate artifacts from the active archive. |
 | `devtools workspace temporal-devloop` | Compose git and operating-log events into a temporal evidence window. |
 | `devtools workspace temporal-read-profile` | Measure read --view temporal phase timings on the active archive. |
 | `devtools workspace worktree-gc` | Safe worktree garbage collection — list and remove merged, squash-equivalent, or abandoned git worktrees. |

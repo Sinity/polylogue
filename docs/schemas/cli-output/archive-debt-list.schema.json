@@ -37,7 +37,7 @@
     },
     "ArchiveDebtRowPayload": {
       "additionalProperties": false,
-      "description": "One actionable archive debt row from an operational readiness provider.",
+      "description": "One archive debt/readiness row from an operational provider.",
       "properties": {
         "actions": {
           "default": [],
@@ -46,6 +46,18 @@
           },
           "title": "Actions",
           "type": "array"
+        },
+        "affected_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Affected Count"
         },
         "age_seconds": {
           "anyOf": [
@@ -58,6 +70,18 @@
           ],
           "default": null,
           "title": "Age Seconds"
+        },
+        "category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Category"
         },
         "caveats": {
           "default": [],
@@ -150,7 +174,8 @@
           "enum": [
             "open",
             "actionable",
-            "blocked"
+            "blocked",
+            "classified"
           ],
           "title": "Status",
           "type": "string"
@@ -185,9 +210,54 @@
           "title": "Actionable",
           "type": "integer"
         },
+        "affected_actionable": {
+          "default": 0,
+          "title": "Affected Actionable",
+          "type": "integer"
+        },
+        "affected_blocked": {
+          "default": 0,
+          "title": "Affected Blocked",
+          "type": "integer"
+        },
+        "affected_classified": {
+          "default": 0,
+          "title": "Affected Classified",
+          "type": "integer"
+        },
+        "affected_critical": {
+          "default": 0,
+          "title": "Affected Critical",
+          "type": "integer"
+        },
+        "affected_info": {
+          "default": 0,
+          "title": "Affected Info",
+          "type": "integer"
+        },
+        "affected_open": {
+          "default": 0,
+          "title": "Affected Open",
+          "type": "integer"
+        },
+        "affected_total": {
+          "default": 0,
+          "title": "Affected Total",
+          "type": "integer"
+        },
+        "affected_warning": {
+          "default": 0,
+          "title": "Affected Warning",
+          "type": "integer"
+        },
         "blocked": {
           "default": 0,
           "title": "Blocked",
+          "type": "integer"
+        },
+        "classified": {
+          "default": 0,
+          "title": "Classified",
           "type": "integer"
         },
         "critical": {

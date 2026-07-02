@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import click
@@ -338,42 +338,331 @@ def _usage_counter_line(counters: object) -> str:
 
 
 @click.command("tools")
-@click.option("--origin", help="Filter by origin")
+@click.option("--origin", help="Filter by origin or provider token")
+@click.option("--tool", help="Only entries for this exact normalized tool name, e.g. mcp__serena__find_symbol")
+@click.option("--mcp-server", help="Only MCP tools with this server prefix, e.g. serena -> mcp__serena__*")
+@click.option("--action-kind", help="Only entries for this action kind")
+@click.option(
+    "--detail-pattern",
+    multiple=True,
+    help="With --basis actions, match command/path/input detail text. Repeatable.",
+)
+@click.option(
+    "--days",
+    type=int,
+    default=None,
+    help="Restrict to sessions whose sort key is within this many days.",
+)
+@click.option(
+    "--basis",
+    type=click.Choice(["tool-use-blocks", "observed-events", "actions"]),
+    default="tool-use-blocks",
+    show_default=True,
+    help=(
+        "Underlying projection: tool-use-blocks counts calls; "
+        "observed-events counts finished tool outcomes; actions counts canonical action evidence."
+    ),
+)
+@click.option(
+    "--compare-family",
+    help=(
+        "Compare one affordance family across tool-use blocks, observed-event outcomes, "
+        "and action/detail evidence without merging the datasets."
+    ),
+)
 @click.option("--limit", "-l", "-n", type=int, default=20, help="Max tools to show")
+@click.option(
+    "--json",
+    "output_format",
+    flag_value="json",
+    default=None,
+    help="Shortcut for --format json.",
+)
+@click.option(
+    "--format",
+    "-f",
+    "output_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format.",
+)
 @click.pass_context
-def tools_command(ctx: click.Context, origin: str | None, limit: int) -> None:
-    """Show top tools by invocation count across filtered sessions."""
+def tools_command(
+    ctx: click.Context,
+    origin: str | None,
+    tool: str | None,
+    mcp_server: str | None,
+    action_kind: str | None,
+    detail_pattern: tuple[str, ...],
+    days: int | None,
+    basis: str,
+    compare_family: str | None,
+    limit: int,
+    output_format: str,
+) -> None:
+    """Show tool usage rollups from archive projections."""
     env: AppEnv = ctx.obj
-    run_coroutine_sync(_tools(env, origin, limit))
+    run_coroutine_sync(
+        _tools(
+            env,
+            origin,
+            tool,
+            mcp_server,
+            action_kind,
+            detail_pattern,
+            days,
+            basis,
+            limit,
+            output_format,
+            compare_family=compare_family,
+        )
+    )
 
 
-async def _tools(env: AppEnv, origin: str | None, limit: int) -> None:
-    from collections import Counter
+async def _tools(
+    env: AppEnv,
+    origin: str | None,
+    tool: str | None,
+    mcp_server: str | None,
+    action_kind: str | None,
+    detail_patterns: tuple[str, ...],
+    days: int | None,
+    basis: str,
+    limit: int,
+    output_format: str = "text",
+    compare_family: str | None = None,
+) -> None:
+    from typing import cast
 
-    # Get recent sessions and aggregate their actions
-    spec = SessionQuerySpec(sort="date", limit=100)
-    if origin:
-        spec = SessionQuerySpec(sort="date", limit=100, origins=(origin,))
-    convs = await spec.list_summaries(env.config)
+    from polylogue.insights.tool_usage import ToolUsageInsightQuery
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.surfaces.payloads import (
+        ToolCountBasis,
+        ToolCountDetailLevel,
+        ToolCountFiltersPayload,
+        ToolCountKind,
+        ToolCountPayload,
+        ToolCountRowPayload,
+        ToolFamilyComparisonPayload,
+    )
 
-    poly = env.polylogue
-    tool_counts: Counter[str] = Counter()
-    for summary in convs:
-        try:
-            actions = await poly.get_actions(str(summary.id))
-            for action in actions:
-                name = getattr(action, "normalized_tool_name", None) or getattr(action, "tool_name", None)
-                if name:
-                    tool_counts[str(name)] += 1
-        except Exception:
-            continue
+    if compare_family is not None and (tool is not None or mcp_server is not None):
+        raise click.UsageError("--compare-family cannot be combined with --tool or --mcp-server")
+    if detail_patterns and basis != "actions" and compare_family is None:
+        raise click.UsageError("--detail-pattern is only supported with --basis actions")
+    if days is not None and days < 1:
+        raise click.UsageError("--days must be positive")
+    since_ms = None
+    if days is not None:
+        since_ms = int((datetime.now(UTC) - timedelta(days=days)).timestamp() * 1000)
 
-    if not tool_counts:
+    def row_payload(row: dict[str, object]) -> ToolCountRowPayload:
+        return ToolCountRowPayload(
+            source_name=str(row["source_name"]),
+            origin=str(row["origin"]),
+            normalized_tool_name=str(row["normalized_tool_name"]),
+            action_kind=str(row["action_kind"]),
+            evidence_kind=str(row["evidence_kind"]) if row.get("evidence_kind") is not None else None,
+            matched_by=str(row["matched_by"]) if row.get("matched_by") is not None else None,
+            call_count=int(str(row["call_count"])) if row.get("call_count") is not None else None,
+            session_count=int(str(row["session_count"])) if row.get("session_count") is not None else None,
+            error_count=int(str(row["error_count"])) if row.get("error_count") is not None else None,
+            nonzero_exit_count=int(str(row["nonzero_exit_count"]))
+            if row.get("nonzero_exit_count") is not None
+            else None,
+            status=str(row["status"]) if row.get("status") is not None else None,
+            event_count=int(str(row["event_count"])) if row.get("event_count") is not None else None,
+        )
+
+    def payload_for(
+        *,
+        rows: list[dict[str, object]],
+        payload_basis: ToolCountBasis,
+        kind_value: ToolCountKind,
+        detail_value: ToolCountDetailLevel,
+        payload_tool: str | None,
+        payload_mcp_server: str | None,
+        payload_detail_patterns: tuple[str, ...],
+    ) -> ToolCountPayload:
+        return ToolCountPayload(
+            kind=kind_value,
+            detail_level=detail_value,
+            archive_root=str(env.config.archive_root),
+            filters=ToolCountFiltersPayload(
+                origin=origin,
+                tool=payload_tool,
+                mcp_server=payload_mcp_server,
+                action_kind=action_kind,
+                detail_patterns=payload_detail_patterns,
+                days=days,
+                basis=payload_basis,
+                limit=limit,
+            ),
+            items=tuple(row_payload(row) for row in rows),
+        )
+
+    query = ToolUsageInsightQuery(
+        provider=origin,
+        tool=tool,
+        mcp_server=mcp_server,
+        action_kind=action_kind,
+        since_ms=since_ms,
+        limit=limit,
+    )
+    with ArchiveStore.open_existing(env.config.archive_root) as archive:
+        if compare_family:
+            family = compare_family.strip().lower()
+            if not family:
+                raise click.UsageError("--compare-family must not be empty")
+            mcp_family = family.replace("-", "_")
+            action_patterns = tuple(dict.fromkeys((family, *detail_patterns)))
+            mcp_query = ToolUsageInsightQuery(
+                provider=origin,
+                mcp_server=mcp_family,
+                action_kind=action_kind,
+                since_ms=since_ms,
+                limit=limit,
+            )
+            action_query = ToolUsageInsightQuery(
+                provider=origin,
+                action_kind=action_kind,
+                since_ms=since_ms,
+                limit=limit,
+            )
+            call_payload = payload_for(
+                rows=archive.list_tool_call_count_rows(mcp_query),
+                payload_basis="tool-use-blocks",
+                kind_value="tool_call_counts",
+                detail_value="tool_use_block_call_counts",
+                payload_tool=None,
+                payload_mcp_server=mcp_family,
+                payload_detail_patterns=(),
+            )
+            event_payload = payload_for(
+                rows=archive.list_tool_observed_event_count_rows(mcp_query),
+                payload_basis="observed-events",
+                kind_value="tool_observed_event_counts",
+                detail_value="tool_finished_observed_events",
+                payload_tool=None,
+                payload_mcp_server=mcp_family,
+                payload_detail_patterns=(),
+            )
+            action_payload = payload_for(
+                rows=archive.list_tool_action_evidence_count_rows(
+                    action_query,
+                    detail_patterns=action_patterns,
+                    since_ms=since_ms,
+                ),
+                payload_basis="actions",
+                kind_value="tool_action_evidence_counts",
+                detail_value="canonical_action_evidence_counts",
+                payload_tool=None,
+                payload_mcp_server=None,
+                payload_detail_patterns=action_patterns,
+            )
+            comparison = ToolFamilyComparisonPayload(
+                kind="tool_family_evidence_comparison",
+                archive_root=str(env.config.archive_root),
+                family=family,
+                bases=(call_payload, event_payload, action_payload),
+                caveats=(
+                    "Counts are grouped by evidence basis and must not be summed across bases.",
+                    "Observed-event sections count source-derived tool_finished outcomes, not raw tool_use calls.",
+                    "Action evidence can include command/path/input detail matches for tools used outside MCP rows.",
+                ),
+            )
+            if output_format == "json":
+                click.echo(comparison.to_json(exclude_none=True))
+                return
+            env.ui.console.print(f"\n[bold]Tool family evidence comparison: {family}[/bold]")
+            for basis_payload in comparison.bases:
+                env.ui.console.print(f"  {basis_payload.filters.basis}: {len(basis_payload.items)} row(s)")
+                for item in basis_payload.items:
+                    count = item.event_count if basis_payload.filters.basis == "observed-events" else item.call_count
+                    evidence = f" [{item.evidence_kind}]" if item.evidence_kind else ""
+                    env.ui.console.print(f"    {item.origin}  {item.normalized_tool_name}{evidence}: {count or 0}")
+            env.ui.console.print("  caveat: counts are basis-specific; do not sum them across sections")
+            return
+        if basis == "observed-events":
+            rows = archive.list_tool_observed_event_count_rows(query)
+            kind = "tool_observed_event_counts"
+            detail = "tool_finished_observed_events"
+            count_key = "event_count"
+        elif basis == "actions":
+            rows = archive.list_tool_action_evidence_count_rows(
+                query,
+                detail_patterns=detail_patterns,
+                since_ms=since_ms,
+            )
+            kind = "tool_action_evidence_counts"
+            detail = "canonical_action_evidence_counts"
+            count_key = "call_count"
+        else:
+            rows = archive.list_tool_call_count_rows(query)
+            kind = "tool_call_counts"
+            detail = "tool_use_block_call_counts"
+            count_key = "call_count"
+    if output_format == "json":
+        payload = payload_for(
+            rows=rows,
+            payload_basis=cast(ToolCountBasis, basis),
+            kind_value=cast(ToolCountKind, kind),
+            detail_value=cast(ToolCountDetailLevel, detail),
+            payload_tool=tool,
+            payload_mcp_server=mcp_server,
+            payload_detail_patterns=tuple(detail_patterns),
+        )
+        click.echo(payload.to_json(exclude_none=True))
+        return
+
+    if not rows:
         env.ui.console.print("No tool invocations found.")
         return
 
-    env.ui.console.print(f"\n[bold]Top tools by invocation count[/bold] (across {len(convs)} sessions)")
-    env.ui.console.print(f"{'tool':40s}  {'count':>6s}")
-    env.ui.console.print("-" * 50)
-    for name, cnt in tool_counts.most_common(limit):
-        env.ui.console.print(f"{name[:40]:40s}  {cnt:>6d}")
+    if basis == "observed-events":
+        title = "Tool observed-event counts"
+    elif basis == "actions":
+        title = "Tool action evidence counts"
+    else:
+        title = "Tool call counts"
+    env.ui.console.print(f"\n[bold]{title}[/bold]")
+    if basis == "observed-events":
+        env.ui.console.print("  detail: tool_finished observed events; counts tool outcomes, not raw tool_use blocks")
+        header = f"{'origin':18s}  {'tool':38s}  {'kind':14s}  {'status':10s}  {'events':>7s}"
+    elif basis == "actions":
+        env.ui.console.print("  detail: canonical actions evidence; can include command/path/input detail matches")
+        header = f"{'origin':18s}  {'tool':38s}  {'kind':14s}  {'evidence':16s}  {'calls':>7s}"
+    else:
+        env.ui.console.print(
+            "  detail: tool_use block call counts; use `analyze insights tool-usage` for exact coverage/detail fields"
+        )
+        header = f"{'origin':18s}  {'tool':38s}  {'kind':14s}  {'calls':>7s}"
+    env.ui.console.print(header)
+    env.ui.console.print("-" * len(header))
+    for row in rows:
+        source_name = str(row["source_name"])
+        tool_name = str(row["normalized_tool_name"])
+        action_kind_value = str(row["action_kind"])
+        count = int(str(row[count_key]))
+        if basis == "observed-events":
+            status = str(row["status"])
+            env.ui.console.print(
+                f"{source_name[:18]:18s}  "
+                f"{tool_name[:38]:38s}  "
+                f"{action_kind_value[:14]:14s}  "
+                f"{status[:10]:10s}  "
+                f"{count:7d}"
+            )
+        elif basis == "actions":
+            evidence_kind = str(row.get("evidence_kind") or "unknown")
+            env.ui.console.print(
+                f"{source_name[:18]:18s}  "
+                f"{tool_name[:38]:38s}  "
+                f"{action_kind_value[:14]:14s}  "
+                f"{evidence_kind[:16]:16s}  "
+                f"{count:7d}"
+            )
+        else:
+            env.ui.console.print(
+                f"{source_name[:18]:18s}  {tool_name[:38]:38s}  {action_kind_value[:14]:14s}  {count:7d}"
+            )

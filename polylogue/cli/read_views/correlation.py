@@ -4,13 +4,10 @@ from __future__ import annotations
 
 from typing import cast
 
+from polylogue.cli.read_view_registry import CORRELATION_READ_VIEW_OPTION_NAMES
 from polylogue.cli.read_views.base import ReadViewCorrelationOptions, ReadViewInvocation, ReadViewOptionValues
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
-
-CORRELATION_READ_VIEW_OPTION_NAMES = frozenset(
-    {"confidence_threshold", "github_api", "otlp", "repo_path", "since_hours"}
-)
 
 
 def build_correlation_options(values: ReadViewOptionValues) -> ReadViewCorrelationOptions:

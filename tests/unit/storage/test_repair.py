@@ -214,6 +214,15 @@ def test_raw_materialization_preview_counts_replayable_rows_without_erasing_miss
 
     assert result.repaired_count == 1
     assert result.success is True
+    assert result.metrics == {
+        "raw_materialization_candidate_count": 1.0,
+        "raw_materialization_missing_blob_count": 1.0,
+        "raw_materialization_already_parsed_count": 0.0,
+        "raw_materialization_total_blob_bytes": float(replayable_size),
+        "raw_materialization_max_blob_bytes": float(replayable_size),
+    }
+    assert "queued raw payload bytes total=" in result.detail
+    assert "largest=" in result.detail
     assert "1 raw rows blocked by missing blobs" in result.detail
 
 
@@ -262,10 +271,165 @@ def test_raw_materialization_raw_artifact_filter_counts_only_target(tmp_path: Pa
 
     assert broad.repaired_count == 2
     assert scoped.repaired_count == 1
-    assert f"replay {1:,} raw rows" in scoped.detail
+    assert f"replay {1:,} acquired-but-unparsed raw rows" in scoped.detail
 
 
-def test_raw_materialization_defers_batch_fts_then_repairs_once(
+def test_raw_materialization_excludes_already_parsed_non_materialized_rows(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    blob_store = BlobStore(tmp_path / "blob")
+    replayable_raw_id, replayable_size = blob_store.write_from_bytes(b'{"mapping":{"pending":{}}}')
+    parsed_raw_id, parsed_size = blob_store.write_from_bytes(b'{"mapping":{"parsed":{}}}')
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.executemany(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms, parsed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (
+                    replayable_raw_id,
+                    "chatgpt-export",
+                    "native-pending",
+                    "pending.json",
+                    0,
+                    bytes.fromhex(replayable_raw_id),
+                    replayable_size,
+                    1,
+                    None,
+                ),
+                (
+                    parsed_raw_id,
+                    "chatgpt-export",
+                    "native-parsed",
+                    "parsed.json",
+                    0,
+                    bytes.fromhex(parsed_raw_id),
+                    parsed_size,
+                    2,
+                    123,
+                ),
+            ),
+        )
+        source_conn.commit()
+
+    result = repair_mod.repair_raw_materialization(config, dry_run=True)
+
+    assert result.repaired_count == 1
+    assert "acquired-but-unparsed raw rows" in result.detail
+
+    scoped = repair_mod.repair_raw_materialization(config, dry_run=True, raw_artifact_id=parsed_raw_id)
+
+    assert scoped.repaired_count == 1
+    assert "already parsed but not materialized" in scoped.detail
+
+
+def test_raw_materialization_explicit_scope_includes_already_parsed_rows(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    blob_store = BlobStore(tmp_path / "blob")
+    parsed_raw_id, parsed_size = blob_store.write_from_bytes(b'{"items":[]}')
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
+                acquired_at_ms, parsed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                parsed_raw_id,
+                "gemini-cli-session",
+                "gemini-parsed",
+                "/captures/gemini/session.json",
+                0,
+                bytes.fromhex(parsed_raw_id),
+                parsed_size,
+                1,
+                123,
+            ),
+        )
+        source_conn.commit()
+
+    broad = repair_mod.repair_raw_materialization(config, dry_run=True)
+    by_family = repair_mod.repair_raw_materialization(config, dry_run=True, source_family="gemini-cli-session")
+    by_root = repair_mod.repair_raw_materialization(config, dry_run=True, source_root=Path("/captures/gemini"))
+
+    assert broad.repaired_count == 0
+    assert by_family.repaired_count == 1
+    assert "already parsed but not materialized" in by_family.detail
+    assert by_root.repaired_count == 1
+
+
+def test_raw_materialization_scope_filters_count_only_matching_raw_rows(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    blob_store = BlobStore(tmp_path / "blob")
+    claude_raw_id, claude_size = blob_store.write_from_bytes(b'{"parentUuid":null,"sessionId":"claude-a"}')
+    codex_raw_id, codex_size = blob_store.write_from_bytes(b'{"items":[]}')
+    other_root_raw_id, other_root_size = blob_store.write_from_bytes(b'{"parentUuid":null,"sessionId":"claude-b"}')
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.executemany(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (
+                    claude_raw_id,
+                    "claude-code-session",
+                    "claude-a",
+                    "/captures/claude/a.jsonl",
+                    0,
+                    bytes.fromhex(claude_raw_id),
+                    claude_size,
+                    1,
+                ),
+                (
+                    codex_raw_id,
+                    "codex-session",
+                    "codex-a",
+                    "/captures/codex/a.jsonl",
+                    0,
+                    bytes.fromhex(codex_raw_id),
+                    codex_size,
+                    2,
+                ),
+                (
+                    other_root_raw_id,
+                    "claude-code-session",
+                    "claude-b",
+                    "/elsewhere/claude/b.jsonl",
+                    0,
+                    bytes.fromhex(other_root_raw_id),
+                    other_root_size,
+                    3,
+                ),
+            ),
+        )
+        source_conn.commit()
+
+    by_provider = repair_mod.repair_raw_materialization(config, dry_run=True, provider="claude-code")
+    by_family = repair_mod.repair_raw_materialization(config, dry_run=True, source_family="codex-session")
+    by_root = repair_mod.repair_raw_materialization(config, dry_run=True, source_root=Path("/captures/claude"))
+
+    assert by_provider.repaired_count == 2
+    assert by_family.repaired_count == 1
+    assert by_root.repaired_count == 1
+    assert by_provider.metrics["raw_materialization_candidate_count"] == 2.0
+    assert by_provider.metrics["raw_materialization_total_blob_bytes"] == float(claude_size + other_root_size)
+    assert by_provider.metrics["raw_materialization_max_blob_bytes"] == float(max(claude_size, other_root_size))
+
+
+def test_raw_materialization_leaves_fts_to_ingest_or_fts_stage(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -285,6 +449,7 @@ def test_raw_materialization_defers_batch_fts_then_repairs_once(
 
     class FakeParseResult:
         processed_ids = {"session-1", "session-2"}
+        parse_failures = 0
 
     class FakeParsingService:
         def __init__(self, **_kwargs: object) -> None:
@@ -294,38 +459,237 @@ def test_raw_materialization_defers_batch_fts_then_repairs_once(
             calls["parse_kwargs"] = kwargs
             return FakeParseResult()
 
-    def fake_repair_dangling_fts(_config: Config, *, dry_run: bool = False) -> repair_mod.RepairResult:
-        calls["fts_dry_run"] = dry_run
-        return repair_mod._repair_result(
-            "dangling_fts",
-            repaired_count=7,
-            success=True,
-            detail="repaired 7 FTS rows",
-        )
-
-    def fake_candidate_ids(_config: Config, *, raw_artifact_id: str | None = None) -> tuple[list[str], int]:
+    def fake_candidate_ids(
+        _config: Config,
+        *,
+        raw_artifact_id: str | None = None,
+        provider: str | None = None,
+        source_family: str | None = None,
+        source_root: Path | None = None,
+    ) -> repair_mod.RawMaterializationCandidates:
         calls["raw_artifact_id"] = raw_artifact_id
-        return ["raw-1"], 0
+        calls["provider"] = provider
+        calls["source_family"] = source_family
+        calls["source_root"] = source_root
+        return repair_mod.RawMaterializationCandidates(["raw-1"], 0, 0)
 
     monkeypatch.setattr(repair_mod, "_raw_materialization_candidate_ids", fake_candidate_ids)
     monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", FakeParsingService)
     monkeypatch.setattr("polylogue.storage.repository.SessionRepository", FakeRepository)
     monkeypatch.setattr("polylogue.storage.sqlite.async_sqlite.SQLiteBackend", FakeBackend)
-    monkeypatch.setattr(repair_mod, "repair_dangling_fts", fake_repair_dangling_fts)
 
     result = repair_mod.repair_raw_materialization(config, dry_run=False)
 
     assert result.success is True
     assert result.repaired_count == 2
-    assert "repaired 7 FTS rows" in result.detail
+    assert "message FTS left to ingest triggers or the FTS maintenance stage" in result.detail
     assert calls["parse_kwargs"] == {
         "raw_ids": ["raw-1"],
+        "progress_callback": None,
         "force_write": False,
         "repair_message_fts": False,
     }
-    assert calls["fts_dry_run"] is False
     assert calls["raw_artifact_id"] is None
     assert calls["closed"] is True
+
+
+def test_raw_materialization_progress_reports_raw_payload_size(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    progress: list[str] = []
+
+    class FakeBackend:
+        def __init__(self, *, db_path: Path) -> None:
+            self.db_path = db_path
+
+    class FakeRepository:
+        def __init__(self, *, backend: FakeBackend, archive_root: Path) -> None:
+            self.backend = backend
+            self.archive_root = archive_root
+
+        async def close(self) -> None:
+            pass
+
+    class FakeParseResult:
+        processed_ids = {"session-1"}
+        parse_failures = 0
+
+    class FakeParsingService:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def parse_from_raw(self, **_kwargs: object) -> FakeParseResult:
+            return FakeParseResult()
+
+    monkeypatch.setattr(
+        repair_mod,
+        "_raw_materialization_candidate_ids",
+        lambda *_args, **_kwargs: repair_mod.RawMaterializationCandidates(
+            ["raw-1"],
+            0,
+            0,
+            {"raw-1": 256 * 1024 * 1024},
+        ),
+    )
+    monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", FakeParsingService)
+    monkeypatch.setattr("polylogue.storage.repository.SessionRepository", FakeRepository)
+    monkeypatch.setattr("polylogue.storage.sqlite.async_sqlite.SQLiteBackend", FakeBackend)
+
+    result = repair_mod.repair_raw_materialization(
+        config,
+        dry_run=False,
+        progress_callback=lambda _amount, desc=None: progress.append(desc or ""),
+    )
+
+    assert result.success is True
+    assert any("raw_materialization: parsing raw 1/1 raw-1 size=256.0 MiB" in line for line in progress)
+    assert result.metrics["raw_materialization_total_blob_bytes"] == float(256 * 1024 * 1024)
+    assert result.metrics["raw_materialization_max_blob_bytes"] == float(256 * 1024 * 1024)
+    assert result.metrics["raw_materialization_session_change_count"] == 1.0
+    assert result.metrics["raw_materialization_parse_failure_count"] == 0.0
+
+
+def test_raw_materialization_blocks_oversized_actual_replay(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+
+    class UnexpectedParsingService:
+        def __init__(self, **_kwargs: object) -> None:
+            raise AssertionError("oversized raw rows should be blocked before parsing")
+
+    monkeypatch.setattr(
+        repair_mod,
+        "_raw_materialization_candidate_ids",
+        lambda *_args, **_kwargs: repair_mod.RawMaterializationCandidates(
+            ["raw-1"],
+            0,
+            0,
+            {"raw-1": 2 * 1024 * 1024 * 1024},
+        ),
+    )
+    monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", UnexpectedParsingService)
+
+    result = repair_mod.repair_raw_materialization(config, dry_run=False)
+
+    assert result.success is False
+    assert result.repaired_count == 0
+    assert "exceed actual replay limit 1.0 GiB" in result.detail
+    assert "largest=2.0 GiB" in result.detail
+    assert result.metrics["raw_materialization_oversized_count"] == 1.0
+    assert result.metrics["raw_materialization_execute_blob_limit_bytes"] == float(1024 * 1024 * 1024)
+
+
+def test_raw_materialization_allows_oversized_stream_record_replay(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    calls: dict[str, object] = {}
+
+    class FakeBackend:
+        def __init__(self, *, db_path: Path) -> None:
+            calls["db_path"] = db_path
+
+    class FakeRepository:
+        def __init__(self, *, backend: FakeBackend, archive_root: Path) -> None:
+            calls["archive_root"] = archive_root
+
+        async def close(self) -> None:
+            calls["closed"] = True
+
+    class FakeParseResult:
+        processed_ids = {"session-1"}
+        parse_failures = 0
+
+    class FakeParsingService:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def parse_from_raw(self, **kwargs: object) -> FakeParseResult:
+            calls["parse_kwargs"] = kwargs
+            return FakeParseResult()
+
+    monkeypatch.setattr(
+        repair_mod,
+        "_raw_materialization_candidate_ids",
+        lambda *_args, **_kwargs: repair_mod.RawMaterializationCandidates(
+            ["raw-1"],
+            0,
+            0,
+            {"raw-1": 2 * 1024 * 1024 * 1024},
+            {"raw-1": "claude-code-session"},
+            {"raw-1": "/captures/claude/session.jsonl"},
+        ),
+    )
+    monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", FakeParsingService)
+    monkeypatch.setattr("polylogue.storage.repository.SessionRepository", FakeRepository)
+    monkeypatch.setattr("polylogue.storage.sqlite.async_sqlite.SQLiteBackend", FakeBackend)
+
+    result = repair_mod.repair_raw_materialization(config, dry_run=False)
+
+    assert result.success is True
+    assert result.repaired_count == 1
+    assert result.metrics["raw_materialization_stream_oversized_count"] == 1.0
+    assert "oversized stream-record raw rows used streaming replay" in result.detail
+    assert calls["parse_kwargs"] == {
+        "raw_ids": ["raw-1"],
+        "progress_callback": None,
+        "force_write": False,
+        "repair_message_fts": False,
+    }
+    assert calls["closed"] is True
+
+
+def test_raw_materialization_reports_parse_write_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+
+    class FakeBackend:
+        def __init__(self, *, db_path: Path) -> None:
+            self.db_path = db_path
+
+    class FakeRepository:
+        def __init__(self, *, backend: FakeBackend, archive_root: Path) -> None:
+            self.backend = backend
+            self.archive_root = archive_root
+
+        async def close(self) -> None:
+            pass
+
+    class FakeParseResult:
+        processed_ids: set[str] = set()
+        parse_failures = 1
+
+    class FakeParsingService:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def parse_from_raw(self, **_kwargs: object) -> FakeParseResult:
+            return FakeParseResult()
+
+    monkeypatch.setattr(
+        repair_mod,
+        "_raw_materialization_candidate_ids",
+        lambda *_args, **_kwargs: repair_mod.RawMaterializationCandidates(["raw-1"], 0, 1),
+    )
+    monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", FakeParsingService)
+    monkeypatch.setattr("polylogue.storage.repository.SessionRepository", FakeRepository)
+    monkeypatch.setattr("polylogue.storage.sqlite.async_sqlite.SQLiteBackend", FakeBackend)
+
+    result = repair_mod.repair_raw_materialization(config, dry_run=False)
+
+    assert result.success is False
+    assert result.repaired_count == 0
+    assert "1 raw rows failed during parse/write" in result.detail
+    assert "already parsed but not materialized" in result.detail
+    assert result.metrics["raw_materialization_parse_failure_count"] == 1.0
+    assert result.metrics["raw_materialization_already_parsed_count"] == 1.0
 
 
 def _ready_session_insight_status() -> SessionInsightStatusSnapshot:
@@ -467,7 +831,12 @@ def test_repair_session_insights_uses_candidate_session_ids(monkeypatch: pytest.
         );
         CREATE TABLE session_work_events (session_id TEXT);
         CREATE TABLE session_phases (session_id TEXT);
-        CREATE TABLE insight_materialization (insight_type TEXT, session_id TEXT);
+        CREATE TABLE insight_materialization (
+            insight_type TEXT,
+            session_id TEXT,
+            materializer_version INTEGER,
+            source_sort_key_ms INTEGER
+        );
         """
     )
     conn.executemany(
@@ -491,16 +860,20 @@ def test_repair_session_insights_uses_candidate_session_ids(monkeypatch: pytest.
         (repair_mod._session_insight_materializer_version(),),
     )
     conn.executemany(
-        "INSERT INTO insight_materialization(insight_type, session_id) VALUES (?, 'ready')",
+        """
+        INSERT INTO insight_materialization(
+            insight_type, session_id, materializer_version, source_sort_key_ms
+        ) VALUES (?, 'ready', ?, 1000)
+        """,
         (
-            ("session_profile",),
-            ("latency",),
-            ("work_events",),
-            ("phases",),
-            ("thread",),
-            ("runs",),
-            ("observed_events",),
-            ("context_snapshots",),
+            ("session_profile", repair_mod._session_insight_materializer_version()),
+            ("latency", repair_mod._session_insight_materializer_version()),
+            ("work_events", repair_mod._session_insight_materializer_version()),
+            ("phases", repair_mod._session_insight_materializer_version()),
+            ("thread", repair_mod._session_insight_materializer_version()),
+            ("runs", repair_mod._session_insight_materializer_version()),
+            ("observed_events", repair_mod._session_insight_materializer_version()),
+            ("context_snapshots", repair_mod._session_insight_materializer_version()),
         ),
     )
 
@@ -550,6 +923,128 @@ def test_repair_session_insights_uses_candidate_session_ids(monkeypatch: pytest.
     assert result.success is True
     assert result.repaired_count == 1
     assert calls == [("missing",)]
+
+
+def test_repair_session_insights_refreshes_stale_thread_materialization_as_aggregate_debt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE sessions (session_id TEXT PRIMARY KEY, sort_key_ms REAL);
+        CREATE TABLE session_profiles (
+            session_id TEXT PRIMARY KEY,
+            materializer_version INTEGER,
+            source_sort_key REAL,
+            work_event_count INTEGER,
+            phase_count INTEGER
+        );
+        CREATE TABLE session_latency_profiles (
+            session_id TEXT PRIMARY KEY,
+            materializer_version INTEGER,
+            source_sort_key REAL
+        );
+        CREATE TABLE session_work_events (session_id TEXT);
+        CREATE TABLE session_phases (session_id TEXT);
+        CREATE TABLE insight_materialization (
+            insight_type TEXT,
+            session_id TEXT,
+            materializer_version INTEGER,
+            source_sort_key_ms INTEGER
+        );
+        """
+    )
+    conn.execute("INSERT INTO sessions(session_id, sort_key_ms) VALUES ('stale-thread-marker', 1000)")
+    current_version = repair_mod._session_insight_materializer_version()
+    conn.execute(
+        """
+        INSERT INTO session_profiles(
+            session_id, materializer_version, source_sort_key, work_event_count, phase_count
+        )
+        VALUES ('stale-thread-marker', ?, 1.0, 0, 0)
+        """,
+        (current_version,),
+    )
+    conn.execute(
+        """
+        INSERT INTO session_latency_profiles(session_id, materializer_version, source_sort_key)
+        VALUES ('stale-thread-marker', ?, 1.0)
+        """,
+        (current_version,),
+    )
+    conn.executemany(
+        """
+        INSERT INTO insight_materialization(
+            insight_type, session_id, materializer_version, source_sort_key_ms
+        ) VALUES (?, 'stale-thread-marker', ?, 1000)
+        """,
+        (
+            ("session_profile", current_version),
+            ("latency", current_version),
+            ("work_events", current_version),
+            ("phases", current_version),
+            ("runs", current_version),
+            ("observed_events", current_version),
+            ("context_snapshots", current_version),
+            ("thread", current_version - 1),
+        ),
+    )
+
+    calls: list[tuple[str, tuple[str, ...] | None]] = []
+
+    class FakeArchive:
+        _conn = conn
+
+        def session_insight_status(self) -> SessionInsightStatusSnapshot:
+            return next(statuses)
+
+        def __enter__(self) -> FakeArchive:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+    stale_status = SessionInsightStatusSnapshot(
+        total_sessions=1,
+        profile_rows_ready=True,
+        latency_profile_rows_ready=True,
+        work_event_inference_rows_ready=True,
+        work_event_inference_fts_ready=True,
+        phase_inference_rows_ready=True,
+        threads_ready=False,
+        threads_fts_ready=True,
+        tag_rollups_ready=True,
+        missing_thread_materialization_count=1,
+    )
+    statuses = iter((stale_status, stale_status, _ready_session_insight_status()))
+
+    def fake_rebuild(_archive: FakeArchive, *, session_ids: tuple[str, ...] | None, **_kwargs: object) -> Any:
+        calls.append(("rebuild", session_ids))
+        return SessionInsightCounts()
+
+    def fake_aggregate_refresh(_conn: sqlite3.Connection, **_kwargs: object) -> SessionInsightCounts:
+        calls.append(("aggregate", None))
+        return SessionInsightCounts(threads=1)
+
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
+        lambda _archive_root, read_only=False: FakeArchive(),
+    )
+    monkeypatch.setattr(
+        "polylogue.api.archive._rebuild_archive_session_insights",
+        fake_rebuild,
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.insights.session.rebuild.refresh_session_insight_aggregates_sync",
+        fake_aggregate_refresh,
+    )
+
+    result = repair_mod.repair_session_insights(_config(tmp_path), dry_run=False)
+
+    assert result.success is True
+    assert result.repaired_count == 1
+    assert calls == [("rebuild", ()), ("aggregate", None)]
 
 
 def test_repair_assessment_counts_missing_run_projection_materialization() -> None:

@@ -45,6 +45,12 @@ class FallbackReason(str, Enum):
         evidence markers (``weak_signal``, ``no_tools``,
         ``shell_default``).
 
+    Large-session bounded materialization:
+      - ``LARGE_SESSION_BOUNDED`` — the session exceeded the full semantic
+        materialization threshold, so profile rows were built from durable
+        archive counters and session metadata instead of hydrating every
+        message/block into memory.
+
     Legacy phase compatibility markers:
       - ``ALL_PHASES_HEURISTIC`` and ``PHASE_NO_TOOL_COUNTS`` are retained
         so historical payloads can still validate. New phase rows are
@@ -57,6 +63,7 @@ class FallbackReason(str, Enum):
     ALL_PHASES_HEURISTIC = "all_phases_heuristic"
     MISSING_SESSION_ANALYSIS = "missing_session_analysis"
     NO_USER_TURNS = "no_user_turns"
+    LARGE_SESSION_BOUNDED = "large_session_bounded"
     WORK_EVENT_NO_EVIDENCE = "work_event_no_evidence"
     WORK_EVENT_WEAK_MARKERS = "work_event_weak_markers"
     PHASE_NO_TOOL_COUNTS = "phase_no_tool_counts"

@@ -50,6 +50,26 @@ class EmbeddingCatchupLimits:
 
 
 @dataclass(frozen=True, slots=True)
+class ArchiveEmbeddingSessionState:
+    """Eligible-session embedding completion counts for an archive index."""
+
+    eligible_sessions: int
+    embedded_sessions: int
+    pending_sessions: int
+
+
+def archive_embeddable_message_where(alias: str = "m") -> str:
+    """SQL predicate for authored prose messages eligible for embedding."""
+
+    return f"""
+{alias}.message_type = 'message'
+AND {alias}.role IN ('user', 'assistant')
+AND {alias}.material_origin IN ('human_authored', 'assistant_authored')
+AND {alias}.word_count > 0
+"""
+
+
+@dataclass(frozen=True, slots=True)
 class EmbedSessionOutcome:
     """Typed outcome for embedding one session."""
 
@@ -249,27 +269,17 @@ def select_pending_archive_session_window(
         id_filter = f"AND s.session_id IN ({placeholders})"
         params.extend(unique_ids)
 
-    min_filter = ""
-    if min_messages is not None:
-        min_filter = "AND s.message_count >= ?"
-        params.append(int(min_messages))
-
     if status_table is None:
         status_table = "embedding_status" if _table_exists(conn, "embedding_status") else ""
-    where_clause = (
-        "1 = 1"
-        if rebuild or not status_table
-        else "(e.session_id IS NULL OR e.needs_reindex = 1 OR e.message_count_embedded < s.message_count)"
-    )
+    status_select = "e.session_id, e.needs_reindex, e.message_count_embedded" if status_table else "NULL, NULL, NULL"
     join_clause = f"LEFT JOIN {status_table} e ON e.session_id = s.session_id" if status_table else ""
     cursor = conn.execute(
         f"""
-        SELECT s.session_id, s.title, s.message_count
+        SELECT s.session_id, s.title, {status_select}
         FROM sessions s
         {join_clause}
-        WHERE {where_clause}
+        WHERE 1 = 1
           {id_filter}
-          {min_filter}
         ORDER BY (s.sort_key_ms IS NULL), s.sort_key_ms DESC, s.session_id
         """,
         tuple(params),
@@ -282,7 +292,22 @@ def select_pending_archive_session_window(
             session_id = str(_row_value(row, 0, "session_id"))
             title_value = _row_value(row, 1, "title")
             title = None if title_value is None else str(title_value)
-            message_count = _row_int(row, 2, "message_count")
+            status_session_id = _row_value(row, 2, "status_session_id")
+            needs_reindex = _row_int(row, 3, "needs_reindex") if status_session_id is not None else 0
+            embedded_count = _row_int(row, 4, "message_count_embedded") if status_session_id is not None else 0
+            message_count = count_archive_session_embeddable_messages(conn, session_id)
+            if message_count <= 0:
+                continue
+            if min_messages is not None and message_count < min_messages:
+                continue
+            if not (
+                rebuild
+                or not status_table
+                or status_session_id is None
+                or needs_reindex == 1
+                or embedded_count < message_count
+            ):
+                continue
             if max_sessions is not None and len(pending) >= max_sessions:
                 return pending
             if max_messages is not None and pending and message_total + message_count > max_messages:
@@ -292,6 +317,103 @@ def select_pending_archive_session_window(
             if max_messages is not None and message_total >= max_messages:
                 return pending
     return pending
+
+
+def count_archive_session_embeddable_messages(conn: sqlite3.Connection, session_id: str) -> int:
+    """Count authored-prose messages eligible for embedding in one session."""
+
+    if not _table_exists(conn, "messages"):
+        return 0
+    messages_ref = (
+        "messages AS m INDEXED BY idx_messages_session_material_origin"
+        if _index_exists(conn, "idx_messages_session_material_origin")
+        else archive_messages_table_ref(conn, alias="m")
+    )
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*)
+        FROM {messages_ref}
+        WHERE {archive_embeddable_message_where("m")}
+          AND m.session_id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+    return int(row[0] or 0) if row is not None else 0
+
+
+def count_archive_embedding_session_state(
+    conn: sqlite3.Connection,
+    *,
+    status_table: str,
+    rebuild: bool = False,
+) -> ArchiveEmbeddingSessionState:
+    """Count eligible sessions and their embedding completion state."""
+
+    if not _table_exists(conn, "messages"):
+        return ArchiveEmbeddingSessionState(eligible_sessions=0, embedded_sessions=0, pending_sessions=0)
+
+    if rebuild or not status_table:
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM (
+                SELECT m.session_id
+                FROM {archive_messages_table_ref(conn, alias="m")}
+                WHERE {archive_embeddable_message_where("m")}
+                GROUP BY m.session_id
+            ) eligible_counts
+            """
+        ).fetchone()
+        eligible = int(row[0] or 0) if row is not None else 0
+        return ArchiveEmbeddingSessionState(
+            eligible_sessions=eligible,
+            embedded_sessions=0,
+            pending_sessions=eligible,
+        )
+
+    row = conn.execute(
+        f"""
+        WITH eligible_counts AS (
+            SELECT m.session_id, COUNT(*) AS message_count
+            FROM {archive_messages_table_ref(conn, alias="m")}
+            WHERE {archive_embeddable_message_where("m")}
+            GROUP BY m.session_id
+        )
+        SELECT
+            COUNT(*) AS eligible_sessions,
+            SUM(
+                CASE
+                    WHEN e.session_id IS NOT NULL
+                     AND e.needs_reindex = 0
+                     AND e.message_count_embedded >= ec.message_count
+                    THEN 1 ELSE 0
+                END
+            ) AS embedded_sessions,
+            SUM(
+                CASE
+                    WHEN e.session_id IS NULL
+                      OR e.needs_reindex = 1
+                      OR e.message_count_embedded < ec.message_count
+                    THEN 1 ELSE 0
+                END
+            ) AS pending_sessions
+        FROM eligible_counts ec
+        LEFT JOIN {status_table} e ON e.session_id = ec.session_id
+        """
+    ).fetchone()
+    if row is None:
+        return ArchiveEmbeddingSessionState(eligible_sessions=0, embedded_sessions=0, pending_sessions=0)
+    return ArchiveEmbeddingSessionState(
+        eligible_sessions=int(row[0] or 0),
+        embedded_sessions=int(row[1] or 0),
+        pending_sessions=int(row[2] or 0),
+    )
+
+
+def archive_messages_table_ref(conn: sqlite3.Connection, *, alias: str) -> str:
+    if _index_exists(conn, "idx_messages_message_type"):
+        return f"messages AS {alias} INDEXED BY idx_messages_message_type"
+    return f"messages AS {alias}"
 
 
 def mark_all_archive_sessions_needs_reindex(index_db_path: Path) -> None:
@@ -395,19 +517,28 @@ def embed_archive_session_sync(
         if not loaded:
             raise RuntimeError("archive embedding materialization requires sqlite-vec") from error
         session = index_conn.execute(
-            "SELECT session_id, origin, title FROM sessions WHERE session_id = ?",
+            "SELECT session_id, origin, title, message_count FROM sessions WHERE session_id = ?",
             (session_id,),
         ).fetchone()
         if session is None:
             return EmbedSessionOutcome(status="not_found", session_id=session_id)
+        messages_ref = (
+            "messages AS m INDEXED BY idx_messages_session_material_origin"
+            if _index_exists(index_conn, "idx_messages_session_material_origin")
+            else archive_messages_table_ref(index_conn, alias="m")
+        )
         rows = index_conn.execute(
-            """
-            SELECT m.message_id, m.role, m.content_hash, m.material_origin,
+            f"""
+            SELECT m.message_id, m.role, m.content_hash, m.material_origin, m.message_type,
                    GROUP_CONCAT(b.text, char(10) || char(10)) AS text
-            FROM messages m
-            LEFT JOIN blocks b ON b.message_id = m.message_id AND b.text IS NOT NULL
+            FROM {messages_ref}
+            LEFT JOIN blocks b
+              ON b.message_id = m.message_id
+             AND b.block_type = 'text'
+             AND b.text IS NOT NULL
             WHERE m.session_id = ?
-            GROUP BY m.message_id, m.role, m.content_hash, m.material_origin, m.position, m.variant_index
+              AND {archive_embeddable_message_where("m")}
+            GROUP BY m.message_id, m.role, m.content_hash, m.material_origin, m.message_type, m.position, m.variant_index
             ORDER BY m.position, m.variant_index
             """,
             (session_id,),
@@ -417,13 +548,15 @@ def embed_archive_session_sync(
                 embeddings_conn, session_id=session_id, origin=str(session["origin"]), message_count=0
             )
             return EmbedSessionOutcome(
-                status="no_messages",
+                status="no_messages" if int(session["message_count"] or 0) <= 0 else "no_embeddable_messages",
                 session_id=session_id,
                 title=None if session["title"] is None else str(session["title"]),
             )
 
         embeddable = [
-            row for row in rows if _should_embed_archive_message(row["material_origin"], row["role"], row["text"])
+            row
+            for row in rows
+            if _should_embed_archive_message(row["material_origin"], row["message_type"], row["role"], row["text"])
         ]
         if not embeddable:
             _record_archive_embedding_success(
@@ -516,38 +649,35 @@ def _record_archive_embedding_success(
         )
 
 
-# Material origins that are NOT conversational prose: large tool outputs,
-# injected runtime context/protocol, and generated packs. Embedding these
-# pollutes semantic search and is expensive (tool_result alone is ~38% of all
-# messages). We embed authored prose (assistant/human) plus ambiguous/unknown
-# origins (e.g. non-Claude providers that don't tag material_origin), and skip
-# the known-noise origins.
-_NON_PROSE_MATERIAL_ORIGINS = frozenset(
-    {
-        "tool_result",
-        "runtime_context",
-        "runtime_protocol",
-        "generated_analysis_pack",
-        "generated_context_pack",
-    }
-)
+_PROSE_MATERIAL_ORIGINS = frozenset({"human_authored", "assistant_authored"})
+_PROSE_ROLES = frozenset({"user", "assistant"})
 
 
-def _should_embed_archive_message(material_origin: object, role: object, text: object) -> bool:
+def _should_embed_archive_message(material_origin: object, message_type: object, role: object, text: object) -> bool:
     if not isinstance(text, str) or not text.strip():
         return False
     stripped = text.strip()
     if len(stripped) < 20:
         return False
-    if str(role) == "system":
+    if str(message_type) != "message":
         return False
-    return material_origin is None or str(material_origin) not in _NON_PROSE_MATERIAL_ORIGINS
+    if str(role) not in _PROSE_ROLES:
+        return False
+    return str(material_origin) in _PROSE_MATERIAL_ORIGINS
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
         (table,),
+    ).fetchone()
+    return row is not None
+
+
+def _index_exists(conn: sqlite3.Connection, index: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name=? LIMIT 1",
+        (index,),
     ).fetchone()
     return row is not None
 
@@ -662,9 +792,14 @@ def _embedding_status_row_exists(db_path: object, session_id: str) -> bool:
 
 __all__ = [
     "EmbeddingCatchupLimits",
+    "ArchiveEmbeddingSessionState",
     "EmbedSessionOutcome",
     "EmbedSingleStatus",
     "PendingSession",
+    "archive_embeddable_message_where",
+    "archive_messages_table_ref",
+    "count_archive_embedding_session_state",
+    "count_archive_session_embeddable_messages",
     "embed_session_sync",
     "embed_archive_session_sync",
     "iter_pending_sessions",

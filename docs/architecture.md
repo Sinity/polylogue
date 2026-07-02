@@ -289,7 +289,7 @@ full permission audit trail (PermissionRequest/PermissionDenied).
 Vector embeddings for semantic search, powered by Voyage AI (`voyage-4`,
 1024 dimensions) via SQLite-vec (`vec0` virtual table):
 
-- **Storage**: `message_embeddings` (vec0), `embeddings_meta`, `embedding_status`
+- **Storage**: `message_embeddings` (vec0), `message_embeddings_meta`, `embedding_status`
 - **Search**: `--similar` flag triggers pure vector search; hybrid mode combines
   FTS5 + vector via Reciprocal Rank Fusion
 - **Integration**: Daemon-side post-ingest and ambient catch-up embedding is

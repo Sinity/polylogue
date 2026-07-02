@@ -18,6 +18,7 @@ from polylogue.readiness import (
     component_from_insight_entry,
     component_from_operation_status,
     component_from_outcome_check,
+    component_from_raw_materialization_readiness,
     component_from_transform_registry,
 )
 from polylogue.storage.repair import ArchiveDebtStatus
@@ -122,6 +123,53 @@ def test_archive_debt_status_maps_debt_to_degraded() -> None:
     assert component.state is CapabilityReadinessState.DEGRADED
     assert component.counts == {"issue_count": 4, "destructive": False}
     assert component.repair_hint == "orphaned_messages"
+
+
+def test_raw_materialization_readiness_maps_actionable_debt_to_stale() -> None:
+    component = component_from_raw_materialization_readiness(
+        {
+            "available": True,
+            "total": 1,
+            "warning": 1,
+            "actionable": 1,
+            "affected_total": 4,
+            "affected_actionable": 4,
+            "category_counts": {"parsed-without-session": 4},
+        }
+    )
+
+    assert component.state is CapabilityReadinessState.STALE
+    assert component.summary == "raw evidence pending materialization"
+    assert component.counts["affected_actionable"] == 4
+    assert component.caveats == ()
+    assert component.repair_hint == "polylogue ops debt list --kind raw-materialization"
+
+
+def test_raw_materialization_readiness_maps_classified_info_debt_to_ready_with_caveat() -> None:
+    component = component_from_raw_materialization_readiness(
+        {
+            "available": True,
+            "total": 2,
+            "critical": 0,
+            "warning": 0,
+            "actionable": 0,
+            "blocked": 0,
+            "classified": 2,
+            "affected_total": 276,
+            "affected_actionable": 0,
+            "affected_open": 0,
+            "affected_classified": 276,
+            "category_counts": {"materialized-alias": 47, "parsed-non-session-artifact": 229},
+            "source_family_counts": {"claude-code-session": 272, "codex-session": 4},
+        }
+    )
+
+    assert component.state is CapabilityReadinessState.READY
+    assert component.summary == "raw evidence classified; no materialization debt"
+    assert component.counts["affected_classified"] == 276
+    assert component.caveats == ("raw_index_join_gaps_classified_not_materialization_debt",)
+    assert component.metadata["category_counts"] == {"materialized-alias": 47, "parsed-non-session-artifact": 229}
+    assert component.repair_hint is None
 
 
 def test_embedding_payload_maps_missing_blocked_stale_and_ready() -> None:

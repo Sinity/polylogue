@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 import time
+from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -152,7 +153,7 @@ _ARCHIVE_TIER_TABLES: dict[str, tuple[str, ...]] = {
         "thread_sessions",
         "insight_materialization",
     ),
-    "embeddings": ("embeddings_meta", "embedding_status"),
+    "embeddings": ("message_embeddings_meta", "embedding_status"),
     "user": ("assertions",),
     "ops": (
         "ingest_cursor",
@@ -1214,6 +1215,13 @@ def _direct_raw_materialization_readiness(active_root: Path) -> dict[str, Any]:
             "sampled_rows": [],
         }
     rows = [row for row in payload.rows if row.kind == "raw-materialization"]
+    category_counts: Counter[str] = Counter()
+    source_family_counts: Counter[str] = Counter()
+    for row in rows:
+        affected = int(row.affected_count or 1)
+        category_counts[str(row.category)] += affected
+        if row.source_family:
+            source_family_counts[str(row.source_family)] += affected
     return {
         "available": True,
         "total": len(rows),
@@ -1221,51 +1229,22 @@ def _direct_raw_materialization_readiness(active_root: Path) -> dict[str, Any]:
         "warning": sum(1 for row in rows if row.severity == "warning"),
         "actionable": sum(1 for row in rows if row.status == "actionable"),
         "blocked": sum(1 for row in rows if row.status == "blocked"),
+        "classified": int(payload.totals.classified),
+        "affected_total": int(payload.totals.affected_total),
+        "affected_actionable": int(payload.totals.affected_actionable),
+        "affected_blocked": int(payload.totals.affected_blocked),
+        "affected_open": int(payload.totals.affected_open),
+        "affected_classified": int(payload.totals.affected_classified),
+        "category_counts": dict(sorted(category_counts.items())),
+        "source_family_counts": dict(sorted(source_family_counts.items())),
         "sampled_rows": [row.model_dump(mode="json", exclude_none=True) for row in rows[:5]],
     }
 
 
 def _direct_raw_materialization_component(readiness: dict[str, Any] | None) -> dict[str, Any]:
-    from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
+    from polylogue.readiness.capability import component_from_raw_materialization_readiness
 
-    payload = readiness or {}
-    available = bool(payload.get("available", False))
-    total = _safe_int(payload.get("total"))
-    critical = _safe_int(payload.get("critical"))
-    warning = _safe_int(payload.get("warning"))
-    actionable = _safe_int(payload.get("actionable"))
-    blocked = _safe_int(payload.get("blocked"))
-    if not available:
-        state = CapabilityReadinessState.UNKNOWN
-        summary = "unknown"
-    elif total == 0:
-        state = CapabilityReadinessState.READY
-        summary = "ready"
-    elif blocked > 0:
-        state = CapabilityReadinessState.BLOCKED
-        summary = "raw evidence blocked"
-    elif critical > 0:
-        state = CapabilityReadinessState.POISONED
-        summary = "raw evidence not materialized"
-    else:
-        state = CapabilityReadinessState.STALE
-        summary = "raw evidence pending materialization"
-    return ComponentReadiness(
-        component="raw_materialization",
-        scope="archive",
-        state=state,
-        summary=summary,
-        counts={
-            "total": total,
-            "critical": critical,
-            "warning": warning,
-            "actionable": actionable,
-            "blocked": blocked,
-        },
-        repair_hint=None
-        if state == CapabilityReadinessState.READY
-        else "polylogue ops debt list --kind raw-materialization",
-    ).to_dict()
+    return component_from_raw_materialization_readiness(readiness).to_dict()
 
 
 def _direct_assertion_component(active_root: Path) -> dict[str, Any]:

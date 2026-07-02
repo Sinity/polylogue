@@ -41,6 +41,8 @@ from polylogue.surfaces.payloads import (
     SessionNeighborCandidatePayload,
     SessionSearchHitPayload,
     SessionSummaryPayload,
+    ToolCountPayload,
+    ToolFamilyComparisonPayload,
 )
 
 DEFAULT_OUTPUT_DIR = Path("docs/schemas/cli-output")
@@ -191,6 +193,29 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
         ),
         model=ArchiveDebtListPayload,
         surfaces=("polylogue ops debt list --format json",),
+    ),
+    CliOutputSchema(
+        name="tool-counts",
+        title="Tool Counts",
+        description=(
+            "Structured tool count output for `polylogue analyze tools --format json`. "
+            "The `basis` and `detail_level` fields declare whether rows count raw "
+            "`tool_use` blocks, materialized `tool_finished` observed-event outcomes, "
+            "or canonical action evidence including command/path/input detail matches."
+        ),
+        model=ToolCountPayload,
+        surfaces=("polylogue analyze tools --format json",),
+    ),
+    CliOutputSchema(
+        name="tool-family-comparison",
+        title="Tool Family Comparison",
+        description=(
+            "Multi-basis evidence comparison for `polylogue analyze tools --compare-family ... --format json`. "
+            "Each nested basis keeps its own filters and counts so observed-event outcomes, raw tool-use blocks, "
+            "and canonical action/detail evidence are not merged into one misleading dataset."
+        ),
+        model=ToolFamilyComparisonPayload,
+        surfaces=("polylogue analyze tools --compare-family FAMILY --format json",),
     ),
     CliOutputSchema(
         name="session-neighbor-candidate",

@@ -7,6 +7,7 @@ from typing import cast
 
 import click
 
+from polylogue.cli.read_view_registry import MESSAGE_READ_VIEW_OPTION_NAMES
 from polylogue.cli.read_views.base import (
     ReadViewInvocation,
     ReadViewMessageOptions,
@@ -15,13 +16,6 @@ from polylogue.cli.read_views.base import (
 )
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
-
-MESSAGE_READ_VIEW_OPTION_NAMES = frozenset(
-    {
-        "limit",
-        "offset",
-    }
-)
 
 
 def build_message_options(values: ReadViewOptionValues) -> ReadViewMessageOptions:

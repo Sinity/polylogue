@@ -7,13 +7,20 @@ import time
 import webbrowser
 from collections.abc import Callable, Mapping
 from dataclasses import replace
+from typing import Any
 from urllib.parse import quote
 
-from polylogue.archive.session.domain_models import SessionSummary
+import yaml
+
+from polylogue.api.sync.bridge import run_coroutine_sync
+from polylogue.archive.semantic.content_projection import ContentProjectionSpec
+from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.cli.read_views.base import ReadViewInvocation, deliver_content, execute_query_request
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
+from polylogue.rendering.formatting import format_session
+from polylogue.surfaces.projection_spec import ProjectionSpec
 from polylogue.surfaces.temporal_evidence import (
     TemporalEvidenceEvent,
     TemporalEvidenceWindow,
@@ -77,6 +84,115 @@ def run_read_summary_or_transcript(env: AppEnv, request: RootModeRequest, invoca
         execute_query_request(env, updated.with_param_updates(output=invocation.out_path))
     else:
         execute_query_request(env, updated)
+
+
+def run_read_dialogue(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
+    """Render one session as authored dialogue using the shared content projection."""
+
+    del request
+    assert invocation.session_id is not None
+    projection = invocation.projection_spec.projection if invocation.projection_spec is not None else None
+    session = run_coroutine_sync(
+        env.polylogue.get_session(invocation.session_id, content_projection=ContentProjectionSpec.prose_only())
+    )
+    if session is None:
+        env.ui.error(f"Session not found: {invocation.session_id}")
+        return
+    fmt = invocation.output_format or "markdown"
+    content = _format_dialogue_session(session, fmt, projection=projection)
+    deliver_content(env, content, destination=invocation.destination, out_path=invocation.out_path)
+
+
+def _format_dialogue_session(
+    session: Session,
+    output_format: str,
+    *,
+    projection: ProjectionSpec | None = None,
+) -> str:
+    if output_format == "json":
+        return json.dumps(_dialogue_payload(session, projection=projection), indent=2)
+    if output_format == "yaml":
+        return str(
+            yaml.dump(
+                _dialogue_payload(session, projection=projection),
+                default_flow_style=False,
+                allow_unicode=True,
+                sort_keys=False,
+            )
+        )
+    session = _window_dialogue_session(session, projection)
+    return format_session(session, output_format, None)
+
+
+def _dialogue_messages(session: Session) -> list[Any]:
+    return [message for message in session.messages if message.text]
+
+
+def _projection_dialogue_window(messages: list[Any], projection: ProjectionSpec | None) -> list[Any]:
+    if projection is None:
+        return messages
+    offset = projection.body_offset or 0
+    if offset:
+        messages = messages[offset:]
+    if projection.body_limit is not None:
+        messages = messages[: projection.body_limit]
+    if projection.max_tokens is not None:
+        remaining = projection.max_tokens
+        bounded: list[Any] = []
+        for message in messages:
+            text = getattr(message, "text", "") or ""
+            token_estimate = max(1, len(str(text).split()))
+            if bounded and token_estimate > remaining:
+                break
+            bounded.append(message)
+            remaining -= token_estimate
+            if remaining <= 0:
+                break
+        return bounded
+    return messages
+
+
+def _window_dialogue_session(session: Session, projection: ProjectionSpec | None) -> Session:
+    if projection is None or (
+        projection.body_limit is None and projection.body_offset is None and projection.max_tokens is None
+    ):
+        return session
+    return session.model_copy(
+        update={"messages": tuple(_projection_dialogue_window(_dialogue_messages(session), projection))}
+    )
+
+
+def _dialogue_payload(session: Session, *, projection: ProjectionSpec | None = None) -> dict[str, object]:
+    all_messages = _dialogue_messages(session)
+    messages = _projection_dialogue_window(all_messages, projection)
+    omitted_before = projection.body_offset or 0 if projection is not None else 0
+    omitted_after = max(0, len(all_messages) - omitted_before - len(messages))
+    return {
+        "id": str(session.id),
+        "origin": session.origin.value,
+        "title": session.title,
+        "created_at": session.created_at.isoformat() if session.created_at else None,
+        "updated_at": session.updated_at.isoformat() if session.updated_at else None,
+        "message_count": len(all_messages),
+        "rendered_message_count": len(messages),
+        "omitted_before": omitted_before,
+        "omitted_after": omitted_after,
+        "projection": {
+            "body_limit": projection.body_limit if projection is not None else None,
+            "body_offset": projection.body_offset if projection is not None else None,
+            "max_tokens": projection.max_tokens if projection is not None else None,
+        },
+        "messages": [
+            {
+                "id": message.id,
+                "role": message.role.value,
+                "timestamp": message.timestamp.isoformat() if message.timestamp else None,
+                "material_origin": message.material_origin.value,
+                "text": message.text,
+            }
+            for message in messages
+        ],
+    }
 
 
 def _session_scope_for_summaries(summaries: list[SessionSummary]) -> str:
@@ -260,7 +376,6 @@ def run_read_browser(env: AppEnv, request: RootModeRequest, invocation: ReadView
     """Open the first matched session in the daemon web reader."""
 
     from polylogue.api.sync.bridge import run_coroutine_sync
-    from polylogue.archive.session.domain_models import Session
     from polylogue.cli.query import _create_query_vector_provider
     from polylogue.paths import archive_file_set_root_for_paths
 
@@ -304,6 +419,7 @@ def run_read_browser(env: AppEnv, request: RootModeRequest, invocation: ReadView
 __all__ = [
     "TemporalPhaseRecorder",
     "build_read_temporal_window",
+    "run_read_dialogue",
     "run_read_browser",
     "run_read_summary_or_transcript",
     "run_read_temporal",

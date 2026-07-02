@@ -7,7 +7,9 @@ a specific action on the matched sessions.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, cast
+import shlex
+from collections.abc import Awaitable
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import click
 from click.shell_completion import CompletionItem
@@ -16,35 +18,78 @@ if TYPE_CHECKING:
     from polylogue.cli.root_request import RootModeRequest
     from polylogue.cli.select import SelectPrintField
     from polylogue.surfaces.payloads import FacetsResponse
+    from polylogue.surfaces.projection_spec import QueryProjectionSpec
 
-from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.viewport import (
     READ_VIEW_PROFILE_BY_ID,
     READ_VIEW_PROFILES,
     read_view_choices,
     read_view_profile_payloads,
 )
-from polylogue.cli.read_view_handlers import (
-    READ_VIEW_HANDLERS,
-    ReadViewInvocation,
-    read_view_option_names,
-    read_view_options_for_view,
-    run_query_set_read_view,
-    run_read_view,
-)
-from polylogue.cli.read_views.base import deliver_content
+from polylogue.cli.read_view_registry import READ_VIEW_HANDLER_METADATA, read_view_option_names
 from polylogue.cli.shared.types import AppEnv
 from polylogue.cli.verb_names import VERB_NAMES
 from polylogue.core.enums import AssertionStatus
-from polylogue.surfaces.payloads import (
-    AssertionCandidateReviewListPayload,
-    AssertionClaimListPayload,
-    serialize_surface_payload,
-)
-from polylogue.surfaces.projection_spec import QueryProjectionSpec, projection_from_views
 
 _FACET_TERMINAL_BUCKET_LIMIT = 12
 _FACET_TERMINAL_IDF_LIMIT = 12
+_T = TypeVar("_T")
+
+
+def run_coroutine_sync(coro: Awaitable[_T]) -> _T:
+    """Import the sync bridge only when a verb actually needs archive work."""
+
+    from polylogue.api.sync.bridge import run_coroutine_sync as _run_coroutine_sync
+
+    return _run_coroutine_sync(coro)
+
+
+def _deliver_content(env: AppEnv, content: str, *, destination: str, out_path: str | None) -> None:
+    """Import read-view delivery helpers only on real delivery paths."""
+
+    from polylogue.cli.read_views.base import deliver_content
+
+    deliver_content(env, content, destination=destination, out_path=out_path)
+
+
+def serialize_surface_payload(payload: Any, *, exclude_none: bool = False) -> str:
+    """Serialize surface payloads without importing payload models at module load."""
+
+    from polylogue.surfaces.payloads import serialize_surface_payload as _serialize_surface_payload
+
+    return _serialize_surface_payload(payload, exclude_none=exclude_none)
+
+
+def read_view_options_for_view(view: str, values: dict[str, object]) -> Any:
+    """Build typed read-view options without importing handlers at module load."""
+
+    from polylogue.cli.read_view_handlers import read_view_options_for_view as _read_view_options_for_view
+
+    return _read_view_options_for_view(view, values)
+
+
+def run_query_set_read_view(*args: Any, **kwargs: Any) -> Any:
+    """Execute a query-set read view without importing handlers at module load."""
+
+    from polylogue.cli.read_view_handlers import run_query_set_read_view as _run_query_set_read_view
+
+    return _run_query_set_read_view(*args, **kwargs)
+
+
+def run_read_view(*args: Any, **kwargs: Any) -> Any:
+    """Execute a session read view without importing handlers at module load."""
+
+    from polylogue.cli.read_view_handlers import run_read_view as _run_read_view
+
+    return _run_read_view(*args, **kwargs)
+
+
+def _read_view_invocation(**kwargs: Any) -> Any:
+    """Create a read-view invocation without importing handlers at module load."""
+
+    from polylogue.cli.read_view_handlers import ReadViewInvocation
+
+    return ReadViewInvocation(**kwargs)
 
 
 def _sorted_nonzero_facet_values(values: dict[str, int]) -> list[tuple[str, int]]:
@@ -158,6 +203,20 @@ _READ_VIEWS = read_view_choices()
 _READ_VIEW_HELP = "What to render (" + ", ".join(_READ_VIEWS) + ")."
 _READ_DESTINATIONS = ("terminal", "stdout", "browser", "clipboard", "file")
 _READ_FORMATS = tuple(sorted({fmt for profile in READ_VIEW_PROFILES for fmt in profile.formats}))
+_READ_RENDER_LAYOUTS = ("standard", "context-image")
+_READ_TIMESTAMP_POLICIES = ("renderer-default", "include-available", "omit")
+_READ_RENDER_EXPRESSION_KEYS = ("layout", "timestamps", "format", "destination", "to", "out")
+_READ_PROJECTION_EXPRESSION_KEYS = (
+    "max-tokens",
+    "max_tokens",
+    "tokens",
+    "redact-paths",
+    "redact_paths",
+    "redact",
+    "include-assertions",
+    "include_assertions",
+    "assertions",
+)
 
 
 def _explicit_read_view_options(ctx: click.Context) -> frozenset[str]:
@@ -167,6 +226,161 @@ def _explicit_read_view_options(ctx: click.Context) -> frozenset[str]:
         name
         for name in read_view_option_names()
         if (source := ctx.get_parameter_source(name)) is not None and source.name == "COMMANDLINE"
+    )
+
+
+def _parse_read_render_expression(expression: str | None) -> dict[str, str]:
+    """Parse a compact render expression into RenderSpec field aliases."""
+
+    if expression is None:
+        return {}
+    result: dict[str, str] = {}
+    try:
+        tokens = shlex.split(expression.replace(",", " "))
+    except ValueError as exc:
+        raise click.UsageError(f"Invalid --render expression: {exc}") from exc
+    for token in tokens:
+        if "=" in token:
+            key, value = token.split("=", 1)
+        elif ":" in token:
+            key, value = token.split(":", 1)
+        else:
+            raise click.UsageError(
+                f"Invalid --render token {token!r}; expected key:value or key=value. "
+                f"Known keys: {', '.join(_READ_RENDER_EXPRESSION_KEYS)}."
+            )
+        key = key.strip().lower()
+        value = value.strip()
+        if key == "to":
+            key = "destination"
+        if key not in {"layout", "timestamps", "format", "destination", "out"}:
+            raise click.UsageError(
+                f"Unknown --render key {key!r}. Known keys: {', '.join(_READ_RENDER_EXPRESSION_KEYS)}."
+            )
+        if not value:
+            raise click.UsageError(f"Empty --render value for {key!r}.")
+        if key in result:
+            raise click.UsageError(f"Duplicate --render key {key!r}.")
+        result[key] = value
+
+    layout = result.get("layout")
+    if layout is not None and layout not in _READ_RENDER_LAYOUTS:
+        raise click.UsageError(f"Invalid --render layout {layout!r}; choose from: {', '.join(_READ_RENDER_LAYOUTS)}.")
+    timestamps = result.get("timestamps")
+    if timestamps is not None and timestamps not in _READ_TIMESTAMP_POLICIES:
+        raise click.UsageError(
+            f"Invalid --render timestamps {timestamps!r}; choose from: {', '.join(_READ_TIMESTAMP_POLICIES)}."
+        )
+    output_format = result.get("format")
+    if output_format is not None and output_format not in _READ_FORMATS:
+        raise click.UsageError(f"Invalid --render format {output_format!r}; choose from: {', '.join(_READ_FORMATS)}.")
+    destination = result.get("destination")
+    if destination is not None and destination not in _READ_DESTINATIONS:
+        raise click.UsageError(
+            f"Invalid --render destination {destination!r}; choose from: {', '.join(_READ_DESTINATIONS)}."
+        )
+    return result
+
+
+def _parse_projection_bool(field: str, value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on", "include", "included"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "omit", "omitted", "exclude", "excluded"}:
+        return False
+    raise click.UsageError(f"Invalid --projection {field} value {value!r}; expected true/false.")
+
+
+def _parse_read_projection_expression(expression: str | None) -> dict[str, int | bool]:
+    """Parse a compact projection expression into ProjectionSpec field aliases."""
+
+    if expression is None:
+        return {}
+    result: dict[str, int | bool] = {}
+    try:
+        tokens = shlex.split(expression.replace(",", " "))
+    except ValueError as exc:
+        raise click.UsageError(f"Invalid --projection expression: {exc}") from exc
+    for token in tokens:
+        if "=" in token:
+            key, value = token.split("=", 1)
+        elif ":" in token:
+            key, value = token.split(":", 1)
+        else:
+            raise click.UsageError(
+                f"Invalid --projection token {token!r}; expected key:value or key=value. "
+                f"Known keys: {', '.join(_READ_PROJECTION_EXPRESSION_KEYS)}."
+            )
+        key = key.strip().lower().replace("-", "_")
+        value = value.strip()
+        if key == "tokens":
+            key = "max_tokens"
+        elif key == "redact":
+            key = "redact_paths"
+        elif key == "assertions":
+            key = "include_assertions"
+        if key not in {"max_tokens", "redact_paths", "include_assertions"}:
+            raise click.UsageError(
+                f"Unknown --projection key {key!r}. Known keys: {', '.join(_READ_PROJECTION_EXPRESSION_KEYS)}."
+            )
+        if not value:
+            raise click.UsageError(f"Empty --projection value for {key!r}.")
+        if key in result:
+            raise click.UsageError(f"Duplicate --projection key {key!r}.")
+        if key == "max_tokens":
+            try:
+                parsed_int = int(value)
+            except ValueError as exc:
+                raise click.UsageError(f"Invalid --projection max-tokens value {value!r}; expected integer.") from exc
+            if parsed_int < 1:
+                raise click.UsageError("Invalid --projection max-tokens value; expected integer >= 1.")
+            result[key] = parsed_int
+        else:
+            result[key] = _parse_projection_bool(key, value)
+    return result
+
+
+def _merge_render_option(field: str, expression_value: str | None, flag_value: str | None) -> str | None:
+    """Merge a render-expression field with its ergonomic CLI alias."""
+
+    if expression_value is None:
+        return flag_value
+    if flag_value is None or flag_value == expression_value:
+        return expression_value
+    raise click.UsageError(
+        f"Conflicting render {field}: --render sets {expression_value!r} but the dedicated flag sets {flag_value!r}."
+    )
+
+
+def _merge_projection_int(field: str, expression_value: object | None, flag_value: int | None) -> int | None:
+    if expression_value is None:
+        return flag_value
+    if not isinstance(expression_value, int) or isinstance(expression_value, bool):
+        raise click.UsageError(f"Invalid --projection {field}; expected integer.")
+    if flag_value is None or flag_value == expression_value:
+        return expression_value
+    raise click.UsageError(
+        f"Conflicting projection {field}: --projection sets {expression_value!r} "
+        f"but the dedicated flag sets {flag_value!r}."
+    )
+
+
+def _merge_projection_bool(
+    field: str,
+    expression_value: object | None,
+    flag_value: bool | None,
+    *,
+    default: bool,
+) -> bool:
+    if expression_value is None:
+        return flag_value if flag_value is not None else default
+    if not isinstance(expression_value, bool):
+        raise click.UsageError(f"Invalid --projection {field}; expected boolean.")
+    if flag_value is None or flag_value == expression_value:
+        return expression_value
+    raise click.UsageError(
+        f"Conflicting projection {field}: --projection sets {expression_value!r} "
+        f"but the dedicated flag sets {flag_value!r}."
     )
 
 
@@ -249,7 +463,6 @@ def _emit_continue_candidates(
 ) -> None:
     """Rank archived sessions for continuation from the current work context."""
 
-    from polylogue.api.sync.bridge import run_coroutine_sync
     from polylogue.cli.shared.machine_errors import emit_success
 
     candidates = run_coroutine_sync(
@@ -305,18 +518,40 @@ def _complete_read_format(ctx: click.Context, param: click.Parameter, incomplete
     return [CompletionItem(output_format, help=help_text) for output_format, help_text in sorted(items.items())]
 
 
+def _read_view_projection_contract(view_id: str) -> dict[str, object]:
+    """Return the shared projection/render contract summary for a read view."""
+
+    from polylogue.surfaces.projection_spec import projection_from_view
+
+    spec = projection_from_view(view_id)
+    return {
+        "families": [family.value for family in spec.projection.families],
+        "body_policy": spec.projection.body_policy.value,
+        "render_layout": spec.render.layout,
+        "timestamp_policy": spec.render.timestamps.value,
+    }
+
+
 def _render_read_view_profiles_plain() -> str:
     lines = ["Read views:"]
     for profile in READ_VIEW_PROFILES:
-        handler = READ_VIEW_HANDLERS[profile.view_id]
-        options = ", ".join(f"--{name.replace('_', '-')}" for name in sorted(handler.accepted_options)) or "none"
-        scope = "query-set" if handler.accepts_query_set else handler.session_policy
+        metadata = READ_VIEW_HANDLER_METADATA[profile.view_id]
+        options = ", ".join(f"--{name.replace('_', '-')}" for name in sorted(metadata.accepted_options)) or "none"
+        scope = "query-set" if metadata.accepts_query_set else metadata.session_policy
         handoff = " handoff" if profile.successor_handoff else ""
+        projection = _read_view_projection_contract(profile.view_id)
         lines.append(
             f"  {profile.view_id:<12} {profile.lossiness:<10} evidence={profile.evidence_policy:<10}"
             f" formats={','.join(profile.formats)}{handoff}"
         )
         lines.append(f"      scope={scope}; options={options}")
+        lines.append(
+            "      projection="
+            f"{','.join(cast(list[str], projection['families']))}; "
+            f"body={projection['body_policy']}; "
+            f"render={projection['render_layout']}; "
+            f"timestamps={projection['timestamp_policy']}"
+        )
         lines.append(f"      {profile.purpose}")
     return "\n".join(lines)
 
@@ -327,11 +562,12 @@ def _emit_read_view_profiles(output_format: str | None) -> None:
 
         payloads: list[dict[str, object]] = []
         for payload in read_view_profile_payloads():
-            handler = READ_VIEW_HANDLERS[str(payload["view_id"])]
+            metadata = READ_VIEW_HANDLER_METADATA[str(payload["view_id"])]
             augmented: dict[str, object] = dict(payload)
-            augmented["cli_options"] = sorted(handler.accepted_options)
-            augmented["session_policy"] = handler.session_policy
-            augmented["accepts_query_set"] = handler.accepts_query_set
+            augmented["cli_options"] = sorted(metadata.accepted_options)
+            augmented["session_policy"] = metadata.session_policy
+            augmented["accepts_query_set"] = metadata.accepts_query_set
+            augmented["projection_contract"] = _read_view_projection_contract(str(payload["view_id"]))
             payloads.append(augmented)
         emit_success({"read_views": payloads})
         return
@@ -356,6 +592,7 @@ def _build_read_projection_spec(
     max_tokens: int | None,
     selection_limit: int | None,
     render_layout: str = "standard",
+    timestamp_policy: str | None = None,
     selection_query: str | None = None,
     selection_origin: str | None = None,
     selection_since: str | None = None,
@@ -367,8 +604,12 @@ def _build_read_projection_spec(
     body_offset: int | None = None,
     neighbor_limit: int | None = None,
     neighbor_window_hours: int | None = None,
+    redact_paths: bool = True,
+    include_assertions: bool = False,
 ) -> QueryProjectionSpec:
     """Build the typed selection/projection/render contract for read options."""
+
+    from polylogue.surfaces.projection_spec import projection_from_views
 
     primary_view = views[0] if views else "summary"
     effective_format = (
@@ -381,6 +622,7 @@ def _build_read_projection_spec(
         format=effective_format,
         destination=destination,
         layout=render_layout,
+        timestamps=timestamp_policy,
         max_tokens=max_tokens,
         out=out_path,
         query=selection_query if selection_query is not None else _read_query_text(request),
@@ -395,6 +637,8 @@ def _build_read_projection_spec(
         body_offset=body_offset,
         neighbor_limit=neighbor_limit,
         neighbor_window_hours=neighbor_window_hours,
+        redact_paths=redact_paths,
+        include_assertions=include_assertions,
     )
 
 
@@ -414,9 +658,11 @@ def _read_projection_limits(
     return limit, None, None, None, None
 
 
-def _read_render_layout(views: tuple[str, ...]) -> str:
+def _read_render_layout(views: tuple[str, ...], *, override: str | None = None) -> str:
     """Return the render layout family for read output."""
 
+    if override is not None:
+        return override
     if len(views) > 1 or "context-image" in views:
         return "context-image"
     return "standard"
@@ -436,7 +682,12 @@ def _projection_spec_with_resolved_session_refs(
 
 
 _READ_HELP_OPTION_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
-    ("Projection", frozenset({"view", "show_views", "show_spec"})),
+    (
+        "Projection",
+        frozenset(
+            {"view", "show_views", "show_spec", "render_expr", "projection_expr", "render_layout", "timestamp_policy"}
+        ),
+    ),
     ("Delivery and format", frozenset({"destination", "output_format", "out_path", "fields"})),
     ("Cardinality and pagination", frozenset({"all_matches", "first_only", "limit", "offset"})),
     (
@@ -509,12 +760,12 @@ def _summary_all_output_param(destination: str, out_path: str | None) -> str | N
     type=click.Choice(["id", "title", "origin"]),
     default="id",
     show_default=True,
-    help="Field to print for the selected session.",
+    help="Field to print for selected or candidate sessions.",
 )
-@click.option("--json", "json_output", is_flag=True, help="Print the selected session as one JSON object.")
+@click.option("--json", "json_output", is_flag=True, help="Print selected or candidate sessions as JSON.")
 @click.pass_context
 def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: bool) -> None:
-    """Select one matched session with fzf/prompt fallback."""
+    """Select one matched session or print bounded candidate identities."""
     from polylogue.cli.select import run_select
 
     field: SelectPrintField = "json" if json_output else cast("SelectPrintField", print_field)
@@ -563,6 +814,37 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: b
     default=None,
     shell_complete=_complete_read_format,
     help="Output format (where applicable).",
+)
+@click.option(
+    "--render",
+    "render_expr",
+    default=None,
+    help=(
+        "Render expression, e.g. layout:context-image,timestamps:include-available,format:markdown. "
+        "Known keys: layout, timestamps, format, destination/to, out."
+    ),
+)
+@click.option(
+    "--projection",
+    "projection_expr",
+    default=None,
+    help=(
+        "Projection expression, e.g. max-tokens:4000,redact-paths:true,include-assertions:false. "
+        "Known keys: max-tokens, redact-paths, include-assertions."
+    ),
+)
+@click.option(
+    "--render-layout",
+    type=click.Choice(_READ_RENDER_LAYOUTS),
+    default=None,
+    help="Render layout for the composed projection spec; defaults from --view.",
+)
+@click.option(
+    "--timestamps",
+    "timestamp_policy",
+    type=click.Choice(_READ_TIMESTAMP_POLICIES),
+    default=None,
+    help="Timestamp rendering policy for the composed projection spec; defaults from --view.",
 )
 @click.option("--out", "out_path", type=click.Path(), default=None, help="File path for --to file.")
 @click.option("--all", "all_matches", is_flag=True, help="Read all matched sessions.")
@@ -645,6 +927,10 @@ def read_verb(
     view: str,
     destination: str,
     output_format: str | None,
+    render_expr: str | None,
+    projection_expr: str | None,
+    render_layout: str | None,
+    timestamp_policy: str | None,
     out_path: str | None,
     all_matches: bool,
     limit: int | None,
@@ -703,6 +989,38 @@ def read_verb(
         _emit_read_view_profiles(output_format)
         return
     request = _parent_request(ctx)
+    render_settings = _parse_read_render_expression(render_expr)
+    projection_settings = _parse_read_projection_expression(projection_expr)
+    destination_alias = (
+        destination
+        if (source := ctx.get_parameter_source("destination")) is not None and source.name == "COMMANDLINE"
+        else None
+    )
+    max_tokens = _merge_projection_int("max_tokens", projection_settings.get("max_tokens"), max_tokens)
+    include_assertions = _merge_projection_bool(
+        "include_assertions",
+        projection_settings.get("include_assertions"),
+        include_assertions
+        if (source := ctx.get_parameter_source("include_assertions")) is not None and source.name == "COMMANDLINE"
+        else None,
+        default=False,
+    )
+    redact_paths = _merge_projection_bool(
+        "redact_paths",
+        projection_settings.get("redact_paths"),
+        (not no_redact)
+        if (source := ctx.get_parameter_source("no_redact")) is not None and source.name == "COMMANDLINE"
+        else None,
+        default=True,
+    )
+    no_redact = not redact_paths
+    render_layout = _merge_render_option("layout", render_settings.get("layout"), render_layout)
+    timestamp_policy = _merge_render_option("timestamps", render_settings.get("timestamps"), timestamp_policy)
+    output_format = _merge_render_option("format", render_settings.get("format"), output_format)
+    destination = (
+        _merge_render_option("destination", render_settings.get("destination"), destination_alias) or destination
+    )
+    out_path = _merge_render_option("out", render_settings.get("out"), out_path)
     view_tokens = [token.strip() for token in view.split(",") if token.strip()] or ["summary"]
     unknown_views = [token for token in view_tokens if token not in _READ_VIEWS]
     if unknown_views:
@@ -756,7 +1074,8 @@ def read_verb(
             out_path=out_path,
             max_tokens=max_tokens,
             selection_limit=spec_selection_limit,
-            render_layout=_read_render_layout(tuple(view_tokens)),
+            render_layout=_read_render_layout(tuple(view_tokens), override=render_layout),
+            timestamp_policy=timestamp_policy,
             selection_query=spec_selection_query,
             selection_origin=spec_selection_origin,
             selection_since=spec_selection_since,
@@ -768,8 +1087,15 @@ def read_verb(
             body_offset=projection_body_offset,
             neighbor_limit=projection_neighbor_limit,
             neighbor_window_hours=projection_neighbor_window_hours,
+            redact_paths=not no_redact,
+            include_assertions=include_assertions,
         )
-        click.echo(serialize_surface_payload(spec, exclude_none=True))
+        _deliver_content(
+            env,
+            serialize_surface_payload(spec, exclude_none=True) + "\n",
+            destination=destination,
+            out_path=out_path,
+        )
         return
     if _explain_terminal_action(
         request,
@@ -807,8 +1133,33 @@ def read_verb(
                 request = request.with_param_updates(fields=fields)
             _execute_query_verb(ctx, request)
             return
+        projection_spec = _build_read_projection_spec(
+            request,
+            views=tuple(view_tokens),
+            output_format=output_format,
+            destination=destination,
+            out_path=out_path,
+            max_tokens=max_tokens,
+            selection_limit=spec_selection_limit,
+            render_layout=_read_render_layout(tuple(view_tokens), override=render_layout),
+            timestamp_policy=timestamp_policy,
+            edge_limit=projection_edge_limit,
+            body_limit=projection_body_limit,
+            body_offset=projection_body_offset,
+            neighbor_limit=projection_neighbor_limit,
+            neighbor_window_hours=projection_neighbor_window_hours,
+            redact_paths=not no_redact,
+            include_assertions=include_assertions,
+        )
         run_query_set_read_view(
-            env, request, output_format=output_format, fields=fields, destination=destination, out_path=out_path
+            env,
+            request,
+            view=primary_view,
+            output_format=output_format,
+            fields=fields,
+            destination=destination,
+            out_path=out_path,
+            projection_spec=projection_spec,
         )
         return
 
@@ -816,7 +1167,10 @@ def read_verb(
     # accumulation, assertion inclusion, and the context-image lens all collapse
     # onto the shared compile_context engine rather than parallel assemblers.
     needs_context_image = (
-        len(view_tokens) > 1 or primary_view == "context-image" or max_tokens is not None or include_assertions
+        len(view_tokens) > 1
+        or primary_view == "context-image"
+        or (max_tokens is not None and primary_view != "dialogue")
+        or include_assertions
     )
     if needs_context_image and destination != "browser":
         projection_spec = _build_read_projection_spec(
@@ -827,13 +1181,16 @@ def read_verb(
             out_path=out_path,
             max_tokens=max_tokens,
             selection_limit=spec_selection_limit if uses_context_image_selector else limit,
-            render_layout=_read_render_layout(tuple(view_tokens)),
+            render_layout=_read_render_layout(tuple(view_tokens), override=render_layout),
+            timestamp_policy=timestamp_policy,
             selection_query=spec_selection_query,
             selection_origin=spec_selection_origin,
             selection_since=spec_selection_since,
             selection_until=spec_selection_until,
             selection_project_path=spec_selection_project_path,
             selection_project_repo=spec_selection_project_repo,
+            redact_paths=not no_redact,
+            include_assertions=include_assertions,
         )
         run_read_context_image(
             env,
@@ -857,10 +1214,10 @@ def read_verb(
         )
         return
 
-    handler = READ_VIEW_HANDLERS[primary_view]
+    handler_metadata = READ_VIEW_HANDLER_METADATA[primary_view]
     session_id = None
     exact_session_ref = _spec_is_exact_session_ref(request.query_spec())
-    if destination == "browser" or first_only or exact_session_ref or not handler.accepts_query_set:
+    if destination == "browser" or first_only or exact_session_ref or not handler_metadata.accepts_query_set:
         session_id = _resolve_query_action_session_id(env, request, operation="read", first_only=first_only)
     effective_format = _effective_read_output_format(request, view=primary_view, output_format=output_format)
     projection_spec = _build_read_projection_spec(
@@ -871,7 +1228,8 @@ def read_verb(
         out_path=out_path,
         max_tokens=max_tokens,
         selection_limit=selection_limit,
-        render_layout=_read_render_layout(tuple(view_tokens)),
+        render_layout=_read_render_layout(tuple(view_tokens), override=render_layout),
+        timestamp_policy=timestamp_policy,
         edge_limit=projection_edge_limit,
         body_limit=projection_body_limit,
         body_offset=projection_body_offset,
@@ -879,11 +1237,25 @@ def read_verb(
         neighbor_window_hours=projection_neighbor_window_hours,
     )
     explicit_options = _explicit_read_view_options(ctx)
+    if primary_view == "dialogue" and session_id is None:
+        if limit is not None:
+            request = request.with_param_updates(limit=limit)
+        run_query_set_read_view(
+            env,
+            request,
+            view=primary_view,
+            output_format=effective_format,
+            fields=fields,
+            destination=destination,
+            out_path=out_path,
+            projection_spec=projection_spec,
+        )
+        return
     if destination == "browser":
         run_read_view(
             env,
             request,
-            ReadViewInvocation(
+            _read_view_invocation(
                 view="summary",
                 session_id=session_id,
                 output_format=effective_format,
@@ -898,7 +1270,7 @@ def read_verb(
     run_read_view(
         env,
         request,
-        ReadViewInvocation(
+        _read_view_invocation(
             view=primary_view,
             session_id=session_id,
             output_format=effective_format,
@@ -1076,7 +1448,7 @@ def continue_verb(
             )
         )
     )
-    deliver_content(env, _render_context_image_markdown(image), destination=destination, out_path=out_path)
+    _deliver_content(env, _render_context_image_markdown(image), destination=destination, out_path=out_path)
 
 
 @click.command("delete")
@@ -1239,7 +1611,6 @@ def mark_verb(
     """
     import uuid
 
-    from polylogue.api.sync.bridge import run_coroutine_sync
     from polylogue.cli.verb_cardinality import CardinalityError, check_cardinality, resolve_session_ids_for_verb
 
     if ctx.invoked_subcommand is not None:
@@ -1359,6 +1730,8 @@ def list_mark_candidates_command(env: AppEnv, target_ref: str | None, limit: int
     """List candidate assertion claims."""
     items = run_coroutine_sync(env.polylogue.list_assertion_candidates(target_ref=target_ref, limit=limit))
     if output_format == "json":
+        from polylogue.surfaces.payloads import AssertionClaimListPayload
+
         payload = AssertionClaimListPayload(
             items=tuple(items), total=len(items), limit=limit, statuses=(AssertionStatus.CANDIDATE,)
         )
@@ -1380,6 +1753,8 @@ def list_mark_candidates_command(env: AppEnv, target_ref: str | None, limit: int
 @click.pass_obj
 def review_mark_candidates_command(env: AppEnv, target_ref: str | None, limit: int, output_format: str | None) -> None:
     """List candidate assertion review state and disabled actions."""
+    from polylogue.surfaces.payloads import AssertionCandidateReviewListPayload
+
     payload = run_coroutine_sync(env.polylogue.list_assertion_candidate_reviews(target_ref=target_ref, limit=limit))
     if not isinstance(payload, AssertionCandidateReviewListPayload):
         payload = AssertionCandidateReviewListPayload.from_envelopes(
@@ -1672,7 +2047,6 @@ def analyze_verb(
 
     import json as _json
 
-    from polylogue.api.sync.bridge import run_coroutine_sync
     from polylogue.cli.shared.cost_rendering import render_outlook_plain
     from polylogue.cost.outlook import ProjectionMethod
     from polylogue.cost.plans import PlanLookupError
@@ -1813,14 +2187,23 @@ def analyze_verb(
 
 
 def _attach_analyze_subcommands() -> None:
-    from polylogue.cli.commands.diagnostics import pace_command, tools_command, turns_command, usage_command
-    from polylogue.cli.commands.insights import analyze_insights_command
+    from polylogue.cli.click_command_registration import _LazyCommand, _LazyGroup
 
-    analyze_verb.add_command(analyze_insights_command)
-    analyze_verb.add_command(pace_command)
-    analyze_verb.add_command(tools_command)
-    analyze_verb.add_command(turns_command)
-    analyze_verb.add_command(usage_command)
+    analyze_verb.add_command(
+        _LazyGroup(
+            "insights",
+            "polylogue.cli.commands.insights",
+            "analyze_insights_command",
+            short_help="Check and export derived insight materialization.",
+        )
+    )
+    for name, attr, help_text in (
+        ("pace", "pace_command", "Analyze session pacing, gaps, and burstiness."),
+        ("tools", "tools_command", "Analyze tool usage across sessions."),
+        ("turns", "turns_command", "Analyze turn structure for one session."),
+        ("usage", "usage_command", "Analyze provider usage events."),
+    ):
+        analyze_verb.add_command(_LazyCommand(name, "polylogue.cli.commands.diagnostics", attr, short_help=help_text))
 
 
 _attach_analyze_subcommands()
@@ -1890,7 +2273,6 @@ def _resolve_target_session_id(request: RootModeRequest) -> str | None:
     if request.query_terms:
         from dataclasses import replace
 
-        from polylogue.api.sync.bridge import run_coroutine_sync
         from polylogue.config import Config
 
         explicit = request.params.get("conv_id")
@@ -2051,6 +2433,7 @@ def _render_context_image_markdown(image: object) -> str:
         render_format = getattr(render, "format", None)
         render_destination = getattr(render, "destination", None)
         render_layout = getattr(render, "layout", None)
+        render_timestamps = getattr(render, "timestamps", None)
         if query:
             lines.append(f"- Selection query: {query}")
         if selection_origin:
@@ -2094,6 +2477,8 @@ def _render_context_image_markdown(image: object) -> str:
             lines.append(f"- Render: {render_format.value} to {render_destination.value}")
         if render_layout:
             lines.append(f"- Render layout: {render_layout}")
+        if render_timestamps is not None:
+            lines.append(f"- Render timestamps: {render_timestamps.value}")
     if caveats:
         lines.append(f"- Caveats: {', '.join(str(caveat) for caveat in caveats)}")
     parts: list[str] = ["\n".join(lines)]
@@ -2149,7 +2534,6 @@ def run_read_context_image(
     ``compile_context`` (seed refs from the resolved selection) or, when only
     context-image filters narrow the set, to ``context_image_payload``.
     """
-    from polylogue.cli.read_views.base import deliver_content
     from polylogue.context.compiler import (
         DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE,
         DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION,
@@ -2213,7 +2597,7 @@ def run_read_context_image(
         content = serialize_surface_payload(image, exclude_none=True) + "\n"
     else:
         content = _render_context_image_markdown(image)
-    deliver_content(env, content, destination=destination, out_path=out_path)
+    _deliver_content(env, content, destination=destination, out_path=out_path)
 
 
 QUERY_VERBS = (

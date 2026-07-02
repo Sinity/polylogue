@@ -170,9 +170,9 @@
     --has-tool-use                  Only sessions with tool use (SQL pushdown)
     --has-thinking                  Only sessions with thinking blocks (SQL
                                     pushdown)
-    --has-paste                     Only sessions with pasted content (SQL
+    --has-paste                     Only sessions with paste evidence (SQL
                                     pushdown)
-    --typed-only                    Only sessions without pasted content (typed
+    --typed-only                    Only sessions without paste evidence (typed
                                     prose only)
     --min-messages INTEGER          Minimum message count
     --max-messages INTEGER          Maximum message count
@@ -388,11 +388,11 @@
     --has-thinking                  Only sessions with thinkin
   g blocks (SQL
                                     pushdown)
-    --has-paste                     Only sessions with pasted
-  content (SQL
+    --has-paste                     Only sessions with paste e
+  vidence (SQL
                                     pushdown)
     --typed-only                    Only sessions without past
-  ed content (typed
+  e evidence (typed
                                     prose only)
     --min-messages INTEGER          Minimum message count
     --max-messages INTEGER          Maximum message count
@@ -593,9 +593,9 @@
     --has-tool-use                  Only sessions with tool use (SQL pushdown)
     --has-thinking                  Only sessions with thinking blocks (SQL
                                     pushdown)
-    --has-paste                     Only sessions with pasted content (SQL
+    --has-paste                     Only sessions with paste evidence (SQL
                                     pushdown)
-    --typed-only                    Only sessions without pasted content (typed
+    --typed-only                    Only sessions without paste evidence (typed
                                     prose only)
     --min-messages INTEGER          Minimum message count
     --max-messages INTEGER          Maximum message count

@@ -78,12 +78,14 @@ def test_structured_failure_followups_aggregates_ref_backed_samples() -> None:
     by_tool = cast(list[dict[str, Any]], result["by_tool"])
     by_model = cast(list[dict[str, Any]], result["by_model"])
     samples = cast(list[dict[str, Any]], result["samples"])
+    stratified = cast(dict[str, list[dict[str, Any]]], result["samples_by_classification"])
 
     assert result["totals"] == {
         "failed_outcomes": 4,
         "acknowledged": 1,
         "silent_proceed": 1,
         "ambiguous": 2,
+        "classified_outcomes": 2,
     }
     assert by_tool[0] == {
         "name": "Bash",
@@ -91,10 +93,18 @@ def test_structured_failure_followups_aggregates_ref_backed_samples() -> None:
         "acknowledged": 1,
         "silent_proceed": 1,
         "ambiguous": 0,
+        "classified_outcomes": 2,
         "silent_rate": 0.5,
+        "silent_rate_among_classified": 0.5,
     }
     assert by_model[0]["name"] == "claude-haiku"
     assert by_model[0]["failed_outcomes"] == 2
+    assert by_model[0]["classified_outcomes"] == 1
+    assert by_model[0]["silent_rate"] == 0.5
+    assert by_model[0]["silent_rate_among_classified"] == 1.0
     assert len(samples) == 3
     assert samples[0]["tool_message_ref"] == "message:tool-ack"
     assert samples[0]["next_message_ref"] == "message:next-ack"
+    assert [item["classification"] for item in stratified["acknowledged"]] == ["acknowledged"]
+    assert [item["classification"] for item in stratified["silent_proceed"]] == ["silent_proceed"]
+    assert [item["classification"] for item in stratified["ambiguous"]] == ["ambiguous", "ambiguous"]

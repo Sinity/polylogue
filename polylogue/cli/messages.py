@@ -139,11 +139,14 @@ def run_raw(
                     "limit": limit,
                     "offset": offset,
                 }
-                env.ui.print(_json.dumps(payload, indent=2))
+                # Machine output uses raw stdout so Rich markup never rewrites
+                # JSON bytes and read-view delivery can capture file/clipboard
+                # targets consistently.
+                click.echo(_json.dumps(payload, indent=2))
             else:
                 import yaml
 
-                env.ui.print(yaml.dump(artifacts))
+                click.echo(yaml.dump(artifacts))
 
     run_coroutine_sync(_run())
 

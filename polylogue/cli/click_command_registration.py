@@ -6,8 +6,6 @@ import importlib
 
 import click
 
-from polylogue.cli.commands.config import config_command
-
 # ── lazy-command wrapper ───────────────────────────────────────────
 
 
@@ -91,7 +89,7 @@ _SHORT_HELP: dict[str, str] = {
     "backup": "Create a timestamped durability-tier backup.",
     "check": "Run archive health checks and repairs.",
     "completions": "Emit shell completion setup for polylogue.",
-    "config": "Show configuration paths and resolved settings.",
+    "config": "Show resolved Polylogue configuration with...",
     "dashboard": "Launch the terminal dashboard TUI.",
     "demo": "Seed and verify the deterministic demo archive.",
     "debt": "List archive work that needs operator attention.",
@@ -115,6 +113,7 @@ _COMMAND_NAMES: dict[str, str] = {
 }
 
 _GROUP_ATTRS: dict[str, str] = {
+    "config": "config_command",
     "debt": "debt_command",
     "demo": "demo_command",
     "diagnostics": "diagnostics_group",
@@ -135,13 +134,17 @@ def _L(name: str) -> _LazyCommand:  # noqa: N802
     attr = _GROUP_ATTRS.get(name, _COMMAND_ATTRS.get(name, f"{name}_command"))
     command_name = _COMMAND_NAMES.get(name, name.replace("_", "-"))
     cls = _LazyGroup if name in _GROUP_ATTRS else _LazyCommand
-    return cls(command_name, module, attr, short_help=_SHORT_HELP.get(name))
+    command = cls(command_name, module, attr, short_help=_SHORT_HELP.get(name))
+    if name == "config" and isinstance(command, _LazyGroup):
+        command.invoke_without_command = True
+        command.no_args_is_help = False
+    return command
 
 
 # ── command list ───────────────────────────────────────────────────
 
 ROOT_COMMANDS: tuple[click.Command, ...] = (
-    config_command,
+    _L("config"),
     _L("dashboard"),
     _L("demo"),
     _L("facets"),

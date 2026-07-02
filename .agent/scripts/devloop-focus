@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+Usage: .agent/scripts/devloop-focus <from> <to> <trigger> [decision]
+       .agent/scripts/devloop-focus --force <from> <to> <trigger> [decision]
+
+Record a material focus transition using the shared modes:
+Direction, Evidence, Construction, Proof, Artifact, Velocity, Meta.
+
+Example:
+  devloop-focus Evidence Construction "stage timings prove the blocker" "Patch the shared path and add focused proof"
+EOF
+  exit 0
+fi
+
+force=0
+if [ "${1:-}" = "--force" ]; then
+  force=1
+  shift
+fi
+
+if [ "$#" -lt 3 ]; then
+  cat >&2 <<'EOF'
+usage: devloop-focus [--force] <from> <to> <trigger> [decision]
+
+Example:
+  devloop-focus Evidence Construction "stage timings prove global attachment ref-count refresh" "Patch write path and add focused regression"
+EOF
+  exit 2
+fi
+
+from="$1"
+to="$2"
+trigger="$3"
+decision="${4:-}"
+root="${POLYLOGUE_AGENT_LOG_ROOT:-/realm/project/polylogue/.agent/conductor-devloop}"
+active="$root/ACTIVE-LOOP.md"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=.agent/scripts/lib-devloop
+source "$script_dir/lib-devloop"
+
+case "$from:$to" in
+  Direction:*|Evidence:*|Construction:*|Proof:*|Artifact:*|Velocity:*|Meta:*) ;;
+  *)
+    printf 'invalid source focus mode: %s\n' "$from" >&2
+    exit 2
+    ;;
+esac
+
+case "$to" in
+  Direction|Evidence|Construction|Proof|Artifact|Velocity|Meta) ;;
+  *)
+    printf 'invalid target focus mode: %s\n' "$to" >&2
+    exit 2
+    ;;
+esac
+
+if [ "$force" -eq 0 ] && ! devloop_focus_edge_allowed "$from" "$to"; then
+  printf 'invalid focus transition: %s -> %s\n' "$from" "$to" >&2
+  printf 'use --force only when the operating log explains why this rare edge is correct\n' >&2
+  exit 2
+fi
+
+if [ "$force" -eq 0 ] && [ -f "$active" ]; then
+  current_to="$(
+    python3 - "$active" <<'PY'
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+match = re.search(r"^Focus: ([A-Za-z]+) -> ([A-Za-z]+)$", text, re.M)
+if match is not None:
+    print(match.group(2))
+PY
+  )"
+  if [ -n "$current_to" ] && [ "$current_to" != "$from" ]; then
+    printf 'stale focus transition: active loop is in %s, got from=%s\n' "$current_to" "$from" >&2
+    printf 'rerun with from=%s, or use --force with an explicit rationale\n' "$current_to" >&2
+    exit 2
+  fi
+fi
+
+"$(dirname "$0")/devloop-log" "focus: $from -> $to" "Focus: $from -> $to
+Trigger: $trigger
+Decision: $decision"
+
+if [ -f "$active" ]; then
+  python3 - "$active" "$from" "$to" "$trigger" "$decision" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+from_focus, to_focus, trigger, decision = sys.argv[2:]
+text = path.read_text()
+
+updates = {
+    "Current Focus": f"Current Focus\n\nFocus: {from_focus} -> {to_focus}\n\nTrigger: {trigger}\n\nDecision: {decision or 'Continue with the focus transition recorded in the operating log.'}",
+    "Next Action": f"Next Action\n\nOperate in `{to_focus}` mode; record the next material focus switch with `.agent/scripts/devloop-focus`.",
+}
+
+for heading, body in updates.items():
+    marker = f"## {heading}"
+    start = text.find(marker)
+    if start == -1:
+        continue
+    next_start = text.find("\n## ", start + 1)
+    if next_start == -1:
+        next_start = len(text)
+    text = text[:start] + "## " + body + "\n" + text[next_start:]
+
+path.write_text(text)
+PY
+fi
+
+"$(dirname "$0")/devloop-sync" >/dev/null

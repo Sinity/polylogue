@@ -124,6 +124,7 @@ class ToolUsageInsightQuery(PaginatedInsightQuery):
     tool: str | None = None
     mcp_server: str | None = None
     action_kind: str | None = None
+    since_ms: int | None = None
     limit: int | None = None
 
 

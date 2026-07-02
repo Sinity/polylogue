@@ -289,13 +289,7 @@ def _archive(tmp_path: Path) -> Polylogue:
 
 
 def _materialize_run_projection(index_db: Path) -> None:
-    """Run the session-insight materializer so derived run-projection tables exist.
-
-    The ``run`` / ``observed-event`` / ``context-snapshot`` units now read the
-    materialized ``session_runs`` / ``session_observed_events`` /
-    ``session_context_snapshots`` tables rather than recomputing the projection
-    at query time, so tests must rebuild insights after writing sessions.
-    """
+    """Run the session-insight materializer for richer digest-derived projections."""
     from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
     from polylogue.storage.sqlite.connection import open_connection
 
@@ -2089,8 +2083,6 @@ async def test_query_units_returns_context_snapshot_rows(tmp_path: Path) -> None
                     ],
                 )
             )
-
-        _materialize_run_projection(archive.config.archive_root / "index.db")
 
         envelope = await archive.query_units(
             "context-snapshots where boundary:session_start AND text:facade-context-snapshot-v1"

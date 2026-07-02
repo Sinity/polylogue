@@ -1,0 +1,1099 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+Usage: .agent/scripts/devloop-review
+
+Run the adversarial scaffold/state review: tracked-vs-ignored boundaries,
+canonical primitive names, conductor packet clutter, generated-state freshness,
+focus transitions, daemon/archive state, worktree state, and pressure signals.
+EOF
+  exit 0
+fi
+
+repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
+current="${POLYLOGUE_AGENT_CURRENT:-$repo/.agent/conductor-devloop}"
+packet="$current"
+archive_root="${POLYLOGUE_ARCHIVE_ROOT:-/home/sinity/.local/share/polylogue}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=.agent/scripts/lib-devloop
+source "$script_dir/lib-devloop"
+expected_index_version="$(
+  cd "$repo" &&
+    python - <<'PY'
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+
+print(INDEX_SCHEMA_VERSION)
+PY
+)"
+
+canonical_devloop_scripts=(
+  devloop-ahead
+  devloop-baseline
+  devloop-checkpoint
+  devloop-demo
+  devloop-focus
+  devloop-handoff
+  devloop-integration
+  devloop-log
+  devloop-meta
+  devloop-refresh-demos
+  devloop-refresh-events
+  devloop-review
+  devloop-start
+  devloop-status
+  devloop-sync
+  devloop-velocity
+  devloop-wait
+)
+
+status=0
+warn() {
+  printf 'WARN: %s\n' "$*"
+  status=1
+}
+ok() {
+  printf 'OK: %s\n' "$*"
+}
+
+required_scaffold=(
+  "$repo/.agent/README.md"
+  "$repo/.agent/DEVLOOP.md"
+  "$repo/.agent/includes/README.md"
+  "$repo/.agent/includes/devloop-conventions.md"
+  "$repo/.agent/includes/projection-render-direction.md"
+  "$current/README.md"
+  "$current/INDEX.md"
+  "$current/INTEGRATION.md"
+  "$current/VELOCITY.md"
+  "$current/PROCESS.md"
+  "$current/TACTICS.md"
+  "$current/ADVERSARIAL-REVIEW.md"
+  "$current/RUNBOOK.md"
+  "$current/SELF-PROMPTS.md"
+  "$repo/.agent/scripts/devloop-log"
+  "$repo/.agent/scripts/lib-devloop"
+  "$repo/.agent/scripts/devloop-sync"
+  "$repo/.agent/scripts/devloop-review"
+  "$repo/.agent/scripts/devloop-status"
+  "$repo/.agent/scripts/devloop-start"
+  "$repo/.agent/scripts/devloop-checkpoint"
+  "$repo/.agent/scripts/devloop-handoff"
+  "$repo/.agent/scripts/devloop-ahead"
+  "$repo/.agent/scripts/devloop-refresh-events"
+  "$repo/.agent/scripts/devloop-refresh-demos"
+  "$repo/.agent/scripts/devloop-focus"
+  "$repo/.agent/scripts/devloop-integration"
+  "$repo/.agent/scripts/devloop-baseline"
+  "$repo/.agent/scripts/devloop-demo"
+  "$repo/.agent/scripts/devloop-meta"
+  "$repo/.agent/scripts/devloop-wait"
+  "$repo/.agent/scripts/devloop-velocity"
+  "$repo/.agent/tools/conductor_compact.py"
+)
+
+missing=0
+for path in "${required_scaffold[@]}"; do
+  if [ ! -e "$path" ]; then
+    warn "missing scaffold file: $path"
+    missing=1
+  fi
+done
+[ "$missing" -eq 0 ] && ok "required scaffold files present"
+
+untracked_scaffold=()
+for path in "${required_scaffold[@]}"; do
+  rel="${path#$repo/}"
+  if [ -e "$path" ] && ! git -C "$repo" ls-files --error-unmatch "$rel" >/dev/null 2>&1; then
+    untracked_scaffold+=("$rel")
+  fi
+done
+if [ "${#untracked_scaffold[@]}" -gt 0 ]; then
+  warn "required scaffold files are not tracked by git"
+  printf '%s\n' "${untracked_scaffold[@]}"
+else
+  ok "required scaffold files are tracked"
+fi
+
+force_included_paths=(
+  ".agent/DEVLOOP.md"
+  ".agent/includes/README.md"
+  ".agent/scripts/devloop-status"
+  ".agent/conductor-devloop/RUNBOOK.md"
+  ".agent/conductor-devloop/INTEGRATION.md"
+)
+ignored_force_included=()
+for rel in "${force_included_paths[@]}"; do
+  if git -C "$repo" check-ignore -q "$rel"; then
+    ignored_force_included+=("$rel")
+  fi
+done
+if [ "${#ignored_force_included[@]}" -gt 0 ]; then
+  warn "tracked scaffold paths are ignored by .gitignore"
+  printf '%s\n' "${ignored_force_included[@]}"
+else
+  ok "tracked scaffold paths are force-included by .gitignore"
+fi
+
+ignored_state_paths=(
+  ".agent/conductor-devloop/ACTIVE-LOOP.md"
+  ".agent/conductor-devloop/OPERATING-LOG.md"
+  ".agent/demos/README.md"
+)
+not_ignored_state=()
+for rel in "${ignored_state_paths[@]}"; do
+  if [ -e "$repo/$rel" ] && ! git -C "$repo" check-ignore -q "$rel"; then
+    not_ignored_state+=("$rel")
+  fi
+done
+if [ "${#not_ignored_state[@]}" -gt 0 ]; then
+  warn "live state/demo paths are not ignored by .gitignore"
+  printf '%s\n' "${not_ignored_state[@]}"
+else
+  ok "live state and demo paths are ignored by .gitignore"
+fi
+
+non_executable_scripts=()
+for path in "$repo"/.agent/scripts/devloop-*; do
+  [ -e "$path" ] || continue
+  if [ ! -x "$path" ]; then
+    non_executable_scripts+=("${path#$repo/}")
+  fi
+done
+if [ "${#non_executable_scripts[@]}" -gt 0 ]; then
+  warn "devloop scripts are not executable"
+  printf '%s\n' "${non_executable_scripts[@]}"
+else
+  ok "devloop scripts are executable"
+fi
+
+scripts_without_help=()
+for path in "$repo"/.agent/scripts/devloop-*; do
+  [ -e "$path" ] || continue
+  if ! grep -Eq -- '--help|-h' "$path"; then
+    scripts_without_help+=("${path#$repo/}")
+  fi
+done
+if [ "${#scripts_without_help[@]}" -gt 0 ]; then
+  warn "devloop scripts lack a side-effect-free --help path"
+  printf '%s\n' "${scripts_without_help[@]}"
+else
+  ok "devloop scripts expose side-effect-free help"
+fi
+
+help_state_files=(
+  "$current/ACTIVE-LOOP.md"
+  "$current/OPERATING-LOG.md"
+  "$current/EVENTS.jsonl"
+  "$current/DEMO-RADAR.md"
+)
+before_help_state="$(
+  for path in "${help_state_files[@]}"; do
+    [ -f "$path" ] && sha256sum "$path"
+  done
+)"
+help_probe_failed=0
+for path in "$repo"/.agent/scripts/devloop-*; do
+  [ -e "$path" ] || continue
+  if ! "$path" --help >/dev/null 2>&1; then
+    help_probe_failed=1
+    warn "devloop script --help failed: ${path#$repo/}"
+  fi
+done
+after_help_state="$(
+  for path in "${help_state_files[@]}"; do
+    [ -f "$path" ] && sha256sum "$path"
+  done
+)"
+if [ "$before_help_state" != "$after_help_state" ]; then
+  warn "devloop script --help mutated active state"
+elif [ "$help_probe_failed" -eq 0 ]; then
+  ok "devloop script --help paths are side-effect-free"
+fi
+
+allowed_agent_root_entries=(
+  DEVLOOP.md
+  README.md
+  archive
+  conductor-devloop
+  demos
+  includes
+  scratch
+  scripts
+  task-history
+  tools
+)
+unexpected_agent_root_entries="$(
+  find "$repo/.agent" -mindepth 1 -maxdepth 1 -printf '%f\n' \
+    | sort \
+    | comm -23 - <(printf '%s\n' "${allowed_agent_root_entries[@]}" | sort)
+)"
+if [ -n "$unexpected_agent_root_entries" ]; then
+  warn ".agent root contains noncanonical entries; move them to demos, scratch/research, archive, or tools"
+  printf '%s\n' "$unexpected_agent_root_entries"
+else
+  ok ".agent root entries match the conductor convention"
+fi
+
+if grep -Eq ':-TODO|:-TBD|:-FIXME' "$repo/.agent/scripts/devloop-meta"; then
+  warn "devloop-meta still has placeholder defaults; meta audits must require complete fields"
+else
+  ok "devloop-meta requires explicit audit fields"
+fi
+
+if grep -q 'stale focus transition' "$repo/.agent/scripts/devloop-focus"; then
+  ok "devloop-focus rejects stale active-mode transitions"
+else
+  warn "devloop-focus does not enforce active-mode continuity"
+fi
+
+meta_start_terms=("meta" "process" "scaffold" "devloop" "conductor" "convention")
+missing_meta_start_terms=()
+for term in "${meta_start_terms[@]}"; do
+  if ! grep -Eiq "$term" "$repo/.agent/scripts/devloop-start"; then
+    missing_meta_start_terms+=("$term")
+  fi
+done
+if [ "${#missing_meta_start_terms[@]}" -gt 0 ]; then
+  warn "devloop-start does not infer Meta for all convention/process titles"
+  printf '%s\n' "${missing_meta_start_terms[@]}"
+else
+  ok "devloop-start infers Meta for process/conductor/convention titles"
+fi
+
+script_name_diff="$(
+  {
+    find "$repo/.agent/scripts" -maxdepth 1 -type f -name 'devloop-*' -printf '%f\n' | sort
+    printf -- '---\n'
+    printf '%s\n' "${canonical_devloop_scripts[@]}" | sort
+  } | awk '
+    $0 == "---" {section = 1; next}
+    section == 0 {actual[$0] = 1; next}
+    {expected[$0] = 1}
+    END {
+      for (name in actual) {
+        if (!(name in expected)) print "extra " name
+      }
+      for (name in expected) {
+        if (!(name in actual)) print "missing " name
+      }
+    }
+  ' | sort
+)"
+if [ -n "$script_name_diff" ]; then
+  warn "devloop primitive names drifted from the canonical set"
+  printf '%s\n' "$script_name_diff"
+else
+  ok "devloop primitive names match canonical set"
+fi
+
+readme_missing_scripts=()
+for script in "${canonical_devloop_scripts[@]}"; do
+  if ! grep -Fq "$script" "$repo/.agent/README.md"; then
+    readme_missing_scripts+=("$script")
+  fi
+done
+if [ "${#readme_missing_scripts[@]}" -gt 0 ]; then
+  warn ".agent/README.md omits canonical devloop primitives"
+  printf '%s\n' "${readme_missing_scripts[@]}"
+else
+  ok ".agent/README.md lists canonical devloop primitives"
+fi
+
+state_files=(
+  "$current/ACTIVE-LOOP.md"
+  "$current/OPERATING-LOG.md"
+  "$current/EVENTS.jsonl"
+  "$current/DEMO-RADAR.md"
+)
+missing_state=0
+for path in "${state_files[@]}"; do
+  if [ ! -e "$path" ]; then
+    missing_state=1
+  fi
+done
+if [ "$missing_state" -eq 1 ]; then
+  warn "local devloop state is incomplete; initialize/resume with .agent/scripts/devloop-start"
+else
+  ok "local devloop state files present"
+fi
+
+if [ -f "$current/OPERATING-LOG.md" ]; then
+  latest="$(awk '/^## [0-9]{4}-[0-9]{2}-[0-9]{2} /{start=NR} {lines[NR]=$0} END{if(start){for(i=start;i<=NR;i++) print lines[i]}}' "$current/OPERATING-LOG.md")"
+  if printf '%s\n' "$latest" | grep -Eiq '\\b(TODO:|TBD:|FIXME:|\\?\\?\\?)'; then
+    warn "latest OPERATING-LOG entry contains unresolved TODO/TBD/FIXME markers"
+  elif printf '%s\n' "$latest" | grep -Eq '^(Primary aim|Evidence touched|Action taken|Artifact/proof|Velocity note|Next decision):[[:space:]]*$'; then
+    warn "latest OPERATING-LOG entry has empty required fields"
+  else
+    ok "latest OPERATING-LOG entry has no TODO/TBD/FIXME markers"
+  fi
+else
+  warn "OPERATING-LOG.md missing"
+fi
+
+if [ -f "$current/EVENTS.jsonl" ]; then
+  if python3 - "$current/EVENTS.jsonl" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    if not line.strip():
+        continue
+    record = json.loads(line)
+    if record.get("schema_version") != 1:
+        raise SystemExit(f"line {line_no}: unsupported schema_version")
+    if not record.get("occurred_at") or not record.get("title"):
+        raise SystemExit(f"line {line_no}: missing occurred_at/title")
+PY
+  then
+    ok "EVENTS.jsonl is valid"
+  else
+    warn "EVENTS.jsonl is invalid"
+  fi
+  if ! python3 - "$current/OPERATING-LOG.md" "$current/EVENTS.jsonl" <<'PY'
+from __future__ import annotations
+
+import json
+import re
+import sys
+from pathlib import Path
+
+log_path = Path(sys.argv[1])
+events_path = Path(sys.argv[2])
+heading_re = re.compile(r"^## \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z]+ [—-] (?P<title>.+)$")
+
+latest_title = ""
+latest_body_lines: list[str] = []
+in_latest = False
+for line in log_path.read_text(encoding="utf-8").splitlines():
+    match = heading_re.match(line)
+    if match is not None:
+        latest_title = match.group("title").strip()
+        latest_body_lines = []
+        in_latest = True
+        continue
+    if in_latest:
+        latest_body_lines.append(line)
+
+latest_body = "\n".join(latest_body_lines).strip()
+events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+if not latest_title or not events:
+    raise SystemExit("missing latest log title or events")
+event = events[-1]
+if event.get("title") != latest_title:
+    raise SystemExit("latest event title does not match operating log")
+if event.get("body") != latest_body:
+    raise SystemExit("latest event body does not match operating log")
+PY
+  then
+    warn "EVENTS.jsonl is stale relative to OPERATING-LOG.md; run .agent/scripts/devloop-sync"
+  else
+    ok "EVENTS.jsonl matches latest operating-log entry"
+  fi
+else
+  warn "EVENTS.jsonl missing"
+fi
+
+if [ -f "$current/DEMO-RADAR.md" ]; then
+  latest_demo="$(awk '/^## [0-9]{4}-[0-9]{2}-[0-9]{2}T/{start=NR} {lines[NR]=$0} END{if(start){for(i=start;i<=NR;i++) print lines[i]}}' "$current/DEMO-RADAR.md")"
+  if [ -z "$latest_demo" ]; then
+    warn "DEMO-RADAR.md exists but has no timestamped entries"
+  elif printf '%s\n' "$latest_demo" | grep -Eiq '\\b(TODO:|TBD:|FIXME:|\\?\\?\\?)'; then
+    warn "latest DEMO-RADAR entry contains unresolved TODO/TBD/FIXME markers"
+  else
+    ok "latest DEMO-RADAR entry has no TODO/TBD/FIXME markers"
+  fi
+else
+  warn "DEMO-RADAR.md missing"
+fi
+
+if [ -d "$packet" ]; then
+  ok "conductor packet is canonical at $packet"
+else
+  warn "missing conductor packet: $packet"
+fi
+
+if [ -d "$current/scripts" ]; then
+  warn "conductor packet contains duplicated script snapshots; run .agent/scripts/devloop-sync"
+else
+  ok "no duplicated script snapshots in conductor packet"
+fi
+
+expected_script_hashes="$(
+  find "$repo/.agent/scripts" -maxdepth 1 -type f \( -name 'devloop-*' -o -name 'lib-devloop' \) -print0 \
+    | sort -z \
+    | xargs -0 sha256sum \
+    | awk -v repo="$repo/" '{sub(repo, "", $2); print $2 "\t" $1}'
+)"
+script_hash_manifest="$current/devloop-script-hashes.tsv"
+if [ ! -f "$script_hash_manifest" ]; then
+  warn "missing devloop script hash manifest; run .agent/scripts/devloop-sync"
+elif [ "$expected_script_hashes" != "$(cat "$script_hash_manifest")" ]; then
+  warn "devloop script hash manifest is stale; run .agent/scripts/devloop-sync"
+else
+  ok "devloop script hash manifest is current"
+fi
+
+if [ -f "$current/agent.README.md" ] || [ -f "$current/scratch.README.md" ]; then
+  warn "conductor packet contains duplicated README snapshots; run .agent/scripts/devloop-sync"
+else
+  ok "no duplicated README snapshots in conductor packet"
+fi
+
+allowed_packet_files=(
+  ACTIVE-LOOP.md
+  ADVERSARIAL-REVIEW.md
+  DEMO-RADAR.md
+  EVENTS.jsonl
+  HANDOFF-LATEST.md
+  INDEX.md
+  INTEGRATION.md
+  MANIFEST.md
+  OPERATING-LOG.md
+  PROCESS.md
+  README.md
+  RUNBOOK.md
+  SELF-PROMPTS.md
+  TACTICS.md
+  VELOCITY.md
+  devloop-script-hashes.tsv
+)
+if [ -d "$current" ]; then
+  packet_bytes="$(du -sb "$current" 2>/dev/null | awk '{print $1}' || printf 0)"
+  packet_files="$(find "$current" -maxdepth 1 -type f 2>/dev/null | wc -l | tr -d ' ')"
+  log_bytes="$(wc -c < "$current/OPERATING-LOG.md" 2>/dev/null || printf 0)"
+  events_bytes="$(wc -c < "$current/EVENTS.jsonl" 2>/dev/null || printf 0)"
+  printf 'INFO: conductor packet size=%s bytes files=%s\n' "$packet_bytes" "$packet_files"
+  if [ "${packet_bytes:-0}" -gt 5242880 ]; then
+    warn "conductor packet exceeds 5 MiB; consolidate logs/artifacts or explain the current need"
+  fi
+  if [ "${log_bytes:-0}" -gt 262144 ]; then
+    warn "OPERATING-LOG.md exceeds the rolling active-window budget; run .agent/scripts/devloop-sync"
+  fi
+  if [ "${events_bytes:-0}" -gt 393216 ]; then
+    warn "EVENTS.jsonl exceeds the active generated-sidecar budget; run .agent/scripts/devloop-sync"
+  fi
+  if [ "${packet_files:-0}" -gt 32 ]; then
+    warn "conductor packet has more than 32 root files; move non-startup material to includes, demos, or scratch/research"
+  fi
+  unexpected="$(
+    find "$current" -maxdepth 1 -type f -printf '%f\n' \
+      | sort \
+      | comm -23 - <(printf '%s\n' "${allowed_packet_files[@]}" | sort)
+  )"
+  if [ -n "$unexpected" ]; then
+    warn "conductor packet has loose non-active files; move them to .agent/archive or .agent/scratch/research"
+    printf '%s\n' "$unexpected"
+  else
+    ok "conductor packet root contains only active/protocol/generated files"
+  fi
+  unexpected_dirs="$(
+    find "$current" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
+  )"
+  if [ -n "$unexpected_dirs" ]; then
+    warn "conductor packet contains subdirectories; active packet must not mirror scripts/demos/scratch"
+    printf '%s\n' "$unexpected_dirs"
+  else
+    ok "conductor packet has no subdirectory mirrors"
+  fi
+fi
+
+if [ -d "$repo/.agent/scratch/current" ]; then
+  warn ".agent/scratch/current exists; active loop state belongs in .agent/conductor-devloop"
+else
+  ok "no scratch/current active-state mirror"
+fi
+
+allowed_scratch_entries=(
+  README.md
+  research
+)
+unexpected_scratch_entries="$(
+  find "$repo/.agent/scratch" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null \
+    | sort \
+    | comm -23 - <(printf '%s\n' "${allowed_scratch_entries[@]}" | sort)
+)"
+if [ -n "$unexpected_scratch_entries" ]; then
+  warn ".agent/scratch contains non-research/support entries; move generated evidence to .agent/task-history, demos, or archive"
+  printf '%s\n' "$unexpected_scratch_entries"
+else
+  ok ".agent/scratch is limited to README plus supporting research"
+fi
+
+scratch_dump_files="$(
+  find "$repo/.agent/scratch" -type f \
+    \( -name '*.json' -o -name '*.jsonl' -o -name '*.csv' -o -name '*.log' -o -name '*.out' -o -name '*.txt' \) \
+    -printf '%P\n' 2>/dev/null \
+    | sort || true
+)"
+if [ -n "$scratch_dump_files" ]; then
+  warn ".agent/scratch contains generated-looking dump files; route dumps to .agent/task-history or a demo packet"
+  printf '%s\n' "$scratch_dump_files"
+else
+  ok ".agent/scratch has no generated-looking dump files"
+fi
+
+if [ -d "$repo/.agent/handoff" ]; then
+  warn ".agent/handoff exists; handoff state belongs in the conductor packet, not a mirror"
+else
+  ok "no handoff mirror"
+fi
+
+if [ -d "$repo/.agent/archive" ]; then
+  archive_bytes="$(du -sb "$repo/.agent/archive" 2>/dev/null | awk '{print $1}' || printf 0)"
+  printf 'INFO: ignored .agent/archive size=%s bytes\n' "$archive_bytes"
+  if [ "${archive_bytes:-0}" -gt 2097152 ]; then
+    warn ".agent/archive exceeds 2 MiB; compact, move bulky archaeology to /realm/inbox/p_arch, or document why it is still useful"
+  fi
+  archive_mirrors="$(
+    find "$repo/.agent/archive" -type f \
+      \( -name 'ACTIVE-LOOP.md' -o -name 'EVENTS.jsonl' -o -name 'HANDOFF-LATEST.md' -o -name 'README.md' -o -name 'RUNBOOK.md' \) \
+      -printf '%P\n' 2>/dev/null \
+      | grep -Ev '^conductor-history/[0-9]{4}-[0-9]{2}-[0-9]{2}/README[.]md$' \
+      | sort || true
+  )"
+  if [ -n "$archive_mirrors" ]; then
+    warn ".agent/archive contains files that look like startup/conductor mirrors"
+    printf '%s\n' "$archive_mirrors"
+  else
+    ok ".agent/archive has no startup/conductor mirror files"
+  fi
+else
+  ok "no ignored .agent/archive archaeology directory"
+fi
+
+if [ -d "$repo/.agent/task-history" ]; then
+  task_history_bytes="$(du -sb "$repo/.agent/task-history" 2>/dev/null | awk '{print $1}' || printf 0)"
+  printf 'INFO: ignored .agent/task-history size=%s bytes\n' "$task_history_bytes"
+  if [ "${task_history_bytes:-0}" -gt 5242880 ]; then
+    warn ".agent/task-history exceeds 5 MiB; rotate or compact the local devtools execution ledger"
+  fi
+else
+  ok "no ignored .agent/task-history ledger"
+fi
+
+if demo_check_output="$("$repo/.agent/scripts/devloop-refresh-demos" --check 2>&1)"; then
+  ok "$demo_check_output"
+else
+  warn "demo shelf indexes are stale; run .agent/scripts/devloop-refresh-demos"
+  printf '%s\n' "$demo_check_output"
+fi
+
+if [ -f "$current/ACTIVE-LOOP.md" ]; then
+  if grep -Eq '^Focus: (Direction|Evidence|Construction|Proof|Artifact|Velocity|Meta) -> (Direction|Evidence|Construction|Proof|Artifact|Velocity|Meta)$' "$current/ACTIVE-LOOP.md"; then
+    ok "ACTIVE-LOOP focus transition is valid"
+  else
+    warn "ACTIVE-LOOP.md lacks a valid Focus transition"
+  fi
+  if python3 - "$current/ACTIVE-LOOP.md" <<'PY'
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+marker = "## Accepted Warnings"
+start = text.find(marker)
+if start == -1:
+    raise SystemExit(1)
+next_start = text.find("\n## ", start + 1)
+if next_start == -1:
+    next_start = len(text)
+section = text[start + len(marker):next_start]
+lines = [line.strip() for line in section.splitlines() if line.strip()]
+historical_markers = (" committed as ", " is committed as ", "demo ", "slice is committed")
+if len(lines) > 8:
+    raise SystemExit(1)
+if any(any(marker in line for marker in historical_markers) for line in lines):
+    raise SystemExit(1)
+PY
+  then
+    ok "ACTIVE-LOOP accepted warnings are current-slice scoped"
+  else
+    warn "ACTIVE-LOOP accepted warnings look like historical ledger; keep history in OPERATING-LOG/DEMO-RADAR"
+  fi
+  if focus_audit_output="$(DEVLOOP_FOCUS_EDGES="$(devloop_focus_edges)" python3 - "$current/ACTIVE-LOOP.md" "$current/OPERATING-LOG.md" <<'PY'
+from __future__ import annotations
+
+import os
+import re
+import sys
+from pathlib import Path
+
+active_path = Path(sys.argv[1])
+log_path = Path(sys.argv[2])
+active = active_path.read_text(encoding="utf-8")
+
+slice_match = re.search(r"^## Current Slice\n\n(?P<slice>.+?)\n\n## ", active, re.M | re.S)
+current_slice = slice_match.group("slice").strip() if slice_match is not None else ""
+if not current_slice:
+    raise SystemExit("missing current slice in ACTIVE-LOOP.md")
+
+heading_re = re.compile(r"^## \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z]+ [—-] (?P<title>.+)$")
+entries: list[tuple[str, str]] = []
+title = ""
+body: list[str] = []
+for line in log_path.read_text(encoding="utf-8").splitlines():
+    match = heading_re.match(line)
+    if match is not None:
+        if title:
+            entries.append((title, "\n".join(body)))
+        title = match.group("title").strip()
+        body = []
+    elif title:
+        body.append(line)
+if title:
+    entries.append((title, "\n".join(body)))
+
+start_index = 0
+for index, (entry_title, _body) in enumerate(entries):
+    if entry_title == current_slice:
+        start_index = index
+
+window = entries[start_index:]
+focus_re = re.compile(r"^Focus: ([A-Za-z]+) -> ([A-Za-z]+)$", re.M)
+expected_edges = {
+    tuple(line.split(":", 1))
+    for line in os.environ.get("DEVLOOP_FOCUS_EDGES", "").splitlines()
+    if ":" in line
+}
+if not expected_edges:
+    raise SystemExit("missing DEVLOOP_FOCUS_EDGES")
+bad_edges: list[str] = []
+unattributed_proof_exits: list[str] = []
+focus_count = 0
+for entry_title, entry_body in window:
+    for match in focus_re.finditer(entry_body):
+        focus_count += 1
+        edge = (match.group(1), match.group(2))
+        if edge not in expected_edges:
+            bad_edges.append(f"{edge[0]}->{edge[1]} :: {entry_title}")
+        if edge[0] == "Proof" and edge[1] not in {"Artifact", "Velocity"}:
+            lowered = entry_body.lower()
+            if not any(
+                phrase in lowered
+                for phrase in (
+                    "no artifact",
+                    "no demo",
+                    "velocity closure",
+                    "direct proof exit",
+                    "skip artifact",
+                )
+            ):
+                unattributed_proof_exits.append(f"Proof->{edge[1]} :: {entry_title}")
+
+if bad_edges:
+    print("unexpected focus transitions in current slice:")
+    print("\n".join(bad_edges))
+    raise SystemExit(1)
+if unattributed_proof_exits:
+    print("direct Proof exits in current slice need attribution:")
+    print("\n".join(unattributed_proof_exits))
+    raise SystemExit(1)
+
+print(f"current-slice focus audit OK: slice={current_slice!r} transitions={focus_count}")
+PY
+  )"; then
+    ok "$focus_audit_output"
+  else
+    warn "$focus_audit_output"
+  fi
+  if global_focus_audit_output="$(DEVLOOP_FOCUS_EDGES="$(devloop_focus_edges)" python3 - "$current/OPERATING-LOG.md" <<'PY'
+from __future__ import annotations
+
+import os
+import re
+import sys
+from pathlib import Path
+
+log_path = Path(sys.argv[1])
+heading_re = re.compile(r"^## \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z]+ [—-] (?P<title>.+)$")
+entries: list[tuple[str, str]] = []
+title = ""
+body: list[str] = []
+for line in log_path.read_text(encoding="utf-8").splitlines():
+    match = heading_re.match(line)
+    if match is not None:
+        if title:
+            entries.append((title, "\n".join(body)))
+        title = match.group("title").strip()
+        body = []
+    elif title:
+        body.append(line)
+if title:
+    entries.append((title, "\n".join(body)))
+
+expected_edges = {
+    tuple(line.split(":", 1))
+    for line in os.environ.get("DEVLOOP_FOCUS_EDGES", "").splitlines()
+    if ":" in line
+}
+if not expected_edges:
+    raise SystemExit("missing DEVLOOP_FOCUS_EDGES")
+
+focus_re = re.compile(r"^Focus: ([A-Za-z]+) -> ([A-Za-z]+)$", re.M)
+bad_edges: list[str] = []
+attributed = 0
+for entry_title, entry_body in entries:
+    for match in focus_re.finditer(entry_body):
+        edge = (match.group(1), match.group(2))
+        if edge in expected_edges:
+            continue
+        lowered = entry_body.lower()
+        if "historical focus anomaly" in lowered or "intentional focus anomaly" in lowered:
+            attributed += 1
+            continue
+        bad_edges.append(f"{edge[0]}->{edge[1]} :: {entry_title}")
+
+if bad_edges:
+    print("unexpected historical focus transitions need attribution:")
+    print("\n".join(bad_edges))
+    raise SystemExit(1)
+
+print(f"historical focus edge audit OK: attributed_anomalies={attributed}")
+PY
+  )"; then
+    ok "$global_focus_audit_output"
+  else
+    warn "$global_focus_audit_output"
+  fi
+  if python3 - "$current/ACTIVE-LOOP.md" "$current/OPERATING-LOG.md" <<'PY'
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+
+def section(heading: str) -> str:
+    marker = f"## {heading}"
+    start = text.find(marker)
+    if start == -1:
+        return ""
+    next_start = text.find("\n## ", start + 1)
+    if next_start == -1:
+        next_start = len(text)
+    return text[start + len(marker):next_start].strip()
+
+slice_text = section("Current Slice").lower()
+focus_text = section("Current Focus")
+focus_line = next((line.strip() for line in focus_text.splitlines() if line.startswith("Focus: ")), "")
+meta_origin = section("Meta Origin").strip().lower()
+is_meta_slice = bool(
+    re.search(r"\b(meta|scaffold|devloop)\b", slice_text)
+    or re.search(r"\bprocess[- ]?(self|improvement|convention)\b", slice_text)
+    or "self-improvement" in slice_text
+)
+is_meta_focus = "Meta ->" in focus_line or "-> Meta" in focus_line
+has_recorded_meta_origin = meta_origin in {"yes", "true"}
+if is_meta_slice and not (is_meta_focus or has_recorded_meta_origin):
+    raise SystemExit(1)
+PY
+  then
+    ok "process/meta slice has explicit Meta origin when applicable"
+  else
+    warn "ACTIVE-LOOP slice looks like process/meta work but has no recorded Meta origin; use devloop-start --meta or devloop-focus ... Meta"
+  fi
+  if python3 - "$current/ACTIVE-LOOP.md" "$current/OPERATING-LOG.md" <<'PY'
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+log_text = Path(sys.argv[2]).read_text(encoding="utf-8") if Path(sys.argv[2]).exists() else ""
+
+def section(heading: str) -> str:
+    marker = f"## {heading}"
+    start = text.find(marker)
+    if start == -1:
+        return ""
+    next_start = text.find("\n## ", start + 1)
+    if next_start == -1:
+        next_start = len(text)
+    return text[start + len(marker):next_start].strip()
+
+slice_title = section("Current Slice")
+focus_text = section("Current Focus")
+focus_line = next((line.strip() for line in focus_text.splitlines() if line.startswith("Focus: ")), "")
+is_meta_focus = "Meta ->" in focus_line or "-> Meta" in focus_line
+if not is_meta_focus or not slice_title:
+    raise SystemExit(0)
+
+entry_re = re.compile(
+    r"^## \d{4}-\d{2}-\d{2} .* [—-] " + re.escape(slice_title) + r"$",
+    re.M,
+)
+entry_match = entry_re.search(log_text)
+if entry_match is None:
+    raise SystemExit(1)
+tail = log_text[entry_match.end() :]
+if re.search(r"^## \d{4}-\d{2}-\d{2} .* [—-] velocity-audit$", tail, re.M):
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+  then
+    ok "Meta-focused slice has a recorded velocity/focus audit"
+  else
+    warn "Meta-focused slice has no recorded velocity/focus audit; run .agent/scripts/devloop-velocity --record"
+  fi
+fi
+
+polylogued_pids="$(polylogued_process_rows)"
+polylogued_devloop_pids="$(polylogued_devloop_rows "$repo")"
+polylogued_non_devloop_pids="$(polylogued_non_devloop_rows "$repo")"
+if [ -z "$polylogued_pids" ]; then
+  warn "polylogued is not running; acceptable only between convergence restarts"
+else
+  count="$(printf '%s\n' "$polylogued_pids" | wc -l)"
+  devloop_count="$(printf '%s\n' "$polylogued_devloop_pids" | sed '/^$/d' | wc -l)"
+  if [ "$count" -eq 1 ] && [ "$devloop_count" -eq 1 ] && [ -z "$polylogued_non_devloop_pids" ]; then
+    ok "one devloop polylogued run process"
+  else
+    warn "polylogued process shape is not the expected single devloop daemon: total=$count devloop=$devloop_count"
+    printf '%s\n' "$polylogued_pids"
+    if [ -n "$polylogued_non_devloop_pids" ]; then
+      printf 'non-devloop polylogued rows:\n%s\n' "$polylogued_non_devloop_pids"
+    fi
+  fi
+  current_head="$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || true)"
+  if [ -n "$polylogued_devloop_pids" ] && [ -n "$current_head" ]; then
+    if python3 - "$polylogued_devloop_pids" "$current_head" <<'PY'
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+rows, current_head = sys.argv[1:]
+bad: list[str] = []
+for line in rows.splitlines():
+    parts = line.split(None, 5)
+    args = parts[5] if len(parts) >= 6 else line
+    tokens = args.split()
+    spool = None
+    for index, token in enumerate(tokens):
+        if token == "--spool" and index + 1 < len(tokens):
+            spool = Path(tokens[index + 1])
+            break
+    if spool is None:
+        bad.append(f"missing --spool :: {line}")
+        continue
+    run_dir = spool.parent
+    if current_head not in run_dir.name:
+        bad.append(f"stale run_dir={run_dir} current_head={current_head}")
+if bad:
+    print("\n".join(bad))
+    raise SystemExit(1)
+PY
+    then
+      ok "devloop daemon run directory matches current HEAD"
+    else
+      warn "devloop daemon run directory is stale; relaunch with devtools workspace dev-loop --launch-daemon"
+    fi
+  fi
+fi
+
+prod_active_state="$(
+  systemctl --user show polylogued.service -p ActiveState --value 2>/dev/null || true
+)"
+prod_sub_state="$(
+  systemctl --user show polylogued.service -p SubState --value 2>/dev/null || true
+)"
+prod_active_state="${prod_active_state:-unknown}"
+prod_sub_state="${prod_sub_state:-unknown}"
+if [ "$prod_active_state" = "inactive" ] && { [ "$prod_sub_state" = "dead" ] || [ "$prod_sub_state" = "unknown" ]; }; then
+  ok "prod polylogued.service inactive"
+elif [ "$prod_active_state" = "unknown" ]; then
+  ok "prod polylogued.service unavailable/inactive"
+else
+  warn "prod polylogued.service state is $prod_active_state/$prod_sub_state; devloop expects inactive/dead"
+fi
+
+status_json="$("$repo/.agent/scripts/devloop-status" --json 2>/dev/null || true)"
+
+if [ -f "$archive_root/index.db" ]; then
+  version="$(sqlite3 "$archive_root/index.db" 'PRAGMA user_version;' 2>/dev/null || true)"
+  sessions="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM sessions;' 2>/dev/null || true)"
+  messages="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM messages;' 2>/dev/null || true)"
+  if [ "$version" = "$expected_index_version" ]; then
+    ok "active archive root $archive_root schema v$version sessions=${sessions:-?} messages=${messages:-?}"
+  else
+    warn "active archive root $archive_root schema v${version:-unknown}, expected v$expected_index_version"
+  fi
+else
+  warn "active archive root has no index.db: $archive_root"
+fi
+
+if [ -n "$status_json" ]; then
+  mapfile -t raw_materialization_fields < <(
+    python3 - "$status_json" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+
+data = json.loads(sys.argv[1])
+convergence = data.get("convergence") or {}
+join_gaps = convergence.get("raw_materialization_join_gaps")
+debt = convergence.get("raw_materialization_debt")
+replayable = convergence.get("raw_materialization_replayable")
+readiness = convergence.get("raw_materialization_readiness") or {}
+component = convergence.get("raw_materialization_component") or {}
+categories = readiness.get("category_counts") or {}
+category_text = ",".join(f"{name}={count}" for name, count in sorted(categories.items()))
+payload = {
+    "join_gaps": "unknown" if join_gaps is None else str(join_gaps),
+    "debt": "unknown" if debt is None else str(debt),
+    "replayable": "unknown" if replayable is None else str(replayable),
+    "affected_total": "unknown" if readiness.get("affected_total") is None else str(readiness.get("affected_total")),
+    "affected_actionable": (
+        "unknown" if readiness.get("affected_actionable") is None else str(readiness.get("affected_actionable"))
+    ),
+    "affected_open": "unknown" if readiness.get("affected_open") is None else str(readiness.get("affected_open")),
+    "state": component.get("state") or "unknown",
+    "categories": category_text,
+}
+for key in (
+    "join_gaps",
+    "debt",
+    "replayable",
+    "affected_total",
+    "affected_actionable",
+    "affected_open",
+    "state",
+    "categories",
+):
+    print(payload[key])
+PY
+  )
+  raw_materialization_join_gaps="${raw_materialization_fields[0]:-unknown}"
+  raw_materialization_debt="${raw_materialization_fields[1]:-unknown}"
+  raw_materialization_replayable="${raw_materialization_fields[2]:-unknown}"
+  raw_affected_total="${raw_materialization_fields[3]:-unknown}"
+  raw_affected_actionable="${raw_materialization_fields[4]:-unknown}"
+  raw_affected_open="${raw_materialization_fields[5]:-unknown}"
+  raw_state="${raw_materialization_fields[6]:-unknown}"
+  raw_category_text="${raw_materialization_fields[7]:-}"
+  if [ "$raw_materialization_debt" = "0" ] && [ "$raw_materialization_replayable" = "0" ]; then
+    ok "raw materialization debt is zero according to devloop-status; join_gaps=$raw_materialization_join_gaps"
+  else
+    printf 'INFO: raw materialization join_gaps=%s debt=%s replayable_acquired_unparsed=%s affected=%s actionable=%s open=%s state=%s from devloop-status; do not claim full archive convergence without repair/classification\n' \
+      "$raw_materialization_join_gaps" "$raw_materialization_debt" "$raw_materialization_replayable" \
+      "$raw_affected_total" "$raw_affected_actionable" \
+      "$raw_affected_open" "$raw_state"
+    if [ -n "${raw_category_text:-}" ]; then
+      printf 'INFO: raw materialization categories=%s\n' "$raw_category_text"
+    fi
+  fi
+  quick_status="$("$repo/.agent/scripts/devloop-status" --quick 2>/dev/null || true)"
+  if python3 - "$raw_materialization_join_gaps" "$raw_materialization_replayable" "$quick_status" <<'PY'
+from __future__ import annotations
+
+import re
+import sys
+
+expected_join_gaps, expected_replayable, quick_status = sys.argv[1:]
+match = re.search(
+    r"^convergence: raw_materialization_join_gaps=(?P<join_gaps>\S+) "
+    r"replayable_acquired_unparsed=(?P<replayable>\S+)$",
+    quick_status,
+    re.M,
+)
+if match is None:
+    raise SystemExit(1)
+if match.group("join_gaps") != expected_join_gaps or match.group("replayable") != expected_replayable:
+    raise SystemExit(1)
+PY
+  then
+    ok "devloop-status --quick raw join-gap count matches JSON status"
+  else
+    warn "devloop-status --quick raw join-gap count disagrees with JSON status"
+  fi
+else
+  warn "devloop-status --json failed before raw materialization review"
+fi
+
+if [ -e /realm/tmp/polylogue-dev/archive/index.db ]; then
+  warn "/realm/tmp/polylogue-dev/archive/index.db exists; archive roots are split again"
+else
+  ok "no second dev archive at /realm/tmp/polylogue-dev/archive"
+fi
+
+if [ -z "$status_json" ]; then
+  warn "devloop-status --json failed"
+else
+  ok "devloop-status --json works"
+  if [ -f "$current/ACTIVE-LOOP.md" ]; then
+    if python3 - "$status_json" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+
+data = json.loads(sys.argv[1])
+active_loop = data.get("active_loop") or {}
+if not active_loop.get("current_slice"):
+    raise SystemExit(1)
+if not active_loop.get("focus"):
+    raise SystemExit(1)
+if not active_loop.get("next_action"):
+    raise SystemExit(1)
+if data.get("next_action") != active_loop.get("next_action"):
+    raise SystemExit(1)
+PY
+    then
+      ok "devloop-status reports active slice, focus, and next action"
+    else
+      warn "devloop-status --json omits active loop resume fields"
+    fi
+  fi
+fi
+
+worktree_gc_json="$(POLYLOGUE_TASK_HISTORY_DISABLE=1 devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"
+if python3 - "$worktree_gc_json" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+
+try:
+    data = json.loads(sys.argv[1])
+except json.JSONDecodeError:
+    raise SystemExit(2)
+safe = int(data.get("safe_count") or 0)
+blocked = int(data.get("blocked_count") or 0)
+if safe:
+    raise SystemExit(1)
+if blocked:
+    print(f"INFO: blocked worktrees={blocked}; inspect with devtools workspace worktree-gc --json before deleting")
+raise SystemExit(0)
+PY
+then
+  ok "no safe removable worktrees"
+else
+  case "$?" in
+    1)
+      warn "safe removable worktrees exist; run devtools workspace worktree-gc and apply only after reviewing candidates"
+      ;;
+    *)
+      warn "worktree-gc JSON probe failed"
+      ;;
+  esac
+fi
+
+heavy="$(pgrep -af 'devtools verify|devtools test|pytest|polylogue import|polylogued run|nix build|nix develop --command' || true)"
+if [ -n "$heavy" ]; then
+  printf 'INFO: active heavy-ish processes:\n%s\n' "$heavy"
+else
+  ok "no heavy test/import/build processes detected"
+fi
+
+exit "$status"

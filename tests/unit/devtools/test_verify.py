@@ -374,6 +374,39 @@ def test_resource_sampler_records_process_tree_sample(tmp_path: Path) -> None:
     assert summary["peak_tree_rss_kb"] == sample["tree_rss_kb"]
 
 
+def test_resource_sampler_throttles_basetemp_size_walk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "resources.jsonl"
+    env = {
+        "POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path),
+        "POLYLOGUE_VERIFY_BASETEMP_SIZE_INTERVAL_S": "60",
+    }
+    basetemp = pytest_basetemp_path(root=tmp_path, run_id="test-run", env=env)
+    basetemp.mkdir(parents=True)
+    (basetemp / "artifact.txt").write_text("payload")
+    calls = 0
+
+    def counted_size(_path: Path) -> int:
+        nonlocal calls
+        calls += 1
+        return calls
+
+    monkeypatch.setattr("devtools.verify_runs._dir_size_kb", counted_size)
+    sampler = ResourceSampler(
+        root_pid=os.getpid(),
+        run_id="test-run",
+        root=tmp_path,
+        env=env,
+        output_path=path,
+    )
+
+    first = sampler.sample(event="sample")
+    second = sampler.sample(event="sample")
+
+    assert first["basetemp_size_kb"] == 1
+    assert second["basetemp_size_kb"] == 1
+    assert calls == 1
+
+
 def test_pytest_basetemp_path_tracks_tmpfs_opt_in(tmp_path: Path) -> None:
     path = pytest_basetemp_path(root=tmp_path, run_id="run-1", env={"POLYLOGUE_PYTEST_TMPFS": "1"})
 

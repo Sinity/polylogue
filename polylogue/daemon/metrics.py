@@ -681,39 +681,33 @@ def _embedding_state(conn: sqlite3.Connection, *, ops_db: Path | None = None) ->
 
 
 def _archive_embedding_state(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> EmbeddingMetricState:
+    from polylogue.storage.embeddings.materialization import count_archive_embedding_session_state
+
     total_sessions = _scalar_int(conn, "SELECT COUNT(*) FROM sessions")
     embedded_sessions = 0
-    pending_sessions = total_sessions
+    pending_sessions = 0
     failed_sessions = 0
     if _table_exists(conn, "embedding_status"):
-        embedded_sessions = _scalar_int(
-            conn,
-            """
-            SELECT COUNT(*)
-            FROM sessions s
-            JOIN embedding_status e ON e.session_id = s.session_id
-            WHERE e.needs_reindex = 0
-              AND e.message_count_embedded >= s.message_count
-            """,
-        )
-        pending_sessions = _scalar_int(
-            conn,
-            """
-            SELECT COUNT(*)
-            FROM sessions s
-            LEFT JOIN embedding_status e ON e.session_id = s.session_id
-            WHERE e.session_id IS NULL OR e.needs_reindex = 1 OR e.message_count_embedded < s.message_count
-            """,
-        )
+        session_state = count_archive_embedding_session_state(conn, status_table="embedding_status", rebuild=False)
+        embedded_sessions = session_state.embedded_sessions
+        pending_sessions = session_state.pending_sessions
         failed_sessions = _scalar_int(
             conn,
             "SELECT COUNT(*) FROM embedding_status WHERE error_message IS NOT NULL",
         )
+    elif _table_exists(conn, "messages"):
+        session_state = count_archive_embedding_session_state(conn, status_table="", rebuild=False)
+        pending_sessions = session_state.pending_sessions
 
     embedded_messages = _embedding_message_count(conn)
-    coverage_percent = max(0, total_sessions - pending_sessions) / total_sessions * 100 if total_sessions > 0 else 0.0
+    eligible_sessions = embedded_sessions + pending_sessions
+    coverage_percent = (
+        embedded_sessions / eligible_sessions * 100 if eligible_sessions > 0 else (100.0 if total_sessions > 0 else 0.0)
+    )
     if total_sessions <= 0 and pending_sessions <= 0 and embedded_messages <= 0:
         status = "empty"
+    elif pending_sessions <= 0:
+        status = "complete"
     elif embedded_messages <= 0:
         status = "none"
     elif pending_sessions > 0:

@@ -51,7 +51,7 @@ def test_status_snapshot_serves_cached_payload_without_rebuilding_status(monkeyp
     assert snapshot["state"] == "fresh"
 
 
-def test_status_snapshot_refresh_default_stays_request_safe(
+def test_status_snapshot_minimal_refresh_stays_request_safe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -60,10 +60,10 @@ def test_status_snapshot_refresh_default_stays_request_safe(
     monkeypatch.setattr("polylogue.daemon.status_snapshot.active_index_db_path", lambda: db)
     monkeypatch.setattr(
         "polylogue.daemon.status.daemon_status_payload",
-        lambda: (_ for _ in ()).throw(AssertionError("periodic snapshot must not build rich status")),
+        lambda: (_ for _ in ()).throw(AssertionError("minimal snapshot must not build rich status")),
     )
 
-    snapshot = refresh_status_snapshot()
+    snapshot = refresh_status_snapshot(rich=False)
 
     status_snapshot = snapshot.payload["status_snapshot"]
     assert isinstance(status_snapshot, dict)
@@ -71,7 +71,7 @@ def test_status_snapshot_refresh_default_stays_request_safe(
     assert snapshot.payload["db_path"] == str(db)
 
 
-def test_status_snapshot_refresh_default_prefers_archive(
+def test_status_snapshot_minimal_refresh_prefers_archive(
     workspace_env: dict[str, Path],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -86,10 +86,10 @@ def test_status_snapshot_refresh_default_prefers_archive(
     archive_db.touch()
     monkeypatch.setattr(
         "polylogue.daemon.status.daemon_status_payload",
-        lambda: (_ for _ in ()).throw(AssertionError("periodic snapshot must not build rich status")),
+        lambda: (_ for _ in ()).throw(AssertionError("minimal snapshot must not build rich status")),
     )
 
-    snapshot = refresh_status_snapshot()
+    snapshot = refresh_status_snapshot(rich=False)
 
     assert snapshot.payload["db_path"] == str(archive_db)
 
@@ -111,7 +111,7 @@ def test_status_snapshot_uses_runtime_browser_capture_state(
         browser_capture_spool_path=spool,
     )
 
-    snapshot = refresh_status_snapshot()
+    snapshot = refresh_status_snapshot(rich=False)
 
     assert snapshot.payload["browser_capture_active"] is True
     assert snapshot.payload["watcher_roots"] == ["/watch/a", "/watch/b"]
@@ -135,7 +135,7 @@ def test_status_snapshot_reports_disk_free_for_archive_parent(
     db = tmp_path / "missing-archive" / "index.db"
     monkeypatch.setattr("polylogue.daemon.status_snapshot.active_index_db_path", lambda: db)
 
-    snapshot = refresh_status_snapshot()
+    snapshot = refresh_status_snapshot(rich=False)
 
     assert cast(int, snapshot.payload["disk_free_bytes"]) > 0
 
@@ -154,7 +154,7 @@ def test_status_snapshot_marks_disabled_browser_capture_inactive(
         browser_capture_enabled=False,
     )
 
-    snapshot = refresh_status_snapshot()
+    snapshot = refresh_status_snapshot(rich=False)
 
     assert snapshot.payload["browser_capture_active"] is False
     component_state = snapshot.payload["component_state"]
@@ -168,6 +168,35 @@ def test_status_snapshot_marks_disabled_browser_capture_inactive(
     browser_readiness = readiness["browser_capture"]
     assert isinstance(browser_readiness, dict)
     assert browser_readiness["state"] == "missing"
+
+
+def test_status_snapshot_refresh_default_builds_rich_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload: JSONDocument = {
+        "ok": True,
+        "daemon_liveness": True,
+        "checked_at": "rich",
+        "raw_materialization_readiness": {"total": 2},
+        "component_readiness": {
+            "raw_materialization": {
+                "component": "raw_materialization",
+                "scope": "archive",
+                "state": "stale",
+                "summary": "raw evidence pending materialization",
+                "counts": {"total": 2},
+                "caveats": [],
+                "repair_hint": "polylogue ops debt list --kind raw-materialization",
+                "evidence_refs": [],
+            }
+        },
+    }
+    build = Mock(return_value=payload)
+    monkeypatch.setattr("polylogue.daemon.status.daemon_status_payload", build)
+
+    snapshot = refresh_status_snapshot()
+
+    assert build.call_count == 1
+    assert snapshot.payload["checked_at"] == "rich"
+    assert snapshot.payload["raw_materialization_readiness"] == {"total": 2}
 
 
 def test_build_daemon_status_reports_failed_live_cursor_files(tmp_path: Path) -> None:
@@ -350,15 +379,18 @@ def test_daemon_status_marks_raw_materialization_debt_not_ready(
             ArchiveDebtRowPayload(
                 debt_ref="debt:raw-materialization:aistudio-drive:parsed-without-session",
                 kind="raw-materialization",
+                category="parsed-without-session",
                 stage="parse",
                 subject_ref="raw-origin:aistudio-drive",
                 severity="warning",
                 status="actionable",
                 owner="daemon",
                 summary="238 aistudio-drive raw artifact(s) parsed but have no materialized session",
+                affected_count=238,
+                source_family="aistudio-drive",
             ),
         ),
-        totals=ArchiveDebtTotalsPayload(total=1, warning=1, actionable=1),
+        totals=ArchiveDebtTotalsPayload(total=1, warning=1, actionable=1, affected_total=238, affected_actionable=238),
     )
 
     monkeypatch.setattr("polylogue.daemon.status.archive_root", lambda: tmp_path)
@@ -375,6 +407,11 @@ def test_daemon_status_marks_raw_materialization_debt_not_ready(
     materialization = cast(dict[str, object], status_payload["raw_materialization_readiness"])
     assert materialization["total"] == 1
     assert materialization["warning"] == 1
+    assert materialization["affected_total"] == 238
+    assert materialization["affected_actionable"] == 238
+    assert materialization["affected_open"] == 0
+    assert materialization["category_counts"] == {"parsed-without-session": 238}
+    assert materialization["source_family_counts"] == {"aistudio-drive": 238}
 
     readiness = cast(dict[str, object], status_payload["component_readiness"])
     raw_component = cast(dict[str, object], readiness["raw_materialization"])
@@ -383,6 +420,9 @@ def test_daemon_status_marks_raw_materialization_debt_not_ready(
     assert raw_component["repair_hint"] == "polylogue ops debt list --kind raw-materialization"
     counts = cast(dict[str, object], raw_component["counts"])
     assert counts["total"] == 1
+    assert counts["affected_total"] == 238
+    metadata = cast(dict[str, object], raw_component["metadata"])
+    assert metadata["category_counts"] == {"parsed-without-session": 238}
 
     lines = format_daemon_status_lines(status_payload)
     assert "Raw materialization: 1 debt row(s), 0 critical, 1 warning, 0 blocked" in lines
@@ -853,7 +893,26 @@ def test_daemon_status_payload_reuses_bounded_probe_results(tmp_path: Path) -> N
         }
     )
     blob_info = Mock(return_value=0)
-    fts_info = Mock(return_value={"messages_ready": True})
+    fts_info = Mock(
+        return_value={
+            "indexed_surface": "messages_fts",
+            "messages_ready": True,
+            "session_work_events_ready": True,
+            "threads_ready": True,
+            "invariant_ready": True,
+            "message_indexed_count": 4,
+            "message_indexable_count": 4,
+            "coverage_pct": 100.0,
+            "surfaces": {
+                "messages_fts": {
+                    "ready": True,
+                    "source_rows": 4,
+                    "indexed_rows": 4,
+                    "missing_rows": 0,
+                }
+            },
+        }
+    )
     freshness_info = Mock(return_value={"sessions_with_profiles": 3, "total_sessions": 4})
 
     with (
@@ -874,6 +933,17 @@ def test_daemon_status_payload_reuses_bounded_probe_results(tmp_path: Path) -> N
     fts_readiness = payload["fts_readiness"]
     assert isinstance(fts_readiness, dict)
     assert fts_readiness["messages_ready"] is True
+    assert fts_readiness["session_work_events_ready"] is True
+    assert fts_readiness["threads_ready"] is True
+    assert fts_readiness["invariant_ready"] is True
+    assert fts_readiness["message_indexed_count"] == 4
+    assert fts_readiness["message_indexable_count"] == 4
+    assert fts_readiness["coverage_pct"] == 100.0
+    surfaces = fts_readiness["surfaces"]
+    assert isinstance(surfaces, dict)
+    messages_surface = surfaces["messages_fts"]
+    assert isinstance(messages_surface, dict)
+    assert messages_surface["ready"] is True
     assert db_info.call_count == 1
     assert blob_info.call_count == 1
     assert fts_info.call_count == 1

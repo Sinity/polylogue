@@ -299,7 +299,7 @@ def test_root_query_explain_json_outputs_terminal_pipeline_stages(cli_runner: Cl
     assert lowering_plan["pipeline_stages"] == expected_stages
 
 
-def test_query_action_read_explain_json_outputs_terminal_action(cli_runner: CliRunner) -> None:
+def test_query_action_read_explain_json_outputs_terminal_stage(cli_runner: CliRunner) -> None:
     result = cli_runner.invoke(
         click_cli,
         [
@@ -320,18 +320,26 @@ def test_query_action_read_explain_json_outputs_terminal_action(cli_runner: CliR
 
     assert result.exit_code == 0, result.output
     payload = cast(dict[str, Any], json.loads(result.output))
-    terminal_action = cast(dict[str, Any], payload["terminal_action"])
-    assert terminal_action == {
-        "action": "read",
-        "all": False,
-        "destination": "terminal",
-        "first": False,
-        "format": "default",
-        "view": "messages",
-    }
+    assert "terminal_action" not in payload
     lowering_plan = cast(dict[str, Any], payload["lowering_plan"])
-    assert lowering_plan["terminal_action"] == terminal_action
-    assert payload["plan_description"][-1] == "terminal action: read"
+    assert "terminal_action" not in lowering_plan
+    pipeline = cast(dict[str, Any], payload["pipeline"])
+    assert pipeline["source"]["unit"] == "sessions"
+    assert pipeline["stages"] == [
+        {
+            "kind": "terminal",
+            "action": "read",
+            "args": {
+                "all": False,
+                "destination": "terminal",
+                "first": False,
+                "format": "default",
+                "view": "messages",
+            },
+        }
+    ]
+    assert lowering_plan["pipeline"] == pipeline
+    assert payload["plan_description"][-1] == "terminal stage: read"
 
 
 def test_query_action_read_explain_uses_default_read_format(cli_runner: CliRunner) -> None:
@@ -353,7 +361,9 @@ def test_query_action_read_explain_uses_default_read_format(cli_runner: CliRunne
 
     assert result.exit_code == 0, result.output
     payload = cast(dict[str, Any], json.loads(result.output))
-    assert cast(dict[str, Any], payload["terminal_action"])["format"] == "default"
+    pipeline = cast(dict[str, Any], payload["pipeline"])
+    stage = cast(dict[str, Any], pipeline["stages"][-1])
+    assert cast(dict[str, Any], stage["args"])["format"] == "default"
 
 
 def test_query_action_read_explain_uses_local_read_format(cli_runner: CliRunner) -> None:
@@ -377,7 +387,9 @@ def test_query_action_read_explain_uses_local_read_format(cli_runner: CliRunner)
 
     assert result.exit_code == 0, result.output
     payload = cast(dict[str, Any], json.loads(result.output))
-    assert cast(dict[str, Any], payload["terminal_action"])["format"] == "json"
+    pipeline = cast(dict[str, Any], payload["pipeline"])
+    stage = cast(dict[str, Any], pipeline["stages"][-1])
+    assert cast(dict[str, Any], stage["args"])["format"] == "json"
 
 
 @pytest.mark.parametrize(
@@ -428,7 +440,7 @@ def test_query_action_read_explain_uses_local_read_format(cli_runner: CliRunner)
         ),
     ],
 )
-def test_query_action_explain_json_outputs_terminal_action_floor(
+def test_query_action_explain_json_outputs_terminal_stage_floor(
     cli_runner: CliRunner,
     action_args: list[str],
     expected: dict[str, object],
@@ -449,9 +461,15 @@ def test_query_action_explain_json_outputs_terminal_action_floor(
 
     assert result.exit_code == 0, result.output
     payload = cast(dict[str, Any], json.loads(result.output))
-    assert payload["terminal_action"] == expected
-    assert cast(dict[str, Any], payload["lowering_plan"])["terminal_action"] == expected
-    assert payload["plan_description"][-1] == f"terminal action: {expected['action']}"
+    assert "terminal_action" not in payload
+    lowering_plan = cast(dict[str, Any], payload["lowering_plan"])
+    assert "terminal_action" not in lowering_plan
+    pipeline = cast(dict[str, Any], payload["pipeline"])
+    stage = cast(dict[str, Any], pipeline["stages"][-1])
+    assert stage["action"] == expected["action"]
+    assert stage["args"] == {key: value for key, value in expected.items() if key != "action"}
+    assert lowering_plan["pipeline"] == pipeline
+    assert payload["plan_description"][-1] == f"terminal stage: {expected['action']}"
 
 
 def test_root_query_explain_json_marks_sql_unit_payload(cli_runner: CliRunner) -> None:
@@ -521,6 +539,10 @@ def test_read_views_plain_lists_profile_metadata(cli_runner: CliRunner) -> None:
     assert "options=--limit, --offset" in result.output
     assert "options=--confidence-threshold, --github-api, --otlp, --repo-path, --since-hours" in result.output
     assert "scope=query-set" in result.output
+    assert (
+        "projection=context,messages; body=authored-dialogue; render=standard; timestamps=include-available"
+        in result.output
+    )
 
 
 def test_read_help_groups_options_by_ownership(cli_runner: CliRunner) -> None:
@@ -536,6 +558,10 @@ def test_read_help_groups_options_by_ownership(cli_runner: CliRunner) -> None:
     assert "Correlation view:" in result.output
     assert "Other options:" in result.output
     assert "--views" in result.output
+    assert "--render" in result.output
+    assert "--projection" in result.output
+    assert "--render-layout" in result.output
+    assert "--timestamps" in result.output
     assert "--max-tokens" in result.output
     assert "--repo-path" in result.output
 
@@ -552,7 +578,20 @@ def test_read_views_json_outputs_profile_payload(cli_runner: CliRunner) -> None:
     assert views["context-image"]["successor_handoff"] is True
     assert views["raw"]["cli_options"] == ["limit", "offset"]
     assert views["raw"]["session_policy"] == "required"
+    assert views["dialogue"]["accepts_query_set"] is True
     assert views["chronicle"]["accepts_query_set"] is True
+    assert views["context-image"]["projection_contract"] == {
+        "families": ["context", "messages"],
+        "body_policy": "authored-dialogue",
+        "render_layout": "standard",
+        "timestamp_policy": "include-available",
+    }
+    assert views["raw"]["projection_contract"] == {
+        "families": ["raw"],
+        "body_policy": "full",
+        "render_layout": "standard",
+        "timestamp_policy": "renderer-default",
+    }
 
 
 def test_read_verb_raw_view_forwards_options(cli_runner: CliRunner) -> None:

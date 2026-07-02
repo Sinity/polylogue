@@ -12,6 +12,7 @@ from polylogue.surfaces.projection_spec import (
     RenderDestination,
     RenderFormat,
     RenderSpec,
+    RenderTimestampPolicy,
     projection_from_view,
     projection_from_views,
 )
@@ -35,6 +36,7 @@ def test_messages_view_maps_to_message_block_projection() -> None:
     assert spec.render.format is RenderFormat.JSON
     assert spec.render.destination is RenderDestination.STDOUT
     assert spec.render.layout == "compact"
+    assert spec.render.timestamps is RenderTimestampPolicy.RENDERER_DEFAULT
 
 
 def test_chronicle_view_maps_to_authored_dialogue_projection() -> None:
@@ -47,6 +49,7 @@ def test_chronicle_view_maps_to_authored_dialogue_projection() -> None:
     )
     assert spec.projection.body_policy is BodyPolicy.AUTHORED_DIALOGUE
     assert spec.projection.edge_limit == 3
+    assert spec.render.timestamps is RenderTimestampPolicy.INCLUDE_AVAILABLE
     assert {"tool_use", "tool_result", "function_call", "function_call_output"} <= set(
         spec.projection.exclude_block_kinds
     )
@@ -58,6 +61,34 @@ def test_neighbors_view_maps_to_neighbor_projection_policy() -> None:
     assert spec.projection.families == (EvidenceFamily.NEIGHBORS, EvidenceFamily.SESSIONS)
     assert spec.projection.neighbor_limit == 4
     assert spec.projection.neighbor_window_hours == 12
+
+
+def test_context_image_view_maps_to_authored_dialogue_projection() -> None:
+    spec = projection_from_views(("context-image",), max_tokens=1200, redact_paths=False)
+
+    assert spec.projection.families == (
+        EvidenceFamily.CONTEXT,
+        EvidenceFamily.MESSAGES,
+    )
+    assert spec.projection.body_policy is BodyPolicy.AUTHORED_DIALOGUE
+    assert spec.projection.max_tokens == 1200
+    assert spec.projection.redact_paths is False
+    assert spec.projection.include_assertions is False
+    assert spec.render.timestamps is RenderTimestampPolicy.INCLUDE_AVAILABLE
+    assert {"tool_use", "tool_result", "function_call", "function_call_output"} <= set(
+        spec.projection.exclude_block_kinds
+    )
+
+
+def test_context_image_projection_records_assertion_inclusion() -> None:
+    spec = projection_from_views(("context-image",), include_assertions=True)
+
+    assert spec.projection.families == (
+        EvidenceFamily.CONTEXT,
+        EvidenceFamily.MESSAGES,
+        EvidenceFamily.ASSERTIONS,
+    )
+    assert spec.projection.include_assertions is True
 
 
 def test_multi_view_projection_dedupes_families_and_preserves_body_policy() -> None:
@@ -84,6 +115,7 @@ def test_multi_view_projection_dedupes_families_and_preserves_body_policy() -> N
     assert spec.projection.max_tokens == 2000
     assert spec.render.format is RenderFormat.JSON
     assert spec.render.destination is RenderDestination.STDOUT
+    assert spec.render.timestamps is RenderTimestampPolicy.INCLUDE_AVAILABLE
 
 
 def test_tool_output_omission_is_projection_policy_not_cli_flag() -> None:

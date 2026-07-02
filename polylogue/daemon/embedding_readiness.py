@@ -7,6 +7,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import polylogue.config as polylogue_config
+from polylogue.storage.embeddings.materialization import (
+    archive_embeddable_message_where,
+    archive_messages_table_ref,
+    count_archive_embedding_session_state,
+)
 from polylogue.storage.embeddings.status_payload import embedding_status_payload
 from polylogue.storage.search_providers.sqlite_vec_support import (
     ESTIMATED_TOKENS_PER_MESSAGE,
@@ -154,6 +159,23 @@ def _embedding_status(
     return "complete"
 
 
+def _attached_table_exists(conn: sqlite3.Connection, schema_name: str, table_name: str) -> bool:
+    quoted_schema = '"' + schema_name.replace('"', '""') + '"'
+    return (
+        conn.execute(
+            f"SELECT 1 FROM {quoted_schema}.sqlite_master WHERE type IN ('table', 'view') AND name = ? LIMIT 1",
+            (table_name,),
+        ).fetchone()
+        is not None
+    )
+
+
+def _attached_table_name(conn: sqlite3.Connection, schema_name: str, table_name: str) -> str:
+    if _attached_table_exists(conn, schema_name, table_name):
+        return f"{schema_name}.{table_name}"
+    return ""
+
+
 def _estimated_cost(message_count: int) -> float:
     estimated_tokens = message_count * ESTIMATED_TOKENS_PER_MESSAGE
     return round(estimated_tokens * VOYAGE_4_COST_PER_1M_TOKENS / 1_000_000, 2)
@@ -177,35 +199,29 @@ def _archive_embedding_readiness_info(
             embeddings_db = index_db.with_name("embeddings.db")
             if embeddings_db.exists():
                 conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
-                status_table = "embeddings.embedding_status"
-                embeddings_table = "embeddings.message_embeddings"
-                meta_table = "embeddings.embeddings_meta"
+                status_table = _attached_table_name(conn, "embeddings", "embedding_status")
+                meta_table = _attached_table_name(conn, "embeddings", "message_embeddings_meta")
             else:
                 status_table = ""
-                embeddings_table = ""
                 meta_table = ""
             has_messages = _table_exists(conn, "messages")
             has_status = bool(status_table)
-            has_embeddings = bool(embeddings_table)
             has_meta = bool(meta_table)
 
             total_sessions = _scalar_int(conn, "SELECT COUNT(*) FROM sessions")
-            embedded_sessions = (
-                _scalar_int(
+            session_state = count_archive_embedding_session_state(conn, status_table=status_table, rebuild=False)
+            embedded_sessions = session_state.embedded_sessions if has_status else 0
+            pending_sessions = session_state.pending_sessions
+            if has_meta:
+                embedded_messages = _scalar_int(
                     conn,
                     f"""
                     SELECT COUNT(*)
-                    FROM sessions s
-                    JOIN {status_table} e ON e.session_id = s.session_id
-                    WHERE e.needs_reindex = 0
-                      AND e.message_count_embedded >= s.message_count
+                    FROM {meta_table}
                     """,
                 )
-                if has_status
-                else 0
-            )
-            pending_sessions = max(total_sessions - embedded_sessions, 0)
-            embedded_messages = _scalar_int(conn, f"SELECT COUNT(*) FROM {embeddings_table}") if has_embeddings else 0
+            else:
+                embedded_messages = 0
             failure_count = (
                 _scalar_int(conn, f"SELECT COUNT(*) FROM {status_table} WHERE error_message IS NOT NULL")
                 if has_status
@@ -215,34 +231,50 @@ def _archive_embedding_readiness_info(
             stale_messages = 0
             total_messages = 0
             if detail and has_messages:
-                total_messages = _scalar_int(conn, "SELECT COUNT(*) FROM messages")
-                if has_embeddings:
+                messages_ref = archive_messages_table_ref(conn, alias="m")
+                embeddable_where = archive_embeddable_message_where("m")
+                total_messages = _scalar_int(conn, f"SELECT COUNT(*) FROM {messages_ref} WHERE {embeddable_where}")
+                if has_meta and embedded_messages == 0:
+                    pending_messages = total_messages
+                elif has_meta:
+                    meta_join = "ON em.message_id = m.message_id"
+                    meta_missing_column = "em.message_id"
+                    status_join = f"LEFT JOIN {status_table} e ON e.session_id = m.session_id" if has_status else ""
+                    status_reindex_clause = "OR COALESCE(e.needs_reindex, 0) = 1" if has_status else ""
                     pending_messages = _scalar_int(
                         conn,
                         f"""
                         SELECT COUNT(*)
-                        FROM messages m
-                        LEFT JOIN {embeddings_table} me ON me.message_id = m.message_id
-                        LEFT JOIN {status_table} e ON e.session_id = m.session_id
-                        WHERE me.message_id IS NULL
-                           OR e.session_id IS NULL
-                           OR e.needs_reindex = 1
+                        FROM {messages_ref}
+                        LEFT JOIN {meta_table} em {meta_join}
+                        {status_join}
+                        WHERE {embeddable_where}
+                          AND (
+                            {meta_missing_column} IS NULL
+                            OR COALESCE(em.needs_reindex, 0) = 1
+                            {status_reindex_clause}
+                          )
                         """,
                     )
                 else:
                     pending_messages = total_messages
-                if has_embeddings and has_meta:
+                if has_meta and embedded_messages == 0:
+                    stale_messages = total_messages
+                elif has_meta:
+                    meta_join = "ON em.message_id = m.message_id"
+                    meta_missing_column = "em.message_id"
                     stale_messages = _scalar_int(
                         conn,
                         f"""
                         SELECT COUNT(*)
-                        FROM {embeddings_table} me
-                        JOIN messages m ON m.message_id = me.message_id
-                        LEFT JOIN {meta_table} em
-                          ON em.target_id = me.message_id
-                         AND em.target_type = 'message'
-                        WHERE em.target_id IS NULL
-                           OR (em.content_hash IS NOT NULL AND em.content_hash != m.content_hash)
+                        FROM {messages_ref}
+                        LEFT JOIN {meta_table} em {meta_join}
+                        WHERE {embeddable_where}
+                          AND (
+                            {meta_missing_column} IS NULL
+                            OR COALESCE(em.needs_reindex, 0) = 1
+                            OR (em.content_hash IS NOT NULL AND em.content_hash != m.content_hash)
+                          )
                         """,
                     )
             status = _embedding_status(
@@ -265,11 +297,11 @@ def _archive_embedding_readiness_info(
                 "embedding_pending_message_count_exact": detail,
                 "embedding_stale_count": stale_messages,
                 "embedding_coverage_percent": round(
-                    (embedded_sessions / total_sessions) * 100,
+                    (embedded_sessions / (embedded_sessions + pending_sessions)) * 100,
                     1,
                 )
-                if total_sessions > 0
-                else 0.0,
+                if embedded_sessions + pending_sessions > 0
+                else (100.0 if total_sessions > 0 else 0.0),
                 "embedding_failure_count": failure_count,
                 "embedding_estimated_cost_usd": _estimated_cost(pending_messages) if detail else 0.0,
                 "embedding_latest_catchup_run": None,

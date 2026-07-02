@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+Usage: .agent/scripts/devloop-meta <trigger> <failure-hypothesis> <evidence> <change-considered> <change-made> <change-deferred> <next-safeguard>
+
+Append a self-audit template for agent/process failure modes. Use when the
+operator corrects process behavior, a loop stalls, repeated friction appears,
+or before a handoff after substantial work.
+EOF
+  exit 0
+fi
+
+if [ "$#" -ne 7 ]; then
+  cat >&2 <<'EOF'
+usage: devloop-meta <trigger> <failure-hypothesis> <evidence> <change-considered> <change-made> <change-deferred> <next-safeguard>
+
+All fields are required. Meta entries are process evidence, not placeholders;
+use "none" for a genuinely empty deferred/change field.
+EOF
+  exit 2
+fi
+
+trigger="$1"
+failure_hypothesis="$2"
+evidence="$3"
+change_considered="$4"
+change_made="$5"
+change_deferred="$6"
+next_safeguard="$7"
+
+repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
+current="${POLYLOGUE_AGENT_CURRENT:-$repo/.agent/conductor-devloop}"
+cd "$repo"
+
+mkdir -p "$current"
+"$repo/.agent/scripts/devloop-log" "meta-audit" "Loop phase: reflect | velocity
+Focus: Meta -> Velocity
+Trigger: $trigger
+Failure hypothesis: $failure_hypothesis
+Evidence for/against: $evidence
+Process/tooling change considered: $change_considered
+Change made now: $change_made
+Change deferred: $change_deferred
+Next safeguard: $next_safeguard"
+"$repo/.agent/scripts/devloop-sync" >/dev/null
+printf '%s\n' "$current/OPERATING-LOG.md"

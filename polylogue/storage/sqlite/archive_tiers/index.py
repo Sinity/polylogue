@@ -33,7 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 18
+INDEX_SCHEMA_VERSION = 20
 
 INDEX_DDL = f"""
 CREATE TABLE IF NOT EXISTS sessions (
@@ -201,6 +201,12 @@ ON blocks(session_id, message_id, position);
 
 CREATE INDEX IF NOT EXISTS idx_blocks_type
 ON blocks(block_type);
+
+CREATE INDEX IF NOT EXISTS idx_blocks_type_tool
+ON blocks(
+    block_type,
+    COALESCE(NULLIF(LOWER(tool_name), ''), 'unknown')
+);
 
 CREATE INDEX IF NOT EXISTS idx_blocks_tool_id
 ON blocks(tool_id)
@@ -931,6 +937,24 @@ ON session_observed_events(run_ref);
 
 CREATE INDEX IF NOT EXISTS idx_session_observed_events_delivery
 ON session_observed_events(delivery_state);
+
+CREATE INDEX IF NOT EXISTS idx_session_observed_events_kind_tool
+ON session_observed_events(
+    kind,
+    COALESCE(NULLIF(json_extract(payload_json, '$.tool_name'), ''), 'unknown')
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_observed_events_kind_handler
+ON session_observed_events(
+    kind,
+    COALESCE(NULLIF(json_extract(payload_json, '$.handler_kind'), ''), 'unknown')
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_observed_events_kind_status
+ON session_observed_events(
+    kind,
+    COALESCE(NULLIF(json_extract(payload_json, '$.status'), ''), 'unknown')
+);
 
 CREATE TABLE IF NOT EXISTS session_context_snapshots (
     snapshot_ref         TEXT PRIMARY KEY,

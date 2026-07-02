@@ -77,18 +77,14 @@ class SqliteVecRuntimeMixin:
                 """
             )
             conn.execute("""
-                CREATE TABLE IF NOT EXISTS embeddings_meta (
-                    target_id TEXT PRIMARY KEY,
-                    target_type TEXT NOT NULL CHECK (target_type IN ('message', 'session')),
+                CREATE TABLE IF NOT EXISTS message_embeddings_meta (
+                    message_id TEXT PRIMARY KEY,
                     model TEXT NOT NULL,
                     dimension INTEGER NOT NULL,
-                    embedded_at TEXT NOT NULL,
-                    content_hash TEXT
+                    embedded_at_ms INTEGER,
+                    content_hash TEXT,
+                    needs_reindex INTEGER NOT NULL DEFAULT 0
                 )
-            """)
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_embeddings_meta_type
-                ON embeddings_meta(target_type)
             """)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS embedding_status (
@@ -109,15 +105,15 @@ class SqliteVecRuntimeMixin:
             conn.close()
 
     def _stored_embedding_dimension(self) -> int | None:
-        """Return the dimension stored in embeddings_meta, if any."""
+        """Return the dimension stored in message_embeddings_meta, if any."""
         conn = self._get_connection()
         try:
             has_table = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='embeddings_meta'"
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='message_embeddings_meta'"
             ).fetchone()
             if has_table is None:
                 return None
-            row = conn.execute("SELECT dimension FROM embeddings_meta WHERE target_type='message' LIMIT 1").fetchone()
+            row = conn.execute("SELECT dimension FROM message_embeddings_meta LIMIT 1").fetchone()
             return int(row["dimension"]) if row else None
         except (sqlite3.OperationalError, TypeError, ValueError):
             return None

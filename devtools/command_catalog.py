@@ -422,7 +422,84 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
         examples=(
             "devtools workspace temporal-devloop --since 2026-06-30T00:00:00+02:00 --json",
-            "devtools workspace temporal-devloop --out /realm/inbox/demos_polylogue/14-devloop-temporal-dogfood/devloop-events.json",
+            "devtools workspace temporal-devloop --out .agent/demos/14-devloop-temporal-dogfood/devloop-events.json",
+        ),
+    ),
+    CommandSpec(
+        "workspace temporal-archive-aggregates",
+        "workspace",
+        "Build run-projection aggregate artifacts from the active archive.",
+        "devtools.temporal_archive_aggregates",
+        use_when=(
+            "Refresh private longitudinal run/observed-event/context-snapshot demo artifacts from "
+            "the canonical archive through one reusable command instead of copying raw sqlite3 "
+            "queries into README files."
+        ),
+        examples=(
+            "devtools workspace temporal-archive-aggregates --json",
+            "devtools workspace temporal-archive-aggregates --out-dir .agent/demos/01-real-archive-temporal-devloops",
+        ),
+    ),
+    CommandSpec(
+        "workspace affordance-usage",
+        "workspace",
+        "Analyze agent affordance/tool usage from archive tool-use rows.",
+        "devtools.affordance_usage",
+        use_when=(
+            "Dogfood agent-tool usage analysis without hand-written SQL: summarize tool families, raw tool names, "
+            "origin splits, recent adoption windows, structured failure rates, and representative samples."
+        ),
+        examples=(
+            "devtools workspace affordance-usage --days 7 --json",
+            "devtools workspace affordance-usage --detail-pattern codebase-memory --detail-pattern search_code --days 30",
+            "devtools workspace affordance-usage --out-dir .agent/demos/agent-affordance-usage",
+        ),
+    ),
+    CommandSpec(
+        "workspace demo-shelf",
+        "workspace",
+        "Refresh or verify current demo shelf indexes.",
+        "devtools.demo_shelf",
+        use_when=(
+            "After curating .agent/demos or another explicit current demo shelf, regenerate "
+            "MANIFEST.readable.json and SUMMARY_INDEX.json from one deterministic helper. "
+            "Declarative read packages own portable readable bundles; the shelf is the best current set, "
+            "not an append-only archive."
+        ),
+        examples=(
+            "devtools workspace demo-shelf",
+            "devtools workspace demo-shelf --check",
+            "devtools workspace demo-shelf --root /realm/project/sinex/.agent/demos --json",
+        ),
+    ),
+    CommandSpec(
+        "workspace cli-surface-audit",
+        "workspace",
+        "Capture a current-curated CLI surface audit demo.",
+        "devtools.cli_surface_audit",
+        use_when=(
+            "Refresh the CLI surface audit shelf through one reusable command that captures representative "
+            "help, status, query, read, and facets outputs while keeping large unbounded diagnostics opt-in."
+        ),
+        examples=(
+            "devtools workspace cli-surface-audit",
+            "devtools workspace cli-surface-audit --out-dir .agent/demos/cli-surface-audit/current --json",
+            "devtools workspace cli-surface-audit --include-unbounded-dialogue",
+        ),
+    ),
+    CommandSpec(
+        "workspace read-package",
+        "workspace",
+        "Render a declarative package of Polylogue read artifacts.",
+        "devtools.read_package",
+        use_when=(
+            "Generate local demo/export packages from a JSON/YAML spec that names ordinary "
+            "read views, formats, and output paths, instead of hand-rolling repeated "
+            "`polylogue read --view ... --to file` shell snippets."
+        ),
+        examples=(
+            "devtools workspace read-package --spec package.json --session-id 019f... --out-dir product-read",
+            "devtools workspace read-package --spec package.yaml --session-id 019f... --out-dir product-read --dry-run --json",
         ),
     ),
     CommandSpec(

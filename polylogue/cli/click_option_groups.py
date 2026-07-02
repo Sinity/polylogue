@@ -243,7 +243,7 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         "--typed-only",
         "typed_only",
         is_flag=True,
-        help="Only sessions without pasted content (typed prose only)",
+        help="Only sessions without paste evidence (typed prose only)",
     ),
     click.option("--min-messages", type=int, help="Minimum message count"),
     click.option("--max-messages", type=int, help="Maximum message count"),

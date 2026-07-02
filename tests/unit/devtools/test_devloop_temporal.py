@@ -8,6 +8,16 @@ from pathlib import Path
 from devtools import devloop_temporal
 
 
+def test_default_paths_use_conductor_devloop() -> None:
+    """Temporal dogfood reads the canonical conductor packet, not scratch."""
+    assert devloop_temporal.DEFAULT_OPERATING_LOG == (
+        devloop_temporal.ROOT / ".agent/conductor-devloop/OPERATING-LOG.md"
+    )
+    assert devloop_temporal.DEFAULT_EVENT_LOG == devloop_temporal.ROOT / ".agent/conductor-devloop/EVENTS.jsonl"
+    assert "scratch/current" not in devloop_temporal.DEFAULT_OPERATING_LOG.as_posix()
+    assert "scratch/current" not in devloop_temporal.DEFAULT_EVENT_LOG.as_posix()
+
+
 def test_operating_log_events_parse_focus_and_checkpoint(tmp_path: Path) -> None:
     log = tmp_path / "OPERATING-LOG.md"
     log.write_text(

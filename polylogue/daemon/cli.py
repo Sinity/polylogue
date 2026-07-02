@@ -41,6 +41,7 @@ from polylogue.daemon.health import (
     _check_schema_version_fast,
     check_health,
     format_health_lines,
+    resolve_health_tiers,
 )
 from polylogue.daemon.status import daemon_status_payload, format_daemon_status_lines
 from polylogue.logging import configure_logging, get_logger
@@ -546,21 +547,7 @@ async def _periodic_health_check() -> None:
 
         cfg = load_polylogue_config()
         interval = cfg.health_check_interval_s
-        tier_str = cfg.health_check_tiers
-
-        # Resolve health tiers from config.
-        tier_map = {
-            "fast": HealthTier.FAST,
-            "medium": HealthTier.MEDIUM,
-            "expensive": HealthTier.EXPENSIVE,
-        }
-        tiers: set[HealthTier] = set()
-        for t in tier_str.split(","):
-            t = t.strip()
-            if t in tier_map:
-                tiers.add(tier_map[t])
-        if not tiers:
-            tiers = {HealthTier.FAST, HealthTier.MEDIUM}
+        tiers = resolve_health_tiers(cfg.health_check_tiers)
 
         await asyncio.sleep(interval)
         try:

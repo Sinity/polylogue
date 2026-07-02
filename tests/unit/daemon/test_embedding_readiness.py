@@ -67,16 +67,16 @@ def _seed_embedding_tables(
     dimension: int,
     session_ids: tuple[str, ...] = (),
 ) -> None:
-    """Create embeddings_meta + embedding_status with seeded rows."""
+    """Create message_embeddings_meta + embedding_status with seeded rows."""
     conn.execute(
         """
-        CREATE TABLE embeddings_meta (
-            target_id TEXT PRIMARY KEY,
-            target_type TEXT NOT NULL,
+        CREATE TABLE message_embeddings_meta (
+            message_id TEXT PRIMARY KEY,
             model TEXT NOT NULL,
             dimension INTEGER NOT NULL,
-            embedded_at TEXT NOT NULL,
-            content_hash TEXT
+            embedded_at_ms INTEGER,
+            content_hash TEXT,
+            needs_reindex INTEGER NOT NULL DEFAULT 0
         )
         """
     )
@@ -92,8 +92,8 @@ def _seed_embedding_tables(
         """
     )
     conn.execute(
-        "INSERT INTO embeddings_meta(target_id, target_type, model, dimension, embedded_at) "
-        "VALUES (?, 'message', ?, ?, '2026-01-01T00:00:00Z')",
+        "INSERT INTO message_embeddings_meta(message_id, model, dimension, embedded_at_ms) "
+        "VALUES (?, ?, ?, 1767225600000)",
         ("msg-1", model, dimension),
     )
     for conv_id in session_ids:
@@ -134,15 +134,23 @@ def _seed_archive_embedding_readiness_db(path: Path) -> None:
             CREATE TABLE messages (
                 message_id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'user',
+                message_type TEXT NOT NULL DEFAULT 'message',
+                material_origin TEXT NOT NULL DEFAULT 'human_authored',
+                word_count INTEGER NOT NULL DEFAULT 8,
                 content_hash BLOB NOT NULL
             );
             INSERT INTO sessions VALUES ('codex-session:complete', 1);
             INSERT INTO sessions VALUES ('codex-session:pending', 2);
             INSERT INTO sessions VALUES ('codex-session:error', 1);
-            INSERT INTO messages VALUES ('codex-session:complete:m1', 'codex-session:complete', x'01');
-            INSERT INTO messages VALUES ('codex-session:pending:m1', 'codex-session:pending', x'02');
-            INSERT INTO messages VALUES ('codex-session:pending:m2', 'codex-session:pending', x'03');
-            INSERT INTO messages VALUES ('codex-session:error:m1', 'codex-session:error', x'04');
+            INSERT INTO messages (message_id, session_id, content_hash)
+            VALUES ('codex-session:complete:m1', 'codex-session:complete', x'01');
+            INSERT INTO messages (message_id, session_id, content_hash)
+            VALUES ('codex-session:pending:m1', 'codex-session:pending', x'02');
+            INSERT INTO messages (message_id, session_id, content_hash)
+            VALUES ('codex-session:pending:m2', 'codex-session:pending', x'03');
+            INSERT INTO messages (message_id, session_id, content_hash)
+            VALUES ('codex-session:error:m1', 'codex-session:error', x'04');
             """
         )
         conn.commit()
@@ -152,13 +160,13 @@ def _seed_archive_embedding_readiness_db(path: Path) -> None:
             CREATE TABLE message_embeddings (
                 message_id TEXT PRIMARY KEY
             );
-            CREATE TABLE embeddings_meta (
-                target_id TEXT PRIMARY KEY,
-                target_type TEXT NOT NULL,
+            CREATE TABLE message_embeddings_meta (
+                message_id TEXT PRIMARY KEY,
                 model TEXT NOT NULL,
                 dimension INTEGER NOT NULL,
                 embedded_at_ms INTEGER NOT NULL,
-                content_hash BLOB
+                content_hash BLOB,
+                needs_reindex INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE embedding_status (
                 session_id TEXT PRIMARY KEY,
@@ -168,8 +176,8 @@ def _seed_archive_embedding_readiness_db(path: Path) -> None:
                 error_message TEXT
             );
             INSERT INTO message_embeddings VALUES ('codex-session:complete:m1');
-            INSERT INTO embeddings_meta VALUES (
-                'codex-session:complete:m1', 'message', 'voyage-4', 1024, 1767225700000, x'01'
+            INSERT INTO message_embeddings_meta VALUES (
+                'codex-session:complete:m1', 'voyage-4', 1024, 1767225700000, x'01', 0
             );
             INSERT INTO embedding_status VALUES ('codex-session:complete', 'codex-session', 1, 0, NULL);
             INSERT INTO embedding_status VALUES ('codex-session:error', 'codex-session', 0, 1, 'voyage timeout');
@@ -238,10 +246,21 @@ def test_readiness_unconfigured_when_enabled_flag_off(
     db.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db) as conn:
         conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
-        conn.execute("CREATE TABLE messages (message_id TEXT PRIMARY KEY, session_id TEXT)")
+        conn.execute(
+            """
+            CREATE TABLE messages (
+                message_id TEXT PRIMARY KEY,
+                session_id TEXT,
+                role TEXT NOT NULL DEFAULT 'user',
+                message_type TEXT NOT NULL DEFAULT 'message',
+                material_origin TEXT NOT NULL DEFAULT 'human_authored',
+                word_count INTEGER NOT NULL DEFAULT 8
+            )
+            """
+        )
         conn.execute("CREATE TABLE embedding_status (session_id TEXT PRIMARY KEY, needs_reindex INTEGER)")
         conn.execute("INSERT INTO sessions VALUES ('conv-1')")
-        conn.execute("INSERT INTO messages VALUES ('msg-1', 'conv-1')")
+        conn.execute("INSERT INTO messages (message_id, session_id) VALUES ('msg-1', 'conv-1')")
         conn.commit()
 
     cfg = _FakeCfg(embedding_enabled=False, voyage_api_key="vk-live")
@@ -297,7 +316,7 @@ def test_readiness_reads_archive_file_set_detail_counts_pending_messages(tmp_pat
     assert info["embedding_pending_count"] == 2
     assert info["embedding_pending_message_count"] == 3
     assert info["embedding_pending_message_count_exact"] is True
-    assert info["embedding_stale_count"] == 0
+    assert info["embedding_stale_count"] == 3
     assert info["embedding_estimated_cost_usd"] == 0.0
 
 
@@ -306,7 +325,7 @@ def test_readiness_reads_index_when_db_anchor_exists(tmp_path: Path) -> None:
     archive_db = tmp_path / "index.db"
     with sqlite3.connect(db_anchor) as conn:
         conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
-        conn.execute("INSERT INTO sessions VALUES ('legacy-pending')")
+        conn.execute("INSERT INTO sessions VALUES ('anchor-pending')")
         conn.commit()
     _seed_archive_embedding_readiness_db(archive_db)
 
@@ -332,7 +351,19 @@ def test_readiness_failure_branch_counts_error_message_rows(tmp_path: Path) -> N
         _seed_embedding_tables(conn, model="voyage-4", dimension=1024, session_ids=("conv-1", "conv-2"))
         conn.execute("UPDATE embedding_status SET error_message = 'voyage api 429' WHERE session_id = 'conv-1'")
         conn.execute("CREATE TABLE message_embeddings (message_id TEXT PRIMARY KEY)")
-        conn.execute("CREATE TABLE messages (message_id TEXT PRIMARY KEY, session_id TEXT, content_hash TEXT)")
+        conn.execute(
+            """
+            CREATE TABLE messages (
+                message_id TEXT PRIMARY KEY,
+                session_id TEXT,
+                role TEXT NOT NULL DEFAULT 'user',
+                message_type TEXT NOT NULL DEFAULT 'message',
+                material_origin TEXT NOT NULL DEFAULT 'human_authored',
+                word_count INTEGER NOT NULL DEFAULT 8,
+                content_hash TEXT
+            )
+            """
+        )
         conn.commit()
 
     cfg = _FakeCfg(embedding_enabled=True, voyage_api_key="vk-live")

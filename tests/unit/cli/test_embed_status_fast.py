@@ -17,7 +17,6 @@ from polylogue.storage.embeddings.progress import (
     finish_embedding_catchup_run,
     start_embedding_catchup_run,
 )
-from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 
 
 class _Cfg:
@@ -43,7 +42,19 @@ def _env(db_path: Path) -> Any:
 def _seed_archive_without_embedding_ledgers(db_path: Path, *, vec_table: bool = False) -> None:
     with sqlite3.connect(db_path) as conn:
         conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
-        conn.execute("CREATE TABLE messages (message_id TEXT PRIMARY KEY, session_id TEXT, content_hash TEXT)")
+        conn.execute(
+            """
+            CREATE TABLE messages (
+                message_id TEXT PRIMARY KEY,
+                session_id TEXT,
+                role TEXT NOT NULL DEFAULT 'user',
+                message_type TEXT NOT NULL DEFAULT 'message',
+                material_origin TEXT NOT NULL DEFAULT 'human_authored',
+                word_count INTEGER NOT NULL DEFAULT 8,
+                content_hash TEXT
+            )
+            """
+        )
         conn.executemany(
             "INSERT INTO sessions (session_id) VALUES (?)",
             [("conv-1",), ("conv-2",)],
@@ -69,13 +80,20 @@ def _seed_archive_file_set_from_archive_tiers(index_db: Path) -> None:
             CREATE TABLE messages (
                 message_id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'user',
+                message_type TEXT NOT NULL DEFAULT 'message',
+                material_origin TEXT NOT NULL DEFAULT 'human_authored',
+                word_count INTEGER NOT NULL DEFAULT 8,
                 content_hash BLOB NOT NULL
             );
             INSERT INTO sessions VALUES ('codex-session:complete', 1);
             INSERT INTO sessions VALUES ('codex-session:pending', 2);
-            INSERT INTO messages VALUES ('codex-session:complete:m1', 'codex-session:complete', x'01');
-            INSERT INTO messages VALUES ('codex-session:pending:m1', 'codex-session:pending', x'02');
-            INSERT INTO messages VALUES ('codex-session:pending:m2', 'codex-session:pending', x'03');
+            INSERT INTO messages (message_id, session_id, content_hash)
+            VALUES ('codex-session:complete:m1', 'codex-session:complete', x'01');
+            INSERT INTO messages (message_id, session_id, content_hash)
+            VALUES ('codex-session:pending:m1', 'codex-session:pending', x'02');
+            INSERT INTO messages (message_id, session_id, content_hash)
+            VALUES ('codex-session:pending:m2', 'codex-session:pending', x'03');
             """
         )
         conn.commit()
@@ -85,13 +103,13 @@ def _seed_archive_file_set_from_archive_tiers(index_db: Path) -> None:
             CREATE TABLE message_embeddings (
                 message_id TEXT PRIMARY KEY
             );
-            CREATE TABLE embeddings_meta (
-                target_id TEXT PRIMARY KEY,
-                target_type TEXT NOT NULL,
+            CREATE TABLE message_embeddings_meta (
+                message_id TEXT PRIMARY KEY,
                 model TEXT NOT NULL,
                 dimension INTEGER NOT NULL,
                 embedded_at_ms INTEGER NOT NULL,
-                content_hash BLOB
+                content_hash BLOB,
+                needs_reindex INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE embedding_status (
                 session_id TEXT PRIMARY KEY,
@@ -101,8 +119,8 @@ def _seed_archive_file_set_from_archive_tiers(index_db: Path) -> None:
                 error_message TEXT
             );
             INSERT INTO message_embeddings VALUES ('codex-session:complete:m1');
-            INSERT INTO embeddings_meta VALUES (
-                'codex-session:complete:m1', 'message', 'voyage-4', 1024, 1767225700000, x'01'
+            INSERT INTO message_embeddings_meta VALUES (
+                'codex-session:complete:m1', 'voyage-4', 1024, 1767225700000, x'01', 0
             );
             INSERT INTO embedding_status VALUES ('codex-session:complete', 'codex-session', 1, 0, NULL);
             """
@@ -280,29 +298,16 @@ def test_status_json_reports_config_gate_combinations(
     assert payload["next_action"]["code"] == ("set_voyage_key" if not has_key else "enable_embeddings")
 
 
-def test_status_json_detail_mode_runs_exact_retrieval_accounting(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_status_json_detail_mode_stays_embedding_scoped(tmp_path: Path) -> None:
     db_path = tmp_path / "archive.db"
     _seed_archive_without_embedding_ledgers(db_path)
-
-    monkeypatch.setattr(
-        "polylogue.storage.embeddings.embedding_stats.session_insight_status_sync",
-        lambda _conn: SessionInsightStatusSnapshot(),
-    )
 
     payload = _run_status(db_path, "--detail")
 
     assert payload["pending_sessions"] == 2
     assert payload["pending_messages"] == 2
     assert payload["pending_messages_exact"] is True
-    assert set(payload["retrieval_bands"]) == {
-        "transcript_embeddings",
-        "evidence_retrieval",
-        "inference_retrieval",
-        "enrichment_retrieval",
-    }
+    assert payload["retrieval_bands"] == {}
 
 
 def test_status_json_includes_latest_catchup_run(tmp_path: Path) -> None:

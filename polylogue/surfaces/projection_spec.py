@@ -64,6 +64,14 @@ class RenderDestination(str, Enum):
     FILE = "file"
 
 
+class RenderTimestampPolicy(str, Enum):
+    """How rendering should treat source timestamps when the projection carries them."""
+
+    RENDERER_DEFAULT = "renderer-default"
+    INCLUDE_AVAILABLE = "include-available"
+    OMIT = "omit"
+
+
 class SelectionSpec(SurfacePayloadModel):
     """Evidence selection independent of projection and rendering."""
 
@@ -92,6 +100,7 @@ class ProjectionSpec(SurfacePayloadModel):
     neighbor_limit: int | None = Field(default=None, ge=1)
     neighbor_window_hours: int | None = Field(default=None, ge=1)
     redact_paths: bool = True
+    include_assertions: bool = False
 
     @model_validator(mode="after")
     def _normalize_policy_exclusions(self) -> ProjectionSpec:
@@ -112,6 +121,7 @@ class RenderSpec(SurfacePayloadModel):
     format: RenderFormat = RenderFormat.MARKDOWN
     destination: RenderDestination = RenderDestination.TERMINAL
     layout: str = "standard"
+    timestamps: RenderTimestampPolicy = RenderTimestampPolicy.RENDERER_DEFAULT
     out: str | None = None
 
     @model_validator(mode="after")
@@ -132,10 +142,11 @@ class QueryProjectionSpec(SurfacePayloadModel):
 READ_VIEW_PROJECTION_FAMILIES: dict[str, tuple[EvidenceFamily, ...]] = {
     "summary": (EvidenceFamily.SESSIONS,),
     "transcript": (EvidenceFamily.MESSAGES, EvidenceFamily.BLOCKS),
+    "dialogue": (EvidenceFamily.MESSAGES, EvidenceFamily.BLOCKS),
     "messages": (EvidenceFamily.MESSAGES, EvidenceFamily.BLOCKS),
     "raw": (EvidenceFamily.RAW,),
     "context": (EvidenceFamily.CONTEXT, EvidenceFamily.MESSAGES),
-    "context-image": (EvidenceFamily.CONTEXT, EvidenceFamily.MESSAGES, EvidenceFamily.ASSERTIONS),
+    "context-image": (EvidenceFamily.CONTEXT, EvidenceFamily.MESSAGES),
     "chronicle": (EvidenceFamily.CHRONICLE, EvidenceFamily.SESSIONS, EvidenceFamily.MESSAGES),
     "neighbors": (EvidenceFamily.NEIGHBORS, EvidenceFamily.SESSIONS),
     "correlation": (EvidenceFamily.CORRELATION, EvidenceFamily.ACTIONS),
@@ -174,6 +185,7 @@ def projection_from_views(
     format: str = "markdown",
     destination: str = "terminal",
     layout: str = "standard",
+    timestamps: str | None = None,
     max_tokens: int | None = None,
     out: str | None = None,
     query: str | None = None,
@@ -188,6 +200,8 @@ def projection_from_views(
     body_offset: int | None = None,
     neighbor_limit: int | None = None,
     neighbor_window_hours: int | None = None,
+    redact_paths: bool = True,
+    include_assertions: bool = False,
 ) -> QueryProjectionSpec:
     """Map one or more read/projection names into a composed spec.
 
@@ -201,6 +215,7 @@ def projection_from_views(
         views = ("summary",)
     families_list: list[EvidenceFamily] = []
     body_policy = BodyPolicy.FULL
+    timestamp_policy = RenderTimestampPolicy.RENDERER_DEFAULT
     for view in views:
         try:
             view_families = NAMED_PROJECTION_FAMILIES[view]
@@ -209,8 +224,13 @@ def projection_from_views(
         for family in view_families:
             if family not in families_list:
                 families_list.append(family)
-        if view == "chronicle":
+        if view in {"dialogue", "chronicle", "context-image"}:
             body_policy = BodyPolicy.AUTHORED_DIALOGUE
+        if view in {"dialogue", "chronicle", "context-image", "temporal"}:
+            timestamp_policy = RenderTimestampPolicy.INCLUDE_AVAILABLE
+    if include_assertions and EvidenceFamily.ASSERTIONS not in families_list:
+        families_list.append(EvidenceFamily.ASSERTIONS)
+    render_timestamps = RenderTimestampPolicy(timestamps) if timestamps is not None else timestamp_policy
     return QueryProjectionSpec(
         selection=SelectionSpec(
             query=query,
@@ -230,9 +250,15 @@ def projection_from_views(
             body_offset=body_offset,
             neighbor_limit=neighbor_limit,
             neighbor_window_hours=neighbor_window_hours,
+            redact_paths=redact_paths,
+            include_assertions=include_assertions,
         ),
         render=RenderSpec(
-            format=RenderFormat(format), destination=RenderDestination(destination), layout=layout, out=out
+            format=RenderFormat(format),
+            destination=RenderDestination(destination),
+            layout=layout,
+            timestamps=render_timestamps,
+            out=out,
         ),
     )
 
@@ -247,6 +273,7 @@ __all__ = [
     "RenderDestination",
     "RenderFormat",
     "RenderSpec",
+    "RenderTimestampPolicy",
     "SelectionSpec",
     "projection_from_view",
     "projection_from_views",

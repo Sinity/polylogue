@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json as _json
 import sqlite3
 import time
 from collections import defaultdict
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 import aiosqlite
 
@@ -18,6 +20,12 @@ from polylogue.archive.session.session_profile import SessionProfile, build_sess
 from polylogue.core.common import chunked
 from polylogue.core.enums import SessionKind
 from polylogue.core.memory import release_process_memory
+from polylogue.insights.archive_models import (
+    SessionEnrichmentPayload,
+    SessionEvidencePayload,
+    SessionInferencePayload,
+)
+from polylogue.insights.fallback import FallbackReason
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.hydrators import session_from_records
 from polylogue.storage.insights.session.aggregates import (
@@ -115,6 +123,9 @@ ORDER BY COALESCE(source_sort_key, 0) DESC, session_id
 _SESSION_INSIGHT_REBUILD_PAGE_SIZE = 50
 _SESSION_INSIGHT_REBUILD_MESSAGE_BUDGET = 5_000
 _SESSION_INSIGHT_RELEASE_MESSAGE_THRESHOLD = 1_000
+_SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD = 10_000
+_SESSION_INSIGHT_DEGRADED_WORD_THRESHOLD = 50_000
+_SESSION_INSIGHT_DEGRADED_TOOL_THRESHOLD = 100
 _SESSION_INSIGHT_MESSAGE_TEXT_PREVIEW_CHARS = 16_384
 _SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS = 4_096
 _SESSION_INSIGHT_SESSION_SQL_TEMPLATE = """
@@ -352,6 +363,34 @@ def _load_message_counts_sync(
         tuple(session_ids),
     ).fetchall()
     return {str(row["session_id"]): int(row["message_count"] or 0) for row in rows}
+
+
+def _heavy_session_ids_sync(
+    conn: sqlite3.Connection,
+    session_ids: Sequence[str],
+) -> set[str]:
+    if not session_ids:
+        return set()
+    placeholders = ", ".join("?" for _ in session_ids)
+    rows = conn.execute(
+        f"""
+        SELECT session_id
+        FROM sessions
+        WHERE session_id IN ({placeholders})
+          AND (
+            message_count >= ?
+            OR word_count >= ?
+            OR tool_use_count >= ?
+          )
+        """,
+        (
+            *session_ids,
+            _SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD,
+            _SESSION_INSIGHT_DEGRADED_WORD_THRESHOLD,
+            _SESSION_INSIGHT_DEGRADED_TOOL_THRESHOLD,
+        ),
+    ).fetchall()
+    return {str(row["session_id"]) for row in rows}
 
 
 def _chunk_session_ids_by_message_budget_sync(
@@ -666,6 +705,240 @@ def build_session_insight_record_bundles(
     ]
 
 
+def _parse_archive_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    normalized = value.replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(normalized)
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _session_count_row(conn: sqlite3.Connection, session_id: str) -> sqlite3.Row:
+    row = conn.execute(
+        """
+        SELECT
+            session_id,
+            origin,
+            title,
+            parent_session_id,
+            message_count,
+            word_count,
+            tool_use_count,
+            thinking_count,
+            paste_count,
+            user_message_count,
+            assistant_message_count,
+            system_message_count,
+            tool_message_count,
+            user_word_count,
+            assistant_word_count,
+            reported_duration_ms,
+            created_at_ms,
+            updated_at_ms,
+            CAST(sort_key_ms AS REAL) / 1000.0 AS sort_key,
+            CASE WHEN created_at_ms IS NULL THEN NULL ELSE strftime('%Y-%m-%dT%H:%M:%f+00:00', created_at_ms / 1000.0, 'unixepoch') END AS created_at,
+            CASE WHEN updated_at_ms IS NULL THEN NULL ELSE strftime('%Y-%m-%dT%H:%M:%f+00:00', updated_at_ms / 1000.0, 'unixepoch') END AS updated_at,
+            git_branch,
+            git_repository_url
+        FROM sessions
+        WHERE session_id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+    if row is None:
+        raise KeyError(f"session not found: {session_id}")
+    if not isinstance(row, sqlite3.Row):
+        raise TypeError("large-session materialization requires sqlite3.Row rows")
+    return row
+
+
+def _large_session_profile_record(
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    logical_session_id: str | None,
+    materialized_at: str,
+) -> SessionProfileRecord:
+    row = _session_count_row(conn, session_id)
+    created_at = _parse_archive_datetime(row["created_at"])
+    updated_at = _parse_archive_datetime(row["updated_at"])
+    canonical_at = created_at or updated_at
+    message_count = int(row["message_count"] or 0)
+    tool_use_count = int(row["tool_use_count"] or 0)
+    thinking_count = int(row["thinking_count"] or 0)
+    word_count = int(row["word_count"] or 0)
+    origin = str(row["origin"])
+    title = str(row["title"] or "")
+    resolved_logical_session_id = logical_session_id or session_id
+    workflow_features: dict[str, object] = {
+        "message_count": message_count,
+        "tool_call_count": tool_use_count,
+        "tool_message_count": int(row["tool_message_count"] or 0),
+        "tool_ratio": round(tool_use_count / max(message_count, 1), 4),
+        "thinking_ratio": round(thinking_count / max(message_count, 1), 4),
+        "bounded_materialization_threshold": _SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD,
+        "bounded_materialization_reason": FallbackReason.LARGE_SESSION_BOUNDED.value,
+    }
+    timestamp_source = "session_timestamp_fallback" if canonical_at is not None else "absent"
+    timestamped_count = message_count if canonical_at is not None else 0
+    untimestamped_count = 0 if canonical_at is not None else message_count
+    timestamp_coverage = "session_bounds_only" if canonical_at is not None else "none"
+    evidence = SessionEvidencePayload(
+        created_at=created_at.isoformat() if created_at else None,
+        updated_at=updated_at.isoformat() if updated_at else None,
+        first_message_at=created_at.isoformat() if created_at else None,
+        last_message_at=updated_at.isoformat() if updated_at else None,
+        session_timestamp=canonical_at.isoformat() if canonical_at else None,
+        timestamp_source=timestamp_source,
+        timestamped_message_count=timestamped_count,
+        untimestamped_message_count=untimestamped_count,
+        timestamp_coverage=timestamp_coverage,
+        canonical_session_date=canonical_at.date().isoformat() if canonical_at else None,
+        message_count=message_count,
+        substantive_count=max(int(row["user_message_count"] or 0) + int(row["assistant_message_count"] or 0), 0),
+        tool_use_count=tool_use_count,
+        thinking_count=thinking_count,
+        word_count=word_count,
+        total_duration_ms=int(row["reported_duration_ms"] or 0),
+        wall_duration_ms=int(row["reported_duration_ms"] or 0),
+        workflow_shape_features=workflow_features,
+        terminal_state_evidence={"bounded_materialization": FallbackReason.LARGE_SESSION_BOUNDED.value},
+        branch_names=(str(row["git_branch"]),) if row["git_branch"] else (),
+        repo_paths=(str(row["git_repository_url"]),) if row["git_repository_url"] else (),
+        tags=(f"origin:{origin}", "degraded:large-session"),
+        is_continuation=row["parent_session_id"] is not None,
+        parent_id=str(row["parent_session_id"]) if row["parent_session_id"] else None,
+        logical_session_id=resolved_logical_session_id,
+        timing_provenance="bounded_session_counters",
+        cost_provenance="unknown",
+    )
+    inference = SessionInferencePayload(
+        inferred_topic=title or None,
+        inferred_topic_source="title_bounded_fallback" if title else "absent",
+        work_event_count=0,
+        phase_count=0,
+        workflow_shape="bounded_large_session",
+        workflow_shape_confidence=0.35,
+        terminal_state="unknown",
+        terminal_state_confidence=0.0,
+        auto_tags=(f"origin:{origin}", "degraded:large-session"),
+        fallback_reasons=(
+            FallbackReason.LARGE_SESSION_BOUNDED,
+            FallbackReason.NO_WORK_EVENTS_AND_NO_PHASES,
+        ),
+    )
+    enrichment = SessionEnrichmentPayload(
+        intent_summary=title or None,
+        outcome_summary=None,
+        confidence=0.1,
+        input_band_summary={"messages": message_count, "actions": tool_use_count},
+        fallback_reasons=(
+            FallbackReason.LARGE_SESSION_BOUNDED,
+            FallbackReason.MISSING_SESSION_ANALYSIS,
+            FallbackReason.NO_USER_TURNS,
+        ),
+    )
+    source_sort_key = float(row["sort_key"]) if row["sort_key"] is not None else None
+    source_updated_at = updated_at.isoformat() if updated_at else None
+    search_text = " \n".join(part for part in (origin, title, row["git_branch"], row["git_repository_url"]) if part)
+    return SessionProfileRecord(
+        session_id=SessionId(session_id),
+        logical_session_id=SessionId(resolved_logical_session_id),
+        materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
+        materialized_at=materialized_at,
+        source_updated_at=source_updated_at,
+        source_sort_key=source_sort_key,
+        input_high_water_mark=source_updated_at,
+        input_high_water_mark_source="provider_ts" if source_updated_at else "fallback_date",
+        input_row_count=message_count,
+        source_name=origin,
+        title=title or None,
+        first_message_at=created_at.isoformat() if created_at else None,
+        last_message_at=updated_at.isoformat() if updated_at else None,
+        canonical_session_date=canonical_at.date().isoformat() if canonical_at else None,
+        repo_paths=(str(row["git_repository_url"]),) if row["git_repository_url"] else (),
+        repo_names=(),
+        tags=(),
+        auto_tags=(f"origin:{origin}", "degraded:large-session"),
+        message_count=message_count,
+        substantive_count=evidence.substantive_count,
+        attachment_count=0,
+        work_event_count=0,
+        phase_count=0,
+        word_count=word_count,
+        tool_use_count=tool_use_count,
+        thinking_count=thinking_count,
+        total_duration_ms=int(row["reported_duration_ms"] or 0),
+        wall_duration_ms=int(row["reported_duration_ms"] or 0),
+        workflow_shape="bounded_large_session",
+        workflow_shape_confidence=0.35,
+        workflow_shape_features_json=_json.dumps(workflow_features, sort_keys=True),
+        terminal_state="unknown",
+        terminal_state_confidence=0.0,
+        terminal_state_evidence_json=_json.dumps(
+            {"bounded_materialization": FallbackReason.LARGE_SESSION_BOUNDED.value},
+            sort_keys=True,
+        ),
+        timing_provenance="bounded_session_counters",
+        evidence_payload=evidence,
+        inference_payload=inference,
+        enrichment_payload=enrichment,
+        search_text=search_text or session_id,
+        evidence_search_text=search_text or session_id,
+        inference_search_text=search_text or session_id,
+        enrichment_search_text=search_text or session_id,
+    )
+
+
+def _large_session_latency_profile_record(
+    profile: SessionProfileRecord,
+    *,
+    materialized_at: str,
+) -> SessionLatencyProfileRecord:
+    return SessionLatencyProfileRecord(
+        session_id=profile.session_id,
+        materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
+        materialized_at=materialized_at,
+        source_updated_at=profile.source_updated_at,
+        source_sort_key=profile.source_sort_key,
+        input_high_water_mark=profile.input_high_water_mark,
+        input_high_water_mark_source=profile.input_high_water_mark_source,
+        input_row_count=profile.input_row_count,
+        source_name=profile.source_name,
+        title=profile.title,
+        first_message_at=profile.first_message_at,
+        last_message_at=profile.last_message_at,
+        canonical_session_date=profile.canonical_session_date,
+        evidence_payload_json='{"fallback_reasons":["large_session_bounded"]}',
+        search_text=profile.search_text,
+    )
+
+
+def build_large_session_insight_record_bundle_sync(
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    logical_session_id: str | None = None,
+    materialized_at: str | None = None,
+) -> SessionInsightRecordBundle:
+    built_at = materialized_at or now_iso()
+    profile = _large_session_profile_record(
+        conn,
+        session_id,
+        logical_session_id=logical_session_id,
+        materialized_at=built_at,
+    )
+    return SessionInsightRecordBundle(
+        profile_record=profile,
+        latency_profile_record=_large_session_latency_profile_record(profile, materialized_at=built_at),
+        work_event_records=[],
+        phase_records=[],
+        run_records=[],
+        observed_event_records=[],
+        context_snapshot_records=[],
+    )
+
+
 def _stamp_bundle_materialization(conn: sqlite3.Connection, bundle: SessionInsightRecordBundle) -> None:
     """Stamp insight_materialization for one rebuilt session bundle.
 
@@ -692,6 +965,7 @@ def _stamp_bundle_materialization(conn: sqlite3.Connection, bundle: SessionInsig
         ("runs", SESSION_INSIGHT_MATERIALIZER_VERSION, len(bundle.run_records)),
         ("observed_events", SESSION_INSIGHT_MATERIALIZER_VERSION, len(bundle.observed_event_records)),
         ("context_snapshots", SESSION_INSIGHT_MATERIALIZER_VERSION, len(bundle.context_snapshot_records)),
+        ("thread", SESSION_INSIGHT_MATERIALIZER_VERSION, 1),
     ):
         apply_insight_materialization(
             conn,
@@ -800,6 +1074,16 @@ def _materialize_thread_spine_sync(
         )
         conn.execute("DELETE FROM thread_sessions WHERE thread_id = ?", (root,))
         hwm_ms = updated_at_ms or created_at_ms or None
+        sort_key_by_session: dict[str, int] = {}
+        if session_ids:
+            placeholders = ", ".join("?" for _ in session_ids)
+            sort_key_by_session = {
+                str(row["session_id"]): int(row["sort_key_ms"] or 0)
+                for row in conn.execute(
+                    f"SELECT session_id, sort_key_ms FROM sessions WHERE session_id IN ({placeholders})",
+                    tuple(session_ids),
+                ).fetchall()
+            }
         for position, session_id in enumerate(session_ids):
             conn.execute(
                 "INSERT INTO thread_sessions (thread_id, session_id, position) VALUES (?, ?, ?)",
@@ -809,10 +1093,10 @@ def _materialize_thread_spine_sync(
                 conn,
                 insight_type="thread",
                 session_id=session_id,
-                materializer_version=1,
+                materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
                 materialized_at_ms=materialized_at_ms,
                 source_updated_at_ms=updated_at_ms or None,
-                source_sort_key_ms=hwm_ms,
+                source_sort_key_ms=sort_key_by_session.get(session_id) or hwm_ms,
                 input_high_water_mark_ms=hwm_ms,
                 input_high_water_mark_source="provider_ts" if hwm_ms else "fallback_date",
                 input_row_count=len(session_ids),
@@ -833,6 +1117,39 @@ def _refresh_thread_roots_sync(
     replace_threads_bulk_sync(conn, mapping)
     _materialize_thread_spine_sync(conn, mapping, materialized_at_ms=materialized_at_ms)
     return sum(1 for root_id in normalized_root_ids if records_by_root.get(root_id) is not None)
+
+
+def refresh_session_insight_aggregates_sync(
+    conn: sqlite3.Connection,
+    *,
+    progress_callback: ProgressCallback | None = None,
+) -> SessionInsightCounts:
+    """Refresh aggregate insight read models without rehydrating transcripts."""
+
+    materialized_at_ms = _epoch_ms_or_none(now_iso()) or 0
+    _delete_orphan_session_insights_sync(conn, progress_callback=progress_callback)
+    conn.execute("DELETE FROM thread_sessions")
+    conn.execute("DELETE FROM threads")
+    conn.execute("DELETE FROM insight_materialization WHERE insight_type = 'thread'")
+    thread_count = 0
+    for root_chunk in iter_root_id_pages_sync(conn):
+        thread_count += _refresh_thread_roots_sync(
+            conn,
+            root_chunk,
+            materialized_at_ms=materialized_at_ms,
+        )
+    conn.execute("DELETE FROM session_tag_rollups")
+    provider_day_groups = set(list_sync_provider_day_groups(conn))
+    refresh_sync_provider_day_aggregates(conn, provider_day_groups)
+    tag_rollup_count = conn.execute("SELECT COUNT(*) FROM session_tag_rollups").fetchone()[0]
+    conn.commit()
+    return _finalize_rebuild_counts(
+        profiles=0,
+        work_events=0,
+        phases=0,
+        threads=thread_count,
+        tag_rollups=int(tag_rollup_count),
+    )
 
 
 def _delete_tables_with_progress_sync(
@@ -944,7 +1261,7 @@ def rebuild_session_insights_sync(
         key = f"{stage_timing_prefix}.{name}"
         stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - started_at)
 
-    session_chunks: Iterable[Sequence[str]]
+    session_chunks: Iterable[_SessionInsightRebuildChunk]
     previous_profile_groups: set[tuple[str, str]] = set()
     thread_materialized_at_ms = _epoch_ms_or_none(now_iso()) or 0
     if session_ids is None:
@@ -980,14 +1297,11 @@ def rebuild_session_insights_sync(
         # page of a few giant sessions cannot blow up RSS or the per-chunk WAL.
         all_session_ids = tuple(str(row["session_id"]) for row in conn.execute(_ALL_SESSION_IDS_SQL).fetchall())
         message_counts = _load_message_counts_sync(conn, all_session_ids)
-        session_chunks = (
-            chunk.session_ids
-            for chunk in _chunk_session_ids_by_message_budget_sync(
-                all_session_ids,
-                message_counts=message_counts,
-                page_size=page_size,
-                message_budget=_SESSION_INSIGHT_REBUILD_MESSAGE_BUDGET,
-            )
+        session_chunks = _chunk_session_ids_by_message_budget_sync(
+            all_session_ids,
+            message_counts=message_counts,
+            page_size=page_size,
+            message_budget=_SESSION_INSIGHT_REBUILD_MESSAGE_BUDGET,
         )
     else:
         session_ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids))
@@ -1002,14 +1316,11 @@ def rebuild_session_insights_sync(
         message_counts = _load_message_counts_sync(conn, session_ids)
         add_timing("message_counts", t0)
         t0 = time.perf_counter()
-        session_chunks = (
-            chunk.session_ids
-            for chunk in _chunk_session_ids_by_message_budget_sync(
-                session_ids,
-                message_counts=message_counts,
-                page_size=page_size,
-                message_budget=_SESSION_INSIGHT_REBUILD_MESSAGE_BUDGET,
-            )
+        session_chunks = _chunk_session_ids_by_message_budget_sync(
+            session_ids,
+            message_counts=message_counts,
+            page_size=page_size,
+            message_budget=_SESSION_INSIGHT_REBUILD_MESSAGE_BUDGET,
         )
         add_timing("chunk_plan", t0)
     if session_ids is not None and not session_ids:
@@ -1019,27 +1330,66 @@ def rebuild_session_insights_sync(
     profile_count = 0
     work_event_count = 0
     phase_count = 0
+    degraded_session_ids: set[str] = set()
+    heavy_session_ids = _heavy_session_ids_sync(conn, session_ids) if session_ids is not None else set()
     refreshed_profile_groups: set[tuple[str, str]] = set()
     saw_session_ids = False
-    for chunk in session_chunks:
+    for chunk_info in session_chunks:
+        chunk = chunk_info.session_ids
         saw_session_ids = True
-        t0 = time.perf_counter()
-        batch = load_sync_batch(conn, chunk)
-        add_timing("load_batch", t0)
-        t0 = time.perf_counter()
-        root_ids_by_session = thread_root_ids_sync(conn, chunk)
-        add_timing("thread_root_lookup", t0)
-        t0 = time.perf_counter()
-        hydrated_sessions = hydrate_sessions(batch)
-        add_timing("hydrate", t0)
-        t0 = time.perf_counter()
-        record_bundles = build_session_insight_record_bundles(
-            hydrated_sessions,
-            compaction_counts_by_session=batch.compaction_counts_by_session,
-            logical_session_ids_by_session=root_ids_by_session,
-            stage_timing_add=add_timing,
-        )
-        add_timing("build_records", t0)
+        chunk_degraded_ids = tuple(session_id for session_id in chunk if session_id in heavy_session_ids)
+        chunk_full_ids = tuple(session_id for session_id in chunk if session_id not in heavy_session_ids)
+        if chunk_info.max_estimated_session_messages >= _SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD:
+            chunk_degraded_ids = chunk
+            chunk_full_ids = ()
+        if chunk_degraded_ids and not chunk_full_ids:
+            t0 = time.perf_counter()
+            degraded_session_ids.update(str(session_id) for session_id in chunk_degraded_ids)
+            record_bundles = [
+                build_large_session_insight_record_bundle_sync(
+                    conn,
+                    session_id,
+                    logical_session_id=session_id,
+                )
+                for session_id in chunk_degraded_ids
+            ]
+            add_timing("build_degraded_records", t0)
+            batch = None
+        else:
+            record_bundles = []
+            batch = None
+            if chunk_degraded_ids:
+                t0 = time.perf_counter()
+                degraded_session_ids.update(str(session_id) for session_id in chunk_degraded_ids)
+                record_bundles.extend(
+                    build_large_session_insight_record_bundle_sync(
+                        conn,
+                        session_id,
+                        logical_session_id=session_id,
+                    )
+                    for session_id in chunk_degraded_ids
+                )
+                add_timing("build_degraded_records", t0)
+            if chunk_full_ids:
+                t0 = time.perf_counter()
+                batch = load_sync_batch(conn, chunk_full_ids)
+                add_timing("load_batch", t0)
+                t0 = time.perf_counter()
+                root_ids_by_session = thread_root_ids_sync(conn, chunk_full_ids)
+                add_timing("thread_root_lookup", t0)
+                t0 = time.perf_counter()
+                hydrated_sessions = hydrate_sessions(batch)
+                add_timing("hydrate", t0)
+                t0 = time.perf_counter()
+                record_bundles.extend(
+                    build_session_insight_record_bundles(
+                        hydrated_sessions,
+                        compaction_counts_by_session=batch.compaction_counts_by_session,
+                        logical_session_ids_by_session=root_ids_by_session,
+                        stage_timing_add=add_timing,
+                    )
+                )
+                add_timing("build_records", t0)
         t0 = time.perf_counter()
         chunk_profiles, chunk_work_events, chunk_phases = _count_record_bundles(record_bundles)
         add_timing("count_records", t0)
@@ -1096,7 +1446,7 @@ def rebuild_session_insights_sync(
                     progress_total=progress_total,
                 ),
             )
-        if len(batch.messages) >= _SESSION_INSIGHT_RELEASE_MESSAGE_THRESHOLD:
+        if batch is not None and len(batch.messages) >= _SESSION_INSIGHT_RELEASE_MESSAGE_THRESHOLD:
             del batch, record_bundles
             release_process_memory()
         # Commit each chunk so the WAL is bounded to one message-budget chunk
@@ -1117,8 +1467,11 @@ def rebuild_session_insights_sync(
         return _empty_rebuild_counts()
 
     if session_ids is not None:
+        thread_refresh_session_ids = tuple(
+            session_id for session_id in session_ids if session_id not in degraded_session_ids
+        )
         t0 = time.perf_counter()
-        affected_roots = tuple(thread_root_ids_sync(conn, session_ids).values())
+        affected_roots = tuple(thread_root_ids_sync(conn, thread_refresh_session_ids).values())
         add_timing("affected_thread_roots", t0)
         t0 = time.perf_counter()
         thread_count = _refresh_thread_roots_sync(
@@ -1151,34 +1504,13 @@ def rebuild_session_insights_sync(
     # whose session no longer exists before the aggregate phase. foreign_keys=ON
     # on the write profile normally cascades session deletes here, but prune
     # explicitly so an FK-disabled mutation path cannot leave stale insights.
-    _delete_orphan_session_insights_sync(conn, progress_callback=progress_callback)
-
-    # threads / thread_sessions are rebuilt by upsert per surviving root; clear
-    # them (and the 'thread' markers) first so roots that disappeared do not
-    # leave stale aggregate rows. This aggregate phase is comparatively small
-    # and commits once at the end. thread_sessions before threads keeps the FK
-    # cascade ordering explicit even if foreign_keys are off.
-    conn.execute("DELETE FROM thread_sessions")
-    conn.execute("DELETE FROM threads")
-    conn.execute("DELETE FROM insight_materialization WHERE insight_type = 'thread'")
-    thread_count = 0
-    for root_chunk in iter_root_id_pages_sync(conn):
-        records_by_root = build_thread_records_for_roots_sync(conn, root_chunk)
-        mapping: dict[str, ThreadRecord | None] = {root_id: records_by_root.get(root_id) for root_id in root_chunk}
-        replace_threads_bulk_sync(conn, mapping)
-        _materialize_thread_spine_sync(conn, mapping, materialized_at_ms=thread_materialized_at_ms)
-        thread_count += sum(1 for root_id in root_chunk if records_by_root.get(root_id) is not None)
-    conn.execute("DELETE FROM session_tag_rollups")
-    provider_day_groups = set(list_sync_provider_day_groups(conn))
-    refresh_sync_provider_day_aggregates(conn, provider_day_groups)
-    tag_rollup_count = conn.execute("SELECT COUNT(*) FROM session_tag_rollups").fetchone()[0]
-    conn.commit()
+    aggregate_counts = refresh_session_insight_aggregates_sync(conn, progress_callback=progress_callback)
     return _finalize_rebuild_counts(
         profiles=profile_count,
         work_events=work_event_count,
         phases=phase_count,
-        threads=thread_count,
-        tag_rollups=int(tag_rollup_count),
+        threads=aggregate_counts.threads,
+        tag_rollups=aggregate_counts.tag_rollups,
     )
 
 
@@ -1408,5 +1740,6 @@ __all__ = [
     "load_sync_batch",
     "rebuild_session_insights_async",
     "rebuild_session_insights_sync",
+    "refresh_session_insight_aggregates_sync",
     "sync_attachment_batch",
 ]

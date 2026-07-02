@@ -385,7 +385,7 @@ def cli(
     configure_logging(verbose=verbose)
 
     use_plain = should_use_plain(plain=plain)
-    env = AppEnv(ui=create_ui(use_plain))
+    env = AppEnv(plain=use_plain)
     ctx.obj = env
 
 

@@ -21,6 +21,7 @@ from polylogue.config import Config
 from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec
 from polylogue.surfaces.payloads import PublicRefResolutionPayload
 from polylogue.surfaces.projection_spec import projection_from_views
+from tests.infra.builders import make_conv, make_msg
 
 
 def _context_pair(
@@ -268,6 +269,142 @@ def test_read_format_completion_comes_from_selected_view_profile() -> None:
     assert items[0].help == "Supported by read --view raw"
 
 
+def test_dialogue_read_view_renders_projected_authored_prose(capsys: pytest.CaptureFixture[str]) -> None:
+    session = make_conv(
+        id="session-1",
+        title="Mixed transcript",
+        messages=[
+            make_msg(id="sys", role="system", text="system prompt"),
+            make_msg(id="user", role="user", text="operator question", material_origin="human_authored"),
+            make_msg(id="tool", role="tool", text="tool output body"),
+            make_msg(id="assistant", role="assistant", text="agent answer"),
+        ],
+    )
+
+    class _FakePolylogue:
+        async def get_session(self, session_id: str, *, content_projection: object | None = None) -> object | None:
+            assert session_id == "session-1"
+            if content_projection is None:
+                return session
+            return session.with_content_projection(content_projection)  # type: ignore[arg-type]
+
+    env = cast(AppEnv, SimpleNamespace(polylogue=_FakePolylogue(), ui=MagicMock()))
+
+    read_view_handlers.run_read_view(
+        env,
+        RootModeRequest.from_params({}),
+        ReadViewInvocation(
+            view="dialogue",
+            session_id="session-1",
+            output_format="markdown",
+            destination="stdout",
+            out_path=None,
+        ),
+    )
+
+    rendered = capsys.readouterr().out
+    assert "operator question" in rendered
+    assert "agent answer" in rendered
+    assert "system prompt" not in rendered
+    assert "tool output body" not in rendered
+
+
+def test_dialogue_json_uses_compact_payload(capsys: pytest.CaptureFixture[str]) -> None:
+    session = make_conv(
+        id="session-1",
+        title="Mixed transcript",
+        messages=[
+            make_msg(id="user", role="user", text="operator question", material_origin="human_authored"),
+            make_msg(id="assistant", role="assistant", text="agent answer"),
+        ],
+    )
+
+    class _FakePolylogue:
+        async def get_session(self, session_id: str, *, content_projection: object | None = None) -> object | None:
+            assert session_id == "session-1"
+            if content_projection is None:
+                return session
+            return session.with_content_projection(content_projection)  # type: ignore[arg-type]
+
+    env = cast(AppEnv, SimpleNamespace(polylogue=_FakePolylogue(), ui=MagicMock()))
+
+    read_view_handlers.run_read_view(
+        env,
+        RootModeRequest.from_params({}),
+        ReadViewInvocation(
+            view="dialogue",
+            session_id="session-1",
+            output_format="json",
+            destination="stdout",
+            out_path=None,
+        ),
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["id"] == "session-1"
+    assert payload["message_count"] == 2
+    assert payload["messages"] == [
+        {
+            "id": "user",
+            "role": "user",
+            "timestamp": None,
+            "material_origin": "human_authored",
+            "text": "operator question",
+        },
+        {
+            "id": "assistant",
+            "role": "assistant",
+            "timestamp": None,
+            "material_origin": "assistant_authored",
+            "text": "agent answer",
+        },
+    ]
+    assert "target_ref" not in payload
+    assert "actions" not in payload
+
+
+def test_dialogue_json_applies_projection_token_budget(capsys: pytest.CaptureFixture[str]) -> None:
+    session = make_conv(
+        id="session-1",
+        title="Budgeted dialogue",
+        messages=[
+            make_msg(id="user-1", role="user", text="one two", material_origin="human_authored"),
+            make_msg(id="assistant-1", role="assistant", text="three four", material_origin="assistant_authored"),
+            make_msg(id="user-2", role="user", text="five", material_origin="human_authored"),
+        ],
+    )
+
+    class _FakePolylogue:
+        async def get_session(self, session_id: str, *, content_projection: object | None = None) -> object | None:
+            assert session_id == "session-1"
+            if content_projection is None:
+                return session
+            return session.with_content_projection(content_projection)  # type: ignore[arg-type]
+
+    env = cast(AppEnv, SimpleNamespace(polylogue=_FakePolylogue(), ui=MagicMock()))
+
+    read_view_handlers.run_read_view(
+        env,
+        RootModeRequest.from_params({}),
+        ReadViewInvocation(
+            view="dialogue",
+            session_id="session-1",
+            output_format="json",
+            destination="stdout",
+            out_path=None,
+            projection_spec=projection_from_views(("dialogue",), max_tokens=3),
+        ),
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["message_count"] == 3
+    assert payload["rendered_message_count"] == 1
+    assert payload["omitted_before"] == 0
+    assert payload["omitted_after"] == 2
+    assert payload["projection"]["max_tokens"] == 3
+    assert [message["id"] for message in payload["messages"]] == ["user-1"]
+
+
 def _read_verb_kwargs(**overrides: object) -> dict[str, object]:
     """Full default kwargs for the read_verb callback (keyword-robust to signature growth)."""
     defaults: dict[str, object] = {
@@ -386,6 +523,45 @@ def test_read_verb_all_non_summary_invokes_query_set_read_view() -> None:
     assert run_read_set.call_args.kwargs["output_format"] == "json"
 
 
+def test_read_verb_dialogue_query_set_uses_selection_limit() -> None:
+    _, child = _context_pair(params={"origin": "claude-code-session"}, query_terms=("alpha",))
+    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+
+    with (
+        patch("polylogue.cli.query_verbs.run_coroutine_sync") as run_sync,
+        patch("polylogue.cli.query_verbs.run_query_set_read_view") as run_read_set,
+    ):
+        wrapped(child, **_read_verb_kwargs(view="dialogue", output_format="json", limit=1))
+
+    run_sync.assert_not_called()
+    run_read_set.assert_called_once()
+    request = run_read_set.call_args.args[1]
+    assert isinstance(request, RootModeRequest)
+    assert request.query_params()["limit"] == 1
+    assert run_read_set.call_args.kwargs["view"] == "dialogue"
+    assert run_read_set.call_args.kwargs["output_format"] == "json"
+    assert run_read_set.call_args.kwargs["projection_spec"].projection.max_tokens is None
+
+
+def test_read_verb_dialogue_query_set_keeps_max_tokens_as_projection() -> None:
+    _, child = _context_pair(params={"origin": "claude-code-session"}, query_terms=("alpha",))
+    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+
+    with (
+        patch("polylogue.cli.query_verbs.run_read_context_image") as run_context_image,
+        patch("polylogue.cli.query_verbs.run_query_set_read_view") as run_read_set,
+    ):
+        wrapped(child, **_read_verb_kwargs(view="dialogue", output_format="json", limit=1, max_tokens=7))
+
+    run_context_image.assert_not_called()
+    run_read_set.assert_called_once()
+    projection_spec = run_read_set.call_args.kwargs["projection_spec"]
+    assert projection_spec.selection.limit == 1
+    assert projection_spec.projection.max_tokens == 7
+
+
 def test_read_verb_context_composes_preamble_not_passthrough() -> None:
     """read --view context routes to the context preamble composer."""
     _, child = _context_pair(params={"conv_id": "claude-code:abc123"}, query_terms=())
@@ -431,9 +607,10 @@ def test_read_verb_context_image_invokes_pack_view() -> None:
     assert "- Selection query: cost" in delivered
     assert "- Selection limit: 3" in delivered
     assert "- Projection families: context, messages, assertions" in delivered
-    assert "- Body policy: full" in delivered
+    assert "- Body policy: authored-dialogue" in delivered
     assert "- Render: markdown to terminal" in delivered
     assert "- Render layout: context-image" in delivered
+    assert "- Render timestamps: include-available" in delivered
 
 
 def test_read_verb_context_image_projection_spec_records_resolved_refs() -> None:
@@ -549,6 +726,7 @@ def test_context_image_markdown_renderer_adds_document_structure() -> None:
     assert "- Projection redact paths: true" in rendered
     assert "- Render: json to stdout" in rendered
     assert "- Render layout: standard" in rendered
+    assert "- Render timestamps: include-available" in rendered
     assert "- Segments: 1" in rendered
     assert "- Omissions: 1" in rendered
     assert "## 1. Temporal Evidence" in rendered

@@ -99,12 +99,7 @@ def test_web_reader_archive_root_rejects_schema_mismatch(tmp_path: Path) -> None
 
 
 def _materialize_run_projection(index_db: Path) -> None:
-    """Rebuild session insights so the materialized run-projection tables exist.
-
-    The ``run`` / ``observed-event`` / ``context-snapshot`` units read the
-    derived ``session_runs`` / ``session_observed_events`` /
-    ``session_context_snapshots`` tables, so tests must materialize after writing.
-    """
+    """Rebuild session insights for richer digest-derived run-projection rows."""
     from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
     from polylogue.storage.sqlite.connection import open_connection
 
@@ -777,6 +772,24 @@ class TestReaderSearchState:
         # A cheap family still carries real data — the counters are not zeroed by
         # the expensive-family timeout.
         assert cast(list[object], facets["origins"])
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/api/sessions?has_paste_evidence=1",
+            "/api/sessions?query=Hello&has_paste_evidence=1",
+        ],
+    )
+    def test_paste_filter_uses_storage_keyword(self, workspace_env: dict[str, Path], path: str) -> None:
+        """The public paste-evidence HTTP filter must compile to storage's has_paste keyword."""
+
+        with _running_server(workspace_env) as (_, base_url):
+            status, payload = _get_json_ex(base_url, path)
+
+        route_state = cast(dict[str, object], payload["route_state"])
+        assert status == 200
+        assert payload["total"] == 0
+        assert route_state["state"] == "no_results"
 
     @pytest.mark.parametrize("path", ["/api/sessions", "/api/facets"])
     def test_archive_busy_routes_return_typed_503(
@@ -1930,8 +1943,6 @@ class TestReaderQueryUnits:
             .save()
         )
 
-        _materialize_run_projection(index_db)
-
         expression = quote("observed-events where session.repo:polylogue AND kind:session_started")
         with _running_server(workspace_env) as (_, base_url):
             payload = cast(dict[str, object], _get_json(base_url, f"/api/query-units?expression={expression}"))
@@ -1955,8 +1966,6 @@ class TestReaderQueryUnits:
             .add_message("m-context", role="user", text="Daemon context snapshot seed")
             .save()
         )
-
-        _materialize_run_projection(index_db)
 
         expression = quote("context-snapshots where session.repo:polylogue AND boundary:session_start AND text:context")
         with _running_server(workspace_env) as (_, base_url):
@@ -2057,6 +2066,17 @@ class TestReaderViewProfiles:
         context_spec = cast(dict[str, object], context_payload["spec"])
         assert context_spec["seed_refs"] == [f"session:{C1}"]
         assert "messages" in cast(list[str], context_spec["read_views"])
+        projection_spec = cast(dict[str, object], context_payload["projection_spec"])
+        projection_selection = cast(dict[str, object], projection_spec["selection"])
+        projection = cast(dict[str, object], projection_spec["projection"])
+        render = cast(dict[str, object], projection_spec["render"])
+        assert projection_selection["refs"] == [f"session:{C1}"]
+        assert projection["families"] == ["context", "messages", "assertions"]
+        assert projection["body_policy"] == "authored-dialogue"
+        assert {"tool_use", "tool_result", "function_call", "function_call_output"} <= set(
+            cast(list[str], projection["exclude_block_kinds"])
+        )
+        assert render["layout"] == "context-image"
         segments = cast(list[dict[str, object]], context_payload["segments"])
         assert any(segment.get("payload_kind") == "messages" for segment in segments)
         assert isinstance(context_payload["token_estimate"], int)

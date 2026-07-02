@@ -15,7 +15,7 @@ import os
 import pickle
 import sqlite3
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, wait
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
@@ -122,6 +122,158 @@ def _open_sync_connection(db_path: Path) -> sqlite3.Connection:
         ensure_runtime_indexes_sync(conn)
     _load_sqlite_vec(conn)
     return conn
+
+
+def _format_foreign_key_violations(
+    rows: Sequence[sqlite3.Row | tuple[object, ...] | Mapping[str, object | None]],
+) -> str:
+    """Render PRAGMA foreign_key_check rows without sqlite3.Row object reprs."""
+    formatted: list[dict[str, object | None]] = []
+    columns = ("table", "rowid", "parent", "fkid")
+    for row in rows:
+        if isinstance(row, Mapping):
+            formatted.append(dict(row))
+            continue
+        if isinstance(row, sqlite3.Row):
+            formatted.append({key: row[key] for key in row.keys()})  # noqa: SIM118 - sqlite3.Row iterates values
+            continue
+        formatted.append({key: row[idx] if idx < len(row) else None for idx, key in enumerate(columns)})
+    return repr(formatted)
+
+
+def _foreign_key_violations_for_sessions(
+    conn: sqlite3.Connection,
+    session_ids: Iterable[str],
+    *,
+    limit: int = 10,
+) -> list[dict[str, object | None]]:
+    """Return transcript FK violations scoped to sessions changed in this batch."""
+    scoped_session_ids = tuple(sorted({session_id for session_id in session_ids if session_id}))
+    if not scoped_session_ids:
+        return []
+    placeholders = ",".join("?" for _ in scoped_session_ids)
+    checks: tuple[tuple[str, str, int], ...] = (
+        (
+            "messages",
+            f"""
+            SELECT rowid, session_id, message_id, parent_message_id AS child_key
+            FROM messages
+            WHERE session_id IN ({placeholders})
+              AND parent_message_id IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM messages parent
+                WHERE parent.message_id = messages.parent_message_id
+              )
+            """,
+            0,
+        ),
+        (
+            "messages",
+            f"""
+            SELECT rowid, session_id, message_id, session_id AS child_key
+            FROM messages
+            WHERE session_id IN ({placeholders})
+              AND NOT EXISTS (
+                SELECT 1 FROM sessions parent
+                WHERE parent.session_id = messages.session_id
+              )
+            """,
+            1,
+        ),
+        (
+            "blocks",
+            f"""
+            SELECT rowid, session_id, message_id, session_id AS child_key
+            FROM blocks
+            WHERE session_id IN ({placeholders})
+              AND NOT EXISTS (
+                SELECT 1 FROM sessions parent
+                WHERE parent.session_id = blocks.session_id
+              )
+            """,
+            0,
+        ),
+        (
+            "blocks",
+            f"""
+            SELECT rowid, session_id, message_id, message_id AS child_key
+            FROM blocks
+            WHERE session_id IN ({placeholders})
+              AND NOT EXISTS (
+                SELECT 1 FROM messages parent
+                WHERE parent.message_id = blocks.message_id
+              )
+            """,
+            1,
+        ),
+        (
+            "web_content_constructs",
+            f"""
+            SELECT rowid, session_id, message_id, block_id AS child_key
+            FROM web_content_constructs
+            WHERE session_id IN ({placeholders})
+              AND NOT EXISTS (
+                SELECT 1 FROM blocks parent
+                WHERE parent.block_id = web_content_constructs.block_id
+              )
+            """,
+            0,
+        ),
+        (
+            "web_content_constructs",
+            f"""
+            SELECT rowid, session_id, message_id, message_id AS child_key
+            FROM web_content_constructs
+            WHERE session_id IN ({placeholders})
+              AND NOT EXISTS (
+                SELECT 1 FROM messages parent
+                WHERE parent.message_id = web_content_constructs.message_id
+              )
+            """,
+            1,
+        ),
+        (
+            "web_content_constructs",
+            f"""
+            SELECT rowid, session_id, message_id, session_id AS child_key
+            FROM web_content_constructs
+            WHERE session_id IN ({placeholders})
+              AND NOT EXISTS (
+                SELECT 1 FROM sessions parent
+                WHERE parent.session_id = web_content_constructs.session_id
+              )
+            """,
+            2,
+        ),
+    )
+    violations: list[dict[str, object | None]] = []
+    for table, sql, fkid in checks:
+        for row in conn.execute(sql, scoped_session_ids).fetchall():
+            violations.append(
+                {
+                    "table": table,
+                    "rowid": row["rowid"],
+                    "parent": _SCOPED_FK_PARENTS[(table, fkid)],
+                    "fkid": fkid,
+                    "session_id": row["session_id"],
+                    "message_id": row["message_id"],
+                    "child_key": row["child_key"],
+                }
+            )
+            if len(violations) >= limit:
+                return violations
+    return violations
+
+
+_SCOPED_FK_PARENTS = {
+    ("messages", 0): "messages",
+    ("messages", 1): "sessions",
+    ("blocks", 0): "sessions",
+    ("blocks", 1): "messages",
+    ("web_content_constructs", 0): "blocks",
+    ("web_content_constructs", 1): "messages",
+    ("web_content_constructs", 2): "sessions",
+}
 
 
 def _stored_message_count(conn: sqlite3.Connection, session_id: str) -> int:
@@ -833,7 +985,6 @@ def _process_ingest_batch_sync(
     setup_started = time.perf_counter()
     conn = _open_sync_connection(db_path)
     summary.setup_elapsed_s = time.perf_counter() - setup_started
-    heavy_batch = summary.total_blob_mb >= INGEST_RELEASE_BLOB_MB_THRESHOLD
     materialized_ids: set[str] = set()
     _observe_current_rss(summary)
     transaction_started = False
@@ -858,9 +1009,10 @@ def _process_ingest_batch_sync(
         )
         if transaction_started:
             if suspend_fts_triggers:
-                fk_violations = conn.execute("PRAGMA foreign_key_check").fetchmany(10)
+                fk_violations = _foreign_key_violations_for_sessions(conn, materialized_ids)
                 if fk_violations:
-                    raise sqlite3.IntegrityError(f"foreign key check failed during bulk ingest: {fk_violations!r}")
+                    detail = _format_foreign_key_violations(fk_violations)
+                    raise sqlite3.IntegrityError(f"foreign key check failed during bulk ingest: {detail}")
             fts_repair_ids = set(summary.fts_repair_session_ids)
             # Side effects run before releasing the connection so data and post-
             # write effects share one transaction. The previous arrangement
@@ -878,7 +1030,7 @@ def _process_ingest_batch_sync(
             summary.commit_elapsed_s = time.perf_counter() - commit_started
             from polylogue.storage.sqlite.wal_checkpoint import maybe_checkpoint_wal
 
-            wal_observation = maybe_checkpoint_wal(db_path, reason="ingest_batch_commit")
+            wal_observation = maybe_checkpoint_wal(db_path, reason="ingest_batch_commit", allow_truncate=False)
             summary.wal_checkpoint_mode = wal_observation.mode
             summary.wal_bytes_before_checkpoint = wal_observation.wal_bytes_before
             summary.wal_bytes_after_checkpoint = wal_observation.wal_bytes_after
@@ -920,9 +1072,6 @@ def _process_ingest_batch_sync(
     summary.worker_progress_completed = progress.completed_raw_count
     summary.worker_progress_total = progress.total_raw_count
     summary.elapsed_s = time.perf_counter() - t_start
-    if heavy_batch or summary.total_msgs >= INGEST_RELEASE_MESSAGE_THRESHOLD:
-        release_process_memory()
-        _observe_current_rss(summary)
     return summary
 
 
@@ -1048,7 +1197,6 @@ async def process_ingest_batch(
     )
     if heavy_batch:
         del batch_summary
-        release_process_memory()
     return observation
 
 

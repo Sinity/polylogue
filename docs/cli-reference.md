@@ -108,7 +108,7 @@ Options:
                                   pushdown)
   --has-paste                     Only sessions with paste evidence (SQL
                                   pushdown)
-  --typed-only                    Only sessions without pasted content (typed
+  --typed-only                    Only sessions without paste evidence (typed
                                   prose only)
   --min-messages INTEGER          Minimum message count
   --max-messages INTEGER          Maximum message count
@@ -234,11 +234,11 @@ Options:
   --help                          Show this message and exit.
 
 Commands:
-  insights  Inspect durable archive insight read models.
-  pace      Show inter-turn gap analysis for one or more sessions.
-  tools     Show top tools by invocation count across filtered sessions.
-  turns     Show per-turn cost and duration for one session.
-  usage     Audit provider usage accounting without turning it into a...
+  insights  Check and export derived insight materialization.
+  pace      Analyze session pacing, gaps, and burstiness.
+  tools     Analyze tool usage across sessions.
+  turns     Analyze turn structure for one session.
+  usage     Analyze provider usage events.
 ```
 
 ## Read Verb
@@ -271,14 +271,29 @@ Usage: polylogue read [OPTIONS] [REF]
       polylogue read session:abc123 --format json
 
 Projection:
-  -v, --view VIEW[,VIEW...]  What to render (summary, transcript, messages,
-                             raw, context, context-image, neighbors,
-                             correlation, temporal, chronicle).  [default:
-                             summary]
-  --views                    List executable read-view profiles, formats, and
-                             options.
-  --spec                     Print the composed selection/projection/render
-                             spec as JSON.
+  -v, --view VIEW[,VIEW...]       What to render (summary, transcript,
+                                  dialogue, messages, raw, context, context-
+                                  image, neighbors, correlation, temporal,
+                                  chronicle).  [default: summary]
+  --render TEXT                   Render expression, e.g. layout:context-
+                                  image,timestamps:include-
+                                  available,format:markdown. Known keys:
+                                  layout, timestamps, format, destination/to,
+                                  out.
+  --projection TEXT               Projection expression, e.g. max-
+                                  tokens:4000,redact-paths:true,include-
+                                  assertions:false. Known keys: max-tokens,
+                                  redact-paths, include-assertions.
+  --render-layout [standard|context-image]
+                                  Render layout for the composed projection
+                                  spec; defaults from --view.
+  --timestamps [renderer-default|include-available|omit]
+                                  Timestamp rendering policy for the composed
+                                  projection spec; defaults from --view.
+  --views                         List executable read-view profiles, formats,
+                                  and options.
+  --spec                          Print the composed
+                                  selection/projection/render spec as JSON.
 
 Delivery and format:
   --to [terminal|stdout|browser|clipboard|file]
@@ -341,13 +356,13 @@ Other options:
 ```text
 Usage: polylogue select [OPTIONS]
 
-  Select one matched session with fzf/prompt fallback.
+  Select one matched session or print bounded candidate identities.
 
 Options:
   -n, --limit INTEGER RANGE  Max candidate sessions.  [default: 20; x>=1]
-  --print [id|title|origin]  Field to print for the selected session.
-                             [default: id]
-  --json                     Print the selected session as one JSON object.
+  --print [id|title|origin]  Field to print for selected or candidate
+                             sessions.  [default: id]
+  --json                     Print selected or candidate sessions as JSON.
   --help                     Show this message and exit.
 ```
 
@@ -755,6 +770,8 @@ The schema files live under `docs/schemas/cli-output/`.
 | `query-unit-aggregate-envelope` | `QueryUnitAggregateEnvelope` | `polylogue --format json messages where ... | group by role | count`<br>`Polylogue.query_units(...)`<br>`MCP query_units`<br>`GET /api/query-units?expression=...` |
 | `import-explain` | `ImportExplainPayload` | `polylogue import PATH --explain --format json`<br>`polylogue import PATH --explain --format ndjson (entries)` |
 | `archive-debt-list` | `ArchiveDebtListPayload` | `polylogue ops debt list --format json` |
+| `tool-counts` | `ToolCountPayload` | `polylogue analyze tools --format json` |
+| `tool-family-comparison` | `ToolFamilyComparisonPayload` | `polylogue analyze tools --compare-family FAMILY --format json` |
 | `session-neighbor-candidate` | `SessionNeighborCandidatePayload` | `polylogue read --view neighbors --format json` |
 | `mutation-result` | `MutationResultPayload` | `polylogue find <query> then delete --dry-run`<br>`polylogue find <query> then delete --yes`<br>`MCP mutation tools`<br>`daemon mutation endpoints` |
 | `action-affordance-list` | `ActionAffordanceListPayload` | `polylogue config action-affordances`<br>`GET /api/action-affordances`<br>`MCP action_affordances` |

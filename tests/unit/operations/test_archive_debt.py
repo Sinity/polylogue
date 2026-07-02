@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,6 +11,7 @@ import pytest
 
 from polylogue.operations import archive_debt as module
 from polylogue.operations.archive_debt import archive_debt_list
+from polylogue.storage.repair import RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
@@ -38,6 +40,15 @@ def test_archive_debt_reports_missing_required_tiers(tmp_path: Path) -> None:
     assert "debt:archive-tier:user:missing" in refs
     assert payload.totals.critical >= 2
     assert all(row.kind == "archive-tier" for row in payload.rows)
+
+
+def test_archive_debt_filters_rows_by_status(tmp_path: Path) -> None:
+    actionable = archive_debt_list(archive_root=tmp_path, kinds=("archive-tier",), statuses=("actionable",))
+    blocked = archive_debt_list(archive_root=tmp_path, kinds=("archive-tier",), statuses=("blocked",))
+
+    assert actionable.totals.total > 0
+    assert all(row.status == "actionable" for row in actionable.rows)
+    assert blocked.totals.total == 0
 
 
 def test_archive_debt_reports_candidate_assertions_as_actionable(tmp_path: Path) -> None:
@@ -263,6 +274,18 @@ def _init_raw_materialization_fixture(root: Path) -> tuple[Path, Path, Path]:
                     None,
                 ),
                 (
+                    "raw-parse-pending",
+                    "codex-session",
+                    "codex-parse-pending",
+                    str(source_file),
+                    bytes.fromhex("13" * 32),
+                    2048,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+                (
                     "raw-parsed-no-session",
                     "aistudio-drive",
                     None,
@@ -334,6 +357,30 @@ def _init_raw_materialization_fixture(root: Path) -> tuple[Path, Path, Path]:
                     123,
                     "passed",
                 ),
+                (
+                    "raw-codex-session-shaped",
+                    "codex-session",
+                    "codex-session-shaped",
+                    str(root / "rollout-session.jsonl"),
+                    bytes.fromhex("ff" * 32),
+                    4096,
+                    123,
+                    None,
+                    123,
+                    "passed",
+                ),
+                (
+                    "raw-gemini-session-shaped",
+                    "gemini-cli-session",
+                    "gemini-session-shaped",
+                    str(root / "gemini-session.json"),
+                    bytes.fromhex("12" * 32),
+                    4096,
+                    123,
+                    None,
+                    123,
+                    "passed",
+                ),
             ),
         )
     (blob_root / "bb").mkdir()
@@ -359,6 +406,22 @@ def _init_raw_materialization_fixture(root: Path) -> tuple[Path, Path, Path]:
         '{"type":"session_meta","timestamp":"2026-06-30T00:00:00Z"}\n',
         encoding="utf-8",
     )
+    (blob_root / "ff").mkdir()
+    (blob_root / "ff" / ("ff" * 31)).write_text(
+        '{"type":"session_meta","timestamp":"2026-06-30T00:00:00Z"}\n'
+        '{"type":"response_item","payload":{"type":"message","role":"user"}}\n',
+        encoding="utf-8",
+    )
+    (blob_root / "12").mkdir()
+    (blob_root / "12" / ("12" * 31)).write_text(
+        '{"sessionId":"gemini-session-shaped","messages":[{"type":"user"},{"type":"gemini"}],"kind":"main"}',
+        encoding="utf-8",
+    )
+    (blob_root / "13").mkdir()
+    (blob_root / "13" / ("13" * 31)).write_text(
+        '{"type":"response_item","payload":{"type":"message","role":"user"}}\n',
+        encoding="utf-8",
+    )
 
     with sqlite3.connect(index_db) as conn:
         conn.execute("CREATE TABLE sessions (session_id TEXT, origin TEXT, native_id TEXT, raw_id TEXT)")
@@ -371,29 +434,184 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
 
     payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
 
+    assert payload.totals.total == 7
+    assert payload.totals.affected_total == 9
+    assert payload.totals.affected_critical == 1
+    assert payload.totals.affected_warning == 4
+    assert payload.totals.affected_info == 4
+    assert payload.totals.affected_actionable == 2
+    assert payload.totals.classified == 2
+    assert payload.totals.affected_open == 3
+    assert payload.totals.affected_classified == 4
+
     by_ref = {row.debt_ref: row for row in payload.rows}
     missing_blob = by_ref["debt:raw-materialization:codex-session:missing-blob"]
     assert missing_blob.severity == "critical"
     assert missing_blob.status == "actionable"
     assert missing_blob.kind == "raw-materialization"
+    assert missing_blob.category == "missing-blob"
+    assert missing_blob.affected_count == 1
     assert "missing blob payloads" in missing_blob.summary
     assert any(ref.startswith("blob:") for ref in missing_blob.evidence_refs)
 
+    parse_pending = by_ref["debt:raw-materialization:codex-session:parse-pending"]
+    assert parse_pending.severity == "warning"
+    assert parse_pending.status == "actionable"
+    assert parse_pending.category == "parse-pending"
+    assert "max raw payload size: 2.0 KiB (2,048 bytes)" in (parse_pending.details or "")
+    assert parse_pending.actions[0].command == ("polylogued", "run")
+    assert parse_pending.actions[1].label == "Preview targeted raw replay"
+    assert parse_pending.actions[1].command == (
+        "polylogue",
+        "ops",
+        "maintenance",
+        "run",
+        "--target",
+        "raw_materialization",
+        "--raw-artifact",
+        "raw-parse-pending",
+        "--dry-run",
+    )
+
     parsed_gap = by_ref["debt:raw-materialization:aistudio-drive:parsed-without-session"]
     assert parsed_gap.severity == "warning"
+    assert parsed_gap.status == "open"
+    assert parsed_gap.category == "parsed-without-session"
+    assert parsed_gap.affected_count == 1
     assert "parsed but have no materialized session" in parsed_gap.summary
+    assert "blind replay is not the primary repair" in (parsed_gap.details or "")
     assert "passed=1" in (parsed_gap.details or "")
+    assert "max raw payload size: 4.0 KiB (4,096 bytes)" in (parsed_gap.details or "")
+    assert parsed_gap.actions == ()
+
+    session_shaped = by_ref["debt:raw-materialization:codex-session:parsed-session-unmaterialized"]
+    assert session_shaped.severity == "warning"
+    assert session_shaped.status == "open"
+    assert session_shaped.category == "parsed-session-unmaterialized"
+    assert session_shaped.affected_count == 1
+    assert "Codex session event stream" in (session_shaped.details or "")
+    assert "Sample parsed session native id(s): codex-session-shaped" in (session_shaped.details or "")
+    assert "parsed-session-native-id:codex-session:codex-session-shaped" in session_shaped.evidence_refs
+    assert session_shaped.actions[0].command == ("polylogue", "import", "--explain")
+    assert session_shaped.actions[1].command[:6] == (
+        "polylogue",
+        "ops",
+        "maintenance",
+        "run",
+        "--target",
+        "raw_materialization",
+    )
+    assert "--raw-artifact" in session_shaped.actions[1].command
+    assert "--dry-run" in session_shaped.actions[1].command
+
+    gemini_session = by_ref["debt:raw-materialization:gemini-cli-session:parsed-session-unmaterialized"]
+    assert gemini_session.severity == "warning"
+    assert gemini_session.status == "open"
+    assert gemini_session.category == "parsed-session-unmaterialized"
+    assert "Gemini CLI chat session" in (gemini_session.details or "")
+    assert "Sample parsed session native id(s): gemini-session-shaped" in (gemini_session.details or "")
+    assert "parsed-session-native-id:gemini-cli-session:gemini-session-shaped" in gemini_session.evidence_refs
+    assert gemini_session.actions[0].label == "Explain parser output"
+    assert gemini_session.actions[1].label == "Preview targeted raw replay"
 
     sidecars = by_ref["debt:raw-materialization:claude-code-session:parsed-non-session-artifact"]
     assert sidecars.severity == "info"
-    assert sidecars.status == "open"
+    assert sidecars.status == "classified"
+    assert sidecars.category == "parsed-non-session-artifact"
+    assert sidecars.affected_count == 3
     assert "parsed as non-session artifacts" in sidecars.summary
     assert "passed=3" in (sidecars.details or "")
     assert sidecars.actions == ()
 
     metadata_only = by_ref["debt:raw-materialization:codex-session:parsed-non-session-artifact"]
     assert metadata_only.severity == "info"
+    assert metadata_only.status == "classified"
+    assert metadata_only.affected_count == 1
     assert "metadata-only" in (metadata_only.details or "") or "non-session artifacts" in metadata_only.summary
+
+
+def test_archive_debt_blocks_oversized_raw_materialization_replay(tmp_path: Path) -> None:
+    _source_db, _index_db, source_file = _init_raw_materialization_fixture(tmp_path)
+    oversized_size = RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES + 1
+    blob = tmp_path / "blob" / "14" / ("14" * 31)
+    blob.parent.mkdir(exist_ok=True)
+    blob.write_bytes(b"{}")
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                acquired_at_ms, parsed_at_ms, parse_error, validated_at_ms,
+                validation_status
+            ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+            """,
+            (
+                "raw-oversized-parse-pending",
+                "claude-code-session",
+                "oversized-native",
+                str(source_file),
+                bytes.fromhex("14" * 32),
+                oversized_size,
+                None,
+                None,
+                None,
+                None,
+            ),
+        )
+
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
+
+    by_ref = {row.debt_ref: row for row in payload.rows}
+    row = by_ref["debt:raw-materialization:claude-code-session:parse-pending"]
+    assert row.status == "blocked"
+    assert row.affected_count == 1
+    assert "Actual replay is blocked by the 1.0 GiB" in (row.details or "")
+    assert "raw-materialization execution limit" in (row.details or "")
+    assert row.actions[0].label == "Preview targeted raw replay"
+    assert payload.totals.affected_blocked == 1
+
+
+def test_archive_debt_marks_oversized_stream_raw_materialization_actionable(tmp_path: Path) -> None:
+    _source_db, _index_db, _source_file = _init_raw_materialization_fixture(tmp_path)
+    source_file = tmp_path / "claude-code.jsonl"
+    source_file.write_text("{}", encoding="utf-8")
+    oversized_size = RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES + 1
+    blob = tmp_path / "blob" / "15" / ("15" * 31)
+    blob.parent.mkdir(exist_ok=True)
+    blob.write_bytes(b"{}")
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                acquired_at_ms, parsed_at_ms, parse_error, validated_at_ms,
+                validation_status
+            ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+            """,
+            (
+                "raw-oversized-stream-parse-pending",
+                "claude-code-session",
+                "oversized-stream-native",
+                str(source_file),
+                bytes.fromhex("15" * 32),
+                oversized_size,
+                None,
+                None,
+                None,
+                None,
+            ),
+        )
+
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
+
+    by_ref = {row.debt_ref: row for row in payload.rows}
+    row = by_ref["debt:raw-materialization:claude-code-session:parse-pending"]
+    assert row.status == "actionable"
+    assert row.affected_count == 1
+    assert "stream-record JSONL sources" in (row.details or "")
+    assert "Actual replay is blocked" not in (row.details or "")
+    assert row.actions[0].label == "Run daemon ingest"
+    assert payload.totals.affected_actionable >= 1
 
 
 def test_archive_debt_reports_codex_zero_token_projection_debt(tmp_path: Path) -> None:
@@ -500,7 +718,7 @@ def test_archive_debt_raw_materialization_reports_native_id_aliases(tmp_path: Pa
     assert "debt:raw-materialization:aistudio-drive:parsed-without-session" not in refs
     alias = refs["debt:raw-materialization:aistudio-drive:materialized-alias"]
     assert alias.severity == "info"
-    assert alias.status == "open"
+    assert alias.status == "classified"
     assert "materialized through native/source aliases" in alias.summary
     assert alias.actions == ()
     assert "debt:raw-materialization:codex-session:missing-blob" in refs
@@ -528,9 +746,63 @@ def test_archive_debt_raw_materialization_reports_source_path_native_aliases(tmp
     assert "debt:raw-materialization:claude-code-session:parsed-without-session" not in refs
     alias = refs["debt:raw-materialization:claude-code-session:materialized-alias"]
     assert alias.severity == "info"
-    assert alias.status == "open"
+    assert alias.status == "classified"
     assert "should not be replayed blindly" in (alias.details or "")
     assert "debt:raw-materialization:codex-session:missing-blob" in refs
+
+
+def test_archive_debt_reports_chatgpt_browser_capture_session_ids(tmp_path: Path) -> None:
+    _source_db, _index_db, _source_file = _init_raw_materialization_fixture(tmp_path)
+    browser_capture = tmp_path / "browser-capture" / "chatgpt" / "conv-1-capture.json"
+    browser_capture.parent.mkdir(parents=True)
+    browser_capture.write_text(
+        json.dumps(
+            {
+                "polylogue_capture_kind": "browser_llm_session",
+                "session": {
+                    "provider_session_id": "conv-1",
+                    "title": "Captured ChatGPT session",
+                },
+                "raw_provider_payload": {
+                    "conversation_id": "conv-1",
+                    "mapping": {},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                acquired_at_ms, parsed_at_ms, parse_error, validated_at_ms,
+                validation_status
+            ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+            """,
+            (
+                "raw-chatgpt-browser-capture",
+                "chatgpt-export",
+                "conv-1",
+                str(browser_capture),
+                bytes.fromhex("13" * 32),
+                4096,
+                123,
+                None,
+                123,
+                "passed",
+            ),
+        )
+    blob = tmp_path / "blob" / "13" / ("13" * 31)
+    blob.parent.mkdir(exist_ok=True)
+    blob.write_text(browser_capture.read_text(encoding="utf-8"), encoding="utf-8")
+
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
+
+    refs = {row.debt_ref: row for row in payload.rows}
+    debt = refs["debt:raw-materialization:chatgpt-export:parsed-session-unmaterialized"]
+    assert "Sample parsed session native id(s): conv-1" in (debt.details or "")
+    assert "parsed-session-native-id:chatgpt-export:conv-1" in debt.evidence_refs
 
 
 def test_archive_debt_reports_partial_embedded_claude_code_aggregates(tmp_path: Path) -> None:
@@ -603,6 +875,7 @@ def test_archive_debt_ignores_fully_materialized_embedded_claude_code_aggregates
     refs = {row.debt_ref for row in payload.rows}
     assert "debt:raw-materialization:claude-code-session:aggregate-partial-materialization" not in refs
     assert "debt:raw-materialization:claude-code-session:parsed-without-session" not in refs
+    assert "debt:raw-materialization:claude-code-session:materialized-alias" not in refs
     assert "debt:raw-materialization:codex-session:missing-blob" in refs
 
 

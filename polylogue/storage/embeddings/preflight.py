@@ -170,41 +170,16 @@ def _read_archive_pending_message_count(
         else:
             status_table = ""
         total = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
-        if max_sessions is not None or max_messages is not None or min_messages is not None:
-            pending = _select_archive_pending_window(
-                conn,
-                status_table=status_table,
-                rebuild=rebuild,
-                max_sessions=max_sessions,
-                max_messages=max_messages,
-                min_messages=min_messages,
-            )
-            return total, len(pending), sum(item[1] for item in pending)
-        if rebuild or not status_table:
-            pending_convs = total
-            pending_messages = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
-            return total, pending_convs, pending_messages
-        pending_convs = int(
-            conn.execute(
-                f"""
-                SELECT COUNT(*)
-                FROM sessions s
-                LEFT JOIN {status_table} e ON e.session_id = s.session_id
-                WHERE e.session_id IS NULL OR e.needs_reindex = 1
-                """
-            ).fetchone()[0]
+        pending = _select_archive_pending_window(
+            conn,
+            status_table=status_table,
+            rebuild=rebuild,
+            max_sessions=max_sessions,
+            max_messages=max_messages,
+            min_messages=min_messages or 1,
         )
-        pending_messages = int(
-            conn.execute(
-                f"""
-                SELECT COUNT(*)
-                FROM messages m
-                JOIN sessions s ON s.session_id = m.session_id
-                LEFT JOIN {status_table} e ON e.session_id = s.session_id
-                WHERE e.session_id IS NULL OR e.needs_reindex = 1
-                """
-            ).fetchone()[0]
-        )
+        pending_convs = len(pending)
+        pending_messages = sum(item[1] for item in pending)
     finally:
         conn.close()
     return total, pending_convs, pending_messages

@@ -82,6 +82,7 @@ REQUIRED_STATUS_KEYS: frozenset[str] = frozenset(
         "operations",
         "last_ingestion_batch",
         "fts_readiness",
+        "raw_materialization_readiness",
         "embedding_readiness",
         "memory",
         "health",
@@ -252,6 +253,7 @@ class TestStatusEnvelopeContract:
             "daemon_ingest",
             "daemon_watcher",
             "embeddings",
+            "raw_materialization",
             "search",
         } <= set(component_readiness)
         api = component_readiness["daemon_api"]
