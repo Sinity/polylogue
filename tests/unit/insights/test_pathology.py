@@ -29,7 +29,15 @@ def _run(session_id: str = "s1") -> ProjectedRun:
     return ProjectedRun(run_ref=ObjectRef.parse(f"run:{session_id}"), evidence_refs=_ev(session_id))
 
 
-def _event(kind: ObservedEventKind, *, session_id: str = "s1", delivery: str = "observed") -> ObservedEvent:
+def _event(
+    kind: ObservedEventKind,
+    *,
+    session_id: str = "s1",
+    delivery: str = "observed",
+    handler_kind: str | None = None,
+    tool_name: str | None = None,
+    command: str | None = None,
+) -> ObservedEvent:
     return ObservedEvent(
         event_ref=ObjectRef.parse(f"observed-event:{session_id}:{kind}"),
         kind=kind,
@@ -37,6 +45,9 @@ def _event(kind: ObservedEventKind, *, session_id: str = "s1", delivery: str = "
         summary=f"{kind} event",
         delivery_state=delivery,  # type: ignore[arg-type]
         evidence_refs=_ev(session_id),
+        handler_kind=handler_kind,
+        tool_name=tool_name,
+        command=command,
     )
 
 
@@ -68,11 +79,68 @@ def _projection(
 
 
 def test_wasted_loop_detected_on_repeated_failures() -> None:
-    proj = _projection(events=[_event("test_failed"), _event("command_failed"), _event("test_failed")])
+    proj = _projection(
+        events=[
+            _event("command_failed", handler_kind="shell", command="cargo test"),
+            _event("command_failed", handler_kind="shell", command="cargo test"),
+            _event("command_failed", handler_kind="shell", command="cargo test"),
+        ]
+    )
     findings = [f for f in detect_session_pathologies(proj) if f.kind == "wasted_loop"]
     assert len(findings) == 1
     assert findings[0].occurrence_count == 3
+    assert "cargo test" in findings[0].detail
     assert findings[0].evidence_refs
+
+
+def test_wasted_loop_requires_consecutive_failures_without_success() -> None:
+    proj = _projection(
+        events=[
+            _event("test_failed"),
+            _event("test_passed"),
+            _event("command_failed"),
+            _event("command_succeeded"),
+            _event("test_failed"),
+        ]
+    )
+    assert [f for f in detect_session_pathologies(proj) if f.kind == "wasted_loop"] == []
+
+
+def test_wasted_loop_ignores_cancelled_non_shell_tool_failures() -> None:
+    proj = _projection(
+        events=[
+            _event("command_failed", handler_kind="file_read", tool_name="Read"),
+            _event("command_failed", handler_kind="generic", tool_name="Edit"),
+            _event("command_failed", handler_kind="shell", tool_name="Bash", command="cargo test"),
+            _event("command_failed", handler_kind="shell", tool_name="Bash", command="cargo test"),
+        ]
+    )
+    findings = [f for f in detect_session_pathologies(proj) if f.kind == "wasted_loop"]
+    assert len(findings) == 1
+    assert findings[0].occurrence_count == 2
+
+
+def test_wasted_loop_treats_old_command_payload_as_diagnostic() -> None:
+    proj = _projection(
+        events=[
+            _event("command_failed", command="pytest -q"),
+            _event("command_failed", command="pytest -q"),
+        ]
+    )
+    findings = [f for f in detect_session_pathologies(proj) if f.kind == "wasted_loop"]
+    assert len(findings) == 1
+    assert findings[0].occurrence_count == 2
+
+
+def test_wasted_loop_not_flagged_on_mixed_diagnostic_failures() -> None:
+    proj = _projection(
+        events=[
+            _event("command_failed", handler_kind="shell", command="pytest -q"),
+            _event("command_failed", handler_kind="shell", command="mypy polylogue"),
+            _event("command_failed", handler_kind="shell", command="devtools verify --quick"),
+        ]
+    )
+    assert [f for f in detect_session_pathologies(proj) if f.kind == "wasted_loop"] == []
 
 
 def test_wasted_loop_not_flagged_on_single_failure() -> None:
@@ -82,7 +150,7 @@ def test_wasted_loop_not_flagged_on_single_failure() -> None:
 
 def test_wasted_loop_severity_scales_with_count() -> None:
     low = _projection(events=[_event("test_failed")] * 2)
-    high = _projection(events=[_event("command_failed")] * 8)
+    high = _projection(events=[_event("command_failed", handler_kind="shell", command="cargo test")] * 8)
     assert next(f for f in detect_session_pathologies(low) if f.kind == "wasted_loop").severity == "low"
     assert next(f for f in detect_session_pathologies(high) if f.kind == "wasted_loop").severity == "high"
 

@@ -254,7 +254,7 @@ def extract_attribution(
     # low-risk language hints here and ignore runtime/protocol provider-user
     # rows such as command stdout.
     for message in semantic_facts.message_facts:
-        if not (message.is_human_authored or message.is_assistant) or message.is_noise or not message.text:
+        if not (message.is_candidate_human_authored or message.is_assistant) or message.is_noise or not message.text:
             continue
         text_lower = message.text.lower()
         for lang_name, pattern in _DIALOGUE_LANGUAGE_HINT_PATTERNS.items():

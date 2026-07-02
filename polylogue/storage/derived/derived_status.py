@@ -1,13 +1,9 @@
 """Canonical readiness/freshness snapshot for durable derived models.
 
-Reads ``index.db`` directly. The old collector
-delegated to readiness helpers bound to the single-file shape
-(``sessions``, ``messages_fts``, the session-insight
-status snapshot keyed by ``session_id``). Those tables do not exist in the
-archive; this module computes the same ``DerivedModelStatus`` contract
-directly from the ``sessions`` / ``messages`` / ``blocks`` /
-``messages_fts`` / ``session_profiles`` / ``session_work_events`` /
-``session_phases`` / ``insight_materialization`` tables.
+Reads ``index.db`` directly for archive FTS/retrieval status and delegates
+session-insight row/readiness accounting to the canonical
+``session_insight_status_sync`` snapshot. This keeps derived-model readiness
+from drifting away from the profile/work-event/phase materialization contract.
 
 Concepts that are moot in the archive (#1743) degrade to an empty,
 ready status rather than crashing:
@@ -31,7 +27,7 @@ from typing import TypeAlias
 from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.storage.derived.insights import build_archive_insight_statuses, pending_docs, pending_rows
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
-from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
+from polylogue.storage.insights.session.status import session_insight_status_sync
 
 MetricValue: TypeAlias = int | bool
 Metrics: TypeAlias = dict[str, MetricValue]
@@ -68,10 +64,6 @@ def _message_fts_triggers_present(conn: sqlite3.Connection) -> bool:
         ).fetchall()
     }
     return all(name in present for name in _MESSAGE_FTS_TRIGGERS)
-
-
-def _total_sessions(conn: sqlite3.Connection) -> int:
-    return _count(conn, "SELECT COUNT(*) FROM sessions")
 
 
 # ---------------------------------------------------------------------------
@@ -124,87 +116,6 @@ def _message_fts_metrics(conn: sqlite3.Connection, *, verify_full: bool) -> Metr
 # ---------------------------------------------------------------------------
 # Session insights (session_profiles / work_events / phases / threads)
 # ---------------------------------------------------------------------------
-
-
-def _archive_session_insight_status(conn: sqlite3.Connection, *, verify_full: bool) -> SessionInsightStatusSnapshot:
-    """Build the session-insight snapshot from `index.db` tables.
-
-    * ``session_profiles`` — one row per materialized session (keyed by
-      ``session_id``).
-    * ``session_work_events`` / ``session_phases`` — inference rows keyed by
-      ``session_id``.
-    * ``threads`` — root threads (``root_session_id`` unique per thread).
-    * ``insight_materialization`` — carries ``materializer_version`` per
-      ``(insight_type, session_id)`` for version/staleness detection.
-
-    Native FK ``ON DELETE CASCADE`` makes orphan derived rows structurally
-    impossible, so orphan counts are zero. Thread-FTS, tag-rollup, and
-    day-summary surfaces do not exist directly and stay at their zero defaults.
-    """
-    total_sessions = _total_sessions(conn)
-    profile_rows = _count(conn, "SELECT COUNT(*) FROM session_profiles")
-    work_event_rows = _count(conn, "SELECT COUNT(*) FROM session_work_events")
-    phase_rows = _count(conn, "SELECT COUNT(*) FROM session_phases")
-    thread_rows = _count(conn, "SELECT COUNT(*) FROM threads") if _table_exists(conn, "threads") else 0
-
-    # Missing profiles: sessions with no materialized profile row.
-    missing_profile_rows = _count(
-        conn,
-        """
-        SELECT COUNT(*)
-        FROM sessions s
-        LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
-        WHERE sp.session_id IS NULL
-        """,
-    )
-
-    # Stale profiles: materialized under an older session-insight version.
-    stale_profile_rows = 0
-    if verify_full and _table_exists(conn, "insight_materialization"):
-        stale_profile_rows = _count(
-            conn,
-            """
-            SELECT COUNT(*)
-            FROM insight_materialization im
-            WHERE im.insight_type = 'session_profile'
-              AND im.materializer_version != ?
-            """,
-            (SESSION_INSIGHT_MATERIALIZER_VERSION,),
-        )
-
-    return SessionInsightStatusSnapshot(
-        total_sessions=total_sessions,
-        root_threads=thread_rows,
-        profile_row_count=profile_rows,
-        work_event_inference_count=work_event_rows,
-        work_event_inference_fts_count=work_event_rows,
-        work_event_inference_fts_duplicate_count=0,
-        phase_inference_count=phase_rows,
-        thread_count=thread_rows,
-        thread_fts_count=thread_rows,
-        thread_fts_duplicate_count=0,
-        tag_rollup_count=0,
-        missing_profile_row_count=missing_profile_rows,
-        stale_profile_row_count=stale_profile_rows,
-        orphan_profile_row_count=0,
-        expected_work_event_inference_count=work_event_rows,
-        stale_work_event_inference_count=0,
-        orphan_work_event_inference_count=0,
-        expected_phase_inference_count=phase_rows,
-        stale_phase_inference_count=0,
-        orphan_phase_inference_count=0,
-        stale_thread_count=0,
-        orphan_thread_count=0,
-        expected_tag_rollup_count=0,
-        stale_tag_rollup_count=0,
-        profile_rows_ready=missing_profile_rows == 0 and stale_profile_rows == 0,
-        work_event_inference_rows_ready=True,
-        work_event_inference_fts_ready=True,
-        phase_inference_rows_ready=True,
-        threads_ready=True,
-        threads_fts_ready=True,
-        tag_rollups_ready=True,
-    )
 
 
 def _session_insight_metrics(session_status: SessionInsightStatusSnapshot) -> Metrics:
@@ -293,11 +204,9 @@ def collect_derived_model_statuses_sync(
     *,
     verify_full: bool = True,
 ) -> dict[str, DerivedModelStatus]:
-    total_sessions = _total_sessions(conn)
-
-    session_status = _archive_session_insight_status(conn, verify_full=verify_full)
+    session_status = session_insight_status_sync(conn, verify_freshness=verify_full)
     metrics: Metrics = {
-        "total_sessions": total_sessions,
+        "total_sessions": session_status.total_sessions,
     }
     metrics.update(_message_fts_metrics(conn, verify_full=verify_full))
     metrics.update(_session_insight_metrics(session_status))

@@ -94,6 +94,7 @@ class TestPolylogueInitialization:
         custom_root = tmp_path / "custom_archive"
         archive = Polylogue(archive_root=custom_root)
         assert archive.archive_root == custom_root
+        assert archive.config.db_path == custom_root / "index.db"
         assert archive.config.render_root == custom_root / "render"
 
     def test_init_with_expanduser(self: object) -> None:

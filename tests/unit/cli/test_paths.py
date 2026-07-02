@@ -61,8 +61,10 @@ def test_paths_command_json_output(cli_workspace: dict[str, Path], cli_runner: C
     assert "storage_layout" in payload
     assert "archive_ready" in payload
     assert "final_shape_ready" in payload
+    assert "archive_schema_ready" in payload
     assert "archive_layout_ready" in payload
     assert "archive_layout_blockers" in payload
+    assert "archive_tier_versions" in payload
     assert "present_tiers" in payload
     assert "missing_tiers" in payload
     assert "source_database_path" in payload
@@ -136,6 +138,7 @@ def test_paths_json_reports_database_existence(cli_workspace: dict[str, Path], c
     assert payload["storage_layout"] == "archive_missing"
     assert payload["archive_ready"] is False
     assert payload["final_shape_ready"] is False
+    assert payload["archive_schema_ready"] is False
     assert payload["archive_layout_ready"] is False
     assert payload["archive_layout_blockers"] == [
         "no_archive_tiers_present",
@@ -173,10 +176,12 @@ def test_paths_json_reports_archive_final_shape(
     assert payload["active_archive_root_matches_configured"] is True
     assert payload["active_database_role"] == "index"
     assert payload["storage_layout"] == "archive_complete"
-    assert payload["archive_ready"] is True
+    assert payload["archive_ready"] is False
     assert payload["final_shape_ready"] is True
+    assert payload["archive_schema_ready"] is False
     assert payload["archive_layout_ready"] is True
     assert payload["archive_layout_blockers"] == []
+    assert payload["archive_tier_versions"]["index"]["version_status"] == "invalid"
     assert payload["present_tiers"] == ["source", "index", "embeddings", "ops", "user"]
     assert payload["missing_tiers"] == []
 

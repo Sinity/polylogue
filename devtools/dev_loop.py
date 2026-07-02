@@ -11,6 +11,7 @@ import re
 import shlex
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 import time
@@ -272,7 +273,10 @@ def _redact_live_provider_url(value: str) -> str:
 def _dev_loop_env_snapshot(env: dict[str, str]) -> dict[str, str]:
     snapshot: dict[str, str] = {}
     for key in sorted(env):
-        if not (key.startswith("POLYLOGUE_") or key in {"PATH", "PYTHONPATH"}):
+        if not (
+            key.startswith("POLYLOGUE_")
+            or key in {"PATH", "PYTHONPATH", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"}
+        ):
             continue
         if _SENSITIVE_ENV_NAME_RE.search(key):
             snapshot[key] = "[redacted]"
@@ -294,6 +298,51 @@ def _prepend_pythonpath(env: dict[str, str], path: Path) -> None:
         env["PYTHONPATH"] = os.pathsep.join([prefix, *[part for part in parts if part != prefix]])
     else:
         env["PYTHONPATH"] = prefix
+
+
+def _dev_loop_suggested_env(
+    *,
+    archive: Path,
+    run_log_dir: Path,
+    api_port: int,
+    browser_capture_port: int,
+    run_id: str,
+) -> dict[str, str]:
+    return {
+        "POLYLOGUE_ARCHIVE_ROOT": str(archive),
+        "POLYLOGUE_API_PORT": str(api_port),
+        "POLYLOGUE_BROWSER_CAPTURE_PORT": str(browser_capture_port),
+        "POLYLOGUE_DAEMON_URL": f"http://127.0.0.1:{api_port}",
+        "POLYLOGUE_DEV_LOOP_RUN_ID": run_id,
+        "POLYLOGUE_DEV_LOOP_LOG_DIR": str(run_log_dir),
+        "XDG_CACHE_HOME": str(run_log_dir / "xdg-cache"),
+        "XDG_DATA_HOME": str(run_log_dir / "xdg-data"),
+        "XDG_STATE_HOME": str(run_log_dir / "xdg-state"),
+    }
+
+
+def _preflight_suggested_env(preflight: dict[str, Any]) -> dict[str, str]:
+    suggested_env = preflight.get("suggested_env")
+    if isinstance(suggested_env, dict):
+        return {str(key): str(value) for key, value in suggested_env.items()}
+    ports = preflight.get("ports")
+    if not isinstance(ports, dict):
+        raise ValueError("preflight payload is missing port status")
+    api_status = ports.get("api")
+    receiver_status = ports.get("browser_capture")
+    if not isinstance(api_status, dict) or not isinstance(receiver_status, dict):
+        raise ValueError("preflight payload is missing API/browser-capture port status")
+    return _dev_loop_suggested_env(
+        archive=Path(str(preflight["dev_archive_root"])),
+        run_log_dir=Path(str(preflight["run_log_dir"])),
+        api_port=int(api_status["port"]),
+        browser_capture_port=int(receiver_status["port"]),
+        run_id=str(preflight["run_id"]),
+    )
+
+
+def _shell_env_prefix(env: dict[str, str]) -> str:
+    return "env " + " ".join(f"{key}={shlex.quote(value)}" for key, value in env.items())
 
 
 def _git_value(args: list[str], *, cwd: Path) -> str | None:
@@ -1279,6 +1328,10 @@ def build_browser_plan(*, preflight: dict[str, Any]) -> dict[str, object]:
         "devtools",
         "workspace",
         "dev-loop",
+        "--archive-root",
+        str(preflight["dev_archive_root"]),
+        "--log-dir",
+        str(preflight["log_dir"]),
         "--api-port",
         str(api_port),
         "--browser-capture-port",
@@ -1508,14 +1561,7 @@ def build_tui_plan(*, preflight: dict[str, Any]) -> dict[str, object]:
     terminal_dir.mkdir(parents=True, exist_ok=True)
     event_path = Path(str(artifacts.get("dev_events", Path(str(preflight["run_log_dir"])) / "dev-loop.events.jsonl")))
 
-    env_exports = {
-        "POLYLOGUE_ARCHIVE_ROOT": str(preflight["dev_archive_root"]),
-        "POLYLOGUE_API_PORT": str(preflight["ports"]["api"]["port"]),
-        "POLYLOGUE_BROWSER_CAPTURE_PORT": str(preflight["ports"]["browser_capture"]["port"]),
-        "POLYLOGUE_DEV_LOOP_RUN_ID": str(preflight["run_id"]),
-        "POLYLOGUE_DEV_LOOP_LOG_DIR": str(preflight["run_log_dir"]),
-        "POLYLOGUE_FORCE_PLAIN": "0",
-    }
+    env_exports = {**_preflight_suggested_env(preflight), "POLYLOGUE_FORCE_PLAIN": "0"}
     env_prefix = " ".join(f"{key}={shlex.quote(value)}" for key, value in env_exports.items())
     typescript_path = tui_dir / "polylogue-ops-status.typescript"
     vhs_tape_path = tui_dir / "polylogue-status.tape"
@@ -2148,6 +2194,46 @@ def _artifact_state(
     }
 
 
+def _archive_status(archive: Path) -> dict[str, object]:
+    index_db = archive / "index.db"
+    status: dict[str, object] = {
+        "archive_root": str(archive),
+        "archive_root_exists": archive.exists(),
+        "index_db": str(index_db),
+        "index_db_exists": index_db.exists(),
+        "schema_ready": False,
+        "sessions_table_exists": False,
+        "session_count": None,
+        "message_count": None,
+        "user_version": None,
+        "error": None,
+    }
+    if not index_db.exists():
+        status["error"] = "index.db missing"
+        return status
+    try:
+        with sqlite3.connect(f"file:{index_db}?mode=ro", uri=True) as conn:
+            user_version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+            status["user_version"] = user_version
+            sessions_exists = (
+                conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'").fetchone()
+                is not None
+            )
+            status["sessions_table_exists"] = sessions_exists
+            status["schema_ready"] = user_version > 0 and sessions_exists
+            if sessions_exists:
+                status["session_count"] = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] or 0)
+            messages_exists = (
+                conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'").fetchone()
+                is not None
+            )
+            if messages_exists:
+                status["message_count"] = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] or 0)
+    except sqlite3.Error as exc:
+        status["error"] = f"{type(exc).__name__}: {exc}"
+    return status
+
+
 def _dev_loop_artifact_status(
     *,
     archive: Path,
@@ -2466,6 +2552,7 @@ def build_dev_loop_status(
     service = system_service_status()
     api = port_status(api_port)
     receiver = port_status(browser_capture_port)
+    archive_status = _archive_status(archive)
     branch = _git_value(["branch", "--show-current"], cwd=root)
     commit = _git_value(["rev-parse", "--short", "HEAD"], cwd=root)
     run_id = _dev_loop_run_id(
@@ -2481,11 +2568,21 @@ def build_dev_loop_status(
     tui_artifact_dir = run_log_dir / "tui"
     preflight_json = run_log_dir / "preflight.json"
     dev_events = run_log_dir / "dev-loop.events.jsonl"
+    suggested_env = _dev_loop_suggested_env(
+        archive=archive,
+        run_log_dir=run_log_dir,
+        api_port=api_port,
+        browser_capture_port=browser_capture_port,
+        run_id=run_id,
+    )
     if prepare:
         archive.mkdir(parents=True, exist_ok=True)
         browser_artifact_dir.mkdir(parents=True, exist_ok=True)
         terminal_artifact_dir.mkdir(parents=True, exist_ok=True)
         tui_artifact_dir.mkdir(parents=True, exist_ok=True)
+        Path(suggested_env["XDG_CACHE_HOME"]).mkdir(parents=True, exist_ok=True)
+        Path(suggested_env["XDG_DATA_HOME"]).mkdir(parents=True, exist_ok=True)
+        Path(suggested_env["XDG_STATE_HOME"]).mkdir(parents=True, exist_ok=True)
     warnings: list[str] = []
     if service.get("active") and port_selection != "isolated":
         warnings.append(
@@ -2494,6 +2591,19 @@ def build_dev_loop_status(
     for name, status in (("api", api), ("browser_capture", receiver)):
         if int(status.get("owner_count") or 0) > 0:
             warnings.append(f"{name} port {status['port']} already has a listener")
+    if not archive_status["schema_ready"]:
+        warnings.append(
+            "branch-local archive is not initialized; run the prepared launch/import path before using its counts"
+        )
+    env_archive = os.environ.get("POLYLOGUE_ARCHIVE_ROOT")
+    if env_archive and Path(env_archive).expanduser() != archive.expanduser():
+        warnings.append(f"current POLYLOGUE_ARCHIVE_ROOT points at {env_archive}; dev-loop commands will use {archive}")
+    env_daemon_url = os.environ.get("POLYLOGUE_DAEMON_URL")
+    if env_daemon_url and env_daemon_url != suggested_env["POLYLOGUE_DAEMON_URL"]:
+        warnings.append(
+            "current POLYLOGUE_DAEMON_URL points at "
+            f"{env_daemon_url}; dev-loop commands will use {suggested_env['POLYLOGUE_DAEMON_URL']}"
+        )
 
     api_url = f"http://127.0.0.1:{api_port}"
     web_url = f"{api_url}/"
@@ -2531,13 +2641,16 @@ def build_dev_loop_status(
     )
     plan_actions = {str(action["name"]): action for action in cast(list[dict[str, object]], operator_plan["actions"])}
     plan_checks = cast(dict[str, dict[str, object]], operator_plan["checks"])
+    shell_env_prefix = f"{_shell_env_prefix(suggested_env)} PYTHONPATH={root}${{PYTHONPATH:+:${{PYTHONPATH}}}}"
+    daemon_spool = run_log_dir / "browser-capture-spool"
     commands = {
         "stop_system_service": "systemctl --user stop polylogued.service",
         "prepare": str(plan_actions["prepare"]["command_text"]),
         "prepare_isolated": "devtools workspace dev-loop --isolated-ports --prepare",
         "save_preflight": (
             f"mkdir -p {run_log_dir} && devtools workspace dev-loop --api-port {api_port} "
-            f"--browser-capture-port {browser_capture_port} --json > {preflight_json}"
+            f"--browser-capture-port {browser_capture_port} --archive-root {archive} "
+            f"--log-dir {logs} --json > {preflight_json}"
         ),
         "launch_daemon": str(plan_actions["launch_daemon"]["command_text"]),
         "receiver_smoke": str(plan_checks["receiver_smoke"]["command_text"]),
@@ -2549,20 +2662,16 @@ def build_dev_loop_status(
         "tui_plan": str(plan_actions["tui_plan"]["command_text"]),
         "inspect_run": str(plan_actions["inspect_run"]["command_text"]),
         "run_daemon": (
-            f"env POLYLOGUE_ARCHIVE_ROOT={archive} "
-            f"POLYLOGUE_API_PORT={api_port} "
-            f"POLYLOGUE_BROWSER_CAPTURE_PORT={browser_capture_port} "
-            f"POLYLOGUE_DEV_LOOP_RUN_ID={run_id} "
-            f"POLYLOGUE_DEV_LOOP_LOG_DIR={run_log_dir} "
-            f"PYTHONPATH={root}${{PYTHONPATH:+:${{PYTHONPATH}}}} "
+            f"{shell_env_prefix} "
             f"{shlex.quote(sys.executable)} -c 'from polylogue.daemon.cli import main; main()' "
-            f"run --api-port {api_port} --port {browser_capture_port} 2>&1 | tee {daemon_log}"
+            f"run --no-watch --api-port {api_port} --port {browser_capture_port} "
+            f"--spool {daemon_spool} 2>&1 | tee {daemon_log}"
         ),
         "open_web_shell": web_url,
         "receiver_status": f"curl -sf {receiver_url}/v1/status",
         "capture_cli_status": (
             "script -q -c "
-            f"'env POLYLOGUE_ARCHIVE_ROOT={archive} polylogue ops status' "
+            f"'{shell_env_prefix} polylogue ops status' "
             f"{terminal_artifact_dir / 'polylogue-ops-status.typescript'}"
         ),
         "terminal_tui_plan": str(plan_actions["tui_plan"]["command_text"]),
@@ -2592,17 +2701,12 @@ def build_dev_loop_status(
             "dev_events": str(dev_events),
         },
         "system_service": service,
+        "archive_status": archive_status,
         "ports": {
             "api": api,
             "browser_capture": receiver,
         },
-        "suggested_env": {
-            "POLYLOGUE_ARCHIVE_ROOT": str(archive),
-            "POLYLOGUE_API_PORT": str(api_port),
-            "POLYLOGUE_BROWSER_CAPTURE_PORT": str(browser_capture_port),
-            "POLYLOGUE_DEV_LOOP_RUN_ID": run_id,
-            "POLYLOGUE_DEV_LOOP_LOG_DIR": str(run_log_dir),
-        },
+        "suggested_env": suggested_env,
         "commands": commands,
         "artifact_status": artifact_status,
         "plan": operator_plan,
@@ -2620,6 +2724,20 @@ def _print_human(payload: dict[str, Any]) -> None:
     print(f"  branch:  {payload.get('branch') or 'unknown'} @ {payload.get('commit') or 'unknown'}")
     print(f"  run id:  {payload['run_id']}")
     print(f"  archive: {payload['dev_archive_root']}")
+    archive_status = payload.get("archive_status")
+    if isinstance(archive_status, dict):
+        ready = archive_status.get("schema_ready")
+        sessions = archive_status.get("session_count")
+        messages = archive_status.get("message_count")
+        detail = f"ready={ready}"
+        if sessions is not None:
+            detail += f" sessions={sessions}"
+        if messages is not None:
+            detail += f" messages={messages}"
+        error = archive_status.get("error")
+        if error:
+            detail += f" error={error}"
+        print(f"  archive status: {detail}")
     print(f"  logs:    {payload['log_dir']}")
     print(f"  run log: {payload['run_log_dir']}")
     print(f"  artifacts: {payload.get('artifact_dir', payload['run_log_dir'])}")
@@ -2804,7 +2922,7 @@ def _print_browser_plan(payload: dict[str, Any]) -> None:
     assert isinstance(artifacts, dict)
     commands = plan["commands"]
     assert isinstance(commands, dict)
-    chrome = commands["chrome"]
+    chrome = commands["preferred"]
     assert isinstance(chrome, list)
     print("Polylogue dev-loop browser plan")
     print(f"  run id:    {preflight['run_id']}")

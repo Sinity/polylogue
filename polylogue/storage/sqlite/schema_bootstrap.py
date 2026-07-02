@@ -54,7 +54,7 @@ def schema_version_mismatch_message(current_version: int) -> str:
         )
     return (
         f"Database schema version {current_version} is not the expected archive version {SCHEMA_VERSION}. "
-        "Move the database aside and rebuild it from source with `polylogue ops reset --database && polylogued run`."
+        "Move the index tier aside and rebuild it from source with `polylogue ops reset --index && polylogued run`."
     )
 
 

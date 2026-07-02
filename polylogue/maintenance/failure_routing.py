@@ -328,6 +328,69 @@ def read_maintenance_failures(
     return records[-limit:]
 
 
+def resolve_maintenance_failures(
+    archive_root: Path,
+    *,
+    target: str,
+    kinds: tuple[str, ...] = (),
+) -> int:
+    """Remove routed failure records that a later successful run supersedes.
+
+    Routed failures are append-only evidence of failed attempts, but the
+    daemon health surface is an active backlog signal. Once a target has
+    been successfully replayed, older failures for that target should no
+    longer keep health red. ``kinds`` narrows resolution when only a
+    class of failure was proven stale, such as a dry-run proving an
+    ``UnsupportedReplayTargetError`` target is now wired.
+    """
+
+    path = _failure_file_path(archive_root)
+    if not path.exists():
+        return 0
+    kept: list[MaintenanceFailureRecord] = []
+    removed = 0
+    kind_filter = set(kinds)
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    payload = loads(stripped)
+                except (ValueError, TypeError):
+                    logger.warning(
+                        "maintenance_failure_unparseable_line",
+                        path=str(path),
+                    )
+                    continue
+                rec = MaintenanceFailureRecord.from_dict(payload)
+                if rec is None:
+                    continue
+                if rec.target == target and (not kind_filter or rec.kind in kind_filter):
+                    removed += 1
+                    continue
+                kept.append(rec)
+        if removed == 0:
+            return 0
+        if kept:
+            with path.open("w", encoding="utf-8") as handle:
+                for rec in kept:
+                    handle.write(dumps(rec.to_dict()))
+                    handle.write("\n")
+        else:
+            path.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning(
+            "maintenance_failure_resolve_failed",
+            path=str(path),
+            target=target,
+            error=str(exc),
+        )
+        return 0
+    return removed
+
+
 def count_maintenance_failures(archive_root: Path) -> int:
     """Return the total number of routed maintenance failures on disk.
 
@@ -377,5 +440,6 @@ __all__ = [
     "clear_maintenance_failures",
     "count_maintenance_failures",
     "read_maintenance_failures",
+    "resolve_maintenance_failures",
     "route_failure_sample",
 ]

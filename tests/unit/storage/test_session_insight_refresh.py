@@ -264,7 +264,7 @@ async def test_apply_session_insight_session_updates_async_uses_session_events_f
 
     with open_connection(db_path) as conn:
         row = conn.execute(
-            "SELECT evidence_payload_json FROM session_profiles WHERE session_id = ?",
+            "SELECT terminal_state, evidence_payload_json FROM session_profiles WHERE session_id = ?",
             ("codex-session:conv-provider-terminal",),
         ).fetchone()
         latency_row = conn.execute(
@@ -273,7 +273,8 @@ async def test_apply_session_insight_session_updates_async_uses_session_events_f
         ).fetchone()
 
     assert row is not None
-    assert json.loads(row["evidence_payload_json"])["terminal_state"] == "tool_left"
+    assert row["terminal_state"] == "tool_left"
+    assert "terminal_state" not in json.loads(row["evidence_payload_json"])
     assert latency_row is not None
     assert latency_row["stuck_tool_count"] == 0
 

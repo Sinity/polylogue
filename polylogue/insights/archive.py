@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Protocol
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from polylogue.archive.semantic.pricing import (
     CostBasisPayload,
@@ -379,9 +379,22 @@ class SessionTagRollupInsight(ArchiveInsightModel):
     logical_session_count: int = 0
     explicit_count: int
     auto_count: int
-    provider_breakdown: dict[str, int]
+    origin_breakdown: dict[str, int]
     repo_breakdown: dict[str, int]
     provenance: ArchiveInsightProvenance
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_provider_breakdown(cls, data: object) -> object:
+        if isinstance(data, Mapping) and "origin_breakdown" not in data and "provider_breakdown" in data:
+            updated = dict(data)
+            updated["origin_breakdown"] = updated["provider_breakdown"]
+            return updated
+        return data
+
+    @property
+    def provider_breakdown(self) -> dict[str, int]:
+        return self.origin_breakdown
 
 
 class DaySessionSummaryInsight(ArchiveInsightModel):
@@ -429,8 +442,21 @@ class ArchiveCoverageInsight(ArchiveInsightModel):
     thinking_percentage: float = 0.0
     work_event_breakdown: dict[str, int] = Field(default_factory=dict)
     repos_active: tuple[str, ...] = ()
-    provider_breakdown: dict[str, int] = Field(default_factory=dict)
+    origin_breakdown: dict[str, int] = Field(default_factory=dict)
     provenance: ArchiveInsightProvenance | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_provider_breakdown(cls, data: object) -> object:
+        if isinstance(data, Mapping) and "origin_breakdown" not in data and "provider_breakdown" in data:
+            updated = dict(data)
+            updated["origin_breakdown"] = updated["provider_breakdown"]
+            return updated
+        return data
+
+    @property
+    def provider_breakdown(self) -> dict[str, int]:
+        return self.origin_breakdown
 
 
 class SessionCostInsight(ArchiveInsightModel):

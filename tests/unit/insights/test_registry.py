@@ -86,6 +86,11 @@ class TestProjectOriginPayload:
         assert breakdown["claude-ai-export"] == 10
         assert breakdown["chatgpt-export"] == 5
 
+    def test_origin_breakdown_dict_passes_through(self) -> None:
+        """origin_breakdown keeps canonical origin tokens."""
+        result = project_origin_payload({"origin_breakdown": {"claude-code-session": 10}})
+        assert result == {"origin_breakdown": {"claude-code-session": 10}}
+
     def test_providers_with_data_to_origins_with_data(self) -> None:
         """providers_with_data → origins_with_data."""
         result = project_origin_payload({"providers_with_data": ["CLAUDE", "CHATGPT"]})

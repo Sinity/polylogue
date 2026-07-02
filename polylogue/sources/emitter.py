@@ -17,7 +17,7 @@ from .assembly import get_assembly_spec
 from .cursor import _ParseContext
 from .decoder_json import JsonValue
 from .decoders import _iter_json_stream
-from .dispatch import GROUP_PROVIDERS, detect_provider, parse_payload
+from .dispatch import GROUP_PROVIDERS, detect_provider, is_jsonl_source_path, parse_payload
 from .parsers.base import ParsedSession, RawSessionData
 
 if TYPE_CHECKING:
@@ -92,8 +92,7 @@ class _SessionEmitter:
                 Used when the caller pre-read the whole file for grouped
                 providers with ``capture_raw=True``.
         """
-        lower = stream_name.lower()
-        is_jsonl = lower.endswith((".jsonl", ".jsonl.txt", ".ndjson"))
+        is_jsonl = is_jsonl_source_path(stream_name)
 
         if is_jsonl and self._ctx.should_group:
             yield from self._emit_grouped(

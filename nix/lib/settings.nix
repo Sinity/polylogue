@@ -235,7 +235,6 @@ let
     health = {
       check-interval-s = mkOption { type = types.nullOr types.ints.unsigned; default = null; description = "Daemon health-check interval."; };
       check-tiers = mkOption { type = types.nullOr types.str; default = null; description = "Health-check tiers."; };
-      fts-auto-restore = mkOption { type = types.nullOr types.bool; default = null; description = "Allow health checks to repair FTS trigger drift."; };
       blob-integrity-sample-size = mkOption { type = types.nullOr types.ints.unsigned; default = null; description = "Blob-integrity sample size."; };
     };
 
@@ -434,7 +433,6 @@ let
       health = maybe "health" (dropNulls {
         check_interval_s = settings.health.check-interval-s;
         check_tiers = settings.health.check-tiers;
-        fts_auto_restore = settings.health.fts-auto-restore;
         blob_integrity_sample_size = settings.health.blob-integrity-sample-size;
       });
 

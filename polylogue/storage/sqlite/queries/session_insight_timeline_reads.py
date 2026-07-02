@@ -20,6 +20,86 @@ __all__ = [
     "list_work_events",
 ]
 
+_ISO_MS = "'%Y-%m-%dT%H:%M:%fZ'"
+
+_WORK_EVENT_SELECT = f"""
+    swe.event_id,
+    swe.session_id,
+    COALESCE(im.materializer_version, 1) AS materializer_version,
+    COALESCE(strftime({_ISO_MS}, im.materialized_at_ms / 1000.0, 'unixepoch'), '1970-01-01T00:00:00.000Z')
+        AS materialized_at,
+    strftime({_ISO_MS}, im.source_updated_at_ms / 1000.0, 'unixepoch') AS source_updated_at,
+    im.source_sort_key_ms / 1000.0 AS source_sort_key,
+    swe.input_high_water_mark,
+    swe.input_high_water_mark_source,
+    COALESCE(im.input_row_count, 0) AS input_row_count,
+    s.origin AS source_name,
+    swe.position AS event_index,
+    swe.work_event_type AS heuristic_label,
+    swe.confidence,
+    swe.start_index,
+    swe.end_index,
+    strftime({_ISO_MS}, swe.started_at_ms / 1000.0, 'unixepoch') AS start_time,
+    strftime({_ISO_MS}, swe.ended_at_ms / 1000.0, 'unixepoch') AS end_time,
+    swe.duration_ms,
+    date(COALESCE(swe.started_at_ms, swe.ended_at_ms, im.source_sort_key_ms) / 1000.0, 'unixepoch')
+        AS canonical_session_date,
+    swe.summary,
+    swe.file_paths_json,
+    swe.tools_used_json,
+    swe.evidence_json AS evidence_payload_json,
+    swe.inference_json AS inference_payload_json,
+    swe.search_text,
+    1 AS inference_version,
+    'heuristic_session_semantics' AS inference_family
+"""
+
+_PHASE_SELECT = f"""
+    sph.phase_id,
+    sph.session_id,
+    COALESCE(im.materializer_version, 1) AS materializer_version,
+    COALESCE(strftime({_ISO_MS}, im.materialized_at_ms / 1000.0, 'unixepoch'), '1970-01-01T00:00:00.000Z')
+        AS materialized_at,
+    strftime({_ISO_MS}, im.source_updated_at_ms / 1000.0, 'unixepoch') AS source_updated_at,
+    im.source_sort_key_ms / 1000.0 AS source_sort_key,
+    sph.input_high_water_mark,
+    sph.input_high_water_mark_source,
+    COALESCE(im.input_row_count, 0) AS input_row_count,
+    s.origin AS source_name,
+    sph.position AS phase_index,
+    'phase' AS kind,
+    sph.start_index,
+    sph.end_index,
+    strftime({_ISO_MS}, sph.started_at_ms / 1000.0, 'unixepoch') AS start_time,
+    strftime({_ISO_MS}, sph.ended_at_ms / 1000.0, 'unixepoch') AS end_time,
+    sph.duration_ms,
+    date(COALESCE(sph.started_at_ms, sph.ended_at_ms, im.source_sort_key_ms) / 1000.0, 'unixepoch')
+        AS canonical_session_date,
+    0.0 AS confidence,
+    '[]' AS evidence_reasons_json,
+    sph.tool_counts_json,
+    sph.word_count,
+    sph.evidence_json AS evidence_payload_json,
+    sph.inference_json AS inference_payload_json,
+    sph.search_text,
+    1 AS inference_version,
+    'heuristic_session_semantics' AS inference_family
+"""
+
+_WORK_EVENT_FROM = """
+    FROM session_work_events swe
+    JOIN sessions s ON s.session_id = swe.session_id
+    LEFT JOIN insight_materialization im
+      ON im.session_id = swe.session_id AND im.insight_type = 'work_events'
+"""
+
+_PHASE_FROM = """
+    FROM session_phases sph
+    JOIN sessions s ON s.session_id = sph.session_id
+    LEFT JOIN insight_materialization im
+      ON im.session_id = sph.session_id AND im.insight_type = 'phases'
+"""
+
 
 async def _require_session_work_events_fts_ready(conn: aiosqlite.Connection) -> None:
     exists = bool(
@@ -78,11 +158,11 @@ async def get_work_events(
     session_id: str,
 ) -> list[SessionWorkEventRecord]:
     cursor = await conn.execute(
-        """
-        SELECT *
-        FROM session_work_events
-        WHERE session_id = ?
-        ORDER BY event_index
+        f"""
+        SELECT {_WORK_EVENT_SELECT}
+        {_WORK_EVENT_FROM}
+        WHERE swe.session_id = ?
+        ORDER BY swe.position
         """,
         (session_id,),
     )
@@ -95,11 +175,11 @@ async def get_session_phases(
     session_id: str,
 ) -> list[SessionPhaseRecord]:
     cursor = await conn.execute(
-        """
-        SELECT *
-        FROM session_phases
-        WHERE session_id = ?
-        ORDER BY phase_index
+        f"""
+        SELECT {_PHASE_SELECT}
+        {_PHASE_FROM}
+        WHERE sph.session_id = ?
+        ORDER BY sph.position
         """,
         (session_id,),
     )
@@ -116,6 +196,9 @@ async def list_work_events(
         await _require_session_work_events_fts_ready(conn)
         from_clause = """
             FROM session_work_events swe
+            JOIN sessions s ON s.session_id = swe.session_id
+            LEFT JOIN insight_materialization im
+              ON im.session_id = swe.session_id AND im.insight_type = 'work_events'
             JOIN session_work_events_fts
               ON session_work_events_fts.event_id = swe.event_id
         """
@@ -123,36 +206,47 @@ async def list_work_events(
         params.append(escape_fts5_query(query.query))
         order_by = (
             "ORDER BY bm25(session_work_events_fts), "
-            "COALESCE(swe.start_time, swe.end_time, swe.source_updated_at, swe.materialized_at) DESC, swe.event_index"
+            "COALESCE(swe.started_at_ms, swe.ended_at_ms, im.source_sort_key_ms, im.materialized_at_ms) DESC, swe.position"
         )
     else:
-        from_clause = "FROM session_work_events swe"
+        from_clause = _WORK_EVENT_FROM
         where = []
-        order_by = "ORDER BY COALESCE(swe.start_time, swe.end_time, swe.source_updated_at, swe.materialized_at) DESC, swe.event_index"
+        order_by = (
+            "ORDER BY COALESCE(swe.started_at_ms, swe.ended_at_ms, im.source_sort_key_ms, im.materialized_at_ms) DESC, "
+            "swe.position"
+        )
 
     if query.session_id:
         where.append("swe.session_id = ?")
         params.append(query.session_id)
     if query.provider:
-        where.append("swe.source_name = ?")
+        where.append("s.origin = ?")
         params.append(query.provider)
     if query.heuristic_label:
-        where.append("swe.heuristic_label = ?")
+        where.append("swe.work_event_type = ?")
         params.append(query.heuristic_label)
     if query.since:
-        where.append("COALESCE(swe.end_time, swe.start_time, swe.source_updated_at, swe.materialized_at) >= ?")
+        where.append(
+            "strftime('%Y-%m-%dT%H:%M:%fZ', COALESCE(swe.ended_at_ms, swe.started_at_ms, im.source_sort_key_ms, im.materialized_at_ms) / 1000.0, 'unixepoch') >= ?"
+        )
         params.append(query.since)
     if query.until:
-        where.append("COALESCE(swe.start_time, swe.end_time, swe.source_updated_at, swe.materialized_at) <= ?")
+        where.append(
+            "strftime('%Y-%m-%dT%H:%M:%fZ', COALESCE(swe.started_at_ms, swe.ended_at_ms, im.source_sort_key_ms, im.materialized_at_ms) / 1000.0, 'unixepoch') <= ?"
+        )
         params.append(query.until)
     if query.session_date_since:
-        where.append("swe.canonical_session_date >= date(?)")
+        where.append(
+            "date(COALESCE(swe.started_at_ms, swe.ended_at_ms, im.source_sort_key_ms) / 1000.0, 'unixepoch') >= date(?)"
+        )
         params.append(query.session_date_since)
     if query.session_date_until:
-        where.append("swe.canonical_session_date <= date(?)")
+        where.append(
+            "date(COALESCE(swe.started_at_ms, swe.ended_at_ms, im.source_sort_key_ms) / 1000.0, 'unixepoch') <= date(?)"
+        )
         params.append(query.session_date_until)
 
-    sql = "SELECT swe.* " + from_clause
+    sql = f"SELECT {_WORK_EVENT_SELECT} " + from_clause
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += f" {order_by}"
@@ -171,34 +265,39 @@ async def list_session_phases(
     params: list[object] = []
     where: list[str] = []
     if query.session_id:
-        where.append("session_id = ?")
+        where.append("sph.session_id = ?")
         params.append(query.session_id)
     if query.provider:
-        where.append("source_name = ?")
+        where.append("s.origin = ?")
         params.append(query.provider)
     if query.kind:
-        where.append("kind = ?")
+        where.append("? = 'phase'")
         params.append(query.kind)
     if query.since:
-        where.append("COALESCE(end_time, start_time, source_updated_at, materialized_at) >= ?")
+        where.append(
+            "strftime('%Y-%m-%dT%H:%M:%fZ', COALESCE(sph.ended_at_ms, sph.started_at_ms, im.source_sort_key_ms, im.materialized_at_ms) / 1000.0, 'unixepoch') >= ?"
+        )
         params.append(query.since)
     if query.until:
-        where.append("COALESCE(start_time, end_time, source_updated_at, materialized_at) <= ?")
+        where.append(
+            "strftime('%Y-%m-%dT%H:%M:%fZ', COALESCE(sph.started_at_ms, sph.ended_at_ms, im.source_sort_key_ms, im.materialized_at_ms) / 1000.0, 'unixepoch') <= ?"
+        )
         params.append(query.until)
     if query.session_date_since:
-        where.append("canonical_session_date >= date(?)")
+        where.append(
+            "date(COALESCE(sph.started_at_ms, sph.ended_at_ms, im.source_sort_key_ms) / 1000.0, 'unixepoch') >= date(?)"
+        )
         params.append(query.session_date_since)
     if query.session_date_until:
-        where.append("canonical_session_date <= date(?)")
+        where.append(
+            "date(COALESCE(sph.started_at_ms, sph.ended_at_ms, im.source_sort_key_ms) / 1000.0, 'unixepoch') <= date(?)"
+        )
         params.append(query.session_date_until)
 
-    sql = """
-        SELECT *
-        FROM session_phases
-    """
+    sql = f"SELECT {_PHASE_SELECT} {_PHASE_FROM}"
     if where:
         sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY COALESCE(start_time, end_time, materialized_at) DESC, phase_index"
+    sql += " ORDER BY COALESCE(sph.started_at_ms, sph.ended_at_ms, im.source_sort_key_ms, im.materialized_at_ms) DESC, sph.position"
     if query.limit is not None:
         sql += " LIMIT ? OFFSET ?"
         params.extend([query.limit, query.offset])

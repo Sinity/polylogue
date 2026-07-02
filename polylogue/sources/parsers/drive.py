@@ -11,7 +11,7 @@ from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import get_logger
 from polylogue.sources.providers.gemini import GeminiMessage
 
-from .base import ParsedAttachment, ParsedMessage, ParsedSession
+from .base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
 from .drive_support import (
     _attachment_from_doc as _attachment_from_doc_impl,
 )
@@ -122,6 +122,41 @@ def _non_negative_int_field(payload: JSONDocument, *keys: str) -> int | None:
     return None
 
 
+def _gemini_usage_event(
+    chunk_obj: JSONDocument,
+    *,
+    role: Role,
+    message_id: str,
+    timestamp: str | None,
+) -> ParsedSessionEvent | None:
+    token_count = _non_negative_int_field(chunk_obj, "tokenCount", "token_count")
+    finish_reason = _string_field(chunk_obj, "finishReason", "finish_reason")
+    if token_count is None and finish_reason is None:
+        return None
+
+    usage: dict[str, int] = {}
+    if token_count is not None:
+        if role is Role.USER:
+            usage["input_tokens"] = token_count
+        else:
+            usage["output_tokens"] = token_count
+
+    payload: dict[str, object] = {"type": "token_count"}
+    if usage:
+        payload["last_token_usage"] = usage
+    if finish_reason is not None:
+        payload["finish_reason"] = finish_reason
+    model_name = _string_field(chunk_obj, "model", "modelName", "model_name")
+    if model_name is not None:
+        payload["model"] = model_name
+    return ParsedSessionEvent(
+        event_type="token_count",
+        timestamp=timestamp,
+        source_message_provider_id=message_id,
+        payload=payload,
+    )
+
+
 def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallback_id: str) -> ParsedSession:
     runtime_provider = Provider.from_string(provider)
     prompt = json_document(payload.get("chunkedPrompt"))
@@ -139,6 +174,7 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
     default_timestamp = str(create_time) if create_time else None
 
     messages: list[ParsedMessage] = []
+    session_events: list[ParsedSessionEvent] = []
     attachments: list[ParsedAttachment] = []
     observed_timestamps: list[str | None] = []
     message_position = 0
@@ -157,6 +193,13 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         role = Role.normalize(role_val)
         msg_id = str(chunk_obj.get("id") or f"chunk-{idx}")
         message_timestamp = _chunk_timestamp(chunk_obj, default_timestamp)
+        if usage_event := _gemini_usage_event(
+            chunk_obj,
+            role=role,
+            message_id=msg_id,
+            timestamp=message_timestamp,
+        ):
+            session_events.append(usage_event)
         chunk_attachments = _collect_chunk_attachments(chunk_obj, msg_id)
         observed_timestamps.append(message_timestamp)
         used_typed_model = False
@@ -224,6 +267,7 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         created_at=create_time_str,
         updated_at=update_time_str,
         messages=messages,
+        session_events=session_events,
         active_leaf_message_provider_id=active_leaf_message_provider_id,
         attachments=attachments,
     )

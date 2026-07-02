@@ -997,8 +997,24 @@ def _archive_tier_state(
                 missing_backup_required.append(tier.value)
         tiers[tier.value] = tier_payload
 
-    derived_readiness = _archive_derived_readiness(root, exact_counts=exact_derived_counts)
-    user_overlay_orphans = _archive_user_overlay_orphans(root)
+    derived_schema_mismatches = [
+        tier for tier in schema_mismatches if tier in {ArchiveTier.SOURCE.value, ArchiveTier.INDEX.value}
+    ]
+    if derived_schema_mismatches:
+        derived_readiness = _unchecked_archive_derived_readiness(
+            f"schema_mismatch:{','.join(derived_schema_mismatches)}"
+        )
+    else:
+        derived_readiness = _archive_derived_readiness(root, exact_counts=exact_derived_counts)
+    user_overlay_schema_mismatches = [
+        tier for tier in schema_mismatches if tier in {ArchiveTier.INDEX.value, ArchiveTier.USER.value}
+    ]
+    if user_overlay_schema_mismatches:
+        user_overlay_orphans = _unchecked_user_overlay_orphans(
+            f"schema_mismatch:{','.join(user_overlay_schema_mismatches)}"
+        )
+    else:
+        user_overlay_orphans = _archive_user_overlay_orphans(root)
     layout_readiness = _archive_layout_readiness(
         present_count=present_count,
         complete=complete,
@@ -1131,20 +1147,26 @@ def _archive_single_tier_state(
     return payload
 
 
+def _unchecked_archive_derived_readiness(reason: str) -> dict[str, Any]:
+    return {
+        "checked": False,
+        "reason": reason,
+        "source_check_available": False,
+        "counts": {},
+        "materialization_counts": {},
+        "missing_materialization_counts": {},
+        "ready": {},
+        "surface_readiness": {},
+    }
+
+
 def _archive_derived_readiness(root: Path, *, exact_counts: bool = False) -> dict[str, Any]:
     """Report cross-table readiness for derived surfaces."""
 
     index_db = root / ARCHIVE_TIER_SPECS[ArchiveTier.INDEX].filename
     source_db = root / ARCHIVE_TIER_SPECS[ArchiveTier.SOURCE].filename
     if not index_db.exists():
-        return {
-            "checked": False,
-            "reason": "missing_index_tier",
-            "counts": {},
-            "materialization_counts": {},
-            "missing_materialization_counts": {},
-            "ready": {},
-        }
+        return _unchecked_archive_derived_readiness("missing_index_tier")
 
     conn = open_readonly_connection(index_db)
     source_attached = False
@@ -1206,6 +1228,15 @@ def _archive_derived_readiness(root: Path, *, exact_counts: bool = False) -> dic
             with suppress(sqlite3.Error):
                 conn.execute("DETACH DATABASE source_tier")
         conn.close()
+
+
+def _unchecked_user_overlay_orphans(reason: str) -> dict[str, Any]:
+    return {
+        "checked": False,
+        "reason": reason,
+        "orphan_session_reference_counts": {},
+        "total_orphan_session_references": 0,
+    }
 
 
 def _archive_derived_counts(

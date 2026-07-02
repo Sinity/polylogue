@@ -135,15 +135,17 @@ class TestResolvePasteBoundaryState:
         )
         assert state == "whole_message_fallback"
 
-    def test_heuristic_only_paste_marker(self) -> None:
-        """Text containing [Pasted text #N] without hook/history → whole_message_fallback."""
+    def test_in_text_paste_marker_is_projected(self) -> None:
+        """Text containing a ground-truth [Pasted text #N] marker without
+        hook/history evidence resolves to projected (known boundary), not the
+        weaker whole_message_fallback proxy state."""
         state = resolve_paste_boundary_state(
             message_text="Look at [Pasted text #1] for details",
             history_has_paste=False,
             history_has_content=False,
             hook_has_paste=False,
         )
-        assert state == "whole_message_fallback"
+        assert state == "projected"
 
     def test_heuristic_only_forwarding_pattern(self) -> None:
         """Text matching chatlog forwarding without hook/history → whole_message_fallback."""
@@ -248,8 +250,8 @@ class TestDetectPasteIntegration:
     def test_detect_paste_returns_one_for_long_text(self) -> None:
         assert detect_paste("x" * 5000) == 1
 
-    def test_resolver_uses_detect_paste_for_fallback(self) -> None:
-        """Resolver returns whole_message_fallback when only detect_paste fires."""
+    def test_resolver_uses_heuristic_for_whole_message_fallback(self) -> None:
+        """Resolver returns whole_message_fallback for a heuristic-only proxy."""
         state = resolve_paste_boundary_state(
             message_text="x" * 5000,
             history_has_paste=False,
@@ -257,6 +259,17 @@ class TestDetectPasteIntegration:
             hook_has_paste=False,
         )
         assert state == "whole_message_fallback"
+
+    def test_resolver_uses_marker_for_projected(self) -> None:
+        """A ground-truth paste marker in text resolves to projected, not the
+        weaker whole_message_fallback proxy state."""
+        state = resolve_paste_boundary_state(
+            message_text="see [Pasted text #1] above",
+            history_has_paste=False,
+            history_has_content=False,
+            hook_has_paste=False,
+        )
+        assert state == "projected"
 
     def test_resolver_returns_none_when_detect_paste_returns_zero(self) -> None:
         """Resolver returns None when detect_paste returns 0 and no other evidence."""

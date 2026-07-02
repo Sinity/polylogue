@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing_extensions import TypedDict
+from typing_extensions import NotRequired, TypedDict
 
 
 class WorkEventDocument(TypedDict):
@@ -127,7 +127,8 @@ class ThreadDocument(TypedDict):
     total_messages: int
     total_cost_usd: float
     dominant_repo: str | None
-    provider_breakdown: dict[str, int]
+    origin_breakdown: dict[str, int]
+    provider_breakdown: NotRequired[dict[str, int]]
     work_event_breakdown: dict[str, int]
     confidence: float
     support_level: str

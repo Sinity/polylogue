@@ -8,12 +8,12 @@ from datetime import datetime
 
 from pydantic import ValidationError
 
-from polylogue.archive.message.artifacts import classify_text_message_type
+from polylogue.archive.message.artifacts import classify_material_origin, classify_text_message_type
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.provider.semantics import extract_codex_text
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, Provider
+from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.core.timestamps import parse_timestamp_pair
 from polylogue.logging import get_logger
 from polylogue.sources.providers.codex import CodexRecord
@@ -109,6 +109,10 @@ def _record_timestamp(record: dict[str, object]) -> str | int | float | None:
     return value if isinstance(value, str | int | float) else None
 
 
+def _message_timestamp(record: dict[str, object], message_record: dict[str, object]) -> str | int | float | None:
+    return _record_timestamp(message_record) or _record_timestamp(record)
+
+
 def _record_instructions(record: dict[str, object]) -> str | None:
     value = record.get("instructions")
     return value if isinstance(value, str) else None
@@ -179,9 +183,14 @@ def _turn_context_payload(payload: dict[str, object]) -> dict[str, object]:
 def _token_usage(record: dict[str, object]) -> dict[str, int]:
     usage = _dict_record(record.get("usage")) or _dict_record(record.get("tokens")) or record
     return {
-        "input_tokens": _int_value(usage.get("input_tokens")),
-        "output_tokens": _int_value(usage.get("output_tokens")),
-        "cache_read_tokens": _int_value(usage.get("cache_read_tokens") or usage.get("cache_read_input_tokens")),
+        "input_tokens": _int_value(usage.get("input_tokens") or usage.get("inputTokenCount")),
+        "output_tokens": _int_value(usage.get("output_tokens") or usage.get("outputTokenCount")),
+        "cache_read_tokens": _int_value(
+            usage.get("cache_read_tokens")
+            or usage.get("cache_read_input_tokens")
+            or usage.get("cached_input_tokens")
+            or usage.get("cached_tokens")
+        ),
         "cache_write_tokens": _int_value(
             usage.get("cache_write_tokens")
             or usage.get("cache_creation_input_tokens")
@@ -315,15 +324,43 @@ def _tool_input_from_arguments(value: object) -> dict[str, object]:
     return {}
 
 
-def _codex_tool_message(record: dict[str, object], *, index: int, position: int) -> ParsedMessage | None:
+def _codex_material_origin(role: Role, message_type: MessageType, text: str | None) -> MaterialOrigin:
+    material_origin = classify_material_origin(role=role, message_type=message_type, text=text)
+    if material_origin is MaterialOrigin.UNKNOWN and role is Role.USER and message_type is MessageType.MESSAGE:
+        return MaterialOrigin.HUMAN_AUTHORED
+    return material_origin
+
+
+def _codex_tool_message(
+    record: dict[str, object],
+    *,
+    index: int,
+    position: int,
+    timestamp_fallback: str | int | float | None = None,
+) -> ParsedMessage | None:
     payload = _record_payload(record)
     record_type = _record_type(record)
-    timestamp = _iso_or_none(_record_timestamp(record))
-    if record_type == "function_call":
+    timestamp = _iso_or_none(_record_timestamp(record) or timestamp_fallback)
+    if record_type in {"function_call", "custom_tool_call", "tool_search_call", "web_search_call", "local_shell_call"}:
         tool_name = payload.get("name")
         if not isinstance(tool_name, str) or not tool_name:
-            return None
+            tool_name = payload.get("execution")
+        if not isinstance(tool_name, str) or not tool_name:
+            tool_name = record_type
         tool_id = payload.get("call_id") or payload.get("id")
+        raw_arguments = payload.get("arguments")
+        if raw_arguments is None:
+            raw_arguments = payload.get("input")
+        if raw_arguments is None:
+            raw_arguments = payload.get("action")
+        blocks = [
+            ParsedContentBlock(
+                type=BlockType.TOOL_USE,
+                tool_name=tool_name,
+                tool_id=str(tool_id) if tool_id else None,
+                tool_input=_tool_input_from_arguments(raw_arguments),
+            )
+        ]
         return ParsedMessage(
             provider_message_id=str(payload.get("id") or tool_id or f"function-call-{index}"),
             role=Role.ASSISTANT,
@@ -332,18 +369,15 @@ def _codex_tool_message(record: dict[str, object], *, index: int, position: int)
             position=position,
             variant_index=0,
             is_active_path=True,
-            blocks=[
-                ParsedContentBlock(
-                    type=BlockType.TOOL_USE,
-                    tool_name=tool_name,
-                    tool_id=str(tool_id) if tool_id else None,
-                    tool_input=_tool_input_from_arguments(payload.get("arguments")),
-                )
-            ],
+            blocks=blocks,
         )
-    if record_type == "function_call_output":
+    if record_type in {"function_call_output", "custom_tool_call_output", "tool_search_output", "web_search_output"}:
         tool_id = payload.get("call_id") or payload.get("id")
         output = payload.get("output")
+        if output is None:
+            output = payload.get("tools")
+        if output is None:
+            output = payload.get("result")
         output_text = output if isinstance(output, str) else json.dumps(output, sort_keys=True) if output else None
         if not tool_id and not output_text:
             return None
@@ -365,6 +399,15 @@ def _codex_tool_message(record: dict[str, object], *, index: int, position: int)
                 if isinstance(raw_exit, int) and not isinstance(raw_exit, bool):
                     exit_code = raw_exit
                     is_error = raw_exit != 0
+        blocks = [
+            ParsedContentBlock(
+                type=BlockType.TOOL_RESULT,
+                tool_id=str(tool_id) if tool_id else None,
+                text=output_text,
+                is_error=is_error,
+                exit_code=exit_code,
+            )
+        ]
         return ParsedMessage(
             provider_message_id=str(payload.get("id") or tool_id or f"function-call-output-{index}"),
             role=Role.TOOL,
@@ -373,17 +416,63 @@ def _codex_tool_message(record: dict[str, object], *, index: int, position: int)
             position=position,
             variant_index=0,
             is_active_path=True,
-            blocks=[
-                ParsedContentBlock(
-                    type=BlockType.TOOL_RESULT,
-                    tool_id=str(tool_id) if tool_id else None,
-                    text=output_text,
-                    is_error=is_error,
-                    exit_code=exit_code,
-                )
-            ],
+            blocks=blocks,
         )
     return None
+
+
+def _message_signature(role: Role | str, text: str | None) -> tuple[str, str]:
+    role_value = role.value if isinstance(role, Role) else str(role)
+    return (role_value, " ".join((text or "").split()))
+
+
+def _response_message_signatures(records: Iterable[object]) -> set[tuple[str, str]]:
+    signatures: set[tuple[str, str]] = set()
+    for item in records:
+        record = _dict_record(item)
+        if record is None:
+            continue
+        message_record = _message_record(record)
+        if message_record is None:
+            continue
+        raw_role = _effective_role(message_record)
+        if not raw_role or raw_role == "unknown":
+            continue
+        text = extract_codex_text(_effective_content(message_record))
+        signatures.add(_message_signature(Role.normalize(raw_role), text))
+    return signatures
+
+
+def _codex_event_message(
+    record: dict[str, object],
+    *,
+    index: int,
+    position: int,
+    response_signatures: set[tuple[str, str]],
+    timestamp_fallback: str | int | float | None = None,
+) -> ParsedMessage | None:
+    record_type = _record_type(record)
+    if record_type not in {"user_message", "agent_message"}:
+        return None
+    text = record.get("message")
+    if not isinstance(text, str) or not text.strip():
+        return None
+    role = Role.USER if record_type == "user_message" else Role.ASSISTANT
+    if _message_signature(role, text) in response_signatures:
+        return None
+    message_type = classify_text_message_type(text) or MessageType.MESSAGE
+    return ParsedMessage(
+        provider_message_id=str(record.get("client_id") or record.get("id") or f"{record_type}-{index}"),
+        role=role,
+        text=text,
+        timestamp=_iso_or_none(_record_timestamp(record) or timestamp_fallback),
+        position=position,
+        variant_index=0,
+        is_active_path=True,
+        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
+        message_type=message_type,
+        material_origin=_codex_material_origin(role, message_type, text),
+    )
 
 
 def _effective_role(record: dict[str, object]) -> str:
@@ -451,6 +540,8 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
     - text_content: Extracted text from any format
     - format_type: Detected format generation
     """
+    record_list = list(records)
+    response_signatures = _response_message_signatures(record_list)
     messages: list[ParsedMessage] = []
     session_events: list[ParsedSessionEvent] = []
     session_id = fallback_id
@@ -471,7 +562,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
     current_model_effort: str | None = None
     message_position = 0
 
-    for idx, item in enumerate(records, start=1):
+    for idx, item in enumerate(record_list, start=1):
         record = _dict_record(item)
         if record is None:
             continue
@@ -585,11 +676,28 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
                         payload=event_payload,
                     )
                 )
-                tool_message = _codex_tool_message(inner, index=idx, position=message_position)
+                timestamp_fallback = _record_timestamp(record)
+                tool_message = _codex_tool_message(
+                    inner,
+                    index=idx,
+                    position=message_position,
+                    timestamp_fallback=timestamp_fallback,
+                )
                 if tool_message is not None:
                     messages.append(tool_message)
                     message_position += 1
                     latest_message_timestamp = _newer_timestamp(latest_message_timestamp, tool_message.timestamp)
+                event_message = _codex_event_message(
+                    inner,
+                    index=idx,
+                    position=message_position,
+                    response_signatures=response_signatures,
+                    timestamp_fallback=timestamp_fallback,
+                )
+                if event_message is not None:
+                    messages.append(event_message)
+                    message_position += 1
+                    latest_message_timestamp = _newer_timestamp(latest_message_timestamp, event_message.timestamp)
                 cwd = _extract_cwd(event_payload)
                 if cwd:
                     working_directories.add(cwd)
@@ -624,7 +732,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
             raw_role = _effective_role(message_record)
             content = _effective_content(message_record)
             text = extract_codex_text(content)
-            timestamp_pair = parse_timestamp_pair(_record_timestamp(message_record))
+            timestamp_pair = parse_timestamp_pair(_message_timestamp(record, message_record))
             timestamp = timestamp_pair[1] if timestamp_pair is not None else None
 
             content_blocks = content_blocks_from_segments(content)
@@ -645,6 +753,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
             model_effort = _string_field(message_record, "effort", "model_effort") or current_model_effort
             duration_ms = _optional_int_field(message_record, "duration_ms", "durationMs", "elapsed_ms")
 
+            message_type = _message_type_from_codex_message(message_record, text)
             messages.append(
                 ParsedMessage(
                     provider_message_id=msg_id,
@@ -652,7 +761,8 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
                     text=text,
                     timestamp=timestamp,
                     blocks=content_blocks,
-                    message_type=_message_type_from_codex_message(message_record, text),
+                    message_type=message_type,
+                    material_origin=_codex_material_origin(role, message_type, text),
                     position=message_position,
                     variant_index=0,
                     is_active_path=True,
@@ -669,15 +779,22 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
             latest_message_timestamp = _newer_timestamp_pair(latest_message_timestamp, timestamp_pair)
 
     # Lineage: prefer the explicit markers on the child's own session_meta.
-    #   - `source.subagent.thread_spawn` → spawned subagent (inherits a prefix)
-    #   - `forked_from_id` (no subagent block) → user fork / resume of the parent
-    # Both copy the parent's context as a leading prefix into this rollout; the
-    # archive write path normalizes that copy into a lineage edge + branch point.
+    #   - `source.subagent.thread_spawn` → spawned subagent (positive evidence
+    #     of a subagent relationship): assign SUBAGENT.
+    #   - `forked_from_id` (no subagent block) → the child shares the parent's
+    #     leading context prefix, but Codex sets this field for BOTH a divergent
+    #     user fork AND a plain resume of the same thread. The marker proves a
+    #     parent, not the relationship *type*. Assigning FORK here over-claimed:
+    #     a resume was recorded as a fork, and RESUME was never emitted. Leave
+    #     the type unclassified (None → conservative CONTINUATION default in
+    #     `branch_type_to_edge_type`) rather than fabricate FORK from absent
+    #     evidence. The prefix-sharing normalization still records the branch
+    #     point + `inheritance`, so the shared-prefix fact is preserved.
     # Fall back to the legacy heuristic (a second embedded session_meta id) when
     # no explicit marker is present.
     if forked_from_id is not None:
         parent_id: str | None = forked_from_id
-        branch_type = BranchType.SUBAGENT if is_subagent_spawn else BranchType.FORK
+        branch_type = BranchType.SUBAGENT if is_subagent_spawn else None
     elif len(session_metas_seen) > 1:
         parent_id = session_metas_seen[1]
         branch_type = BranchType.CONTINUATION

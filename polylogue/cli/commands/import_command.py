@@ -25,6 +25,7 @@ The three observable outcomes are:
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import time
 from pathlib import Path
@@ -48,8 +49,8 @@ _ACCEPTED_STATUSES = frozenset({"accepted", "pending", "scheduled", "queued"})
 _DEMO_WAIT_POLL_INTERVAL_S = 0.25
 
 
-def _daemon_url(env: AppEnv) -> str:
-    return getattr(env, "daemon_url", None) or _DEFAULT_DAEMON_URL
+def _default_daemon_url() -> str:
+    return os.environ.get("POLYLOGUE_DAEMON_URL") or _DEFAULT_DAEMON_URL
 
 
 def _stage_for_daemon(path: Path, *, replace_existing: bool = False) -> Path:
@@ -171,9 +172,9 @@ def _daemon_http_error_message(exc: HTTPError, *, daemon_url: str, staged: Path)
 )
 @click.option(
     "--daemon-url",
-    default=_DEFAULT_DAEMON_URL,
+    default=_default_daemon_url,
     show_default=True,
-    help="Daemon API URL.",
+    help="Daemon API URL (env: POLYLOGUE_DAEMON_URL).",
 )
 @click.option(
     "--explain",
@@ -298,8 +299,9 @@ def import_command(
         f"  Operation:    {operation.operation_id}\n"
         f"  Daemon:       {daemon_url}\n"
         f"  Next:         the daemon will process the staged file automatically.\n"
-        f"                Check progress:  journalctl --user -u polylogued.service -f\n"
-        f"                Verify ingested: polylogue analyze"
+        f"                Check progress:    journalctl --user -u polylogued.service -f\n"
+        f"                Check convergence: polylogued status\n"
+        f"                Verify archive:    polylogue status --full"
     )
 
     if wait:

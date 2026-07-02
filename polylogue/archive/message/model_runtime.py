@@ -61,6 +61,22 @@ class MessageRuntimeMixin:
         )
 
     @property
+    def is_candidate_human_authored(self) -> bool:
+        """User-channel turn that is positively human OR merely unclassified.
+
+        ``material_origin`` no longer asserts HUMAN_AUTHORED for an unmarked
+        user turn (it stays UNKNOWN), so display/topic heuristics that want
+        "the human's ask" must accept HUMAN_AUTHORED|UNKNOWN while still
+        excluding the known non-human classes (tool results, runtime
+        context/protocol, operator commands, generated packs, assistant prose).
+        This is a heuristic candidate signal, not an authorship fact.
+        """
+        return self.is_user and MaterialOrigin.normalize(getattr(self, "material_origin", MaterialOrigin.UNKNOWN)) in {
+            MaterialOrigin.HUMAN_AUTHORED,
+            MaterialOrigin.UNKNOWN,
+        }
+
+    @property
     def is_authored_prose(self) -> bool:
         return MaterialOrigin.normalize(getattr(self, "material_origin", MaterialOrigin.UNKNOWN)) in {
             MaterialOrigin.HUMAN_AUTHORED,

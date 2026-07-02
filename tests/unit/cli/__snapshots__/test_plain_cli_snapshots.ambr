@@ -1297,6 +1297,7 @@
     "archive_runtime_paths": {
       "checked": true,
       "source": "static_facade_route_catalog",
+      "archive_routing_ready": true,
       "archive_runtime_ready": true,
       "primary_ingest_store": "archive_file_set",
       "ingest_write_mode": "archive",

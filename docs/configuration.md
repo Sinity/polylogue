@@ -235,7 +235,6 @@ max_per_hour = 12
 [health]
 check_interval_s = 300
 check_tiers = "fast"
-fts_auto_restore = false
 blob_integrity_sample_size = 100
 
 # Convergence-debt alert thresholds. The daemon raises a typed HealthAlert

@@ -2,13 +2,46 @@
 
 from __future__ import annotations
 
-from polylogue.archive.message.paste_detection import detect_paste, has_paste_indicator
+from polylogue.archive.message.paste_detection import (
+    detect_paste,
+    has_paste_heuristic,
+    has_paste_indicator,
+    has_paste_marker,
+)
 
 
 def test_detect_paste_empty_text() -> None:
     assert detect_paste(None) == 0
     assert detect_paste("") == 0
     assert detect_paste("   ") == 0
+
+
+def test_marker_and_heuristic_are_distinct_signals() -> None:
+    # A real paste marker is ground truth: marker True, heuristic False.
+    marker_only = "look at [Pasted text #1] for the details"
+    assert has_paste_marker(marker_only) is True
+    assert has_paste_heuristic(marker_only) is False
+
+    # A long typed prose message is only a proxy: heuristic True, marker False.
+    heuristic_only = "x" * 4001
+    assert has_paste_marker(heuristic_only) is False
+    assert has_paste_heuristic(heuristic_only) is True
+
+    # Ordinary short prose matches neither.
+    plain = "Can you help me fix this bug?"
+    assert has_paste_marker(plain) is False
+    assert has_paste_heuristic(plain) is False
+
+    # detect_paste is the union selection gate over both signals.
+    assert detect_paste(marker_only) == 1
+    assert detect_paste(heuristic_only) == 1
+    assert detect_paste(plain) == 0
+
+
+def test_predicates_handle_empty_text() -> None:
+    for empty in (None, "", "   "):
+        assert has_paste_marker(empty) is False
+        assert has_paste_heuristic(empty) is False
 
 
 def test_detect_paste_short_typed_text() -> None:

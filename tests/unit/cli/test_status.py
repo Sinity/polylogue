@@ -265,6 +265,7 @@ class TestNoArchiveStatus:
         assert payload["archive_cli_routes"]["unsupported_command_count"] == 0
         assert payload["archive_cli_routes"]["routes"]["ops.state.blackboard.post"]["tier"] == "user"
         assert payload["archive_cli_routes"]["routes"]["reset.database"]["route"] == "archive_direct"
+        assert payload["archive_runtime_paths"]["archive_routing_ready"] is True
         assert payload["archive_runtime_paths"]["archive_runtime_ready"] is True
         assert payload["archive_runtime_paths"]["primary_ingest_store"] == "archive_file_set"
         assert payload["archive_runtime_paths"]["ingest_write_mode"] == "archive"
@@ -383,7 +384,7 @@ class TestNoArchiveStatus:
         diagnose.assert_not_called()
         combined = _combined_calls(env)
         assert "Archive surfaces:" in combined
-        assert "Archive runtime paths:" in combined
+        assert "Archive routing paths:" in combined
         assert "ingest=archive -> source.db,index.db" in combined
         assert "tiers=source.db,index.db,embeddings.db,user.db,ops.db" in combined
         assert "Archive route ownership:" in combined
@@ -424,6 +425,7 @@ class TestNoArchiveStatus:
         assert readiness["surfaces"]["raw_artifacts"]["ready"] is False
         assert readiness["surfaces"]["raw_artifacts"]["blockers"] == ["missing_source_raw_sessions"]
         runtime_paths = payload["archive_runtime_paths"]
+        assert runtime_paths["archive_routing_ready"] is True
         assert runtime_paths["archive_runtime_ready"] is True
         assert runtime_paths["unsupported_primary_method_count"] == 0
         assert runtime_paths["final_shape_blockers"] == []

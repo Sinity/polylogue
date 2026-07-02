@@ -4,7 +4,7 @@ Uses ``systemd.journal.send()`` to emit one journald entry per alert,
 mapping :class:`~polylogue.daemon.health.HealthSeverity` to a syslog
 priority. Structured ``HealthAlert`` fields (check name, tier, severity,
 consecutive failure count, checked-at timestamp) are forwarded as journald
-metadata so ``journalctl POLYLOGUE_CHECK=fts_trigger_drift`` works.
+metadata so ``journalctl POLYLOGUE_CHECK=fts_readiness`` works.
 
 The backend is hard-dependent on the optional ``systemd`` Python binding
 because that is the only public Python entrypoint into the journal

@@ -56,9 +56,6 @@ def profile_evidence_search_text(profile: SessionProfile) -> str:
     parts = [
         profile.origin,
         profile.title or "",
-        profile.inferred_topic or "",
-        profile.workflow_shape,
-        profile.terminal_state,
         *profile.repo_paths,
         *profile.cwd_paths,
         *profile.file_paths_touched,
@@ -112,6 +109,8 @@ def profile_enrichment_search_text(
         profile.inferred_topic or "",
         enrichment_payload.intent_summary or "",
         enrichment_payload.outcome_summary or "",
+        enrichment_payload.goal_text or "",
+        enrichment_payload.goal_outcome or "",
         *profile.repo_names,
         *profile.repo_paths,
         *blockers,
@@ -133,7 +132,7 @@ def session_enrichment_payload(
     text_bands = _collect_enrichment_text_bands(analysis)
     user_turns = text_bands.user_turns
     assistant_turns = text_bands.assistant_turns
-    blockers_val = text_bands.blockers
+    blockers_val = text_bands.blockers if profile.terminal_state in _UNRESOLVED_BLOCKER_TERMINAL_STATES else ()
     support_signals_val = enrichment_support_signals(profile, analysis, text_bands=text_bands)
     input_band_summary = {
         "user_turns": len(user_turns),
@@ -174,17 +173,21 @@ def session_enrichment_payload(
     if raw_intent and _goal_re.search(raw_intent):
         is_goal_session = True
         goal_text = _clean_topic_text(raw_intent, width=500) if raw_intent else None
-        # Classify outcome from terminal state and session shape.
-        ts = profile.terminal_state
-        if ts == "completed":
-            goal_outcome = "completed"
-        elif ts in ("abandoned", "error", "interrupted"):
-            goal_outcome = "failed" if ts == "error" else "abandoned"
-        elif ts == "timed_out":
-            goal_outcome = "timed_out"
-        elif ts == "stuck":
-            goal_outcome = "failed"
-        # Fall through: unknown terminal state → None
+        # Classify boundary posture from the current terminal-state vocabulary.
+        # These are not claims about whether the goal itself succeeded.
+        match profile.terminal_state:
+            case "clean_finish":
+                goal_outcome = "ended_cleanly"
+            case "error_left":
+                goal_outcome = "ended_with_error"
+            case "question_left":
+                goal_outcome = "awaiting_user"
+            case "tool_left":
+                goal_outcome = "pending_tool"
+            case "agent_hanging":
+                goal_outcome = "inactive_pending"
+            case _:
+                goal_outcome = None
 
     return SessionEnrichmentPayload(
         intent_summary=intent_summary,
@@ -236,11 +239,7 @@ def profile_evidence_payload(profile: SessionProfile) -> SessionEvidencePayload:
         total_duration_ms=profile.total_duration_ms,
         wall_duration_ms=profile.wall_duration_ms,
         tool_active_duration_ms=profile.tool_active_duration_ms,
-        workflow_shape=profile.workflow_shape,
-        workflow_shape_confidence=profile.workflow_shape_confidence,
         workflow_shape_features=dict(profile.workflow_shape_features),
-        terminal_state=profile.terminal_state,
-        terminal_state_confidence=profile.terminal_state_confidence,
         terminal_state_evidence=dict(profile.terminal_state_evidence),
         cost_is_estimated=profile.cost_is_estimated,
         compaction_count=profile.compaction_count,
@@ -261,6 +260,12 @@ def profile_evidence_payload(profile: SessionProfile) -> SessionEvidencePayload:
         latency_percentiles_ms=dict(profile.latency_percentiles_ms),
         tool_calls_per_minute=profile.tool_calls_per_minute,
         timing_provenance=profile.timing_provenance,
+        total_input_tokens=profile.total_input_tokens,
+        total_output_tokens=profile.total_output_tokens,
+        total_cache_read_tokens=profile.total_cache_read_tokens,
+        total_cache_write_tokens=profile.total_cache_write_tokens,
+        total_credit_cost=profile.total_credit_cost,
+        cost_provenance=profile.cost_provenance,
     )
 
 
@@ -299,8 +304,6 @@ def profile_inference_fallback_reasons(profile: SessionProfile) -> tuple[Fallbac
         reasons.append(FallbackReason.NO_WORK_EVENTS_AND_NO_PHASES)
     elif profile.work_events and all(event_fallback(event) for event in profile.work_events):
         reasons.append(FallbackReason.ALL_WORK_EVENTS_WEAK)
-    if profile.phases and all(phase_fallback(phase) for phase in profile.phases):
-        reasons.append(FallbackReason.ALL_PHASES_HEURISTIC)
     return tuple(reasons)
 
 
@@ -670,10 +673,8 @@ def profile_support_signals(profile: SessionProfile) -> tuple[str, ...]:
 def profile_support_level(profile: SessionProfile) -> ConfidenceBand:
     signals = profile_support_signals(profile)
     work_confidence = max((float(event.confidence or 0.0) for event in profile.work_events), default=0.0)
-    phase_confidence = max((float(phase.confidence or 0.0) for phase in profile.phases), default=0.0)
-    confidence = max(work_confidence, phase_confidence)
     fallback = engaged_duration_source(profile) != "phase_sum" and not profile.work_events and not profile.phases
-    return support_level(confidence, support_signals=signals, fallback=fallback)
+    return support_level(work_confidence, support_signals=signals, fallback=fallback)
 
 
 # ---------------------------------------------------------------------------
@@ -710,6 +711,15 @@ _BLOCKER_MARKERS = (
     "panic",
 )
 
+_UNRESOLVED_BLOCKER_TERMINAL_STATES = frozenset(
+    {
+        "error_left",
+        "question_left",
+        "tool_left",
+        "agent_hanging",
+    }
+)
+
 
 @dataclass(frozen=True)
 class _EnrichmentTextBands:
@@ -729,7 +739,7 @@ def _collect_enrichment_text_bands(analysis: SessionAnalysis | None) -> _Enrichm
         text = str(message.text or "").strip()
         if not text:
             continue
-        if message.is_human_authored and not message.is_noise:
+        if message.is_candidate_human_authored and not message.is_noise:
             user_texts.append(message.text)
             text_lower = message.text.lower()
             if any(marker in text_lower for marker in _BLOCKER_MARKERS):

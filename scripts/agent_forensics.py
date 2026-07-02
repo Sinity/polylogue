@@ -17,10 +17,12 @@ The archive defaults to ``$POLYLOGUE_ARCHIVE_ROOT`` then the XDG data dir.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 # --------------------------------------------------------------------------- #
 # SVG charting (dependency-free)
@@ -229,7 +231,7 @@ def _has_table(conn: sqlite3.Connection, name: str) -> bool:
     )
 
 
-def _scalar(conn: sqlite3.Connection, sql: str, default: object = 0) -> object:
+def _scalar(conn: sqlite3.Connection, sql: str, default: Any = 0) -> Any:
     row = conn.execute(sql).fetchone()
     if row is None or row[0] is None:
         return default
@@ -241,8 +243,8 @@ def _scalar(conn: sqlite3.Connection, sql: str, default: object = 0) -> object:
 # --------------------------------------------------------------------------- #
 
 
-def analyze(conn: sqlite3.Connection) -> dict[str, object]:
-    f: dict[str, object] = {}
+def analyze(conn: sqlite3.Connection) -> dict[str, Any]:
+    f: dict[str, Any] = {}
 
     # 1. Scale & span -------------------------------------------------------- #
     f["sessions"] = int(_scalar(conn, "SELECT COUNT(*) FROM sessions"))
@@ -377,7 +379,162 @@ def analyze(conn: sqlite3.Connection) -> dict[str, object]:
         f["msg_p90"] = msg_counts[int(len(msg_counts) * 0.9)]
         f["msg_max"] = msg_counts[-1]
         f["msg_hist"] = _log_histogram([float(x) for x in msg_counts])
+    if _has_table(conn, "actions") and _has_table(conn, "blocks"):
+        f["structured_failure_followups"] = _structured_failure_followups(conn)
     return f
+
+
+_ACKNOWLEDGMENT_MARKERS = (
+    "failed",
+    "failure",
+    "error",
+    "errored",
+    "exit code",
+    "non-zero",
+    "nonzero",
+    "exception",
+    "traceback",
+    "permission denied",
+    "not found",
+    "timed out",
+    "timeout",
+    "fix",
+    "failing",
+)
+
+
+def _classify_failed_followup(text: str | None) -> str:
+    """Classify the next assistant turn after a structured tool failure.
+
+    This deliberately avoids mining a positive success claim from prose. The
+    structured failure is the anchor; the next assistant turn is only checked
+    for explicit acknowledgment markers. Missing/short follow-up stays
+    ambiguous rather than being counted as silent proceed.
+    """
+
+    if text is None:
+        return "ambiguous"
+    normalized = " ".join(text.lower().split())
+    if len(normalized) < 20:
+        return "ambiguous"
+    if any(marker in normalized for marker in _ACKNOWLEDGMENT_MARKERS):
+        return "acknowledged"
+    return "silent_proceed"
+
+
+def _structured_failure_followups(conn: sqlite3.Connection, *, sample_limit: int = 20) -> dict[str, object]:
+    """Return adjacency-anchored follow-up stats for failed tool outcomes."""
+
+    rows = conn.execute(
+        """
+        WITH failed AS (
+            SELECT
+                a.session_id,
+                a.message_id,
+                a.tool_name,
+                a.tool_command,
+                a.is_error,
+                a.exit_code,
+                m.position,
+                m.model_name AS tool_message_model
+            FROM actions AS a
+            JOIN messages AS m ON m.message_id = a.message_id
+            WHERE COALESCE(a.is_error, 0) = 1
+               OR (a.exit_code IS NOT NULL AND a.exit_code != 0)
+        ),
+        next_message AS (
+            SELECT
+                f.*,
+                (
+                    SELECT nm.message_id
+                    FROM messages AS nm
+                    WHERE nm.session_id = f.session_id
+                      AND nm.role = 'assistant'
+                      AND nm.position > f.position
+                    ORDER BY nm.position
+                    LIMIT 1
+                ) AS next_message_id
+            FROM failed AS f
+        )
+        SELECT
+            n.session_id,
+            n.message_id,
+            n.tool_name,
+            n.tool_command,
+            n.is_error,
+            n.exit_code,
+            COALESCE(nm.model_name, n.tool_message_model, '') AS model_name,
+            n.next_message_id,
+            substr(group_concat(COALESCE(b.text, ''), '\n'), 1, 1200) AS next_text
+        FROM next_message AS n
+        LEFT JOIN messages AS nm ON nm.message_id = n.next_message_id
+        LEFT JOIN blocks AS b ON b.message_id = n.next_message_id
+        GROUP BY
+            n.session_id,
+            n.message_id,
+            n.tool_name,
+            n.tool_command,
+            n.is_error,
+            n.exit_code,
+            model_name,
+            n.next_message_id
+        """,
+    ).fetchall()
+
+    by_tool: dict[str, dict[str, int]] = {}
+    by_model: dict[str, dict[str, int]] = {}
+    samples: list[dict[str, object]] = []
+    totals = {"failed_outcomes": 0, "acknowledged": 0, "silent_proceed": 0, "ambiguous": 0}
+    for row in rows:
+        classification = _classify_failed_followup(row["next_text"])
+        tool = str(row["tool_name"] or "unknown")
+        model = str(row["model_name"] or "unknown")
+        totals["failed_outcomes"] += 1
+        totals[classification] += 1
+        by_tool.setdefault(tool, {"failed_outcomes": 0, "acknowledged": 0, "silent_proceed": 0, "ambiguous": 0})
+        by_model.setdefault(model, {"failed_outcomes": 0, "acknowledged": 0, "silent_proceed": 0, "ambiguous": 0})
+        by_tool[tool]["failed_outcomes"] += 1
+        by_tool[tool][classification] += 1
+        by_model[model]["failed_outcomes"] += 1
+        by_model[model][classification] += 1
+        if len(samples) < sample_limit:
+            samples.append(
+                {
+                    "classification": classification,
+                    "session_ref": f"session:{row['session_id']}",
+                    "tool_message_ref": f"message:{row['message_id']}",
+                    "next_message_ref": f"message:{row['next_message_id']}" if row["next_message_id"] else None,
+                    "tool_name": tool,
+                    "exit_code": row["exit_code"],
+                    "is_error": row["is_error"],
+                    "tool_command_preview": str(row["tool_command"] or "")[:160],
+                }
+            )
+
+    def ranked(mapping: dict[str, dict[str, int]]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for key, counts in mapping.items():
+            failed = counts["failed_outcomes"]
+            silent = counts["silent_proceed"]
+            out.append(
+                {
+                    "name": key,
+                    **counts,
+                    "silent_rate": (silent / failed) if failed else 0.0,
+                }
+            )
+        return sorted(out, key=lambda item: (-int(item["failed_outcomes"]), str(item["name"])))
+
+    return {
+        "definition": (
+            "failed tool outcomes are structured rows where is_error=1 or exit_code!=0; "
+            "classification inspects only the next assistant turn for explicit failure acknowledgment markers"
+        ),
+        "totals": totals,
+        "by_tool": ranked(by_tool),
+        "by_model": ranked(by_model),
+        "samples": samples,
+    }
 
 
 def _log_histogram(values: list[float]) -> list[tuple[str, int]]:
@@ -417,7 +574,7 @@ def _model_family(model_name: str) -> str | None:
     return None
 
 
-def _subscription_credits(per_model_classes: list) -> dict[str, float]:
+def _subscription_credits(per_model_classes: list[Any]) -> dict[str, Any]:
     """Estimate Claude subscription credits from priced per-model token classes.
 
     credits = (input + cache_write) × in_rate + output × out_rate; cache reads
@@ -443,7 +600,7 @@ def _subscription_credits(per_model_classes: list) -> dict[str, float]:
 # --------------------------------------------------------------------------- #
 
 
-def build_report(f: dict[str, object], out_dir: Path, *, archive_label: str) -> str:
+def build_report(f: dict[str, Any], out_dir: Path, *, archive_label: str) -> str:
     charts = out_dir / "charts"
     charts.mkdir(parents=True, exist_ok=True)
 
@@ -555,9 +712,8 @@ def build_report(f: dict[str, object], out_dir: Path, *, archive_label: str) -> 
                 f"{_fmt_num(int(pv['input']))} fresh input — the model re-reads cached context "
                 f"~{ratio:.0f}× more than it ingests fresh. Effective blended rate "
                 f"**${blended:.3f}/M** (vs $15+/M list for fresh Opus input), because cache "
-                f"reads dominate the volume and are cheap. This is the cache 'goblin' made "
-                f"concrete: a token counter that ignores cache reads understates real usage "
-                f"by orders of magnitude."
+                f"reads dominate the volume and are cheap. A token counter that ignores "
+                f"cache reads understates real usage by orders of magnitude."
             )
         if "tok_reasoning" in f:
             md.append("")
@@ -602,9 +758,13 @@ def build_report(f: dict[str, object], out_dir: Path, *, archive_label: str) -> 
                 f"![cost distribution]({write_chart('cost_hist.svg', bar_chart('Per-session cost distribution (USD, log bands)', [b[0] for b in ch], [float(b[1]) for b in ch]))})"
             )
             md.append("")
-        prov = f.get("cost_provenance") or []
-        if prov:
-            md.append("Cost provenance: " + ", ".join(f"{_esc(str(r[0]))} ({_fmt_int(int(r[1]))})" for r in prov) + ".")
+        cost_provenance = f.get("cost_provenance") or []
+        if cost_provenance:
+            md.append(
+                "Cost provenance: "
+                + ", ".join(f"{_esc(str(r[0]))} ({_fmt_int(int(r[1]))})" for r in cost_provenance)
+                + "."
+            )
             md.append("")
 
     # Subscription reality (the priced cost above is API-list-equivalent)
@@ -683,13 +843,77 @@ def build_report(f: dict[str, object], out_dir: Path, *, archive_label: str) -> 
             )
             md.append("")
 
+    followups = f.get("structured_failure_followups")
+    if isinstance(followups, dict):
+        totals = followups.get("totals", {})
+        failed_total = int(totals.get("failed_outcomes", 0)) if isinstance(totals, dict) else 0
+        if failed_total:
+            md.append("## Structured failure follow-up")
+            md.append("")
+            md.append(
+                "This section is the claim-vs-evidence core: it anchors on structured tool "
+                "outcomes, not prose-mined success claims. A failed outcome is any action row "
+                "with `is_error=1` or non-zero `exit_code`. The next assistant turn is then "
+                "classified as `acknowledged`, `silent_proceed`, or `ambiguous` by a small, "
+                "auditable acknowledgment-marker rule. Treat this as the structured core plus "
+                "a lexical acknowledgment heuristic, not an LLM judgment."
+            )
+            md.append("")
+            ack = int(totals.get("acknowledged", 0)) if isinstance(totals, dict) else 0
+            silent = int(totals.get("silent_proceed", 0)) if isinstance(totals, dict) else 0
+            amb = int(totals.get("ambiguous", 0)) if isinstance(totals, dict) else 0
+            md.append(
+                f"Failed structured outcomes: **{_fmt_int(failed_total)}**. "
+                f"Acknowledged: **{_fmt_int(ack)}**; silent-proceed: **{_fmt_int(silent)}** "
+                f"({silent / failed_total:.1%}); ambiguous: **{_fmt_int(amb)}**."
+            )
+            md.append("")
+            by_tool = [item for item in followups.get("by_tool", []) if isinstance(item, dict)]
+            if by_tool:
+                md.append("| tool | failed outcomes | acknowledged | silent-proceed | ambiguous | silent rate |")
+                md.append("|---|---:|---:|---:|---:|---:|")
+                for item in by_tool[:12]:
+                    failed = int(item["failed_outcomes"])
+                    md.append(
+                        f"| {_esc(str(item['name']))} | {_fmt_int(failed)} | "
+                        f"{_fmt_int(int(item['acknowledged']))} | {_fmt_int(int(item['silent_proceed']))} | "
+                        f"{_fmt_int(int(item['ambiguous']))} | {float(item['silent_rate']):.1%} |"
+                    )
+                md.append("")
+            by_model = [item for item in followups.get("by_model", []) if isinstance(item, dict)]
+            if by_model:
+                md.append("| model | failed outcomes | acknowledged | silent-proceed | ambiguous | silent rate |")
+                md.append("|---|---:|---:|---:|---:|---:|")
+                for item in by_model[:12]:
+                    failed = int(item["failed_outcomes"])
+                    md.append(
+                        f"| {_esc(str(item['name']))} | {_fmt_int(failed)} | "
+                        f"{_fmt_int(int(item['acknowledged']))} | {_fmt_int(int(item['silent_proceed']))} | "
+                        f"{_fmt_int(int(item['ambiguous']))} | {float(item['silent_rate']):.1%} |"
+                    )
+                md.append("")
+            samples = [item for item in followups.get("samples", []) if isinstance(item, dict)]
+            if samples:
+                md.append("Sample ref-backed instances:")
+                md.append("")
+                for item in samples[:8]:
+                    next_ref = item.get("next_message_ref") or "no-next-assistant-turn"
+                    command = str(item.get("tool_command_preview") or "").replace("\n", " ")
+                    md.append(
+                        f"- `{item.get('classification')}` `{item.get('tool_name')}` "
+                        f"exit=`{item.get('exit_code')}` error=`{item.get('is_error')}` "
+                        f"[{item.get('tool_message_ref')}] -> [{next_ref}]"
+                        + (f" — `{_esc(command)}`" if command else "")
+                    )
+                md.append("")
+
     md.append("---")
     md.append("")
     md.append(
         "*Reproduce: `python scripts/agent_forensics.py --archive <root> --out <dir>`. "
-        "Numbers are read directly from the archive's materialized analytics tables "
+        "Numbers are read directly from the archive's materialized analytics and action tables "
         "(`session_model_usage`, `session_provider_usage_events`, `session_work_events`, "
-        "`sessions`).*"
+        "`sessions`, `actions`, `messages`, `blocks`).*"
     )
     return "\n".join(md) + "\n"
 
@@ -710,6 +934,12 @@ def main() -> None:
         findings = analyze(conn)
     finally:
         conn.close()
+    followups = findings.get("structured_failure_followups")
+    if isinstance(followups, dict):
+        (out_dir / "structured_failure_followups.json").write_text(
+            json.dumps(followups, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
     report = build_report(findings, out_dir, archive_label=str(index_db.parent))
     (out_dir / "report.md").write_text(report, encoding="utf-8")
     print(f"Wrote {out_dir / 'report.md'} ({int(findings.get('sessions', 0)):,} sessions analyzed)")

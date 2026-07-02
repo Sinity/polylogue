@@ -21,6 +21,8 @@ from hypothesis import strategies as st
 from polylogue.archive.message.paste_detection import (
     _PASTE_BOUNDARY_STATES,
     detect_paste,
+    has_paste_heuristic,
+    has_paste_marker,
     resolve_paste_boundary_state,
 )
 
@@ -68,11 +70,19 @@ def test_zero_evidence_implies_no_paste(
         # function uses detect_paste as fallback.
         pass
     else:
-        # If a boundary state was returned, it must be the text heuristic
-        # fallback (whole_message_fallback).
-        assert state == "whole_message_fallback", (
-            f"Zero evidence should only produce whole_message_fallback from text heuristics, got {state}"
+        # If a boundary state was returned with no history/hook evidence, it
+        # came from the text alone. The marker (ground truth) and the heuristic
+        # proxy are resolved as DISTINCT states and never collapsed: a
+        # ``[Pasted text #N]`` marker yields ``projected``, a size/code-fence
+        # proxy yields ``whole_message_fallback``.
+        assert state in {"projected", "whole_message_fallback"}, (
+            f"Text-only evidence should produce projected (marker) or whole_message_fallback (heuristic), got {state}"
         )
+        if state == "projected":
+            assert has_paste_marker(message_text or None)
+        else:
+            assert has_paste_heuristic(message_text or None)
+            assert not has_paste_marker(message_text or None)
 
 
 # ── invariant: any evidence → has_paste = 1 ────────────────────────
@@ -227,15 +237,25 @@ def test_priority_chain_hash_only_beats_fallback() -> None:
     assert state == "hash_only"
 
 
-def test_fallback_from_text_heuristic() -> None:
-    """Text with a paste marker triggers whole_message_fallback."""
-    state = resolve_paste_boundary_state(
+def test_in_text_marker_resolves_to_projected() -> None:
+    """A ground-truth [Pasted text #N] marker resolves to projected; a
+    heuristic-only proxy resolves to whole_message_fallback. The two are kept
+    as distinct boundary states."""
+    marker_state = resolve_paste_boundary_state(
         message_text="[Pasted text #1] Here is some pasted content",
         history_has_paste=False,
         history_has_content=False,
         hook_has_paste=False,
     )
-    assert state == "whole_message_fallback"
+    assert marker_state == "projected"
+
+    heuristic_state = resolve_paste_boundary_state(
+        message_text="x" * 5000,
+        history_has_paste=False,
+        history_has_content=False,
+        hook_has_paste=False,
+    )
+    assert heuristic_state == "whole_message_fallback"
 
 
 def test_no_paste_returns_none() -> None:

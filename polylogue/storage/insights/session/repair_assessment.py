@@ -12,6 +12,9 @@ _SESSION_INSIGHT_READY_FLAGS: tuple[SessionInsightReadyFlag, ...] = (
     "work_event_inference_rows_ready",
     "work_event_inference_fts_ready",
     "phase_inference_rows_ready",
+    "run_rows_ready",
+    "observed_event_rows_ready",
+    "context_snapshot_rows_ready",
     "threads_ready",
     "threads_fts_ready",
     "tag_rollups_ready",
@@ -54,15 +57,23 @@ def _fts_repair_count(*, source_rows: int, indexed_rows: int, duplicates: int) -
 def _session_insight_row_repair_count(status: SessionInsightStatusSnapshot) -> int:
     return (
         status.missing_profile_row_count
+        + status.missing_session_profile_materialization_count
         + status.stale_profile_row_count
         + status.orphan_profile_row_count
         + status.missing_latency_profile_row_count
+        + status.missing_latency_materialization_count
         + status.stale_latency_profile_row_count
         + status.orphan_latency_profile_row_count
+        + status.missing_work_event_materialization_count
         + status.stale_work_event_inference_count
         + status.orphan_work_event_inference_count
+        + status.missing_phase_materialization_count
         + status.stale_phase_inference_count
         + status.orphan_phase_inference_count
+        + status.missing_run_materialization_count
+        + status.missing_observed_event_materialization_count
+        + status.missing_context_snapshot_materialization_count
+        + status.missing_thread_materialization_count
         + status.stale_thread_count
         + status.orphan_thread_count
         + status.stale_tag_rollup_count

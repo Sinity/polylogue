@@ -20,6 +20,7 @@ from polylogue.core.payload_coercion import (
     string_int_mapping,
     string_sequence,
 )
+from polylogue.core.sources import source_name_to_origin
 
 ThreadPayload: TypeAlias = ThreadDocument
 
@@ -38,7 +39,9 @@ def _thread_payload(thread: Thread) -> ThreadPayload:
         "total_messages": thread.total_messages,
         "total_cost_usd": thread.total_cost_usd,
         "dominant_repo": thread.dominant_repo,
-        "provider_breakdown": dict(thread.provider_breakdown),
+        "origin_breakdown": {
+            source_name_to_origin(source_name): count for source_name, count in thread.provider_breakdown.items()
+        },
         "work_event_breakdown": dict(thread.work_event_breakdown),
         "confidence": thread.confidence,
         "support_level": thread.support_level,
@@ -60,7 +63,7 @@ def _thread_from_mapping(payload: Mapping[str, object]) -> Thread:
         total_messages=coerce_int(payload.get("total_messages"), 0),
         total_cost_usd=coerce_float(payload.get("total_cost_usd"), 0.0),
         dominant_repo=optional_string(payload.get("dominant_repo")),
-        provider_breakdown=string_int_mapping(payload.get("provider_breakdown")),
+        provider_breakdown=string_int_mapping(payload.get("origin_breakdown") or payload.get("provider_breakdown")),
         work_event_breakdown=string_int_mapping(payload.get("work_event_breakdown")),
         confidence=coerce_float(payload.get("confidence"), 0.0),
         support_level=optional_string(payload.get("support_level")) or "weak",

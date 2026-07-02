@@ -30,8 +30,6 @@ class FallbackReason(str, Enum):
         fallback floor.
       - ``ALL_WORK_EVENTS_WEAK`` — every materialized work event was
         emitted with weak/no evidence markers.
-      - ``ALL_PHASES_HEURISTIC`` — every materialized phase has no
-        recorded tool counts so classification is heuristic-only.
 
     Profile enrichment (``SessionEnrichmentPayload.fallback_reasons``):
       - ``MISSING_SESSION_ANALYSIS`` — enrichment built without a
@@ -47,9 +45,10 @@ class FallbackReason(str, Enum):
         evidence markers (``weak_signal``, ``no_tools``,
         ``shell_default``).
 
-    Phase inference (``SessionPhaseInferencePayload.fallback_reasons``):
-      - ``PHASE_NO_TOOL_COUNTS`` — the phase has no recorded tool
-        invocations, so phase classification is heuristic-only.
+    Legacy phase compatibility markers:
+      - ``ALL_PHASES_HEURISTIC`` and ``PHASE_NO_TOOL_COUNTS`` are retained
+        so historical payloads can still validate. New phase rows are
+        evidence intervals, not phase-kind classifier output.
     """
 
     ENGAGED_DURATION_SESSION_TOTAL = "engaged_duration_session_total"

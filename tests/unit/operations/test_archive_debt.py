@@ -286,10 +286,79 @@ def _init_raw_materialization_fixture(root: Path) -> tuple[Path, Path, Path]:
                     123,
                     "skipped",
                 ),
+                (
+                    "raw-claude-sidecar",
+                    "claude-code-session",
+                    "sidecar-native",
+                    str(root / "sidecar.jsonl"),
+                    bytes.fromhex("dd" * 32),
+                    2048,
+                    123,
+                    None,
+                    123,
+                    "passed",
+                ),
+                (
+                    "raw-claude-file-history-progress",
+                    "claude-code-session",
+                    "sidecar-native-progress",
+                    str(root / "sidecar-progress.jsonl"),
+                    bytes.fromhex("de" * 32),
+                    2048,
+                    123,
+                    None,
+                    123,
+                    "passed",
+                ),
+                (
+                    "raw-claude-metadata-descriptor",
+                    "claude-code-session",
+                    "metadata-native",
+                    str(root / "metadata.jsonl"),
+                    bytes.fromhex("df" * 32),
+                    2048,
+                    123,
+                    None,
+                    123,
+                    "passed",
+                ),
+                (
+                    "raw-codex-metadata-only",
+                    "codex-session",
+                    "codex-metadata-only",
+                    str(root / "rollout.jsonl"),
+                    bytes.fromhex("ee" * 32),
+                    2048,
+                    123,
+                    None,
+                    123,
+                    "passed",
+                ),
             ),
         )
     (blob_root / "bb").mkdir()
     (blob_root / "bb" / ("bb" * 31)).write_bytes(b"payload")
+    (blob_root / "dd").mkdir()
+    (blob_root / "dd" / ("dd" * 31)).write_text(
+        '{"type":"file-history-snapshot","messageId":"m1"}\n',
+        encoding="utf-8",
+    )
+    (blob_root / "de").mkdir()
+    (blob_root / "de" / ("de" * 31)).write_text(
+        '{"type":"file-history-snapshot","messageId":"m1"}\n{"type":"progress","messageId":"m1"}\n',
+        encoding="utf-8",
+    )
+    (blob_root / "df").mkdir()
+    (blob_root / "df" / ("df" * 31)).write_text(
+        '{"sessionId":"s1","projectHash":"p","startTime":"2026-06-30T00:00:00Z",'
+        '"lastUpdated":"2026-06-30T00:00:00Z","kind":"metadata"}\n',
+        encoding="utf-8",
+    )
+    (blob_root / "ee").mkdir()
+    (blob_root / "ee" / ("ee" * 31)).write_text(
+        '{"type":"session_meta","timestamp":"2026-06-30T00:00:00Z"}\n',
+        encoding="utf-8",
+    )
 
     with sqlite3.connect(index_db) as conn:
         conn.execute("CREATE TABLE sessions (session_id TEXT, origin TEXT, native_id TEXT, raw_id TEXT)")
@@ -314,6 +383,17 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
     assert parsed_gap.severity == "warning"
     assert "parsed but have no materialized session" in parsed_gap.summary
     assert "passed=1" in (parsed_gap.details or "")
+
+    sidecars = by_ref["debt:raw-materialization:claude-code-session:parsed-non-session-artifact"]
+    assert sidecars.severity == "info"
+    assert sidecars.status == "open"
+    assert "parsed as non-session artifacts" in sidecars.summary
+    assert "passed=3" in (sidecars.details or "")
+    assert sidecars.actions == ()
+
+    metadata_only = by_ref["debt:raw-materialization:codex-session:parsed-non-session-artifact"]
+    assert metadata_only.severity == "info"
+    assert "metadata-only" in (metadata_only.details or "") or "non-session artifacts" in metadata_only.summary
 
 
 def test_archive_debt_reports_codex_zero_token_projection_debt(tmp_path: Path) -> None:
@@ -401,7 +481,7 @@ def test_archive_debt_raw_materialization_ignores_materialized_rows(tmp_path: Pa
     assert source_db.exists()
 
 
-def test_archive_debt_raw_materialization_ignores_native_id_matches(tmp_path: Path) -> None:
+def test_archive_debt_raw_materialization_reports_native_id_aliases(tmp_path: Path) -> None:
     _source_db, index_db, _source_file = _init_raw_materialization_fixture(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         conn.execute(
@@ -416,12 +496,17 @@ def test_archive_debt_raw_materialization_ignores_native_id_matches(tmp_path: Pa
 
     payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
 
-    refs = {row.debt_ref for row in payload.rows}
+    refs = {row.debt_ref: row for row in payload.rows}
     assert "debt:raw-materialization:aistudio-drive:parsed-without-session" not in refs
+    alias = refs["debt:raw-materialization:aistudio-drive:materialized-alias"]
+    assert alias.severity == "info"
+    assert alias.status == "open"
+    assert "materialized through native/source aliases" in alias.summary
+    assert alias.actions == ()
     assert "debt:raw-materialization:codex-session:missing-blob" in refs
 
 
-def test_archive_debt_raw_materialization_ignores_source_path_native_aliases(tmp_path: Path) -> None:
+def test_archive_debt_raw_materialization_reports_source_path_native_aliases(tmp_path: Path) -> None:
     _source_db, index_db, _source_file = _init_raw_materialization_fixture(tmp_path)
     source_path = tmp_path / "drive-cache" / "gemini" / "native-alias_1.jsonl.txt.json"
     source_path.parent.mkdir(parents=True)
@@ -439,7 +524,84 @@ def test_archive_debt_raw_materialization_ignores_source_path_native_aliases(tmp
 
     payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
 
+    refs = {row.debt_ref: row for row in payload.rows}
+    assert "debt:raw-materialization:claude-code-session:parsed-without-session" not in refs
+    alias = refs["debt:raw-materialization:claude-code-session:materialized-alias"]
+    assert alias.severity == "info"
+    assert alias.status == "open"
+    assert "should not be replayed blindly" in (alias.details or "")
+    assert "debt:raw-materialization:codex-session:missing-blob" in refs
+
+
+def test_archive_debt_reports_partial_embedded_claude_code_aggregates(tmp_path: Path) -> None:
+    _source_db, index_db, _source_file = _init_raw_materialization_fixture(tmp_path)
+    source_path = tmp_path / "drive-cache" / "gemini" / "aggregate.jsonl.txt.json"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text(
+        "\n".join(
+            (
+                '{"type":"user","sessionId":"materialized-session","uuid":"u1"}',
+                '{"type":"assistant","sessionId":"missing-session","uuid":"u2"}',
+            )
+        ),
+        encoding="utf-8",
+    )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            "UPDATE raw_sessions SET origin = ?, source_path = ? WHERE raw_id = ?",
+            ("claude-code-session", str(source_path), "raw-parsed-no-session"),
+        )
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(
+            "INSERT INTO sessions (session_id, origin, native_id, raw_id) VALUES (?, ?, ?, ?)",
+            (
+                "claude-code-session:materialized-session",
+                "claude-code-session",
+                "materialized-session",
+                "older-raw",
+            ),
+        )
+
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
+
+    refs = {row.debt_ref: row for row in payload.rows}
+    debt = refs["debt:raw-materialization:claude-code-session:aggregate-partial-materialization"]
+    assert "partially materialized" in debt.summary
+    assert "1/2 embedded session id(s) materialized" in (debt.details or "")
+    assert "debt:raw-materialization:claude-code-session:parsed-without-session" not in refs
+
+
+def test_archive_debt_ignores_fully_materialized_embedded_claude_code_aggregates(tmp_path: Path) -> None:
+    _source_db, index_db, _source_file = _init_raw_materialization_fixture(tmp_path)
+    source_path = tmp_path / "drive-cache" / "gemini" / "aggregate.jsonl.txt.json"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text(
+        "\n".join(
+            (
+                '{"type":"user","sessionId":"first-session","uuid":"u1"}',
+                '{"type":"assistant","sessionId":"second-session","uuid":"u2"}',
+            )
+        ),
+        encoding="utf-8",
+    )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            "UPDATE raw_sessions SET origin = ?, source_path = ? WHERE raw_id = ?",
+            ("claude-code-session", str(source_path), "raw-parsed-no-session"),
+        )
+    with sqlite3.connect(index_db) as conn:
+        conn.executemany(
+            "INSERT INTO sessions (session_id, origin, native_id, raw_id) VALUES (?, ?, ?, ?)",
+            (
+                ("claude-code-session:first-session", "claude-code-session", "first-session", "raw-1"),
+                ("claude-code-session:second-session", "claude-code-session", "second-session", "raw-2"),
+            ),
+        )
+
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
+
     refs = {row.debt_ref for row in payload.rows}
+    assert "debt:raw-materialization:claude-code-session:aggregate-partial-materialization" not in refs
     assert "debt:raw-materialization:claude-code-session:parsed-without-session" not in refs
     assert "debt:raw-materialization:codex-session:missing-blob" in refs
 

@@ -91,30 +91,59 @@ def _has_base64_blob(text: str) -> bool:
     return False
 
 
-def detect_paste(text: str | None) -> int:
-    """Return 1 if the message text is dominated by pasted/inserted content.
+def has_paste_marker(text: str | None) -> bool:
+    """Ground-truth paste signal: an explicit ``[Pasted text #N]`` marker.
 
-    Heuristics (any one match is sufficient):
-    1. Text contains an explicit ``[Pasted text #N]`` (or content/image) marker
-       emitted by the agent runtime before clipboard expansion.
-    2. Text contains a contiguous base64-like blob of >=512 characters.
-    3. Total text length exceeds 4000 characters.
-    4. Text matches a known chatlog-forwarding pattern.
-    5. More than 70% of characters live inside fenced code blocks.
+    The agent runtime emits ``[Pasted text|content|image #N]`` (optionally
+    ``+M lines``) before clipboard expansion. This is the only *positive*
+    evidence that a paste actually occurred — it is asserted by the runtime,
+    not inferred from message shape. Kept separate from the size/format
+    heuristics so a ground-truth signal is never conflated with a proxy.
     """
     if not text or not text.strip():
-        return 0
-    if _PASTE_MARKER_PATTERN.search(text):
-        return 1
+        return False
+    return _PASTE_MARKER_PATTERN.search(text) is not None
+
+
+def has_paste_heuristic(text: str | None) -> bool:
+    """Heuristic *proxy* for pasted/inserted content — NOT ground truth.
+
+    Any one match is sufficient:
+    1. A contiguous base64-like blob of >=512 characters.
+    2. Total text length exceeds 4000 characters.
+    3. A known chatlog-forwarding phrase.
+    4. More than 70% of characters live inside fenced code blocks.
+
+    These are shape signals: a long typed prose answer or a heavily
+    code-quoting human reply will match without any paste having occurred.
+    Callers must treat the result as a weak proxy (candidate), never as a
+    confirmed paste.
+    """
+    if not text or not text.strip():
+        return False
     if _has_base64_blob(text):
-        return 1
+        return True
     if len(text) > _PASTE_LENGTH_THRESHOLD:
-        return 1
+        return True
     if _has_forwarding_pattern(text):
-        return 1
-    if _code_fence_ratio(text) > 0.7:
-        return 1
-    return 0
+        return True
+    return _code_fence_ratio(text) > 0.7
+
+
+def detect_paste(text: str | None) -> int:
+    """Selection gate: 1 if *any* paste evidence (marker or proxy) is present.
+
+    This is the union of :func:`has_paste_marker` (ground truth) and
+    :func:`has_paste_heuristic` (proxy), used only to decide whether a hook
+    event or message is worth closer paste inspection
+    (see :func:`has_paste_indicator`). It is deliberately NOT a stored paste
+    fact: the persisted ``messages.has_paste`` column is marker-derived (from
+    ``paste_spans``), and ``paste_boundary`` distinguishes a marker
+    (``projected``) from a heuristic-only proxy (``whole_message_fallback``)
+    via :func:`resolve_paste_boundary_state`. Do not promote this union
+    boolean into a ground-truth "a paste occurred" claim.
+    """
+    return int(has_paste_marker(text) or has_paste_heuristic(text))
 
 
 def _flatten_payload_text(value: Any) -> list[str]:
@@ -173,7 +202,14 @@ def resolve_paste_boundary_state(
     """Resolve paste boundary state from available evidence sources.
 
     Priority: history exact-content > hook markers > history hash-only
-    > text heuristics > none.
+    > in-text paste marker (ground truth, ``projected``) > heuristic proxy
+    (``whole_message_fallback``) > none.
+
+    The marker and the heuristic proxies are resolved as distinct states: a
+    ``[Pasted text #N]`` marker carries a known boundary (``projected``),
+    while a size/code-fence proxy only signals "a paste likely happened
+    somewhere in this message" (``whole_message_fallback``). They are never
+    collapsed into one state.
     """
     if history_has_paste and history_has_content:
         return "exact"
@@ -181,9 +217,17 @@ def resolve_paste_boundary_state(
         return "projected"
     if history_has_paste and not history_has_content:
         return "hash_only"
-    if detect_paste(message_text):
+    if has_paste_marker(message_text):
+        return "projected"
+    if has_paste_heuristic(message_text):
         return "whole_message_fallback"
     return None
 
 
-__all__ = ["detect_paste", "has_paste_indicator", "resolve_paste_boundary_state"]
+__all__ = [
+    "detect_paste",
+    "has_paste_heuristic",
+    "has_paste_indicator",
+    "has_paste_marker",
+    "resolve_paste_boundary_state",
+]

@@ -227,8 +227,9 @@ not an in-place storage upgrade — it is a deletes-then-defines edit of `SCHEMA
 The PR body must replace any upgrade-path section with a
 **re-ingest plan**:
 
-- which user-visible archive operation triggers re-acquisition from
-  source (e.g. `polylogue ops reset --database && polylogued run`),
+- which user-visible archive operation triggers rebuild/re-acquisition from
+  source (e.g. `polylogue ops reset --index && polylogued run` for index-tier
+  schema bumps),
 - which downstream products (insights, blob store, FTS) are rebuilt
   automatically vs. needing explicit recomputation,
 - the expected end-user impact (rebuild time, disk usage, anything
@@ -1193,11 +1194,11 @@ schema shape:
   - **Empty file** (`user_version == 0`): bootstrap fresh.
   - **Version match**: open as-is.
   - **Anything else** (older or newer): the database is rejected.
-- **Mismatch → re-ingest from source.** Polylogue does not patch an
-  out-of-band shape into the canonical one. The operator moves the
-  database aside and runs `polylogue ops reset --database && polylogued run`,
-  which re-acquires from the source archives and rebuilds the canonical
-  archive.
+- **Mismatch → rebuild the affected tier from source.** Polylogue does not
+  patch an out-of-band shape into the canonical one. For index-tier schema
+  bumps, the operator moves the index database aside with
+  `polylogue ops reset --index && polylogued run`, preserving `source.db`,
+  `user.db`, and other durable tiers while rebuilding the canonical index.
 - Schema bumps are deletes-then-defines, never deltas. A schema change
   edits the owning tier DDL/version and documents the re-ingest expectation.
   No upgrade helpers are added for the bump.
@@ -1211,7 +1212,7 @@ schema shape:
   from result text. Now they are read from structure: NULL means unknown
   (default), never a fabricated positive. This is additive — existing rows
   read NULL until rebuilt. Rebuild from source evidence
-  (`polylogue ops reset --database && polylogued run`).
+  (`polylogue ops reset --index && polylogued run`).
 - Index schema version 15 makes `idx_messages_session_sortkey` an expression
   index — `(session_id, (occurred_at_ms IS NULL), occurred_at_ms, message_id)`
   (#2475 perf audit). The keyset/paginated message reads order by
@@ -1222,7 +1223,7 @@ schema shape:
   (expensive on multi-thousand-message sessions). The expression index matches
   the ORDER BY exactly and plans as a covering-index scan with no temp sort
   (verified via EXPLAIN QUERY PLAN). Rebuild from source evidence
-  (`polylogue ops reset --database && polylogued run`).
+  (`polylogue ops reset --index && polylogued run`).
 - Index schema version 14 hardens lineage normalization (#2467 audit).
   `session_links.branch_point_message_id` is no longer a FK with `ON DELETE SET
   NULL`: a parent's full-replace re-ingest (`DELETE FROM messages` then re-INSERT)
@@ -1249,7 +1250,7 @@ schema shape:
   (`get_messages`, `read_archive_session_envelope`) compose the parent transcript
   up to the branch point + the child's own tail, so each real message is stored
   once while the full logical transcript is still served. Existing index tiers
-  must be rebuilt from source evidence (`polylogue ops reset --database &&
+  must be rebuilt from source evidence (`polylogue ops reset --index &&
   polylogued run`); `source.db` is untouched, so this is a derived-index rebuild
   with no user-data impact. (The matching parser detection of Codex
   `forked_from_id`/`thread_spawn` and Claude `agent-acompact-*` shipped
@@ -1263,7 +1264,7 @@ schema shape:
   per-query recovery-transform scan. They are derived/rebuildable, not a new
   source of truth; the durable evidence stays `session_events` + `messages` +
   `topology_edges`. Existing index tiers must be rebuilt from source evidence
-  (`polylogue ops reset --database && polylogued run`).
+  (`polylogue ops reset --index && polylogued run`).
 - Index schema version 10 adds a role-leading `idx_messages_role` index so
   daemon `/api/facets` can compute global role counts without scanning the
   session-role compound index and spilling to a temp B-tree. Existing index
@@ -1501,23 +1502,17 @@ Full-text search uses SQLite FTS5:
   include it). Case-insensitive for ASCII. Unicode-aware tokenization.
 - **Content sync**: FTS5 indexes use `content='messages'` to stay in sync with
   the source table. Triggers handle INSERT/UPDATE/DELETE.
-- **Trigger suspension**: During bulk operations, FTS triggers are suspended
-  for performance, then re-enabled and the index rebuilt via
-  `INSERT INTO messages_fts(messages_fts) VALUES('rebuild')`.
-- **Risk**: SIGKILL during trigger suspension leaves FTS out of sync.
-  Mitigation: daemon/CLI startup checks and restores FTS triggers.
-- **Catch-up health signalling** (#1613): the FAST-tier
-  `fts_trigger_drift` health check downgrades from CRITICAL to INFO
-  when triggers are missing inside a fresh in-flight bulk attempt
-  (`live_ingest_attempt.status='running'`, `phase IN
-  ('full_parse','full_worker_wait')`, heartbeat within
-  `_BULK_ATTEMPT_FRESHNESS_S` seconds). The writer dropped the triggers
-  inside its own transaction; `commit_archive_write_effects` will
-  restore them before the commit lands, so other readers never see
-  the dropped state — the only entity that observes "15/15 missing"
-  is the writer's own connection mid-batch. Stale or orphaned
-  in-flight rows (no heartbeat in the freshness window) still escalate
-  to CRITICAL because that signature is identical to the SIGKILL leak.
+- **Trigger suspension (atomic, #1242)**: During bulk operations the writer
+  drops the FTS triggers, bulk-writes, then re-creates the triggers and rebuilds
+  the index (`INSERT INTO messages_fts(messages_fts) VALUES('rebuild')`) — all
+  inside the single ingest transaction (`commit_archive_write_effects`). SQLite
+  DDL is transactional, so the drop/restore is atomic with the commit: the
+  committed state always has triggers, and a SIGKILL mid-batch rolls back to
+  the triggers-present state on the next connection. The dropped-trigger state
+  is therefore only ever observable by the writer's own connection mid-batch and
+  never lands as committed drift. There is no separate FTS-trigger-drift health
+  check or auto-restore loop — that machinery guarded a state nothing can
+  commit (removed; the readiness/freshness check below is the real FTS net).
 - **Query syntax**: FTS5 boolean operators (AND/OR/NOT), phrase search
   (`"exact phrase"`), prefix search (`prefix*`). Column filters are not
   directly exposed; use CLI/MCP filters instead.
@@ -1705,8 +1700,8 @@ Series are derived from existing daemon state tables via
 `open_readonly_connection` — `live_ingest_attempt` (totals by status,
 in-flight gauge, recent-attempt duration min/mean/max), unresolved
 `live_convergence_debt` grouped by stage, `pending_blob_refs` (pending
-count, distinct operations), and the six expected FTS sync triggers
-from `_EXPECTED_FTS_TRIGGERS`. The same scrape also exposes embedding
+count, distinct operations), and the expected FTS sync triggers
+from `active_fts_triggers_sync`. The same scrape also exposes embedding
 backlog counts and the latest `embedding_catchup_runs` progress row so
 semantic-search catch-up is visible in normal daemon dashboards without
 running an operator CLI command. Missing tables degrade to zero samples

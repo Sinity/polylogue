@@ -141,6 +141,8 @@ def test_parse_code_classifies_runtime_artifacts() -> None:
     assert by_id["retro-pack-1"].message_type is MessageType.MESSAGE
     assert by_id["retro-pack-1"].material_origin is MaterialOrigin.GENERATED_ANALYSIS_PACK
     assert by_id["prompt-1"].message_type is MessageType.MESSAGE
+    # Claude Code has provider-native provenance for real user turns: type=user,
+    # !isMeta, no toolUseResult, no non-human origin.
     assert by_id["prompt-1"].material_origin is MaterialOrigin.HUMAN_AUTHORED
     assert result.title == "Actual user prompt."
 
@@ -206,6 +208,119 @@ def test_parse_code_drops_progress_hook_records() -> None:
     provider_ids = {m.provider_message_id for m in result.messages}
     assert provider_ids == {"u-1", "a-1"}
     assert all("prog" not in pid for pid in provider_ids)
+
+
+def test_parse_code_drops_non_message_sidecars() -> None:
+    items: list[object] = [
+        {
+            "type": "user",
+            "uuid": "u-1",
+            "sessionId": "sess-sidecar",
+            "message": {"role": "user", "content": "real prompt"},
+        },
+        {"type": "attachment", "uuid": "att-1", "sessionId": "sess-sidecar", "attachment": {"name": "x.py"}},
+        {"type": "mode", "mode": "default", "sessionId": "sess-sidecar"},
+        {"type": "last-prompt", "lastPrompt": "real prompt", "sessionId": "sess-sidecar"},
+        {"type": "ai-title", "aiTitle": "Title", "sessionId": "sess-sidecar"},
+        {"type": "bridge-session", "sessionId": "sess-sidecar", "bridgeSessionId": "b1"},
+        {"type": "permission-mode", "permissionMode": "acceptEdits", "sessionId": "sess-sidecar"},
+        {"type": "pr-link", "sessionId": "sess-sidecar", "prNumber": 1},
+    ]
+
+    result = parse_code(items, "fallback-sidecar")
+
+    assert [message.provider_message_id for message in result.messages] == ["u-1"]
+    assert result.messages[0].material_origin is MaterialOrigin.HUMAN_AUTHORED
+
+
+def test_parse_code_drops_empty_system_sidecars() -> None:
+    result = parse_code(
+        [
+            {"type": "system", "uuid": "sys-empty", "sessionId": "sess-empty"},
+            {
+                "type": "user",
+                "uuid": "u-1",
+                "sessionId": "sess-empty",
+                "message": {"role": "user", "content": "real prompt"},
+            },
+        ],
+        "fallback-empty",
+    )
+
+    assert [message.provider_message_id for message in result.messages] == ["u-1"]
+
+
+def test_parse_code_continuation_summary_is_runtime_context() -> None:
+    result = parse_code(
+        [
+            {
+                "type": "user",
+                "uuid": "continued",
+                "sessionId": "sess-continued",
+                "message": {
+                    "role": "user",
+                    "content": "This session is being continued from a previous conversation that ran out of context.\n\nSummary...",
+                },
+            }
+        ],
+        "fallback-continued",
+    )
+
+    assert result.messages[0].message_type is MessageType.CONTEXT
+    assert result.messages[0].material_origin is MaterialOrigin.RUNTIME_CONTEXT
+
+
+def test_parse_code_compaction_summary_is_generated_context() -> None:
+    result = parse_code(
+        [
+            {
+                "type": "summary",
+                "uuid": "summary-1",
+                "sessionId": "sess-summary",
+                "summary": "Compressed context for the next turn.",
+                "timestamp": 1704067200,
+            }
+        ],
+        "fallback-summary",
+    )
+
+    assert result.messages[0].message_type is MessageType.SUMMARY
+    assert result.messages[0].material_origin is MaterialOrigin.GENERATED_CONTEXT_PACK
+
+
+def test_parse_code_non_human_user_origin_is_runtime_protocol() -> None:
+    result = parse_code(
+        [
+            {
+                "type": "user",
+                "uuid": "task-origin",
+                "sessionId": "sess-origin",
+                "origin": {"kind": "task-notification"},
+                "message": {"role": "user", "content": "background task completed"},
+            }
+        ],
+        "fallback-origin",
+    )
+
+    assert result.messages[0].message_type is MessageType.PROTOCOL
+    assert result.messages[0].material_origin is MaterialOrigin.RUNTIME_PROTOCOL
+
+
+def test_parse_code_interrupt_marker_is_protocol_not_human_prompt() -> None:
+    result = parse_code(
+        [
+            {
+                "type": "user",
+                "uuid": "interrupt",
+                "sessionId": "sess-interrupt",
+                "message": {"role": "user", "content": "[Request interrupted by user]"},
+            }
+        ],
+        "fallback-interrupt",
+    )
+
+    assert result.messages[0].message_type is MessageType.PROTOCOL
+    assert result.messages[0].material_origin is MaterialOrigin.RUNTIME_PROTOCOL
 
 
 def test_message_usage_payload_captures_server_tool_use() -> None:

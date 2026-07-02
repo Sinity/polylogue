@@ -118,7 +118,7 @@ def _tag_rollup() -> SessionTagRollupInsight:
         session_count=3,
         explicit_count=2,
         auto_count=1,
-        provider_breakdown={"claude-code": 3},
+        origin_breakdown={"claude-code": 3},
         repo_breakdown={"polylogue": 3},
         provenance=_provenance(),
     )

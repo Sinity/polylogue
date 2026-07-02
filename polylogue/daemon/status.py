@@ -38,6 +38,8 @@ from polylogue.paths import archive_root, db_path, index_db_path, resolve_active
 from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.watcher import default_sources
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 # Backwards-compatible alias for the stuck threshold (#1246). The "stale"
@@ -116,6 +118,8 @@ class ArchiveTierStatus(BaseModel):
     size_bytes: int = 0
     wal_size_bytes: int = 0
     user_version: int | None = None
+    expected_user_version: int | None = None
+    version_status: Literal["ok", "missing", "mismatch", "invalid"] = "missing"
     table_count: int = 0
 
 
@@ -127,6 +131,8 @@ class ArchiveStorageStatus(BaseModel):
     archive_root_matches_configured: bool = True
     archive_ready: bool = False
     final_shape_ready: bool = False
+    archive_schema_ready: bool = False
+    schema_mismatches: list[str] = Field(default_factory=list)
     present_tiers: list[str] = Field(default_factory=list)
     missing_tiers: list[str] = Field(default_factory=list)
     tiers: list[ArchiveTierStatus] = Field(default_factory=list)
@@ -355,6 +361,8 @@ def _archive_storage_info() -> ArchiveStorageStatus:
     index_exists = "index" in present_tiers
     source_exists = "source" in present_tiers
     final_shape_ready = not missing_tiers
+    schema_mismatches = [str(tier.name) for tier in tiers if tier.exists and tier.version_status != "ok"]
+    archive_schema_ready = final_shape_ready and not schema_mismatches
     if index_exists and source_exists:
         active_store: Literal["archive_file_set", "empty"] = "archive_file_set"
     else:
@@ -365,8 +373,10 @@ def _archive_storage_info() -> ArchiveStorageStatus:
         archive_root=str(root),
         configured_archive_root=str(configured_root),
         archive_root_matches_configured=root == configured_root,
-        archive_ready=index_exists and source_exists,
+        archive_ready=index_exists and source_exists and archive_schema_ready,
         final_shape_ready=final_shape_ready,
+        archive_schema_ready=archive_schema_ready,
+        schema_mismatches=schema_mismatches,
         present_tiers=present_tiers,
         missing_tiers=missing_tiers,
         tiers=tiers,
@@ -384,14 +394,18 @@ def _archive_tier_status(
     path: Path,
 ) -> ArchiveTierStatus:
     wal_path = Path(f"{path}-wal")
+    tier = ArchiveTier(name)
+    expected_user_version = ARCHIVE_VERSION_BY_TIER[tier]
     if not path.exists():
-        return ArchiveTierStatus(name=name, path=str(path))
+        return ArchiveTierStatus(name=name, path=str(path), expected_user_version=expected_user_version)
     user_version: int | None = None
     table_count = 0
+    version_status: Literal["ok", "missing", "mismatch", "invalid"] = "invalid"
     try:
         conn = open_readonly_connection(path)
         try:
             user_version = _row_int(conn.execute("PRAGMA user_version").fetchone()[0])
+            version_status = "ok" if user_version == expected_user_version else "mismatch"
             table_count = _row_int(
                 conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'").fetchone()[0]
             )
@@ -406,6 +420,8 @@ def _archive_tier_status(
         size_bytes=path.stat().st_size,
         wal_size_bytes=wal_path.stat().st_size if wal_path.exists() else 0,
         user_version=user_version,
+        expected_user_version=expected_user_version,
+        version_status=version_status,
         table_count=table_count,
     )
 
@@ -1706,15 +1722,28 @@ def _daemon_embedding_repair_hint(
 
 
 def _component_from_archive_storage(storage: ArchiveStorageStatus) -> ComponentReadiness:
-    if storage.final_shape_ready:
+    if storage.archive_ready:
         state = CapabilityReadinessState.READY
-    elif storage.archive_ready:
+    elif storage.final_shape_ready or storage.schema_mismatches:
+        state = CapabilityReadinessState.BLOCKED
+    elif "source" in storage.present_tiers and "index" in storage.present_tiers:
         state = CapabilityReadinessState.DEGRADED
     elif storage.present_tiers:
         state = CapabilityReadinessState.BLOCKED
     else:
         state = CapabilityReadinessState.MISSING
-    caveats = (f"missing_tiers:{','.join(storage.missing_tiers)}",) if storage.missing_tiers else ()
+    caveats: tuple[str, ...] = ()
+    if storage.missing_tiers:
+        caveats += (f"missing_tiers:{','.join(storage.missing_tiers)}",)
+    if storage.schema_mismatches:
+        caveats += (f"schema_mismatch:{','.join(storage.schema_mismatches)}",)
+    repair_hint = None
+    if state is not CapabilityReadinessState.READY:
+        repair_hint = (
+            "polylogue ops reset --index && polylogued run"
+            if storage.schema_mismatches == ["index"]
+            else "polylogue ops maintenance archive-init --yes"
+        )
     return ComponentReadiness(
         component="archive_storage",
         scope="archive",
@@ -1725,9 +1754,11 @@ def _component_from_archive_storage(storage: ArchiveStorageStatus) -> ComponentR
             "missing_tier_count": len(storage.missing_tiers),
             "archive_ready": storage.archive_ready,
             "final_shape_ready": storage.final_shape_ready,
+            "archive_schema_ready": storage.archive_schema_ready,
+            "schema_mismatch_count": len(storage.schema_mismatches),
         },
         caveats=caveats,
-        repair_hint=None if state == CapabilityReadinessState.READY else "polylogue ops maintenance archive-init --yes",
+        repair_hint=repair_hint,
     )
 
 
@@ -2062,6 +2093,9 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
             line += f"; missing {missing_text}"
         elif storage.get("final_shape_ready"):
             line += "; final split complete"
+        schema_mismatches = storage.get("schema_mismatches", [])
+        if isinstance(schema_mismatches, list) and schema_mismatches:
+            line += f"; schema mismatch {', '.join(str(item) for item in schema_mismatches)}"
         if storage.get("archive_root_matches_configured") is False:
             line += f"; active root {storage.get('archive_root', 'unknown')}"
         lines.append(line)

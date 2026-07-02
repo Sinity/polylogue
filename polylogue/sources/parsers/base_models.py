@@ -157,6 +157,12 @@ class ParsedMessage(BaseModel):
             parsed = parse_timestamp(self.timestamp)
             if parsed is not None:
                 self.occurred_at_ms = int(parsed.timestamp() * 1000)
+        if self.message_type is MessageType.MESSAGE:
+            from polylogue.archive.message.artifacts import classify_block_message_type
+
+            block_message_type = classify_block_message_type(tuple(block.type for block in self.blocks))
+            if block_message_type is not None:
+                self.message_type = block_message_type
         if self.material_origin is MaterialOrigin.UNKNOWN:
             from polylogue.archive.message.artifacts import classify_material_origin
 
@@ -297,6 +303,35 @@ class ParsedSession(BaseModel):
         if value is not None and value < 0:
             raise ValueError("reported_cost_usd cannot be negative")
         return value
+
+    @model_validator(mode="after")
+    def _upgrade_chat_export_user_authorship(self) -> ParsedSession:
+        """Chat exports have a clean human user channel; agent runtimes do not.
+
+        `classify_material_origin` defaults role=user MESSAGE rows to UNKNOWN
+        because agent-runtime user channels (Claude Code, Codex) carry tool
+        results, hook injections, and pasted corpora — text shape is not proof a
+        human typed it. But for turn-based chat exports (ChatGPT, Claude.ai,
+        Gemini/AI-Studio, Grok — sources with no on-disk runtime_root, delivered
+        as export ZIPs/Drive) the user channel IS a structural human-input
+        guarantee. Without this the authored-user metrics read ~0 for chat
+        exports after re-ingest. Provider context only exists at the session
+        level, so the positive upgrade is applied here, not in the per-message
+        classifier.
+        """
+        from polylogue.core.sources import provider_to_source
+
+        source = provider_to_source(self.source_name)
+        if source.runtime_root is not None:
+            return self  # agent runtime — keep UNKNOWN default
+        for message in self.messages:
+            if (
+                message.role is Role.USER
+                and message.message_type is MessageType.MESSAGE
+                and message.material_origin is MaterialOrigin.UNKNOWN
+            ):
+                message.material_origin = MaterialOrigin.HUMAN_AUTHORED
+        return self
 
 
 class RawSessionData(BaseModel):

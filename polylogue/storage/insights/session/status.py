@@ -178,6 +178,9 @@ SESSION_WORK_EVENT_COUNT_SQL = "SELECT COUNT(*) FROM session_work_events"
 SESSION_WORK_EVENT_FTS_DOC_COUNT_SQL = "SELECT COUNT(DISTINCT event_id) FROM session_work_events_fts"
 SESSION_WORK_EVENT_FTS_DUPLICATE_COUNT_SQL = "SELECT COUNT(*) - COUNT(DISTINCT event_id) FROM session_work_events_fts"
 SESSION_PHASE_COUNT_SQL = "SELECT COUNT(*) FROM session_phases"
+SESSION_RUN_COUNT_SQL = "SELECT COUNT(*) FROM session_runs"
+SESSION_OBSERVED_EVENT_COUNT_SQL = "SELECT COUNT(*) FROM session_observed_events"
+SESSION_CONTEXT_SNAPSHOT_COUNT_SQL = "SELECT COUNT(*) FROM session_context_snapshots"
 THREAD_COUNT_SQL = "SELECT COUNT(*) FROM threads"
 THREAD_FTS_DOC_COUNT_SQL = "SELECT COUNT(DISTINCT thread_id) FROM threads_fts"
 THREAD_FTS_DUPLICATE_COUNT_SQL = "SELECT COUNT(*) - COUNT(DISTINCT thread_id) FROM threads_fts"
@@ -239,16 +242,28 @@ ORPHAN_SESSION_LATENCY_PROFILE_COUNT_SQL = """
     LEFT JOIN sessions c ON c.session_id = slp.session_id
     WHERE c.session_id IS NULL
 """
+MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL = """
+    SELECT COUNT(*)
+    FROM sessions c
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM insight_materialization im
+        WHERE im.session_id = c.session_id
+          AND im.insight_type = ?
+    )
+"""
 EXPECTED_WORK_EVENT_COUNT_SQL = "SELECT COALESCE(SUM(work_event_count), 0) FROM session_profiles"
 EXPECTED_PHASE_COUNT_SQL = "SELECT COALESCE(SUM(phase_count), 0) FROM session_profiles"
 STALE_WORK_EVENT_COUNT_SQL = f"""
     SELECT COUNT(*)
-    FROM session_work_events swe
-    JOIN sessions c ON c.session_id = swe.session_id
+    FROM sessions c
+    JOIN insight_materialization im
+      ON im.session_id = c.session_id
+     AND im.insight_type = ?
     WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
       AND (
-           swe.materializer_version != ?
-        OR ABS(COALESCE(swe.source_sort_key, 0.0) - COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0)) > 0.000001
+           im.materializer_version != ?
+        OR ABS(COALESCE(im.source_sort_key_ms, 0) - COALESCE(c.sort_key_ms, 0)) > 0
       )
 """
 ORPHAN_SESSION_WORK_EVENT_COUNT_SQL = """
@@ -259,10 +274,12 @@ ORPHAN_SESSION_WORK_EVENT_COUNT_SQL = """
 """
 STALE_SESSION_PHASE_COUNT_SQL = """
     SELECT COUNT(*)
-    FROM session_phases sph
-    JOIN sessions c ON c.session_id = sph.session_id
-    WHERE sph.materializer_version != ?
-       OR ABS(COALESCE(sph.source_sort_key, 0.0) - COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0)) > 0.000001
+    FROM sessions c
+    JOIN insight_materialization im
+      ON im.session_id = c.session_id
+     AND im.insight_type = ?
+    WHERE im.materializer_version != ?
+       OR ABS(COALESCE(im.source_sort_key_ms, 0) - COALESCE(c.sort_key_ms, 0)) > 0
 """
 ORPHAN_SESSION_PHASE_COUNT_SQL = """
     SELECT COUNT(*)
@@ -394,10 +411,32 @@ _TABLE_DESCRIPTORS: tuple[SessionInsightTableDescriptor, ...] = (
         count_sql=SESSION_PHASE_COUNT_SQL,
     ),
     SessionInsightTableDescriptor(
+        key="session_runs",
+        table_name="session_runs",
+        count_key="run_count",
+        count_sql=SESSION_RUN_COUNT_SQL,
+    ),
+    SessionInsightTableDescriptor(
+        key="session_observed_events",
+        table_name="session_observed_events",
+        count_key="observed_event_count",
+        count_sql=SESSION_OBSERVED_EVENT_COUNT_SQL,
+    ),
+    SessionInsightTableDescriptor(
+        key="session_context_snapshots",
+        table_name="session_context_snapshots",
+        count_key="context_snapshot_count",
+        count_sql=SESSION_CONTEXT_SNAPSHOT_COUNT_SQL,
+    ),
+    SessionInsightTableDescriptor(
         key="threads",
         table_name="threads",
         count_key="thread_count",
         count_sql=THREAD_COUNT_SQL,
+    ),
+    SessionInsightTableDescriptor(
+        key="insight_materialization",
+        table_name="insight_materialization",
     ),
     SessionInsightTableDescriptor(
         key="threads_fts",
@@ -449,6 +488,13 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
         requires_freshness=True,
     ),
     SessionInsightCountDescriptor(
+        count_key="missing_session_profile_materialization_count",
+        table_key="insight_materialization",
+        sql=MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL,
+        params=("session_profile",),
+        fallback_count_key="total_sessions",
+    ),
+    SessionInsightCountDescriptor(
         count_key="orphan_profile_row_count",
         table_key="session_profiles",
         sql=ORPHAN_SESSION_PROFILE_COUNT_SQL,
@@ -468,6 +514,13 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
         requires_freshness=True,
     ),
     SessionInsightCountDescriptor(
+        count_key="missing_latency_materialization_count",
+        table_key="insight_materialization",
+        sql=MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL,
+        params=("latency",),
+        fallback_count_key="total_sessions",
+    ),
+    SessionInsightCountDescriptor(
         count_key="orphan_latency_profile_row_count",
         table_key="session_latency_profiles",
         sql=ORPHAN_SESSION_LATENCY_PROFILE_COUNT_SQL,
@@ -479,15 +532,29 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
         sql=EXPECTED_WORK_EVENT_COUNT_SQL,
     ),
     SessionInsightCountDescriptor(
+        count_key="missing_work_event_materialization_count",
+        table_key="insight_materialization",
+        sql=MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL,
+        params=("work_events",),
+        fallback_count_key="total_sessions",
+    ),
+    SessionInsightCountDescriptor(
         count_key="expected_phase_inference_count",
         table_key="session_profiles",
         sql=EXPECTED_PHASE_COUNT_SQL,
     ),
     SessionInsightCountDescriptor(
+        count_key="missing_phase_materialization_count",
+        table_key="insight_materialization",
+        sql=MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL,
+        params=("phases",),
+        fallback_count_key="total_sessions",
+    ),
+    SessionInsightCountDescriptor(
         count_key="stale_work_event_inference_count",
-        table_key="session_work_events",
+        table_key="insight_materialization",
         sql=STALE_WORK_EVENT_COUNT_SQL,
-        params=(SESSION_INSIGHT_MATERIALIZER_VERSION,),
+        params=("work_events", SESSION_INSIGHT_MATERIALIZER_VERSION),
         requires_freshness=True,
     ),
     SessionInsightCountDescriptor(
@@ -498,9 +565,9 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
     ),
     SessionInsightCountDescriptor(
         count_key="stale_phase_inference_count",
-        table_key="session_phases",
+        table_key="insight_materialization",
         sql=STALE_SESSION_PHASE_COUNT_SQL,
-        params=(SESSION_INSIGHT_MATERIALIZER_VERSION,),
+        params=("phases", SESSION_INSIGHT_MATERIALIZER_VERSION),
         requires_freshness=True,
     ),
     SessionInsightCountDescriptor(
@@ -508,6 +575,34 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
         table_key="session_phases",
         sql=ORPHAN_SESSION_PHASE_COUNT_SQL,
         requires_freshness=True,
+    ),
+    SessionInsightCountDescriptor(
+        count_key="missing_run_materialization_count",
+        table_key="insight_materialization",
+        sql=MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL,
+        params=("runs",),
+        fallback_count_key="total_sessions",
+    ),
+    SessionInsightCountDescriptor(
+        count_key="missing_observed_event_materialization_count",
+        table_key="insight_materialization",
+        sql=MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL,
+        params=("observed_events",),
+        fallback_count_key="total_sessions",
+    ),
+    SessionInsightCountDescriptor(
+        count_key="missing_context_snapshot_materialization_count",
+        table_key="insight_materialization",
+        sql=MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL,
+        params=("context_snapshots",),
+        fallback_count_key="total_sessions",
+    ),
+    SessionInsightCountDescriptor(
+        count_key="missing_thread_materialization_count",
+        table_key="insight_materialization",
+        sql=MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL,
+        params=("thread",),
+        fallback_count_key="total_sessions",
     ),
     SessionInsightCountDescriptor(
         count_key="stale_thread_count",
@@ -542,7 +637,12 @@ _READY_DESCRIPTORS: tuple[SessionInsightReadyDescriptor, ...] = (
     SessionInsightReadyDescriptor(
         ready_key="profile_rows_ready",
         table_key="session_profiles",
-        zero_counts=("missing_profile_row_count", "stale_profile_row_count", "orphan_profile_row_count"),
+        zero_counts=(
+            "missing_profile_row_count",
+            "missing_session_profile_materialization_count",
+            "stale_profile_row_count",
+            "orphan_profile_row_count",
+        ),
     ),
     SessionInsightReadyDescriptor(
         ready_key="latency_profile_rows_ready",
@@ -550,6 +650,7 @@ _READY_DESCRIPTORS: tuple[SessionInsightReadyDescriptor, ...] = (
         equal_counts=(("latency_profile_row_count", "profile_row_count"),),
         zero_counts=(
             "missing_latency_profile_row_count",
+            "missing_latency_materialization_count",
             "stale_latency_profile_row_count",
             "orphan_latency_profile_row_count",
         ),
@@ -558,19 +659,42 @@ _READY_DESCRIPTORS: tuple[SessionInsightReadyDescriptor, ...] = (
         ready_key="work_event_inference_rows_ready",
         table_key="session_work_events",
         equal_counts=(("work_event_inference_count", "expected_work_event_inference_count"),),
-        zero_counts=("stale_work_event_inference_count", "orphan_work_event_inference_count"),
+        zero_counts=(
+            "missing_work_event_materialization_count",
+            "stale_work_event_inference_count",
+            "orphan_work_event_inference_count",
+        ),
     ),
     SessionInsightReadyDescriptor(
         ready_key="phase_inference_rows_ready",
         table_key="session_phases",
         equal_counts=(("phase_inference_count", "expected_phase_inference_count"),),
-        zero_counts=("stale_phase_inference_count", "orphan_phase_inference_count"),
+        zero_counts=(
+            "missing_phase_materialization_count",
+            "stale_phase_inference_count",
+            "orphan_phase_inference_count",
+        ),
+    ),
+    SessionInsightReadyDescriptor(
+        ready_key="run_rows_ready",
+        table_key="session_runs",
+        zero_counts=("missing_run_materialization_count",),
+    ),
+    SessionInsightReadyDescriptor(
+        ready_key="observed_event_rows_ready",
+        table_key="session_observed_events",
+        zero_counts=("missing_observed_event_materialization_count",),
+    ),
+    SessionInsightReadyDescriptor(
+        ready_key="context_snapshot_rows_ready",
+        table_key="session_context_snapshots",
+        zero_counts=("missing_context_snapshot_materialization_count",),
     ),
     SessionInsightReadyDescriptor(
         ready_key="threads_ready",
         table_key="threads",
         equal_counts=(("thread_count", "root_threads"),),
-        zero_counts=("stale_thread_count", "orphan_thread_count"),
+        zero_counts=("missing_thread_materialization_count", "stale_thread_count", "orphan_thread_count"),
     ),
     SessionInsightReadyDescriptor(
         ready_key="tag_rollups_ready",
@@ -718,6 +842,9 @@ def _status_payload(
         work_event_inference_rows_ready=ready_flags["work_event_inference_rows_ready"],
         work_event_inference_fts_ready=ready_flags["work_event_inference_fts_ready"],
         phase_inference_rows_ready=ready_flags["phase_inference_rows_ready"],
+        run_rows_ready=ready_flags["run_rows_ready"],
+        observed_event_rows_ready=ready_flags["observed_event_rows_ready"],
+        context_snapshot_rows_ready=ready_flags["context_snapshot_rows_ready"],
         threads_ready=ready_flags["threads_ready"],
         threads_fts_ready=ready_flags["threads_fts_ready"],
         tag_rollups_ready=ready_flags["tag_rollups_ready"],

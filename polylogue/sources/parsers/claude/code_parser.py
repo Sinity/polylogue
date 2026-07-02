@@ -80,6 +80,22 @@ def _clean_title_text(text: str) -> str:
 
 
 logger = get_logger(__name__)
+_SKIPPED_SIDECAR_RECORD_TYPES = frozenset(
+    {
+        "init",
+        "file-history-snapshot",
+        "queue-operation",
+        "progress",
+        "agent-name",
+        "ai-title",
+        "attachment",
+        "bridge-session",
+        "last-prompt",
+        "mode",
+        "permission-mode",
+        "pr-link",
+    }
+)
 
 
 def _safe_float(value: object) -> float:
@@ -110,6 +126,9 @@ def _message_type_from_code_record(item: dict[str, object], text: str | None) ->
         return artifact_type
     if item.get("isMeta"):
         return MessageType.CONTEXT
+    origin_kind = _record_origin_kind(item)
+    if origin_kind not in (None, "human"):
+        return MessageType.PROTOCOL
     return MessageType.MESSAGE
 
 
@@ -180,6 +199,34 @@ def _record_role(item: dict[str, object], message: object) -> Role:
     if record_type in {"progress", "result"}:
         return Role.TOOL
     return Role.UNKNOWN
+
+
+def _record_origin_kind(item: dict[str, object]) -> str | None:
+    origin = item.get("origin")
+    if isinstance(origin, dict):
+        kind = origin.get("kind")
+        return kind if isinstance(kind, str) and kind else None
+    return None
+
+
+def _is_claude_code_human_turn(
+    item: dict[str, object],
+    *,
+    role: Role,
+    message_type: MessageType,
+    content_blocks: Sequence[ParsedContentBlock],
+) -> bool:
+    """Return whether a Claude Code user-channel row is a provider-evidenced prompt."""
+    if item.get("type") != "user" or role is not Role.USER or message_type is not MessageType.MESSAGE:
+        return False
+    if item.get("isMeta") or item.get("isCompactSummary") or item.get("isVisibleInTranscriptOnly"):
+        return False
+    if item.get("toolUseResult") is not None:
+        return False
+    if any(block.type is BlockType.TOOL_RESULT for block in content_blocks):
+        return False
+    origin_kind = _record_origin_kind(item)
+    return origin_kind in (None, "human")
 
 
 def _string_field(item: dict[str, object], key: str) -> str | None:
@@ -265,7 +312,7 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
         # ~23%. See #1617 for the full forensic. We drop them here at the
         # parser; the hook payload, if useful for analytics, belongs in
         # a future ``session_event`` capture, not in the messages table.
-        if record_type in {"init", "file-history-snapshot", "queue-operation", "progress"}:
+        if record_type in _SKIPPED_SIDECAR_RECORD_TYPES:
             continue
 
         if not session_id:
@@ -283,6 +330,10 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
         envelope_role = _record_role(item, message)
         content_blocks = _content_blocks_from_record(message, text)
         message_type = _message_type_from_code_record(item, text)
+        if envelope_role is Role.SYSTEM and message_type is MessageType.MESSAGE:
+            message_type = MessageType.CONTEXT
+        if not text and not content_blocks and record_type != "summary":
+            continue
         # Claude Code records carry per-message token usage at
         # ``record.message.usage``; propagate so MaterializedMessage and the
         # downstream cost estimator see real numbers instead of zeros.
@@ -300,6 +351,13 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
             text=text,
             block_types=tuple(block.type for block in content_blocks),
         )
+        if material_origin is MaterialOrigin.UNKNOWN and _is_claude_code_human_turn(
+            item,
+            role=resolved_role,
+            message_type=message_type,
+            content_blocks=content_blocks,
+        ):
+            material_origin = MaterialOrigin.HUMAN_AUTHORED
         # Paste markers only appear in user prompts; restricting detection to the
         # user role avoids false positives from assistant text that quotes a marker.
         paste_spans = _detect_paste_spans(text) if resolved_role == Role.USER else []
@@ -401,7 +459,16 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
 
     title = str(composed_session_id)
     for message in messages:
-        if message.material_origin is MaterialOrigin.HUMAN_AUTHORED and message.text and len(message.text.strip()) > 3:
+        # Title heuristic: the first plain human-authored user turn. Claude Code
+        # has enough structural provenance (`isMeta`, `toolUseResult`, `origin`)
+        # to avoid the old "unknown but title-worthy" compromise.
+        if (
+            message.role is Role.USER
+            and message.message_type is MessageType.MESSAGE
+            and message.material_origin is MaterialOrigin.HUMAN_AUTHORED
+            and message.text
+            and len(message.text.strip()) > 3
+        ):
             # Strip protocol artifacts before extracting title
             cleaned = _clean_title_text(message.text)
             if cleaned and len(cleaned) > 3:

@@ -47,6 +47,8 @@ from polylogue.daemon.web_shell_paste import (
 )
 from polylogue.errors import DatabaseError, PolylogueError
 from polylogue.logging import get_logger
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.surfaces.payloads import (
     AssertionClaimListPayload,
     MutationResultPayload,
@@ -377,12 +379,22 @@ def _json_bytes(payload: object) -> bytes:
 
 
 def _web_reader_archive_root() -> Path | None:
-    """Return the archive root when index.db reader routes should use it."""
+    """Return the archive root when archive reader routes should use it."""
     from polylogue.paths import archive_root
 
     root = archive_root()
-    index_db = root / "index.db"
-    return root if index_db.exists() else None
+    required = ((ArchiveTier.SOURCE, root / "source.db"), (ArchiveTier.INDEX, root / "index.db"))
+    for tier, path in required:
+        if not path.exists():
+            return None
+        try:
+            with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+                version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+        except sqlite3.Error:
+            return None
+        if version != ARCHIVE_VERSION_BY_TIER[tier]:
+            return None
+    return root
 
 
 def _archive_origin_filter(params: dict[str, list[str]]) -> tuple[str | None, tuple[str, ...]]:

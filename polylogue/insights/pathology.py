@@ -34,13 +34,17 @@ from polylogue.insights.archive_models import ArchiveInsightModel
 from polylogue.insights.run_projection import ObservedEvent, RunProjection
 
 # Bump when a detector's rule changes so cached/rebuilt output is comparable.
-PATHOLOGY_DETECTOR_VERSION = 2
+PATHOLOGY_DETECTOR_VERSION = 4
 
 PathologyKind = Literal["wasted_loop", "stale_context"]
 PathologySeverity = Literal["low", "medium", "high"]
 
-# Event kinds that mark a failed verification turn (structured outcomes, #2482).
-_FAILURE_EVENT_KINDS = frozenset({"test_failed", "command_failed"})
+# Event kinds that prove the failure streak converged before later failures.
+_SUCCESS_EVENT_KINDS = frozenset({"test_passed", "command_succeeded"})
+# Command-like handler kinds whose failure can represent an edit/test/debug
+# loop. File reads, edits, todos, and other generic tool failures are execution
+# noise for this detector unless old payloads only expose a concrete command.
+_DIAGNOSTIC_FAILURE_HANDLER_KINDS = frozenset({"shell", "git", "github", "test"})
 # Continuation boundaries where a *resumed* run re-inherits prior context. A
 # ``subagent_start`` boundary is intentionally excluded: a subagent receiving a
 # focused summary/prefix is by design, not a stale-context pathology — only a
@@ -98,20 +102,58 @@ def _wasted_loop_severity(count: int) -> PathologySeverity:
 
 
 def _detect_wasted_loops(projection: RunProjection) -> list[PathologyFinding]:
-    """Repeated failed test/command turns — edit→test-fail→edit churn."""
-    failures = [event for event in projection.events if event.kind in _FAILURE_EVENT_KINDS]
-    if len(failures) < 2:
+    """Repeated failed test/command turns with no structured success between."""
+    longest_streak: list[ObservedEvent] = []
+    current_streak: list[ObservedEvent] = []
+    current_signature: str | None = None
+    for event in projection.events:
+        if _is_diagnostic_failure_event(event):
+            signature = _diagnostic_failure_signature(event)
+            if current_signature is not None and signature != current_signature:
+                current_streak = []
+            current_streak.append(event)
+            current_signature = signature
+            if len(current_streak) > len(longest_streak):
+                longest_streak = list(current_streak)
+        elif event.kind in _SUCCESS_EVENT_KINDS:
+            current_streak = []
+            current_signature = None
+    if len(longest_streak) < 2:
         return []
     return [
         PathologyFinding(
             kind="wasted_loop",
             session_id=projection.session_id,
-            severity=_wasted_loop_severity(len(failures)),
-            detail=f"{len(failures)} failed test/command turns without a clean pass between them",
-            occurrence_count=len(failures),
-            evidence_refs=_evidence_from_events(failures),
+            severity=_wasted_loop_severity(len(longest_streak)),
+            detail=(
+                f"{len(longest_streak)} repeated failed diagnostic turn(s) for "
+                f"{_diagnostic_failure_signature(longest_streak[0])!r} without a structured success"
+            ),
+            occurrence_count=len(longest_streak),
+            evidence_refs=_evidence_from_events(longest_streak),
         )
     ]
+
+
+def _diagnostic_failure_signature(event: ObservedEvent) -> str:
+    if event.command and event.command.strip():
+        return " ".join(event.command.split())
+    if event.tool_name and event.tool_name.strip():
+        return f"{event.kind}:{event.handler_kind or ''}:{event.tool_name.strip()}"
+    return f"{event.kind}:{event.handler_kind or ''}"
+
+
+def _is_diagnostic_failure_event(event: ObservedEvent) -> bool:
+    if event.kind == "test_failed":
+        return True
+    if event.kind != "command_failed":
+        return False
+    if event.handler_kind in _DIAGNOSTIC_FAILURE_HANDLER_KINDS:
+        return True
+    # Backward-compatible path for already-materialized v3 payloads that predate
+    # handler metadata. A concrete command is still a shell-like diagnostic
+    # signal; a bare "Read failed" / "Edit failed" summary is not.
+    return bool(event.command and event.command.strip())
 
 
 def _detect_stale_context(projection: RunProjection) -> list[PathologyFinding]:

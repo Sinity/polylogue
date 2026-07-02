@@ -30,6 +30,7 @@ from polylogue.maintenance.failure_routing import (
     clear_maintenance_failures,
     count_maintenance_failures,
     read_maintenance_failures,
+    resolve_maintenance_failures,
     route_failure_sample,
 )
 from polylogue.maintenance.planner import FailureSample
@@ -94,6 +95,54 @@ def test_route_failure_sample_infers_target_from_locator(tmp_path: Path) -> None
         archive_root=Path(config.archive_root),
     )
     assert record.target == "session_insights"
+
+
+def test_resolve_maintenance_failures_removes_matching_target_and_kind(tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+    root = Path(config.archive_root)
+    route_failure_sample(
+        FailureSample(
+            kind="UnsupportedReplayTargetError",
+            locator="target:message_embeddings",
+            message="not wired",
+        ),
+        operation_id="op-old",
+        archive_root=root,
+        target="message_embeddings",
+    )
+    route_failure_sample(
+        FailureSample(
+            kind="RepairReportedFailure",
+            locator="target:message_embeddings",
+            message="provider call failed",
+        ),
+        operation_id="op-real",
+        archive_root=root,
+        target="message_embeddings",
+    )
+    route_failure_sample(
+        FailureSample(
+            kind="UnsupportedReplayTargetError",
+            locator="target:raw_materialization",
+            message="not wired",
+        ),
+        operation_id="op-other",
+        archive_root=root,
+        target="raw_materialization",
+    )
+
+    removed = resolve_maintenance_failures(
+        root,
+        target="message_embeddings",
+        kinds=("UnsupportedReplayTargetError",),
+    )
+
+    assert removed == 1
+    remaining = read_maintenance_failures(root)
+    assert [(r.target, r.kind) for r in remaining] == [
+        ("message_embeddings", "RepairReportedFailure"),
+        ("raw_materialization", "UnsupportedReplayTargetError"),
+    ]
 
 
 def test_route_failure_sample_redacts_absolute_paths_in_message(tmp_path: Path) -> None:

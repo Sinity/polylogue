@@ -63,7 +63,7 @@ def synthesize_provider_tag_rollups(
                 logical_session_count=count,
                 explicit_count=0,
                 auto_count=0,
-                provider_breakdown={origin_value: count},
+                origin_breakdown={origin_value: count},
                 repo_breakdown={},
                 provenance=ArchiveInsightProvenance(
                     materializer_version=1,

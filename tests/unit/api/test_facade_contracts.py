@@ -40,6 +40,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import AssertionKind, AssertionStatus, BlockType, MaterialOrigin, Origin, Provider
 from polylogue.errors import DatabaseError, PolylogueError
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -2582,8 +2583,8 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
         assert rebuilt.profiles == 1
         assert rebuilt.threads == 1
         assert rebuilt_profile is not None
-        assert rebuilt_profile.evidence is not None
-        assert rebuilt_profile.evidence.workflow_shape
+        assert rebuilt_profile.inference is not None
+        assert rebuilt_profile.inference.workflow_shape
         assert rebuilt_status.profile_row_count == 1
         assert rebuilt_status.profile_rows_ready is True
         assert rebuilt_status.thread_count == 1
@@ -2887,7 +2888,8 @@ async def test_archive_tiers_api_tag_rollups_read_index_and_user_tiers(tmp_path:
         assert rollup.logical_session_count == 2
         assert rollup.explicit_count == 1
         assert rollup.auto_count == 1
-        assert rollup.provider_breakdown == {Provider.CODEX.value: 2}
+        assert rollup.origin_breakdown == {Origin.CODEX_SESSION.value: 2}
+        assert rollup.provider_breakdown == {Origin.CODEX_SESSION.value: 2}
         assert rollup.repo_breakdown == {"https://example.test/polylogue.git": 2}
         assert rollup.provenance.source_updated_at == "2026-02-02T02:41:00Z"
     finally:
@@ -3008,14 +3010,16 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
         assert day.total_words == 5
         assert day.work_event_breakdown == {"implementation": 1}
         assert day.repos_active == ("polylogue",)
-        assert day.provider_breakdown == {Provider.CODEX.value: 1}
+        assert day.origin_breakdown == {Origin.CODEX_SESSION.value: 1}
+        assert day.provider_breakdown == {Origin.CODEX_SESSION.value: 1}
         assert day.provenance is not None
         assert day.provenance.source_updated_at == "2026-02-02T02:40:00Z"
 
         assert len(week_rows) == 1
         assert week_rows[0].group_by == "week"
         assert week_rows[0].session_count == 1
-        assert week_rows[0].provider_breakdown == {Provider.CODEX.value: 1}
+        assert week_rows[0].origin_breakdown == {Origin.CODEX_SESSION.value: 1}
+        assert week_rows[0].provider_breakdown == {Origin.CODEX_SESSION.value: 1}
     finally:
         await archive.close()
 
@@ -3501,7 +3505,8 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
         assert thread.thread.depth == 1
         assert thread.thread.branch_count == 1
         assert thread.thread.total_messages == 3
-        assert thread.thread.provider_breakdown == {Provider.CLAUDE_CODE.value: 2}
+        assert thread.thread.origin_breakdown == {Origin.CLAUDE_CODE_SESSION.value: 2}
+        assert thread.thread.provider_breakdown == {Origin.CLAUDE_CODE_SESSION.value: 2}
         assert thread.thread.member_evidence[1].parent_id == parent_id
         assert thread.thread.member_evidence[1].role == "parent_continuation"
         assert "parent_session_id" in thread.thread.member_evidence[1].support_signals
@@ -3871,14 +3876,13 @@ async def test_archive_tiers_api_session_profiles_read_index_tier(tmp_path: Path
         assert merged.title == "Native profile"
         assert merged.provenance.materializer_version == 10
         assert merged.evidence is not None
-        assert merged.evidence.workflow_shape == "implementation"
-        assert merged.evidence.terminal_state == "completed"
         assert merged.evidence.total_duration_ms == 120000
         assert merged.evidence.canonical_session_date == "2026-02-02"
         assert merged.inference is not None
         assert merged.inference.work_event_count == 2
         assert merged.inference.phase_count == 1
         assert merged.inference.workflow_shape == "implementation"
+        assert merged.inference.terminal_state == "completed"
         assert merged.enrichment is None
         assert evidence_only is not None
         assert evidence_only.evidence is not None
@@ -3956,13 +3960,17 @@ async def test_archive_tiers_api_session_insight_status_reads_index_tier(tmp_pat
                 """,
                 (first_id,),
             )
+            conn.execute(
+                "UPDATE threads SET materializer_version = ?, materialized_at = ?",
+                (SESSION_INSIGHT_MATERIALIZER_VERSION, "2026-02-03T00:05:00Z"),
+            )
             for insight_type in ("work_events", "phases", "thread"):
                 for session_id in (first_id, second_id):
                     upsert_insight_materialization(
                         conn,
                         insight_type=insight_type,
                         session_id=session_id,
-                        materializer_version=3,
+                        materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
                         materialized_at_ms=1_770_000_300_000,
                     )
 
@@ -3982,6 +3990,9 @@ async def test_archive_tiers_api_session_insight_status_reads_index_tier(tmp_pat
         assert status.thread_count == 2
         assert status.root_threads == 2
         assert status.threads_ready is True
+        assert status.tag_rollup_count == 0
+        assert status.expected_tag_rollup_count == 0
+        assert status.tag_rollups_ready is True
     finally:
         await archive.close()
 

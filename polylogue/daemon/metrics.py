@@ -1492,19 +1492,20 @@ def _emit_archive_storage_metrics(lines: list[str], db: Path) -> None:
         metric_type="gauge",
         samples=version_samples,
     )
-    archive_ready = present["source"] and present["index"]
     final_shape_ready = all(present.values())
     storage_layout = archive_layout.classify_storage_layout(
         present_count=present_count, final_shape_ready=final_shape_ready
     )
     active_tier_role = archive_layout.active_tier_role(db, [(tier, path) for tier, path, _, _ in tier_paths])
-    active_store = "archive_file_set" if archive_ready else "empty"
+    physical_archive_store = present["source"] and present["index"]
+    active_store = "archive_file_set" if physical_archive_store else "empty"
     blockers = archive_layout.archive_layout_blockers(
         present_count=present_count,
         final_shape_ready=final_shape_ready,
         schema_mismatches=schema_mismatches,
         missing_backup_required=missing_backup_required,
     )
+    archive_ready = physical_archive_store and not blockers
     _emit_metric(
         lines,
         name="polylogue_archive_storage_layout",

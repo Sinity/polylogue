@@ -162,7 +162,7 @@ def extract_messages_from_chat_messages(
         timestamp = normalize_timestamp(raw_ts)
 
         text = item.get("text") if isinstance(item.get("text"), str) else None
-        if text is None:
+        if not text:
             content = item.get("content")
             if isinstance(content, str):
                 text = content

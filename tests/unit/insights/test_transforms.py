@@ -9,6 +9,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
 from polylogue.core.refs import EvidenceRef, ObjectRef
+from polylogue.insights.run_projection import build_run_projection
 from polylogue.insights.transforms import (
     RECOVERY_TRANSFORM,
     TRANSFORM_REGISTRY,
@@ -142,6 +143,35 @@ def _session() -> Session:
     )
 
 
+@pytest.mark.parametrize(
+    ("origin", "expected_harness"),
+    [
+        ("codex-session", "codex"),
+        ("claude-code-session", "claude-code"),
+        ("chatgpt-export", "chatgpt"),
+        ("gemini-cli-session", "local"),
+        ("hermes-session", "local"),
+        ("antigravity-session", "local"),
+    ],
+)
+def test_run_projection_harness_uses_origin_predicate(origin: str, expected_harness: str) -> None:
+    projection = build_run_projection(
+        session_id=f"{origin}:demo",
+        source_origin=origin,
+        title="demo",
+        git_branch=None,
+        working_directories=(),
+        session_raw_refs=(TransformRawRef(session_id=f"{origin}:demo"),),
+        tool_summaries=(),
+        subagent_reports=(),
+        recovery_events=(),
+    )
+
+    [run] = projection.runs
+    assert run.provider_origin == origin
+    assert run.harness == expected_harness
+
+
 def _sparse_session() -> Session:
     return Session(
         id=SessionId("codex-session:sparse"),
@@ -234,6 +264,12 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
     assert {(event.kind, event.summary) for event in digest.events} == {
         ("test_passed", "devtools verify --quick passed (exit 0)"),
     }
+    [digest_event] = digest.events
+    assert digest_event.tool_name == "Bash"
+    assert digest_event.tool_id == "tool-1"
+    assert digest_event.command == "devtools verify --quick"
+    assert digest_event.handler_kind == "test"
+    assert digest_event.status == "ok"
 
     projection = digest.run_projection
     assert projection.session_id == "codex-session:demo"
@@ -268,6 +304,11 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
     test_event = next(event for event in projection.events if event.kind == "test_passed")
     assert test_event.delivery_state == "observed"
     assert test_event.object_refs == ()
+    assert test_event.tool_name == "Bash"
+    assert test_event.tool_id == "tool-1"
+    assert test_event.command == "devtools verify --quick"
+    assert test_event.handler_kind == "test"
+    assert test_event.status == "ok"
 
     candidates = {candidate.text for candidate in digest.decision_candidates}
     assert "goal: burn down the backlog" in candidates

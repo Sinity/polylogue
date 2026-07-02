@@ -39,6 +39,11 @@ def _real_path(value: object) -> Path | None:
     return value if isinstance(value, Path) else None
 
 
+def _filter_value(value: object) -> str:
+    raw = getattr(value, "value", value)
+    return str(raw)
+
+
 class ArchiveQueryFilters(TypedDict):
     origin: str | None
     origins: tuple[str, ...]
@@ -233,35 +238,9 @@ def _project_archive_message(
 
 def archive_message_payload(message: ArchiveMessageRow, *, session_id: str) -> MCPMessagePayload:
     """Project one archive message into the generic MCP message shape."""
-    from polylogue.mcp.payloads import MCPMessagePayload
+    from polylogue.surfaces.payloads import SessionMessagePayload
 
-    text = "\n\n".join(block.text for block in message.blocks if block.text)
-    content_blocks: list[dict[str, object]] = [
-        {
-            "type": block.block_type,
-            "text": block.text or "",
-            "block_id": block.block_id,
-            **({"tool_name": block.tool_name} if block.tool_name else {}),
-            **({"tool_id": block.tool_id} if block.tool_id else {}),
-            **({"semantic_type": block.semantic_type} if block.semantic_type else {}),
-        }
-        for block in message.blocks
-    ]
-    return MCPMessagePayload(
-        id=message.message_id,
-        role=message.role,
-        text=text,
-        target_ref=TargetRefPayload.message(session_id=session_id, message_id=message.message_id),
-        anchor=reader_anchor("message", message.message_id),
-        timestamp=_parse_archive_datetime(message.occurred_at),
-        message_type=message.message_type,
-        material_origin=message.material_origin,
-        content_blocks=content_blocks,
-        branch_index=message.variant_index,
-        has_paste=message.has_paste,
-        has_tool_use=message.has_tool_use,
-        has_thinking=message.has_thinking,
-    )
+    return SessionMessagePayload.from_archive_row(message, session_id=session_id)
 
 
 def archive_session_list_payload(
@@ -380,9 +359,10 @@ def archive_search_payload(
         reverse=spec.reverse,
         **filters,
     )
+    total = archive.count_search_sessions(query, **filters)
     return build_search_envelope(
         tuple(archive_search_hit_payload(hit, archive=archive) for hit in hits),
-        total=len(hits),
+        total=total,
         limit=limit,
         offset=offset,
         query=query,
@@ -426,14 +406,17 @@ def archive_messages_payload(
     """Build the generic MCP message-list envelope from an archive session."""
     from polylogue.mcp.payloads import MCPMessagesListPayload
 
-    role_filter = frozenset(roles)
+    role_filter = frozenset(_filter_value(role) for role in roles)
+    message_type_filter = _filter_value(message_type) if message_type is not None else None
     material_origin_filter = frozenset(material_origins)
     messages = [
         projected
         for message in session.messages
-        for message_origin in (str(getattr(message.material_origin, "value", message.material_origin)),)
-        if (not role_filter or message.role in role_filter)
-        and (message_type is None or message.message_type == message_type)
+        for message_role in (_filter_value(message.role),)
+        for message_type_value in (_filter_value(message.message_type),)
+        for message_origin in (_filter_value(message.material_origin),)
+        if (not role_filter or message_role in role_filter)
+        and (message_type_filter is None or message_type_value == message_type_filter)
         and (not material_origin_filter or message_origin in material_origin_filter)
         for projected in (_project_archive_message(message, content_projection),)
         if projected is not None

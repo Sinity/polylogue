@@ -203,7 +203,7 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             "session_count",
             "explicit_count",
             "auto_count",
-            "provider_breakdown",
+            "origin_breakdown",
             "repo_breakdown",
         ),
         version_fields=(
