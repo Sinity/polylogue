@@ -273,29 +273,15 @@ def select_pending_archive_session_window(
 
     if status_table is None:
         status_table = "embedding_status" if _table_exists(conn, "embedding_status") else ""
-    exact_count_cte = _archive_session_embeddable_count_cte(conn)
-    aggregate_expr = None if exact_count_cte is not None else _archive_session_embeddable_count_expression(conn)
-    status_select = "e.session_id, e.needs_reindex, e.message_count_embedded" if status_table else "NULL, NULL, NULL"
+    exact_counts_available = _archive_session_embeddable_counts_available(conn)
+    aggregate_expr = None if exact_counts_available else _archive_session_embeddable_count_expression(conn)
+    status_select = (
+        "e.session_id AS status_session_id, e.needs_reindex, e.message_count_embedded"
+        if status_table
+        else "NULL AS status_session_id, NULL AS needs_reindex, NULL AS message_count_embedded"
+    )
     join_clause = f"LEFT JOIN {status_table} e ON e.session_id = s.session_id" if status_table else ""
-    count_join = ""
-    if exact_count_cte is not None:
-        count_select = "ec.embeddable_message_count AS estimated_message_count"
-        count_join = "JOIN embeddable_counts ec ON ec.session_id = s.session_id"
-        floor_filter = "AND ec.embeddable_message_count >= ?" if min_messages is not None else ""
-        if min_messages is not None:
-            params.append(min_messages)
-        pending_filter = (
-            ""
-            if rebuild or not status_table
-            else """
-              AND (
-                    e.session_id IS NULL
-                 OR e.needs_reindex = 1
-                 OR e.message_count_embedded < ec.embeddable_message_count
-              )
-            """
-        )
-    elif aggregate_expr is None:
+    if exact_counts_available or aggregate_expr is None:
         count_select = "NULL AS estimated_message_count"
         floor_filter = ""
         pending_filter = ""
@@ -317,10 +303,8 @@ def select_pending_archive_session_window(
         ).format(aggregate_expr=aggregate_expr)
     cursor = conn.execute(
         f"""
-        {exact_count_cte or ""}
         SELECT s.session_id, s.title, {status_select}, {count_select}
         FROM sessions s
-        {count_join}
         {join_clause}
         WHERE 1 = 1
           {id_filter}
@@ -341,7 +325,11 @@ def select_pending_archive_session_window(
             status_session_id = _row_value(row, 2, "status_session_id")
             needs_reindex = _row_int(row, 3, "needs_reindex") if status_session_id is not None else 0
             message_count_embedded = _row_int(row, 4, "message_count_embedded") if status_session_id is not None else 0
-            estimated_count = _row_int(row, 5, "estimated_message_count")
+            estimated_count = (
+                count_archive_session_embeddable_messages(conn, session_id)
+                if exact_counts_available
+                else _row_int(row, 5, "estimated_message_count")
+            )
             if estimated_count <= 0:
                 continue
             if min_messages is not None and estimated_count < min_messages:
@@ -479,22 +467,12 @@ def _archive_session_embeddable_count_expression(conn: sqlite3.Connection) -> st
     return None
 
 
-def _archive_session_embeddable_count_cte(conn: sqlite3.Connection) -> str | None:
-    """Return exact per-session prose counts for canonical archive indexes."""
+def _archive_session_embeddable_counts_available(conn: sqlite3.Connection) -> bool:
+    """Return whether exact per-session prose counts can be computed."""
 
     message_columns = _table_columns(conn, "messages")
     required_columns = {"session_id", "message_type", "role", "material_origin", "word_count"}
-    if not required_columns.issubset(message_columns):
-        return None
-    messages_ref = archive_embedding_messages_table_ref(conn, alias="m")
-    return f"""
-        WITH embeddable_counts AS (
-            SELECT m.session_id, COUNT(*) AS embeddable_message_count
-            FROM {messages_ref}
-            WHERE {archive_embeddable_message_where("m")}
-            GROUP BY m.session_id
-        )
-    """
+    return required_columns.issubset(message_columns)
 
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
