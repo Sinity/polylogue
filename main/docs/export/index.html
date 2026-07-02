@@ -437,6 +437,39 @@ polylogue --since yesterday read --all --format html
 <p>Reads include all selected content blocks: text, thinking blocks, tool use, tool
 results, images, code blocks, and document references. Use query-unit
 expressions or explicit read views to narrow what is selected before rendering.</p>
+<h2>Repeatable Local Packages</h2>
+<p>For repeatable local demo/export bundles, describe ordinary <code>read</code> artifacts in
+a JSON/YAML package and render it through <code>devtools workspace read-package</code>.
+Artifact-level projection policy lives under <code>projection</code>, and renderer/layout
+policy lives under <code>render</code>. Both map to ordinary <code>polylogue read</code> flags:</p>
+<pre><code class="language-json">{
+  &quot;version&quot;: 1,
+  &quot;artifacts&quot;: [
+    {
+      &quot;name&quot;: &quot;dialogue-json&quot;,
+      &quot;view&quot;: &quot;dialogue&quot;,
+      &quot;format&quot;: &quot;json&quot;,
+      &quot;path&quot;: &quot;dialogue.json&quot;,
+      &quot;projection&quot;: {
+        &quot;max_tokens&quot;: 120
+      }
+    },
+    {
+      &quot;name&quot;: &quot;spec-json&quot;,
+      &quot;view&quot;: &quot;temporal,chronicle&quot;,
+      &quot;format&quot;: &quot;json&quot;,
+      &quot;path&quot;: &quot;spec.json&quot;,
+      &quot;spec&quot;: true,
+      &quot;render&quot;: {
+        &quot;fields&quot;: &quot;selection,projection,render&quot;
+      }
+    }
+  ]
+}
+</code></pre>
+<p>This is still composition over <code>polylogue read</code>: the package renderer plans
+normal read commands such as <code>--view dialogue --format json --max-tokens 120</code>
+or <code>--spec --fields selection,projection,render</code>.</p>
 <h2>Sharing Considerations</h2>
 <ul>
 <li>Rendered output can contain full message content including tool inputs/outputs and

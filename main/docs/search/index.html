@@ -476,13 +476,17 @@ currently support <code>sort by time [asc|desc]</code>,
 and <code>offset N</code> for SQL-backed terminal rows (<code>messages</code>, <code>actions</code>, <code>blocks</code>,
 <code>files</code>, <code>assertions</code>). Query-string limits narrow the surface limit instead of expanding
 caller/API caps, and query-string offsets are added to the caller offset.
-<code>runs</code>, <code>observed-events</code>, and <code>context-snapshots</code> are now SQL-backed terminal
-rows over the materialized run-projection tables (<code>session_runs</code>,
-<code>session_observed_events</code>, <code>session_context_snapshots</code>); they support
-<code>sort by time</code>, <code>limit</code>, and <code>offset</code> and are usable as <code>exists run(...)</code> /
-<code>exists observed-event(...)</code> / <code>exists context-snapshot(...)</code> session selectors.
-They do not yet expose <code>group by | count</code> aggregation (no aggregate lowerer), so
-aggregate stages on these units fail with a typed error rather than broadening.
+<code>runs</code>, <code>observed-events</code>, and <code>context-snapshots</code> are SQL-backed terminal rows
+over source-derived archive relations plus any non-duplicate materialized
+projection enrichments. Main runs, <code>session_started</code> events, tool-finished
+events, and session-start context snapshots are computed directly from
+<code>sessions</code> and <code>blocks</code>; richer digest-derived rows can still come from
+<code>session_runs</code>, <code>session_observed_events</code>, and <code>session_context_snapshots</code>.
+These units support <code>sort by time</code>, <code>limit</code>, and <code>offset</code> and are usable as
+<code>exists run(...)</code> / <code>exists observed-event(...)</code> /
+<code>exists context-snapshot(...)</code> session selectors. They do not yet expose
+<code>group by | count</code> aggregation (no aggregate lowerer), so aggregate stages on
+these units fail with a typed error rather than broadening.
 Pipeline syntax is terminal-row syntax: session-selector surfaces reject piped
 queries, including aggregate stages like <code>group by role | count</code>, instead of
 dropping those stages and widening the query to <code>exists message(...)</code>.</p>
@@ -754,15 +758,15 @@ non-empty <code>tool_path</code>. It returns one row per owning session and norm
 with action counts and first/last tool-use refs. It is not a global filesystem
 inventory and does not claim that a file still exists on disk.</p>
 <p><code>runs</code>, <code>observed-events</code>, and <code>context-snapshots</code> are SQL-backed row sources
-over the materialized run-projection tables (<code>session_runs</code>,
-<code>session_observed_events</code>, <code>session_context_snapshots</code>), which the session-insight
-materializer recomputes from each session's run-projection evidence.
-They are both terminal unit sources (<code>runs where ...</code>) and <code>exists run(...)</code> /
-<code>exists observed-event(...)</code> / <code>exists context-snapshot(...)</code> session selectors,
-and they accept the full SQL-backed session filter surface (<code>session.action</code>,
-<code>session.tool</code>, <code>session.path</code>, <code>session.has</code>, …). They support <code>sort by time</code>,
-<code>limit</code>, and <code>offset</code>; they do not yet expose <code>group by | count</code> aggregation, so
-aggregate stages on these units fail with a typed error rather than broadening.</p>
+over source-derived archive relations, with materialized projection tables used
+only for richer non-duplicate rows that are not cheap local projections of
+<code>sessions</code> and <code>blocks</code>. They are both terminal unit sources (<code>runs where ...</code>)
+and <code>exists run(...)</code> / <code>exists observed-event(...)</code> /
+<code>exists context-snapshot(...)</code> session selectors, and they accept the full
+SQL-backed session filter surface (<code>session.action</code>, <code>session.tool</code>,
+<code>session.path</code>, <code>session.has</code>, …). They support <code>sort by time</code>, <code>limit</code>, and
+<code>offset</code>; they do not yet expose <code>group by | count</code> aggregation, so aggregate
+stages on these units fail with a typed error rather than broadening.</p>
 <p>Session filters such as <code>--origin</code>, <code>--tag</code>, <code>--repo</code>, <code>--since</code>, and <code>--until</code>
 still narrow the owning sessions before rows are returned. Session-only actions
 and result-shaping modes that do not have row semantics yet, such as
@@ -917,7 +921,7 @@ can resolve deliberately when the operator wants to inspect source evidence.</p>
 </tr>
 <tr>
 <td><code>--typed-only</code></td>
-<td>Only typed (non-pasted) content</td>
+<td>Only sessions without paste evidence</td>
 </tr>
 <tr>
 <td><code>--has</code>, <code>--has-type</code></td>
