@@ -61,9 +61,24 @@ pressure_rows="$(
     ' \
     || true
 )"
+archive_writer_rows="$(
+  ps -eo pid=,stat=,pcpu=,pmem=,comm=,args= \
+    | awk '
+      $5 == "awk" {next}
+      /polylogue ops maintenance rebuild-index/ {print; next}
+      /polylogue import/ {print; next}
+      /polylogued run/ {print; next}
+    ' \
+    || true
+)"
 performance_blocked="false"
 if printf '%s\n' "$pressure_rows" | grep -Eq 'borg create|lynchpin.analysis materialize'; then
   performance_blocked="true"
+fi
+quick_reason=""
+if [ "$quick" = false ] && [ -n "$archive_writer_rows" ]; then
+  quick=true
+  quick_reason="active-archive-writer"
 fi
 
 raw_materialization_debt_payload() {
@@ -113,19 +128,19 @@ if [ "$format" = "--json" ]; then
   raw_debt_json=""
   if [ -f "$archive_root/index.db" ]; then
     index_version="$(sqlite3 "$archive_root/index.db" 'PRAGMA user_version;' 2>/dev/null || true)"
-    sessions="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM sessions;' 2>/dev/null || true)"
     if [ "$quick" = false ]; then
+      sessions="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM sessions;' 2>/dev/null || true)"
       messages="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM messages;' 2>/dev/null || true)"
+      observed_events="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM session_observed_events;' 2>/dev/null || true)"
     else
       index_count_mode="quick-no-large-counts"
     fi
-    observed_events="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM session_observed_events;' 2>/dev/null || true)"
   fi
   if [ -f "$archive_root/source.db" ]; then
     source_version="$(sqlite3 "$archive_root/source.db" 'PRAGMA user_version;' 2>/dev/null || true)"
     raw_rows="$(sqlite3 "$archive_root/source.db" 'SELECT COUNT(*) FROM raw_sessions;' 2>/dev/null || true)"
   fi
-  if [ -f "$archive_root/source.db" ] && [ -f "$archive_root/index.db" ]; then
+  if [ "$quick" = false ] && [ -f "$archive_root/source.db" ] && [ -f "$archive_root/index.db" ]; then
     raw_materialization_debt="$(
       sqlite3 "$archive_root/source.db" "
         ATTACH '$archive_root/index.db' AS idx;
@@ -170,12 +185,12 @@ if [ "$format" = "--json" ]; then
   else
     worktree_gc_json='{}'
   fi
-  python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$observed_events" "$index_count_mode" "$source_version" "$raw_rows" "$raw_materialization_debt" "$raw_materialization_replayable" "$ops_status_json" "$raw_debt_json" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$polylogued_devloop_rows" "$polylogued_non_devloop_rows" "$worktree_gc_json" "$pressure_rows" "$performance_blocked" "$packet_bytes" "$packet_files" "$packet_dirs" "$operating_log_bytes" "$events_bytes" <<'PY'
+  python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$observed_events" "$index_count_mode" "$source_version" "$raw_rows" "$raw_materialization_debt" "$raw_materialization_replayable" "$ops_status_json" "$raw_debt_json" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$polylogued_devloop_rows" "$polylogued_non_devloop_rows" "$worktree_gc_json" "$pressure_rows" "$performance_blocked" "$packet_bytes" "$packet_files" "$packet_dirs" "$operating_log_bytes" "$events_bytes" "$quick_reason" "$archive_writer_rows" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-repo, current, archive_root, git_branch, git_head, git_tracked_changes, git_untracked_changes, index_version, sessions, messages, observed_events, index_count_mode, source_version, raw_rows, raw_materialization_debt, raw_materialization_replayable, ops_status_json, raw_debt_json, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows, polylogued_devloop_rows, polylogued_non_devloop_rows, worktree_gc_json, pressure_rows, performance_blocked, packet_bytes, packet_files, packet_dirs, operating_log_bytes, events_bytes = sys.argv[1:]
+repo, current, archive_root, git_branch, git_head, git_tracked_changes, git_untracked_changes, index_version, sessions, messages, observed_events, index_count_mode, source_version, raw_rows, raw_materialization_debt, raw_materialization_replayable, ops_status_json, raw_debt_json, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows, polylogued_devloop_rows, polylogued_non_devloop_rows, worktree_gc_json, pressure_rows, performance_blocked, packet_bytes, packet_files, packet_dirs, operating_log_bytes, events_bytes, quick_reason, archive_writer_rows = sys.argv[1:]
 
 def int_or_none(value: str):
     try:
@@ -345,6 +360,7 @@ print(json.dumps({
         "messages": int_or_none(messages),
         "observed_events": int_or_none(observed_events),
         "count_mode": index_count_mode,
+        "quick_reason": quick_reason or None,
     },
     "source": {
         "schema_version": int_or_none(source_version),
@@ -383,6 +399,7 @@ print(json.dumps({
     "pressure": {
         "live_performance_proof_blocked": performance_blocked == "true",
         "active_heavy_rows": [line for line in pressure_rows.splitlines() if line],
+        "active_archive_writers": [line for line in archive_writer_rows.splitlines() if line],
     },
     "active_loop": active_loop,
     "next_action": active_loop["next_action"],
@@ -427,15 +444,20 @@ fi
 
 if [ -f "$archive_root/index.db" ]; then
   version="$(sqlite3 "$archive_root/index.db" 'PRAGMA user_version;' 2>/dev/null || true)"
-  sessions="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM sessions;' 2>/dev/null || true)"
   if [ "$quick" = false ]; then
+    sessions="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM sessions;' 2>/dev/null || true)"
     messages="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM messages;' 2>/dev/null || true)"
+    observed_events="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM session_observed_events;' 2>/dev/null || true)"
   else
+    sessions="skipped-quick"
     messages="skipped-quick"
+    observed_events="skipped-quick"
   fi
-  observed_events="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM session_observed_events;' 2>/dev/null || true)"
   printf 'index: v%s sessions=%s messages=%s observed_events=%s\n' \
     "${version:-?}" "${sessions:-?}" "${messages:-?}" "${observed_events:-?}"
+  if [ -n "$quick_reason" ]; then
+    printf 'index_count_mode: quick (%s)\n' "$quick_reason"
+  fi
 else
   printf 'index: missing\n'
 fi
@@ -446,7 +468,7 @@ if [ -f "$archive_root/source.db" ]; then
   printf 'source: v%s raw_sessions=%s\n' "${source_version:-?}" "${raw_rows:-?}"
 fi
 
-if [ -f "$archive_root/source.db" ] && [ -f "$archive_root/index.db" ]; then
+if [ "$quick" = false ] && [ -f "$archive_root/source.db" ] && [ -f "$archive_root/index.db" ]; then
   raw_materialization_debt="$(
     sqlite3 "$archive_root/source.db" "
       ATTACH '$archive_root/index.db' AS idx;
@@ -544,6 +566,9 @@ if [ -n "$pressure_rows" ]; then
   printf '%s\n' "$pressure_rows"
 else
   printf 'live performance proof: no obvious heavy blockers\n'
+fi
+if [ -n "$archive_writer_rows" ]; then
+  printf '\nactive archive writer; expensive archive probes suppressed:\n%s\n' "$archive_writer_rows"
 fi
 
 printf '\n== daemon ==\n'
