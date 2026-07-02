@@ -779,6 +779,10 @@ class MCPMessagesListPayload(SurfacePayloadModel):
     total: int
     limit: int
     offset: int
+    offset_from: str = "start"
+    next_offset: int | None = None
+    suggested_tail_offset: int | None = None
+    offset_note: str | None = None
 
 
 class MCPRawArtifactPayload(SurfacePayloadModel):

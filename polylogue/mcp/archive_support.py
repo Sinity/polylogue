@@ -410,6 +410,7 @@ def archive_messages_payload(
     content_projection: ContentProjectionSpec | None = None,
     limit: int,
     offset: int,
+    offset_from: str = "start",
 ) -> MCPMessagesListPayload:
     """Build the generic MCP message-list envelope from an archive session."""
     from polylogue.mcp.payloads import MCPMessagesListPayload
@@ -429,13 +430,31 @@ def archive_messages_payload(
         for projected in (_project_archive_message(message, content_projection),)
         if projected is not None
     ]
-    page = messages[offset : offset + limit]
+    total = len(messages)
+    requested_offset = max(0, offset)
+    effective_offset = max(total - limit, 0) if offset_from == "end" else requested_offset
+    page = messages[effective_offset : effective_offset + limit]
+    next_offset = effective_offset + len(page) if page and effective_offset + len(page) < total else None
+    suggested_tail_offset = max(total - limit, 0)
+    offset_note = None
+    if offset_from != "end" and requested_offset >= total:
+        offset_note = (
+            "No messages returned because offset is in filtered result space "
+            f"and is >= filtered total ({total}). Use offset_from='end' or "
+            f"offset={suggested_tail_offset} for the filtered tail."
+            if total
+            else "No messages matched the supplied filters."
+        )
     return MCPMessagesListPayload(
         session_id=session.session_id,
         messages=tuple(archive_message_payload(message, session_id=session.session_id) for message in page),
-        total=len(messages),
+        total=total,
         limit=limit,
-        offset=offset,
+        offset=effective_offset,
+        offset_from=offset_from,
+        next_offset=next_offset,
+        suggested_tail_offset=suggested_tail_offset,
+        offset_note=offset_note,
     )
 
 

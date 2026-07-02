@@ -855,13 +855,30 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         material_origin: str | None = None,
         limit: MCPToolLimit = 50,
         offset: MCPToolOffset = 0,
+        offset_from: str = "start",
+        tail: bool = False,
     ) -> str:
+        """Return a filtered message page.
+
+        ``offset`` is evaluated after role/type/material filters. Use
+        ``tail=True`` or ``offset_from="end"`` to read the filtered tail of a
+        large session without first calculating the filtered total.
+        """
+
         async def run() -> str:
             from polylogue.archive.message.types import validate_message_type_filter
 
             normalized_message_type = (
                 validate_message_type_filter(message_type).value if message_type is not None else None
             )
+            normalized_offset_from = offset_from.strip().lower()
+            if tail:
+                normalized_offset_from = "end"
+            if normalized_offset_from not in {"start", "end"}:
+                return hooks.error_json(
+                    "offset_from must be 'start' or 'end'",
+                    code="invalid_argument",
+                )
             config = hooks.get_config()
             try:
                 with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
@@ -875,6 +892,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                         material_origins=(material_origin,) if material_origin else (),
                         limit=hooks.clamp_limit(limit),
                         offset=max(0, offset),
+                        offset_from=normalized_offset_from,
                     )
                 )
             except (KeyError, ValueError, sqlite3.OperationalError):

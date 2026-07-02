@@ -901,6 +901,84 @@ class TestGetSessionTool:
         ]
         assert payload["total"] == 3
 
+    def test_get_messages_tail_applies_after_filters(
+        self,
+        tmp_path: Path,
+        mcp_server: MCPServerUnderTest,
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        session_id = _seed_archive(
+            archive_root,
+            native_id="tail-filtered",
+            extra=(
+                ("a1", "assistant checkpoint 1"),
+                ("a2", "assistant checkpoint 2"),
+                ("a3", "assistant checkpoint 3"),
+            ),
+        )
+
+        with _archive_config(archive_root):
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["get_messages"].fn,
+                session_id=session_id,
+                message_role="assistant",
+                limit=2,
+                tail=True,
+            )
+
+        payload = json.loads(result)
+        assert [message["text"] for message in payload["messages"]] == [
+            "assistant checkpoint 2",
+            "assistant checkpoint 3",
+        ]
+        assert payload["total"] == 3
+        assert payload["offset"] == 1
+        assert payload["offset_from"] == "end"
+        assert payload["suggested_tail_offset"] == 1
+
+    def test_get_messages_large_filtered_offset_returns_actionable_note(
+        self,
+        tmp_path: Path,
+        mcp_server: MCPServerUnderTest,
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        session_id = _seed_archive(
+            archive_root,
+            native_id="offset-filtered",
+            extra=(
+                ("a1", "assistant checkpoint 1"),
+                ("a2", "assistant checkpoint 2"),
+            ),
+        )
+
+        with _archive_config(archive_root):
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["get_messages"].fn,
+                session_id=session_id,
+                message_role="assistant",
+                limit=2,
+                offset=100,
+            )
+
+        payload = json.loads(result)
+        assert payload["messages"] == []
+        assert payload["total"] == 2
+        assert payload["offset"] == 100
+        assert payload["offset_from"] == "start"
+        assert payload["suggested_tail_offset"] == 0
+        assert "filtered result space" in payload["offset_note"]
+
+    def test_get_messages_rejects_unknown_offset_from(self, mcp_server: MCPServerUnderTest) -> None:
+        result = invoke_surface(
+            mcp_server._tool_manager._tools["get_messages"].fn,
+            session_id="test:long",
+            offset_from="middle",
+        )
+
+        body = json.loads(result)
+        assert body["is_error"] is True
+        assert body["code"] == "invalid_argument"
+
     def test_archive_message_payload_uses_shared_reader_envelope(self) -> None:
         from polylogue.mcp.archive_support import archive_message_payload
         from polylogue.storage.sqlite.archive_tiers.write import (
