@@ -296,7 +296,17 @@ class TestPreflightCommand:
         with patch("polylogue.cli.commands.embed._build_preflight_report", fake_preflight):
             result = cli_runner.invoke(
                 embed_command,
-                ["preflight", "--max-sessions", "2", "--max-messages", "7", "--max-cost-usd", "0.10"],
+                [
+                    "preflight",
+                    "--max-sessions",
+                    "2",
+                    "--max-messages",
+                    "7",
+                    "--max-cost-usd",
+                    "0.10",
+                    "--min-messages",
+                    "5",
+                ],
                 obj=stub_env,
             )
 
@@ -304,6 +314,7 @@ class TestPreflightCommand:
         assert fake_preflight.call_args.kwargs["max_sessions"] == 2
         assert fake_preflight.call_args.kwargs["max_messages"] == 7
         assert fake_preflight.call_args.kwargs["max_cost_usd"] == 0.10
+        assert fake_preflight.call_args.kwargs["min_messages"] == 5
 
     def test_preflight_json_emits_machine_readable_window_plan(self, cli_runner: CliRunner, stub_env: Any) -> None:
         report = _make_report(
@@ -315,6 +326,7 @@ class TestPreflightCommand:
             max_sessions=3,
             max_messages=2000,
             max_cost_usd=0.10,
+            min_messages=5,
         )
         with _patch_preflight(report):
             result = cli_runner.invoke(embed_command, ["preflight", "--format", "json"], obj=stub_env)
@@ -338,10 +350,12 @@ class TestPreflightCommand:
             "2000",
             "--max-cost-usd",
             "0.1",
+            "--min-messages",
+            "5",
         ]
         assert (
             payload["backfill_command"]
-            == "polylogue ops embed backfill --yes --max-sessions 3 --max-messages 2000 --max-cost-usd 0.1"
+            == "polylogue ops embed backfill --yes --max-sessions 3 --max-messages 2000 --max-cost-usd 0.1 --min-messages 5"
         )
 
     def test_preflight_json_omits_backfill_command_when_backlog_empty(
