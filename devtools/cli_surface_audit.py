@@ -206,8 +206,13 @@ def _json_top_level_bytes(text: str) -> dict[str, int] | None:
         payload = json.loads(text)
     except json.JSONDecodeError:
         return None
+    if isinstance(payload, list):
+        return {
+            "$array_bytes": len(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()),
+            "$array_items": len(payload),
+        }
     if not isinstance(payload, dict):
-        return None
+        return {"$scalar_bytes": len(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())}
     return {
         key: len(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
         for key, value in sorted(payload.items())

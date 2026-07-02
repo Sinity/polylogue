@@ -206,7 +206,7 @@ def test_select_verb_invokes_query_backed_selector() -> None:
     assert callable(wrapped)
 
     with patch("polylogue.cli.select.run_select") as run_select:
-        wrapped(child, 7, "title", False)
+        wrapped(child, 7, "title", None)
 
     request = run_select.call_args.args[1]
     assert run_select.call_args.args[0] is child.obj
@@ -216,13 +216,24 @@ def test_select_verb_invokes_query_backed_selector() -> None:
     assert run_select.call_args.kwargs == {"limit": 7, "print_field": "title"}
 
 
-def test_select_verb_json_flag_overrides_print_field() -> None:
+def test_select_verb_format_json_overrides_print_field() -> None:
     _, child = _context_pair(query_terms=("alpha",))
     wrapped = getattr(query_verbs.select_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
     with patch("polylogue.cli.select.run_select") as run_select:
-        wrapped(child, 5, "id", True)
+        wrapped(child, 5, "id", "json")
+
+    assert run_select.call_args.kwargs == {"limit": 5, "print_field": "json"}
+
+
+def test_select_verb_inherits_root_json_format() -> None:
+    _, child = _context_pair(params={"output_format": "json"}, query_terms=("alpha",))
+    wrapped = getattr(query_verbs.select_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+
+    with patch("polylogue.cli.select.run_select") as run_select:
+        wrapped(child, 5, "id", None)
 
     assert run_select.call_args.kwargs == {"limit": 5, "print_field": "json"}
 

@@ -762,19 +762,25 @@ def _summary_all_output_param(destination: str, out_path: str | None) -> str | N
     show_default=True,
     help="Field to print for selected or candidate sessions.",
 )
-@click.option("--json", "json_output", is_flag=True, help="Print selected or candidate sessions as JSON.")
+@click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
+@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
 @click.pass_context
-def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: bool) -> None:
+def select_verb(ctx: click.Context, limit: int, print_field: str, output_format: str | None) -> None:
     """Select one matched session or print bounded candidate identities."""
     from polylogue.cli.select import run_select
 
-    field: SelectPrintField = "json" if json_output else cast("SelectPrintField", print_field)
     request = _parent_request(ctx)
+    root_format = request.params.get("output_format")
+    effective_format = (
+        output_format if output_format is not None else root_format if isinstance(root_format, str) else None
+    )
+    field: SelectPrintField = "json" if effective_format == "json" else cast("SelectPrintField", print_field)
     if _explain_terminal_action(
         request,
         action="select",
         limit=limit,
         print_field=field,
+        format=effective_format or "default",
     ):
         return
     run_select(ctx.obj, request, limit=limit, print_field=field)
