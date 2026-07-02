@@ -463,6 +463,7 @@ def test_daemon_status_payload_maps_component_readiness(tmp_path: Path) -> None:
                 "embedding_retrieval_ready": True,
                 "embedding_pending_count": 2,
                 "embedding_pending_message_count": 12,
+                "embedding_pending_message_count_exact": True,
                 "embedding_stale_count": 3,
                 "embedding_coverage_percent": 70.0,
                 "embedding_failure_count": 0,
@@ -495,6 +496,9 @@ def test_daemon_status_payload_maps_component_readiness(tmp_path: Path) -> None:
     assert session_profiles["repair_hint"] == "polylogue ops maintenance preview --scope derived"
     assert embeddings["state"] == "stale"
     assert embeddings["scope"] == "semantic"
+    embedding_counts = cast(dict[str, object], embeddings["counts"])
+    assert embedding_counts["pending_messages"] == 12
+    assert embedding_counts["pending_messages_exact"] is True
     assert embeddings["repair_hint"] == "polylogue ops embed backfill"
     assert api["state"] == "ready"
     assert ingest["state"] == "ready"
@@ -529,7 +533,7 @@ def test_plain_daemon_status_reports_bounded_embedding_pending_messages() -> Non
             "embedding_freshness_status": "none",
             "embedding_retrieval_ready": False,
             "embedding_pending_count": 7,
-            "embedding_pending_message_count": 0,
+            "embedding_pending_message_count": None,
             "embedding_pending_message_count_exact": False,
         }
     }

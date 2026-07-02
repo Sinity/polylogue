@@ -274,7 +274,7 @@ def test_readiness_unconfigured_when_enabled_flag_off(
     assert info["embedding_freshness_status"] == "none"
     assert info["embedding_retrieval_ready"] is False
     assert info["embedding_pending_count"] == 1
-    assert info["embedding_pending_message_count"] == 0
+    assert info["embedding_pending_message_count"] is None
     assert info["embedding_pending_message_count_exact"] is False
 
     with patch("polylogue.config.load_polylogue_config", return_value=cfg):
@@ -299,7 +299,7 @@ def test_readiness_reads_archive_index(tmp_path: Path) -> None:
     assert info["embedding_freshness_status"] == "partial"
     assert info["embedding_retrieval_ready"] is True
     assert info["embedding_pending_count"] == 2
-    assert info["embedding_pending_message_count"] == 0
+    assert info["embedding_pending_message_count"] is None
     assert info["embedding_pending_message_count_exact"] is False
     assert info["embedding_failure_count"] == 1
     assert info["embedding_coverage_percent"] == 33.3

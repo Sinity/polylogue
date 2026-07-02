@@ -181,6 +181,8 @@ def test_embedding_payload_maps_missing_blocked_stale_and_ready() -> None:
         "embedded_sessions": 2,
         "embedded_messages": 5,
         "pending_sessions": 0,
+        "pending_messages": None,
+        "pending_messages_exact": False,
         "stale_messages": 0,
         "failure_count": 0,
         "retrieval_ready": True,
@@ -194,7 +196,13 @@ def test_embedding_payload_maps_missing_blocked_stale_and_ready() -> None:
         is CapabilityReadinessState.BLOCKED
     )
     assert component_from_embedding_payload({**base, "stale_messages": 1}).state is CapabilityReadinessState.STALE
-    assert component_from_embedding_payload(base).state is CapabilityReadinessState.READY
+    ready = component_from_embedding_payload(base)
+    assert ready.state is CapabilityReadinessState.READY
+    assert ready.counts["pending_messages"] is None
+    assert ready.counts["pending_messages_exact"] is False
+    exact = component_from_embedding_payload({**base, "pending_messages": 7, "pending_messages_exact": True})
+    assert exact.counts["pending_messages"] == 7
+    assert exact.counts["pending_messages_exact"] is True
 
 
 def test_archive_surface_maps_search_mismatch_to_stale_component() -> None:

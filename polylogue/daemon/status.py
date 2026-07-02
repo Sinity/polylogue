@@ -93,7 +93,7 @@ class EmbeddingReadiness(BaseModel):
     embedding_freshness_status: str = "empty"
     embedding_retrieval_ready: bool = False
     embedding_pending_count: int = 0
-    embedding_pending_message_count: int = 0
+    embedding_pending_message_count: int | None = None
     embedding_pending_message_count_exact: bool = False
     embedding_stale_count: int = 0
     embedding_coverage_percent: float = 0.0
@@ -1666,7 +1666,7 @@ def _component_from_daemon_embedding_readiness(readiness: EmbeddingReadiness) ->
         state = CapabilityReadinessState.STALE
     elif readiness.embedding_retrieval_ready:
         state = CapabilityReadinessState.READY
-    elif readiness.embedding_pending_count or readiness.embedding_pending_message_count:
+    elif readiness.embedding_pending_count or (readiness.embedding_pending_message_count or 0):
         state = CapabilityReadinessState.REBUILDING
     else:
         state = CapabilityReadinessState.MISSING
@@ -1679,6 +1679,7 @@ def _component_from_daemon_embedding_readiness(readiness: EmbeddingReadiness) ->
         counts={
             "pending_sessions": readiness.embedding_pending_count,
             "pending_messages": readiness.embedding_pending_message_count,
+            "pending_messages_exact": readiness.embedding_pending_message_count_exact,
             "stale_messages": readiness.embedding_stale_count,
             "failure_count": readiness.embedding_failure_count,
             "coverage_pct": readiness.embedding_coverage_percent,
@@ -1923,8 +1924,10 @@ def build_daemon_status(
         embedding_freshness_status=str(embedding_info.get("embedding_freshness_status", "empty")),
         embedding_retrieval_ready=bool(embedding_info.get("embedding_retrieval_ready", False)),
         embedding_pending_count=_safe_int(embedding_info.get("embedding_pending_count", 0)),
-        embedding_pending_message_count=_safe_int(embedding_info.get("embedding_pending_message_count", 0)),
         embedding_pending_message_count_exact=bool(embedding_info.get("embedding_pending_message_count_exact", False)),
+        embedding_pending_message_count=_safe_int(embedding_info.get("embedding_pending_message_count", 0))
+        if bool(embedding_info.get("embedding_pending_message_count_exact", False))
+        else None,
         embedding_stale_count=_safe_int(embedding_info.get("embedding_stale_count", 0)),
         embedding_coverage_percent=_safe_float(embedding_info.get("embedding_coverage_percent")),
         embedding_failure_count=_safe_int(embedding_info.get("embedding_failure_count", 0)),

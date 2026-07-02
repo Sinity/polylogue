@@ -42,7 +42,7 @@ class ComponentReadiness:
     summary: str = ""
     last_success: str | None = None
     last_attempt: str | None = None
-    counts: Mapping[str, int | float | bool] = field(default_factory=dict)
+    counts: Mapping[str, int | float | bool | None] = field(default_factory=dict)
     caveats: tuple[str, ...] = ()
     repair_hint: str | None = None
     evidence_refs: tuple[str, ...] = ()
@@ -239,6 +239,9 @@ def component_from_embedding_payload(payload: Mapping[str, Any]) -> ComponentRea
     else:
         state = CapabilityReadinessState.REBUILDING
 
+    pending_messages_exact = bool(payload.get("pending_messages_exact"))
+    pending_messages = int(payload.get("pending_messages") or 0) if pending_messages_exact else None
+
     return ComponentReadiness(
         component="embeddings",
         scope="semantic",
@@ -249,6 +252,8 @@ def component_from_embedding_payload(payload: Mapping[str, Any]) -> ComponentRea
             "embedded_sessions": int(payload.get("embedded_sessions") or 0),
             "embedded_messages": int(payload.get("embedded_messages") or 0),
             "pending_sessions": int(payload.get("pending_sessions") or 0),
+            "pending_messages": pending_messages,
+            "pending_messages_exact": pending_messages_exact,
             "stale_messages": int(payload.get("stale_messages") or 0),
             "failure_count": int(payload.get("failure_count") or 0),
             "retrieval_ready": bool(payload.get("retrieval_ready")),

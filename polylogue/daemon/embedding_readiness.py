@@ -99,7 +99,7 @@ def embedding_readiness_info(db_file: Path, *, detail: bool = False) -> dict[str
         "embedding_freshness_status": payload["freshness_status"],
         "embedding_retrieval_ready": payload["retrieval_ready"],
         "embedding_pending_count": payload["pending_sessions"],
-        "embedding_pending_message_count": payload["pending_messages"] or 0,
+        "embedding_pending_message_count": payload["pending_messages"],
         "embedding_pending_message_count_exact": payload["pending_messages_exact"],
         "embedding_stale_count": payload["stale_messages"],
         "embedding_coverage_percent": payload["embedding_coverage_percent"],
@@ -229,7 +229,7 @@ def _archive_embedding_readiness_info(
                 if has_status
                 else 0
             )
-            pending_messages = 0
+            pending_messages: int | None = None
             stale_messages = 0
             total_messages = 0
             if detail and has_messages:
@@ -305,7 +305,7 @@ def _archive_embedding_readiness_info(
                 if embedded_sessions + pending_sessions > 0
                 else (100.0 if total_sessions > 0 else 0.0),
                 "embedding_failure_count": failure_count,
-                "embedding_estimated_cost_usd": _estimated_cost(pending_messages) if detail else 0.0,
+                "embedding_estimated_cost_usd": _estimated_cost(pending_messages or 0) if detail else 0.0,
                 "embedding_latest_catchup_run": None,
                 "embedding_latest_material_catchup_run": None,
             }

@@ -449,6 +449,8 @@ class TestNoArchiveStatus:
             "embedded_sessions": 2,
             "embedded_messages": 20,
             "pending_sessions": 1,
+            "pending_messages": None,
+            "pending_messages_exact": False,
             "stale_messages": 4,
             "failure_count": 0,
             "freshness_status": "stale",
@@ -478,6 +480,8 @@ class TestNoArchiveStatus:
         assert readiness["summary"] == "partial"
         assert readiness["counts"]["total_sessions"] == 3
         assert readiness["counts"]["embedded_sessions"] == 2
+        assert readiness["counts"]["pending_messages"] is None
+        assert readiness["counts"]["pending_messages_exact"] is False
         assert readiness["counts"]["stale_messages"] == 4
         assert readiness["counts"]["retrieval_ready"] is True
         assert readiness["caveats"] == []
