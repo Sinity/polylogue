@@ -226,6 +226,44 @@ def test_raw_materialization_preview_counts_replayable_rows_without_erasing_miss
     assert "1 raw rows blocked by missing blobs" in result.detail
 
 
+def test_raw_materialization_replays_parsed_rows_when_index_is_empty(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    blob_store = BlobStore(tmp_path / "blob")
+    raw_id, blob_size = blob_store.write_from_bytes(b'{"mapping":{"already-parsed":{}}}')
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms, parsed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                raw_id,
+                "chatgpt-export",
+                "native-reset-replay",
+                "reset-replay.json",
+                0,
+                bytes.fromhex(raw_id),
+                blob_size,
+                1,
+                2,
+            ),
+        )
+        source_conn.commit()
+
+    result = repair_mod.repair_raw_materialization(config, dry_run=True)
+
+    assert result.repaired_count == 1
+    assert result.success is True
+    assert result.metrics["raw_materialization_candidate_count"] == 1.0
+    assert result.metrics["raw_materialization_already_parsed_count"] == 1.0
+    assert "already parsed but not materialized" in result.detail
+
+
 def test_raw_materialization_raw_artifact_filter_counts_only_target(tmp_path: Path) -> None:
     config = _config(tmp_path)
     initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)

@@ -128,7 +128,13 @@ def _raw_materialization_candidate_ids(
             normalized_root = str(source_root).rstrip("/")
             source_root_filter = " AND (r.source_path = ? OR r.source_path LIKE ?)"
             params.extend((normalized_root, f"{normalized_root}/%"))
-        include_already_parsed = any(
+        index_session_count = 0
+        try:
+            row = conn.execute("SELECT COUNT(*) FROM index_tier.sessions").fetchone()
+            index_session_count = int(row[0] or 0) if row is not None else 0
+        except sqlite3.Error:
+            index_session_count = 0
+        include_already_parsed = index_session_count == 0 or any(
             value is not None for value in (raw_artifact_id, provider_origin, source_family, source_root)
         )
         parsed_filter = "" if include_already_parsed else "AND r.parsed_at_ms IS NULL"
