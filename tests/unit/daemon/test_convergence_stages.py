@@ -958,6 +958,51 @@ def test_archive_insights_execute_ids_deduplicates_session_ids(tmp_path: Path, m
     assert seen_session_ids == [["codex-session:conv-dupe"]]
 
 
+def test_archive_insights_execute_ids_rebuilds_quiet_subset_when_some_sessions_are_hot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "index.db"
+    with open_connection(db_path) as conn:
+        _seed_index_session(conn, session_id="conv-hot", text="Message for hot session")
+        _seed_index_session(conn, session_id="conv-cold", text="Message for cold session")
+        conn.commit()
+
+    seen_session_ids: list[list[str]] = []
+
+    def fake_rebuild(
+        conn: sqlite3.Connection,
+        *,
+        session_ids: list[str],
+        page_size: int,
+        stage_timings_s: dict[str, float] | None = None,
+        stage_timing_prefix: str = "insights",
+    ) -> SimpleNamespace:
+        del conn, page_size, stage_timing_prefix
+        seen_session_ids.append(session_ids)
+        if stage_timings_s is not None:
+            stage_timings_s["insights.fake"] = 0.25
+        return SimpleNamespace(profiles=1, work_events=0, phases=0, threads=0)
+
+    monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
+    monkeypatch.setattr(stages, "_archive_hot_insight_session_ids", lambda _conn, _ids: {"codex-session:conv-hot"})
+    monkeypatch.setattr(stages, "_archive_stale_session_profile_ids", lambda _conn, _ids: [])
+
+    with sqlite3.connect(db_path) as conn:
+        result = stages._archive_insights_execute_ids(
+            conn,
+            [
+                "codex-session:conv-hot",
+                "codex-session:conv-cold",
+            ],
+        )
+
+    assert isinstance(result, StageExecutionResult)
+    assert result.success is False
+    assert result.stage_timings_s == {"insights.fake": 0.25}
+    assert seen_session_ids == [["codex-session:conv-cold"]]
+
+
 def test_archive_insights_execute_sessions_uses_write_connection_profile(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

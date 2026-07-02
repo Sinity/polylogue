@@ -17,7 +17,6 @@ from polylogue.archive.models import Session, SessionSummary
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility, BlockType, Provider
 from polylogue.core.refs import EvidenceRef
-from polylogue.insights.transforms import RecoveryWorkPacket, RecoveryWorkPacketEntry
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
@@ -918,61 +917,6 @@ class TestArchiveGenericToolSurfaces:
         assert payload["messages"][0]["text"] == "tool message from archive index"
 
     @pytest.mark.asyncio
-    async def test_get_recovery_work_packet_reads_shared_facade_dto(
-        self: object, mcp_server: MCPServerUnderTest
-    ) -> None:
-        packet = RecoveryWorkPacket(
-            session_id="session-1",
-            title="Recovery target",
-            source_origin="codex-session",
-            message_count=3,
-            entries=(
-                RecoveryWorkPacketEntry(
-                    section="assertions",
-                    label="Assertion",
-                    text="The retry path is evidence-backed.",
-                    evidence_refs=(EvidenceRef(session_id="session-1"),),
-                    support="assertion",
-                    metadata={"kind": "fact"},
-                ),
-            ),
-            evidence_refs=(EvidenceRef(session_id="session-1"),),
-        )
-        mock_poly = make_polylogue_mock()
-        mock_poly.recovery_work_packet.return_value = packet
-
-        with patch("polylogue.mcp.server._get_polylogue", return_value=mock_poly):
-            result = await invoke_surface_async(
-                mcp_server._tool_manager._tools["get_recovery_work_packet"].fn,
-                session_id="session-1",
-            )
-
-        payload = json.loads(result)
-        assert payload["recovery_work_packet"]["session_id"] == "session-1"
-        assert payload["recovery_work_packet"]["entries"][0]["section"] == "assertions"
-        assert payload["recovery_work_packet"]["entries"][0]["support"] == "assertion"
-        assert payload["recovery_work_packet"]["entries"][0]["evidence_refs"][0]["session_id"] == "session-1"
-        mock_poly.recovery_work_packet.assert_awaited_once_with("session-1")
-
-    @pytest.mark.asyncio
-    async def test_get_recovery_report_reads_shared_facade_report(self: object, mcp_server: MCPServerUnderTest) -> None:
-        mock_poly = make_polylogue_mock()
-        mock_poly.recovery_report.return_value = "# Continue: Recovery target"
-
-        with patch("polylogue.mcp.server._get_polylogue", return_value=mock_poly):
-            result = await invoke_surface_async(
-                mcp_server._tool_manager._tools["get_recovery_report"].fn,
-                session_id="session-1",
-                report="continue",
-            )
-
-        payload = json.loads(result)
-        assert payload["session_id"] == "session-1"
-        assert payload["report"] == "continue"
-        assert payload["content"] == "# Continue: Recovery target"
-        mock_poly.recovery_report.assert_awaited_once_with("session-1", "continue")
-
-    @pytest.mark.asyncio
     async def test_archive_debt_tool_reads_shared_facade_payload(self: object, mcp_server: MCPServerUnderTest) -> None:
         mock_poly = make_polylogue_mock()
         mock_poly.archive_debt.return_value = ArchiveDebtListPayload(
@@ -1040,55 +984,18 @@ class TestArchiveGenericToolSurfaces:
         )
 
     @pytest.mark.asyncio
-    async def test_get_recovery_report_reports_missing_session(self: object, mcp_server: MCPServerUnderTest) -> None:
-        mock_poly = make_polylogue_mock()
-        mock_poly.recovery_report.return_value = None
-
-        with patch("polylogue.mcp.server._get_polylogue", return_value=mock_poly):
-            result = await invoke_surface_async(
-                mcp_server._tool_manager._tools["get_recovery_report"].fn,
-                session_id="missing",
-                report="blame",
-            )
-
-        payload = json.loads(result)
-        assert payload["is_error"] is True
-        assert payload["code"] == "not_found"
-        assert payload["tool"] == "get_recovery_report"
-        mock_poly.recovery_report.assert_awaited_once_with("missing", "blame")
-
-    @pytest.mark.asyncio
-    async def test_get_recovery_work_packet_reports_missing_session(
-        self: object, mcp_server: MCPServerUnderTest
-    ) -> None:
-        mock_poly = make_polylogue_mock()
-        mock_poly.recovery_work_packet.return_value = None
-
-        with patch("polylogue.mcp.server._get_polylogue", return_value=mock_poly):
-            result = await invoke_surface_async(
-                mcp_server._tool_manager._tools["get_recovery_work_packet"].fn,
-                session_id="missing",
-            )
-
-        payload = json.loads(result)
-        assert payload["is_error"] is True
-        assert payload["code"] == "not_found"
-        assert payload["tool"] == "get_recovery_work_packet"
-        mock_poly.recovery_work_packet.assert_awaited_once_with("missing")
-
-    @pytest.mark.asyncio
     async def test_compile_context_reads_shared_context_image(self: object, mcp_server: MCPServerUnderTest) -> None:
         from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec
 
         image = ContextImage(
-            spec=ContextSpec(seed_refs=("session:session-1",), read_views=("recovery", "work-packet")),
+            spec=ContextSpec(seed_refs=("session:session-1",), read_views=("messages",)),
             segments=(
                 ContextSegment(
-                    segment_id="recovery:session-1:recovery_digest",
-                    kind="recovery",
-                    title="Recovery digest",
-                    markdown="Resume with explicit evidence.",
-                    payload_kind="recovery_digest",
+                    segment_id="read-view:session-1:messages",
+                    kind="read_view",
+                    title="Messages",
+                    markdown="Message context with explicit evidence.",
+                    payload_kind="messages",
                     evidence_refs=(EvidenceRef(session_id="session-1"),),
                     token_estimate=4,
                 ),
@@ -1103,18 +1010,18 @@ class TestArchiveGenericToolSurfaces:
             result = await invoke_surface_async(
                 mcp_server._tool_manager._tools["compile_context"].fn,
                 seed_ref="session:session-1",
-                read_views="recovery,work-packet",
+                read_views="messages",
                 max_tokens=1000,
             )
 
         payload = json.loads(result)
         assert payload["spec"]["seed_refs"] == ["session:session-1"]
-        assert payload["spec"]["read_views"] == ["recovery", "work-packet"]
-        assert payload["segments"][0]["payload_kind"] == "recovery_digest"
+        assert payload["spec"]["read_views"] == ["messages"]
+        assert payload["segments"][0]["payload_kind"] == "messages"
         assert payload["evidence_refs"][0]["session_id"] == "session-1"
         called_spec = mock_poly.compile_context.await_args.args[0]
         assert called_spec.seed_refs == ("session:session-1",)
-        assert called_spec.read_views == ("recovery", "work-packet")
+        assert called_spec.read_views == ("messages",)
         assert called_spec.max_tokens == 1000
 
     @pytest.mark.asyncio
@@ -1371,7 +1278,7 @@ class TestPromptSurfaces:
         assert "0 messages" in result
 
     @pytest.mark.asyncio
-    async def test_extract_code_no_code_blocks(self: object, mcp_server: MCPServerUnderTest) -> None:
+    async def test_extract_code_handles_plain_text_session(self: object, mcp_server: MCPServerUnderTest) -> None:
         conv = make_conv(
             id="nocode",
             provider=Provider.UNKNOWN,
@@ -1473,12 +1380,11 @@ class TestPromptSurfaces:
 
 
 class TestExportSessionTool:
-    def test_get_messages_tool_applies_native_content_projection(
+    def test_get_messages_tool_returns_full_archive_messages(
         self: object,
         mcp_server: MCPServerUnderTest,
         tmp_path: Path,
     ) -> None:
-        """Archive-backed MCP messages honor the shared projection flags."""
         body = "Alpha\n\n```python\nprint('x')\n```\n\nOmega"
         archive_root = tmp_path / "archive"
         with ArchiveStore(archive_root) as archive:
@@ -1506,12 +1412,11 @@ class TestExportSessionTool:
             result = invoke_surface(
                 mcp_server._tool_manager._tools["get_messages"].fn,
                 session_id=session_id,
-                no_code_blocks=True,
             )
 
         payload = json.loads(result)
-        assert payload["messages"][0]["text"] == "Alpha\n\nOmega"
-        assert "```" not in payload["messages"][0]["content_blocks"][0]["text"]
+        assert payload["messages"][0]["text"] == body
+        assert payload["messages"][0]["content_blocks"][0]["text"] == body
 
 
 class TestTypedPayloads:

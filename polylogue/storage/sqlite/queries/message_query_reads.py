@@ -7,12 +7,14 @@ from typing import Literal
 
 import aiosqlite
 
-from polylogue.archive.message.roles import MessageRoleFilter, Role, message_role_sql_values
+from polylogue.archive.message.roles import MessageRoleFilter, message_role_sql_values
 from polylogue.archive.message.types import validate_message_type_filter
+from polylogue.core.enums import MaterialOrigin
 from polylogue.storage.runtime import MessageRecord
 from polylogue.storage.sqlite.queries.mappers import _row_to_message
 
 MessageTypeName = Literal["message", "summary", "tool_use", "tool_result", "thinking", "context", "protocol"]
+MaterialOriginFilter = MaterialOrigin | str | tuple[MaterialOrigin | str, ...] | list[MaterialOrigin | str]
 
 _MESSAGE_RECORD_SELECT = """
     m.message_id,
@@ -35,6 +37,7 @@ _MESSAGE_RECORD_SELECT = """
     m.has_tool_use,
     m.has_thinking,
     m.has_paste,
+    m.paste_boundary AS paste_boundary_state,
     m.message_type,
     m.material_origin,
     m.model_name,
@@ -144,6 +147,7 @@ def _filter_composed(
     *,
     message_role: MessageRoleFilter = (),
     message_type: MessageTypeName | None = None,
+    material_origin: MaterialOriginFilter | None = None,
     sort_key_since: float | None = None,
     sort_key_until: float | None = None,
 ) -> list[MessageRecord]:
@@ -160,11 +164,14 @@ def _filter_composed(
     """
     role_set = set(message_role) if message_role else None
     type_match = validate_message_type_filter(message_type) if message_type else None
+    material_origin_set = set(_material_origin_values(material_origin))
     out: list[MessageRecord] = []
     for record in records:
         if role_set is not None and record.role not in role_set:
             continue
         if type_match is not None and record.message_type != type_match:
+            continue
+        if material_origin_set and record.material_origin.value not in material_origin_set:
             continue
         if sort_key_since is not None and (record.sort_key is None or record.sort_key < sort_key_since):
             continue
@@ -172,6 +179,16 @@ def _filter_composed(
             continue
         out.append(record)
     return out
+
+
+def _material_origin_values(values: MaterialOriginFilter | None) -> tuple[str, ...]:
+    if values is None:
+        return ()
+    if isinstance(values, (MaterialOrigin, str)):
+        raw_values: tuple[MaterialOrigin | str, ...] = (values,)
+    else:
+        raw_values = tuple(values)
+    return tuple(MaterialOrigin.validate_filter_token(value).value for value in raw_values)
 
 
 async def get_messages_batch(
@@ -321,12 +338,107 @@ async def get_messages_paginated(
     return messages, total
 
 
+async def get_message_edge_windows(
+    conn: aiosqlite.Connection,
+    session_id: str,
+    *,
+    message_role: MessageRoleFilter = (),
+    message_type: MessageTypeName | None = None,
+    material_origin: MaterialOriginFilter | None = None,
+    edge_limit: int = 8,
+) -> tuple[list[MessageRecord], list[MessageRecord], int]:
+    """Return first/last transcript-order message windows for one session.
+
+    This is for bounded export/review projections: transcript order is the
+    provider position, while timestamps remain evidence displayed on rows.
+    """
+
+    session_id = await _resolve_session_id(conn, session_id)
+    edge_limit = max(edge_limit, 1)
+
+    if await _prefix_sharing_edge(conn, session_id) is not None:
+        composed = _filter_composed(
+            await get_messages(conn, session_id),
+            message_role=message_role,
+            message_type=message_type,
+            material_origin=material_origin,
+        )
+        total = len(composed)
+        first = composed[:edge_limit]
+        first_ids = {record.message_id for record in first}
+        last = [record for record in composed[-edge_limit:] if record.message_id not in first_ids]
+        return first, last, total
+
+    where = "WHERE m.session_id = ?"
+    count_where = "WHERE session_id = ?"
+    params: list[str | int] = [session_id]
+    count_params: list[str | int] = [session_id]
+
+    role_values = message_role_sql_values(message_role)
+    if role_values:
+        role_placeholders = ",".join("?" for _ in role_values)
+        where += f" AND m.role IN ({role_placeholders})"
+        count_where += f" AND role IN ({role_placeholders})"
+        params.extend(role_values)
+        count_params.extend(role_values)
+
+    if message_type:
+        normalized_type = validate_message_type_filter(message_type).value
+        where += " AND m.message_type = ?"
+        count_where += " AND message_type = ?"
+        params.append(normalized_type)
+        count_params.append(normalized_type)
+
+    material_origin_values = _material_origin_values(material_origin)
+    if material_origin_values:
+        origin_placeholders = ",".join("?" for _ in material_origin_values)
+        where += f" AND m.material_origin IN ({origin_placeholders})"
+        count_where += f" AND material_origin IN ({origin_placeholders})"
+        params.extend(material_origin_values)
+        count_params.extend(material_origin_values)
+
+    count_cursor = await conn.execute(
+        f"SELECT COUNT(*) FROM messages INDEXED BY idx_messages_session_position {count_where}",
+        tuple(count_params),
+    )
+    count_row = await count_cursor.fetchone()
+    total = int(count_row[0]) if count_row is not None else 0
+
+    first_cursor = await conn.execute(
+        f"""
+        SELECT {_MESSAGE_RECORD_SELECT}
+        FROM messages m
+        JOIN sessions s ON s.session_id = m.session_id
+        {where}
+        ORDER BY m.position, m.variant_index, m.message_id
+        LIMIT ?
+        """,
+        (*params, edge_limit),
+    )
+    first = [_row_to_message(row) for row in await first_cursor.fetchall()]
+    first_ids = {record.message_id for record in first}
+
+    last_cursor = await conn.execute(
+        f"""
+        SELECT {_MESSAGE_RECORD_SELECT}
+        FROM messages m
+        JOIN sessions s ON s.session_id = m.session_id
+        {where}
+        ORDER BY m.position DESC, m.variant_index DESC, m.message_id DESC
+        LIMIT ?
+        """,
+        (*params, edge_limit),
+    )
+    last_desc = [_row_to_message(row) for row in await last_cursor.fetchall()]
+    last = [record for record in reversed(last_desc) if record.message_id not in first_ids]
+    return first, last, total
+
+
 async def iter_messages(
     conn: aiosqlite.Connection,
     session_id: str,
     *,
     chunk_size: int = 100,
-    dialogue_only: bool = False,
     message_roles: MessageRoleFilter = (),
     limit: int | None = None,
 ) -> AsyncIterator[MessageRecord]:
@@ -344,7 +456,7 @@ async def iter_messages(
     """
     session_id = await _resolve_session_id(conn, session_id)
     yielded = 0
-    effective_roles = message_roles or ((Role.USER, Role.ASSISTANT) if dialogue_only else ())
+    effective_roles = message_roles
 
     # Keyset streaming is per-session, but a prefix-sharing child's logical
     # transcript spans its parent, so the cursor cannot stream across the

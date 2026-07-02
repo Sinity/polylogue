@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from itertools import islice
@@ -10,7 +11,7 @@ from typing import TYPE_CHECKING, Any, TypeAlias
 
 from typing_extensions import TypedDict
 
-from polylogue.mcp.archive_support import active_archive_root, archive_query_filters
+from polylogue.mcp.archive_support import archive_query_filters, mcp_archive_root
 from polylogue.mcp.payloads import MCPFencedCodeBlock
 from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -197,6 +198,24 @@ def _archive_prompt_session_by_id(archive: ArchiveStore, token: str) -> PromptSe
         return None
 
 
+def _prompt_sessions_from_config(hooks: Any, spec: SessionQuerySpec) -> list[PromptSession]:
+    config = hooks.get_config()
+    try:
+        with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
+            return _archive_prompt_sessions(archive, spec)
+    except sqlite3.OperationalError:
+        return []
+
+
+def _prompt_session_by_id_from_config(hooks: Any, token: str) -> PromptSession | None:
+    config = hooks.get_config()
+    try:
+        with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
+            return _archive_prompt_session_by_id(archive, token)
+    except sqlite3.OperationalError:
+        return None
+
+
 def register_prompts(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     """Register MCP prompts on the given server."""
 
@@ -212,10 +231,7 @@ def register_prompts(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             since=since,
             limit=limit,
         ).build_spec(hooks.clamp_limit)
-        config = hooks.get_config()
-        convs: list[Any]
-        with ArchiveStore.open_existing(active_archive_root(config) or config.archive_root) as archive:
-            convs = _archive_prompt_sessions(archive, spec)
+        convs = _prompt_sessions_from_config(hooks, spec)
 
         error_contexts: list[ErrorContextPayload] = []
         for conv in convs:
@@ -256,10 +272,7 @@ Error contexts:
             since=week_ago,
             limit=limit,
         ).build_spec(hooks.clamp_limit)
-        config = hooks.get_config()
-        convs: list[Any]
-        with ArchiveStore.open_existing(active_archive_root(config) or config.archive_root) as archive:
-            convs = _archive_prompt_sessions(archive, spec)
+        convs = _prompt_sessions_from_config(hooks, spec)
 
         by_origin: dict[str, int] = {}
         total_messages = 0
@@ -287,10 +300,7 @@ Focus on actionable insights and patterns, not exhaustive summaries.
     @mcp.prompt()
     async def extract_code(language: str = "", limit: int = 50) -> str:
         spec = MCPSessionQueryRequest(limit=limit).build_spec(hooks.clamp_limit)
-        config = hooks.get_config()
-        convs: list[Any]
-        with ArchiveStore.open_existing(active_archive_root(config) or config.archive_root) as archive:
-            convs = _archive_prompt_sessions(archive, spec)
+        convs = _prompt_sessions_from_config(hooks, spec)
 
         code_snippets: list[ExtractedCodeSnippetPayload] = []
         for conv in convs:
@@ -320,12 +330,8 @@ Code snippets:
 
     @mcp.prompt()
     async def compare_sessions(id1: str, id2: str) -> str:
-        config = hooks.get_config()
-        conv1: Any | None
-        conv2: Any | None
-        with ArchiveStore.open_existing(active_archive_root(config) or config.archive_root) as archive:
-            conv1 = _archive_prompt_session_by_id(archive, id1)
-            conv2 = _archive_prompt_session_by_id(archive, id2)
+        conv1 = _prompt_session_by_id_from_config(hooks, id1)
+        conv2 = _prompt_session_by_id_from_config(hooks, id2)
 
         return f"""Compare these two sessions and analyze:
 
@@ -347,10 +353,7 @@ Session 2:
             origin=origin,
             limit=limit,
         ).build_spec(hooks.clamp_limit)
-        config = hooks.get_config()
-        convs: list[Any]
-        with ArchiveStore.open_existing(active_archive_root(config) or config.archive_root) as archive:
-            convs = _archive_prompt_sessions(archive, spec)
+        convs = _prompt_sessions_from_config(hooks, spec)
 
         summaries: list[SessionPatternPayload] = []
         for conv in convs:

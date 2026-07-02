@@ -39,8 +39,8 @@ def test_check_health_aggregates_requested_tiers_and_worst_status(
     assert health.overall_status == HealthSeverity.ERROR
     assert [alert.check_name for alert in health.alerts] == ["daemon_liveness", "wal_size", "raw_failures"]
     assert health.tier_summary == {
-        "fast": {"ok": 1, "info": 0, "warning": 1, "error": 0, "critical": 0},
-        "medium": {"ok": 0, "info": 0, "warning": 0, "error": 1, "critical": 0},
+        "fast": {"ok": 1, "warning": 1, "error": 0, "critical": 0},
+        "medium": {"ok": 0, "warning": 0, "error": 1, "critical": 0},
     }
 
 
@@ -63,5 +63,5 @@ def test_check_health_default_runs_fast_only(
     health = check_health()
 
     assert [alert.check_name for alert in health.alerts] == ["daemon_liveness"]
-    assert health.tier_summary == {"fast": {"ok": 1, "info": 0, "warning": 0, "error": 0, "critical": 0}}
+    assert health.tier_summary == {"fast": {"ok": 1, "warning": 0, "error": 0, "critical": 0}}
     assert medium_called is False

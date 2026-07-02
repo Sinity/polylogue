@@ -4,6 +4,7 @@ from polylogue.archive.attachment.models import Attachment
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.semantic.content_projection import (
+    ContentKind,
     ContentProjectionSpec,
     coerce_content_projection_spec,
     project_message_content,
@@ -51,7 +52,9 @@ def test_projection_removes_only_file_read_payloads_when_requested() -> None:
         ]
     )
 
-    projected = session.with_content_projection(ContentProjectionSpec.from_params({"no_file_reads": True}))
+    projected = session.with_content_projection(
+        ContentProjectionSpec.from_params({"exclude_content_kinds": [ContentKind.FILE_READ]})
+    )
 
     assert [message.id for message in projected.messages] == ["a1", "t2"]
     texts = [message.text or "" for message in projected.messages]
@@ -104,8 +107,7 @@ def test_projection_filters_structured_code_and_tool_outputs_without_losing_pros
     projected = session.with_content_projection(
         ContentProjectionSpec.from_params(
             {
-                "no_code_blocks": True,
-                "no_tool_outputs": True,
+                "exclude_content_kinds": [ContentKind.CODE, ContentKind.TOOL_OUTPUT, ContentKind.FILE_READ],
             }
         )
     )
@@ -252,8 +254,17 @@ def test_projection_default_coercion_returns_unfiltered_messages() -> None:
     messages = [make_msg(id="plain", text="plain")]
 
     assert coerce_content_projection_spec(None).is_default()
-    assert coerce_content_projection_spec({"no_code_blocks": True}).include_code is False
+    assert coerce_content_projection_spec({"exclude_content_kinds": ["code"]}).include_code is False
     assert project_message_content(messages, None) == messages
+
+
+def test_projection_can_include_only_named_content_kinds() -> None:
+    spec = ContentProjectionSpec.from_params({"include_content_kinds": "prose,tool_call"})
+
+    assert spec.include_prose is True
+    assert spec.include_tool_calls is True
+    assert spec.include_code is False
+    assert spec.include_tool_outputs is False
 
 
 def test_projection_classifies_text_blocks_tools_attachments_and_system_noise() -> None:

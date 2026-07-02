@@ -288,20 +288,8 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "resolve_ref": ("archive_routed", "index", "resolves public refs through bounded archive read payloads"),
     "record_correction": ("archive_routed", "user", "writes corrections through user.db"),
     "compile_context": ("archive_routed", "index", "compiles bounded context images from archive reads"),
-    "context_pack_payload": ("archive_routed", "index", "builds context-pack DTOs from archive-routed reads"),
+    "context_image_payload": ("archive_routed", "index", "builds context-image DTOs from archive-routed reads"),
     "context_preamble_payload": ("archive_routed", "index", "builds context preamble DTOs from archive-routed reads"),
-    "recovery_digest": ("archive_routed", "index", "builds recovery digests from archive-routed session reads"),
-    "recovery_report": ("archive_routed", "index", "renders recovery reports from archive-routed session reads"),
-    "recovery_read_payload": (
-        "archive_routed",
-        "index",
-        "renders recovery read DTOs from archive-routed session reads",
-    ),
-    "recovery_work_packet": (
-        "archive_routed",
-        "index",
-        "renders recovery work packets from archive-routed session reads",
-    ),
     "judge_assertion_candidate": ("archive_routed", "user", "writes candidate assertion judgments through user.db"),
     "remove_mark": ("archive_routed", "user", "writes user marks through user.db"),
     "remove_tag": ("archive_routed", "user", "writes user tags through user.db"),
@@ -1316,7 +1304,7 @@ def _direct_assertion_component(active_root: Path) -> dict[str, Any]:
 
 
 def _direct_transform_component(archive_readiness: dict[str, Any] | None) -> dict[str, Any]:
-    from polylogue.insights.transforms import RECOVERY_TRANSFORM_VERSION, TRANSFORM_REGISTRY
+    from polylogue.insights.transforms import SESSION_DIGEST_TRANSFORM_VERSION, TRANSFORM_REGISTRY
     from polylogue.readiness.capability import component_from_transform_registry
 
     if isinstance(archive_readiness, dict) and archive_readiness.get("checked") is False:
@@ -1324,7 +1312,7 @@ def _direct_transform_component(archive_readiness: dict[str, Any] | None) -> dic
         return component_from_transform_registry(
             transform_count=len(TRANSFORM_REGISTRY),
             session_count=None,
-            recovery_transform_version=RECOVERY_TRANSFORM_VERSION,
+            session_digest_transform_version=SESSION_DIGEST_TRANSFORM_VERSION,
             error=reason,
         ).to_dict()
 
@@ -1333,7 +1321,7 @@ def _direct_transform_component(archive_readiness: dict[str, Any] | None) -> dic
     return component_from_transform_registry(
         transform_count=len(TRANSFORM_REGISTRY),
         session_count=session_count,
-        recovery_transform_version=RECOVERY_TRANSFORM_VERSION,
+        session_digest_transform_version=SESSION_DIGEST_TRANSFORM_VERSION,
     ).to_dict()
 
 

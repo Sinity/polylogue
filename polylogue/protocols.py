@@ -183,7 +183,6 @@ class SessionReader(Protocol):
         self,
         session_id: str,
         *,
-        dialogue_only: bool = False,
         message_roles: MessageRoleFilter = (),
         material_origin: tuple[MaterialOrigin, ...] = (),
         limit: int | None = None,

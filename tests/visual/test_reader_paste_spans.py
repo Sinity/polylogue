@@ -2,7 +2,7 @@
 
 Pins the daemon web shell's contract for the paste-spans slice:
 
-- per-message paste indication driven by ``has_paste`` (whole-message
+- per-message paste indication driven by ``has_paste_evidence`` (whole-message
   fallback) and by ``paste_spans`` (per-span highlight + diff fold);
 - copy menu gains ``copy-typed`` and ``copy-paste`` actions, disabled
   when no paste spans are present;
@@ -45,7 +45,7 @@ def test_reader_paste_spans_contract(reader_workspace: ReaderWorkspace, tmp_path
         assert isinstance(conv_payload, dict)
         messages = conv_payload["messages"]
         # The seeded diff-paste message is present with non-empty spans;
-        # the original "synthetic paste-like block" message has has_paste
+        # the original "synthetic paste-like block" message has paste evidence
         # set but no detectable diff, so spans are empty (banner path).
         diff_msg = next(m for m in messages if m["id"] == READER_C3_DIFF)
         plain_paste_msg = next(m for m in messages if m["id"] == READER_C3_M1)
@@ -57,11 +57,11 @@ def test_reader_paste_spans_contract(reader_workspace: ReaderWorkspace, tmp_path
     assert "text/html" in content_type
     assert_no_private_paths(body, context="reader shell HTML")
 
-    assert diff_msg["has_paste"] is True
+    assert diff_msg["has_paste_evidence"] is True
     assert isinstance(diff_msg["paste_spans"], list)
     assert len(diff_msg["paste_spans"]) == 1
     assert diff_msg["paste_spans"][0]["kind"] == "diff"
-    assert plain_paste_msg["has_paste"] is True
+    assert plain_paste_msg["has_paste_evidence"] is True
     # Whole-message fallback: no per-span data for the prose paste.
     assert plain_paste_msg["paste_spans"] == []
 

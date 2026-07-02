@@ -24,7 +24,7 @@ from polylogue.insights.postmortem import (
     render_postmortem_markdown,
     render_postmortem_plain,
 )
-from polylogue.insights.transforms import RecoveryDigest, compile_recovery_digest
+from polylogue.insights.transforms import SessionDigest, compile_session_digest
 from polylogue.types import SessionId
 
 
@@ -78,8 +78,8 @@ def _profile(
     )
 
 
-def _digest_with_subagent(session_id: str) -> RecoveryDigest:
-    """Build a real recovery digest whose run projection includes a subagent."""
+def _digest_with_subagent(session_id: str) -> SessionDigest:
+    """Build a real session digest whose run projection includes a subagent."""
     session = Session(
         id=SessionId(session_id),
         origin=Origin.CODEX_SESSION,
@@ -114,7 +114,7 @@ def _digest_with_subagent(session_id: str) -> RecoveryDigest:
             ]
         ),
     )
-    return compile_recovery_digest(session)
+    return compile_session_digest(session)
 
 
 def _scope(matched: int, analyzed: int) -> PostmortemScope:

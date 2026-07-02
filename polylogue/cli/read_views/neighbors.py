@@ -71,14 +71,23 @@ def run_read_neighbors(env: AppEnv, request: RootModeRequest, invocation: ReadVi
     origin = request.params.get("origin")
     provider = provider_from_origin(Origin(str(origin))).value if origin else None
 
+    projection = invocation.projection_spec.projection if invocation.projection_spec is not None else None
+    limit = (
+        projection.neighbor_limit if projection is not None and projection.neighbor_limit is not None else options.limit
+    )
+    window_hours = (
+        projection.neighbor_window_hours
+        if projection is not None and projection.neighbor_window_hours is not None
+        else options.window_hours
+    )
     try:
         candidates = run_coroutine_sync(
             env.polylogue.neighbor_candidates(
                 session_id=invocation.session_id,
                 query=query_seed,
                 provider=provider,
-                limit=max(1, options.limit if options.limit is not None else 10),
-                window_hours=max(1, options.window_hours),
+                limit=max(1, limit if limit is not None else 10),
+                window_hours=max(1, window_hours),
             )
         )
     except NeighborDiscoveryError as exc:

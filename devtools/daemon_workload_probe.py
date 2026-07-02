@@ -194,6 +194,12 @@ def _presence_count(conn: sqlite3.Connection, table: str) -> int:
     return 1 if row is not None else 0
 
 
+def _readiness_count(conn: sqlite3.Connection, table: str, *, exact: bool) -> int:
+    """Return a readiness display count without scanning large tables by default."""
+
+    return _scalar_int(conn, f"SELECT COUNT(*) FROM {table}") if exact else _table_count(conn, table, exact=False)
+
+
 def _recent_attempts(conn: sqlite3.Connection, *, limit: int, ops_db: Path | None = None) -> list[dict[str, Any]]:
     ops_attempts = _ops_recent_attempts(ops_db, limit=limit)
     if ops_attempts:
@@ -537,6 +543,9 @@ def _source_path_churn(
     has_sessions = _table_exists(conn, "sessions")
     join = "LEFT JOIN sessions AS c ON c.raw_id = r.raw_id" if has_sessions else ""
     session_count = "COUNT(DISTINCT c.session_id)" if has_sessions else "0"
+    raw_columns = _columns(conn, "raw_sessions")
+    acquired_is_ms = "acquired_at_ms" in raw_columns
+    acquired_expr = "MAX(r.acquired_at_ms)" if acquired_is_ms else "MAX(r.acquired_at)"
     placeholders = ",".join("?" for _ in source_paths)
     rows = conn.execute(
         f"""
@@ -547,7 +556,7 @@ def _source_path_churn(
             SUM(CASE WHEN r.source_index = -1 THEN 1 ELSE 0 END) AS append_raw_count,
             {session_count} AS session_count,
             SUM(COALESCE(r.blob_size, 0)) AS total_blob_bytes,
-            MAX(r.acquired_at) AS latest_acquired_at
+            {acquired_expr} AS latest_acquired_at
         FROM raw_sessions AS r
         {join}
         WHERE r.source_path IN ({placeholders})
@@ -571,7 +580,7 @@ def _source_path_churn(
                 "session_count": session_count_value,
                 "orphan_raw_count": max(0, raw_count - session_count_value),
                 "total_blob_bytes": int(row[5] or 0),
-                "latest_acquired_at": row[6],
+                "latest_acquired_at": _iso_from_epoch_ms(row[6]) if acquired_is_ms else row[6],
             }
         )
     return items
@@ -802,27 +811,52 @@ def _convergence_debt(conn: sqlite3.Connection, *, ops_db: Path | None = None) -
     ops_rows = _ops_convergence_debt_rows(ops_db)
     if ops_rows:
         return {
-            "failed_count": sum(count for _stage, count in ops_rows),
-            "by_stage": [{"stage": stage, "failed_count": count} for stage, count in ops_rows],
+            "failed_count": sum(failed_count for _stage, failed_count, _deferred_count, _unresolved_count in ops_rows),
+            "deferred_count": sum(
+                deferred_count for _stage, _failed_count, deferred_count, _unresolved_count in ops_rows
+            ),
+            "unresolved_count": sum(
+                unresolved_count for _stage, _failed_count, _deferred_count, unresolved_count in ops_rows
+            ),
+            "by_stage": [
+                {
+                    "stage": stage,
+                    "failed_count": failed_count,
+                    "deferred_count": deferred_count,
+                    "unresolved_count": unresolved_count,
+                }
+                for stage, failed_count, deferred_count, unresolved_count in ops_rows
+            ],
         }
     if not _table_exists(conn, "live_convergence_debt"):
-        return {"failed_count": 0, "by_stage": []}
+        return {"failed_count": 0, "deferred_count": 0, "unresolved_count": 0, "by_stage": []}
     rows = conn.execute(
         """
-        SELECT stage, COUNT(*) AS failed_count
+        SELECT stage, COUNT(*) AS unresolved_count
         FROM live_convergence_debt
         WHERE status != 'resolved'
         GROUP BY stage
-        ORDER BY failed_count DESC, stage
+        ORDER BY unresolved_count DESC, stage
         """
     ).fetchall()
+    unresolved_count = sum(int(row[1] or 0) for row in rows)
     return {
-        "failed_count": sum(int(row[1] or 0) for row in rows),
-        "by_stage": [{"stage": row[0], "failed_count": int(row[1] or 0)} for row in rows],
+        "failed_count": unresolved_count,
+        "deferred_count": 0,
+        "unresolved_count": unresolved_count,
+        "by_stage": [
+            {
+                "stage": row[0],
+                "failed_count": int(row[1] or 0),
+                "deferred_count": 0,
+                "unresolved_count": int(row[1] or 0),
+            }
+            for row in rows
+        ],
     }
 
 
-def _ops_convergence_debt_rows(ops_db: Path | None) -> list[tuple[str, int]]:
+def _ops_convergence_debt_rows(ops_db: Path | None) -> list[tuple[str, int, int, int]]:
     if ops_db is None or not ops_db.exists():
         return []
     try:
@@ -832,17 +866,21 @@ def _ops_convergence_debt_rows(ops_db: Path | None) -> list[tuple[str, int]]:
                 return []
             rows = conn.execute(
                 """
-                SELECT stage, COUNT(*) AS failed_count
+                SELECT
+                    stage,
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+                    SUM(CASE WHEN status = 'deferred' THEN 1 ELSE 0 END) AS deferred_count,
+                    COUNT(*) AS unresolved_count
                 FROM convergence_debt
                 GROUP BY stage
-                ORDER BY failed_count DESC, stage
+                ORDER BY failed_count DESC, deferred_count DESC, stage
                 """
             ).fetchall()
         finally:
             conn.close()
     except sqlite3.Error:
         return []
-    return [(str(row[0] or "unknown"), int(row[1] or 0)) for row in rows]
+    return [(str(row[0] or "unknown"), int(row[1] or 0), int(row[2] or 0), int(row[3] or 0)) for row in rows]
 
 
 def _boundary_table_counts(
@@ -1177,16 +1215,21 @@ def _archive_derived_readiness(root: Path, *, exact_counts: bool = False) -> dic
             source_attached = True
             source_check_available = _attached_table_exists(conn, "source_tier", "raw_sessions")
         counts = _archive_derived_counts(conn, source_check_available=source_check_available, exact_counts=exact_counts)
+        counts.update(_raw_materialization_debt_counts(root))
         materialization_counts = _archive_materialization_counts(conn)
         missing_materialization_counts = _archive_missing_materialization_counts(conn)
         messages_fts_ready = (
             counts["text_block_count"] == counts["messages_fts_count"]
             if exact_counts
             else _fts_trigger_state(conn)["all_present"]
-            and (counts["block_count"] == 0 or counts["messages_fts_count"] > 0)
+            and (_presence_count(conn, "blocks") == 0 or _presence_count(conn, "messages_fts_docsize") > 0)
         )
+        raw_materialization_debt_count = counts["raw_materialization_debt_count"]
         ready = {
             "raw_links_ready": counts["missing_raw_session_count"] == 0 if source_check_available else None,
+            "raw_materialization_ready": (
+                None if raw_materialization_debt_count is None else raw_materialization_debt_count == 0
+            ),
             "messages_fts_ready": messages_fts_ready,
             "profile_rows_ready": counts["missing_profile_row_count"] == 0 and counts["orphan_profile_row_count"] == 0,
             "profile_counts_ready": (
@@ -1255,23 +1298,23 @@ def _archive_derived_counts(
               )
             """,
         )
-    block_count = _scalar_int(conn, "SELECT COUNT(*) FROM blocks")
+    block_count = _readiness_count(conn, "blocks", exact=exact_counts)
     if exact_counts:
         text_block_count = _scalar_int(conn, "SELECT COUNT(*) FROM blocks WHERE search_text != ''")
         messages_fts_count = _scalar_int(conn, "SELECT COUNT(*) FROM messages_fts")
     else:
         text_block_count = block_count
-        messages_fts_count = _scalar_int(conn, "SELECT COUNT(*) FROM messages_fts_docsize")
+        messages_fts_count = _readiness_count(conn, "messages_fts_docsize", exact=False)
     return {
-        "session_count": _scalar_int(conn, "SELECT COUNT(*) FROM sessions"),
+        "session_count": _readiness_count(conn, "sessions", exact=exact_counts),
         "raw_link_count": _scalar_int(conn, "SELECT COUNT(*) FROM sessions WHERE raw_id IS NOT NULL"),
         "missing_raw_session_count": missing_raw,
-        "message_count": _scalar_int(conn, "SELECT COUNT(*) FROM messages"),
+        "message_count": _readiness_count(conn, "messages", exact=exact_counts),
         "block_count": block_count,
         "text_block_count": text_block_count,
         "messages_fts_count": messages_fts_count,
         "messages_fts_exact_counts": exact_counts,
-        "profile_row_count": _scalar_int(conn, "SELECT COUNT(*) FROM session_profiles"),
+        "profile_row_count": _readiness_count(conn, "session_profiles", exact=exact_counts),
         "missing_profile_row_count": _scalar_int(
             conn,
             """
@@ -1292,11 +1335,11 @@ def _archive_derived_counts(
             )
             """,
         ),
-        "work_event_row_count": _scalar_int(conn, "SELECT COUNT(*) FROM session_work_events"),
-        "phase_row_count": _scalar_int(conn, "SELECT COUNT(*) FROM session_phases"),
-        "thread_count": _scalar_int(conn, "SELECT COUNT(*) FROM threads"),
-        "thread_session_count": _scalar_int(conn, "SELECT COUNT(*) FROM thread_sessions"),
-        "session_tag_count": _scalar_int(conn, "SELECT COUNT(*) FROM session_tags"),
+        "work_event_row_count": _readiness_count(conn, "session_work_events", exact=exact_counts),
+        "phase_row_count": _readiness_count(conn, "session_phases", exact=exact_counts),
+        "thread_count": _readiness_count(conn, "threads", exact=exact_counts),
+        "thread_session_count": _readiness_count(conn, "thread_sessions", exact=exact_counts),
+        "session_tag_count": _readiness_count(conn, "session_tags", exact=exact_counts),
         "action_count": _scalar_int(conn, "SELECT COUNT(*) FROM actions")
         if exact_counts
         else _presence_count(conn, "actions"),
@@ -1332,6 +1375,27 @@ def _archive_derived_counts(
     }
 
 
+def _raw_materialization_debt_counts(root: Path) -> dict[str, int | None]:
+    try:
+        from polylogue.operations.archive_debt import archive_debt_list
+
+        payload = archive_debt_list(
+            archive_root=root,
+            kinds=("raw-materialization",),
+            limit=None,
+            exact_fts=False,
+        )
+    except Exception:
+        return {
+            "raw_materialization_debt_count": None,
+            "raw_materialization_debt_group_count": None,
+        }
+    return {
+        "raw_materialization_debt_count": int(payload.totals.actionable),
+        "raw_materialization_debt_group_count": int(payload.totals.total),
+    }
+
+
 def _archive_surface_readiness(
     counts: dict[str, Any],
     *,
@@ -1363,11 +1427,16 @@ def _archive_surface_readiness(
     if not source_check_available:
         raw_ready = None
         raw_blockers.append("source_tier_unavailable")
-    elif counts["missing_raw_session_count"] == 0:
+    elif counts["missing_raw_session_count"] == 0 and counts["raw_materialization_debt_count"] == 0:
         raw_ready = True
     else:
         raw_ready = False
-        raw_blockers.append("missing_source_raw_sessions")
+        if counts["missing_raw_session_count"]:
+            raw_blockers.append("missing_source_raw_sessions")
+        if counts["raw_materialization_debt_count"] is None:
+            raw_blockers.append("raw_materialization_debt_unavailable")
+        elif counts["raw_materialization_debt_count"]:
+            raw_blockers.append("unmaterialized_raw_sessions")
 
     search_blockers: list[str] = []
     if counts["messages_fts_exact_counts"] and counts["text_block_count"] != counts["messages_fts_count"]:
@@ -1414,6 +1483,8 @@ def _archive_surface_readiness(
                 "source_check_available": source_check_available,
                 "raw_link_count": counts["raw_link_count"],
                 "missing_raw_session_count": counts["missing_raw_session_count"],
+                "raw_materialization_debt_count": counts["raw_materialization_debt_count"],
+                "raw_materialization_debt_group_count": counts["raw_materialization_debt_group_count"],
             },
         ),
         "search": surface(
@@ -2256,7 +2327,18 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
             "before": int(before_debt.get("failed_count") or 0),
             "after": int(after_debt.get("failed_count") or 0),
             "delta": int(after_debt.get("failed_count") or 0) - int(before_debt.get("failed_count") or 0),
-        }
+        },
+        "deferred_count": {
+            "before": int(before_debt.get("deferred_count") or 0),
+            "after": int(after_debt.get("deferred_count") or 0),
+            "delta": int(after_debt.get("deferred_count") or 0) - int(before_debt.get("deferred_count") or 0),
+        },
+        "unresolved_count": {
+            "before": int(before_debt.get("unresolved_count") or before_debt.get("failed_count") or 0),
+            "after": int(after_debt.get("unresolved_count") or after_debt.get("failed_count") or 0),
+            "delta": int(after_debt.get("unresolved_count") or after_debt.get("failed_count") or 0)
+            - int(before_debt.get("unresolved_count") or before_debt.get("failed_count") or 0),
+        },
     }
 
     before_timings = before.get("convergence_stage_timings") or {}
@@ -2605,9 +2687,23 @@ def _format_compare_human(diff: dict[str, Any]) -> str:
         lines.append(f"  restored: {', '.join(fts['restored'])}")
     if not fts["regressed"] and not fts["restored"]:
         lines.append("  no trigger drift")
-    debt = diff["convergence_debt"]["failed_count"]
+    debt = diff["convergence_debt"]
     lines.append("")
-    lines.append(f"Convergence debt failed_count: {debt['before']} -> {debt['after']} (Δ {debt['delta']:+d})")
+    failed_debt = debt["failed_count"]
+    deferred_debt = debt["deferred_count"]
+    unresolved_debt = debt["unresolved_count"]
+    lines.append(
+        "Convergence debt failed_count: "
+        f"{failed_debt['before']} -> {failed_debt['after']} (Δ {failed_debt['delta']:+d})"
+    )
+    lines.append(
+        "Convergence debt deferred_count: "
+        f"{deferred_debt['before']} -> {deferred_debt['after']} (Δ {deferred_debt['delta']:+d})"
+    )
+    lines.append(
+        "Convergence debt unresolved_count: "
+        f"{unresolved_debt['before']} -> {unresolved_debt['after']} (Δ {unresolved_debt['delta']:+d})"
+    )
     timings = diff["convergence_stage_timings"]
     lines.append("")
     lines.append(
@@ -2816,7 +2912,12 @@ def main(argv: list[str] | None = None) -> int:
         f"convergence mean {timings.get('convergence_time_s', {}).get('mean', 0.0):.3f}s"
     )
     debt = payload["convergence_debt"]
-    print(f"  convergence debt: {debt['failed_count']} unresolved")
+    print(
+        "  convergence debt: "
+        f"{debt['failed_count']} failed, "
+        f"{debt.get('deferred_count', 0)} deferred, "
+        f"{debt.get('unresolved_count', debt['failed_count'])} unresolved"
+    )
     churn = payload.get("source_path_churn") or []
     if churn:
         worst = churn[0]

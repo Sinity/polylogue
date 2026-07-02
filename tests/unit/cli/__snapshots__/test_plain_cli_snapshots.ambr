@@ -189,7 +189,7 @@
         },
         "longest_tool_gap": {
           "status": "unavailable",
-          "reason": "per-tool-call timestamps are not present in the session profile or recovery digest; longest_tool_gap is not cheaply derivable in v0"
+          "reason": "per-tool-call timestamps are not present in the session profile or session digest; longest_tool_gap is not cheaply derivable in v0"
         },
         "wasted_loop": {
           "status": "clean",
@@ -539,8 +539,8 @@
         "path": "<PATH>",
         "exists": true,
         "size_bytes": <SIZE_BYTES>,
-        "expected_user_version": 10,
-        "user_version": 10,
+        "expected_user_version": 18,
+        "user_version": 18,
         "version_status": "ok",
         "table_counts": {
           "sessions": 2,
@@ -596,6 +596,29 @@
         }
       }
     },
+    "ingest_workload": {
+      "available": true,
+      "actively_ingesting": false,
+      "running_count": 0,
+      "running": [],
+      "throughput": {
+        "window_minutes": 5,
+        "batches": 0,
+        "files": 0,
+        "materialized": 0,
+        "files_per_second": 0.0
+      },
+      "cursor": {
+        "tracked": 0,
+        "excluded": 0,
+        "retry_pending": 0
+      },
+      "debt": {
+        "total": 0,
+        "by_status": {}
+      },
+      "lifetime_attempts": {}
+    },
     "archive_readiness": {
       "checked": false,
       "reason": "direct_status_default_skips_exact_archive_readiness",
@@ -613,8 +636,8 @@
         "not_archive_runtime": 1
       },
       "tier_counts": {
-        "user": 39,
-        "index": 82,
+        "user": 40,
+        "index": 81,
         "none": 1,
         "source": 4
       },
@@ -680,10 +703,10 @@
           "tier": "index",
           "detail": "compiles bounded context images from archive reads"
         },
-        "context_pack_payload": {
+        "context_image_payload": {
           "route": "archive_routed",
           "tier": "index",
-          "detail": "builds context-pack DTOs from archive-routed reads"
+          "detail": "builds context-image payloads from archive-routed reads"
         },
         "context_preamble_payload": {
           "route": "archive_routed",
@@ -1090,6 +1113,11 @@
           "tier": "user",
           "detail": "reads workspaces through user.db"
         },
+        "materialize_pathology_assertions": {
+          "route": "archive_routed",
+          "tier": "user",
+          "detail": "writes pathology candidate assertions through user.db"
+        },
         "neighbor_candidate_payloads": {
           "route": "archive_routed",
           "tier": "index",
@@ -1110,10 +1138,25 @@
           "tier": "source",
           "detail": "writes source.db and index.db directly"
         },
+        "pathology_report": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "compiles pathology reports from archive-routed projections"
+        },
+        "portfolio_bundle": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "builds portfolio bundles from archive-routed session reads"
+        },
         "post_blackboard_note": {
           "route": "archive_routed",
           "tier": "user",
           "detail": "writes blackboard notes through user.db"
+        },
+        "postmortem_bundle": {
+          "route": "archive_routed",
+          "tier": "index",
+          "detail": "compiles postmortem bundles from archive-routed session reads"
         },
         "provider_usage_report": {
           "route": "archive_routed",
@@ -1149,26 +1192,6 @@
           "route": "archive_routed",
           "tier": "user",
           "detail": "writes corrections through user.db"
-        },
-        "recovery_digest": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "builds recovery digests from archive-routed session reads"
-        },
-        "recovery_read_payload": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "renders recovery read DTOs from archive-routed session reads"
-        },
-        "recovery_report": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "renders recovery reports from archive-routed session reads"
-        },
-        "recovery_work_packet": {
-          "route": "archive_routed",
-          "tier": "index",
-          "detail": "renders recovery work packets from archive-routed session reads"
         },
         "remove_mark": {
           "route": "archive_routed",
@@ -1313,8 +1336,8 @@
         "ops.db"
       ],
       "facade_tier_route_counts": {
-        "user": 39,
-        "index": 82,
+        "user": 40,
+        "index": 81,
         "none": 1,
         "source": 4
       },
@@ -1632,14 +1655,14 @@
       },
       "transforms": {
         "component": "transforms",
-        "scope": "recovery",
+        "scope": "session-analysis",
         "state": "blocked",
         "summary": "direct_status_default_skips_exact_archive_readiness",
         "last_success": null,
         "last_attempt": null,
         "counts": {
           "transform_count": 1,
-          "recovery_transform_version": 1
+          "session_digest_transform_version": 1
         },
         "caveats": [
           "direct_status_default_skips_exact_archive_readiness"
@@ -1709,7 +1732,7 @@
   | top_expensive_session | no_signal: no session in scope carries a positive cost figure |
   | repos_touched | (none) |
   | subagent_branch_count | 0 |
-  | longest_tool_gap | unavailable (per-tool-call timestamps are not present in the session profile or recovery digest; longest_tool_gap is not cheaply derivable in v0) |
+  | longest_tool_gap | unavailable (per-tool-call timestamps are not present in the session profile or session digest; longest_tool_gap is not cheaply derivable in v0) |
   | wasted_loop | clean (no pathology found) |
   | failure_mode | clean (no pathology found) |
   
@@ -1759,7 +1782,7 @@
     top_expensive_session: no_signal (no session in scope carries a positive cost figure)
     repos_touched: (none)
     subagent_branch_count: 0
-    longest_tool_gap: unavailable (per-tool-call timestamps are not present in the session profile or recovery digest; longest_tool_gap is not cheaply derivable in v0)
+    longest_tool_gap: unavailable (per-tool-call timestamps are not present in the session profile or session digest; longest_tool_gap is not cheaply derivable in v0)
     wasted_loop: clean (no pathology found)
     failure_mode: clean (no pathology found)
     evidence:

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from polylogue.api.archive import _archive_index_available
-from polylogue.mcp.context_pack import archive_context_pack_active
+from polylogue.context.selection import archive_context_image_active
 
 
 def test_runtime_archive_helpers_use_configured_archive_index(tmp_path: Path) -> None:
@@ -22,7 +22,7 @@ def test_runtime_archive_helpers_use_configured_archive_index(tmp_path: Path) ->
     config = SimpleNamespace(archive_root=archive_root, db_path=db_path)
 
     assert _archive_index_available(cast(Any, config))
-    assert archive_context_pack_active(
+    assert archive_context_image_active(
         archive_root=archive_root,
         db_anchor_path=db_path,
     )
@@ -39,7 +39,7 @@ def test_runtime_archive_helpers_do_not_depend_on_polylogue_db(tmp_path: Path) -
     config = SimpleNamespace(archive_root=archive_root, db_path=db_path)
 
     assert _archive_index_available(cast(Any, config))
-    assert archive_context_pack_active(
+    assert archive_context_image_active(
         archive_root=archive_root,
         db_anchor_path=db_path,
     )

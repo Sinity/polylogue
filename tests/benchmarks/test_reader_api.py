@@ -5,7 +5,7 @@ Covers: daemon HTTP endpoint latency on synthetic data
   - GET /api/sessions/{id}  (session detail)
   - GET /api/facets              (aggregated provider/tag counts)
   - GET /api/status              (archive-level stats)
-  - Context pack assembly        (future surface — placeholder)
+  - Context image assembly        (future surface — placeholder)
   - Cost rollup                  (future surface — placeholder)
 
 Run with:
@@ -135,33 +135,33 @@ def test_bench_reader_status(
 
 
 # ---------------------------------------------------------------------------
-# Context pack assembly (future reader surface)
+# Context image assembly (future reader surface)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.benchmark
-def test_bench_reader_context_pack(
+def test_bench_reader_context_image(
     benchmark: BenchmarkFixture,
     bench_db_5k: Path,
 ) -> None:
-    """Benchmark assembling a minimal context pack for a session.
+    """Benchmark assembling a minimal context image for a session.
 
-    Placeholder for the context-pack reader surface.  Uses the same
+    Placeholder for the context-image reader surface.  Uses the same
     get-session path as the detail endpoint today.
     """
     conv_id = _first_conv_id(bench_db_5k)
 
-    def _context_pack(db_path: Path) -> None:
+    def _context_image(db_path: Path) -> None:
         from tests.benchmarks.helpers import open_bench_store
 
         with open_bench_store(db_path) as store:
             conv = store.run(store.repository.get(conv_id))
             assert conv is not None
-            # A real context pack would assemble messages + insights + neighbors.
+            # A real context image would assemble messages + insights + neighbors.
             # For now this measures the core fetch cost.
             _ = (conv.id, len(conv.messages), conv.word_count)
 
-    benchmark(lambda: _context_pack(bench_db_5k))
+    benchmark(lambda: _context_image(bench_db_5k))
 
 
 # ---------------------------------------------------------------------------

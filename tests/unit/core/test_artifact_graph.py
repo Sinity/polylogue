@@ -58,10 +58,10 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
         "schema_list_results",
         "schema_explanation_results",
         "session_query_results",
-        "recovery_digest",
+        "session_digest",
         "forensic_index",
         "resume_bundle",
-        "recovery_report_markdown",
+        "session_report_markdown",
         "archive_readiness",
     }
     assert nodes["configured_sources"].layer is ArtifactLayer.SOURCE
@@ -97,10 +97,10 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert nodes["parse_quarantine"].depends_on == ("raw_validation_state",)
     assert nodes["session_insight_source_sessions"].depends_on == ("archive_session_rows",)
     assert nodes["session_query_results"].depends_on == ("message_fts",)
-    assert nodes["recovery_digest"].depends_on == ("archive_session_rows", "message_source_rows")
-    assert nodes["forensic_index"].depends_on == ("recovery_digest",)
-    assert nodes["resume_bundle"].depends_on == ("recovery_digest",)
-    assert nodes["recovery_report_markdown"].depends_on == ("recovery_digest", "forensic_index")
+    assert nodes["session_digest"].depends_on == ("archive_session_rows", "message_source_rows")
+    assert nodes["forensic_index"].depends_on == ("session_digest",)
+    assert nodes["resume_bundle"].depends_on == ("session_digest",)
+    assert nodes["session_report_markdown"].depends_on == ("session_digest", "forensic_index")
     assert nodes["session_profile_results"].depends_on == ("session_profile_rows",)
     assert nodes["archive_coverage_results"].depends_on == ("archive_session_rows", "session_profile_rows")
     assert nodes["inferred_corpus_specs"].depends_on == ("schema_packages", "schema_cluster_manifests")
@@ -134,9 +134,9 @@ def test_artifact_graph_contains_the_current_runtime_paths() -> None:
     assert operations["project-retrieval-band-readiness"].produces == ("retrieval_band_readiness",)
     assert operations["query-embedding-status"].produces == ("embedding_status_results",)
     assert operations["query-sessions"].produces == ("session_query_results",)
-    assert operations["compile-recovery-digest"].consumes == ("archive_session_rows", "message_source_rows")
-    assert operations["compile-recovery-digest"].produces == ("recovery_digest", "forensic_index", "resume_bundle")
-    assert operations["render-recovery-report"].produces == ("recovery_report_markdown",)
+    assert operations["compile-session-digest"].consumes == ("archive_session_rows", "message_source_rows")
+    assert operations["compile-session-digest"].produces == ("session_digest", "forensic_index", "resume_bundle")
+    assert operations["render-session-report"].produces == ("session_report_markdown",)
     assert "session_insight_rows" in operations["materialize-session-insights"].produces
     assert "session_profile_rows" in operations["materialize-session-insights"].produces
     assert "thread_fts" in operations["materialize-session-insights"].produces
@@ -200,7 +200,7 @@ def test_artifact_graph_paths_reference_only_declared_nodes() -> None:
         "retrieval-band-readiness-loop",
         "embedding-status-query-loop",
         "session-query-loop",
-        "recovery-digest-transform-loop",
+        "session-digest-transform-loop",
         "session-insight-repair-loop",
         "raw-session-insight-repair-loop",
         "session-profile-query-loop",

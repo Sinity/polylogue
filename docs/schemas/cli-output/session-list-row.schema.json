@@ -67,9 +67,9 @@
       "additionalProperties": false,
       "description": "Boolean flags summarizing session content characteristics.",
       "properties": {
-        "has_paste": {
+        "has_paste_evidence": {
           "default": false,
-          "title": "Has Paste",
+          "title": "Has Paste Evidence",
           "type": "boolean"
         },
         "has_thinking": {

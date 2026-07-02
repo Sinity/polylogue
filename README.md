@@ -96,11 +96,10 @@ Polylogue is that substrate, and a cockpit over it:
   you can ask which branch burned the time and which session is the real root
   worth turning into a skill. Exposed through `get_session_topology`,
   `get_logical_session`, and `get_session_tree`.
-- **Recovery & resume.** Polylogue assembles a recovery work-packet and resume
-  brief from evidence — what an interrupted agent session was doing, what it
-  touched, and what to pick up next — and surfaces abandoned or resumable
-  sessions through `find_resume_candidates`, `find_abandoned_sessions`,
-  `get_resume_brief`, `get_recovery_report`, and `get_recovery_work_packet`.
+- **Resume context.** Polylogue assembles evidence-backed context for successor
+  agents — what an interrupted session was doing, what it touched, and what to
+  pick up next — and surfaces abandoned or resumable sessions through
+  `find_resume_candidates`, `find_abandoned_sessions`, and `get_resume_brief`.
 - **Built to be inspected.** Schema is fresh-first (no in-place upgrade chain
   to guess at), blob storage is content-addressed, and the daemon exposes
   health checks and Prometheus metrics.
@@ -217,7 +216,7 @@ text or local paths.
 
 `polylogue-mcp --role read` exposes the archive as a Model Context Protocol
 server so AI assistants can search, list, and retrieve sessions, insights, and
-context packs from their own sessions. See
+context images from their own sessions. See
 [docs/mcp-integration.md](docs/mcp-integration.md). It also composes a context
 preamble from the archive — recent lineage, project state, and resume guidance
 for a seed session — so a coding agent can inject prior memory at SessionStart

@@ -785,11 +785,11 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
     #     leading context prefix, but Codex sets this field for BOTH a divergent
     #     user fork AND a plain resume of the same thread. The marker proves a
     #     parent, not the relationship *type*. Assigning FORK here over-claimed:
-    #     a resume was recorded as a fork, and RESUME was never emitted. Leave
-    #     the type unclassified (None → conservative CONTINUATION default in
-    #     `branch_type_to_edge_type`) rather than fabricate FORK from absent
-    #     evidence. The prefix-sharing normalization still records the branch
-    #     point + `inheritance`, so the shared-prefix fact is preserved.
+    #     a resume was recorded as a fork. Leave the type unclassified
+    #     (`None` → generic topology link, no `sessions.branch_type`) rather
+    #     than fabricate FORK from absent evidence. The prefix-sharing
+    #     normalization still records the branch point + `inheritance`, so the
+    #     shared-prefix fact is preserved.
     # Fall back to the legacy heuristic (a second embedded session_meta id) when
     # no explicit marker is present.
     if forked_from_id is not None:

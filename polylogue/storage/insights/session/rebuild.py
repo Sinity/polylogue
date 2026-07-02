@@ -608,15 +608,15 @@ def build_session_insight_records(
     phase_records = build_session_phase_records(profile, materialized_at=materialized_at)
     add_timing("build_records.phase_records", t0)
     t0 = time.perf_counter()
-    # The run projection is computed from the same hydrated Session via the
-    # recovery digest, with no cross-session links (session_links=()), so the
-    # materialized rows match the runtime query path exactly. compile_recovery_digest
-    # always yields a main run, so RunProjection's ">=1 run" invariant holds for
-    # every session, including empty ones. A projection failure must surface, not
-    # be swallowed, so the rebuild fails loudly on malformed evidence.
-    from polylogue.insights.transforms import compile_recovery_digest
+    # The run projection is computed from the same hydrated Session, with no
+    # cross-session links (session_links=()), so the materialized rows match the
+    # runtime query path exactly. The projection helper always yields a main run,
+    # so RunProjection's ">=1 run" invariant holds for every session, including
+    # empty ones. A projection failure must surface, not be swallowed, so the
+    # rebuild fails loudly on malformed evidence.
+    from polylogue.insights.transforms import compile_session_run_projection
 
-    run_projection = compile_recovery_digest(session, session_links=()).run_projection
+    run_projection = compile_session_run_projection(session, session_links=())
     source_updated_at = profile_record.source_updated_at
     run_records = build_session_run_records(
         run_projection,

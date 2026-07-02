@@ -195,7 +195,7 @@ def test_transform_registry_maps_registry_and_session_availability() -> None:
     ready = component_from_transform_registry(
         transform_count=1,
         session_count=2,
-        recovery_transform_version=1,
+        session_digest_transform_version=1,
     )
     no_sessions = component_from_transform_registry(transform_count=1, session_count=0)
     no_registry = component_from_transform_registry(transform_count=0, session_count=2)
@@ -206,11 +206,11 @@ def test_transform_registry_maps_registry_and_session_availability() -> None:
     )
 
     assert ready.state is CapabilityReadinessState.READY
-    assert ready.scope == "recovery"
+    assert ready.scope == "session-analysis"
     assert ready.counts == {
         "transform_count": 1,
         "session_count": 2,
-        "recovery_transform_version": 1,
+        "session_digest_transform_version": 1,
     }
     assert ready.evidence_refs == ("transform_registry",)
     assert no_sessions.state is CapabilityReadinessState.MISSING

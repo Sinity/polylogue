@@ -294,12 +294,12 @@ def test_compile_benchmark_campaigns_indexes_by_name() -> None:
         "storage",
         "pipeline",
         "reader-api",
-        "recovery-digest",
+        "session-digest",
         "daemon-convergence",
     }
     assert campaigns["archive-maintenance"].tests == ("tests/benchmarks/test_archive_maintenance.py",)
     assert campaigns["search-filters"].tests == ("tests/benchmarks/test_search_filters.py",)
-    assert campaigns["recovery-digest"].tests == ("tests/benchmarks/test_recovery_digest.py",)
+    assert campaigns["session-digest"].tests == ("tests/benchmarks/test_session_digest.py",)
 
 
 def test_benchmark_scenario_index_tracks_authored_catalog() -> None:
@@ -309,7 +309,7 @@ def test_benchmark_scenario_index_tracks_authored_catalog() -> None:
         "storage",
         "pipeline",
         "reader-api",
-        "recovery-digest",
+        "session-digest",
         "daemon-convergence",
     }
 

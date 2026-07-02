@@ -20,10 +20,15 @@ from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import MessageRoleFilter, Role
 from polylogue.archive.message.types import MessageType, validate_message_type_filter
+from polylogue.archive.query.predicate import QueryFieldPredicate, QueryFieldRef
 from polylogue.archive.query.spec import normalize_action_sequence, normalize_action_terms, parse_query_date
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_models import Session, SessionSummary
+from polylogue.context.compiler import (
+    DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE,
+    DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION,
+)
 from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin, Provider
 from polylogue.core.json import JSONDocument
 from polylogue.core.refs import EvidenceRef, ObjectRef, parse_public_ref
@@ -50,6 +55,20 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveSessionEnvelope,
 )
 from polylogue.storage.sqlite.queries.message_query_reads import MessageTypeName
+from polylogue.surfaces.chronicle import (
+    ChronicleProjectionPayload,
+    ChronicleSessionPayload,
+    build_chronicle_projection_payload,
+    build_chronicle_session_payload,
+)
+from polylogue.surfaces.temporal_evidence import (
+    TemporalEvidenceEvent,
+    TemporalEvidenceWindow,
+    action_row_to_temporal_event,
+    build_temporal_evidence_window,
+    message_row_to_temporal_event,
+    summary_to_temporal_event,
+)
 from polylogue.types import SessionId
 
 if TYPE_CHECKING:
@@ -62,7 +81,7 @@ if TYPE_CHECKING:
     from polylogue.archive.session.neighbor_candidates import SessionNeighborCandidate
     from polylogue.archive.stats import ArchiveStats as StorageArchiveStats
     from polylogue.config import Config
-    from polylogue.context.compiler import ContextImage, ContextSpec, RecoveryContextCompilation
+    from polylogue.context.compiler import ContextImage, ContextOmission, ContextSpec
     from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport
     from polylogue.insights.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
     from polylogue.insights.pathology import PathologyReport
@@ -70,12 +89,7 @@ if TYPE_CHECKING:
     from polylogue.insights.postmortem import PostmortemBundle
     from polylogue.insights.readiness import InsightReadinessQuery, InsightReadinessReport
     from polylogue.insights.resume import ResumeBrief, ResumeCandidate
-    from polylogue.insights.transforms import (
-        RecoveryDigest,
-        RecoveryReportPreset,
-        RecoveryWorkPacket,
-        WorkPacketSupport,
-    )
+    from polylogue.insights.transforms import SessionDigest
     from polylogue.operations import ArchiveStats
     from polylogue.protocols import ProgressCallback, SessionQueryRuntimeStore
     from polylogue.readiness import ReadinessReport
@@ -102,9 +116,6 @@ if TYPE_CHECKING:
         OtelProjectionPayload,
         PublicRefResolutionPayload,
         QueryUnitResultEnvelope,
-        RecoveryReadPayload,
-        RecoveryReportFormat,
-        RecoveryReportKind,
         SearchEnvelope,
         SessionSearchHitPayload,
         TagMutationResult,
@@ -286,6 +297,54 @@ def _provider_for_archive_origin(origin: str) -> Provider:
         return Provider.UNKNOWN
 
 
+def _archive_context_message_window(
+    messages: Sequence[Message],
+    *,
+    anchor_message_id: str | None,
+    max_messages: int | None,
+    max_chars_per_message: int | None,
+) -> tuple[tuple[tuple[str, str], ...], int, int, int]:
+    """Return normalized message rows plus omission/clipping counts for context."""
+
+    rows: list[tuple[str, str, str]] = []
+    clipped_messages = 0
+    for message in messages:
+        if not message.text:
+            continue
+        text = message.text
+        if max_chars_per_message is not None and len(text) > max_chars_per_message:
+            omitted_chars = len(text) - max_chars_per_message
+            text = text[:max_chars_per_message].rstrip() + f"\n\n... {omitted_chars} chars omitted from this message."
+            clipped_messages += 1
+        rows.append(
+            (
+                str(message.id),
+                str(getattr(message.role, "value", message.role)),
+                text,
+            )
+        )
+    if max_messages is None or len(rows) <= max_messages:
+        return tuple((role, text) for _message_id, role, text in rows), 0, 0, clipped_messages
+
+    anchor_index = 0
+    if anchor_message_id is not None:
+        for index, (message_id, _role, _text) in enumerate(rows):
+            if message_id == anchor_message_id:
+                anchor_index = index
+                break
+    half_window = max_messages // 2
+    start = max(0, anchor_index - half_window)
+    start = min(start, max(0, len(rows) - max_messages))
+    end = start + max_messages
+    window = rows[start:end]
+    return (
+        tuple((role, text) for _message_id, role, text in window),
+        start,
+        max(0, len(rows) - end),
+        clipped_messages,
+    )
+
+
 def _dedupe_object_refs(refs: Iterable[ObjectRef]) -> tuple[ObjectRef, ...]:
     deduped: list[ObjectRef] = []
     seen: set[tuple[str, str]] = set()
@@ -308,6 +367,78 @@ def _dedupe_evidence_refs(refs: Iterable[EvidenceRef]) -> tuple[EvidenceRef, ...
         seen.add(key)
         deduped.append(ref)
     return tuple(deduped)
+
+
+def _archive_context_session_predicate(session_id: str) -> QueryFieldPredicate:
+    """Build a bound exact-session predicate without reparsing public DSL text."""
+
+    return QueryFieldPredicate(field="session.id", values=(session_id,), op="=").with_field_ref(
+        QueryFieldRef(scope="session", name="id", source_name="session.id")
+    )
+
+
+def _archive_context_temporal_window(config: Config, summary: SessionSummary) -> TemporalEvidenceWindow:
+    """Build a bounded temporal context window for one selected session."""
+
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    session_id = str(summary.id)
+    message_limit = 8
+    action_limit = 4
+    events: list[TemporalEvidenceEvent] = []
+    if session_event := summary_to_temporal_event(summary):
+        events.append(session_event)
+    caveats: list[str] = []
+    with ArchiveStore.open_existing(_active_archive_root(config)) as archive:
+        message_rows = archive.query_messages(
+            _archive_context_session_predicate(session_id),
+            limit=message_limit,
+            sort="time",
+            sort_direction="asc",
+        )
+        action_rows = archive.query_session_actions([session_id], limit=action_limit, sort_direction="asc")
+    events.extend(event for row in message_rows if (event := message_row_to_temporal_event(row)) is not None)
+    events.extend(event for row in action_rows if (event := action_row_to_temporal_event(row)) is not None)
+    if len(message_rows) >= message_limit and (summary.message_count or 0) > message_limit:
+        caveats.append("message_events_capped")
+    if len(action_rows) >= action_limit:
+        caveats.append("action_events_capped")
+    return build_temporal_evidence_window(events, caveats=caveats)
+
+
+async def _archive_context_chronicle_payload(
+    config: Config,
+    summary: SessionSummary,
+    *,
+    edge_limit: int = 8,
+) -> ChronicleProjectionPayload:
+    """Build a bounded chronicle projection for one selected session."""
+
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+
+    archive_root = _active_archive_root(config)
+    backend = SQLiteBackend(db_path=archive_root / "index.db")
+    session_payloads: list[ChronicleSessionPayload] = []
+    try:
+        first_messages, last_messages, total = await backend.get_message_edge_windows(
+            str(summary.id),
+            message_role=(Role.USER, Role.ASSISTANT),
+            message_type="message",
+            material_origin=(MaterialOrigin.HUMAN_AUTHORED, MaterialOrigin.ASSISTANT_AUTHORED),
+            edge_limit=edge_limit * 5,
+        )
+        session_payloads.append(
+            build_chronicle_session_payload(
+                summary,
+                first_messages=first_messages,
+                last_messages=last_messages,
+                total_matching_messages=total,
+                edge_limit=edge_limit,
+            )
+        )
+    finally:
+        await backend.close()
+    return build_chronicle_projection_payload(session_payloads, edge_limit=edge_limit)
 
 
 def _parse_archive_datetime(value: str | None) -> datetime | None:
@@ -888,56 +1019,6 @@ def _archive_emit_pathology_assertions(
     return emitted
 
 
-def _archive_assertion_work_packet_entries(claims: Sequence[Any], session_id: str) -> tuple[Any, ...]:
-    """Return assertion-backed work-packet rows for one target session."""
-
-    from polylogue.core.refs import EvidenceRef
-    from polylogue.insights.transforms import RecoveryWorkPacketEntry
-
-    entries: list[RecoveryWorkPacketEntry] = []
-    fallback_ref = EvidenceRef(session_id=session_id)
-    for claim in claims:
-        text = claim.body_text
-        if not text:
-            text = json.dumps(claim.value, sort_keys=True) if claim.value is not None else claim.assertion_id
-        entries.append(
-            RecoveryWorkPacketEntry(
-                section="assertions",
-                label=claim.kind,
-                text=text,
-                support=_archive_assertion_support(claim.kind),
-                evidence_refs=_archive_assertion_evidence_refs(claim.evidence_refs, fallback_ref),
-                metadata={
-                    "assertion_id": claim.assertion_id,
-                    "status": claim.status or "",
-                    "visibility": claim.visibility or "",
-                    "author_ref": claim.author_ref or "",
-                },
-            )
-        )
-    return tuple(entries)
-
-
-def _archive_assertion_support(kind: str) -> WorkPacketSupport:
-    if kind in {"blocker", "caveat"}:
-        return "caveat"
-    if kind in {"transform_candidate", "pathology"}:
-        return "inference"
-    return "assertion"
-
-
-def _archive_assertion_evidence_refs(raw_refs: Sequence[str], fallback: Any) -> tuple[Any, ...]:
-    from polylogue.core.refs import EvidenceRef
-
-    parsed: list[EvidenceRef] = []
-    for raw_ref in raw_refs:
-        try:
-            parsed.append(EvidenceRef.parse(raw_ref))
-        except ValueError:
-            continue
-    return tuple(parsed) or (fallback,)
-
-
 def _archive_count_table_rows(conn: Any, table_name: str) -> int | None:
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ? LIMIT 1",
@@ -1005,6 +1086,7 @@ def _archive_message_to_domain(message: ArchiveMessageRow, *, provider: Provider
         has_tool_use=message.has_tool_use,
         has_thinking=message.has_thinking,
         has_paste=message.has_paste,
+        paste_boundary_state=message.paste_boundary_state,
         duration_ms=message.duration_ms,
         branch_index=message.variant_index,
         parent_id=message.parent_message_id,
@@ -1439,7 +1521,6 @@ class _ArchiveNeighborRuntime:
         self,
         session_id: str,
         *,
-        dialogue_only: bool = False,
         message_roles: MessageRoleFilter = (),
         material_origin: tuple[MaterialOrigin, ...] = (),
         limit: int | None = None,
@@ -1450,8 +1531,6 @@ class _ArchiveNeighborRuntime:
                 return
             count = 0
             for message in session.messages:
-                if dialogue_only and message.role not in {Role.USER, Role.ASSISTANT}:
-                    continue
                 if message_roles and message.role not in message_roles:
                     continue
                 if material_origin and message.material_origin not in material_origin:
@@ -1648,9 +1727,9 @@ class PolylogueArchiveMixin:
             raise ValueError("path is required unless raw_ref or source_path is provided")
         return explain_import_path(Path(path), source_name=source_name, limit=limit)
 
-    async def recovery_digest(self, session_id: str) -> RecoveryDigest | None:
-        """Compile one resolved session and its child links into a recovery digest."""
-        from polylogue.insights.transforms import compile_recovery_digest
+    async def _session_digest(self, session_id: str) -> SessionDigest | None:
+        """Compile one resolved session and its child links into a session digest."""
+        from polylogue.insights.transforms import compile_session_digest
         from polylogue.storage.query_models import SessionRecordQuery
 
         session = await self.get_session(session_id)
@@ -1671,7 +1750,7 @@ class PolylogueArchiveMixin:
             }
             for child in children
         )
-        return compile_recovery_digest(session, session_links=session_links)
+        return compile_session_digest(session, session_links=session_links)
 
     async def postmortem_bundle(
         self,
@@ -1729,9 +1808,9 @@ class PolylogueArchiveMixin:
         profiles_map = await self.repository.get_session_profiles_batch(analyzed_ids)
         profiles = [profiles_map[sid] for sid in analyzed_ids if sid in profiles_map]
 
-        digests: dict[str, RecoveryDigest] = {}
+        digests: dict[str, SessionDigest] = {}
         for sid in analyzed_ids:
-            digest = await self.recovery_digest(sid)
+            digest = await self._session_digest(sid)
             if digest is not None:
                 digests[sid] = digest
 
@@ -1757,7 +1836,7 @@ class PolylogueArchiveMixin:
         """Mine agent-workflow pathologies across a matched session scope (#2383).
 
         Resolves the matched session set (the same summary path
-        ``postmortem_bundle`` uses), fetches each session's recovery digest, and
+        ``postmortem_bundle`` uses), fetches each session's session digest, and
         runs the deterministic detectors in :mod:`polylogue.insights.pathology`
         over the typed run projections. Returns the aggregate
         :class:`PathologyReport` (findings + per-kind distribution), the
@@ -1795,7 +1874,7 @@ class PolylogueArchiveMixin:
             )
         projections = []
         for sid in analyzed_ids:
-            digest = await self.recovery_digest(sid)
+            digest = await self._session_digest(sid)
             if digest is not None:
                 projections.append(digest.run_projection)
         return compile_pathology_report(projections)
@@ -1849,7 +1928,7 @@ class PolylogueArchiveMixin:
             )
         findings_by_session: dict[str, list[Any]] = {}
         for sid in analyzed_ids:
-            digest = await self.recovery_digest(sid)
+            digest = await self._session_digest(sid)
             if digest is None:
                 continue
             findings = detect_session_pathologies(digest.run_projection)
@@ -1867,7 +1946,7 @@ class PolylogueArchiveMixin:
         """Compile a corpus-wide portfolio report (#2437).
 
         Resolves the matched session set (the same summary path
-        ``postmortem_bundle`` uses), batch-fetches profiles + recovery digests,
+        ``postmortem_bundle`` uses), batch-fetches profiles + session digests,
         and delegates aggregation to the pure :func:`compile_portfolio_bundle`
         (session/repo/origin counts, cost + wall-clock distributions, pathology
         and context-loss distribution). The analysis cap defaults to 200 sessions.
@@ -1910,9 +1989,9 @@ class PolylogueArchiveMixin:
         profiles_map = await self.repository.get_session_profiles_batch(analyzed_ids)
         profiles = [profiles_map[sid] for sid in analyzed_ids if sid in profiles_map]
 
-        digests: dict[str, RecoveryDigest] = {}
+        digests: dict[str, SessionDigest] = {}
         for sid in analyzed_ids:
-            digest = await self.recovery_digest(sid)
+            digest = await self._session_digest(sid)
             if digest is not None:
                 digests[sid] = digest
 
@@ -1926,73 +2005,6 @@ class PolylogueArchiveMixin:
             dropped_session_count=dropped,
         )
         return compile_portfolio_bundle(profiles, digests, scope=scope, top_n=top_n)
-
-    async def recovery_report(self, session_id: str, preset: RecoveryReportPreset) -> str | None:
-        """Render one deterministic recovery report preset for a session."""
-        digest = await self.recovery_digest(session_id)
-        if digest is None:
-            return None
-        compilation = await self._compile_recovery_context_from_digest(digest, report=preset)
-        return compilation.markdown
-
-    async def recovery_work_packet(self, session_id: str) -> RecoveryWorkPacket | None:
-        """Return the storage-free continuation packet DTO for a session."""
-        digest = await self.recovery_digest(session_id)
-        if digest is None:
-            return None
-        compilation = await self._compile_recovery_context_from_digest(digest, report="work-packet")
-        return compilation.work_packet
-
-    async def _compile_recovery_context_from_digest(
-        self,
-        digest: RecoveryDigest,
-        *,
-        report: RecoveryReportPreset | None = None,
-        include_assertions: bool = True,
-    ) -> RecoveryContextCompilation:
-        """Compile one recovery-context view without making callers branch on bundle shape."""
-        from polylogue.context.compiler import compile_recovery_context
-        from polylogue.surfaces.payloads import AssertionClaimPayload
-
-        packet: RecoveryWorkPacket | None = None
-        target_ref = f"session:{digest.session_id}"
-        claims: Sequence[ArchiveAssertionEnvelope]
-        if not include_assertions:
-            claims = ()
-            if report == "work-packet":
-                packet = await self._recovery_work_packet_from_digest(digest, claims=claims)
-        elif report == "work-packet":
-            claims = await self.list_assertion_claims(target_ref=target_ref, limit=20)
-            packet = await self._recovery_work_packet_from_digest(digest, claims=claims)
-        else:
-            claims = await self.list_assertion_claims(
-                target_ref=target_ref,
-                statuses=("active",),
-                context_inject=True,
-                limit=20,
-            )
-        assertion_claims = tuple(AssertionClaimPayload.from_envelope(claim) for claim in claims)
-        return compile_recovery_context(
-            digest,
-            report=report,
-            work_packet=packet,
-            assertion_claims=assertion_claims,
-        )
-
-    async def _recovery_work_packet_from_digest(
-        self,
-        digest: RecoveryDigest,
-        *,
-        claims: Sequence[ArchiveAssertionEnvelope] | None = None,
-    ) -> RecoveryWorkPacket:
-        """Build the assertion-enriched work-packet bundle for a digest."""
-        packet = digest.work_packet()
-        if claims is None:
-            claims = await self.list_assertion_claims(target_ref=f"session:{digest.session_id}", limit=20)
-        assertion_entries = _archive_assertion_work_packet_entries(claims, digest.session_id)
-        if not assertion_entries:
-            return packet
-        return packet.model_copy(update={"entries": (*packet.entries, *assertion_entries)})
 
     async def list_assertion_claims(
         self,
@@ -2123,65 +2135,93 @@ class PolylogueArchiveMixin:
         )
         return AssertionJudgmentResultPayload.from_envelope(result)
 
-    async def recovery_read_payload(
+    async def _compile_context_seed_query(
         self,
-        session_id: str,
-        *,
-        report: RecoveryReportKind = "work-packet",
-        output_format: RecoveryReportFormat = "json",
-    ) -> RecoveryReadPayload | None:
-        """Return one recovery/read payload through the shared surface DTO.
+        spec: ContextSpec,
+    ) -> tuple[list[str], dict[str, str], list[ContextOmission]]:
+        """Resolve ContextSpec query/filter seed selection into session ids."""
+        from polylogue.context.compiler import ContextOmission
+        from polylogue.context.selection import clamp_context_image_limit, select_context_image_sessions
 
-        This is the cross-surface JSON boundary for daemon/web/API consumers.
-        It intentionally delegates content generation to the existing recovery
-        digest/work-packet/report methods instead of creating a web-specific
-        recovery model.
-        """
-
-        from polylogue.surfaces.payloads import RecoveryReadPayload
-
-        if output_format not in {"json", "markdown"}:
-            raise ValueError(f"unsupported recovery output format: {output_format}")
-        if report not in {"digest", "work-packet"}:
-            raise ValueError(f"unsupported recovery report: {report}")
-        if report == "digest" and output_format != "json":
-            raise ValueError("digest recovery reads are JSON-only")
-        if report == "digest":
-            digest = await self.recovery_digest(session_id)
-            if digest is None:
-                return None
-            return RecoveryReadPayload.from_digest(digest)
-        if report == "work-packet":
-            packet = await self.recovery_work_packet(session_id)
-            if packet is None:
-                return None
-            if output_format == "markdown":
-                return RecoveryReadPayload.from_work_packet_markdown(
-                    session_id=packet.session_id,
-                    markdown=packet.render_markdown(),
+        session_ids: list[str] = []
+        message_anchor_by_session: dict[str, str] = {}
+        omitted: list[ContextOmission] = []
+        has_filters = any(
+            (
+                spec.seed_project_path,
+                spec.seed_project_repo,
+                spec.seed_since,
+                spec.seed_until,
+                spec.seed_origin,
+            )
+        )
+        if has_filters or spec.seed_query == "":
+            selection = await select_context_image_sessions(
+                self.list_sessions_for_spec,
+                clamp_context_image_limit,
+                project_path=spec.seed_project_path,
+                project_repo=spec.seed_project_repo,
+                since=spec.seed_since,
+                until=spec.seed_until,
+                origin=spec.seed_origin,
+                query=spec.seed_query or None,
+                limit=spec.seed_query_limit,
+            )
+            if not selection.sessions:
+                omitted.append(
+                    ContextOmission(
+                        query=spec.seed_query or None,
+                        reason="not_found",
+                        detail="seed selection matched no sessions",
+                    )
                 )
-            return RecoveryReadPayload.from_work_packet_json(packet)
-        raise ValueError(f"unsupported recovery report: {report}")
+            else:
+                session_ids.extend(str(summary.id) for summary in selection.sessions[: spec.seed_query_limit])
+            return session_ids, message_anchor_by_session, omitted
+
+        if spec.seed_query is None:
+            return session_ids, message_anchor_by_session, omitted
+
+        result = await self.search(spec.seed_query, limit=spec.seed_query_limit)
+        if not result.hits:
+            omitted.append(
+                ContextOmission(
+                    query=spec.seed_query,
+                    reason="not_found",
+                    detail="seed query matched no sessions",
+                )
+            )
+        else:
+            for hit in result.hits:
+                session_ids.append(hit.session_id)
+                if hit.session_id not in message_anchor_by_session and hit.message_id:
+                    message_anchor_by_session[hit.session_id] = hit.message_id
+        return session_ids, message_anchor_by_session, omitted
 
     async def compile_context(self, spec: ContextSpec) -> ContextImage:
         """Compile a bounded context image from query/ref seeds and read views.
 
         This is the executable API boundary for ``ContextSpec``. It deliberately
-        reuses existing recovery/read primitives and records unsupported or
+        reuses existing query/read primitives and records unsupported or
         missing inputs as omissions instead of creating a parallel memory store.
         """
         from polylogue.context.compiler import (
             ContextImage,
             ContextOmission,
             ContextSegment,
+            compile_assertion_context_segment,
+            compile_chronicle_context_segment,
             compile_messages_context_segment,
+            compile_query_unit_context_segment,
+            compile_temporal_context_segment,
         )
 
         segments: list[ContextSegment] = []
         omitted: list[ContextOmission] = []
-        requested_views = tuple(dict.fromkeys(spec.read_views or ("recovery",)))
+        requested_views = tuple(dict.fromkeys(spec.read_views))
         session_ids: list[str] = []
         seen_sessions: set[str] = set()
+        message_anchor_by_session: dict[str, str] = {}
 
         for seed_ref in spec.seed_refs:
             if not seed_ref.startswith("session:"):
@@ -2198,36 +2238,45 @@ class PolylogueArchiveMixin:
                 seen_sessions.add(session_id)
                 session_ids.append(session_id)
 
-        if spec.seed_query is not None:
-            result = await self.search(spec.seed_query, limit=spec.seed_query_limit)
-            if not result.hits:
-                omitted.append(
-                    ContextOmission(
-                        query=spec.seed_query,
-                        reason="not_found",
-                        detail="seed query matched no sessions",
-                    )
-                )
-            else:
-                for hit in result.hits:
-                    if hit.session_id not in seen_sessions:
-                        seen_sessions.add(hit.session_id)
-                        session_ids.append(hit.session_id)
+        query_session_ids, query_message_anchors, query_omissions = await self._compile_context_seed_query(spec)
+        omitted.extend(query_omissions)
+        for session_id in query_session_ids:
+            if session_id not in seen_sessions:
+                seen_sessions.add(session_id)
+                session_ids.append(session_id)
+        for session_id, message_id in query_message_anchors.items():
+            message_anchor_by_session.setdefault(session_id, message_id)
 
         token_budget = spec.max_tokens
         token_total = 0
-        for session_id in session_ids:
-            digest = await self.recovery_digest(session_id)
-            if digest is None:
+        for expression in spec.unit_queries:
+            try:
+                envelope = await self.query_units(expression, limit=spec.unit_query_limit)
+            except Exception as exc:
                 omitted.append(
                     ContextOmission(
-                        ref=f"session:{session_id}",
-                        reason="not_found",
-                        detail="session seed did not resolve to a recovery digest",
+                        query=expression,
+                        reason="unsupported",
+                        detail=f"query-unit expression failed: {exc}",
                     )
                 )
                 continue
+            segment = compile_query_unit_context_segment(envelope)
+            if token_budget is not None and token_total + segment.token_estimate > token_budget:
+                omitted.append(
+                    ContextOmission(
+                        query=expression,
+                        view="query_unit",
+                        reason="budget",
+                        detail="query-unit segment exceeded the requested context token budget",
+                    )
+                )
+                continue
+            token_total += segment.token_estimate
+            segments.append(segment)
+        for session_id in session_ids:
             session = await self.get_session(session_id)
+            summary = await self.get_session_summary(session_id)
             for view in requested_views:
                 if view == "messages":
                     if session is None:
@@ -2240,18 +2289,20 @@ class PolylogueArchiveMixin:
                             )
                         )
                         continue
+                    messages, omitted_before, omitted_after, clipped_messages = _archive_context_message_window(
+                        tuple(session.messages),
+                        anchor_message_id=message_anchor_by_session.get(session_id),
+                        max_messages=spec.max_messages_per_session,
+                        max_chars_per_message=spec.max_chars_per_message,
+                    )
                     segment = compile_messages_context_segment(
-                        session_id=digest.session_id,
-                        title=digest.title,
-                        messages=tuple(
-                            (
-                                str(getattr(message.role, "value", message.role)),
-                                message.text or "",
-                            )
-                            for message in session.messages
-                            if message.text
-                        ),
-                        evidence_refs=tuple(ref.to_evidence_ref() for ref in digest.raw_refs),
+                        session_id=session_id,
+                        title=session.title,
+                        messages=messages,
+                        evidence_refs=(EvidenceRef(session_id=session_id),),
+                        omitted_before=omitted_before,
+                        omitted_after=omitted_after,
+                        clipped_messages=clipped_messages,
                     )
                     if token_budget is not None and token_total + segment.token_estimate > token_budget:
                         omitted.append(
@@ -2266,44 +2317,95 @@ class PolylogueArchiveMixin:
                     token_total += segment.token_estimate
                     segments.append(segment)
                     continue
-                if view not in {"recovery", "work-packet"}:
-                    omitted.append(
-                        ContextOmission(
-                            ref=f"session:{session_id}",
-                            view=view,
-                            reason="unsupported",
-                            detail="compile_context currently supports recovery, work-packet, and messages views",
+                if view == "temporal":
+                    if summary is None:
+                        omitted.append(
+                            ContextOmission(
+                                ref=f"session:{session_id}",
+                                view=view,
+                                reason="not_found",
+                                detail="session seed did not resolve to temporal evidence",
+                            )
                         )
-                    )
+                        continue
+                    window = _archive_context_temporal_window(self.config, summary)
+                    segment = compile_temporal_context_segment(session_id=session_id, window=window)
+                    if token_budget is not None and token_total + segment.token_estimate > token_budget:
+                        omitted.append(
+                            ContextOmission(
+                                ref=f"session:{session_id}",
+                                view=view,
+                                reason="budget",
+                                detail="segment exceeded the requested context token budget",
+                            )
+                        )
+                        continue
+                    token_total += segment.token_estimate
+                    segments.append(segment)
                     continue
-                compilation = await self._compile_recovery_context_from_digest(
-                    digest,
-                    report="work-packet" if view == "work-packet" else None,
-                    include_assertions=spec.include_assertions,
+                if view == "chronicle":
+                    if summary is None:
+                        omitted.append(
+                            ContextOmission(
+                                ref=f"session:{session_id}",
+                                view=view,
+                                reason="not_found",
+                                detail="session seed did not resolve to chronicle evidence",
+                            )
+                        )
+                        continue
+                    payload = await _archive_context_chronicle_payload(self.config, summary)
+                    segment = compile_chronicle_context_segment(session_id=session_id, payload=payload)
+                    if token_budget is not None and token_total + segment.token_estimate > token_budget:
+                        omitted.append(
+                            ContextOmission(
+                                ref=f"session:{session_id}",
+                                view=view,
+                                reason="budget",
+                                detail="segment exceeded the requested context token budget",
+                            )
+                        )
+                        continue
+                    token_total += segment.token_estimate
+                    segments.append(segment)
+                    continue
+                omitted.append(
+                    ContextOmission(
+                        ref=f"session:{session_id}",
+                        view=view,
+                        reason="unsupported",
+                        detail=(
+                            "compile_context supports messages, temporal, chronicle read views "
+                            "and explicit query-unit context"
+                        ),
+                    )
                 )
-                if compilation.context_image is None:
-                    omitted.append(
-                        ContextOmission(
-                            ref=f"session:{session_id}",
-                            view=view,
-                            reason="not_found",
-                            detail="recovery compiler did not produce a context image",
-                        )
+            if spec.include_assertions:
+                assertion_claims = await self.list_assertion_claim_payloads(
+                    target_ref=f"session:{session_id}",
+                    statuses=("active",),
+                    context_inject=True,
+                )
+                for claim in assertion_claims:
+                    segment = compile_assertion_context_segment(
+                        assertion_id=claim.assertion_id,
+                        kind=claim.kind,
+                        body_text=claim.body_text,
+                        target_ref=claim.target_ref,
+                        evidence_ref_texts=claim.evidence_refs,
                     )
-                    continue
-                segment = compilation.context_image.segments[0]
-                if token_budget is not None and token_total + segment.token_estimate > token_budget:
-                    omitted.append(
-                        ContextOmission(
-                            ref=f"session:{session_id}",
-                            view=view,
-                            reason="budget",
-                            detail="segment exceeded the requested context token budget",
+                    if token_budget is not None and token_total + segment.token_estimate > token_budget:
+                        omitted.append(
+                            ContextOmission(
+                                ref=f"assertion:{claim.assertion_id}",
+                                view="assertion",
+                                reason="budget",
+                                detail="assertion segment exceeded the requested context token budget",
+                            )
                         )
-                    )
-                    continue
-                token_total += segment.token_estimate
-                segments.append(segment)
+                        continue
+                    token_total += segment.token_estimate
+                    segments.append(segment)
 
         object_refs = _dedupe_object_refs(ref for segment in segments for ref in segment.object_refs)
         evidence_refs = _dedupe_evidence_refs(ref for segment in segments for ref in segment.evidence_refs)
@@ -2327,7 +2429,7 @@ class PolylogueArchiveMixin:
 
         return list(read_view_profile_payloads())
 
-    async def context_pack_payload(
+    async def context_image_payload(
         self,
         *,
         project_path: str | None = None,
@@ -2338,6 +2440,8 @@ class PolylogueArchiveMixin:
         query: str | None = None,
         max_sessions: int = 5,
         max_tokens: int | None = None,
+        max_messages_per_session: int | None = DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION,
+        max_chars_per_message: int | None = DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE,
         include_messages: bool = True,
         include_assertions: bool = True,
         redact_paths: bool = True,
@@ -2347,59 +2451,32 @@ class PolylogueArchiveMixin:
 
         This is a thin lens over the shared context engine, not a parallel
         assembler. Session selection runs through the query algebra (a seed ref
-        or the context-pack selection filters); compilation, token-budgeted
+        or the context-image selection filters); compilation, token-budgeted
         accumulation, omission accounting, and assertion inclusion are all
         delegated to :meth:`compile_context`.
         """
-        from polylogue.context.compiler import ContextImage, ContextOmission, ContextSpec
-        from polylogue.mcp.context_pack import _clamp_context_pack_limit, select_context_pack_sessions
+        from polylogue.context.compiler import ContextSpec
 
-        views: tuple[str, ...] = ("messages",) if include_messages else ("recovery",)
+        views: tuple[str, ...] = ("messages",) if include_messages else ()
         redaction: Literal["default", "raw-opt-in"] = "raw-opt-in" if not redact_paths else "default"
+        limit = max(1, min(max_sessions, 20))
 
-        if seed_session_id is not None:
-            seed_refs: tuple[str, ...] = (f"session:{seed_session_id}",)
-        else:
-            limit = max(1, min(max_sessions, 20))
-            selection = await select_context_pack_sessions(
-                self.list_sessions_for_spec,
-                _clamp_context_pack_limit,
-                project_path=project_path,
-                project_repo=project_repo,
-                since=since,
-                until=until,
-                origin=origin,
-                query=query,
-                limit=limit,
-            )
-            seed_refs = tuple(f"session:{summary.id}" for summary in selection.sessions[:limit])
-
-        if not seed_refs:
-            spec = ContextSpec(
-                purpose="handoff",
-                seed_query=query or "<context-pack>",
-                read_views=views,
-                max_tokens=max_tokens,
-                include_assertions=include_assertions,
-                redaction_policy=redaction,
-            )
-            return ContextImage(
-                spec=spec,
-                segments=(),
-                omitted=(
-                    ContextOmission(
-                        query=query,
-                        reason="not_found",
-                        detail="no sessions matched the context-pack selection",
-                    ),
-                ),
-            )
+        seed_refs: tuple[str, ...] = (f"session:{seed_session_id}",) if seed_session_id is not None else ()
 
         spec = ContextSpec(
             purpose="handoff",
             seed_refs=seed_refs,
+            seed_query=query if query is not None else ("" if not seed_refs else None),
+            seed_query_limit=limit,
+            seed_project_path=project_path,
+            seed_project_repo=project_repo,
+            seed_since=since,
+            seed_until=until,
+            seed_origin=origin,
             read_views=views,
             max_tokens=max_tokens,
+            max_messages_per_session=max_messages_per_session,
+            max_chars_per_message=max_chars_per_message,
             include_assertions=include_assertions,
             redaction_policy=redaction,
         )
@@ -2807,7 +2884,7 @@ class PolylogueArchiveMixin:
         object_ref: ObjectRef,
         summary: Any,
     ) -> PublicRefResolutionPayload | None:
-        from polylogue.insights.transforms import compile_recovery_digest
+        from polylogue.insights.transforms import compile_session_digest
         from polylogue.surfaces.payloads import (
             ContextSnapshotQueryRowPayload,
             ObservedEventQueryRowPayload,
@@ -2817,7 +2894,7 @@ class PolylogueArchiveMixin:
         )
 
         session = _archive_session_to_session(archive.read_session(str(summary.session_id)))
-        digest = compile_recovery_digest(session)
+        digest = compile_session_digest(session)
         if object_ref.kind == "run":
             for run in digest.run_projection.runs:
                 if run.run_ref.format() != normalized_ref:

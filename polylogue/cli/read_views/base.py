@@ -14,6 +14,7 @@ from polylogue.cli.shared.types import AppEnv
 
 if TYPE_CHECKING:
     from polylogue.cli.root_request import RootModeRequest
+    from polylogue.surfaces.projection_spec import QueryProjectionSpec
 
 
 ReadViewSessionPolicy = Literal["optional", "required", "query_or_session", "none"]
@@ -26,14 +27,6 @@ class ReadViewMessageOptions:
 
     limit: int | None = None
     offset: int = 0
-    role: tuple[str, ...] = ()
-    material_origin: tuple[str, ...] = ()
-    message_type: str | None = None
-    no_code_blocks: bool = False
-    no_tool_calls: bool = False
-    no_tool_outputs: bool = False
-    no_file_reads: bool = False
-    prose_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,8 +37,8 @@ class ReadViewContextOptions:
 
 
 @dataclass(frozen=True, slots=True)
-class ReadViewContextPackOptions:
-    """Options owned by the project context-pack view."""
+class ReadViewContextImageOptions:
+    """Options owned by the project context-image view."""
 
     project_path: str | None = None
     project_repo: str | None = None
@@ -55,13 +48,6 @@ class ReadViewContextPackOptions:
     query: str | None = None
     max_sessions: int = 5
     no_redact: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class ReadViewRecoveryOptions:
-    """Options owned by the recovery digest/report view."""
-
-    report: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,13 +69,20 @@ class ReadViewCorrelationOptions:
     otlp: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class ReadViewChronicleOptions:
+    """Options owned by the bounded chronicle read view."""
+
+    edge_limit: int = 8
+
+
 ReadViewOptions = (
     ReadViewMessageOptions
     | ReadViewContextOptions
-    | ReadViewContextPackOptions
-    | ReadViewRecoveryOptions
+    | ReadViewContextImageOptions
     | ReadViewNeighborOptions
     | ReadViewCorrelationOptions
+    | ReadViewChronicleOptions
 )
 ReadViewOptionValues = Mapping[str, object]
 ReadViewOptionBuilder = Callable[[ReadViewOptionValues], ReadViewOptions | None]
@@ -106,6 +99,7 @@ class ReadViewInvocation:
     out_path: str | None
     options: ReadViewOptions | None = None
     explicit_options: frozenset[ReadViewOptionName] = frozenset()
+    projection_spec: QueryProjectionSpec | None = None
 
 
 ReadViewHandlerFunc = Callable[[AppEnv, "RootModeRequest", ReadViewInvocation], None]
@@ -121,6 +115,7 @@ class ReadViewHandler:
     default_format: str | None = None
     accepted_options: frozenset[ReadViewOptionName] = frozenset()
     option_builder: ReadViewOptionBuilder | None = None
+    accepts_query_set: bool = False
 
     def validate(self, invocation: ReadViewInvocation, request: RootModeRequest) -> None:
         """Validate cross-view selection rules before executing the handler."""
@@ -182,8 +177,9 @@ def execute_query_request(env: AppEnv, request: RootModeRequest) -> None:
 
 __all__ = [
     "ReadViewContextOptions",
-    "ReadViewContextPackOptions",
+    "ReadViewContextImageOptions",
     "ReadViewCorrelationOptions",
+    "ReadViewChronicleOptions",
     "ReadViewHandler",
     "ReadViewHandlerFunc",
     "ReadViewInvocation",
@@ -193,7 +189,6 @@ __all__ = [
     "ReadViewOptionBuilder",
     "ReadViewOptions",
     "ReadViewOptionValues",
-    "ReadViewRecoveryOptions",
     "ReadViewSessionPolicy",
     "deliver_content",
     "execute_query_request",

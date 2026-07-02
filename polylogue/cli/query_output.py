@@ -15,7 +15,6 @@ from urllib.parse import quote
 
 import click
 
-from polylogue.archive.message.roles import MessageRoleFilter, Role, message_role_count_key, message_role_labels
 from polylogue.cli.query_contracts import QueryDeliveryTarget, QueryOutputSpec
 from polylogue.cli.query_feedback import emit_no_results
 from polylogue.cli.query_output_contracts import QueryOutputDocument, StructuredRowsDocument
@@ -61,7 +60,6 @@ if TYPE_CHECKING:
 
 SessionStats: TypeAlias = dict[str, int]
 MACHINE_OUTPUT_FORMATS = frozenset({"json", "ndjson", "yaml", "csv"})
-DIALOGUE_MESSAGE_ROLES: MessageRoleFilter = (Role.USER, Role.ASSISTANT)
 
 
 def _display_date(value: datetime | None, date_format: str = "%Y-%m-%d") -> str:
@@ -174,21 +172,6 @@ def _stream_date_parts(display_date: object | None) -> tuple[str | None, str | N
         value = str(display_date)
         return value, value
     return None, None
-
-
-def _role_filter_label(message_roles: MessageRoleFilter) -> str:
-    if message_roles == DIALOGUE_MESSAGE_ROLES:
-        return "dialogue"
-    labels = message_role_labels(message_roles)
-    if len(labels) == 1:
-        return labels[0]
-    return "selected-role"
-
-
-def _role_filter_count(stats: SessionStats, message_roles: MessageRoleFilter) -> int:
-    if message_roles == DIALOGUE_MESSAGE_ROLES:
-        return stats.get("dialogue_messages", 0)
-    return sum(stats.get(message_role_count_key(role), 0) for role in message_roles)
 
 
 # ---------------------------------------------------------------------------
@@ -784,10 +767,7 @@ def render_stream_header(
     origin: str | None,
     display_date: object | None,
     output_format: str,
-    dialogue_only: bool,
-    message_roles: MessageRoleFilter,
     message_limit: int | None,
-    stats: SessionStats | None,
 ) -> str:
     """Render any stream prelude/header for the selected output format."""
     display_date_text, display_date_value = _stream_date_parts(display_date)
@@ -800,13 +780,8 @@ def render_stream_header(
             lines.append(f"**Origin**: {origin}")
         if display_date_text is not None or origin:
             lines.append("")
-        if message_roles and stats:
-            shown = _role_filter_count(stats, message_roles)
-            label = _role_filter_label(message_roles)
-            line = f"_Showing {shown} {label} messages"
-            if message_limit:
-                line += f" (limit: {message_limit})"
-            line += f" of {stats['total_messages']} total_"
+        if message_limit:
+            line = f"_Showing up to {message_limit} messages_"
             lines.extend([line, ""])
         return "\n".join(lines)
 
@@ -817,10 +792,7 @@ def render_stream_header(
             "title": title,
             "origin": origin,
             "date": display_date_value,
-            "dialogue_only": dialogue_only,
-            "message_roles": list(message_role_labels(message_roles)),
             "message_limit": message_limit,
-            "stats": stats,
         }
         return json.dumps(header) + "\n"
 
@@ -844,20 +816,9 @@ def render_stream_transcript(
     display_date: object | None,
     messages: list[Message],
     output_format: str,
-    dialogue_only: bool = False,
-    message_roles: MessageRoleFilter = (),
-    material_origins: tuple[object, ...] = (),
     message_limit: int | None = None,
-    stats: SessionStats | None = None,
 ) -> tuple[str, int]:
     """Render the full stream transcript deterministically for evidence/tests."""
-    effective_roles = message_roles or (DIALOGUE_MESSAGE_ROLES if dialogue_only else ())
-    filtered_messages = [
-        message
-        for message in messages
-        if (not effective_roles or message.role in effective_roles)
-        and (not material_origins or message.material_origin in material_origins)
-    ]
     parts = [
         render_stream_header(
             session_id=session_id,
@@ -865,14 +826,11 @@ def render_stream_transcript(
             origin=origin,
             display_date=display_date,
             output_format=output_format,
-            dialogue_only=dialogue_only,
-            message_roles=effective_roles,
             message_limit=message_limit,
-            stats=stats,
         )
     ]
     emitted = 0
-    for message in filtered_messages[: message_limit if message_limit is not None else None]:
+    for message in messages[: message_limit if message_limit is not None else None]:
         chunk = render_stream_message(message, output_format)
         if chunk:
             parts.append(chunk)

@@ -177,7 +177,7 @@ text terms.
 | `cwd` | Working-directory prefix | `cwd:/realm/project` |
 | `tool` | Tool name used in the session | `tool:bash` |
 | `action` | Semantic action category | `action:file_edit` |
-| `has` | Content presence (`paste`, `tools`, `thinking`, or stored type) | `has:paste` |
+| `has` | Content/evidence presence (`paste` evidence, `tools`, `thinking`, or stored type) | `has:paste` |
 | `id` | Session id or prefix | `id:codex-session:abc` |
 | `session` | Exact session ref alias for `id` | `session:codex-session:abc` |
 | `title` | Session title substring | `title:refactor` |
@@ -361,7 +361,7 @@ inventory and does not claim that a file still exists on disk.
 `runs`, `observed-events`, and `context-snapshots` are SQL-backed row sources
 over the materialized run-projection tables (`session_runs`,
 `session_observed_events`, `session_context_snapshots`), which the session-insight
-materializer recomputes from each session's recovery/run-projection evidence.
+materializer recomputes from each session's run-projection evidence.
 They are both terminal unit sources (`runs where ...`) and `exists run(...)` /
 `exists observed-event(...)` / `exists context-snapshot(...)` session selectors,
 and they accept the full SQL-backed session filter surface (`session.action`,
@@ -377,7 +377,7 @@ are rejected instead of silently coercing row queries back to session queries.
 
 ## Assertion Candidate Judgment
 
-Transform and recovery jobs may emit assertion rows with `status:candidate`.
+Transform and session-analysis jobs may emit assertion rows with `status:candidate`.
 Candidate rows are private, carry `context_policy.inject=false`, and keep
 `promotion_required=true` until an operator makes an explicit judgment. They
 can be inspected like any other assertion row, or through the review list that
@@ -422,7 +422,7 @@ polylogue ops debt list --kind assertion-candidate --only-actionable --format js
 ## Public Ref Resolution
 
 Query/read payloads carry public object and evidence refs so agents and the web
-shell can jump from a row, work packet, or assertion back to the exact archive
+shell can jump from a row, context image, or assertion back to the exact archive
 object it cites. Resolve refs through the shared resolver rather than turning
 them into broad text search:
 
@@ -497,7 +497,7 @@ can resolve deliberately when the operator wants to inspect source evidence.
 |------|-------------|
 | `--has-tool-use` | Only sessions with tool calls |
 | `--has-thinking` | Only sessions with reasoning/thinking blocks |
-| `--has-paste` | Only sessions with pasted content |
+| `--has-paste` | Only sessions with paste evidence |
 | `--typed-only` | Only typed (non-pasted) content |
 | `--has`, `--has-type` | Filter by content type: `thinking`, `tools`, `summary`, `attachments` |
 
@@ -508,7 +508,6 @@ can resolve deliberately when the operator wants to inspect source evidence.
 | `--min-messages` | Minimum message count |
 | `--max-messages` | Maximum message count |
 | `--min-words` | Minimum word count |
-| `--message-type` | Filter by message type |
 
 ### Semantic actions
 
@@ -548,31 +547,18 @@ can resolve deliberately when the operator wants to inspect source evidence.
 | `--retrieval-lane` | Query lane: `auto`, `dialogue`, `actions`, `hybrid` |
 | `--similar` | Semantic similarity query (requires embeddings) |
 
-### Output modifiers
-
-| Flag | Description |
-|------|-------------|
-| `--no-code-blocks` | Strip code blocks from output |
-| `--no-tool-calls` | Strip tool call blocks |
-| `--no-tool-outputs` | Strip tool result blocks |
-| `--no-file-reads` | Strip file read blocks |
-| `--prose-only` | Show only authored prose text |
-| `--dialogue-only` | Show only provider-role user/assistant messages |
-| `--message-role` | Filter by provider role (`user`, `assistant`, `system`, `tool`) |
-| `--material-origin` | Filter message rows by authoredness/material source (`human_authored`, `runtime_protocol`, `tool_result`, `unknown`, etc.) |
-
 ## Verbs
 
 Verbs determine the action applied to the matched session set.
 
 | Verb | Description |
 |------|-------------|
-| `read --all` | List/export matched sessions with metadata |
+| `read --all` | Read every matched session with metadata |
 | `analyze --count` | Print count of matched sessions |
 | `analyze --by ...` | Grouped statistics (`origin`, `month`, `year`, `day`, `action`, `tool`, `repo`, `work-kind`) |
 | `read` | Display session content through read views |
 | `read --to browser` | Open session in browser |
-| `read --all --format ...` | Export matched sessions |
+| `read --all --format ...` | Render every matched session in the selected format |
 | `read --view messages` | Show individual messages |
 | `read --view raw` | Show raw (unparsed) session data |
 | `select` | Select and print a single field |
@@ -906,7 +892,7 @@ polylogue 'text:css {session_id claude-code}: refactor'
 |--------|-------------|
 | `markdown` | Default -- formatted markdown with syntax-highlighted code blocks |
 | `json` | Full session as JSON |
-| `jsonl` | One JSON object per line (used by `bulk-export`) |
+| `jsonl` | One JSON object per line (used by `read --all --format ndjson`) |
 | `yaml` | YAML representation |
 | `plaintext` | Plain text, no formatting |
 | `html` | HTML with Pygments syntax highlighting |
@@ -918,7 +904,7 @@ Set format with `-f` / `--format` on a verb:
 
 ```bash
 polylogue "sqlite locking" read --all --format json
-polylogue --since yesterday bulk-export --format jsonl
+polylogue --since yesterday read --all --format ndjson
 ```
 
 ## Facets (Scoped vs Global)

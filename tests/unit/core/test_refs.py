@@ -35,7 +35,7 @@ from polylogue.core.refs import (
         ("user:sinity", "user", "sinity", ()),
         ("repo:polylogue", "repo", "polylogue", ()),
         ("insight:session-1", "insight", "session-1", ()),
-        ("transform:recovery_digest_v0@v1", "transform", "recovery_digest_v0@v1", ()),
+        ("transform:session_digest_v0@v1", "transform", "session_digest_v0@v1", ()),
         ("assertion:note-1", "assertion", "note-1", ()),
         ("saved_view:view-1", "saved_view", "view-1", ()),
         ("recall_pack:pack-1", "recall_pack", "pack-1", ()),

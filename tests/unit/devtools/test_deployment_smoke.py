@@ -175,7 +175,7 @@ def test_deployment_smoke_json_reports_failures(
         elif comp_words == "polylogue find id:abc then s":
             stdout = "plain,select\n"
         elif comp_words == "polylogue find id:abc then read --view ":
-            stdout = "plain,summary\nplain,messages\nplain,raw\nplain,context-pack\n"
+            stdout = "plain,summary\nplain,messages\nplain,raw\nplain,context-image\n"
         else:
             stdout = "plain,json\nplain,ndjson\nplain,text\n"
         return subprocess.CompletedProcess(["polylogue"], 0, stdout, "")
@@ -225,7 +225,7 @@ def test_deployment_smoke_command_succeeds_when_all_probes_pass(
                 "polylogue find id:abc t": "plain,then\n",
                 "polylogue find id:abc then s": "plain,select\n",
                 "polylogue find id:abc then read --view ": (
-                    "plain,summary\nplain,messages\nplain,raw\nplain,context-pack\n"
+                    "plain,summary\nplain,messages\nplain,raw\nplain,context-image\n"
                 ),
                 "polylogue find id:abc then read --view messages --format ": "plain,json\nplain,ndjson\nplain,text\n",
             }[str(kwargs["comp_words"])],
@@ -290,7 +290,7 @@ def test_deployment_smoke_runtime_evidence_includes_effective_config(
                 "polylogue find id:abc t": "plain,then\n",
                 "polylogue find id:abc then s": "plain,select\n",
                 "polylogue find id:abc then read --view ": (
-                    "plain,summary\nplain,messages\nplain,raw\nplain,context-pack\n"
+                    "plain,summary\nplain,messages\nplain,raw\nplain,context-image\n"
                 ),
                 "polylogue find id:abc then read --view messages --format ": "plain,json\nplain,ndjson\nplain,text\n",
             }[str(kwargs["comp_words"])],
@@ -347,7 +347,7 @@ def test_deployment_smoke_includes_effective_config_evidence(
                 "polylogue find id:abc t": "plain,then\n",
                 "polylogue find id:abc then s": "plain,select\n",
                 "polylogue find id:abc then read --view ": (
-                    "plain,summary\nplain,messages\nplain,raw\nplain,context-pack\n"
+                    "plain,summary\nplain,messages\nplain,raw\nplain,context-image\n"
                 ),
                 "polylogue find id:abc then read --view messages --format ": "plain,json\nplain,ndjson\nplain,text\n",
             }[str(kwargs["comp_words"])],
@@ -434,7 +434,7 @@ def test_deployment_smoke_reports_facets_timeout_as_route_failure(
                 "polylogue find id:abc t": "plain,then\n",
                 "polylogue find id:abc then s": "plain,select\n",
                 "polylogue find id:abc then read --view ": (
-                    "plain,summary\nplain,messages\nplain,raw\nplain,context-pack\n"
+                    "plain,summary\nplain,messages\nplain,raw\nplain,context-image\n"
                 ),
                 "polylogue find id:abc then read --view messages --format ": "plain,json\nplain,ndjson\nplain,text\n",
             }[str(kwargs["comp_words"])],
@@ -652,7 +652,7 @@ def test_deployment_smoke_report_includes_browser_render_failure(
                 "polylogue find id:abc t": "plain,then\n",
                 "polylogue find id:abc then s": "plain,select\n",
                 "polylogue find id:abc then read --view ": (
-                    "plain,summary\nplain,messages\nplain,raw\nplain,context-pack\n"
+                    "plain,summary\nplain,messages\nplain,raw\nplain,context-image\n"
                 ),
                 "polylogue find id:abc then read --view messages --format ": "plain,json\nplain,ndjson\nplain,text\n",
             }[str(kwargs["comp_words"])],

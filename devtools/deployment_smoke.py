@@ -52,7 +52,7 @@ COMPLETION_PROBES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
         "read-views",
         "polylogue find id:abc then read --view ",
-        ("summary", "messages", "raw", "context-pack"),
+        ("summary", "messages", "raw", "context-image"),
     ),
     (
         "message-formats",

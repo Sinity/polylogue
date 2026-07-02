@@ -108,7 +108,7 @@ class SessionRuntimeMixin:
 
         return cast(Self, project_session_content(cast("Session", self), projection))
 
-    def dialogue_only(self) -> Self:
+    def authored_dialogue(self) -> Self:
         return self.with_roles((Role.USER, Role.ASSISTANT))
 
     def without_noise(self) -> Self:

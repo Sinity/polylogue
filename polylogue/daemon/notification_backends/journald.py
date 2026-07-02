@@ -37,7 +37,6 @@ logger = get_logger(__name__)
 
 SEVERITY_TO_PRIORITY: dict[HealthSeverity, int] = {
     HealthSeverity.OK: 6,
-    HealthSeverity.INFO: 6,
     HealthSeverity.WARNING: 4,
     HealthSeverity.ERROR: 3,
     HealthSeverity.CRITICAL: 2,

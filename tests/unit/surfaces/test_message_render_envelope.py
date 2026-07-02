@@ -1,7 +1,7 @@
 """``MessageRenderEnvelope`` contract for ``SessionMessagePayload`` (#1487).
 
 Pins the unified envelope every reader path emits — session detail,
-paginated message windows, MCP ``get_messages``, future bulk export. The
+paginated message windows, MCP ``get_messages``, future query-set reads. The
 contract enumerates which fields must be present (with their defaults)
 and asserts that a roundtrip through ``Message`` populates every typed
 slot from the canonical Message model.
@@ -23,11 +23,15 @@ from pydantic import ValidationError
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
+from polylogue.core.enums import BlockType
+from polylogue.storage.hydrators import message_from_record
+from polylogue.storage.runtime.archive.records import BlockRecord, MessageRecord
 from polylogue.surfaces.payloads import (
     ReaderActionAvailabilityPayload,
     SessionMessagePayload,
     TargetRefPayload,
 )
+from polylogue.types import ContentHash, MessageId, SessionId
 
 # The canonical envelope field set. Adding a new field to
 # ``SessionMessagePayload`` requires extending this list — that's
@@ -46,7 +50,7 @@ _ENVELOPE_FIELDS: tuple[str, ...] = (
     "content_blocks",
     "parent_id",
     "branch_index",
-    "has_paste",
+    "has_paste_evidence",
     "paste_boundary_state",
     "has_tool_use",
     "has_thinking",
@@ -112,7 +116,7 @@ def test_envelope_minimal_construction_uses_default_envelope_fields() -> None:
     assert payload.timestamp is None
     assert payload.parent_id is None
     assert payload.branch_index == 0
-    assert payload.has_paste is False
+    assert payload.has_paste_evidence is False
     assert payload.has_tool_use is False
     assert payload.has_thinking is False
     assert payload.input_tokens == 0
@@ -139,11 +143,74 @@ def test_from_message_propagates_branch_lineage_state() -> None:
 
 
 def test_from_message_propagates_content_flags() -> None:
-    msg = _build_message(has_paste=True, has_tool_use=True, has_thinking=True)
+    msg = _build_message(
+        has_paste=True,
+        paste_boundary_state="projected",
+        has_tool_use=True,
+        has_thinking=True,
+    )
     payload = SessionMessagePayload.from_message(msg, session_id="c1")
-    assert payload.has_paste is True
+    assert payload.has_paste_evidence is True
+    assert payload.paste_boundary_state == "projected"
     assert payload.has_tool_use is True
     assert payload.has_thinking is True
+
+
+def test_from_archive_row_propagates_paste_boundary_state() -> None:
+    """Archive row payloads must not collapse paste evidence to has_paste."""
+    row = MessageRecord(
+        message_id=MessageId("m1"),
+        session_id=SessionId("c1"),
+        provider_message_id="native-m1",
+        role=Role.USER,
+        content_hash=ContentHash("0" * 64),
+        blocks=[
+            BlockRecord(
+                block_id="b1",
+                message_id=MessageId("m1"),
+                session_id=SessionId("c1"),
+                block_index=0,
+                type=BlockType.TEXT,
+                text="See [Pasted text #1]",
+            )
+        ],
+        has_paste=1,
+        paste_boundary_state="projected",
+    )
+
+    payload = SessionMessagePayload.from_archive_row(row, session_id="c1")
+
+    assert payload.has_paste_evidence is True
+    assert payload.paste_boundary_state == "projected"
+
+
+def test_hydrated_message_envelope_preserves_paste_boundary_state() -> None:
+    """Storage hydration must not collapse paste evidence to has_paste."""
+    record = MessageRecord(
+        message_id=MessageId("m1"),
+        session_id=SessionId("c1"),
+        provider_message_id="native-m1",
+        role=Role.USER,
+        content_hash=ContentHash("0" * 64),
+        blocks=[
+            BlockRecord(
+                block_id="b1",
+                message_id=MessageId("m1"),
+                session_id=SessionId("c1"),
+                block_index=0,
+                type=BlockType.TEXT,
+                text="Large pasted body",
+            )
+        ],
+        has_paste=1,
+        paste_boundary_state="whole_message_fallback",
+    )
+
+    message = message_from_record(record, [])
+    payload = SessionMessagePayload.from_message(message, session_id="c1")
+
+    assert payload.has_paste_evidence is True
+    assert payload.paste_boundary_state == "whole_message_fallback"
 
 
 def test_from_message_propagates_usage_and_model() -> None:
@@ -227,7 +294,7 @@ def test_minimal_payload_serializes_compactly_with_exclude_none() -> None:
     # Required: typed envelope fields are observable (the test would
     # fail-fast if a new None-default field crept in).
     assert blob["branch_index"] == 0
-    assert blob["has_paste"] is False
+    assert blob["has_paste_evidence"] is False
     assert blob["input_tokens"] == 0
     assert blob["attachment_refs"] == []
 

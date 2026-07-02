@@ -8,12 +8,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.cli.messages import run_messages, run_raw
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
-from polylogue.core.enums import MaterialOrigin
 
 SCHEMAS_DIR = Path("docs/schemas/cli-output")
 
@@ -125,7 +123,7 @@ def _request(tmp_path: Path) -> RootModeRequest:
     )
 
 
-def test_run_messages_emits_json_and_passes_projection(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_run_messages_emits_json_and_passes_pagination(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     env = _env()
     api = _FakeApi(
         messages_result=(
@@ -146,27 +144,16 @@ def test_run_messages_emits_json_and_passes_projection(tmp_path: Path, capsys: p
             env,
             _request(tmp_path),
             session_id="conv-1",
-            message_role=("user",),
-            material_origin=("human-authored",),
-            message_type="summary",
             limit=5,
             offset=2,
-            no_code_blocks=True,
-            prose_only=True,
             output_format="json",
         )
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["messages"][0]["text"] == "hello"
     assert api.messages_kwargs["session_id"] == "conv-1"
-    assert api.messages_kwargs["message_role"] == ("user",)
-    assert api.messages_kwargs["material_origin"] == (MaterialOrigin.HUMAN_AUTHORED,)
-    assert api.messages_kwargs["message_type"] == "summary"
     assert api.messages_kwargs["limit"] == 5
     assert api.messages_kwargs["offset"] == 2
-    projection = cast(ContentProjectionSpec, api.messages_kwargs["content_projection"])
-    assert projection.include_code is False
-    assert projection.include_tool_calls is False
 
 
 def test_run_messages_json_is_single_finite_document(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

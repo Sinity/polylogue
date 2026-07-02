@@ -115,7 +115,7 @@ class ObjectRef:
 
 @dataclass(frozen=True, slots=True)
 class EvidenceRef:
-    """Recovery evidence pointer using ``session_id[::message_id[::block]]``."""
+    """Archive evidence pointer using ``session_id[::message_id[::block]]``."""
 
     session_id: str
     message_id: str | None = None
@@ -123,7 +123,7 @@ class EvidenceRef:
 
     @classmethod
     def parse(cls, value: str) -> EvidenceRef:
-        """Parse the recovery evidence id format.
+        """Parse the archive evidence id format.
 
         ``::`` is used because session ids themselves are often colon-bearing
         origin-prefixed strings such as ``codex-session:demo``.
@@ -161,7 +161,7 @@ class EvidenceRef:
         return "session"
 
     def format(self) -> str:
-        """Return the canonical recovery evidence id."""
+        """Return the canonical archive evidence id."""
 
         parts = [self.session_id]
         if self.message_id is not None:

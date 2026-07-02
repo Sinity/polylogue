@@ -1076,7 +1076,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         Read-shaped delegate to :meth:`Polylogue.postmortem_bundle`: resolves
         the matched session set from the filter scope, aggregates per-session
-        recovery digests, and returns the typed
+        session digests, and returns the typed
         :class:`polylogue.insights.postmortem.PostmortemBundle` (top sessions
         by cost, repos touched, tool/work-kind rollups, failure-mode signals).
         The analysis cap defaults to 200 sessions; a larger match marks the

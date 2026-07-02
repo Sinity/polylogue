@@ -37,7 +37,7 @@ Conversation target defaults:
 
 - copy title + permalink.
 - copy Markdown transcript excerpt.
-- copy context-pack seed when available.
+- copy context-image seed when available.
 - copy raw provenance pointer.
 
 Message target defaults:

@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 from polylogue.daemon.web_shell_attachments import ATTACHMENT_CSS, ATTACHMENT_JS
-from polylogue.daemon.web_shell_bulk import (
-    BULK_CSS,
-    BULK_JS,
-    BULK_PREVIEW_HTML,
-    BULK_TOOLBAR_HTML,
-)
 from polylogue.daemon.web_shell_lineage import LINEAGE_JS
 from polylogue.daemon.web_shell_paste import PASTE_CSS, PASTE_JS
 from polylogue.daemon.web_shell_provenance import PROVENANCE_JS
 from polylogue.daemon.web_shell_reader import READER_CSS, READER_HELP_HTML, READER_JS
 from polylogue.daemon.web_shell_realtime import REALTIME_JS
+from polylogue.daemon.web_shell_selection import (
+    SELECTION_CSS,
+    SELECTION_JS,
+    SELECTION_PREVIEW_HTML,
+    SELECTION_TOOLBAR_HTML,
+)
 from polylogue.daemon.web_shell_similar import SIMILAR_JS
 from polylogue.daemon.web_shell_workspace import WORKSPACE_CSS, WORKSPACE_HTML, WORKSPACE_JS
 
@@ -124,7 +124,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
 .conv-item .conv-meta .flag.think { color: var(--role-thinking); }
 .conv-item .conv-meta .flag.mark { color: var(--warn); border: 1px solid var(--border); }
 .provider-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 3px; flex-shrink: 0; }
-__BULK_CSS__
+__SELECTION_CSS__
 .sidebar-state { padding: 16px 12px; color: var(--text-dim); font-size: var(--small); text-align: center; line-height: 1.6; }
 .sidebar-state .state-icon { font-size: 24px; margin-bottom: 6px; opacity: 0.4; }
 
@@ -283,7 +283,7 @@ __ATTACHMENT_CSS__
       <button class="help-btn" id="help-btn" title="Keyboard shortcuts (?)">?</button>
     </div>
     <div id="facet-bar"></div>
-__BULK_TOOLBAR_HTML__
+__SELECTION_TOOLBAR_HTML__
     <div id="conv-list"><div class="sidebar-state"><div class="state-icon">&mdash;</div>Loading...</div></div>
   </div>
   <div id="main">
@@ -341,7 +341,7 @@ __READER_HELP_HTML__
   </div>
 </div>
 
-__BULK_PREVIEW_HTML__
+__SELECTION_PREVIEW_HTML__
 
 <script>
 var API = '';
@@ -352,11 +352,11 @@ var state = {
   facetError: '',
   marks: {}, annotations: {}, savedViews: [], workspaces: [], userStateError: '',
   mode: 'single', stackPayload: null, comparePayload: null,
-  // Bulk selection state (#1119). selection is a Set-like object keyed by
-  // session_id. lastBulkResult holds the per-session envelope from
-  // the most recent bulk operation: {succeeded:[ids], failed:[{id,reason}],
+  // Selection set state (#1119). selection is a Set-like object keyed by
+  // session_id. lastSelectionResult holds the per-session envelope from
+  // the most recent selection operation: {succeeded:[ids], failed:[{id,reason}],
   // skipped:[{id,reason}], dryRun:bool, action:string}.
-  bulkSelection: {}, lastBulkResult: null, bulkPending: null,
+  selectionSet: {}, lastSelectionResult: null, selectionPending: null,
   // Cost panel cache (#1122). Keyed by session_id; populated on demand
   // when the Cost inspector tab is opened. ``undefined`` means "not loaded
   // yet", null/{error} means "fetch failed".
@@ -377,10 +377,8 @@ var state = {
   // Per-session collapsed-section toggles for the Insights tab.
   // Keyed as ``"<session_id>:<kind>"``; default = expanded.
   insightsCollapsed: {},
-  // Per-session evidence/work-packet panel cache (#1846). Keyed by
-  // session_id; populated from the new daemon recovery/assertion routes.
-  // This is intentionally a read-side cache over shared DTOs, not a web-only
-  // evidence model.
+  // Per-session evidence/context panel cache (#1846). Keyed by session_id and
+  // populated from the shared read-view and assertion routes.
   evidencePanels: {},
   // Shared read-view profile inventory (#1846/#1838). Loaded from
   // /api/read-view-profiles so the shell does not grow a second profile
@@ -1063,7 +1061,7 @@ function renderSessions() {
   }
   el.innerHTML = items.map(function(c) {
     var sel = state.selected && state.selected.id === c.id ? ' selected' : '';
-    var bulkSel = isBulkSelected(c.id) ? ' bulk-selected' : '';
+    var selectionSel = isSelectionSelected(c.id) ? ' selection-selected' : '';
     var title = esc((c.title || 'Untitled').substring(0, 100));
     var date = c.created_at ? new Date(c.created_at).toLocaleDateString() : '';
     var p = c.origin || 'unknown';
@@ -1072,16 +1070,16 @@ function renderSessions() {
     if (c.flags) {
       if (c.flags.has_tool_use) flagsHtml += '<span class="flag tool">T</span>';
       if (c.flags.has_thinking) flagsHtml += '<span class="flag think">R</span>';
-      if (c.flags.has_paste) flagsHtml += '<span class="flag">P</span>';
+      if (c.flags.has_paste_evidence) flagsHtml += '<span class="flag">P</span>';
     }
     if (hasMark(c.id, 'star')) flagsHtml += '<span class="flag mark" title="Starred">*</span>';
     if (hasMark(c.id, 'pin')) flagsHtml += '<span class="flag mark" title="Pinned">P</span>';
     if (hasMark(c.id, 'archive')) flagsHtml += '<span class="flag mark" title="Archived">A</span>';
     var repoHtml = c.repo ? '<span class="chip" style="font-size:10px;padding:0 4px">' + esc(c.repo.split('/').pop()) + '</span>' : '';
-    var checked = isBulkSelected(c.id) ? ' checked' : '';
-    return '<div class="conv-item' + sel + bulkSel + '" data-id="' + escAttr(c.id) + '">'
+    var checked = isSelectionSelected(c.id) ? ' checked' : '';
+    return '<div class="conv-item' + sel + selectionSel + '" data-id="' + escAttr(c.id) + '">'
       + '<div class="conv-row">'
-      + '<input type="checkbox" class="bulk-check" data-bulk-id="' + escAttr(c.id) + '" aria-label="Select session"' + checked + '>'
+      + '<input type="checkbox" class="selection-check" data-selection-id="' + escAttr(c.id) + '" aria-label="Select session"' + checked + '>'
       + '<div class="conv-body" onclick="selectSession(\'' + escAttr(c.id) + '\')">'
       + '<div class="conv-title">' + title + '</div>'
       + '<div class="conv-meta">'
@@ -1092,10 +1090,10 @@ function renderSessions() {
       + flagsHtml + repoHtml
       + '</div></div></div></div>';
   }).join('');
-  renderBulkToolbar();
+  renderSelectionToolbar();
 }
 
-__BULK_JS__
+__SELECTION_JS__
 
 function renderFacets() {
   var f = state.facets;
@@ -1205,9 +1203,7 @@ function renderReadViewSelector(c) {
 
 function applyReadViewSelection(viewId) {
   state.selectedReadView = viewId || 'messages';
-  if (viewId === 'recovery') {
-    state.inspectorTab = 'evidence';
-  } else if (viewId === 'raw') {
+  if (viewId === 'raw') {
     state.inspectorTab = 'raw';
   }
   document.querySelectorAll('#inspector-tabs button').forEach(function(b) {
@@ -1289,7 +1285,7 @@ function renderMain() {
   if (c.flags) {
     if (c.flags.has_tool_use) headerHtml += '<span class="chip accent">tool use</span>';
     if (c.flags.has_thinking) headerHtml += '<span class="chip accent">thinking</span>';
-    if (c.flags.has_paste) headerHtml += '<span class="chip accent">paste</span>';
+    if (c.flags.has_paste_evidence) headerHtml += '<span class="chip accent">paste</span>';
   }
   // 5. cost/tokens (surface when present; estimated → q-estimated quality)
   if (c.cost_usd !== undefined && c.cost_usd !== null) {
@@ -1337,10 +1333,9 @@ function renderReadViewExecution(c, viewId) {
     return '<div class="main-empty"><h3>Loading ' + esc(viewId) + '...</h3></div>';
   }
   var payload = envelope.payload || {};
-  if (viewId === 'recovery') return renderRecoveryReadView(payload);
   if (viewId === 'raw') return renderRawReadView(payload);
   if (viewId === 'context') return renderContextReadView(payload);
-  if (viewId === 'context-pack') return renderContextPackReadView(payload);
+  if (viewId === 'context-image') return renderContextImageReadView(payload);
   if (viewId === 'neighbors') return renderNeighborsReadView(payload);
   if (viewId === 'correlation') return renderCorrelationReadView(payload);
   return '<div class="main-empty"><h3>Unsupported read view</h3><p>' + esc(viewId) + '</p></div>';
@@ -1352,22 +1347,6 @@ function retryReadViewExecution() {
   delete state.readViewErrors[key];
   delete state.readViewPayloads[key];
   renderMain();
-}
-
-function renderRecoveryReadView(payload) {
-  var packet = payload.work_packet || {};
-  var entries = packet.entries || [];
-  var html = '<div class="read-view-panel"><h3>Recovery work packet</h3>'
-    + '<p class="muted">Read through /api/sessions/:id/read using the shared recovery DTO.</p>'
-    + '<div class="inspector-field"><span class="label">entries</span><span class="value">' + esc(String(entries.length)) + '</span></div>'
-    + '<div class="inspector-field"><span class="label">evidence refs</span><span class="value">' + esc(String((packet.evidence_refs || []).length)) + '</span></div>';
-  entries.slice(0, 10).forEach(function(entry) {
-    html += '<div class="annotation-item"><div class="meta">' + esc(entry.section || 'entry') + ' / ' + esc(entry.support || 'support') + '</div>'
-      + '<div class="note"><strong>' + esc(entry.label || 'entry') + '</strong><br>' + esc(entry.text || '') + '</div></div>';
-  });
-  if (!entries.length) html += '<div class="inspector-empty">No recovery entries surfaced for this session.</div>';
-  html += '</div>';
-  return html;
 }
 
 function renderRawReadView(payload) {
@@ -1412,7 +1391,7 @@ function renderContextReadView(payload) {
   return html;
 }
 
-function renderContextPackReadView(payload) {
+function renderContextImageReadView(payload) {
   var segments = payload.segments || [];
   var omitted = payload.omitted || [];
   var spec = payload.spec || {};
@@ -1420,8 +1399,8 @@ function renderContextPackReadView(payload) {
     + '<p class="muted">Read through /api/sessions/:id/read using the shared ContextImage payload (compile_context).</p>'
     + '<div class="inspector-field"><span class="label">segments</span><span class="value">' + esc(String(segments.length)) + '</span></div>'
     + '<div class="inspector-field"><span class="label">tokens</span><span class="value">' + esc(String(payload.token_estimate || 0)) + '</span></div>'
-    + '<div class="inspector-field"><span class="label">views</span><span class="value">' + esc((spec.read_views || []).join(', ') || 'recovery') + '</span></div>'
-    + '<div class="inspector-field"><span class="label">strategy</span><span class="value">' + esc(payload.selection_strategy || 'single_session_recovery_digest_v0') + '</span></div>';
+    + '<div class="inspector-field"><span class="label">views</span><span class="value">' + esc((spec.read_views || []).join(', ') || '-') + '</span></div>'
+    + '<div class="inspector-field"><span class="label">strategy</span><span class="value">' + esc(payload.selection_strategy || 'context_spec_v1') + '</span></div>';
   segments.slice(0, 8).forEach(function(segment) {
     html += '<div class="annotation-item"><div class="meta">' + esc(segment.kind || 'segment') + ' / ' + esc(String(segment.token_estimate || 0)) + ' tokens</div>'
       + '<div class="note"><strong>' + esc(segment.title || segment.segment_id || 'Segment') + '</strong></div></div>';
@@ -1868,9 +1847,9 @@ function renderInspectorCost(el, c) {
 
 async function loadEvidencePanel(id) {
   try {
-    var recovery = await fetchJSON('/api/sessions/' + encodeURIComponent(id) + '/recovery?report=work-packet&format=json', {timeoutMs: 10000});
+    var context = await fetchJSON('/api/sessions/' + encodeURIComponent(id) + '/read?view=context-image&format=json&include_messages=0', {timeoutMs: 10000});
     var assertions = await fetchJSON('/api/assertions?target_ref=' + encodeURIComponent('session:' + id) + '&limit=20', {timeoutMs: 10000});
-    state.evidencePanels[id] = {recovery: recovery, assertions: assertions};
+    state.evidencePanels[id] = {context: context, assertions: assertions};
   } catch(e) {
     state.evidencePanels[id] = {error: String(e)};
   }
@@ -1901,23 +1880,23 @@ function renderInspectorEvidence(el, c) {
     el.innerHTML = '<div class="inspector-empty">Evidence surface unavailable</div>';
     return;
   }
-  var packet = (panel.recovery && panel.recovery.work_packet) || {};
+  var contextPayload = (panel.context && panel.context.payload) || {};
   var assertions = (panel.assertions && panel.assertions.items) || [];
-  var html = '<div class="inspector-section"><h4>Work packet</h4>'
-    + '<div class="inspector-field"><span class="label">entries</span><span class="value">' + esc(String((packet.entries || []).length)) + '</span></div>'
-    + '<div class="inspector-field"><span class="label">evidence refs</span><span class="value">' + esc(String((packet.evidence_refs || []).length)) + '</span></div>'
+  var html = '<div class="inspector-section"><h4>Context image</h4>'
+    + '<div class="inspector-field"><span class="label">segments</span><span class="value">' + esc(String((contextPayload.segments || []).length)) + '</span></div>'
+    + '<div class="inspector-field"><span class="label">evidence refs</span><span class="value">' + esc(String((contextPayload.evidence_refs || []).length)) + '</span></div>'
     + '</div>';
-  if ((packet.entries || []).length) {
-    html += '<div class="inspector-section"><h4>Packet entries</h4>';
-    (packet.entries || []).slice(0, 8).forEach(function(entry) {
-      html += '<div class="annotation-item"><div class="meta">' + esc(entry.section || 'entry') + ' / ' + esc(entry.support || 'support') + '</div>'
-        + '<div class="note"><strong>' + esc(entry.label || 'entry') + '</strong><br>' + esc(entry.text || '') + '</div>'
+  if ((contextPayload.segments || []).length) {
+    html += '<div class="inspector-section"><h4>Segments</h4>';
+    (contextPayload.segments || []).slice(0, 8).forEach(function(segment) {
+      html += '<div class="annotation-item"><div class="meta">' + esc(segment.kind || 'segment') + ' / ' + esc(String(segment.token_estimate || 0)) + ' tokens</div>'
+        + '<div class="note"><strong>' + esc(segment.title || segment.segment_id || 'Segment') + '</strong></div>'
         + '</div>';
     });
     html += '</div>';
   }
-  html += '<div class="inspector-section"><h4>Evidence refs</h4>' + renderRefList(packet.evidence_refs || []) + '</div>';
-  html += '<div class="inspector-section"><h4>Target refs</h4>' + renderRefList(packet.target_refs || []) + '</div>';
+  html += '<div class="inspector-section"><h4>Evidence refs</h4>' + renderRefList(contextPayload.evidence_refs || []) + '</div>';
+  html += '<div class="inspector-section"><h4>Object refs</h4>' + renderRefList(contextPayload.object_refs || []) + '</div>';
   html += '<div class="inspector-section"><h4>Assertions</h4>';
   if (assertions.length) {
     assertions.forEach(function(claim) {
@@ -2333,7 +2312,7 @@ document.getElementById('facet-bar').addEventListener('click', function(e) {
   if (facet === 'origin') { state.origin = value || ''; state.offset = 0; loadSessions(); loadFacets(); }
 });
 
-attachBulkHandlers();
+attachSelectionHandlers();
 
 document.getElementById('inspector-tabs').addEventListener('click', function(e) {
   if (e.target.tagName !== 'BUTTON') return;
@@ -2363,10 +2342,10 @@ __ATTACHMENT_JS__
 </html>""".replace("__WORKSPACE_CSS__", WORKSPACE_CSS)
     .replace("__WORKSPACE_HTML__", WORKSPACE_HTML)
     .replace("__WORKSPACE_JS__", WORKSPACE_JS)
-    .replace("__BULK_CSS__", BULK_CSS)
-    .replace("__BULK_TOOLBAR_HTML__", BULK_TOOLBAR_HTML)
-    .replace("__BULK_PREVIEW_HTML__", BULK_PREVIEW_HTML)
-    .replace("__BULK_JS__", BULK_JS)
+    .replace("__SELECTION_CSS__", SELECTION_CSS)
+    .replace("__SELECTION_TOOLBAR_HTML__", SELECTION_TOOLBAR_HTML)
+    .replace("__SELECTION_PREVIEW_HTML__", SELECTION_PREVIEW_HTML)
+    .replace("__SELECTION_JS__", SELECTION_JS)
     .replace("__PROVENANCE_JS__", PROVENANCE_JS)
     .replace("__LINEAGE_JS__", LINEAGE_JS)
     .replace("__SIMILAR_JS__", SIMILAR_JS)

@@ -33,6 +33,7 @@ class Message(MessageRuntimeMixin, BaseModel):
     has_tool_use: bool = False
     has_thinking: bool = False
     has_paste: bool = False
+    paste_boundary_state: str | None = None
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0

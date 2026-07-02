@@ -24,14 +24,15 @@ from polylogue.archive.viewport import (
     read_view_choices,
     read_view_profile_payloads,
 )
-from polylogue.cli.click_option_groups import _LazyChoice
 from polylogue.cli.read_view_handlers import (
+    READ_VIEW_HANDLERS,
     ReadViewInvocation,
     read_view_option_names,
     read_view_options_for_view,
-    run_bulk_export_view,
+    run_query_set_read_view,
     run_read_view,
 )
+from polylogue.cli.read_views.base import deliver_content
 from polylogue.cli.shared.types import AppEnv
 from polylogue.cli.verb_names import VERB_NAMES
 from polylogue.core.enums import AssertionStatus
@@ -40,6 +41,7 @@ from polylogue.surfaces.payloads import (
     AssertionClaimListPayload,
     serialize_surface_payload,
 )
+from polylogue.surfaces.projection_spec import QueryProjectionSpec, projection_from_views
 
 _FACET_TERMINAL_BUCKET_LIMIT = 12
 _FACET_TERMINAL_IDF_LIMIT = 12
@@ -142,26 +144,6 @@ def _get_root_request_class() -> object:  # pragma: no cover — returns RootMod
     return RootModeRequest
 
 
-def _get_message_type_class() -> object:  # pragma: no cover — returns MessageType
-    from polylogue.archive.message.types import MessageType
-
-    return MessageType
-
-
-def _get_message_type_choices() -> list[str]:
-    return [m.value for m in _get_message_type_class()]  # type: ignore[attr-defined]
-
-
-def _get_material_origin_class() -> object:  # pragma: no cover — returns MaterialOrigin
-    from polylogue.core.enums import MaterialOrigin
-
-    return MaterialOrigin
-
-
-def _get_material_origin_choices() -> list[str]:
-    return [m.value for m in _get_material_origin_class()]  # type: ignore[attr-defined]
-
-
 def _lazy_shell_complete(source: str):  # type: ignore[no-untyped-def]
     def _complete(ctx: click.Context, param: click.Parameter, incomplete: str):  # type: ignore[no-untyped-def]
         from polylogue.cli.shell_completion_values import complete_query_source
@@ -172,15 +154,10 @@ def _lazy_shell_complete(source: str):  # type: ignore[no-untyped-def]
     return _complete
 
 
-_complete_session_id = _lazy_shell_complete("session_id")
-_complete_material_origin = _lazy_shell_complete("material_origin")
-_complete_message_type = _lazy_shell_complete("message_type")
-
 _READ_VIEWS = read_view_choices()
 _READ_VIEW_HELP = "What to render (" + ", ".join(_READ_VIEWS) + ")."
 _READ_DESTINATIONS = ("terminal", "stdout", "browser", "clipboard", "file")
 _READ_FORMATS = tuple(sorted({fmt for profile in READ_VIEW_PROFILES for fmt in profile.formats}))
-_RECOVERY_REPORT_PRESETS = ("continue", "blame", "work-packet")
 
 
 def _explicit_read_view_options(ctx: click.Context) -> frozenset[str]:
@@ -197,24 +174,15 @@ def _read_view_option_values(
     *,
     limit: int | None,
     offset: int,
-    message_role: tuple[str, ...],
-    material_origin: tuple[str, ...],
-    message_type: str | None,
-    no_code_blocks: bool,
-    no_tool_calls: bool,
-    no_tool_outputs: bool,
-    no_file_reads: bool,
-    prose_only: bool,
     related_limit: int,
     project_path: str | None,
     project_repo: str | None,
     since: str | None,
     until: str | None,
-    pack_origin: str | None,
-    pack_query: str | None,
+    context_origin: str | None,
+    context_query: str | None,
     max_sessions: int,
     no_redact: bool,
-    recovery_report: str | None,
     window_hours: int,
     repo_path: str | None,
     since_hours: int,
@@ -227,24 +195,15 @@ def _read_view_option_values(
     return {
         "limit": limit,
         "offset": offset,
-        "message_role": message_role,
-        "material_origin": material_origin,
-        "message_type": message_type,
-        "no_code_blocks": no_code_blocks,
-        "no_tool_calls": no_tool_calls,
-        "no_tool_outputs": no_tool_outputs,
-        "no_file_reads": no_file_reads,
-        "prose_only": prose_only,
         "related_limit": related_limit,
         "project_path": project_path,
         "project_repo": project_repo,
         "since": since,
         "until": until,
-        "pack_origin": pack_origin,
-        "pack_query": pack_query,
+        "context_origin": context_origin,
+        "context_query": context_query,
         "max_sessions": max_sessions,
         "no_redact": no_redact,
-        "recovery_report": recovery_report,
         "window_hours": window_hours,
         "repo_path": repo_path,
         "since_hours": since_hours,
@@ -255,6 +214,18 @@ def _read_view_option_values(
 
 
 _CONTINUE_CANDIDATE_DEFAULT_LIMIT = 10
+
+
+def _successor_context_unit_queries(session_id: str) -> tuple[str, ...]:
+    """Default successor-context recipe expressed through terminal DSL units."""
+
+    session_clause = f"session.id:{session_id}"
+    return (
+        f"runs where {session_clause}",
+        f"observed-events where {session_clause}",
+        f"context-snapshots where {session_clause}",
+        f"actions where {session_clause}",
+    )
 
 
 def _wants_json(request: RootModeRequest, *, output_format: str | None) -> bool:
@@ -337,11 +308,15 @@ def _complete_read_format(ctx: click.Context, param: click.Parameter, incomplete
 def _render_read_view_profiles_plain() -> str:
     lines = ["Read views:"]
     for profile in READ_VIEW_PROFILES:
+        handler = READ_VIEW_HANDLERS[profile.view_id]
+        options = ", ".join(f"--{name.replace('_', '-')}" for name in sorted(handler.accepted_options)) or "none"
+        scope = "query-set" if handler.accepts_query_set else handler.session_policy
         handoff = " handoff" if profile.successor_handoff else ""
         lines.append(
             f"  {profile.view_id:<12} {profile.lossiness:<10} evidence={profile.evidence_policy:<10}"
             f" formats={','.join(profile.formats)}{handoff}"
         )
+        lines.append(f"      scope={scope}; options={options}")
         lines.append(f"      {profile.purpose}")
     return "\n".join(lines)
 
@@ -350,11 +325,167 @@ def _emit_read_view_profiles(output_format: str | None) -> None:
     if output_format == "json":
         from polylogue.cli.shared.machine_errors import emit_success
 
-        emit_success({"read_views": read_view_profile_payloads()})
+        payloads: list[dict[str, object]] = []
+        for payload in read_view_profile_payloads():
+            handler = READ_VIEW_HANDLERS[str(payload["view_id"])]
+            augmented: dict[str, object] = dict(payload)
+            augmented["cli_options"] = sorted(handler.accepted_options)
+            augmented["session_policy"] = handler.session_policy
+            augmented["accepts_query_set"] = handler.accepts_query_set
+            payloads.append(augmented)
+        emit_success({"read_views": payloads})
         return
     if output_format is not None:
         raise click.UsageError("`read --views` only supports terminal text or --format json")
     click.echo(_render_read_view_profiles_plain())
+
+
+def _read_query_text(request: RootModeRequest) -> str | None:
+    if not request.query_terms:
+        return None
+    return " ".join(str(term) for term in request.query_terms)
+
+
+def _build_read_projection_spec(
+    request: RootModeRequest,
+    *,
+    views: tuple[str, ...],
+    output_format: str | None,
+    destination: str,
+    out_path: str | None,
+    max_tokens: int | None,
+    selection_limit: int | None,
+    render_layout: str = "standard",
+    selection_query: str | None = None,
+    selection_origin: str | None = None,
+    selection_since: str | None = None,
+    selection_until: str | None = None,
+    selection_project_path: str | None = None,
+    selection_project_repo: str | None = None,
+    edge_limit: int | None = None,
+    body_limit: int | None = None,
+    body_offset: int | None = None,
+    neighbor_limit: int | None = None,
+    neighbor_window_hours: int | None = None,
+) -> QueryProjectionSpec:
+    """Build the typed selection/projection/render contract for read options."""
+
+    primary_view = views[0] if views else "summary"
+    effective_format = (
+        _effective_read_output_format(request, view=primary_view, output_format=output_format) or "markdown"
+    )
+    query_spec = request.query_spec()
+    origin = query_spec.origins[0] if len(query_spec.origins) == 1 else None
+    return projection_from_views(
+        views,
+        format=effective_format,
+        destination=destination,
+        layout=render_layout,
+        max_tokens=max_tokens,
+        out=out_path,
+        query=selection_query if selection_query is not None else _read_query_text(request),
+        origin=selection_origin if selection_origin is not None else origin,
+        since=selection_since if selection_since is not None else query_spec.since,
+        until=selection_until if selection_until is not None else query_spec.until,
+        project_path=selection_project_path,
+        project_repo=selection_project_repo,
+        limit=selection_limit,
+        edge_limit=edge_limit,
+        body_limit=body_limit,
+        body_offset=body_offset,
+        neighbor_limit=neighbor_limit,
+        neighbor_window_hours=neighbor_window_hours,
+    )
+
+
+def _read_projection_limits(
+    views: tuple[str, ...],
+    limit: int | None,
+    offset: int,
+) -> tuple[int | None, int | None, int | None, int | None, int | None]:
+    """Split read --limit between selection cardinality and projection policy."""
+
+    if len(views) == 1 and views[0] == "chronicle":
+        return None, limit, None, None, None
+    if len(views) == 1 and views[0] in {"messages", "raw"}:
+        return None, None, limit, offset if offset else None, None
+    if len(views) == 1 and views[0] == "neighbors":
+        return None, None, None, None, limit
+    return limit, None, None, None, None
+
+
+def _read_render_layout(views: tuple[str, ...]) -> str:
+    """Return the render layout family for read output."""
+
+    if len(views) > 1 or "context-image" in views:
+        return "context-image"
+    return "standard"
+
+
+def _projection_spec_with_resolved_session_refs(
+    projection_spec: QueryProjectionSpec | None,
+    session_ids: tuple[str, ...],
+) -> QueryProjectionSpec | None:
+    """Return a projection spec that records resolved archive session refs."""
+
+    if projection_spec is None or not session_ids:
+        return projection_spec
+    refs = tuple(f"session:{session_id}" for session_id in session_ids)
+    selection = projection_spec.selection.model_copy(update={"refs": refs})
+    return projection_spec.model_copy(update={"selection": selection})
+
+
+_READ_HELP_OPTION_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
+    ("Projection", frozenset({"view", "show_views", "show_spec"})),
+    ("Delivery and format", frozenset({"destination", "output_format", "out_path", "fields"})),
+    ("Cardinality and pagination", frozenset({"all_matches", "first_only", "limit", "offset"})),
+    (
+        "Context-image projection",
+        frozenset(
+            {
+                "project_path",
+                "project_repo",
+                "since",
+                "until",
+                "context_origin",
+                "context_query",
+                "max_sessions",
+                "max_tokens",
+                "include_assertions",
+                "no_redact",
+            }
+        ),
+    ),
+    ("Context and neighbor views", frozenset({"related_limit", "window_hours"})),
+    ("Correlation view", frozenset({"repo_path", "since_hours", "confidence_threshold", "github_api", "otlp"})),
+)
+
+
+class _ReadCommand(click.Command):
+    """Click command with read-option help grouped by ownership."""
+
+    def format_options(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        grouped: dict[str, list[tuple[str, str]]] = {heading: [] for heading, _ in _READ_HELP_OPTION_GROUPS}
+        other: list[tuple[str, str]] = []
+
+        for param in self.get_params(ctx):
+            record = param.get_help_record(ctx)
+            if record is None:
+                continue
+            target = other
+            for heading, names in _READ_HELP_OPTION_GROUPS:
+                if param.name in names:
+                    target = grouped[heading]
+                    break
+            target.append(record)
+
+        for heading, _names in _READ_HELP_OPTION_GROUPS:
+            if grouped[heading]:
+                with formatter.section(heading):
+                    formatter.write_dl(grouped[heading])
+        if other:
+            with formatter.section("Other options"):
+                formatter.write_dl(other)
 
 
 def _summary_all_output_param(destination: str, out_path: str | None) -> str | None:
@@ -398,7 +529,7 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: b
     run_select(ctx.obj, request, limit=limit, print_field=field)
 
 
-@click.command("read")
+@click.command("read", cls=_ReadCommand)
 @click.option(
     "--view",
     "-v",
@@ -434,24 +565,7 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: b
     help="Output format (where applicable).",
 )
 @click.option("--out", "out_path", type=click.Path(), default=None, help="File path for --to file.")
-@click.option("--all", "export_all", is_flag=True, help="Apply to all matched sessions (bulk export).")
-# message/raw pagination flags
-@click.option("--message-role", "-r", "message_role", multiple=True, help="Filter by message role (--view messages).")
-@click.option(
-    "--material-origin",
-    "material_origin",
-    multiple=True,
-    type=_LazyChoice(_get_material_origin_choices, "origin"),
-    shell_complete=_complete_material_origin,
-    help="Filter by material origin (--view messages).",
-)
-@click.option(
-    "--message-type",
-    "message_type",
-    type=_LazyChoice(_get_message_type_choices, "type"),
-    shell_complete=_complete_message_type,
-    help="Filter by message content type (--view messages).",
-)
+@click.option("--all", "all_matches", is_flag=True, help="Read all matched sessions.")
 @click.option("--limit", "-l", "-n", type=int, default=None, help="Max items to return.")
 @click.option("--offset", type=int, default=0, help="Pagination offset.")
 @click.option(
@@ -498,21 +612,14 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: b
     show_default=True,
     help="Number of related sessions to include (--view context).",
 )
+@click.option("--project-path", default=None, help="Filter by cwd prefix pattern (--view context-image).")
+@click.option("--project-repo", default=None, help="Filter by git repo URL or name (--view context-image).")
+@click.option("--since", default=None, help="Start date, ISO 8601 (--view context-image).")
+@click.option("--until", default=None, help="End date, ISO 8601 (--view context-image).")
+@click.option("--context-origin", "context_origin", default=None, help="Source-origin filter (--view context-image).")
+@click.option("--query", "context_query", default=None, help="Free-text query (--view context-image).")
 @click.option(
-    "--report",
-    "recovery_report",
-    type=click.Choice(_RECOVERY_REPORT_PRESETS),
-    default=None,
-    help="Render a recovery report preset (--view recovery): continue, blame, or work-packet.",
-)
-@click.option("--project-path", default=None, help="Filter by cwd prefix pattern (--view context-pack).")
-@click.option("--project-repo", default=None, help="Filter by git repo URL or name (--view context-pack).")
-@click.option("--since", default=None, help="Start date, ISO 8601 (--view context-pack).")
-@click.option("--until", default=None, help="End date, ISO 8601 (--view context-pack).")
-@click.option("--pack-origin", "pack_origin", default=None, help="Source-origin filter (--view context-pack).")
-@click.option("--query", "pack_query", default=None, help="Free-text query (--view context-pack).")
-@click.option(
-    "--max-sessions", type=int, default=5, show_default=True, help="Max sessions, 1-20 (--view context-pack)."
+    "--max-sessions", type=int, default=5, show_default=True, help="Max sessions, 1-20 (--view context-image)."
 )
 @click.option(
     "--max-tokens",
@@ -526,14 +633,10 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, json_output: b
     default=False,
     help="Include context-inject assertion claims in the compiled context image.",
 )
-@click.option("--no-redact", is_flag=True, default=False, help="Do not redact filesystem paths (--view context-pack).")
-@click.option("--no-code-blocks", is_flag=True, help="Exclude code blocks (--view messages).")
-@click.option("--no-tool-calls", is_flag=True, help="Exclude tool calls (--view messages).")
-@click.option("--no-tool-outputs", is_flag=True, help="Exclude tool outputs (--view messages).")
-@click.option("--no-file-reads", is_flag=True, help="Exclude file reads (--view messages).")
-@click.option("--prose-only", is_flag=True, help="Show only prose text (--view messages).")
+@click.option("--no-redact", is_flag=True, default=False, help="Do not redact filesystem paths (--view context-image).")
 @click.option("--fields", help="Fields for JSON/YAML outputs (--all).")
-@click.option("--views", "show_views", is_flag=True, help="List executable read-view profiles and exit.")
+@click.option("--views", "show_views", is_flag=True, help="List executable read-view profiles, formats, and options.")
+@click.option("--spec", "show_spec", is_flag=True, help="Print the composed selection/projection/render spec as JSON.")
 @click.option("--first", "first_only", is_flag=True, help="Read the first matched session only.")
 @click.argument("ref", required=False)
 @click.pass_context
@@ -543,10 +646,7 @@ def read_verb(
     destination: str,
     output_format: str | None,
     out_path: str | None,
-    export_all: bool,
-    message_role: tuple[str, ...],
-    material_origin: tuple[str, ...],
-    message_type: str | None,
+    all_matches: bool,
     limit: int | None,
     offset: int,
     window_hours: int,
@@ -556,24 +656,19 @@ def read_verb(
     github_api: bool,
     otlp: bool,
     related_limit: int,
-    recovery_report: str | None,
     project_path: str | None,
     project_repo: str | None,
     since: str | None,
     until: str | None,
-    pack_origin: str | None,
-    pack_query: str | None,
+    context_origin: str | None,
+    context_query: str | None,
     max_sessions: int,
     max_tokens: int | None,
     include_assertions: bool,
     no_redact: bool,
-    no_code_blocks: bool,
-    no_tool_calls: bool,
-    no_tool_outputs: bool,
-    no_file_reads: bool,
-    prose_only: bool,
     fields: str | None,
     first_only: bool,
+    show_spec: bool = False,
     show_views: bool = False,
     ref: str | None = None,
 ) -> None:
@@ -582,6 +677,7 @@ def read_verb(
     \b
     Routes to the appropriate renderer based on --view and delivers the
     output to --to (terminal, stdout, browser, clipboard, or file).
+    Use --views to inspect which options belong to each read view.
 
     \b
     Examples:
@@ -591,20 +687,16 @@ def read_verb(
         polylogue find id:abc then read --to browser
         polylogue find 'repo:polylogue has:paste' then read --all --format ndjson
         polylogue find id:abc then read --view context --related-limit 5
-        polylogue find 'cost tracking' then read --view context-pack --max-sessions 5
-        polylogue read --view context-pack --project-repo github.com/Sinity/polylogue --since 2026-01-01
-        polylogue find id:abc then read --view recovery
+        polylogue find 'cost tracking' then read --view context-image --max-sessions 5
+        polylogue read --view context-image --project-repo github.com/Sinity/polylogue --since 2026-01-01
         polylogue read --views
         polylogue read --views --format json
+        polylogue find 'repo:polylogue' then read --view temporal,chronicle --spec
         polylogue find id:abc then read --view neighbors --window-hours 48
         polylogue --latest read --view neighbors --format json
         polylogue find id:abc then read --view correlation --since-hours 4
         polylogue --latest read --view correlation --otlp --format json
         polylogue read session:abc123 --format json
-
-    \b
-    Reserved views (not yet implemented):
-        timeline, tools, files, metadata, continuation
     """
     env: AppEnv = ctx.obj
     if show_views:
@@ -618,17 +710,74 @@ def read_verb(
             f"Unknown read view(s): {', '.join(unknown_views)}. Choose from: {', '.join(_READ_VIEWS)}."
         )
     primary_view = view_tokens[0]
-    if export_all and first_only:
+    if all_matches and first_only:
         raise click.UsageError("read --all and --first are mutually exclusive.")
     if destination == "file" and not out_path:
         raise click.UsageError("read --to file requires --out.")
+    (
+        selection_limit,
+        projection_edge_limit,
+        projection_body_limit,
+        projection_body_offset,
+        projection_neighbor_limit,
+    ) = _read_projection_limits(tuple(view_tokens), limit, offset)
+    projection_neighbor_window_hours = window_hours if len(view_tokens) == 1 and view_tokens[0] == "neighbors" else None
+    uses_context_image_selector = "context-image" in view_tokens
+    context_image_max_sessions = min(max_sessions, limit) if limit is not None else max_sessions
+    spec_selection_limit: int | None
+    spec_selection_query: str | None
+    spec_selection_origin: str | None
+    spec_selection_since: str | None
+    spec_selection_until: str | None
+    spec_selection_project_path: str | None
+    spec_selection_project_repo: str | None
+    if uses_context_image_selector:
+        spec_selection_limit = context_image_max_sessions
+        spec_selection_query = context_query
+        spec_selection_origin = context_origin
+        spec_selection_since = since
+        spec_selection_until = until
+        spec_selection_project_path = project_path
+        spec_selection_project_repo = project_repo
+    else:
+        spec_selection_limit = selection_limit
+        spec_selection_query = None
+        spec_selection_origin = None
+        spec_selection_since = None
+        spec_selection_until = None
+        spec_selection_project_path = None
+        spec_selection_project_repo = None
+    if show_spec:
+        spec = _build_read_projection_spec(
+            request,
+            views=tuple(view_tokens),
+            output_format=output_format,
+            destination=destination,
+            out_path=out_path,
+            max_tokens=max_tokens,
+            selection_limit=spec_selection_limit,
+            render_layout=_read_render_layout(tuple(view_tokens)),
+            selection_query=spec_selection_query,
+            selection_origin=spec_selection_origin,
+            selection_since=spec_selection_since,
+            selection_until=spec_selection_until,
+            selection_project_path=spec_selection_project_path,
+            selection_project_repo=spec_selection_project_repo,
+            edge_limit=projection_edge_limit,
+            body_limit=projection_body_limit,
+            body_offset=projection_body_offset,
+            neighbor_limit=projection_neighbor_limit,
+            neighbor_window_hours=projection_neighbor_window_hours,
+        )
+        click.echo(serialize_surface_payload(spec, exclude_none=True))
+        return
     if _explain_terminal_action(
         request,
         action="read",
         view=view,
         destination=destination,
         format=_effective_read_output_format(request, view=view, output_format=output_format) or "default",
-        all=export_all,
+        all=all_matches,
         first=first_only,
     ):
         return
@@ -644,7 +793,7 @@ def read_verb(
     # Summary all-mode is the command-floor replacement for the old list verb:
     # it preserves the summary-list envelope and fields/limit behavior instead
     # of exporting full transcript payloads.
-    if export_all:
+    if all_matches:
         if limit is not None:
             request = request.with_param_updates(limit=limit)
         if primary_view == "summary":
@@ -658,41 +807,77 @@ def read_verb(
                 request = request.with_param_updates(fields=fields)
             _execute_query_verb(ctx, request)
             return
-        run_bulk_export_view(
+        run_query_set_read_view(
             env, request, output_format=output_format, fields=fields, destination=destination, out_path=out_path
         )
         return
 
     # General context-image path: multi-view composition, token-bounded
-    # accumulation, assertion inclusion, and the context-pack lens all collapse
+    # accumulation, assertion inclusion, and the context-image lens all collapse
     # onto the shared compile_context engine rather than parallel assemblers.
     needs_context_image = (
-        len(view_tokens) > 1 or primary_view == "context-pack" or max_tokens is not None or include_assertions
+        len(view_tokens) > 1 or primary_view == "context-image" or max_tokens is not None or include_assertions
     )
     if needs_context_image and destination != "browser":
+        projection_spec = _build_read_projection_spec(
+            request,
+            views=tuple(view_tokens),
+            output_format=output_format,
+            destination=destination,
+            out_path=out_path,
+            max_tokens=max_tokens,
+            selection_limit=spec_selection_limit if uses_context_image_selector else limit,
+            render_layout=_read_render_layout(tuple(view_tokens)),
+            selection_query=spec_selection_query,
+            selection_origin=spec_selection_origin,
+            selection_since=spec_selection_since,
+            selection_until=spec_selection_until,
+            selection_project_path=spec_selection_project_path,
+            selection_project_repo=spec_selection_project_repo,
+        )
         run_read_context_image(
             env,
             request,
             views=tuple(view_tokens),
             max_tokens=max_tokens,
             include_assertions=include_assertions,
-            max_sessions=max_sessions,
+            max_sessions=context_image_max_sessions,
             project_path=project_path,
             project_repo=project_repo,
             since=since,
             until=until,
-            pack_origin=pack_origin,
-            pack_query=pack_query,
+            context_origin=context_origin,
+            context_query=context_query,
             no_redact=no_redact,
             output_format=output_format,
             destination=destination,
             out_path=out_path,
             first_only=first_only,
+            projection_spec=projection_spec,
         )
         return
 
-    session_id = _resolve_query_action_session_id(env, request, operation="read", first_only=first_only)
+    handler = READ_VIEW_HANDLERS[primary_view]
+    session_id = None
+    exact_session_ref = _spec_is_exact_session_ref(request.query_spec())
+    if destination == "browser" or first_only or exact_session_ref or not handler.accepts_query_set:
+        session_id = _resolve_query_action_session_id(env, request, operation="read", first_only=first_only)
     effective_format = _effective_read_output_format(request, view=primary_view, output_format=output_format)
+    projection_spec = _build_read_projection_spec(
+        request,
+        views=tuple(view_tokens),
+        output_format=output_format,
+        destination=destination,
+        out_path=out_path,
+        max_tokens=max_tokens,
+        selection_limit=selection_limit,
+        render_layout=_read_render_layout(tuple(view_tokens)),
+        edge_limit=projection_edge_limit,
+        body_limit=projection_body_limit,
+        body_offset=projection_body_offset,
+        neighbor_limit=projection_neighbor_limit,
+        neighbor_window_hours=projection_neighbor_window_hours,
+    )
     explicit_options = _explicit_read_view_options(ctx)
     if destination == "browser":
         run_read_view(
@@ -705,6 +890,7 @@ def read_verb(
                 destination=destination,
                 out_path=out_path,
                 explicit_options=explicit_options,
+                projection_spec=projection_spec,
             ),
         )
         return
@@ -723,24 +909,15 @@ def read_verb(
                 _read_view_option_values(
                     limit=limit,
                     offset=offset,
-                    message_role=message_role,
-                    material_origin=material_origin,
-                    message_type=message_type,
-                    no_code_blocks=no_code_blocks,
-                    no_tool_calls=no_tool_calls,
-                    no_tool_outputs=no_tool_outputs,
-                    no_file_reads=no_file_reads,
-                    prose_only=prose_only,
                     related_limit=related_limit,
                     project_path=project_path,
                     project_repo=project_repo,
                     since=since,
                     until=until,
-                    pack_origin=pack_origin,
-                    pack_query=pack_query,
+                    context_origin=context_origin,
+                    context_query=context_query,
                     max_sessions=max_sessions,
                     no_redact=no_redact,
-                    recovery_report=recovery_report,
                     window_hours=window_hours,
                     repo_path=repo_path,
                     since_hours=since_hours,
@@ -750,6 +927,7 @@ def read_verb(
                 ),
             ),
             explicit_options=explicit_options,
+            projection_spec=projection_spec,
         ),
     )
 
@@ -851,6 +1029,9 @@ def continue_verb(
     session_id = _resolve_query_action_session_id(env, request, operation="continue")
     if session_id is None:
         raise click.UsageError("continue requires one matched session (use --id, --latest, or a narrowing query).")
+    session = run_coroutine_sync(env.polylogue.get_session(session_id))
+    if session is None:
+        raise click.UsageError(f"Session not found: {session_id}")
     root_format = request.params.get("output_format")
     effective_format = (
         output_format if output_format is not None else root_format if isinstance(root_format, str) else None
@@ -869,7 +1050,8 @@ def continue_verb(
                 ContextSpec(
                     purpose="continue",
                     seed_refs=(f"session:{session_id}",),
-                    read_views=("recovery",),
+                    read_views=("messages",),
+                    unit_queries=_successor_context_unit_queries(session_id),
                 )
             )
         )
@@ -880,18 +1062,21 @@ def continue_verb(
         else:
             click.echo(rendered)
         return
-    run_read_view(
-        env,
-        request,
-        ReadViewInvocation(
-            view="recovery",
-            session_id=session_id,
-            output_format=effective_format,
-            destination=destination,
-            out_path=out_path,
-            options=read_view_options_for_view("recovery", {"recovery_report": "continue"}),
-        ),
+    if effective_format not in (None, "markdown"):
+        raise click.UsageError("continue supports markdown output by default or --format json.")
+    from polylogue.context.compiler import ContextSpec
+
+    image = run_coroutine_sync(
+        env.polylogue.compile_context(
+            ContextSpec(
+                purpose="continue",
+                seed_refs=(f"session:{session_id}",),
+                read_views=("messages",),
+                unit_queries=_successor_context_unit_queries(session_id),
+            )
+        )
     )
+    deliver_content(env, _render_context_image_markdown(image), destination=destination, out_path=out_path)
 
 
 @click.command("delete")
@@ -1658,11 +1843,7 @@ def _explain_terminal_action(request: RootModeRequest, **terminal_action: object
 
 
 def _effective_read_output_format(request: RootModeRequest, *, view: str, output_format: str | None) -> str | None:
-    effective_format = output_format
-    if view == "recovery" and effective_format is None:
-        root_format = request.params.get("output_format")
-        effective_format = root_format if isinstance(root_format, str) else None
-    return effective_format
+    return output_format
 
 
 def _parent_request(ctx: click.Context) -> RootModeRequest:
@@ -1828,19 +2009,115 @@ def _resolve_query_action_session_ids(
 
 def _render_context_image_markdown(image: object) -> str:
     """Render a compiled ContextImage to markdown for terminal/file delivery."""
-    parts: list[str] = []
-    for segment in getattr(image, "segments", ()):
+    spec = getattr(image, "spec", None)
+    segments = tuple(getattr(image, "segments", ()))
+    omitted = tuple(getattr(image, "omitted", ()))
+    caveats = tuple(getattr(image, "caveats", ()))
+    purpose = getattr(spec, "purpose", None) or "context"
+    read_views = tuple(getattr(spec, "read_views", ()) or ())
+    projection_spec = getattr(image, "projection_spec", None)
+    token_estimate = getattr(image, "token_estimate", None)
+    lines: list[str] = [
+        "# Context Image",
+        "",
+        f"- Purpose: {purpose}",
+        f"- Views: {', '.join(str(view) for view in read_views) or 'none'}",
+        f"- Segments: {len(segments)}",
+        f"- Omissions: {len(omitted)}",
+    ]
+    if token_estimate is not None:
+        lines.append(f"- Token estimate: {token_estimate}")
+    if projection_spec is not None:
+        selection = getattr(projection_spec, "selection", None)
+        projection = getattr(projection_spec, "projection", None)
+        render = getattr(projection_spec, "render", None)
+        query = getattr(selection, "query", None)
+        refs = tuple(getattr(selection, "refs", ()) or ())
+        selection_origin = getattr(selection, "origin", None)
+        selection_since = getattr(selection, "since", None)
+        selection_until = getattr(selection, "until", None)
+        selection_project_path = getattr(selection, "project_path", None)
+        selection_project_repo = getattr(selection, "project_repo", None)
+        selection_limit = getattr(selection, "limit", None)
+        families = tuple(getattr(projection, "families", ()) or ())
+        body_policy = getattr(projection, "body_policy", None)
+        max_tokens = getattr(projection, "max_tokens", None)
+        edge_limit = getattr(projection, "edge_limit", None)
+        body_limit = getattr(projection, "body_limit", None)
+        body_offset = getattr(projection, "body_offset", None)
+        neighbor_limit = getattr(projection, "neighbor_limit", None)
+        neighbor_window_hours = getattr(projection, "neighbor_window_hours", None)
+        redact_paths = getattr(projection, "redact_paths", None)
+        render_format = getattr(render, "format", None)
+        render_destination = getattr(render, "destination", None)
+        render_layout = getattr(render, "layout", None)
+        if query:
+            lines.append(f"- Selection query: {query}")
+        if selection_origin:
+            lines.append(f"- Selection origin: {selection_origin}")
+        if selection_since:
+            lines.append(f"- Selection since: {selection_since}")
+        if selection_until:
+            lines.append(f"- Selection until: {selection_until}")
+        if selection_project_path:
+            lines.append(f"- Selection project path: {selection_project_path}")
+        if selection_project_repo:
+            lines.append(f"- Selection project repo: {selection_project_repo}")
+        if selection_limit is not None:
+            lines.append(f"- Selection limit: {selection_limit}")
+        if refs:
+            shown_refs = refs[:3]
+            refs_text = ", ".join(str(ref) for ref in shown_refs)
+            remaining = len(refs) - len(shown_refs)
+            if remaining:
+                refs_text = f"{refs_text}, ... {remaining} more"
+            lines.append(f"- Selection refs: {refs_text}")
+        if families:
+            lines.append(f"- Projection families: {', '.join(str(family.value) for family in families)}")
+        if body_policy is not None:
+            lines.append(f"- Body policy: {body_policy.value}")
+        if max_tokens is not None:
+            lines.append(f"- Projection max tokens: {max_tokens}")
+        if edge_limit is not None:
+            lines.append(f"- Projection edge limit: {edge_limit}")
+        if body_limit is not None:
+            lines.append(f"- Projection body limit: {body_limit}")
+        if body_offset is not None:
+            lines.append(f"- Projection body offset: {body_offset}")
+        if neighbor_limit is not None:
+            lines.append(f"- Projection neighbor limit: {neighbor_limit}")
+        if neighbor_window_hours is not None:
+            lines.append(f"- Projection neighbor window hours: {neighbor_window_hours}")
+        if redact_paths is not None:
+            lines.append(f"- Projection redact paths: {str(bool(redact_paths)).lower()}")
+        if render_format is not None and render_destination is not None:
+            lines.append(f"- Render: {render_format.value} to {render_destination.value}")
+        if render_layout:
+            lines.append(f"- Render layout: {render_layout}")
+    if caveats:
+        lines.append(f"- Caveats: {', '.join(str(caveat) for caveat in caveats)}")
+    parts: list[str] = ["\n".join(lines)]
+    for index, segment in enumerate(segments, start=1):
         markdown = getattr(segment, "markdown", None)
         if markdown:
-            parts.append(markdown.rstrip())
-    omitted = getattr(image, "omitted", ())
+            title = getattr(segment, "title", None) or getattr(segment, "payload_kind", None) or f"Segment {index}"
+            payload_kind = getattr(segment, "payload_kind", None)
+            token_count = getattr(segment, "token_estimate", None)
+            segment_lines = [f"## {index}. {title}", ""]
+            meta: list[str] = []
+            if payload_kind:
+                meta.append(f"kind={payload_kind}")
+            if token_count is not None:
+                meta.append(f"tokens={token_count}")
+            if meta:
+                segment_lines.extend([f"_({'; '.join(meta)})_", ""])
+            segment_lines.append(markdown.rstrip())
+            parts.append("\n".join(segment_lines))
     if omitted:
         parts.append("## Omitted")
         for omission in omitted:
             target = omission.ref or omission.query or omission.view or "?"
             parts.append(f"- {target} [{omission.reason}]: {omission.detail}")
-    if not parts:
-        return "(no context segments)\n"
     return "\n\n".join(parts).rstrip() + "\n"
 
 
@@ -1856,33 +2133,40 @@ def run_read_context_image(
     project_repo: str | None,
     since: str | None,
     until: str | None,
-    pack_origin: str | None,
-    pack_query: str | None,
+    context_origin: str | None,
+    context_query: str | None,
     no_redact: bool,
     output_format: str | None,
     destination: str,
     out_path: str | None,
     first_only: bool,
+    projection_spec: QueryProjectionSpec | None = None,
 ) -> None:
     """Compile and emit a bounded context image over the matched selection.
 
     This is the single general read path for multi-view composition, token
-    budgeting, assertion inclusion, and the context-pack lens. It delegates to
+    budgeting, assertion inclusion, and the context-image lens. It delegates to
     ``compile_context`` (seed refs from the resolved selection) or, when only
-    context-pack filters narrow the set, to ``context_pack_payload``.
+    context-image filters narrow the set, to ``context_image_payload``.
     """
     from polylogue.cli.read_views.base import deliver_content
-    from polylogue.context.compiler import ContextSpec
+    from polylogue.context.compiler import (
+        DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE,
+        DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION,
+        ContextSpec,
+    )
 
     poly = env.polylogue
     redact = not no_redact
     limit = max(1, min(max_sessions, 20))
     session_ids = _resolve_query_action_session_ids(env, request, limit=limit, first_only=first_only)
+    projection_spec = _projection_spec_with_resolved_session_refs(projection_spec, tuple(session_ids))
 
-    # compile_context handles messages/recovery/work-packet; the context-pack
+    # compile_context handles read views and query-unit context; the context-image
     # token maps to the message transcript view. Other tokens become honest
     # "unsupported" omissions inside compile_context rather than silent drops.
-    compile_views = tuple("messages" if token == "context-pack" else token for token in views)
+    compile_views = tuple("messages" if token == "context-image" else token for token in views)
+    uses_context_image_defaults = "context-image" in views
 
     if session_ids:
         spec = ContextSpec(
@@ -1890,19 +2174,25 @@ def run_read_context_image(
             seed_refs=tuple(f"session:{session_id}" for session_id in session_ids),
             read_views=compile_views,
             max_tokens=max_tokens,
+            max_messages_per_session=(
+                DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION if uses_context_image_defaults else None
+            ),
+            max_chars_per_message=(
+                DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE if uses_context_image_defaults else None
+            ),
             include_assertions=include_assertions,
             redaction_policy="raw-opt-in" if not redact else "default",
         )
         image = run_coroutine_sync(poly.compile_context(spec))
-    elif "context-pack" in views:
+    elif "context-image" in views:
         image = run_coroutine_sync(
-            poly.context_pack_payload(
+            poly.context_image_payload(
                 project_path=project_path,
                 project_repo=project_repo,
                 since=since,
                 until=until,
-                origin=pack_origin,
-                query=pack_query,
+                origin=context_origin,
+                query=context_query,
                 max_sessions=limit,
                 max_tokens=max_tokens,
                 include_messages="messages" in compile_views,
@@ -1915,6 +2205,9 @@ def run_read_context_image(
             "read with --max-tokens, --include-assertions, or multiple --view values "
             "requires a seed (use --id, --latest, id:prefix, or a query)."
         )
+
+    if projection_spec is not None:
+        image = image.model_copy(update={"projection_spec": projection_spec})
 
     if output_format == "json":
         content = serialize_surface_payload(image, exclude_none=True) + "\n"

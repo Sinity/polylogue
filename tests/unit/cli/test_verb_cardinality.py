@@ -106,20 +106,18 @@ class TestReadVerbCardinality:
         self,
         child: click.Context,
         *,
-        export_all: bool = False,
+        view: str = "summary",
+        all_matches: bool = False,
         first_only: bool = False,
     ) -> None:
         cb = self._read_callback()
         cb(  # type: ignore[operator]
             ctx=child,
-            view="summary",
+            view=view,
             destination="terminal",
             output_format=None,
             out_path=None,
-            export_all=export_all,
-            message_role=(),
-            material_origin=(),
-            message_type=None,
+            all_matches=all_matches,
             limit=None,
             offset=0,
             window_hours=24,
@@ -129,21 +127,16 @@ class TestReadVerbCardinality:
             github_api=False,
             otlp=False,
             related_limit=5,
-            recovery_report=None,
             project_path=None,
             project_repo=None,
             since=None,
             until=None,
-            pack_origin=None,
-            pack_query=None,
+            context_origin=None,
+            context_query=None,
             max_sessions=5,
-            max_messages=20,
+            max_tokens=None,
+            include_assertions=False,
             no_redact=False,
-            no_code_blocks=False,
-            no_tool_calls=False,
-            no_tool_outputs=False,
-            no_file_reads=False,
-            prose_only=False,
             fields=None,
             first_only=first_only,
             show_views=False,
@@ -158,13 +151,28 @@ class TestReadVerbCardinality:
 
         return patch("polylogue.cli.query_verbs.run_coroutine_sync", side_effect=_close_and_return)
 
-    def test_multi_match_without_first_or_all_raises(self) -> None:
+    def test_single_session_view_multi_match_without_first_or_all_raises(self) -> None:
         _, child = _context_pair(query_terms=("needle",))
         child.obj = SimpleNamespace(config=MagicMock())
 
         with self._read_resolution(["id1", "id2"]):
             with pytest.raises(click.UsageError, match="--first"):
-                self._call_read(child)
+                self._call_read(child, view="messages")
+
+    def test_query_set_view_multi_match_projects_without_cardinality_guard(self) -> None:
+        _, child = _context_pair(query_terms=("needle",))
+        child.obj = SimpleNamespace(config=MagicMock())
+
+        with (
+            patch("polylogue.cli.query_verbs.run_coroutine_sync") as run_sync,
+            patch("polylogue.cli.query_verbs.run_read_view") as run_read_view,
+        ):
+            self._call_read(child, view="temporal")
+
+        run_sync.assert_not_called()
+        invocation = run_read_view.call_args.args[2]
+        assert invocation.view == "temporal"
+        assert invocation.session_id is None
 
     def test_multi_match_with_first_reads_first_match(self) -> None:
         _, child = _context_pair(query_terms=("needle",))
@@ -184,7 +192,7 @@ class TestReadVerbCardinality:
         child.obj = SimpleNamespace(config=MagicMock())
 
         with pytest.raises(click.UsageError, match="mutually exclusive"):
-            self._call_read(child, export_all=True, first_only=True)
+            self._call_read(child, all_matches=True, first_only=True)
 
     def test_read_uses_shared_check_cardinality(self) -> None:
         _, child = _context_pair(query_terms=("needle",))
@@ -198,7 +206,7 @@ class TestReadVerbCardinality:
             ) as mock_check,
         ):
             with pytest.raises(click.UsageError, match="mocked error"):
-                self._call_read(child)
+                self._call_read(child, view="messages")
 
         mock_check.assert_called_once_with(
             2,

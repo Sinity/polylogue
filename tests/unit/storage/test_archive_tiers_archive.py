@@ -97,6 +97,45 @@ def test_archive_tiers_archive_facade_sorts_search_matches(tmp_path: Path) -> No
     assert [hit.session_id for hit in short_only] == [short_id]
 
 
+def test_archive_tiers_archive_facade_queries_session_actions_by_session_index(tmp_path: Path) -> None:
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-session-actions",
+        title="Session actions",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                timestamp="2026-06-30T08:00:00Z",
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_USE,
+                        tool_name="Bash",
+                        tool_id="tool-1",
+                        tool_input={"command": "pytest tests/unit/storage/test_archive_tiers_archive.py"},
+                    ),
+                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="tool-1", text="passed"),
+                ],
+            )
+        ],
+    )
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        session_id = facade.write_parsed(session)
+
+    with ArchiveStore.open_existing(root) as facade:
+        rows = facade.query_session_actions([session_id], limit=10)
+
+    assert [(row.session_id, row.tool_name, row.tool_command, row.output_text) for row in rows] == [
+        (
+            session_id,
+            "Bash",
+            "pytest tests/unit/storage/test_archive_tiers_archive.py",
+            "passed",
+        )
+    ]
+
+
 def test_archive_tiers_archive_facade_links_raw_and_parsed_rows(tmp_path: Path) -> None:
     session = ParsedSession(
         source_name=Provider.CODEX,

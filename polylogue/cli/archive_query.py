@@ -17,7 +17,6 @@ from urllib.parse import quote
 import click
 from typing_extensions import TypedDict
 
-from polylogue.archive.message.roles import MessageRoleFilter, Role, normalize_message_roles
 from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.archive.query.attached_units import fetch_attached_units
 from polylogue.archive.query.expression import (
@@ -33,7 +32,6 @@ from polylogue.archive.query.spec import (
     parse_query_date,
 )
 from polylogue.archive.query.unit_results import query_unit_rows, query_unit_session_filters
-from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.archive.stats import ArchiveStats
 from polylogue.cli.query_contracts import QueryOutputSpec
 from polylogue.cli.query_feedback import maybe_subcommand_typo_hint
@@ -51,7 +49,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import (
     ArchiveSessionSummary,
     ArchiveStore,
 )
-from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
+from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.surfaces.payloads import (
     SEARCH_CURSOR_VERSION,
@@ -223,9 +221,6 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             raise click.UsageError("Root query --sample must be positive.")
         limit = sample_count
         page_offset = 0
-    message_roles = _message_roles(params)
-    content_projection = ContentProjectionSpec.from_params(params)
-    transform = _transform(params.get("transform"))
     stream = bool(params.get("stream"))
     stream_output_format = QueryOutputSpec.from_params(params).stream_format()
     sort = _sort(params.get("sort"))
@@ -294,7 +289,6 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                     metadata_to_set,
                     delete_matched,
                     params.get("open_result"),
-                    transform is not None,
                     params.get("conv_id"),
                     sample_count is not None,
                     since_session_id is not None,
@@ -430,9 +424,6 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                         _emit_stream(
                             envelope,
                             output_format=stream_output_format,
-                            message_roles=message_roles,
-                            content_projection=content_projection,
-                            transform=transform,
                             message_limit=_stream_message_limit(params),
                         )
                         return
@@ -458,17 +449,6 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                             print_url=bool(params.get("print_url")),
                         )
                         return
-                    if transform is not None:
-                        envelopes = [archive.read_session(hit.session_id) for hit in page_hits]
-                        _emit_sessions(
-                            envelopes,
-                            output_format=output_format,
-                            fields=fields,
-                            message_roles=message_roles,
-                            content_projection=content_projection,
-                            transform=transform,
-                        )
-                        return
                     _emit_search(
                         page_hits,
                         archive=archive,
@@ -489,9 +469,6 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                     _emit_stream(
                         envelope,
                         output_format=stream_output_format,
-                        message_roles=message_roles,
-                        content_projection=content_projection,
-                        transform=transform,
                         message_limit=_stream_message_limit(params),
                     )
                     return
@@ -515,9 +492,6 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 envelope,
                 output_format=output_format,
                 fields=fields,
-                message_roles=message_roles,
-                content_projection=content_projection,
-                transform=transform,
             )
             return
         if query or similar_text:
@@ -550,9 +524,6 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 _emit_stream(
                     envelope,
                     output_format=stream_output_format,
-                    message_roles=message_roles,
-                    content_projection=content_projection,
-                    transform=transform,
                     message_limit=_stream_message_limit(params),
                 )
                 return
@@ -572,17 +543,6 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                     page_hits[0].session_id,
                     output_format=output_format,
                     print_url=bool(params.get("print_url")),
-                )
-                return
-            if transform is not None:
-                envelopes = [archive.read_session(hit.session_id) for hit in page_hits]
-                _emit_sessions(
-                    envelopes,
-                    output_format=output_format,
-                    fields=fields,
-                    message_roles=message_roles,
-                    content_projection=content_projection,
-                    transform=transform,
                 )
                 return
             _emit_search(
@@ -647,9 +607,6 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             _emit_stream(
                 envelope,
                 output_format=stream_output_format,
-                message_roles=message_roles,
-                content_projection=content_projection,
-                transform=transform,
                 message_limit=_stream_message_limit(params),
             )
             return
@@ -669,17 +626,6 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 page_summaries[0].session_id,
                 output_format=output_format,
                 print_url=bool(params.get("print_url")),
-            )
-            return
-        if transform is not None:
-            envelopes = [archive.read_session(summary.session_id) for summary in page_summaries]
-            _emit_sessions(
-                envelopes,
-                output_format=output_format,
-                fields=fields,
-                message_roles=message_roles,
-                content_projection=content_projection,
-                transform=transform,
             )
             return
         _emit_list(
@@ -887,27 +833,16 @@ def _emit_stream(
     envelope: ArchiveSessionEnvelope,
     *,
     output_format: str,
-    message_roles: MessageRoleFilter,
-    content_projection: ContentProjectionSpec,
-    transform: str | None,
     message_limit: int | None,
 ) -> None:
-    if transform is not None:
-        click.echo("Warning: --transform is ignored in --stream mode (messages are streamed individually).", err=True)
-    projected = _project_session_envelope(
-        envelope,
-        message_roles=message_roles,
-        content_projection=content_projection,
-        transform=None,
-    )
-    messages = projected.messages[:message_limit] if message_limit is not None else projected.messages
+    messages = envelope.messages[:message_limit] if message_limit is not None else envelope.messages
     payload = _session_payload(
         ArchiveSessionEnvelope(
-            session_id=projected.session_id,
-            native_id=projected.native_id,
-            origin=projected.origin,
-            title=projected.title,
-            active_leaf_message_id=projected.active_leaf_message_id,
+            session_id=envelope.session_id,
+            native_id=envelope.native_id,
+            origin=envelope.origin,
+            title=envelope.title,
+            active_leaf_message_id=envelope.active_leaf_message_id,
             messages=tuple(messages),
         )
     )
@@ -1023,18 +958,6 @@ def _message_type(value: object) -> str | None:
         raise click.UsageError(str(exc)) from exc
 
 
-def _message_roles(params: dict[str, object]) -> MessageRoleFilter:
-    roles = params.get("message_role") or params.get("message_roles")
-    if roles:
-        try:
-            return normalize_message_roles(roles)
-        except ValueError as exc:
-            raise click.UsageError(str(exc)) from exc
-    if params.get("dialogue_only"):
-        return (Role.USER, Role.ASSISTANT)
-    return ()
-
-
 def _sort(value: object) -> str | None:
     if not value:
         return None
@@ -1042,15 +965,6 @@ def _sort(value: object) -> str | None:
     if sort not in {"date", "messages", "words", "longest", "tokens", "random"}:
         raise click.UsageError("Root query sort must be one of date, messages, words, longest, tokens, random.")
     return sort
-
-
-def _transform(value: object) -> str | None:
-    if not value:
-        return None
-    transform = str(value)
-    if transform not in {"strip-tools", "strip-thinking", "strip-all"}:
-        raise click.UsageError("Root query transform must be one of strip-tools, strip-thinking, strip-all.")
-    return transform
 
 
 def _optional_int(value: object) -> int | None:
@@ -1428,17 +1342,8 @@ def _emit_session(
     *,
     output_format: str,
     fields: str | None,
-    message_roles: MessageRoleFilter,
-    content_projection: ContentProjectionSpec,
-    transform: str | None,
 ) -> None:
-    projected_envelope = _project_session_envelope(
-        envelope,
-        message_roles=message_roles,
-        content_projection=content_projection,
-        transform=transform,
-    )
-    payload = _session_payload(projected_envelope)
+    payload = _session_payload(envelope)
     if output_format == "json":
         click.echo(json.dumps(_project_payload(payload, fields), indent=2, sort_keys=True))
         return
@@ -1456,61 +1361,7 @@ def _emit_session(
         return
     if output_format not in {"markdown", "plaintext"}:
         raise click.UsageError(f"Full-session reads do not support --format {output_format}.")
-    click.echo(_session_text(projected_envelope))
-
-
-def _emit_sessions(
-    envelopes: Sequence[ArchiveSessionEnvelope],
-    *,
-    output_format: str,
-    fields: str | None,
-    message_roles: MessageRoleFilter,
-    content_projection: ContentProjectionSpec,
-    transform: str | None,
-) -> None:
-    if not envelopes:
-        _fail("Transform found no matching session.")
-    projected = [
-        _project_session_envelope(
-            envelope,
-            message_roles=message_roles,
-            content_projection=content_projection,
-            transform=transform,
-        )
-        for envelope in envelopes
-    ]
-    if len(projected) == 1:
-        _emit_session(
-            projected[0],
-            output_format=output_format,
-            fields=fields,
-            message_roles=(),
-            content_projection=ContentProjectionSpec(),
-            transform=None,
-        )
-        return
-
-    items = [_project_payload(_session_payload(envelope), fields) for envelope in projected]
-    payload: dict[str, object] = {
-        "mode": "sessions",
-        "items": items,
-        "total": len(projected),
-    }
-    if output_format == "json":
-        click.echo(json.dumps(payload, indent=2, sort_keys=True))
-        return
-    if output_format == "yaml":
-        import yaml
-
-        click.echo(yaml.safe_dump(payload, sort_keys=False, allow_unicode=True), nl=False)
-        return
-    if output_format == "ndjson":
-        for item in items:
-            click.echo(json.dumps(item, sort_keys=True))
-        return
-    if output_format not in {"markdown", "plaintext"}:
-        raise click.UsageError(f"Transformed session reads do not support --format {output_format}.")
-    click.echo("\n\n---\n\n".join(_session_text(envelope) for envelope in projected))
+    click.echo(_session_text(envelope))
 
 
 def _emit_no_results(envelope: dict[str, object], *, output_format: str, typo_hint: str | None = None) -> NoReturn:
@@ -1802,96 +1653,6 @@ def _hit_payload(
             exclude_none=True,
         ),
     )
-
-
-def _project_session_envelope(
-    envelope: ArchiveSessionEnvelope,
-    *,
-    message_roles: MessageRoleFilter,
-    content_projection: ContentProjectionSpec,
-    transform: str | None,
-) -> ArchiveSessionEnvelope:
-    if not message_roles and content_projection.is_default() and transform is None:
-        return envelope
-    role_values = {role.value for role in message_roles}
-    messages: list[ArchiveMessageRow] = []
-    for message in envelope.messages:
-        if role_values and message.role not in role_values:
-            continue
-        if _message_removed_by_transform(message, transform):
-            continue
-        blocks = tuple(_project_archive_blocks(message.blocks, content_projection))
-        if content_projection.filters_content() and not blocks:
-            continue
-        messages.append(
-            ArchiveMessageRow(
-                message_id=message.message_id,
-                native_id=message.native_id,
-                role=message.role,
-                position=message.position,
-                variant_index=message.variant_index,
-                is_active_path=message.is_active_path,
-                is_active_leaf=message.is_active_leaf,
-                blocks=blocks,
-            )
-        )
-    return ArchiveSessionEnvelope(
-        session_id=envelope.session_id,
-        native_id=envelope.native_id,
-        origin=envelope.origin,
-        title=envelope.title,
-        active_leaf_message_id=envelope.active_leaf_message_id,
-        messages=tuple(messages),
-    )
-
-
-def _message_removed_by_transform(message: ArchiveMessageRow, transform: str | None) -> bool:
-    if transform is None:
-        return False
-    has_tool = any(block.block_type in {"tool_use", "tool_result"} for block in message.blocks)
-    has_thinking = any(block.block_type == "thinking" for block in message.blocks)
-    if transform == "strip-tools":
-        return has_tool
-    if transform == "strip-thinking":
-        return has_thinking
-    if transform == "strip-all":
-        return has_tool or has_thinking
-    return False
-
-
-def _project_archive_blocks(
-    blocks: tuple[ArchiveBlockRow, ...],
-    content_projection: ContentProjectionSpec,
-) -> list[ArchiveBlockRow]:
-    if content_projection.is_default():
-        return list(blocks)
-    tool_semantics = {
-        block.tool_id: block.semantic_type
-        for block in blocks
-        if block.block_type == "tool_use" and block.tool_id and block.semantic_type
-    }
-    return [block for block in blocks if _keep_archive_block(block, content_projection, tool_semantics)]
-
-
-def _keep_archive_block(
-    block: ArchiveBlockRow,
-    content_projection: ContentProjectionSpec,
-    tool_semantics: dict[str, str],
-) -> bool:
-    if block.block_type == "thinking":
-        return content_projection.include_reasoning
-    if block.block_type == "code":
-        return content_projection.include_code
-    if block.block_type == "tool_use":
-        return content_projection.include_tool_calls
-    if block.block_type == "tool_result":
-        semantic_type = tool_semantics.get(block.tool_id or "", block.semantic_type or "")
-        if semantic_type == "file_read":
-            return content_projection.include_file_reads and content_projection.include_tool_outputs
-        return content_projection.include_tool_outputs
-    if block.block_type in {"image", "document", "file"}:
-        return content_projection.include_attachments
-    return content_projection.include_prose
 
 
 def _session_payload(envelope: ArchiveSessionEnvelope) -> dict[str, object]:

@@ -11,16 +11,17 @@ from polylogue.core.enums import Origin
 from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.insights.run_projection import build_run_projection
 from polylogue.insights.transforms import (
-    RECOVERY_TRANSFORM,
+    SESSION_DIGEST_TRANSFORM,
     TRANSFORM_REGISTRY,
     ForensicIndexEntry,
-    RecoveryEvent,
     RunStateSummary,
+    SessionDigestEvent,
     SubagentReport,
     ToolSummary,
     TransformRawRef,
-    compile_recovery_digest,
-    render_recovery_report,
+    compile_session_digest,
+    compile_session_run_projection,
+    render_session_report,
 )
 from polylogue.types import SessionId
 
@@ -164,7 +165,7 @@ def test_run_projection_harness_uses_origin_predicate(origin: str, expected_harn
         session_raw_refs=(TransformRawRef(session_id=f"{origin}:demo"),),
         tool_summaries=(),
         subagent_reports=(),
-        recovery_events=(),
+        session_digest_events=(),
     )
 
     [run] = projection.runs
@@ -189,16 +190,16 @@ def _sparse_session() -> Session:
     )
 
 
-def test_registry_declares_no_llm_recovery_transform() -> None:
-    assert TRANSFORM_REGISTRY[RECOVERY_TRANSFORM.transform_id] == RECOVERY_TRANSFORM
-    assert RECOVERY_TRANSFORM.deterministic is True
-    assert RECOVERY_TRANSFORM.uses_llm is False
+def test_registry_declares_no_llm_session_digest_transform() -> None:
+    assert TRANSFORM_REGISTRY[SESSION_DIGEST_TRANSFORM.transform_id] == SESSION_DIGEST_TRANSFORM
+    assert SESSION_DIGEST_TRANSFORM.deterministic is True
+    assert SESSION_DIGEST_TRANSFORM.uses_llm is False
 
 
-def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None:
-    digest = compile_recovery_digest(_session())
+def test_compile_session_digest_extracts_small_evidence_linked_bundle() -> None:
+    digest = compile_session_digest(_session())
 
-    assert digest.transform.transform_id == "recovery_digest_v0"
+    assert digest.transform.transform_id == "session_digest_v0"
     assert digest.transform.transform_version == 1
     assert digest.transform.input_session_id == "codex-session:demo"
     assert digest.size_metrics.message_count == 3
@@ -325,11 +326,11 @@ def test_compile_recovery_digest_extracts_small_evidence_linked_bundle() -> None
     assert "- [assertion] next: merge PR #1911" in digest.resume_markdown
     assert "Bash [test]" in digest.resume_markdown
     assert "Read [file_read]" in digest.resume_markdown
-    assert "Every packet row carries evidence refs and a support marker." in digest.resume_markdown
+    assert "Every bundle row carries evidence refs and a support marker." in digest.resume_markdown
 
 
 def test_every_extracted_claim_carries_raw_refs() -> None:
-    digest = compile_recovery_digest(_session())
+    digest = compile_session_digest(_session())
 
     assert digest.raw_refs
     assert digest.forensic_index.session_id == digest.session_id
@@ -352,8 +353,8 @@ def test_every_extracted_claim_carries_raw_refs() -> None:
         assert all(ref.session_id == digest.session_id for ref in candidate.raw_refs)
 
 
-def test_recovery_digest_enriches_subagent_reports_from_session_links() -> None:
-    digest = compile_recovery_digest(
+def test_session_digest_enriches_subagent_reports_from_session_links() -> None:
+    digest = compile_session_digest(
         _session(),
         session_links=(
             {
@@ -376,7 +377,7 @@ def test_recovery_digest_enriches_subagent_reports_from_session_links() -> None:
 
 
 def test_forensic_index_groups_claims_by_raw_ref() -> None:
-    digest = compile_recovery_digest(_session())
+    digest = compile_session_digest(_session())
     entries = {entry.evidence_id: entry for entry in digest.forensic_index.entries}
 
     assert "codex-session:demo" in entries
@@ -407,7 +408,7 @@ def test_forensic_index_groups_claims_by_raw_ref() -> None:
 
 
 def test_forensic_index_evidence_ids_round_trip_through_typed_refs() -> None:
-    digest = compile_recovery_digest(_session())
+    digest = compile_session_digest(_session())
 
     for entry in digest.forensic_index.entries:
         parsed = EvidenceRef.parse(entry.evidence_id)
@@ -416,20 +417,20 @@ def test_forensic_index_evidence_ids_round_trip_through_typed_refs() -> None:
         assert parsed == entry.raw_ref.to_evidence_ref()
 
 
-def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
-    digest = compile_recovery_digest(_session())
+def test_successor_context_exposes_storage_free_continuation_bundle() -> None:
+    digest = compile_session_digest(_session())
 
-    packet = digest.work_packet()
-    rendered = packet.render_markdown()
+    bundle = digest.successor_context()
+    rendered = bundle.render_markdown()
 
-    assert packet.session_id == "codex-session:demo"
-    assert packet.source_origin == "codex-session"
-    assert packet.message_count == 3
-    assert packet.target_refs == (
+    assert bundle.session_id == "codex-session:demo"
+    assert bundle.source_origin == "codex-session"
+    assert bundle.message_count == 3
+    assert bundle.target_refs == (
         ObjectRef(kind="session", object_id="codex-session:demo"),
         ObjectRef(kind="branch", object_id="feature/demo"),
     )
-    assert {entry.section for entry in packet.entries} == {
+    assert {entry.section for entry in bundle.entries} == {
         "execution",
         "events",
         "subagents",
@@ -437,10 +438,10 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
         "tools",
         "decisions",
     }
-    assert all(entry.evidence_refs for entry in packet.entries)
-    assert {entry.support for entry in packet.entries} >= {"raw_evidence", "assertion", "caveat", "inference"}
-    assert any(ref.format() == "codex-session:demo::m2::0" for entry in packet.entries for ref in entry.evidence_refs)
-    execution_entries = tuple(entry for entry in packet.entries if entry.section == "execution")
+    assert all(entry.evidence_refs for entry in bundle.entries)
+    assert {entry.support for entry in bundle.entries} >= {"raw_evidence", "assertion", "caveat", "inference"}
+    assert any(ref.format() == "codex-session:demo::m2::0" for entry in bundle.entries for ref in entry.evidence_refs)
+    execution_entries = tuple(entry for entry in bundle.entries if entry.section == "execution")
     assert any(
         entry.label == "run"
         and ObjectRef(kind="run", object_id="codex-session:demo") in entry.object_refs
@@ -467,14 +468,14 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
 
     # The "events" section carries only the structured outcome event — no
     # GitHub/issue/review object refs are synthesized.
-    event_entries = tuple(entry for entry in packet.entries if entry.section == "events")
+    event_entries = tuple(entry for entry in bundle.entries if entry.section == "events")
     assert [entry.label for entry in event_entries] == ["test_passed"]
     test_event = event_entries[0]
     assert test_event.text == "devtools verify --quick passed (exit 0)"
     assert test_event.metadata == {}
     assert test_event.object_refs == ()
 
-    bash_entry = next(entry for entry in packet.entries if entry.section == "tools" and entry.label == "Bash")
+    bash_entry = next(entry for entry in bundle.entries if entry.section == "tools" and entry.label == "Bash")
     assert bash_entry.metadata == {
         "handler_kind": "test",
         "status": "ok",
@@ -486,7 +487,7 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
         ObjectRef(kind="github-pr", object_id="#1911"),
     )
     close_entry = next(
-        entry for entry in packet.entries if entry.section == "tools" and entry.text == "gh issue close 1818"
+        entry for entry in bundle.entries if entry.section == "tools" and entry.text == "gh issue close 1818"
     )
     assert close_entry.metadata == {
         "handler_kind": "github",
@@ -497,7 +498,7 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
         ObjectRef(kind="tool-call", object_id="codex-session:demo:tool-close"),
         ObjectRef(kind="github-issue", object_id="#1818"),
     )
-    read_entry = next(entry for entry in packet.entries if entry.section == "tools" and entry.label == "Read")
+    read_entry = next(entry for entry in bundle.entries if entry.section == "tools" and entry.label == "Read")
     assert read_entry.metadata == {
         "handler_kind": "file_read",
         "status": "unknown",
@@ -508,7 +509,7 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
         ObjectRef(kind="file", object_id="polylogue/insights/transforms.py"),
     )
     commit_entry = next(
-        entry for entry in packet.entries if entry.section == "tools" and entry.text == "git rev-parse HEAD"
+        entry for entry in bundle.entries if entry.section == "tools" and entry.text == "git rev-parse HEAD"
     )
     assert commit_entry.metadata == {
         "handler_kind": "git",
@@ -520,13 +521,13 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
         ObjectRef(kind="commit", object_id="a8cd1c1516b29068ec9ce1493f262d663407ffa5"),
     )
     subagent_entry = next(
-        entry for entry in packet.entries if entry.section == "subagents" and entry.label == "Explore"
+        entry for entry in bundle.entries if entry.section == "subagents" and entry.label == "Explore"
     )
     assert subagent_entry.object_refs == (
         ObjectRef(kind="subagent-report", object_id="codex-session:demo:tool-2"),
         ObjectRef(kind="agent", object_id="codex/Explore"),
     )
-    for entry in packet.entries:
+    for entry in bundle.entries:
         for ref in entry.object_refs:
             assert ObjectRef.parse(ref.format()) == ref
     assert "# Resume: Ship the backlog" in rendered
@@ -552,19 +553,19 @@ def test_work_packet_exposes_storage_free_continuation_bundle() -> None:
     assert "details: pr_refs=#1911; test_evidence=ruff check ... ok | 20 passed in 50.28s" in rendered
     assert "details: file_refs=polylogue/insights/transforms.py" in rendered
     assert "details: commit_refs=a8cd1c1516b29068ec9ce1493f262d663407ffa5" in rendered
-    # No fabricated GitHub/review event refs leak into the rendered packet.
+    # No fabricated GitHub/review event refs leak into the rendered bundle.
     assert "github-review" not in rendered
     assert "pr_opened" not in rendered
     assert "issue_closed" not in rendered
 
 
-def test_work_packet_marks_missing_evidence_explicitly() -> None:
-    digest = compile_recovery_digest(_sparse_session())
+def test_successor_context_marks_missing_evidence_explicitly() -> None:
+    digest = compile_session_digest(_sparse_session())
 
-    packet = digest.work_packet()
-    rendered = packet.render_markdown()
+    bundle = digest.successor_context()
+    rendered = bundle.render_markdown()
 
-    gap_entries = tuple(entry for entry in packet.entries if entry.section == "evidence_gaps")
+    gap_entries = tuple(entry for entry in bundle.entries if entry.section == "evidence_gaps")
     assert {entry.label for entry in gap_entries} == {"events", "subagents", "run_state", "tools", "decisions"}
     assert all(entry.support == "missing_evidence" for entry in gap_entries)
     assert all(entry.evidence_refs for entry in gap_entries)
@@ -574,7 +575,7 @@ def test_work_packet_marks_missing_evidence_explicitly() -> None:
     assert "- [missing-evidence] events: No structured tool or test outcome events were extracted." in rendered
 
 
-def test_work_packet_does_not_promote_random_hex_to_commit_ref() -> None:
+def test_successor_context_does_not_promote_random_hex_to_commit_ref() -> None:
     session = Session(
         id=SessionId("codex-session:hex-output"),
         origin=Origin.CODEX_SESSION,
@@ -603,7 +604,7 @@ def test_work_packet_does_not_promote_random_hex_to_commit_ref() -> None:
         ),
     )
 
-    [tool] = compile_recovery_digest(session).tool_summaries
+    [tool] = compile_session_digest(session).tool_summaries
 
     assert tool.commit_refs == ()
 
@@ -635,30 +636,36 @@ def _outcome_session(*, command: str, exit_code: int | None = None, is_error: bo
 
 
 def test_structured_outcomes_map_exit_code_to_event_kind() -> None:
-    succeeded = compile_recovery_digest(_outcome_session(command="ls -la", exit_code=0))
+    succeeded = compile_session_digest(_outcome_session(command="ls -la", exit_code=0))
     assert {(e.kind, e.summary) for e in succeeded.events} == {("command_succeeded", "ls -la succeeded (exit 0)")}
 
-    failed = compile_recovery_digest(_outcome_session(command="ls /missing", exit_code=2))
+    failed = compile_session_digest(_outcome_session(command="ls /missing", exit_code=2))
     assert {(e.kind, e.summary) for e in failed.events} == {("command_failed", "ls /missing failed (exit 2)")}
 
-    test_failed = compile_recovery_digest(_outcome_session(command="pytest tests/unit", exit_code=1))
+    test_failed = compile_session_digest(_outcome_session(command="pytest tests/unit", exit_code=1))
     assert {(e.kind, e.summary) for e in test_failed.events} == {("test_failed", "pytest tests/unit failed (exit 1)")}
     # A failing test/command marks the run failed.
     assert test_failed.run_projection.runs[0].status == "failed"
 
 
+def test_direct_run_projection_matches_digest_projection() -> None:
+    session = _outcome_session(command="pytest tests/unit", exit_code=1)
+
+    assert compile_session_run_projection(session) == compile_session_digest(session).run_projection
+
+
 def test_structured_outcomes_use_is_error_when_no_exit_code() -> None:
-    ok = compile_recovery_digest(_outcome_session(command="gh pr view 1", is_error=False))
+    ok = compile_session_digest(_outcome_session(command="gh pr view 1", is_error=False))
     assert {e.kind for e in ok.events} == {"command_succeeded"}
     assert "(exit" not in next(iter(ok.events)).summary
 
-    bad = compile_recovery_digest(_outcome_session(command="gh pr view 1", is_error=True))
+    bad = compile_session_digest(_outcome_session(command="gh pr view 1", is_error=True))
     assert {e.kind for e in bad.events} == {"command_failed"}
 
 
 def test_unknown_outcome_yields_no_event() -> None:
     # tool_result with no structured fields -> unknown -> no fabricated event.
-    digest = compile_recovery_digest(_outcome_session(command="ls"))
+    digest = compile_session_digest(_outcome_session(command="ls"))
     assert digest.events == ()
     [tool] = digest.tool_summaries
     assert tool.status == "unknown"
@@ -688,17 +695,17 @@ def test_external_truths_are_not_synthesized_from_prose() -> None:
         ),
     )
 
-    digest = compile_recovery_digest(session)
+    digest = compile_session_digest(session)
     assert digest.events == ()
 
 
-def test_continue_report_renders_successor_boot_packet_with_evidence_refs() -> None:
-    digest = compile_recovery_digest(_session())
+def test_continue_report_renders_successor_boot_bundle_with_evidence_refs() -> None:
+    digest = compile_session_digest(_session())
 
     report = digest.report_markdown("continue")
 
     assert report.startswith("# Continue: Ship the backlog [evidence: codex-session:demo]")
-    assert "## Boot Packet" in report
+    assert "## Boot Bundle" in report
     assert "- goal: burn down the backlog [evidence: codex-session:demo::m1]" in report
     assert "- next: merge PR #1911 [evidence: codex-session:demo::m1]" in report
     # Structured outcomes are facts, not heuristic candidates (#2482).
@@ -716,9 +723,9 @@ def test_continue_report_renders_successor_boot_packet_with_evidence_refs() -> N
 
 
 def test_blame_report_renders_forensic_evidence_report_with_raw_refs() -> None:
-    digest = compile_recovery_digest(_session())
+    digest = compile_session_digest(_session())
 
-    report = render_recovery_report(digest, preset="blame")
+    report = render_session_report(digest, preset="blame")
 
     assert report.startswith("# Blame: Ship the backlog [evidence: codex-session:demo]")
     assert "## Forensic Summary" in report
@@ -753,7 +760,7 @@ def test_claim_models_reject_missing_raw_refs() -> None:
     with pytest.raises(ValidationError):
         RunStateSummary(raw_refs=())
     with pytest.raises(ValidationError):
-        RecoveryEvent(kind="test_passed", summary="pytest passed (exit 0)", raw_refs=())
+        SessionDigestEvent(kind="test_passed", summary="pytest passed (exit 0)", raw_refs=())
     with pytest.raises(ValidationError):
         ForensicIndexEntry(
             evidence_id="session::m1",
@@ -764,7 +771,7 @@ def test_claim_models_reject_missing_raw_refs() -> None:
 
 
 def test_raw_refs_include_message_and_block_preview() -> None:
-    digest = compile_recovery_digest(_session())
+    digest = compile_session_digest(_session())
 
     tool_ref = digest.tool_summaries[0].raw_refs[0]
     assert tool_ref.message_id == "m2"
@@ -785,11 +792,11 @@ def test_raw_ref_requires_session_id() -> None:
 
 
 def test_run_projection_refs_round_trip() -> None:
-    digest = compile_recovery_digest(_session())
+    digest = compile_session_digest(_session())
 
     refs = {
         ref
-        for entry in digest.work_packet().entries
+        for entry in digest.successor_context().entries
         if entry.section == "execution"
         for ref in entry.object_refs
         if ref.kind in {"run", "context-snapshot", "observed-event"}

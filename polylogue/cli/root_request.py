@@ -129,9 +129,6 @@ class RootModeRequest:
                 "explain_query",
                 "limit",
                 "stream",
-                "dialogue_only",
-                "message_role",
-                "material_origin",
             )
         )
 

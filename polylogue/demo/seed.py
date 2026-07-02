@@ -55,7 +55,7 @@ def _materialize_session_insights(archive_root: Path, session_ids: list[str]) ->
     not materialize the derived insight tables (``session_profiles`` and
     siblings); the daemon convergence path normally does that in a separate
     stage. The no-daemon demo seed must run the same rebuild so that the
-    postmortem / recovery-digest read surfaces resolve against a populated demo
+    postmortem / session-digest read surfaces resolve against a populated demo
     archive instead of an empty one. Passing ``session_ids`` makes
     ``rebuild_session_insights_sync`` commit internally and skip the full-table
     delete/rebuild path.

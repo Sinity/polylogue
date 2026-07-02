@@ -7,6 +7,7 @@ rollups.  It is an audit surface, not a billing estimator.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -66,7 +67,7 @@ _PROVIDER_USAGE_COVERAGE: tuple[ProviderUsageCoverage, ...] = (
         evidence_stream="provider_reported_usage",
         event_types=("token_count",),
         request_semantics="Codex last_token_usage is request/current-window telemetry and can be summed by request when present.",
-        cumulative_semantics="Codex total_token_usage is cumulative; rollups take the latest total per session/model to avoid double-counting.",
+        cumulative_semantics="Codex total_token_usage is cumulative and session-global; rollups take the latest total per session to avoid double-counting.",
         cache_semantics="cached_input_tokens and cache write/cache creation aliases are preserved as separate lanes and are not folded into generic input/output.",
         notes=("model_context_window is carried on token_count events when the provider supplies it.",),
     ),
@@ -351,7 +352,9 @@ def provider_usage_report_from_connection(
     model_by_origin = _model_rollup_stats(conn, origin) if model_table_present else {}
     model_counts_by_origin = _model_row_counts(conn, origin) if model_table_present else {}
     multi_model_by_origin = _multi_model_session_counts(conn, origin) if model_table_present else {}
-    raw_by_origin, raw_samples, raw_caveat = _source_raw_stats(conn, origin, limit)
+    raw_by_origin, raw_samples, raw_caveat = _source_raw_stats(
+        conn, archive_root=Path(archive_root), origin=origin, limit=limit
+    )
     if raw_caveat:
         caveats.append(raw_caveat)
 
@@ -530,6 +533,7 @@ def _coverage_state(
 
 def _source_raw_stats(
     conn: sqlite3.Connection,
+    archive_root: Path,
     origin: str | None,
     limit: int | None,
 ) -> tuple[dict[str, dict[str, int]], dict[str, tuple[str, ...]], str | None]:
@@ -557,45 +561,97 @@ def _source_raw_stats(
             """,
             _origin_args(origin),
         ).fetchall()
+        candidates = _acquired_not_materialized_raw_rows(conn, alias_sql, origin)
+        actionable_by_origin: dict[str, list[sqlite3.Row]] = defaultdict(list)
+        for candidate in candidates:
+            if _raw_row_is_known_non_session_artifact(archive_root, candidate):
+                continue
+            actionable_by_origin[str(candidate["origin"])].append(candidate)
         stats = {
             str(row["origin"]): {
                 "raw_session_count": _int(row["raw_session_count"]),
                 "raw_parse_error_count": _int(row["raw_parse_error_count"]),
-                "acquired_not_materialized_count": _int(row["acquired_not_materialized_count"]),
+                "acquired_not_materialized_count": len(actionable_by_origin.get(str(row["origin"]), ())),
             }
             for row in rows
         }
-        samples = _sample_acquired_not_materialized_raw_ids(conn, alias_sql, origin, limit)
+        samples = _sample_acquired_not_materialized_raw_ids(actionable_by_origin, limit)
     except sqlite3.Error as exc:
         return {}, {}, f"source.db raw_sessions coverage check failed: {exc}"
     return stats, samples, None
 
 
-def _sample_acquired_not_materialized_raw_ids(
+def _acquired_not_materialized_raw_rows(
     conn: sqlite3.Connection,
     alias_sql: str,
     origin: str | None,
-    limit: int | None,
-) -> dict[str, tuple[str, ...]]:
-    if limit is not None and limit <= 0:
-        return {}
-    rows = conn.execute(
-        f"""
-        SELECT r.origin AS origin, r.raw_id AS raw_id
+) -> list[sqlite3.Row]:
+    return list(
+        conn.execute(
+            f"""
+        SELECT r.origin AS origin,
+               r.raw_id AS raw_id,
+               r.source_path AS source_path,
+               r.blob_hash AS blob_hash,
+               r.parsed_at_ms AS parsed_at_ms
         FROM {alias_sql}.raw_sessions AS r
         LEFT JOIN sessions AS s ON s.raw_id = r.raw_id
         {_where_origin(origin, table_alias="r")}
           {"AND" if origin is not None else "WHERE"} (r.parse_error IS NULL OR TRIM(r.parse_error) = '')
           AND s.session_id IS NULL
         ORDER BY r.origin, r.raw_id
-        {"LIMIT ?" if limit is not None else ""}
         """,
-        (*_origin_args(origin), *(() if limit is None else (limit,))),
-    ).fetchall()
+            _origin_args(origin),
+        ).fetchall()
+    )
+
+
+def _sample_acquired_not_materialized_raw_ids(
+    rows_by_origin: dict[str, list[sqlite3.Row]],
+    limit: int | None,
+) -> dict[str, tuple[str, ...]]:
+    if limit is not None and limit <= 0:
+        return {}
     by_origin: dict[str, list[str]] = defaultdict(list)
-    for row in rows:
-        by_origin[str(row["origin"])].append(str(row["raw_id"]))
+    for origin, rows in rows_by_origin.items():
+        selected = rows if limit is None else rows[:limit]
+        by_origin[origin].extend(str(row["raw_id"]) for row in selected)
     return {key: tuple(value) for key, value in by_origin.items()}
+
+
+def _raw_row_is_known_non_session_artifact(archive_root: Path, row: sqlite3.Row) -> bool:
+    if str(row["origin"]) != Origin.CODEX_SESSION.value:
+        return False
+    if row["parsed_at_ms"] is None:
+        return False
+    return _raw_jsonl_type_set(_raw_blob_path(archive_root, row), limit=8) == {"session_meta"}
+
+
+def _raw_blob_path(archive_root: Path, row: sqlite3.Row) -> Path:
+    blob_hash = row["blob_hash"]
+    digest = blob_hash.hex() if isinstance(blob_hash, bytes) else str(blob_hash)
+    return archive_root / "blob" / digest[:2] / digest[2:]
+
+
+def _raw_jsonl_type_set(path: Path, *, limit: int) -> set[str]:
+    types: set[str] = set()
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    payload = json.loads(stripped)
+                except json.JSONDecodeError:
+                    return set()
+                if isinstance(payload, dict) and isinstance(payload.get("type"), str):
+                    types.add(str(payload["type"]))
+                if len(types) >= limit:
+                    break
+    except OSError:
+        return set()
+    return types
 
 
 def _stale_provider_rollup_stats(
@@ -653,7 +709,7 @@ def _expected_provider_model_rollups(
         """,
         _origin_args(origin),
     ).fetchall()
-    latest_total_by_model: dict[tuple[str, str], tuple[int, int, int, int, int]] = {}
+    latest_total_by_session: dict[str, tuple[str, tuple[int, int, int, int, int]]] = {}
     summed_last_by_model: dict[tuple[str, str], list[int]] = {}
     for row in rows:
         session_id = str(row["session_id"])
@@ -679,10 +735,10 @@ def _expected_provider_model_rollups(
             _int(row["total_reasoning_output_tokens"]),
             _int(row["total_tokens"]),
         )
-        key = (session_id, model_name)
         if any(total_values):
-            latest_total_by_model[key] = total_values[:5]
+            latest_total_by_session[session_id] = (model_name, total_values[:5])
             continue
+        key = (session_id, model_name)
         if any(last_values):
             bucket = summed_last_by_model.setdefault(key, [0, 0, 0, 0, 0])
             bucket[0] += last_values[0]
@@ -698,12 +754,12 @@ def _expected_provider_model_rollups(
     # corpus-verified Codex token semantics.
     from polylogue.storage.sqlite.archive_tiers.write import _provider_usage_disjoint_lanes
 
-    for (session_id, model_name), total_tuple in latest_total_by_model.items():
+    for session_id, (model_name, total_tuple) in latest_total_by_session.items():
         expected[session_id][model_name] = _provider_usage_disjoint_lanes(
             total_tuple[0], total_tuple[1], total_tuple[2], total_tuple[3]
         )
     for (session_id, model_name), last_totals in summed_last_by_model.items():
-        if (session_id, model_name) in latest_total_by_model:
+        if session_id in latest_total_by_session:
             continue
         expected[session_id][model_name] = _provider_usage_disjoint_lanes(
             last_totals[0], last_totals[1], last_totals[2], last_totals[3]

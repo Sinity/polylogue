@@ -662,7 +662,6 @@ class TestReaderSearchState:
             "/api/read-view-profiles",
             "/read?view=",
             "/api/assertions",
-            "/recovery?report=work-packet",
             "Load artifact list",
             "Load raw preview",
             'data-tab="evidence"',
@@ -1041,52 +1040,6 @@ class TestReaderSessionState:
         assert entries[0]["parser_mode"] == "archived_raw_session"
         assert source_path not in json.dumps(payload)
 
-    def test_session_messages_apply_content_projection_flags(self, workspace_env: dict[str, Path]) -> None:
-        from polylogue.archive.message.roles import Role
-        from polylogue.core.enums import BlockType, Provider
-        from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        _seed_test_db(workspace_env)
-        with ArchiveStore(workspace_env["archive_root"]) as archive:
-            session_id = archive.write_parsed(
-                ParsedSession(
-                    source_name=Provider.CODEX,
-                    provider_session_id="projection-c1",
-                    title="Projection fixture",
-                    created_at="2026-01-01T00:00:00+00:00",
-                    updated_at="2026-01-01T00:01:00+00:00",
-                    messages=[
-                        ParsedMessage(
-                            provider_message_id="projection-m1",
-                            role=Role.ASSISTANT,
-                            text="Visible prose\nprint('secret')\nTool call hidden",
-                            timestamp="2026-01-01T00:00:00+00:00",
-                            blocks=[
-                                ParsedContentBlock(type=BlockType.TEXT, text="Visible prose"),
-                                ParsedContentBlock(type=BlockType.CODE, text="print('secret')"),
-                                ParsedContentBlock(type=BlockType.TOOL_USE, text="Tool call hidden", tool_id="tool-1"),
-                                ParsedContentBlock(
-                                    type=BlockType.TOOL_RESULT,
-                                    text="Tool output hidden",
-                                    tool_id="tool-1",
-                                ),
-                            ],
-                        )
-                    ],
-                )
-            )
-
-        with _running_server(workspace_env, seeded=False) as (_, base_url):
-            payload = _get_json(base_url, f"/api/sessions/{session_id}/messages?prose_only=1")
-
-        result = cast(dict[str, object], payload)
-        messages = cast(list[dict[str, object]], result["messages"])
-        assert result["total"] == 1
-        assert messages[0]["text"] == "Visible prose"
-        assert "secret" not in str(messages[0]["text"])
-        assert "Tool" not in str(messages[0]["text"])
-
     def test_archive_file_set_session_detail_and_messages_from_archive_tiers(
         self,
         workspace_env: dict[str, Path],
@@ -1279,7 +1232,7 @@ class TestReaderWorkspaceRoutes:
             'data-tab="evidence"',
             "renderInspectorEvidence",
             "/api/sessions/",
-            "/recovery?report=work-packet&format=json",
+            "/read?view=context-image",
             "/api/assertions?target_ref=",
         ):
             assert hook in body
@@ -2051,15 +2004,11 @@ class TestReaderViewProfiles:
         assert raw_http["supported"] is True
         assert raw_http["route"] == "/api/sessions/{session_id}/read"
         assert raw_http["formats"] == ["json"]
-        assert profiles["recovery"]["successor_handoff"] is True
-        assert "markdown" in profiles["recovery"]["formats"]
-        recovery_http = cast(dict[str, object], profiles["recovery"]["http"])
-        assert recovery_http["formats"] == ["json", "markdown"]
-        assert "report" in cast(list[str], recovery_http["query_params"])
-        context_pack_http = cast(dict[str, object], profiles["context-pack"]["http"])
-        assert "max_tokens" in cast(list[str], context_pack_http["query_params"])
+        assert "recovery" not in profiles
+        context_image_http = cast(dict[str, object], profiles["context-image"]["http"])
+        assert "max_tokens" in cast(list[str], context_image_http["query_params"])
 
-    def test_read_view_execution_route_returns_messages_recovery_raw_context_and_context_pack(
+    def test_read_view_execution_route_returns_messages_raw_context_and_context_image(
         self,
         workspace_env: dict[str, Path],
     ) -> None:
@@ -2068,15 +2017,11 @@ class TestReaderViewProfiles:
                 dict[str, object],
                 _get_json(base_url, f"/api/sessions/{C1}/read?view=messages&limit=5"),
             )
-            recovery = cast(
-                dict[str, object],
-                _get_json(base_url, f"/api/sessions/{C1}/read?view=recovery&report=work-packet"),
-            )
             raw = cast(dict[str, object], _get_json(base_url, f"/api/sessions/{C1}/read?view=raw"))
             context = cast(dict[str, object], _get_json(base_url, f"/api/sessions/{C1}/read?view=context"))
-            context_pack = cast(
+            context_image = cast(
                 dict[str, object],
-                _get_json(base_url, f"/api/sessions/{C1}/read?view=context-pack"),
+                _get_json(base_url, f"/api/sessions/{C1}/read?view=context-image"),
             )
             neighbors = cast(
                 dict[str, object],
@@ -2096,11 +2041,6 @@ class TestReaderViewProfiles:
         assert message_actions["open"]["enabled"] is True
         message_payload = cast(dict[str, object], messages["payload"])
         assert message_payload["total"] == 1
-        assert recovery["view"] == "recovery"
-        assert recovery["lossiness"] == "derived"
-        assert recovery["evidence_policy"] == "required"
-        recovery_payload = cast(dict[str, object], recovery["payload"])
-        assert recovery_payload["report"] == "work-packet"
         assert raw["view"] == "raw"
         assert raw["target_refs"] == [f"session:{C1}"]
         assert raw["lossiness"] == "raw"
@@ -2110,8 +2050,8 @@ class TestReaderViewProfiles:
         assert context["view"] == "context"
         context_payload = cast(dict[str, object], context["payload"])
         assert context_payload["preamble_version"] == "1.0"
-        assert context_pack["view"] == "context-pack"
-        context_payload = cast(dict[str, object], context_pack["payload"])
+        assert context_image["view"] == "context-image"
+        context_payload = cast(dict[str, object], context_image["payload"])
         # Context pack now returns the shared ContextImage payload compiled from
         # the seed session through compile_context.
         context_spec = cast(dict[str, object], context_payload["spec"])
@@ -2145,96 +2085,6 @@ class TestReaderViewProfiles:
         assert view_payload["error"] == "unsupported_read_view"
         assert format_status == 400
         assert format_payload["error"] == "invalid_format"
-
-
-class TestReaderRecoveryEndpoint:
-    def test_recovery_endpoint_returns_digest_json(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
-            payload = cast(
-                dict[str, object],
-                _get_json(base_url, f"/api/sessions/{C1}/recovery?report=digest&format=json"),
-            )
-
-        assert payload["report"] == "digest"
-        assert payload["format"] == "json"
-        digest = cast(dict[str, object], payload["digest"])
-        assert digest["session_id"] == C1
-        assert digest["raw_refs"]
-
-    def test_recovery_endpoint_returns_shared_work_packet_json(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
-            payload = cast(
-                dict[str, object],
-                _get_json(base_url, f"/api/sessions/{C1}/recovery?report=work-packet&format=json"),
-            )
-
-        assert payload["report"] == "work-packet"
-        assert payload["format"] == "json"
-        packet = cast(dict[str, object], payload["work_packet"])
-        assert packet["session_id"] == C1
-        assert packet["evidence_refs"]
-        assert packet["selection_strategy"] == "single_session_recovery_digest_v0"
-        assert packet["redaction_policy"] == "public_refs_and_redacted_local_paths"
-        assert isinstance(packet["token_estimate"], int)
-        assert packet["token_estimate"] > 0
-        assert packet["omissions"]
-        assert packet["evidence_windows"]
-        packet_size_estimate = cast(dict[str, object], packet["size_estimate"])
-        assert isinstance(packet_size_estimate["json_bytes"], int)
-        assert packet_size_estimate["json_bytes"] > 0
-        assert "raw_artifacts" not in json.dumps(payload)
-
-    def test_recovery_endpoint_returns_work_packet_markdown_envelope(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
-            payload = cast(
-                dict[str, object],
-                _get_json(base_url, f"/api/sessions/{C1}/recovery?report=work-packet&format=markdown"),
-            )
-
-        assert payload["report"] == "work-packet"
-        assert payload["format"] == "markdown"
-        assert "markdown" in payload
-        assert C1 in str(payload["markdown"])
-
-    @pytest.mark.parametrize("report", ["continue", "blame"])
-    def test_recovery_endpoint_does_not_overexpose_report_presets(
-        self, workspace_env: dict[str, Path], report: str
-    ) -> None:
-        """#1846 exposes bundle DTOs first; #1847 owns report-preset promotion."""
-
-        with _running_server(workspace_env) as (_, base_url):
-            status, payload = _get_json_ex(base_url, f"/api/sessions/{C1}/recovery?report={report}&format=markdown")
-
-        assert status == 400
-        assert payload["error"] == "invalid_report"
-
-    @pytest.mark.parametrize(
-        ("query", "error_code"),
-        [
-            ("report=nope&format=json", "invalid_report"),
-            ("report=continue&format=json", "invalid_report"),
-            ("report=blame&format=json", "invalid_report"),
-            ("report=digest&format=markdown", "invalid_format"),
-            ("report=work-packet&format=zip", "invalid_format"),
-        ],
-    )
-    def test_recovery_endpoint_rejects_unsupported_report_or_format(
-        self, workspace_env: dict[str, Path], query: str, error_code: str
-    ) -> None:
-        with _running_server(workspace_env) as (_, base_url):
-            status, payload = _get_json_ex(base_url, f"/api/sessions/{C1}/recovery?{query}")
-
-        assert status == 400
-        assert payload["error"] == error_code
-
-    def test_recovery_endpoint_returns_404_for_missing_session(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
-            status, payload = _get_json_ex(
-                base_url, "/api/sessions/claude-code-session:missing/recovery?report=work-packet&format=json"
-            )
-
-        assert status == 404
-        assert payload["error"] == "not_found"
 
 
 class TestReaderAssertionEndpoint:
@@ -2374,8 +2224,7 @@ class TestReaderPrivacy:
             "/api/sessions/claude-code-session:c1",
             "/api/sessions/claude-code-session:c1/messages",
             "/api/sessions/claude-code-session:c1/read?view=messages",
-            "/api/sessions/claude-code-session:c1/read?view=recovery",
-            "/api/sessions/claude-code-session:c1/recovery?report=work-packet&format=json",
+            "/api/sessions/claude-code-session:c1/read?view=context-image&include_messages=0",
             "/api/assertions?target_ref=session%3Aclaude-code-session%3Ac1",
         ],
     )
@@ -2411,8 +2260,7 @@ class TestReaderAuthSurface:
     @pytest.mark.parametrize(
         "path",
         [
-            "/api/sessions/claude-code-session:c1/recovery?report=work-packet&format=json",
-            "/api/sessions/claude-code-session:c1/read?view=recovery",
+            "/api/sessions/claude-code-session:c1/read?view=context-image&include_messages=0",
             "/api/assertions?target_ref=session%3Aclaude-code-session%3Ac1",
         ],
     )
@@ -2631,31 +2479,6 @@ class TestSharedQueryPayloads:
         assert dump["items"][0]["assertion_id"] == "claim-1"
         assert dump["items"][0]["evidence_refs"] == ["message:m1"]
         assert dump["statuses"] == ["active"]
-
-    def test_recovery_read_payload_wraps_storage_free_recovery_models(self) -> None:
-        from polylogue.surfaces.payloads import RecoveryReadPayload, SurfacePayloadModel
-
-        class TinyRecovery(SurfacePayloadModel):
-            session_id: str
-            evidence_refs: tuple[str, ...] = ()
-
-        digest = TinyRecovery(session_id="c1", evidence_refs=("message:m1",))
-        packet = TinyRecovery(session_id="c1", evidence_refs=("message:m2",))
-
-        digest_payload = RecoveryReadPayload.from_digest(digest).model_dump(mode="json", exclude_none=True)
-        packet_payload = RecoveryReadPayload.from_work_packet_json(packet).model_dump(mode="json", exclude_none=True)
-        markdown_payload = RecoveryReadPayload.from_work_packet_markdown(
-            session_id="c1", markdown="# Work packet"
-        ).model_dump(mode="json", exclude_none=True)
-
-        assert digest_payload["digest"]["evidence_refs"] == ["message:m1"]
-        assert packet_payload["work_packet"]["evidence_refs"] == ["message:m2"]
-        assert markdown_payload == {
-            "session_id": "c1",
-            "report": "work-packet",
-            "format": "markdown",
-            "markdown": "# Work packet",
-        }
 
 
 @pytest.mark.load_sensitive
@@ -3113,69 +2936,69 @@ class TestReaderSavedViewsUI:
 
 
 # ---------------------------------------------------------------------------
-# polylogue.local_reader.bulk — multi-select bulk operations (#1119)
+# polylogue.local_reader.selection — multi-select selection operations (#1119)
 # ---------------------------------------------------------------------------
 
 
-class TestReaderBulkOperations:
-    """``polylogue.local_reader.bulk``: selection toolbar + per-session envelope.
+class TestReaderSelectionOperations:
+    """``polylogue.local_reader.selection``: selection toolbar + per-session envelope.
 
-    The bulk surface composes existing daemon routes: ``/api/user/marks``
+    The selection surface composes existing daemon routes: ``/api/user/marks``
     carries route-backed overlay mutations, and ``/api/sessions/{id}``
     carries export reads. Delete and re-embed are exposed only through a
     preview overlay because the daemon has no corresponding mutation routes yet.
 
     These tests assert the shipped HTML carries every load-bearing region
     hook and that the underlying tag endpoint accepts the per-session
-    POSTs the bulk toolbar drives — that is the contract the JS depends on.
+    POSTs the selection toolbar drives — that is the contract the JS depends on.
     Pixel-level assertions are deliberately avoided so reader visual
     iteration does not invalidate the smoke.
     """
 
-    BULK_REGION_HOOKS = (
-        "bulk-toolbar",
-        "bulk-select-all",
-        "bulk-clear",
-        'data-bulk-action="tag-star"',
-        'data-bulk-action="tag-pin"',
-        'data-bulk-action="tag-archive"',
-        'data-bulk-action="export"',
-        'data-bulk-action="delete-preview"',
-        'data-bulk-action="reembed-preview"',
-        "bulk-preview",
-        "bulk-preview-confirm",
-        "bulkApplyMark",
-        "bulkExport",
-        "openBulkPreview",
-        "confirmBulkPreview",
-        "renderBulkToolbar",
-        "isBulkSelected",
-        "bulkSelection",
+    SELECTION_REGION_HOOKS = (
+        "selection-toolbar",
+        "selection-select-all",
+        "selection-clear",
+        'data-selection-action="tag-star"',
+        'data-selection-action="tag-pin"',
+        'data-selection-action="tag-archive"',
+        'data-selection-action="export"',
+        'data-selection-action="delete-preview"',
+        'data-selection-action="reembed-preview"',
+        "selection-preview",
+        "selection-preview-confirm",
+        "selectionApplyMark",
+        "selectionExport",
+        "openSelectionPreview",
+        "confirmSelectionPreview",
+        "renderSelectionToolbar",
+        "isSelectionSelected",
+        "selectionSet",
         "no_endpoint",
     )
 
-    def test_bulk_toolbar_regions_present_in_shell(self, workspace_env: dict[str, Path]) -> None:
+    def test_selection_toolbar_regions_present_in_shell(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
             status, content_type, body = _get_text(base_url, "/")
         assert status == 200
         assert "text/html" in content_type
-        for hook in self.BULK_REGION_HOOKS:
-            assert hook in body, f"web shell missing bulk hook {hook!r}"
+        for hook in self.SELECTION_REGION_HOOKS:
+            assert hook in body, f"web shell missing selection hook {hook!r}"
 
-    def test_bulk_envelope_keys_documented_in_shell(self, workspace_env: dict[str, Path]) -> None:
+    def test_selection_envelope_keys_documented_in_shell(self, workspace_env: dict[str, Path]) -> None:
         """The shipped JS must reference the per-session status keys the
-        bulk envelope contract uses (succeeded/failed/skipped + dryRun + action).
-        These are the field names the UI surfaces to the operator after a bulk
+        selection envelope contract uses (succeeded/failed/skipped + dryRun + action).
+        These are the field names the UI surfaces to the operator after a selection
         op; renaming any of them silently would break the rendered status."""
         with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         for key in ("succeeded", "failed", "skipped", "dryRun", "action"):
-            assert key in body, f"bulk envelope key {key!r} missing from shell"
+            assert key in body, f"selection envelope key {key!r} missing from shell"
 
-    def test_bulk_tag_drives_existing_marks_endpoint(self, workspace_env: dict[str, Path]) -> None:
-        """The bulk toolbar issues per-session POSTs against
+    def test_selection_tag_drives_existing_marks_endpoint(self, workspace_env: dict[str, Path]) -> None:
+        """The selection toolbar issues per-session POSTs against
         ``/api/user/marks``. This simulates that loop server-side to lock the
-        contract: the daemon must accept the same payload shape the bulk JS
+        contract: the daemon must accept the same payload shape the selection JS
         emits for every selected session, and a follow-up GET must
         surface the resulting marks on every session."""
         with _running_server(workspace_env) as (_, base_url):
@@ -3195,8 +3018,8 @@ class TestReaderBulkOperations:
         ids = sorted(str(item["session_id"]) for item in items)
         assert ids == ["chatgpt-export:c2", "claude-ai-export:c3", "claude-code-session:c1"]
 
-    def test_bulk_export_uses_session_detail_endpoint(self, workspace_env: dict[str, Path]) -> None:
-        """Bulk export concatenates per-session GETs. This pins the
+    def test_query_set_export_uses_session_detail_endpoint(self, workspace_env: dict[str, Path]) -> None:
+        """Query-set export concatenates per-session GETs. This pins the
         contract that ``/api/sessions/{id}`` returns the detail payload
         the export bundle is composed from, for every selected id."""
         with _running_server(workspace_env) as (_, base_url):

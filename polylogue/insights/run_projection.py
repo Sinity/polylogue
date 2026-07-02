@@ -1,8 +1,8 @@
 """Storage-free Run / ContextSnapshot / ObservedEvent projection.
 
-The projection is intentionally fed by existing recovery-transform DTOs. It
-gives recovery/work-packet consumers a typed execution view without inventing a
-new durable table before there is measured query pressure.
+The projection is intentionally fed by existing session-digest DTOs. It gives
+successor-context consumers a typed execution view without inventing a new
+durable table before there is measured query pressure.
 """
 
 from __future__ import annotations
@@ -96,7 +96,7 @@ class _SubagentReportLike(Protocol):
     def raw_refs(self) -> Sequence[_RawRefLike]: ...
 
 
-class _RecoveryEventLike(Protocol):
+class _SessionDigestEventLike(Protocol):
     @property
     def kind(self) -> ObservedEventKind: ...
 
@@ -193,7 +193,7 @@ class ObservedEvent(ArchiveInsightModel):
 
 
 class RunProjection(ArchiveInsightModel):
-    """Typed execution projection over recovery-transform evidence."""
+    """Typed execution projection over session-digest evidence."""
 
     session_id: str
     runs: tuple[ProjectedRun, ...]
@@ -217,7 +217,7 @@ def build_run_projection(
     session_raw_refs: Sequence[_RawRefLike],
     tool_summaries: Sequence[_ToolSummaryLike],
     subagent_reports: Sequence[_SubagentReportLike],
-    recovery_events: Sequence[_RecoveryEventLike],
+    session_digest_events: Sequence[_SessionDigestEventLike],
 ) -> RunProjection:
     """Project digest evidence into bounded Run/ContextSnapshot/ObservedEvent DTOs."""
 
@@ -236,7 +236,7 @@ def build_run_projection(
         title=title or session_id,
         cwd=working_directories[0] if working_directories else None,
         git_branch=git_branch,
-        status=_main_run_status(recovery_events, tool_summaries),
+        status=_main_run_status(session_digest_events, tool_summaries),
         confidence="raw",
         transcript_ref=session_evidence[0],
         evidence_refs=session_evidence,
@@ -284,7 +284,7 @@ def build_run_projection(
             )
         )
 
-    for index, event in enumerate(recovery_events):
+    for index, event in enumerate(session_digest_events):
         # Structured outcome events carry no GitHub/issue object refs and always
         # have delivery_state "observed" — their evidence is the tool-call block.
         evidence_refs = _to_evidence_refs(event.raw_refs)
@@ -413,14 +413,14 @@ def _harness_for_origin(source_origin: str) -> RunHarness:
 
 
 def _main_run_status(
-    recovery_events: Sequence[_RecoveryEventLike],
+    session_digest_events: Sequence[_SessionDigestEventLike],
     tool_summaries: Sequence[_ToolSummaryLike],
 ) -> RunStatus:
-    if any(event.kind in {"command_failed", "test_failed"} for event in recovery_events):
+    if any(event.kind in {"command_failed", "test_failed"} for event in session_digest_events):
         return "failed"
     if any(tool.status == "failed" for tool in tool_summaries):
         return "failed"
-    if recovery_events or tool_summaries:
+    if session_digest_events or tool_summaries:
         return "completed"
     return "unknown"
 

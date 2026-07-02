@@ -1,8 +1,8 @@
-"""Deterministic recovery/digest transforms for coding-agent sessions.
+"""Deterministic session digest transforms for coding-agent sessions.
 
 The v0 transform surface is intentionally storage-free: it compiles an
 already-hydrated :class:`~polylogue.archive.session.domain_models.Session`
-into small typed recovery artifacts while preserving raw message/block refs for
+into small typed session digest artifacts while preserving raw message/block refs for
 drilldown. Raw archive rows stay the evidence source; these records are
 read-model candidates.
 """
@@ -30,8 +30,8 @@ from polylogue.surfaces.action_affordances import (
     assertion_candidate_review_affordances,
 )
 
-RECOVERY_TRANSFORM_ID = "recovery_digest_v0"
-RECOVERY_TRANSFORM_VERSION = 1
+SESSION_DIGEST_TRANSFORM_ID = "session_digest_v0"
+SESSION_DIGEST_TRANSFORM_VERSION = 1
 T = TypeVar("T")
 
 ForensicClaimKind = Literal[
@@ -42,8 +42,8 @@ ForensicClaimKind = Literal[
     "event",
     "decision_candidate",
 ]
-RecoveryReportPreset = Literal["continue", "blame", "work-packet"]
-WorkPacketSection = Literal[
+SessionReportPreset = Literal["continue", "blame", "successor-context"]
+SuccessorContextSection = Literal[
     "execution",
     "events",
     "subagents",
@@ -54,9 +54,9 @@ WorkPacketSection = Literal[
     "assertions",
     "evidence_gaps",
 ]
-WorkPacketSupport = Literal["raw_evidence", "assertion", "inference", "caveat", "missing_evidence"]
+EvidenceSupport = Literal["raw_evidence", "assertion", "inference", "caveat", "missing_evidence"]
 DecisionCandidateReviewStatus = Literal["accepted", "rejected", "deferred"]
-RecoveryEvidenceWindowKind = Literal[
+ContextEvidenceWindowKind = Literal[
     "quoted_evidence",
     "inferred_summary",
     "accepted_candidate",
@@ -64,7 +64,7 @@ RecoveryEvidenceWindowKind = Literal[
     "deferred_candidate",
     "unavailable_source_material",
 ]
-RecoveryPackOmissionReason = Literal["budget", "unsupported", "not_found", "policy", "redacted", "missing_evidence"]
+SuccessorContextOmissionReason = Literal["budget", "unsupported", "not_found", "policy", "redacted", "missing_evidence"]
 SubagentChildLinkStatus = Literal["resolved", "unresolved", "repaired", "quarantined"]
 
 _GITHUB_REPO_REF = r"[\w.-]+/[\w.-]+#"
@@ -128,7 +128,7 @@ class TransformRawRef(ArchiveInsightModel):
         return value
 
     def to_evidence_ref(self) -> EvidenceRef:
-        """Return the shared DTO used to parse/format recovery evidence ids."""
+        """Return the shared DTO used to parse/format archive evidence ids."""
 
         return EvidenceRef(
             session_id=self.session_id,
@@ -155,7 +155,7 @@ class ForensicIndexEntry(ArchiveInsightModel):
 
 
 class ForensicIndex(ArchiveInsightModel):
-    """Deterministic raw-ref index for blame/continue recovery surfaces."""
+    """Deterministic raw-ref index for blame/continue session reports."""
 
     session_id: str
     entries: tuple[ForensicIndexEntry, ...] = ()
@@ -171,7 +171,7 @@ class TransformMetadata(ArchiveInsightModel):
     input_message_count: int = 0
 
 
-class RecoverySizeMetrics(ArchiveInsightModel):
+class SessionDigestSizeMetrics(ArchiveInsightModel):
     raw_bytes: int
     normal_read_bytes: int
     resume_bundle_bytes: int
@@ -251,7 +251,7 @@ class RunStateSummary(ArchiveInsightModel):
         return self
 
 
-class RecoveryEvent(ArchiveInsightModel):
+class SessionDigestEvent(ArchiveInsightModel):
     # Structured in-session outcome events. Derived from the keystone
     # tool-result fields (exit_code / is_error) on a paired tool_result block,
     # never regex-mined from message prose (#2482). External truths (PR/issue/CI
@@ -271,9 +271,9 @@ class RecoveryEvent(ArchiveInsightModel):
     status: str | None = None
 
     @model_validator(mode="after")
-    def _requires_raw_refs(self) -> RecoveryEvent:
+    def _requires_raw_refs(self) -> SessionDigestEvent:
         if not self.raw_refs:
-            raise ValueError("RecoveryEvent requires at least one raw ref")
+            raise ValueError("SessionDigestEvent requires at least one raw ref")
         return self
 
 
@@ -292,8 +292,8 @@ class DecisionCandidate(ArchiveInsightModel):
         return self
 
 
-class RecoveryPacketScope(ArchiveInsightModel):
-    """What raw material a recovery work packet selected."""
+class SuccessorContextScope(ArchiveInsightModel):
+    """What raw material a successor context bundle selected."""
 
     seed_refs: tuple[str, ...] = ()
     read_views: tuple[str, ...] = ()
@@ -303,29 +303,29 @@ class RecoveryPacketScope(ArchiveInsightModel):
     message_count: int = 0
 
 
-class RecoveryPackOmission(ArchiveInsightModel):
-    """Explicitly omitted or unavailable work-packet material."""
+class SuccessorContextOmission(ArchiveInsightModel):
+    """Explicitly omitted or unavailable successor-context material."""
 
     ref: str | None = None
     view: str | None = None
-    reason: RecoveryPackOmissionReason
+    reason: SuccessorContextOmissionReason
     detail: str
     evidence_refs: tuple[EvidenceRef, ...] = ()
 
 
-class RecoveryEvidenceWindow(ArchiveInsightModel):
+class ContextEvidenceWindow(ArchiveInsightModel):
     """Typed evidence-window vocabulary for successor handoffs."""
 
-    kind: RecoveryEvidenceWindowKind
+    kind: ContextEvidenceWindowKind
     label: str
     text: str
-    support: WorkPacketSupport = "raw_evidence"
+    support: EvidenceSupport = "raw_evidence"
     evidence_refs: tuple[EvidenceRef, ...] = ()
     candidate_ref: str | None = None
 
 
-class RecoveryPacketSizeEstimate(ArchiveInsightModel):
-    """Approximate size/cost posture for a recovery handoff packet."""
+class SuccessorContextSizeEstimate(ArchiveInsightModel):
+    """Approximate size/cost posture for a successor handoff bundle."""
 
     raw_bytes: int = 0
     normal_read_bytes: int = 0
@@ -335,26 +335,26 @@ class RecoveryPacketSizeEstimate(ArchiveInsightModel):
     token_estimate: int = 0
 
 
-class RecoveryWorkPacketEntry(ArchiveInsightModel):
-    """One storage-free successor-session packet item with typed evidence refs."""
+class SuccessorContextEntry(ArchiveInsightModel):
+    """One storage-free successor-session bundle item with typed evidence refs."""
 
-    section: WorkPacketSection
+    section: SuccessorContextSection
     label: str
     text: str
     evidence_refs: tuple[EvidenceRef, ...]
     object_refs: tuple[ObjectRef, ...] = ()
-    support: WorkPacketSupport = "raw_evidence"
+    support: EvidenceSupport = "raw_evidence"
     metadata: dict[str, str] = Field(default_factory=dict)
     action_affordances: tuple[ActionAffordancePayload, ...] = ()
 
     @model_validator(mode="after")
-    def _requires_evidence_refs(self) -> RecoveryWorkPacketEntry:
+    def _requires_evidence_refs(self) -> SuccessorContextEntry:
         if not self.evidence_refs:
-            raise ValueError("RecoveryWorkPacketEntry requires at least one evidence ref")
+            raise ValueError("SuccessorContextEntry requires at least one evidence ref")
         return self
 
 
-class RecoveryWorkPacket(ArchiveInsightModel):
+class SuccessorContextBundle(ArchiveInsightModel):
     """Storage-free DTO for the compact continuation bundle."""
 
     session_id: str
@@ -362,46 +362,46 @@ class RecoveryWorkPacket(ArchiveInsightModel):
     source_origin: str
     message_count: int
     generated_at: str = ""
-    selection_strategy: str = "single_session_recovery_digest_v0"
-    scope: RecoveryPacketScope = Field(default_factory=RecoveryPacketScope)
+    selection_strategy: str = "single_session_session_digest_v0"
+    scope: SuccessorContextScope = Field(default_factory=SuccessorContextScope)
     git_branch: str | None = None
     working_directories: tuple[str, ...] = ()
     target_refs: tuple[ObjectRef, ...] = ()
-    entries: tuple[RecoveryWorkPacketEntry, ...] = ()
+    entries: tuple[SuccessorContextEntry, ...] = ()
     evidence_refs: tuple[EvidenceRef, ...]
-    evidence_windows: tuple[RecoveryEvidenceWindow, ...] = ()
-    omissions: tuple[RecoveryPackOmission, ...] = ()
+    evidence_windows: tuple[ContextEvidenceWindow, ...] = ()
+    omissions: tuple[SuccessorContextOmission, ...] = ()
     caveats: tuple[str, ...] = ()
     redaction_policy: str = "public_refs_and_redacted_local_paths"
     token_estimate: int = 0
-    size_estimate: RecoveryPacketSizeEstimate = Field(default_factory=RecoveryPacketSizeEstimate)
+    size_estimate: SuccessorContextSizeEstimate = Field(default_factory=SuccessorContextSizeEstimate)
 
     @model_validator(mode="after")
-    def _requires_evidence_refs(self) -> RecoveryWorkPacket:
+    def _requires_evidence_refs(self) -> SuccessorContextBundle:
         if not self.evidence_refs:
-            raise ValueError("RecoveryWorkPacket requires at least one evidence ref")
+            raise ValueError("SuccessorContextBundle requires at least one evidence ref")
         return self
 
     def render_markdown(self) -> str:
         """Render the operator-facing continuation bundle."""
 
-        return render_work_packet(self)
+        return render_successor_context(self)
 
 
-class RecoveryDigest(ArchiveInsightModel):
-    """Typed v0 output for transform-first successor-session recovery."""
+class SessionDigest(ArchiveInsightModel):
+    """Typed v0 output for transform-first successor-session context."""
 
     session_id: str
     title: str | None = None
     git_branch: str | None = None
     working_directories: tuple[str, ...] = ()
     transform: TransformMetadata
-    size_metrics: RecoverySizeMetrics
+    size_metrics: SessionDigestSizeMetrics
     role_counts: dict[str, int] = Field(default_factory=dict)
     tool_summaries: tuple[ToolSummary, ...] = ()
     subagent_reports: tuple[SubagentReport, ...] = ()
     run_state: RunStateSummary | None = None
-    events: tuple[RecoveryEvent, ...] = ()
+    events: tuple[SessionDigestEvent, ...] = ()
     decision_candidates: tuple[DecisionCandidate, ...] = ()
     run_projection: RunProjection
     forensic_index: ForensicIndex
@@ -409,52 +409,52 @@ class RecoveryDigest(ArchiveInsightModel):
     raw_refs: tuple[TransformRawRef, ...]
 
     @model_validator(mode="after")
-    def _requires_session_ref(self) -> RecoveryDigest:
+    def _requires_session_ref(self) -> SessionDigest:
         if not self.raw_refs:
-            raise ValueError("RecoveryDigest requires at least one raw ref")
+            raise ValueError("SessionDigest requires at least one raw ref")
         return self
 
-    def report_markdown(self, preset: RecoveryReportPreset) -> str:
-        """Render a deterministic evidence-linked recovery report preset."""
+    def report_markdown(self, preset: SessionReportPreset) -> str:
+        """Render a deterministic evidence-linked session report preset."""
 
-        return render_recovery_report(self, preset=preset)
+        return render_session_report(self, preset=preset)
 
-    def work_packet(self) -> RecoveryWorkPacket:
-        """Return the storage-free continuation packet DTO for this digest."""
+    def successor_context(self) -> SuccessorContextBundle:
+        """Return the storage-free continuation bundle DTO for this digest."""
 
-        return build_recovery_work_packet(self)
+        return build_successor_context_bundle(self)
 
-    def work_packet_markdown(self) -> str:
-        """Render the storage-free continuation packet DTO."""
+    def successor_context_markdown(self) -> str:
+        """Render the storage-free continuation bundle DTO."""
 
-        return self.work_packet().render_markdown()
+        return self.successor_context().render_markdown()
 
 
 class TransformDescriptor(ArchiveInsightModel):
     transform_id: str
     version: int
     input_kind: Literal["session"] = "session"
-    output_kind: Literal["recovery_digest"] = "recovery_digest"
+    output_kind: Literal["session_digest"] = "session_digest"
     deterministic: bool = True
     uses_llm: bool = False
 
 
-RECOVERY_TRANSFORM = TransformDescriptor(
-    transform_id=RECOVERY_TRANSFORM_ID,
-    version=RECOVERY_TRANSFORM_VERSION,
+SESSION_DIGEST_TRANSFORM = TransformDescriptor(
+    transform_id=SESSION_DIGEST_TRANSFORM_ID,
+    version=SESSION_DIGEST_TRANSFORM_VERSION,
 )
 
 TRANSFORM_REGISTRY: dict[str, TransformDescriptor] = {
-    RECOVERY_TRANSFORM.transform_id: RECOVERY_TRANSFORM,
+    SESSION_DIGEST_TRANSFORM.transform_id: SESSION_DIGEST_TRANSFORM,
 }
 
 
-def compile_recovery_digest(
+def compile_session_digest(
     session: Session,
     *,
     session_links: Sequence[Mapping[str, object]] = (),
-) -> RecoveryDigest:
-    """Compile a session into a small deterministic recovery/digest bundle."""
+) -> SessionDigest:
+    """Compile a session into a small deterministic session digest bundle."""
 
     messages = list(session.messages)
     session_ref = TransformRawRef(
@@ -481,7 +481,7 @@ def compile_recovery_digest(
         session_raw_refs=(session_ref,),
         tool_summaries=tool_summaries,
         subagent_reports=subagent_reports,
-        recovery_events=events,
+        session_digest_events=events,
     )
     role_counts = dict(Counter(_role_value(message) for message in messages))
     normal_read = _normal_read_text(messages)
@@ -504,18 +504,18 @@ def compile_recovery_digest(
         events=events,
         decisions=decisions,
     )
-    return RecoveryDigest(
+    return SessionDigest(
         session_id=str(session.id),
         title=session.title,
         transform=TransformMetadata(
-            transform_id=RECOVERY_TRANSFORM_ID,
-            transform_version=RECOVERY_TRANSFORM_VERSION,
+            transform_id=SESSION_DIGEST_TRANSFORM_ID,
+            transform_version=SESSION_DIGEST_TRANSFORM_VERSION,
             input_session_id=str(session.id),
             source_origin=str(session.origin),
             computed_at=_session_transform_timestamp(session),
             input_message_count=len(messages),
         ),
-        size_metrics=RecoverySizeMetrics(
+        size_metrics=SessionDigestSizeMetrics(
             raw_bytes=raw_bytes,
             normal_read_bytes=len(normal_read.encode("utf-8")),
             resume_bundle_bytes=len(resume_markdown.encode("utf-8")),
@@ -541,42 +541,84 @@ def compile_recovery_digest(
     )
 
 
+def compile_session_run_projection(
+    session: Session,
+    *,
+    session_links: Sequence[Mapping[str, object]] = (),
+) -> RunProjection:
+    """Compile only the run projection for materialization/read-model paths.
+
+    ``compile_session_digest`` builds several presentation-heavy products
+    (resume markdown, forensic index, size metrics, decision candidates) that
+    are irrelevant when the session-insight materializer only needs
+    ``session_runs`` / ``session_observed_events`` / ``session_context_snapshots``.
+    This helper keeps the run-projection semantics shared while avoiding that
+    extra work in daemon convergence.
+    """
+
+    messages = list(session.messages)
+    session_ref = TransformRawRef(
+        session_id=str(session.id),
+        message_id=None,
+        block_index=None,
+        ref_kind="session",
+        preview=session.display_title,
+    )
+    tool_summaries = tuple(_extract_tool_summaries(session, messages))
+    subagent_reports = _enrich_subagent_reports_with_links(
+        tuple(_extract_subagent_reports(session, messages)),
+        session_links,
+    )
+    events = tuple(_extract_events(session, messages))
+    return build_run_projection(
+        session_id=str(session.id),
+        source_origin=str(session.origin),
+        title=session.title,
+        git_branch=session.git_branch,
+        working_directories=tuple(session.working_directories),
+        session_raw_refs=(session_ref,),
+        tool_summaries=tool_summaries,
+        subagent_reports=subagent_reports,
+        session_digest_events=events,
+    )
+
+
 def render_resume_bundle(
     *,
     session: Session,
     tool_summaries: Sequence[ToolSummary],
     subagent_reports: Sequence[SubagentReport],
     run_state: RunStateSummary | None,
-    events: Sequence[RecoveryEvent],
+    events: Sequence[SessionDigestEvent],
     decisions: Sequence[DecisionCandidate],
     run_projection: RunProjection,
 ) -> str:
-    """Render the small successor-session boot packet for a digest."""
+    """Render the small successor-session boot bundle for a digest."""
 
-    packet = RecoveryWorkPacket(
+    bundle = SuccessorContextBundle(
         session_id=str(session.id),
         title=session.display_title,
         source_origin=str(session.origin),
         message_count=len(session.messages),
         git_branch=session.git_branch,
-        scope=RecoveryPacketScope(
+        scope=SuccessorContextScope(
             seed_refs=(f"session:{session.id}",),
-            read_views=("recovery", "work-packet"),
+            read_views=("messages",),
             selection_limits={"sessions": 1, "entry_soft_cap": 120},
             session_count=1,
             message_count=len(session.messages),
         ),
         working_directories=tuple(_redact_local_path(path) for path in session.working_directories),
-        target_refs=_work_packet_target_refs(str(session.id), session.git_branch),
+        target_refs=_successor_context_target_refs(str(session.id), session.git_branch),
         entries=tuple(
-            _work_packet_entries(
+            _successor_context_entries(
                 events=events,
                 subagent_reports=subagent_reports,
                 run_state=run_state,
                 tool_summaries=tool_summaries,
                 decisions=decisions,
                 run_projection=run_projection,
-                packet_raw_refs=(
+                bundle_raw_refs=(
                     TransformRawRef(
                         session_id=str(session.id),
                         message_id=None,
@@ -589,52 +631,78 @@ def render_resume_bundle(
         ),
         evidence_refs=(EvidenceRef(session_id=str(session.id)),),
     )
-    return packet.render_markdown()
+    return bundle.render_markdown()
 
 
-def render_work_packet(packet: RecoveryWorkPacket) -> str:
-    """Render a storage-free recovery work packet."""
+# A Claude Code subagent runs in an ephemeral worktree named `agent-<hex>`.
+# These are noise in a session digest — a session that fans out to dozens of
+# subagents would otherwise dump dozens of worktree paths and bury the real
+# project directory. Match the basename factually rather than guessing.
+_SUBAGENT_WORKTREE_RE = re.compile(r"/agent-[0-9a-f]+$")
+_WORKDIR_DISPLAY_CAP = 6
+
+
+def _format_workdirs(workdirs: Sequence[str]) -> str:
+    """Render workdirs with subagent worktrees collapsed to a count.
+
+    Keeps the meaningful project directories visible and reports the number of
+    ephemeral subagent worktrees instead of listing each one.
+    """
+    primary = [d for d in workdirs if not _SUBAGENT_WORKTREE_RE.search(d)]
+    worktree_count = len(workdirs) - len(primary)
+    shown = primary[:_WORKDIR_DISPLAY_CAP]
+    parts = list(shown)
+    overflow = len(primary) - len(shown)
+    if overflow > 0:
+        parts.append(f"(+{overflow} more)")
+    if worktree_count:
+        parts.append(f"(+{worktree_count} subagent worktrees)")
+    return ", ".join(parts)
+
+
+def render_successor_context(bundle: SuccessorContextBundle) -> str:
+    """Render a storage-free successor context bundle."""
 
     lines = [
-        f"# Resume: {packet.title}",
+        f"# Resume: {bundle.title}",
         "",
-        f"- session_id: {packet.session_id}",
-        f"- origin: {packet.source_origin}",
-        f"- messages: {packet.message_count}",
-        f"- selection_strategy: {packet.selection_strategy}",
-        f"- redaction_policy: {packet.redaction_policy}",
+        f"- session_id: {bundle.session_id}",
+        f"- origin: {bundle.source_origin}",
+        f"- messages: {bundle.message_count}",
+        f"- selection_strategy: {bundle.selection_strategy}",
+        f"- redaction_policy: {bundle.redaction_policy}",
     ]
-    if packet.token_estimate:
-        lines.append(f"- token_estimate: {packet.token_estimate}")
-    if packet.generated_at:
-        lines.append(f"- generated_at: {packet.generated_at}")
-    if packet.scope.seed_refs:
-        lines.append(f"- seed_refs: {', '.join(packet.scope.seed_refs)}")
-    if packet.scope.read_views:
-        lines.append(f"- read_views: {', '.join(packet.scope.read_views)}")
-    if packet.size_estimate.raw_bytes or packet.size_estimate.json_bytes:
+    if bundle.token_estimate:
+        lines.append(f"- token_estimate: {bundle.token_estimate}")
+    if bundle.generated_at:
+        lines.append(f"- generated_at: {bundle.generated_at}")
+    if bundle.scope.seed_refs:
+        lines.append(f"- seed_refs: {', '.join(bundle.scope.seed_refs)}")
+    if bundle.scope.read_views:
+        lines.append(f"- read_views: {', '.join(bundle.scope.read_views)}")
+    if bundle.size_estimate.raw_bytes or bundle.size_estimate.json_bytes:
         lines.append(
             "- size_estimate: "
-            f"raw_bytes={packet.size_estimate.raw_bytes}; "
-            f"normal_read_bytes={packet.size_estimate.normal_read_bytes}; "
-            f"resume_bundle_bytes={packet.size_estimate.resume_bundle_bytes}; "
-            f"markdown_bytes={packet.size_estimate.markdown_bytes}; "
-            f"json_bytes={packet.size_estimate.json_bytes}"
+            f"raw_bytes={bundle.size_estimate.raw_bytes}; "
+            f"normal_read_bytes={bundle.size_estimate.normal_read_bytes}; "
+            f"resume_bundle_bytes={bundle.size_estimate.resume_bundle_bytes}; "
+            f"markdown_bytes={bundle.size_estimate.markdown_bytes}; "
+            f"json_bytes={bundle.size_estimate.json_bytes}"
         )
-    if packet.git_branch:
-        lines.append(f"- branch: {packet.git_branch}")
-    if packet.target_refs:
-        lines.append(f"- refs: {', '.join(ref.format() for ref in packet.target_refs)}")
-    if packet.working_directories:
-        lines.append(f"- workdirs: {', '.join(packet.working_directories)}")
+    if bundle.git_branch:
+        lines.append(f"- branch: {bundle.git_branch}")
+    if bundle.target_refs:
+        lines.append(f"- refs: {', '.join(ref.format() for ref in bundle.target_refs)}")
+    if bundle.working_directories:
+        lines.append(f"- workdirs: {_format_workdirs(bundle.working_directories)}")
     lines.extend(["", "## Execution Projection"])
-    execution_entries = _packet_section(packet, "execution")
+    execution_entries = _successor_context_section(bundle, "execution")
     for entry in execution_entries[:20]:
-        lines.append(_work_packet_line(entry))
+        lines.append(_successor_context_line(entry))
         object_refs = _object_refs_line(entry)
         if object_refs:
             lines.append(f"  - refs: {object_refs}")
-        detail = _packet_metadata_line(
+        detail = _bundle_metadata_line(
             entry.metadata,
             keys=(
                 "role",
@@ -652,13 +720,13 @@ def render_work_packet(packet: RecoveryWorkPacket) -> str:
     if not execution_entries:
         lines.append("- none projected")
     lines.extend(["", "## Events"])
-    event_entries = _packet_section(packet, "events")
+    event_entries = _successor_context_section(bundle, "events")
     for entry in event_entries[:8]:
-        lines.append(_work_packet_line(entry))
+        lines.append(_successor_context_line(entry))
         object_refs = _object_refs_line(entry)
         if object_refs:
             lines.append(f"  - refs: {object_refs}")
-        detail = _packet_metadata_line(
+        detail = _bundle_metadata_line(
             entry.metadata,
             keys=("pr_refs", "review_refs", "issue_refs", "commit_refs", "test_evidence"),
         )
@@ -667,7 +735,7 @@ def render_work_packet(packet: RecoveryWorkPacket) -> str:
     if not event_entries:
         lines.append("- none extracted")
     lines.extend(["", "## Subagents"])
-    subagent_entries = _packet_section(packet, "subagents")
+    subagent_entries = _successor_context_section(bundle, "subagents")
     for entry in subagent_entries[:8]:
         prompt = f" — {entry.text}" if entry.text else ""
         lines.append(f"- {_support_marker(entry)} {entry.label}{prompt}")
@@ -683,13 +751,13 @@ def render_work_packet(packet: RecoveryWorkPacket) -> str:
     if not subagent_entries:
         lines.append("- none extracted")
     lines.extend(["", "## Run State"])
-    run_state_entries = _packet_section(packet, "run_state")
+    run_state_entries = _successor_context_section(bundle, "run_state")
     if not run_state_entries:
         lines.append("- none extracted")
     else:
-        lines.extend(_work_packet_line(entry) for entry in run_state_entries[:33])
+        lines.extend(_successor_context_line(entry) for entry in run_state_entries[:33])
     lines.extend(["", "## Tools"])
-    tool_entries = _packet_section(packet, "tools")
+    tool_entries = _successor_context_section(bundle, "tools")
     for entry in tool_entries[:8]:
         command = f" — {entry.text}" if entry.text else ""
         handler = entry.metadata.get("handler_kind", "generic")
@@ -698,7 +766,7 @@ def render_work_packet(packet: RecoveryWorkPacket) -> str:
         object_refs = _object_refs_line(entry)
         if object_refs:
             lines.append(f"  - refs: {object_refs}")
-        detail = _packet_metadata_line(
+        detail = _bundle_metadata_line(
             entry.metadata,
             keys=("pr_refs", "issue_refs", "file_refs", "commit_refs", "test_evidence"),
         )
@@ -707,79 +775,79 @@ def render_work_packet(packet: RecoveryWorkPacket) -> str:
     if not tool_entries:
         lines.append("- none extracted")
     lines.extend(["", "## Candidate Decisions / Run State"])
-    decision_entries = _packet_section(packet, "decisions")
-    lines.extend(_work_packet_line(entry) for entry in decision_entries[:8])
+    decision_entries = _successor_context_section(bundle, "decisions")
+    lines.extend(_successor_context_line(entry) for entry in decision_entries[:8])
     if not decision_entries:
         lines.append("- none extracted")
-    review_entries = _packet_section(packet, "candidate_review")
+    review_entries = _successor_context_section(bundle, "candidate_review")
     if review_entries:
         lines.extend(["", "## Candidate Review"])
-        lines.extend(_work_packet_line(entry) for entry in review_entries[:12])
-    assertion_entries = _packet_section(packet, "assertions")
+        lines.extend(_successor_context_line(entry) for entry in review_entries[:12])
+    assertion_entries = _successor_context_section(bundle, "assertions")
     if assertion_entries:
         lines.extend(["", "## Assertion Claims"])
-        lines.extend(_work_packet_line(entry) for entry in assertion_entries[:12])
-    gap_entries = _packet_section(packet, "evidence_gaps")
+        lines.extend(_successor_context_line(entry) for entry in assertion_entries[:12])
+    gap_entries = _successor_context_section(bundle, "evidence_gaps")
     if gap_entries:
         lines.extend(["", "## Evidence Gaps"])
-        lines.extend(_work_packet_line(entry) for entry in gap_entries[:8])
-    if packet.omissions:
+        lines.extend(_successor_context_line(entry) for entry in gap_entries[:8])
+    if bundle.omissions:
         lines.extend(["", "## Omissions"])
-        for omission in packet.omissions[:12]:
+        for omission in bundle.omissions[:12]:
             ref = f" ref={omission.ref}" if omission.ref else ""
             view = f" view={omission.view}" if omission.view else ""
             evidence = _evidence_refs_text(omission.evidence_refs)
             evidence_suffix = f" [evidence: {evidence}]" if evidence else ""
             lines.append(f"- [{omission.reason}]{ref}{view}: {omission.detail}{evidence_suffix}")
-    if packet.caveats:
+    if bundle.caveats:
         lines.extend(["", "## Caveats"])
-        lines.extend(f"- {caveat}" for caveat in packet.caveats[:12])
+        lines.extend(f"- {caveat}" for caveat in bundle.caveats[:12])
     lines.extend(["", "## Evidence"])
-    if packet.evidence_windows:
-        for window in packet.evidence_windows[:20]:
+    if bundle.evidence_windows:
+        for window in bundle.evidence_windows[:20]:
             evidence = _evidence_refs_text(window.evidence_refs)
             candidate = f" candidate={window.candidate_ref}" if window.candidate_ref else ""
             evidence_suffix = f" [evidence: {evidence}]" if evidence else ""
             lines.append(f"- {window.kind}: {window.label}{candidate}: {window.text}{evidence_suffix}")
     else:
-        lines.append("Every packet row carries evidence refs and a support marker.")
+        lines.append("Every bundle row carries evidence refs and a support marker.")
     return "\n".join(lines).strip() + "\n"
 
 
-def build_recovery_work_packet(digest: RecoveryDigest) -> RecoveryWorkPacket:
-    """Build the storage-free continuation packet DTO from a recovery digest."""
+def build_successor_context_bundle(digest: SessionDigest) -> SuccessorContextBundle:
+    """Build the storage-free continuation bundle DTO from a session digest."""
 
     evidence_refs = tuple(ref.to_evidence_ref() for ref in digest.raw_refs)
     entries = tuple(
-        _work_packet_entries(
+        _successor_context_entries(
             events=digest.events,
             subagent_reports=digest.subagent_reports,
             run_state=digest.run_state,
             tool_summaries=digest.tool_summaries,
             decisions=digest.decision_candidates,
             run_projection=digest.run_projection,
-            packet_raw_refs=digest.raw_refs,
+            bundle_raw_refs=digest.raw_refs,
         )
     )
-    token_estimate = _estimate_work_packet_tokens(digest=digest, entries=entries)
-    size_estimate = RecoveryPacketSizeEstimate(
+    token_estimate = _estimate_successor_context_tokens(digest=digest, entries=entries)
+    size_estimate = SuccessorContextSizeEstimate(
         raw_bytes=digest.size_metrics.raw_bytes,
         normal_read_bytes=digest.size_metrics.normal_read_bytes,
         resume_bundle_bytes=digest.size_metrics.resume_bundle_bytes,
         token_estimate=token_estimate,
     )
-    omitted = _recovery_packet_omissions(entries)
-    caveats = _recovery_packet_caveats(entries=entries, omissions=omitted)
-    packet = RecoveryWorkPacket(
+    omitted = _successor_context_omissions(entries)
+    caveats = _successor_context_caveats(entries=entries, omissions=omitted)
+    bundle = SuccessorContextBundle(
         session_id=digest.session_id,
         title=digest.title or digest.session_id,
         source_origin=digest.transform.source_origin,
         message_count=digest.size_metrics.message_count,
         generated_at=digest.transform.computed_at,
-        selection_strategy="single_session_recovery_digest_v0",
-        scope=RecoveryPacketScope(
+        selection_strategy="single_session_session_digest_v0",
+        scope=SuccessorContextScope(
             seed_refs=(f"session:{digest.session_id}",),
-            read_views=("recovery", "work-packet"),
+            read_views=("messages",),
             selection_limits={"sessions": 1, "entry_soft_cap": 120},
             included_sections=tuple(sorted({entry.section for entry in entries})),
             session_count=1,
@@ -787,7 +855,7 @@ def build_recovery_work_packet(digest: RecoveryDigest) -> RecoveryWorkPacket:
         ),
         git_branch=digest.git_branch,
         working_directories=tuple(_redact_local_path(path) for path in digest.working_directories),
-        target_refs=_work_packet_target_refs(digest.session_id, digest.git_branch),
+        target_refs=_successor_context_target_refs(digest.session_id, digest.git_branch),
         entries=entries,
         evidence_refs=evidence_refs,
         evidence_windows=_recovery_evidence_windows(entries=entries, omissions=omitted),
@@ -797,17 +865,17 @@ def build_recovery_work_packet(digest: RecoveryDigest) -> RecoveryWorkPacket:
         token_estimate=token_estimate,
         size_estimate=size_estimate,
     )
-    rendered = packet.render_markdown()
+    rendered = bundle.render_markdown()
     final_size_estimate = size_estimate.model_copy(
         update={
             "markdown_bytes": len(rendered.encode("utf-8")),
-            "json_bytes": len(packet.model_dump_json(exclude_none=True).encode("utf-8")),
+            "json_bytes": len(bundle.model_dump_json(exclude_none=True).encode("utf-8")),
         }
     )
-    return packet.model_copy(update={"size_estimate": final_size_estimate})
+    return bundle.model_copy(update={"size_estimate": final_size_estimate})
 
 
-def _estimate_work_packet_tokens(*, digest: RecoveryDigest, entries: Sequence[RecoveryWorkPacketEntry]) -> int:
+def _estimate_successor_context_tokens(*, digest: SessionDigest, entries: Sequence[SuccessorContextEntry]) -> int:
     texts = [digest.title or digest.session_id, digest.transform.source_origin]
     texts.extend(entry.text for entry in entries)
     texts.extend(
@@ -823,13 +891,13 @@ def _estimate_work_packet_tokens(*, digest: RecoveryDigest, entries: Sequence[Re
     return max(1, word_count)
 
 
-def _recovery_packet_omissions(entries: Sequence[RecoveryWorkPacketEntry]) -> tuple[RecoveryPackOmission, ...]:
-    omissions: list[RecoveryPackOmission] = []
+def _successor_context_omissions(entries: Sequence[SuccessorContextEntry]) -> tuple[SuccessorContextOmission, ...]:
+    omissions: list[SuccessorContextOmission] = []
     for entry in entries:
         if entry.support != "missing_evidence":
             continue
         omissions.append(
-            RecoveryPackOmission(
+            SuccessorContextOmission(
                 ref=None,
                 view=entry.label,
                 reason="missing_evidence",
@@ -840,10 +908,10 @@ def _recovery_packet_omissions(entries: Sequence[RecoveryWorkPacketEntry]) -> tu
     return tuple(omissions)
 
 
-def _recovery_packet_caveats(
+def _successor_context_caveats(
     *,
-    entries: Sequence[RecoveryWorkPacketEntry],
-    omissions: Sequence[RecoveryPackOmission],
+    entries: Sequence[SuccessorContextEntry],
+    omissions: Sequence[SuccessorContextOmission],
 ) -> tuple[str, ...]:
     caveats: list[str] = []
     for entry in entries:
@@ -858,15 +926,15 @@ def _recovery_packet_caveats(
 
 def _recovery_evidence_windows(
     *,
-    entries: Sequence[RecoveryWorkPacketEntry],
-    omissions: Sequence[RecoveryPackOmission],
-) -> tuple[RecoveryEvidenceWindow, ...]:
-    windows: list[RecoveryEvidenceWindow] = []
+    entries: Sequence[SuccessorContextEntry],
+    omissions: Sequence[SuccessorContextOmission],
+) -> tuple[ContextEvidenceWindow, ...]:
+    windows: list[ContextEvidenceWindow] = []
     for entry in entries:
         candidate_ref = entry.metadata.get("candidate_ref")
         kind = _evidence_window_kind(entry)
         windows.append(
-            RecoveryEvidenceWindow(
+            ContextEvidenceWindow(
                 kind=kind,
                 label=f"{entry.section}:{entry.label}",
                 text=entry.text,
@@ -877,7 +945,7 @@ def _recovery_evidence_windows(
         )
     for omission in omissions:
         windows.append(
-            RecoveryEvidenceWindow(
+            ContextEvidenceWindow(
                 kind="unavailable_source_material",
                 label=f"omission:{omission.view or omission.reason}",
                 text=omission.detail,
@@ -888,7 +956,7 @@ def _recovery_evidence_windows(
     return tuple(windows)
 
 
-def _evidence_window_kind(entry: RecoveryWorkPacketEntry) -> RecoveryEvidenceWindowKind:
+def _evidence_window_kind(entry: SuccessorContextEntry) -> ContextEvidenceWindowKind:
     status = entry.metadata.get("candidate_status")
     if status == "accepted":
         return "accepted_candidate"
@@ -910,22 +978,24 @@ def _redact_local_path(path: str) -> str:
     return f"<redacted-path>/{name}"
 
 
-def _packet_section(packet: RecoveryWorkPacket, section: WorkPacketSection) -> tuple[RecoveryWorkPacketEntry, ...]:
-    return tuple(entry for entry in packet.entries if entry.section == section)
+def _successor_context_section(
+    bundle: SuccessorContextBundle, section: SuccessorContextSection
+) -> tuple[SuccessorContextEntry, ...]:
+    return tuple(entry for entry in bundle.entries if entry.section == section)
 
 
-def _work_packet_target_refs(session_id: str, git_branch: str | None) -> tuple[ObjectRef, ...]:
+def _successor_context_target_refs(session_id: str, git_branch: str | None) -> tuple[ObjectRef, ...]:
     refs = [ObjectRef(kind="session", object_id=session_id)]
     if git_branch:
         refs.append(ObjectRef(kind="branch", object_id=git_branch))
     return tuple(refs)
 
 
-def _support_marker(entry: RecoveryWorkPacketEntry) -> str:
+def _support_marker(entry: SuccessorContextEntry) -> str:
     return f"[{entry.support.replace('_', '-')}]"
 
 
-def _work_packet_line(entry: RecoveryWorkPacketEntry) -> str:
+def _successor_context_line(entry: SuccessorContextEntry) -> str:
     suffixes: list[str] = []
     evidence = _evidence_refs_text(entry.evidence_refs)
     if evidence:
@@ -956,29 +1026,29 @@ def _action_affordances_text(actions: Sequence[ActionAffordancePayload]) -> str:
     return ", ".join(parts)
 
 
-def _object_refs_line(entry: RecoveryWorkPacketEntry) -> str:
-    """Render packet object refs in their public string form."""
+def _object_refs_line(entry: SuccessorContextEntry) -> str:
+    """Render bundle object refs in their public string form."""
 
     return ", ".join(ref.format() for ref in entry.object_refs)
 
 
-def _packet_metadata_line(metadata: Mapping[str, str], *, keys: Sequence[str]) -> str:
+def _bundle_metadata_line(metadata: Mapping[str, str], *, keys: Sequence[str]) -> str:
     parts = [f"{key}={metadata[key]}" for key in keys if metadata.get(key)]
     return "; ".join(parts)
 
 
-def _work_packet_entries(
+def _successor_context_entries(
     *,
-    events: Sequence[RecoveryEvent],
+    events: Sequence[SessionDigestEvent],
     subagent_reports: Sequence[SubagentReport],
     run_state: RunStateSummary | None,
     tool_summaries: Sequence[ToolSummary],
     decisions: Sequence[DecisionCandidate],
     run_projection: RunProjection,
-    packet_raw_refs: Sequence[TransformRawRef],
-) -> Iterable[RecoveryWorkPacketEntry]:
-    packet_evidence_refs = _to_evidence_refs(packet_raw_refs)
-    packet_harness = run_projection.runs[0].harness if run_projection.runs else "unknown"
+    bundle_raw_refs: Sequence[TransformRawRef],
+) -> Iterable[SuccessorContextEntry]:
+    bundle_evidence_refs = _to_evidence_refs(bundle_raw_refs)
+    bundle_harness = run_projection.runs[0].harness if run_projection.runs else "unknown"
     for run in run_projection.runs:
         metadata: dict[str, str] = {
             "role": run.role,
@@ -992,7 +1062,7 @@ def _work_packet_entries(
             metadata["branch"] = run.git_branch
         if run.native_parent_session_id:
             metadata["native_parent_session_id"] = run.native_parent_session_id
-        yield RecoveryWorkPacketEntry(
+        yield SuccessorContextEntry(
             section="execution",
             label="run",
             text=run.title or run.run_ref.object_id,
@@ -1010,7 +1080,7 @@ def _work_packet_entries(
             evidence_refs=run.evidence_refs,
         )
     for snapshot in run_projection.context_snapshots:
-        yield RecoveryWorkPacketEntry(
+        yield SuccessorContextEntry(
             section="execution",
             label="context_snapshot",
             text=snapshot.boundary,
@@ -1023,7 +1093,7 @@ def _work_packet_entries(
             evidence_refs=snapshot.evidence_refs,
         )
     for observed in run_projection.events:
-        yield RecoveryWorkPacketEntry(
+        yield SuccessorContextEntry(
             section="execution",
             label=observed.kind,
             text=observed.summary,
@@ -1043,7 +1113,7 @@ def _work_packet_entries(
     for event in events:
         # Structured outcome events carry no GitHub/issue object refs — their
         # evidence is the tool-call block itself.
-        yield RecoveryWorkPacketEntry(
+        yield SuccessorContextEntry(
             section="events",
             label=event.kind,
             text=event.summary,
@@ -1053,20 +1123,20 @@ def _work_packet_entries(
         metadata = _subagent_report_metadata(report)
         if report.final_report_preview:
             metadata["report"] = report.final_report_preview
-        yield RecoveryWorkPacketEntry(
+        yield SuccessorContextEntry(
             section="subagents",
             label=report.subagent_type,
             text=report.prompt,
             metadata=metadata,
             object_refs=(
-                _subagent_report_object_ref(packet_raw_refs[0].session_id, report),
-                ObjectRef(kind="agent", object_id=f"{packet_harness}/{report.subagent_type or 'unknown'}"),
+                _subagent_report_object_ref(bundle_raw_refs[0].session_id, report),
+                ObjectRef(kind="agent", object_id=f"{bundle_harness}/{report.subagent_type or 'unknown'}"),
             ),
             evidence_refs=_to_evidence_refs(report.raw_refs),
         )
     if run_state is not None:
         if run_state.goal:
-            yield RecoveryWorkPacketEntry(
+            yield SuccessorContextEntry(
                 section="run_state",
                 label="goal",
                 text=run_state.goal,
@@ -1080,7 +1150,7 @@ def _work_packet_entries(
             ("next", run_state.next_actions),
         ):
             for item in items[:8]:
-                yield RecoveryWorkPacketEntry(
+                yield SuccessorContextEntry(
                     section="run_state",
                     label=label,
                     text=item,
@@ -1088,19 +1158,19 @@ def _work_packet_entries(
                     evidence_refs=_to_evidence_refs(run_state.raw_refs),
                 )
     else:
-        yield RecoveryWorkPacketEntry(
+        yield SuccessorContextEntry(
             section="evidence_gaps",
             label="run_state",
             text="No structured RunState section was extracted from the session.",
             support="missing_evidence",
-            evidence_refs=packet_evidence_refs,
+            evidence_refs=bundle_evidence_refs,
         )
     for tool in tool_summaries:
-        yield RecoveryWorkPacketEntry(
+        yield SuccessorContextEntry(
             section="tools",
             label=tool.tool_name,
             text=tool.command or "",
-            metadata=_tool_packet_metadata(tool),
+            metadata=_tool_bundle_metadata(tool),
             object_refs=_tool_object_refs(tool),
             evidence_refs=_to_evidence_refs(tool.raw_refs),
         )
@@ -1113,14 +1183,14 @@ def _work_packet_entries(
         if decision.reason:
             decision_metadata["candidate_reason"] = decision.reason
         if status == "accepted":
-            section: WorkPacketSection = "decisions"
-            support: WorkPacketSupport = "inference"
+            section: SuccessorContextSection = "decisions"
+            support: EvidenceSupport = "inference"
             label = decision.kind
         else:
             section = "candidate_review"
             support = "caveat"
             label = f"{status}_{decision.kind}"
-        yield RecoveryWorkPacketEntry(
+        yield SuccessorContextEntry(
             section=section,
             label=label,
             text=decision.text,
@@ -1133,36 +1203,36 @@ def _work_packet_entries(
             ),
         )
     if not events:
-        yield RecoveryWorkPacketEntry(
+        yield SuccessorContextEntry(
             section="evidence_gaps",
             label="events",
             text="No structured tool or test outcome events were extracted.",
             support="missing_evidence",
-            evidence_refs=packet_evidence_refs,
+            evidence_refs=bundle_evidence_refs,
         )
     if not subagent_reports:
-        yield RecoveryWorkPacketEntry(
+        yield SuccessorContextEntry(
             section="evidence_gaps",
             label="subagents",
             text="No subagent handoff or child-session evidence was extracted.",
             support="missing_evidence",
-            evidence_refs=packet_evidence_refs,
+            evidence_refs=bundle_evidence_refs,
         )
     if not tool_summaries:
-        yield RecoveryWorkPacketEntry(
+        yield SuccessorContextEntry(
             section="evidence_gaps",
             label="tools",
             text="No tool execution summary was extracted.",
             support="missing_evidence",
-            evidence_refs=packet_evidence_refs,
+            evidence_refs=bundle_evidence_refs,
         )
     if not decisions:
-        yield RecoveryWorkPacketEntry(
+        yield SuccessorContextEntry(
             section="evidence_gaps",
             label="decisions",
             text="No candidate decision statement was extracted.",
             support="missing_evidence",
-            evidence_refs=packet_evidence_refs,
+            evidence_refs=bundle_evidence_refs,
         )
 
 
@@ -1189,7 +1259,7 @@ def _subagent_report_object_ref(session_id: str, report: SubagentReport) -> Obje
     return ObjectRef(kind="subagent-report", object_id=f"{session_id}:{stable_id}")
 
 
-def _tool_packet_metadata(tool: ToolSummary) -> dict[str, str]:
+def _tool_bundle_metadata(tool: ToolSummary) -> dict[str, str]:
     metadata: dict[str, str] = {"handler_kind": tool.handler_kind, "status": tool.status}
     issue_refs = _refs_without_pr_refs(tool.issue_refs, tool.pr_refs)
     if tool.pr_refs:
@@ -1238,19 +1308,19 @@ def _refs_without_pr_refs(issue_refs: Sequence[str], pr_refs: Sequence[str]) -> 
     return tuple(ref for ref in issue_refs if ref not in pr_ref_set)
 
 
-def render_recovery_report(digest: RecoveryDigest, *, preset: RecoveryReportPreset) -> str:
-    """Render a deterministic recovery report preset from a recovery digest."""
+def render_session_report(digest: SessionDigest, *, preset: SessionReportPreset) -> str:
+    """Render a deterministic session report preset from a session digest."""
 
     if preset == "continue":
         return _render_continue_report(digest)
     if preset == "blame":
         return _render_blame_report(digest)
-    if preset == "work-packet":
-        return digest.work_packet_markdown()
-    raise ValueError(f"unsupported recovery report preset: {preset}")
+    if preset == "successor-context":
+        return digest.successor_context_markdown()
+    raise ValueError(f"unsupported session report preset: {preset}")
 
 
-def _render_continue_report(digest: RecoveryDigest) -> str:
+def _render_continue_report(digest: SessionDigest) -> str:
     session_refs = digest.raw_refs
     lines = [
         f"# Continue: {digest.title or digest.session_id}{_evidence_suffix(digest, session_refs)}",
@@ -1260,7 +1330,7 @@ def _render_continue_report(digest: RecoveryDigest) -> str:
         f"- origin: {digest.transform.source_origin}{_evidence_suffix(digest, session_refs)}",
         f"- messages: {digest.size_metrics.message_count}{_evidence_suffix(digest, session_refs)}",
     ]
-    lines.extend(["", "## Boot Packet"])
+    lines.extend(["", "## Boot Bundle"])
     if digest.run_state is None:
         lines.append(f"- run_state: none extracted{_evidence_suffix(digest, session_refs)}")
     else:
@@ -1329,7 +1399,7 @@ def _render_continue_report(digest: RecoveryDigest) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
-def _render_blame_report(digest: RecoveryDigest) -> str:
+def _render_blame_report(digest: SessionDigest) -> str:
     session_refs = digest.raw_refs
     lines = [
         f"# Blame: {digest.title or digest.session_id}{_evidence_suffix(digest, session_refs)}",
@@ -1386,7 +1456,7 @@ def _render_blame_report(digest: RecoveryDigest) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
-def _render_evidence_index_lines(digest: RecoveryDigest, *, limit: int | None) -> list[str]:
+def _render_evidence_index_lines(digest: SessionDigest, *, limit: int | None) -> list[str]:
     entries = digest.forensic_index.entries if limit is None else digest.forensic_index.entries[:limit]
     if not entries:
         return [f"- none extracted{_evidence_suffix(digest, digest.raw_refs)}"]
@@ -1414,14 +1484,14 @@ def _raw_location(ref: TransformRawRef) -> str:
     return " ".join(parts)
 
 
-def _evidence_suffix(digest: RecoveryDigest, refs: Sequence[TransformRawRef]) -> str:
+def _evidence_suffix(digest: SessionDigest, refs: Sequence[TransformRawRef]) -> str:
     evidence_ids = _evidence_ids_for_refs(digest, refs)
     if not evidence_ids:
         evidence_ids = tuple(_evidence_id(ref) for ref in refs)
     return f" [evidence: {', '.join(evidence_ids)}]"
 
 
-def _evidence_ids_for_refs(digest: RecoveryDigest, refs: Sequence[TransformRawRef]) -> tuple[str, ...]:
+def _evidence_ids_for_refs(digest: SessionDigest, refs: Sequence[TransformRawRef]) -> tuple[str, ...]:
     evidence_ids_by_key = {_raw_ref_key(entry.raw_ref): entry.evidence_id for entry in digest.forensic_index.entries}
     result: list[str] = []
     for ref in refs:
@@ -1437,7 +1507,7 @@ def _build_forensic_index(
     tool_summaries: Sequence[ToolSummary],
     subagent_reports: Sequence[SubagentReport],
     run_state: RunStateSummary | None,
-    events: Sequence[RecoveryEvent],
+    events: Sequence[SessionDigestEvent],
     decisions: Sequence[DecisionCandidate],
 ) -> ForensicIndex:
     refs_by_key: dict[tuple[str, str | None, int | None, str], TransformRawRef] = {}
@@ -1635,7 +1705,7 @@ def _session_link_child_keys(link: Mapping[str, object]) -> tuple[str, ...]:
     return tuple(keys)
 
 
-def _extract_events(session: Session, messages: Sequence[Message]) -> Iterable[RecoveryEvent]:
+def _extract_events(session: Session, messages: Sequence[Message]) -> Iterable[SessionDigestEvent]:
     """Structured in-session outcome events from paired tool-result blocks.
 
     Success/failure is read from the keystone tool-result fields
@@ -1713,7 +1783,7 @@ def _outcome_event(
     command: str | None,
     exit_code: int | None,
     ref: TransformRawRef,
-) -> RecoveryEvent:
+) -> SessionDigestEvent:
     """Build a structured outcome event from a tool's structured result status."""
 
     success = status == "ok"
@@ -1726,7 +1796,7 @@ def _outcome_event(
     else:
         kind = "command_succeeded" if success else "command_failed"
         verb = "succeeded" if success else "failed"
-    return RecoveryEvent(
+    return SessionDigestEvent(
         kind=kind,
         summary=f"{label} {verb}{exit_suffix}",
         raw_refs=(ref,),
@@ -2187,9 +2257,9 @@ def _tool_commit_refs(*, command: str | None, output_text: str) -> Iterable[str]
     """Return commit hashes from git-shaped tool evidence.
 
     The detector is intentionally conservative: a bare 40-character hash in
-    arbitrary command output is not enough. Work packets cite commit refs only
+    arbitrary command output is not enough. Work bundles cite commit refs only
     when the command itself is git-shaped or the output line names commit-ish
-    context, keeping handoff packets small and avoiding random hex soup.
+    context, keeping handoff bundles small and avoiding random hex soup.
     """
 
     command_text = command or ""
@@ -2236,33 +2306,34 @@ def _preview(value: str, *, limit: int = 160) -> str:
 
 
 __all__ = [
-    "RECOVERY_TRANSFORM",
-    "RECOVERY_TRANSFORM_ID",
-    "RECOVERY_TRANSFORM_VERSION",
+    "SESSION_DIGEST_TRANSFORM",
+    "SESSION_DIGEST_TRANSFORM_ID",
+    "SESSION_DIGEST_TRANSFORM_VERSION",
     "TRANSFORM_REGISTRY",
     "DecisionCandidate",
     "DecisionCandidateReviewStatus",
     "ForensicIndex",
     "ForensicIndexEntry",
-    "RecoveryDigest",
-    "RecoveryEvidenceWindow",
-    "RecoveryEvidenceWindowKind",
-    "RecoveryEvent",
-    "RecoveryPackOmission",
-    "RecoveryPackOmissionReason",
-    "RecoveryPacketScope",
-    "RecoveryPacketSizeEstimate",
-    "RecoveryReportPreset",
-    "RecoverySizeMetrics",
-    "RecoveryWorkPacket",
-    "RecoveryWorkPacketEntry",
+    "SessionDigest",
+    "ContextEvidenceWindow",
+    "ContextEvidenceWindowKind",
+    "SessionDigestEvent",
+    "SuccessorContextOmission",
+    "SuccessorContextOmissionReason",
+    "SuccessorContextScope",
+    "SuccessorContextSizeEstimate",
+    "SessionReportPreset",
+    "SessionDigestSizeMetrics",
+    "SuccessorContextBundle",
+    "SuccessorContextEntry",
     "RunStateSummary",
     "SubagentReport",
     "ToolSummary",
     "TransformDescriptor",
     "TransformMetadata",
     "TransformRawRef",
-    "compile_recovery_digest",
-    "render_recovery_report",
+    "compile_session_digest",
+    "compile_session_run_projection",
+    "render_session_report",
     "render_resume_bundle",
 ]

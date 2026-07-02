@@ -8,13 +8,9 @@ import click
 
 from polylogue.api.archive import SessionNotFoundError
 from polylogue.api.sync.bridge import run_coroutine_sync
-from polylogue.archive.message.roles import MessageRoleFilter, normalize_message_roles
-from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
-from polylogue.core.enums import MaterialOrigin
-from polylogue.storage.sqlite.queries.message_query_reads import MessageTypeName
 from polylogue.surfaces.payloads import (
     SessionMessageRowPayload,
     SessionMessagesResponsePayload,
@@ -27,16 +23,8 @@ def run_messages(
     request: RootModeRequest,
     *,
     session_id: str,
-    message_role: tuple[str, ...] = (),
-    material_origin: tuple[str, ...] = (),
-    message_type: str | None = None,
     limit: int = 50,
     offset: int = 0,
-    no_code_blocks: bool = False,
-    no_tool_calls: bool = False,
-    no_tool_outputs: bool = False,
-    no_file_reads: bool = False,
-    prose_only: bool = False,
     output_format: str | None = None,
 ) -> None:
     """Execute the messages verb."""
@@ -44,27 +32,11 @@ def run_messages(
 
     async def _run() -> None:
         async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
-            roles: MessageRoleFilter = normalize_message_roles(message_role) if message_role else ()
-            material_origins = tuple(MaterialOrigin.validate_filter_token(origin) for origin in material_origin)
-            projection = ContentProjectionSpec.from_params(
-                {
-                    "no_code_blocks": no_code_blocks,
-                    "no_tool_calls": no_tool_calls,
-                    "no_tool_outputs": no_tool_outputs,
-                    "no_file_reads": no_file_reads,
-                    "prose_only": prose_only,
-                }
-            )
-
             try:
                 messages, total = await api.get_messages_paginated(
                     session_id,
-                    message_role=roles,
-                    message_type=cast(MessageTypeName, message_type),
-                    material_origin=material_origins,
                     limit=limit,
                     offset=offset,
-                    content_projection=projection,
                 )
             except SessionNotFoundError:
                 env.ui.error(f"Session not found: {session_id}")

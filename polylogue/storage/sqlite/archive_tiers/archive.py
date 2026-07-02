@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -220,6 +220,7 @@ class ArchiveMessageQueryRow:
     role: str
     message_type: str
     material_origin: str
+    occurred_at_ms: int | None
     position: int
     word_count: int
     text: str
@@ -239,7 +240,25 @@ class ArchiveActionQueryRow:
     semantic_type: str | None
     tool_command: str | None
     tool_path: str | None
+    occurred_at_ms: int | None
     output_text: str | None
+
+
+def _archive_action_query_row(row: sqlite3.Row) -> ArchiveActionQueryRow:
+    return ArchiveActionQueryRow(
+        session_id=str(row["session_id"]),
+        message_id=str(row["message_id"]),
+        origin=str(row["origin"]),
+        title=str(row["title"]) if row["title"] is not None else None,
+        tool_use_block_id=str(row["tool_use_block_id"]),
+        tool_result_block_id=str(row["tool_result_block_id"]) if row["tool_result_block_id"] is not None else None,
+        tool_name=str(row["tool_name"]) if row["tool_name"] is not None else None,
+        semantic_type=str(row["semantic_type"]) if row["semantic_type"] is not None else None,
+        tool_command=str(row["tool_command"]) if row["tool_command"] is not None else None,
+        tool_path=str(row["tool_path"]) if row["tool_path"] is not None else None,
+        occurred_at_ms=int(row["occurred_at_ms"]) if row["occurred_at_ms"] is not None else None,
+        output_text=str(row["output_text"]) if row["output_text"] is not None else None,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -3476,6 +3495,7 @@ class ArchiveStore:
                 m.role,
                 m.message_type,
                 m.material_origin,
+                m.occurred_at_ms,
                 m.position,
                 m.word_count,
                 COALESCE((
@@ -3506,6 +3526,7 @@ class ArchiveStore:
                 role=str(row["role"]),
                 message_type=str(row["message_type"]),
                 material_origin=str(row["material_origin"]),
+                occurred_at_ms=int(row["occurred_at_ms"]) if row["occurred_at_ms"] is not None else None,
                 position=int(row["position"]),
                 word_count=int(row["word_count"]),
                 text=str(row["text"] or ""),
@@ -3628,6 +3649,7 @@ class ArchiveStore:
                 a.semantic_type,
                 a.tool_command,
                 a.tool_path,
+                m.occurred_at_ms,
                 a.output_text
             FROM actions a
             JOIN sessions s ON s.session_id = a.session_id
@@ -3639,24 +3661,58 @@ class ArchiveStore:
             """,
             [*params, *session_params, normalized_limit, normalized_offset],
         ).fetchall()
-        return [
-            ArchiveActionQueryRow(
-                session_id=str(row["session_id"]),
-                message_id=str(row["message_id"]),
-                origin=str(row["origin"]),
-                title=str(row["title"]) if row["title"] is not None else None,
-                tool_use_block_id=str(row["tool_use_block_id"]),
-                tool_result_block_id=str(row["tool_result_block_id"])
-                if row["tool_result_block_id"] is not None
-                else None,
-                tool_name=str(row["tool_name"]) if row["tool_name"] is not None else None,
-                semantic_type=str(row["semantic_type"]) if row["semantic_type"] is not None else None,
-                tool_command=str(row["tool_command"]) if row["tool_command"] is not None else None,
-                tool_path=str(row["tool_path"]) if row["tool_path"] is not None else None,
-                output_text=str(row["output_text"]) if row["output_text"] is not None else None,
-            )
-            for row in rows
-        ]
+        return [_archive_action_query_row(row) for row in rows]
+
+    def query_session_actions(
+        self,
+        session_ids: Sequence[str],
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        sort_direction: Literal["asc", "desc"] = "asc",
+    ) -> list[ArchiveActionQueryRow]:
+        """Return action rows for known sessions using the session-position block index."""
+
+        normalized_session_ids = tuple(
+            dict.fromkeys(session_id.strip() for session_id in session_ids if session_id.strip())
+        )
+        if not normalized_session_ids:
+            return []
+        normalized_limit = max(int(limit), 0)
+        normalized_offset = max(int(offset), 0)
+        order_direction = _query_unit_order_direction(sort_direction)
+        placeholders = ", ".join("?" for _ in normalized_session_ids)
+        rows = self._conn.execute(
+            f"""
+            SELECT
+                u.session_id,
+                u.message_id,
+                s.origin,
+                s.title,
+                u.block_id AS tool_use_block_id,
+                r.block_id AS tool_result_block_id,
+                u.tool_name,
+                u.semantic_type,
+                u.tool_command,
+                u.tool_path,
+                m.occurred_at_ms,
+                r.text AS output_text
+            FROM blocks u INDEXED BY idx_blocks_session_position
+            JOIN sessions s ON s.session_id = u.session_id
+            JOIN messages m ON m.message_id = u.message_id
+            LEFT JOIN blocks r
+                ON r.tool_id = u.tool_id
+               AND r.session_id = u.session_id
+               AND r.block_type = 'tool_result'
+            WHERE u.session_id IN ({placeholders})
+              AND u.block_type = 'tool_use'
+            ORDER BY COALESCE(m.occurred_at_ms, s.sort_key_ms, 0) {order_direction},
+                     u.block_id {order_direction}
+            LIMIT ? OFFSET ?
+            """,
+            [*normalized_session_ids, normalized_limit, normalized_offset],
+        ).fetchall()
+        return [_archive_action_query_row(row) for row in rows]
 
     def query_files(
         self,

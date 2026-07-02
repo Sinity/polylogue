@@ -33,7 +33,7 @@ Each row carries item-level evidence:
 | `fixtures` | Tests or sample data that exercise the mode. |
 | `schema_package` | Generated provider schema package or catalog, when applicable. |
 | `query_units` | Query-row/read substrate coverage after import. |
-| `read_views` | Reader/recovery/profile surfaces that can consume imported sessions. |
+| `read_views` | Reader, context, and profile surfaces that can consume imported sessions. |
 | `import_explain` | `polylogue import --explain` coverage. |
 | `privacy_caveats` | Documentation of source/capture privacy boundaries. |
 | `generated_docs` | User-facing provider documentation. |

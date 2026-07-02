@@ -358,7 +358,9 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
                         len(hot_ids),
                         _HOT_INSIGHT_QUIET_SECONDS,
                     )
-                    return False
+                    session_ids = [session_id for session_id in session_ids if session_id not in hot_ids]
+                    if not session_ids:
+                        return False
                 counts = rebuild_session_insights_sync(
                     conn,
                     session_ids=session_ids,
@@ -373,6 +375,8 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
                     counts.phases,
                     counts.threads,
                 )
+                if hot_ids:
+                    return False
             return True
         except Exception:
             logger.warning("insights: rebuild failed", exc_info=True)
@@ -427,7 +431,9 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
                         len(hot_ids),
                         _HOT_INSIGHT_QUIET_SECONDS,
                     )
-                    return False
+                    session_ids = [session_id for session_id in session_ids if session_id not in hot_ids]
+                    if not session_ids:
+                        return False
                 counts = rebuild_session_insights_sync(
                     conn,
                     session_ids=session_ids,
@@ -443,6 +449,8 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
                     counts.phases,
                     counts.threads,
                 )
+                if hot_ids:
+                    return False
             return True
         except Exception:
             logger.warning("insights: batch rebuild failed", exc_info=True)
@@ -488,7 +496,9 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
                         len(hot_ids),
                         _HOT_INSIGHT_QUIET_SECONDS,
                     )
-                    return False
+                    ids = [session_id for session_id in ids if session_id not in hot_ids]
+                    if not ids:
+                        return False
                 counts = rebuild_session_insights_sync(
                     conn,
                     session_ids=ids,
@@ -506,6 +516,8 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
                     len(remaining),
                 )
                 if remaining:
+                    return False
+                if hot_ids:
                     return False
             return True
         except Exception:
@@ -1450,7 +1462,9 @@ def _archive_insights_execute_ids(conn: sqlite3.Connection, session_ids: Sequenc
             len(hot_ids),
             _HOT_INSIGHT_QUIET_SECONDS,
         )
-        return False
+        session_ids = [session_id for session_id in session_ids if session_id not in hot_ids]
+        if not session_ids:
+            return False
     # The canonical rebuild function requires row-factory access on the
     # connection (name-based column reads throughout). The archive callers
     # use plain sqlite3.connect() without row_factory, so set it here.
@@ -1475,7 +1489,7 @@ def _archive_insights_execute_ids(conn: sqlite3.Connection, session_ids: Sequenc
         counts.threads,
         len(remaining),
     )
-    return StageExecutionResult(success=not remaining, stage_timings_s=stage_timings_s)
+    return StageExecutionResult(success=not hot_ids and not remaining, stage_timings_s=stage_timings_s)
 
 
 __all__ = [

@@ -88,7 +88,7 @@ def commit_archive_write_effects(
         message_fts_elapsed_s = 0.0
         if sorted_ids and repair_message_fts:
             t_message = time.perf_counter()
-            repair_message_fts_index_sync(conn, sorted_ids)
+            repair_message_fts_index_sync(conn, sorted_ids, record_exact_snapshot=False)
             message_fts_elapsed_s = time.perf_counter() - t_message
         t_commit = time.perf_counter()
         conn.commit()

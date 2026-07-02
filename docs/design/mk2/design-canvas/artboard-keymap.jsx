@@ -40,7 +40,7 @@ const Keymap = () => (
         <KRow keys={['+']}   act="add to recall pack"/>
         <KRow keys={['t']}   act="add tag…"/>
         <KRow keys={['T']}   act="remove tag…"/>
-        <KRow keys={['e']}   act="bulk export…"/>
+        <KRow keys={['e']}   act="export selection…"/>
         <KRow keys={['⌫']}   act="delete (confirm)"/>
       </KCol>
 
@@ -66,7 +66,7 @@ const Keymap = () => (
       <KCol title="palette · :">
         <KRow keys={[': open']}      act="open conversation"/>
         <KRow keys={[': doctor']}    act="run doctor target"/>
-        <KRow keys={[': export']}    act="bulk export"/>
+        <KRow keys={[': export']}    act="export query set"/>
         <KRow keys={[': recall new']} act="new recall pack"/>
         <KRow keys={[': view save']} act="save current filter"/>
         <KRow keys={[': daemon restart']} act="restart polylogued"/>

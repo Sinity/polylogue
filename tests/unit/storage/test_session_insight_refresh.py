@@ -376,6 +376,72 @@ def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roo
     assert claude_thread["search_text"] == "sentinel thread untouched"
 
 
+def test_targeted_session_insight_rebuild_moves_tag_rollup_between_days(
+    tmp_path: Path,
+) -> None:
+    """Backfilled sessions must refresh the old and new provider-day buckets."""
+    db_path = tmp_path / "refresh-sync-backfill-day.db"
+    with open_connection(db_path) as conn:
+        store_records(
+            session=make_session(
+                "conv-chatgpt-backfill",
+                source_name="chatgpt",
+                title="ChatGPT Backfill",
+                created_at="2026-04-03T10:00:00+00:00",
+                updated_at="2026-04-03T10:05:00+00:00",
+            ),
+            messages=[
+                make_message(
+                    "conv-chatgpt-backfill:msg-1",
+                    "conv-chatgpt-backfill",
+                    text="Initial later-day message",
+                    timestamp="2026-04-03T10:00:00+00:00",
+                )
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        rebuild_session_insights_sync(conn)
+
+        store_records(
+            session=make_session(
+                "conv-chatgpt-backfill",
+                source_name="chatgpt",
+                title="ChatGPT Backfill",
+                created_at="2026-04-01T08:00:00+00:00",
+                updated_at="2026-04-01T08:05:00+00:00",
+            ),
+            messages=[
+                make_message(
+                    "conv-chatgpt-backfill:msg-1",
+                    "conv-chatgpt-backfill",
+                    text="Backfilled earlier-day message",
+                    timestamp="2026-04-01T08:00:00+00:00",
+                )
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        counts = rebuild_session_insights_sync(
+            conn,
+            session_ids=[_sid("conv-chatgpt-backfill", "chatgpt-export")],
+        )
+        tag_rows = conn.execute(
+            """
+            SELECT bucket_day, session_count
+            FROM session_tag_rollups
+            WHERE source_name = 'chatgpt-export'
+              AND tag = 'origin:chatgpt-export'
+            ORDER BY bucket_day
+            """
+        ).fetchall()
+
+    assert counts.profiles == 1
+    assert [(row["bucket_day"], row["session_count"]) for row in tag_rows] == [
+        ("2026-04-01", 1),
+    ]
+
+
 def test_session_insight_rebuild_fills_profile_time_from_session_timestamp(
     tmp_path: Path,
 ) -> None:

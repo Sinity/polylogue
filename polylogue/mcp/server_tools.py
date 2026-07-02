@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.core.enums import AssertionKind, AssertionStatus, Origin
 from polylogue.core.sources import provider_from_origin
 from polylogue.mcp.archive_support import (
-    active_archive_root,
     archive_messages_payload,
     archive_query_unit_payload,
     archive_search_payload,
     archive_session_list_payload,
     archive_summary_payload,
     blackboard_note_payload,
+    mcp_archive_root,
 )
 from polylogue.mcp.payloads import (
     MCPArchiveSearchHitPayload,
@@ -79,18 +79,6 @@ _MCP_READ_TOOL_SPECS: dict[str, _MCPReadToolSpec] = {
         description="List executable read-view profile metadata for agents.",
         output_model="MCPRootPayload",
     ),
-    "get_recovery_work_packet": _MCPReadToolSpec(
-        name="get_recovery_work_packet",
-        description="Return the shared recovery work-packet DTO for one session.",
-        linked_read_view="recovery",
-        output_model="MCPRootPayload",
-    ),
-    "get_recovery_report": _MCPReadToolSpec(
-        name="get_recovery_report",
-        description="Return a shared deterministic recovery report for one session.",
-        linked_read_view="recovery",
-        output_model="MCPRootPayload",
-    ),
 }
 
 
@@ -135,7 +123,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     limit=(spec.limit or clamped_limit) + clamped_limit,
                 )
             config = hooks.get_config()
-            archive_root = active_archive_root(config) or config.archive_root
+            archive_root = mcp_archive_root(config)
             with ArchiveStore.open_existing(archive_root) as archive:
                 return hooks.json_payload(
                     archive_search_payload(
@@ -186,7 +174,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         until: str | None = None,
         has_tool_use: bool = False,
         has_thinking: bool = False,
-        has_paste: bool = False,
+        has_paste_evidence: bool = False,
         typed_only: bool = False,
         min_messages: MCPCountBound = None,
         max_messages: MCPCountBound = None,
@@ -197,10 +185,19 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         """Return terminal rows for explicit unit-source query expressions."""
 
         async def run() -> str:
-            from polylogue.archive.query.expression import ExpressionCompileError
+            from polylogue.archive.query.expression import ExpressionCompileError, parse_unit_source_expression
 
             config = hooks.get_config()
-            with ArchiveStore.open_existing(active_archive_root(config) or config.archive_root) as archive:
+            try:
+                if parse_unit_source_expression(expression) is None:
+                    return hooks.error_json(
+                        "query_units requires a terminal unit expression",
+                        code="invalid_query",
+                        tool="query_units",
+                    )
+            except ExpressionCompileError as exc:
+                return hooks.error_json(str(exc), code="invalid_query", tool="query_units")
+            with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
                 try:
                     return hooks.json_payload(
                         archive_query_unit_payload(
@@ -228,7 +225,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                             until=until,
                             has_tool_use=has_tool_use,
                             has_thinking=has_thinking,
-                            has_paste=has_paste,
+                            has_paste=has_paste_evidence,
                             typed_only=typed_only,
                             min_messages=min_messages,
                             max_messages=max_messages,
@@ -259,7 +256,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         async def run() -> str:
             spec = request.build_spec(hooks.clamp_limit)
             config = hooks.get_config()
-            archive_root = active_archive_root(config) or config.archive_root
+            archive_root = mcp_archive_root(config)
             with ArchiveStore.open_existing(archive_root) as archive:
                 return hooks.json_payload(
                     archive_session_list_payload(archive, spec, config=config, archive_root=archive_root)
@@ -280,7 +277,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     async def compile_context(
         seed_ref: str | None = None,
         seed_query: str | None = None,
-        read_views: str = "recovery",
+        read_views: str = "messages",
         max_tokens: int | None = None,
         include_assertions: bool = True,
         include_candidates: bool = False,
@@ -303,7 +300,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 spec = ContextSpec(
                     seed_query=seed_query,
                     seed_refs=seed_refs,
-                    read_views=_split_archive_csv(read_views) or ("recovery",),
+                    read_views=_split_archive_csv(read_views) or ("messages",),
                     max_tokens=max_tokens,
                     include_assertions=include_assertions,
                     include_candidates=include_candidates,
@@ -321,13 +318,13 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     ) -> str:
         async def run() -> str:
             config = hooks.get_config()
-            with ArchiveStore.open_existing(active_archive_root(config) or config.archive_root) as archive:
-                try:
+            try:
+                with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
                     session_id = archive.resolve_session_id(id)
                     archive_summary = archive.read_summary(session_id)
-                except (KeyError, ValueError):
-                    return hooks.error_json(f"Session not found: {id}", code="not_found")
-                return hooks.json_payload(archive_summary_payload(archive_summary))
+                    return hooks.json_payload(archive_summary_payload(archive_summary))
+            except (KeyError, ValueError, sqlite3.OperationalError):
+                return hooks.error_json(f"Session not found: {id}", code="not_found")
 
         return await hooks.async_safe_call("get_session", run)
 
@@ -342,7 +339,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         has_type: str | None = None,
         has_tool_use: bool = False,
         has_thinking: bool = False,
-        has_paste: bool = False,
+        has_paste_evidence: bool = False,
         tool: str | None = None,
         exclude_tool: str | None = None,
         action: str | None = None,
@@ -393,7 +390,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 has_types=has_types,
                 has_tool_use=has_tool_use,
                 has_thinking=has_thinking,
-                has_paste=has_paste,
+                has_paste=has_paste_evidence,
                 tool_terms=tool_terms,
                 excluded_tool_terms=excluded_tool_terms,
                 action_terms=action_terms,
@@ -425,7 +422,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 has_types=has_types,
                 has_tool_use=has_tool_use,
                 has_thinking=has_thinking,
-                has_paste=has_paste,
+                has_paste=has_paste_evidence,
                 tool_terms=tool_terms,
                 excluded_tool_terms=excluded_tool_terms,
                 action_terms=action_terms,
@@ -468,7 +465,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         has_type: str | None = None,
         has_tool_use: bool = False,
         has_thinking: bool = False,
-        has_paste: bool = False,
+        has_paste_evidence: bool = False,
         tool: str | None = None,
         exclude_tool: str | None = None,
         action: str | None = None,
@@ -503,7 +500,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 has_types=_split_archive_csv(has_type),
                 has_tool_use=has_tool_use,
                 has_thinking=has_thinking,
-                has_paste=has_paste,
+                has_paste=has_paste_evidence,
                 tool_terms=_split_archive_csv(tool),
                 excluded_tool_terms=_split_archive_csv(exclude_tool),
                 action_terms=_split_archive_csv(action),
@@ -579,7 +576,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     async def stats() -> str:
         async def run() -> str:
             config = hooks.get_config()
-            with ArchiveStore.open_existing(active_archive_root(config) or config.archive_root) as archive:
+            with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
                 archive_stats = archive.stats()
             return hooks.json_payload(
                 MCPArchiveStatsPayload.from_archive_stats(
@@ -747,13 +744,13 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     async def get_session_summary(id: str) -> str:
         async def run() -> str:
             config = hooks.get_config()
-            with ArchiveStore.open_existing(active_archive_root(config) or config.archive_root) as archive:
-                try:
+            try:
+                with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
                     session_id = archive.resolve_session_id(id)
                     archive_summary = archive.read_summary(session_id)
-                except (KeyError, ValueError):
-                    return hooks.error_json(f"Session not found: {id}", code="not_found")
-                return hooks.json_payload(archive_summary_payload(archive_summary))
+                    return hooks.json_payload(archive_summary_payload(archive_summary))
+            except (KeyError, ValueError, sqlite3.OperationalError):
+                return hooks.error_json(f"Session not found: {id}", code="not_found")
 
         return await hooks.async_safe_call("get_session_summary", run)
 
@@ -822,54 +819,24 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def get_messages(
         session_id: str,
-        message_role: str | None = None,
-        message_type: str | None = None,
-        material_origin: str | None = None,
-        no_code_blocks: bool = False,
-        no_tool_calls: bool = False,
-        no_tool_outputs: bool = False,
-        no_file_reads: bool = False,
-        prose_only: bool = False,
         limit: MCPToolLimit = 50,
         offset: MCPToolOffset = 0,
     ) -> str:
         async def run() -> str:
-            from polylogue.archive.message.roles import normalize_message_roles
-            from polylogue.archive.message.types import validate_message_type_filter
-            from polylogue.core.enums import MaterialOrigin
-
-            roles = normalize_message_roles(message_role) if message_role else ()
-            normalized_message_type = (
-                validate_message_type_filter(message_type).value if message_type is not None else None
-            )
-            material_origins = (MaterialOrigin.validate_filter_token(material_origin).value,) if material_origin else ()
-            projection = ContentProjectionSpec.from_params(
-                {
-                    "no_code_blocks": no_code_blocks,
-                    "no_tool_calls": no_tool_calls,
-                    "no_tool_outputs": no_tool_outputs,
-                    "no_file_reads": no_file_reads,
-                    "prose_only": prose_only,
-                }
-            )
             config = hooks.get_config()
-            with ArchiveStore.open_existing(active_archive_root(config) or config.archive_root) as archive:
-                try:
+            try:
+                with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
                     resolved_session_id = archive.resolve_session_id(session_id)
                     session = archive.read_session(resolved_session_id)
-                except (KeyError, ValueError):
-                    return hooks.error_json(f"Session not found: {session_id}", code="not_found")
                 return hooks.json_payload(
                     archive_messages_payload(
                         session,
-                        roles=tuple(str(role) for role in roles),
-                        message_type=normalized_message_type,
-                        material_origins=material_origins,
-                        content_projection=projection,
                         limit=hooks.clamp_limit(limit),
                         offset=max(0, offset),
                     )
                 )
+            except (KeyError, ValueError, sqlite3.OperationalError):
+                return hooks.error_json(f"Session not found: {session_id}", code="not_found")
 
         return await hooks.async_safe_call("get_messages", run)
 
@@ -980,52 +947,7 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         return await hooks.async_safe_call("list_read_view_profiles", run)
 
-    async def get_recovery_work_packet(session_id: str) -> str:
-        async def run() -> str:
-            packet = await hooks.get_polylogue().recovery_work_packet(session_id)
-            if packet is None:
-                return hooks.error_json(
-                    f"Session not found: {session_id}",
-                    code="not_found",
-                    tool="get_recovery_work_packet",
-                )
-            return hooks.json_payload(
-                MCPRootPayload(
-                    root=cast(
-                        dict[str, object],
-                        {"recovery_work_packet": packet.model_dump(mode="json", exclude_none=True)},
-                    )
-                )
-            )
-
-        return await hooks.async_safe_call("get_recovery_work_packet", run)
-
-    async def get_recovery_report(
-        session_id: str,
-        report: Literal["continue", "blame", "work-packet"] = "continue",
-    ) -> str:
-        async def run() -> str:
-            content = await hooks.get_polylogue().recovery_report(session_id, report)
-            if content is None:
-                return hooks.error_json(
-                    f"Session not found: {session_id}",
-                    code="not_found",
-                    tool="get_recovery_report",
-                )
-            return hooks.json_payload(
-                MCPRootPayload(
-                    root=cast(
-                        dict[str, object],
-                        {"session_id": session_id, "report": report, "content": content},
-                    )
-                )
-            )
-
-        return await hooks.async_safe_call("get_recovery_report", run)
-
     _register_mcp_read_tool(mcp, list_read_view_profiles, _MCP_READ_TOOL_SPECS["list_read_view_profiles"])
-    _register_mcp_read_tool(mcp, get_recovery_work_packet, _MCP_READ_TOOL_SPECS["get_recovery_work_packet"])
-    _register_mcp_read_tool(mcp, get_recovery_report, _MCP_READ_TOOL_SPECS["get_recovery_report"])
 
     @mcp.tool()
     async def explain_query_expression(expression: str) -> str:

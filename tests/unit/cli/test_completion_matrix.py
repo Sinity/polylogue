@@ -44,8 +44,6 @@ STATIC_COMPLETERS: tuple[tuple[str, list[str]], ...] = (
     ("retrieval_lane", ["--retrieval-lane"]),
     ("action", ["--action"]),
     ("action_sequence", ["--action-sequence"]),
-    ("material_origin", ["--material-origin"]),
-    ("message_type", ["messages", "--message-type"]),
     ("read_view", ["read", "--view"]),
     ("read_format", ["read", "--format"]),
 )
@@ -625,7 +623,8 @@ def test_query_action_read_view_completion_per_shell(
     items = _run_completion(shell, comp_cls, ["find", "id:abc", "then", "read", "--view"])
     item_map = dict(items)
 
-    assert {"messages", "recovery", "context-pack"}.issubset(item_map)
+    assert {"messages", "context-image"}.issubset(item_map)
+    assert "recovery" not in item_map
     assert item_map["messages"] is not None and "Messages:" in item_map["messages"]
 
 
@@ -771,31 +770,6 @@ def test_query_action_continue_candidates_completion_per_shell(
     )
 
     assert {"--repo", "--cwd", "--recent", "--limit", "--format"}.issubset(items)
-
-
-@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
-def test_query_action_read_material_origin_completion_normalizes_hyphen_prefix_per_shell(
-    shell: str,
-    comp_cls: type[ShellComplete],
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``--material-origin`` accepts a shell-friendly hyphen prefix and inserts enum values."""
-
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
-
-    items = dict(
-        _run_completion_for_partial(
-            shell,
-            comp_cls,
-            ["find", "id:abc", "then", "read", "--material-origin"],
-            "human-",
-        )
-    )
-
-    assert "human_authored" in items
 
 
 @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])

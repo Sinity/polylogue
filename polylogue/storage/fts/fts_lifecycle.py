@@ -466,14 +466,28 @@ async def rebuild_fts_index_async(
     )
 
 
-def repair_message_fts_index_sync(conn: sqlite3.Connection, session_ids: Sequence[str]) -> None:
-    """Repair message FTS rows for the supplied sessions."""
+def repair_message_fts_index_sync(
+    conn: sqlite3.Connection,
+    session_ids: Sequence[str],
+    *,
+    record_exact_snapshot: bool = True,
+) -> None:
+    """Repair message FTS rows for the supplied sessions.
+
+    ``record_exact_snapshot`` intentionally defaults to the historical exact
+    diagnostic behavior for explicit repair callers. Archive writes that have
+    already scoped the changed sessions pass ``False`` so a small ingest does
+    not scan the whole block/FTS surface just to refresh global freshness
+    counters.
+    """
     if not session_ids:
         return
     for chunk in chunked(list(session_ids), size=500):
         params = tuple(chunk)
         conn.execute(delete_session_rows_sql(len(chunk)), params)
         conn.execute(insert_session_rows_sql(len(chunk)), params)
+    if not record_exact_snapshot:
+        return
     from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
 
     record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))

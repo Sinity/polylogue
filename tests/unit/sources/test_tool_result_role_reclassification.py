@@ -2,7 +2,7 @@
 
 Anthropic's protocol requires ``tool_result`` blocks to be carried by
 ``role: user`` envelopes. Polylogue's outer-envelope role normalization
-puts those under ``Role.USER``, polluting ``--message-role user`` filters.
+puts those under ``Role.USER``, polluting role-scoped message queries.
 The reclassification flips USER → TOOL when content is exclusively
 ``tool_result`` blocks; mixed envelopes (text + tool_result) keep USER.
 """

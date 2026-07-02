@@ -1,6 +1,6 @@
 """Context pack MCP tool registration.
 
-Registers ``build_context_pack`` — the agent-facing context assembly tool. It is
+Registers ``build_context_image`` — the agent-facing context assembly tool. It is
 a thin lens over the shared ``compile_context`` engine: session selection runs
 through the query algebra, then the bounded ``ContextImage`` payload (segments,
 token-budgeted accumulation, omission accounting, assertions) is compiled by the
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 _DEFAULT_MAX_SESSIONS = 5
 _DEFAULT_MAX_MESSAGES = 20
 _DETAIL_INCLUDES_MESSAGES: dict[str, bool] = {
-    "summary": False,  # metadata/recovery only, no message bodies
+    "summary": False,  # metadata only, no message bodies
     "compact": True,
     "full": True,
 }
@@ -32,7 +32,7 @@ def _detail_includes_messages(detail_level: str) -> bool:
 
 def register_context_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     @mcp.tool()
-    async def build_context_pack(
+    async def build_context_image(
         project_path: str | None = None,
         project_repo: str | None = None,
         since: str | None = None,
@@ -61,14 +61,14 @@ def register_context_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             max_sessions: Maximum sessions to include (1-20).
             max_tokens: Optional token budget; segments over budget are omitted
                 with reason 'budget' instead of being silently truncated.
-            detail_level: 'summary' (recovery only), 'compact'/'full' (messages).
+            detail_level: 'summary' (metadata only), 'compact'/'full' (messages).
             redact_paths: Redact filesystem paths for privacy (default True).
             include_assertions: Include context-inject assertion claims.
         """
 
         async def run() -> str:
             include_messages = _detail_includes_messages(detail_level)
-            payload = await hooks.get_polylogue().context_pack_payload(
+            payload = await hooks.get_polylogue().context_image_payload(
                 project_path=project_path,
                 project_repo=project_repo,
                 since=since,
@@ -83,7 +83,7 @@ def register_context_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             )
             return hooks.json_payload(payload, exclude_none=True)
 
-        return await hooks.async_safe_call("build_context_pack", run)
+        return await hooks.async_safe_call("build_context_image", run)
 
     @mcp.tool()
     async def compose_context_preamble(

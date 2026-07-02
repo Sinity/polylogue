@@ -55,7 +55,7 @@ nix flake check
 | Machine output | JSON is finite, NDJSON is streaming, mutation/error envelopes are typed, and machine-output prompts do not block. | #1818, #1816 |
 | README commands | README examples resolve against live commands and do not cite stale APIs. | #1841 |
 | Import/demo | Public import vocabulary is stable and demo mode has deterministic private-data-free fixtures. | #1815, #1843 |
-| Recovery/digest | Agent-session recovery views are available only to the extent claimed by README/release notes. | #1880, #1838 |
+| Session digest/context | Agent-session context bundles are available only to the extent claimed by README/release notes. | #1880, #1838 |
 | Assertion/user state | User-tier assertion data is preserved and reset/delete flows are guarded. | #1883 |
 | Public vocabulary | Public surfaces use session/origin vocabulary; provider/conversation terms are raw-source or historical only. | #1810 |
 | Web/API | Any advertised web/API surface has stable DTOs, auth posture, and route vocabulary. | #1847, #1846 |
@@ -88,7 +88,7 @@ Satisfied:
 - #1841 README cockpit is landed and command examples are checked by
   `verify doc-commands`.
 - #1878 benchmark convergence flake is closed.
-- #1880 has recovery digest registry, extraction, CLI read view, Python API
+- #1880 has session digest registry, extraction, CLI read view, Python API
   facade, GitHub/check event extraction slices, and source-aligned query DSL
   documentation for currently shipped recovery/query behavior.
 - #1883 has the assertions table, write-through adapters, delete/status
@@ -102,8 +102,8 @@ Satisfied:
 - #1825 MCP/Python parity is closed for the shared query/read contracts that
   exist today; new route or mutation surfaces still need parity evidence in
   their owning issues.
-- #1838 work packets are implemented as on-demand evidence bundles with
-  raw-ref/lossiness semantics for currently shipped recovery surfaces.
+- #1838 successor context outputs are implemented as on-demand evidence bundles
+  with raw-ref/lossiness semantics for currently shipped context surfaces.
 
 Still blocking external release claims:
 
@@ -124,7 +124,7 @@ Release gate:
 - Machine output:
 - README/demo:
 - Import/demo fixture:
-- Recovery/digest:
+- Session digest/context:
 - Web/API scope:
 - Packaging:
 - Known caveats scoped out:

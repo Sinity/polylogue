@@ -224,7 +224,7 @@ paths:
         schema:
           type: boolean
           default: false
-      - name: has_paste
+      - name: has_paste_evidence
         in: query
         description: Restrict terminal rows to sessions with paste evidence.
         required: false
@@ -294,9 +294,8 @@ paths:
     get:
       summary: Execute a session read-view
       description: Executes one supported single-session read profile and returns the stable ``SessionReadViewEnvelope``.
-        Supported profiles currently include ``messages``, ``recovery``, ``raw``, ``context``, ``context-pack``, ``neighbors``,
-        ``correlation``. The envelope shape is stable; individual ``payload`` content is the shared DTO for the selected read
-        profile.
+        Supported profiles currently include ``messages``, ``raw``, ``context``, ``context-image``, ``neighbors``, ``correlation``.
+        The envelope shape is stable; individual ``payload`` content is the shared DTO for the selected read profile.
       operationId: readSessionView
       parameters:
       - name: session_id
@@ -313,10 +312,9 @@ paths:
           type: string
           enum:
           - messages
-          - recovery
           - raw
           - context
-          - context-pack
+          - context-image
           - neighbors
           - correlation
           default: messages
@@ -328,7 +326,6 @@ paths:
           type: string
           enum:
           - json
-          - markdown
           default: json
       - name: limit
         in: query
@@ -344,63 +341,6 @@ paths:
         schema:
           type: integer
           minimum: 0
-      - name: message_role
-        in: query
-        required: false
-        description: Restrict the messages view to one or more message roles.
-        schema:
-          type: string
-      - name: message_type
-        in: query
-        required: false
-        description: Restrict the messages view by message type.
-        schema:
-          type: string
-      - name: no_code_blocks
-        in: query
-        required: false
-        description: Exclude code blocks from the messages projection.
-        schema:
-          type: boolean
-          default: false
-      - name: no_file_reads
-        in: query
-        required: false
-        description: Exclude file-read material from the messages projection.
-        schema:
-          type: boolean
-          default: false
-      - name: no_tool_calls
-        in: query
-        required: false
-        description: Exclude tool-call material from the messages projection.
-        schema:
-          type: boolean
-          default: false
-      - name: no_tool_outputs
-        in: query
-        required: false
-        description: Exclude tool-output material from the messages projection.
-        schema:
-          type: boolean
-          default: false
-      - name: prose_only
-        in: query
-        required: false
-        description: Show only prose text in the messages projection.
-        schema:
-          type: boolean
-          default: false
-      - name: report
-        in: query
-        required: false
-        description: Recovery report kind for the recovery view.
-        schema:
-          type: string
-          enum:
-          - digest
-          - work-packet
-          default: work-packet
       - name: related_limit
         in: query
         required: false
@@ -412,7 +352,7 @@ paths:
       - name: include_messages
         in: query
         required: false
-        description: Include message excerpts in context-pack payloads.
+        description: Include message excerpts in context-image payloads.
         schema:
           type: boolean
           default: true
@@ -426,7 +366,7 @@ paths:
       - name: no_redact
         in: query
         required: false
-        description: Return unredacted context-pack path/provenance details where available.
+        description: Return unredacted context-image path/provenance details where available.
         schema:
           type: boolean
           default: false
@@ -470,51 +410,6 @@ paths:
                 $ref: '#/components/schemas/SessionReadViewEnvelope'
         '400':
           description: Unsupported view or format.
-        '404':
-          description: Session not found.
-  /api/sessions/{session_id}/recovery:
-    get:
-      summary: Read recovery digest or work-packet evidence
-      description: Returns the stable ``RecoveryReadPayload`` for one session. The route exposes storage-free recovery digest
-        and work-packet DTOs shared with the web workbench and Python API. ``continue`` and ``blame`` are not accepted here;
-        use the read-view route or CLI/MCP report surfaces when those workflows are needed.
-      operationId: readSessionRecovery
-      parameters:
-      - name: session_id
-        in: path
-        description: Resolved Polylogue session id.
-        required: true
-        schema:
-          type: string
-      - name: report
-        in: query
-        description: Recovery report kind.
-        required: false
-        schema:
-          type: string
-          enum:
-          - digest
-          - work-packet
-          default: work-packet
-      - name: format
-        in: query
-        description: Response format. Digest is JSON-only; work-packet also supports markdown.
-        required: false
-        schema:
-          type: string
-          enum:
-          - json
-          - markdown
-          default: json
-      responses:
-        '200':
-          description: Recovery digest/work-packet envelope.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RecoveryReadPayload'
-        '400':
-          description: Unsupported report or format.
         '404':
           description: Session not found.
   /api/assertions:
@@ -1318,6 +1213,12 @@ components:
           - type: 'null'
           default: null
           title: Tool Path
+        occurred_at_ms:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Occurred At Ms
         output_text:
           anyOf:
           - type: string
@@ -1695,6 +1596,12 @@ components:
           default: unknown
           title: Material Origin
           type: string
+        occurred_at_ms:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Occurred At Ms
         position:
           title: Position
           type: integer
@@ -2175,51 +2082,6 @@ components:
       - payload
       title: SessionReadViewEnvelope
       type: object
-    RecoveryReadPayload:
-      additionalProperties: false
-      description: Shared recovery/read envelope for daemon web and future API/MCP parity.
-      properties:
-        session_id:
-          title: Session Id
-          type: string
-        report:
-          enum:
-          - digest
-          - work-packet
-          title: Report
-          type: string
-        format:
-          enum:
-          - json
-          - markdown
-          title: Format
-          type: string
-        digest:
-          anyOf:
-          - additionalProperties: true
-            type: object
-          - type: 'null'
-          default: null
-          title: Digest
-        work_packet:
-          anyOf:
-          - additionalProperties: true
-            type: object
-          - type: 'null'
-          default: null
-          title: Work Packet
-        markdown:
-          anyOf:
-          - type: string
-          - type: 'null'
-          default: null
-          title: Markdown
-      required:
-      - session_id
-      - report
-      - format
-      title: RecoveryReadPayload
-      type: object
     AssertionClaimPayload:
       additionalProperties: false
       description: Shared payload for assertion-backed lifecycle claims.
@@ -2373,9 +2235,9 @@ components:
           default: false
           title: Has Thinking
           type: boolean
-        has_paste:
+        has_paste_evidence:
           default: false
-          title: Has Paste
+          title: Has Paste Evidence
           type: boolean
       title: SessionFlagsPayload
       type: object
@@ -2669,13 +2531,6 @@ x-polylogue-route-contracts:
   stability: stable
   auth_policy: bearer_if_configured
   response_contract: session messages JSON
-- method: GET
-  pattern: /api/sessions/:id/recovery
-  kind: read_detail
-  stability: stable
-  auth_policy: bearer_if_configured
-  response_contract: RecoveryReadPayload
-  notes: Consumes shared recovery digest/work-packet DTOs for the local workbench and API clients.
 - method: GET
   pattern: /api/sessions/:id/read
   kind: read_detail

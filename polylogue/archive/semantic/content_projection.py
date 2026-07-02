@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -59,14 +59,31 @@ class ContentProjectionSpec:
     @classmethod
     def from_params(cls, params: Mapping[str, object]) -> ContentProjectionSpec:
         spec = cls.prose_only() if bool(params.get("prose_only")) else cls()
-        if params.get("no_code_blocks"):
-            spec = replace(spec, include_code=False)
-        if params.get("no_tool_calls"):
-            spec = replace(spec, include_tool_calls=False)
-        if params.get("no_tool_outputs"):
-            spec = replace(spec, include_tool_outputs=False)
-        if params.get("no_file_reads"):
-            spec = replace(spec, include_file_reads=False)
+        include_kinds = _coerce_content_kind_set(params.get("include_content_kinds"))
+        exclude_kinds = _coerce_content_kind_set(params.get("exclude_content_kinds"))
+        if include_kinds is not None:
+            spec = cls(
+                include_prose=ContentKind.PROSE in include_kinds,
+                include_code=ContentKind.CODE in include_kinds,
+                include_tool_calls=ContentKind.TOOL_CALL in include_kinds,
+                include_tool_outputs=ContentKind.TOOL_OUTPUT in include_kinds,
+                include_file_reads=ContentKind.FILE_READ in include_kinds,
+                include_reasoning=ContentKind.REASONING in include_kinds,
+                include_system_noise=ContentKind.SYSTEM_NOISE in include_kinds,
+                include_attachments=ContentKind.ATTACHMENT in include_kinds,
+            )
+        if exclude_kinds:
+            spec = replace(
+                spec,
+                include_prose=spec.include_prose and ContentKind.PROSE not in exclude_kinds,
+                include_code=spec.include_code and ContentKind.CODE not in exclude_kinds,
+                include_tool_calls=spec.include_tool_calls and ContentKind.TOOL_CALL not in exclude_kinds,
+                include_tool_outputs=spec.include_tool_outputs and ContentKind.TOOL_OUTPUT not in exclude_kinds,
+                include_file_reads=spec.include_file_reads and ContentKind.FILE_READ not in exclude_kinds,
+                include_reasoning=spec.include_reasoning and ContentKind.REASONING not in exclude_kinds,
+                include_system_noise=spec.include_system_noise and ContentKind.SYSTEM_NOISE not in exclude_kinds,
+                include_attachments=spec.include_attachments and ContentKind.ATTACHMENT not in exclude_kinds,
+            )
         return spec
 
     def is_default(self) -> bool:
@@ -81,6 +98,31 @@ class _Segment:
     kind: ContentKind
     text: str | None
     block: dict[str, object] | None = None
+
+
+def _coerce_content_kind_set(value: object) -> frozenset[ContentKind] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        raw_items: Iterable[object] = (item.strip() for item in value.split(",") if item.strip())
+    elif isinstance(value, Iterable):
+        raw_items = value
+    else:
+        raise ValueError(f"content kind set must be a string or iterable, got {type(value).__name__}")
+
+    kinds: set[ContentKind] = set()
+    for item in raw_items:
+        if isinstance(item, ContentKind):
+            kinds.add(item)
+            continue
+        if not isinstance(item, str):
+            raise ValueError(f"content kind entries must be strings, got {type(item).__name__}")
+        try:
+            kinds.add(ContentKind(item))
+        except ValueError as exc:
+            allowed = ", ".join(kind.value for kind in ContentKind)
+            raise ValueError(f"unknown content kind {item!r}; choose from: {allowed}") from exc
+    return frozenset(kinds)
 
 
 _CODE_FENCE_PATTERN = re.compile(r"```(?P<lang>[^\n`]*)\n?(?P<code>.*?)```", re.DOTALL)
@@ -370,7 +412,7 @@ def _keep_segment(segment: _Segment, spec: ContentProjectionSpec) -> bool:
     if kind is ContentKind.TOOL_OUTPUT:
         return spec.include_tool_outputs
     if kind is ContentKind.FILE_READ:
-        return spec.include_tool_outputs and spec.include_file_reads
+        return spec.include_file_reads
     if kind is ContentKind.REASONING:
         return spec.include_reasoning
     if kind is ContentKind.SYSTEM_NOISE:

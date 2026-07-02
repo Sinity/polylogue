@@ -36,7 +36,6 @@ _complete_action = _lazy_shell_complete("action")
 _complete_action_sequence = _lazy_shell_complete("action_sequence")
 _complete_session_id = _lazy_shell_complete("session_id")
 _complete_cwd_prefix = _lazy_shell_complete("cwd_prefix")
-_complete_material_origin = _lazy_shell_complete("material_origin")
 _complete_message_type = _lazy_shell_complete("message_type")
 _complete_origin = _lazy_shell_complete("origin")
 _complete_repo = _lazy_shell_complete("repo")
@@ -109,32 +108,6 @@ def _validate_origin_tokens(
             param_hint=param_name,
         )
     return value
-
-
-def _validate_message_role_tokens(
-    ctx: click.Context,
-    _param: click.Parameter,
-    value: tuple[str, ...],
-) -> tuple[str, ...]:
-    try:
-        from polylogue.cli.query_contracts import normalize_message_role_option
-
-        return normalize_message_role_option(value)
-    except ValueError as exc:
-        raise click.BadParameter(str(exc), param_hint="--message-role") from exc
-
-
-def _validate_material_origin_tokens(
-    ctx: click.Context,
-    _param: click.Parameter,
-    value: tuple[str, ...],
-) -> tuple[str, ...]:
-    try:
-        from polylogue.cli.query_contracts import normalize_material_origin_option
-
-        return normalize_material_origin_option(value)
-    except ValueError as exc:
-        raise click.BadParameter(str(exc), param_hint="--material-origin") from exc
 
 
 FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] = (
@@ -264,7 +237,7 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         "--has-paste",
         "filter_has_paste",
         is_flag=True,
-        help="Only sessions with pasted content (SQL pushdown)",
+        help="Only sessions with paste evidence (SQL pushdown)",
     ),
     click.option(
         "--typed-only",
@@ -275,13 +248,6 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
     click.option("--min-messages", type=int, help="Minimum message count"),
     click.option("--max-messages", type=int, help="Maximum message count"),
     click.option("--min-words", type=int, help="Minimum total word count"),
-    click.option(
-        "--message-type",
-        "message_type",
-        type=_LazyChoice(_load_message_types, "type"),
-        help="Filter by message content type (message, summary, tool_use, tool_result, thinking, context, protocol)",
-        shell_complete=_complete_message_type,
-    ),
     click.option(
         "--since-session",
         "since_session_id",
@@ -342,42 +308,13 @@ OUTPUT_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         default=False,
         help="Explain query DSL parsing and lowering instead of executing the query.",
     ),
-    click.option(
-        "--transform",
-        type=click.Choice(["strip-tools", "strip-thinking", "strip-all"]),
-        help="Remove content: strip-tools (tool calls), strip-thinking (reasoning), strip-all (both)",
-    ),
-    click.option("--no-code-blocks", is_flag=True, help="Exclude fenced and structured code blocks from output"),
-    click.option("--no-tool-calls", is_flag=True, help="Exclude tool invocation records from output"),
-    click.option("--no-tool-outputs", is_flag=True, help="Exclude tool-result payloads from output"),
-    click.option("--no-file-reads", is_flag=True, help="Exclude file-read payloads while keeping other tool output"),
-    click.option("--prose-only", is_flag=True, help="Show only authored prose text"),
 )
 
 STREAMING_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] = (
     click.option(
         "--stream",
         is_flag=True,
-        help="Stream output (low memory). Requires --latest or -i ID. Incompatible with --transform",
-    ),
-    click.option("--dialogue-only", "-d", is_flag=True, help="Show only user/assistant messages"),
-    click.option(
-        "--message-role",
-        "message_role",
-        multiple=True,
-        callback=_validate_message_role_tokens,
-        help="Show only selected message roles (repeatable or comma-separated: user, assistant, system, tool, unknown)",
-    ),
-    click.option(
-        "--material-origin",
-        "material_origin",
-        multiple=True,
-        callback=_validate_material_origin_tokens,
-        shell_complete=_complete_material_origin,
-        help=(
-            "Show only selected material origins "
-            "(repeatable or comma-separated: human_authored, runtime_protocol, tool_result, unknown)"
-        ),
+        help="Stream output (low memory). Requires --latest or -i ID.",
     ),
 )
 

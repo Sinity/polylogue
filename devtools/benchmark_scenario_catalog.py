@@ -41,7 +41,7 @@ BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
     ),
     BenchmarkCampaignEntry(
         name="reader-api",
-        description="Reader HTTP API list/get/facets/context-pack/cost-rollup benchmark domain",
+        description="Reader HTTP API list/get/facets/context-image/cost-rollup benchmark domain",
         execution=pytest_execution("tests/benchmarks/test_reader_api.py"),
         notes=(
             "Covers reader read-path latency for list, get, facets, and context operations.",
@@ -53,22 +53,22 @@ BENCHMARK_SCENARIOS: tuple[BenchmarkCampaignEntry, ...] = (
         tags=("benchmark", "reader", "api"),
     ),
     BenchmarkCampaignEntry(
-        name="recovery-digest",
-        description="Deterministic recovery digest transform/render benchmark domain",
-        execution=pytest_execution("tests/benchmarks/test_recovery_digest.py"),
+        name="session-digest",
+        description="Deterministic session digest transform/render benchmark domain",
+        execution=pytest_execution("tests/benchmarks/test_session_digest.py"),
         notes=(
-            "Covers recovery/digest transform compilation and report rendering over tool-heavy sessions.",
-            "Keeps #1880 recovery artifact shape in the generated benchmark inventory.",
+            "Covers session digest transform compilation and report rendering over tool-heavy sessions.",
+            "Keeps #1880 session digest artifact shape in the generated benchmark inventory.",
         ),
         origin="authored.benchmark-domain",
-        artifact_targets=("recovery_digest", "forensic_index", "resume_bundle", "recovery_report_markdown"),
+        artifact_targets=("session_digest", "forensic_index", "resume_bundle", "session_report_markdown"),
         operation_targets=(
-            "compile-recovery-digest",
-            "render-recovery-report",
-            "benchmark.transform.recovery-digest",
-            "benchmark.transform.recovery-report",
+            "compile-session-digest",
+            "render-session-report",
+            "benchmark.transform.session-digest",
+            "benchmark.transform.session-report",
         ),
-        tags=("benchmark", "transform", "recovery"),
+        tags=("benchmark", "transform", "session-analysis"),
     ),
     BenchmarkCampaignEntry(
         name="daemon-convergence",

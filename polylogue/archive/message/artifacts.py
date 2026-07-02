@@ -9,6 +9,7 @@ through ordinary text channels by a provider.
 
 from __future__ import annotations
 
+import json
 import re
 
 from polylogue.archive.message.types import MessageType
@@ -68,7 +69,12 @@ _OPERATOR_COMMAND_MARKERS = (
     "<command-message>",
     "<command-args>",
     "<bash-input>",
+    "bash -lc ",
+    "python - <<",
+    "python3 - <<",
 )
+
+_CHATGPT_PROTOCOL_JSON_KEYS = frozenset({"queries"})
 
 
 def strip_system_reminders(text: str) -> str:
@@ -103,6 +109,10 @@ def classify_text_message_type(text: str | None) -> MessageType | None:
         return MessageType.CONTEXT
     if stripped.startswith(_CLAUDE_CODE_PROTOCOL_START_MARKERS):
         return MessageType.PROTOCOL
+    if stripped.startswith(("bash -lc ", "python - <<", "python3 - <<")):
+        return MessageType.PROTOCOL
+    if _is_protocol_json_envelope(stripped):
+        return MessageType.PROTOCOL
 
     # Additional context heuristics beyond start-of-text markers.
     if "<system>" in stripped and "</system>" in stripped:
@@ -115,6 +125,22 @@ def classify_text_message_type(text: str | None) -> MessageType | None:
         return MessageType.CONTEXT
 
     return None
+
+
+def _is_protocol_json_envelope(text: str) -> bool:
+    if not (text.startswith("{") and text.endswith("}")):
+        return False
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    keys = set(parsed)
+    if keys != _CHATGPT_PROTOCOL_JSON_KEYS:
+        return False
+    queries = parsed.get("queries")
+    return isinstance(queries, list) and all(isinstance(item, str) for item in queries)
 
 
 def classify_block_message_type(block_types: tuple[BlockType, ...]) -> MessageType | None:
@@ -156,7 +182,7 @@ def classify_material_origin(
         if any(marker in stripped for marker in _OPERATOR_COMMAND_MARKERS):
             return MaterialOrigin.OPERATOR_COMMAND
         return MaterialOrigin.RUNTIME_PROTOCOL
-    if normalized_role is Role.ASSISTANT and normalized_type is MessageType.MESSAGE:
+    if normalized_role is Role.ASSISTANT and normalized_type in (MessageType.MESSAGE, MessageType.TOOL_USE):
         # The assistant role IS positive evidence of model authorship: it is the
         # model's output channel. Unlike the user channel, nothing else is
         # injected through it once context/protocol/tool-result shapes are ruled

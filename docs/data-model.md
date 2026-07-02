@@ -73,19 +73,19 @@ Convenience properties resolve these:
 | `text` | `str?` | Flattened message text |
 | `timestamp` | `datetime?` | Message timestamp |
 | `message_type` | `MessageType` | `message`, `summary`, `tool_use`, `tool_result`, `thinking`, `context`, `protocol` |
-| `material_origin` | `MaterialOrigin` | Authoredness/material source, separate from provider role: `human_authored`, `assistant_authored`, `operator_command`, `runtime_protocol`, `runtime_context`, `tool_result`, `generated_context_pack`, `generated_analysis_pack`, `unknown` |
+| `material_origin` | `MaterialOrigin` | Authoredness/material source, separate from provider role: `human_authored`, `assistant_authored`, `operator_command`, `runtime_protocol`, `runtime_context`, `tool_result`, `generated_context_pack`, `generated_analysis_pack`, `unknown`. `generated_context_pack` is a persisted legacy/source-marker value for provider-generated context bundles; renaming it is a schema-bump/rebuild decision, not a docs-only cleanup. |
 | `provider` | `Provider?` | Provider-wire identity (parse-boundary only; prefer the session `origin`) |
 | `content_blocks` | `list[dict]` | Structured content blocks (text/thinking/tool_use/tool_result/image/code/document) |
 | `attachments` | `list[Attachment]` | File attachments referenced by the message |
 
 `role` preserves provider/display envelope truth. It must not be used as a
 proxy for human-authored prose: Claude Code, for example, carries command
-wrappers, task notifications, generated context packs, and tool-result
+wrappers, task notifications, provider-generated context bundles, and tool-result
 protocol envelopes through `role=user`. Use `material_origin` for authoredness
 accounting and prose projection.
 | `parent_id` | `str?` | Parent message, for branching |
 | `branch_index` | `int` | Branch position among sibling variants |
-| `has_tool_use` / `has_thinking` / `has_paste` | `bool` | Precomputed content flags projected from storage |
+| `has_tool_use` / `has_thinking` / `has_paste_evidence` | `bool` | Precomputed content/evidence flags projected from storage |
 | `input_tokens` / `output_tokens` | `int` | Token counts, when reported |
 | `cache_read_tokens` / `cache_write_tokens` | `int` | Cache token counts, when reported |
 | `duration_ms` | `int` | Reported generation duration |

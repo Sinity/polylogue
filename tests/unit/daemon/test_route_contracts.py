@@ -87,10 +87,9 @@ def test_stable_user_overlay_mutations_use_shared_envelope_contract() -> None:
 
 
 def test_evidence_routes_are_published_as_stable_api() -> None:
-    """Typed recovery/assertion routes are stable API contracts (#1847)."""
+    """Typed assertion and read-view routes are stable API contracts (#1847)."""
 
     assertion_route = route_contract_for("GET", "/api/assertions")
-    recovery_route = route_contract_for("GET", "/api/sessions/codex-session:abc/recovery")
     read_route = route_contract_for("GET", "/api/sessions/codex-session:abc/read")
 
     assert assertion_route is not None
@@ -98,10 +97,6 @@ def test_evidence_routes_are_published_as_stable_api() -> None:
     assert assertion_route.auth_policy == "bearer_if_configured"
     assert assertion_route.response_contract == "AssertionClaimListPayload"
 
-    assert recovery_route is not None
-    assert recovery_route.stability == "stable"
-    assert recovery_route.auth_policy == "bearer_if_configured"
-    assert recovery_route.response_contract == "RecoveryReadPayload"
     assert read_route is not None
     assert read_route.stability == "stable"
     assert read_route.auth_policy == "bearer_if_configured"
@@ -135,13 +130,6 @@ def test_read_view_execution_route_is_published_as_stable_api() -> None:
             "GET",
             "/api/sessions/codex-session:abc/messages",
             "/api/sessions/:id/messages",
-            "read_detail",
-            "bearer_if_configured",
-        ),
-        (
-            "GET",
-            "/api/sessions/codex-session:abc/recovery",
-            "/api/sessions/:id/recovery",
             "read_detail",
             "bearer_if_configured",
         ),

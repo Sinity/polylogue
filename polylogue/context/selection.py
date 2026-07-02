@@ -1,10 +1,8 @@
-"""Context-pack session selection helpers.
+"""Context-image session selection helpers.
 
-The context-pack *payload* is no longer assembled here: compilation collapsed
-onto the shared ``compile_context`` / ``ContextImage`` engine (see
-``polylogue.context.compiler`` and ``Polylogue.context_pack_payload``). What
-remains is the recall-oriented query-algebra **selection** used to pick which
-sessions a context pack should cover.
+The context-image compiler owns payload assembly. This module owns the small
+query-selection lens that chooses seed sessions for multi-session handoff
+images, including recall-oriented fallback for archaeology queries.
 """
 
 from __future__ import annotations
@@ -27,7 +25,7 @@ if TYPE_CHECKING:
     from polylogue.archive.query.spec import SessionQuerySpec
 
 
-def _clamp_context_pack_limit(value: int | object) -> int:
+def clamp_context_image_limit(value: int | object) -> int:
     if isinstance(value, bool):
         return 1
     if isinstance(value, int):
@@ -38,14 +36,14 @@ def _clamp_context_pack_limit(value: int | object) -> int:
 
 
 @dataclass(frozen=True, slots=True)
-class ContextPackSelection:
+class ContextImageSelection:
     sessions: list[Any]
     match_strategy: str
     relaxed_filters: tuple[str, ...] = ()
     query_total: int = 0
 
 
-class ArchiveContextPackFilters(TypedDict):
+class ArchiveContextImageFilters(TypedDict):
     origins: tuple[str, ...]
     excluded_origins: tuple[str, ...]
     tags: tuple[str, ...]
@@ -57,7 +55,7 @@ class ArchiveContextPackFilters(TypedDict):
 
 
 @dataclass(frozen=True, slots=True)
-class _ContextPackQueryAttempt:
+class _ContextImageQueryAttempt:
     query: str | None
     project_path: str | None
     project_repo: str | None
@@ -65,37 +63,37 @@ class _ContextPackQueryAttempt:
     relaxed_filters: tuple[str, ...] = ()
 
 
-def _context_pack_recall_terms(query: str | None) -> tuple[str, ...]:
+def _context_image_recall_terms(query: str | None) -> tuple[str, ...]:
     if not query:
         return ()
     from polylogue.storage.search.query_support import extract_match_terms
 
     terms = extract_match_terms(query)
-    # Single-letter FTS terms produce noisy archaeology packs and pure boolean
+    # Single-letter FTS terms produce noisy archaeology images and pure boolean
     # operators are already stripped by extract_match_terms().
     return tuple(term for term in terms if len(term) > 1)
 
 
-def _context_pack_query_attempts(
+def _context_image_query_attempts(
     *,
     query: str | None,
     project_path: str | None,
     project_repo: str | None,
-) -> tuple[_ContextPackQueryAttempt, ...]:
+) -> tuple[_ContextImageQueryAttempt, ...]:
     attempts = [
-        _ContextPackQueryAttempt(
+        _ContextImageQueryAttempt(
             query=query,
             project_path=project_path,
             project_repo=project_repo,
             strategy="strict",
         )
     ]
-    terms = _context_pack_recall_terms(query)
+    terms = _context_image_recall_terms(query)
     if len(terms) <= 1:
         return tuple(attempts)
 
     attempts.extend(
-        _ContextPackQueryAttempt(
+        _ContextImageQueryAttempt(
             query=term,
             project_path=project_path,
             project_repo=project_repo,
@@ -108,7 +106,7 @@ def _context_pack_query_attempts(
             name for name, value in (("project_path", project_path), ("project_repo", project_repo)) if value
         )
         attempts.extend(
-            _ContextPackQueryAttempt(
+            _ContextImageQueryAttempt(
                 query=term,
                 project_path=None,
                 project_repo=None,
@@ -120,7 +118,7 @@ def _context_pack_query_attempts(
     return tuple(attempts)
 
 
-async def select_context_pack_sessions(
+async def select_context_image_sessions(
     query_sessions: Callable[[SessionQuerySpec], Awaitable[Sequence[Any]]],
     clamp_limit: Callable[[int | object], int],
     *,
@@ -131,18 +129,11 @@ async def select_context_pack_sessions(
     origin: str | None,
     query: str | None,
     limit: int,
-) -> ContextPackSelection:
-    """Select sessions for a context pack with recall-oriented fallback.
-
-    The context-pack surface is an archaeology/reorientation tool. A pasted
-    investigative query often contains many alternative identifiers; treating
-    it as one strict FTS conjunction produces false "no history" answers. We
-    still run the strict request first, then fall back to single-term recall
-    only when strict selection returns no sessions.
-    """
+) -> ContextImageSelection:
+    """Select sessions for a context image with recall-oriented fallback."""
     from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 
-    def _spec(attempt: _ContextPackQueryAttempt) -> SessionQuerySpec:
+    def _spec(attempt: _ContextImageQueryAttempt) -> SessionQuerySpec:
         return MCPSessionQueryRequest(
             query=attempt.query,
             origin=origin,
@@ -155,14 +146,14 @@ async def select_context_pack_sessions(
             limit=limit,
         ).build_spec(clamp_limit)
 
-    attempts = _context_pack_query_attempts(
+    attempts = _context_image_query_attempts(
         query=query,
         project_path=project_path,
         project_repo=project_repo,
     )
     strict = list(await query_sessions(_spec(attempts[0])))
     if strict:
-        return ContextPackSelection(sessions=strict[:limit], match_strategy="strict", query_total=len(strict))
+        return ContextImageSelection(sessions=strict[:limit], match_strategy="strict", query_total=len(strict))
 
     for strategy in ("term_recall", "relaxed_project_term_recall"):
         merged: list[Any] = []
@@ -184,37 +175,37 @@ async def select_context_pack_sessions(
             if len(merged) >= limit:
                 break
         if merged:
-            return ContextPackSelection(
+            return ContextImageSelection(
                 sessions=merged,
                 match_strategy=strategy,
                 relaxed_filters=relaxed_filters,
                 query_total=len(merged),
             )
 
-    return ContextPackSelection(sessions=[], match_strategy="strict", query_total=0)
+    return ContextImageSelection(sessions=[], match_strategy="strict", query_total=0)
 
 
-def archive_context_pack_active(
+def archive_context_image_active(
     *,
     archive_root: Path,
     db_anchor_path: Path,
 ) -> bool:
-    """Return whether context-pack should read archive index data."""
+    """Return whether context-image selection should read archive index data."""
     return archive_index_active_paths(
         archive_root=archive_root,
         db_anchor_path=db_anchor_path,
     )
 
 
-def query_archive_context_pack(
+def query_archive_context_image(
     archive: ArchiveStore,
     spec: SessionQuerySpec,
     *,
     default_limit: int,
 ) -> list[SimpleNamespace]:
-    """Project archive sessions into the context-pack summary surface."""
+    """Project archive sessions into the context-image summary surface."""
     query = " ".join(spec.query_terms).strip()
-    kwargs = archive_context_pack_filters(spec)
+    kwargs = archive_context_image_filters(spec)
     if query:
         rows: list[ArchiveSessionSummary | ArchiveSessionSearchHit] = list(
             archive.search_summaries(
@@ -238,7 +229,7 @@ def query_archive_context_pack(
         )
 
     summaries: list[ArchiveSessionSummary] = []
-    for row in dedupe_archive_context_pack_rows(rows):
+    for row in dedupe_archive_context_image_rows(rows):
         if isinstance(row, ArchiveSessionSearchHit):
             try:
                 summaries.append(archive.read_summary(row.session_id))
@@ -246,10 +237,10 @@ def query_archive_context_pack(
                 continue
         else:
             summaries.append(row)
-    return [archive_context_pack_summary(row) for row in summaries]
+    return [archive_context_image_summary(row) for row in summaries]
 
 
-def archive_context_pack_filters(spec: SessionQuerySpec) -> ArchiveContextPackFilters:
+def archive_context_image_filters(spec: SessionQuerySpec) -> ArchiveContextImageFilters:
     filters = archive_query_filters(spec)
     return {
         "origins": filters["origins"],
@@ -263,7 +254,7 @@ def archive_context_pack_filters(spec: SessionQuerySpec) -> ArchiveContextPackFi
     }
 
 
-def archive_context_pack_summary(row: ArchiveSessionSummary) -> SimpleNamespace:
+def archive_context_image_summary(row: ArchiveSessionSummary) -> SimpleNamespace:
     return SimpleNamespace(
         id=row.session_id,
         origin=row.origin,
@@ -277,7 +268,7 @@ def archive_context_pack_summary(row: ArchiveSessionSummary) -> SimpleNamespace:
     )
 
 
-def dedupe_archive_context_pack_rows(
+def dedupe_archive_context_image_rows(
     rows: list[ArchiveSessionSummary | ArchiveSessionSearchHit],
 ) -> list[ArchiveSessionSummary | ArchiveSessionSearchHit]:
     deduped: list[ArchiveSessionSummary | ArchiveSessionSearchHit] = []

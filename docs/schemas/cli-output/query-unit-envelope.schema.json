@@ -8,6 +8,18 @@
           "title": "Message Id",
           "type": "string"
         },
+        "occurred_at_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Occurred At Ms"
+        },
         "origin": {
           "title": "Origin",
           "type": "string"
@@ -611,6 +623,18 @@
         "message_type": {
           "title": "Message Type",
           "type": "string"
+        },
+        "occurred_at_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Occurred At Ms"
         },
         "origin": {
           "title": "Origin",

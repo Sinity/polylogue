@@ -20,12 +20,11 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from polylogue.archive.message.roles import MessageRoleFilter, Role
+from polylogue.archive.message.roles import Role
 from polylogue.archive.models import Session
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.archive.stats import ArchiveStats
 from polylogue.cli.query import async_execute_query, project_query_results
-from polylogue.cli.query_actions import apply_transform
 from polylogue.cli.query_contracts import (
     QueryAction,
     QueryDeliveryTarget,
@@ -204,21 +203,13 @@ def _output_spec(
     *,
     destinations: tuple[str, ...] = ("stdout",),
     fields: str | None = None,
-    dialogue_only: bool = False,
-    message_roles: MessageRoleFilter = (),
-    transform: str | None = None,
     list_mode: bool = False,
     print_url: bool = False,
-    material_origins: tuple[MaterialOrigin, ...] = (),
 ) -> QueryOutputSpec:
     return QueryOutputSpec(
         output_format=output_format,
         destinations=_delivery_targets(*destinations),
         fields=fields,
-        dialogue_only=dialogue_only,
-        message_roles=message_roles,
-        material_origins=material_origins,
-        transform=transform,
         list_mode=list_mode,
         print_url=print_url,
     )
@@ -272,7 +263,7 @@ def _sample_session() -> Session:
 
 
 # ---------------------------------------------------------------------------
-# project_query_results / apply_transform (still wired via query.py + bulk_export)
+# project_query_results
 # ---------------------------------------------------------------------------
 
 
@@ -280,78 +271,14 @@ def test_project_query_results_contract() -> None:
     plan = QueryExecutionPlan(
         selection=SessionQuerySpec(),
         action=QueryAction.SHOW,
-        output=_output_spec(dialogue_only=True, transform="strip-all"),
+        output=_output_spec(),
         mutation=_mutation_spec(),
     )
     session = _sample_session()
 
     projected = project_query_results([session], plan)
 
-    assert [message.id for message in projected[0].messages] == ["m-user", "m-assistant"]
-    assert [message.id for message in session.messages] == [
-        "m-user",
-        "m-thinking",
-        "m-tool",
-        "m-assistant",
-    ]
-
-
-def test_project_query_results_message_role_contract() -> None:
-    plan = QueryExecutionPlan(
-        selection=SessionQuerySpec(),
-        action=QueryAction.SHOW,
-        output=_output_spec(message_roles=(Role.USER,)),
-        mutation=_mutation_spec(),
-    )
-    session = _sample_session()
-
-    projected = project_query_results([session], plan)
-
-    assert [message.id for message in projected[0].messages] == ["m-user"]
-
-
-def test_project_query_results_material_origin_contract() -> None:
-    plan = QueryExecutionPlan(
-        selection=SessionQuerySpec(),
-        action=QueryAction.SHOW,
-        output=_output_spec(material_origins=(MaterialOrigin.ASSISTANT_AUTHORED,)),
-        mutation=_mutation_spec(),
-    )
-    session = _sample_session()
-
-    projected = project_query_results([session], plan)
-
-    assert [message.id for message in projected[0].messages] == ["m-assistant"]
-
-
-def test_project_query_results_explicit_message_role_supersedes_dialogue_only() -> None:
-    plan = QueryExecutionPlan(
-        selection=SessionQuerySpec(),
-        action=QueryAction.SHOW,
-        output=_output_spec(dialogue_only=True, message_roles=(Role.TOOL,)),
-        mutation=_mutation_spec(),
-    )
-    session = _sample_session()
-
-    projected = project_query_results([session], plan)
-
-    assert [message.id for message in projected[0].messages] == ["m-tool"]
-
-
-@pytest.mark.parametrize(
-    ("transform", "expected_ids"),
-    [
-        ("strip-tools", ["m-user", "m-thinking", "m-assistant"]),
-        ("strip-thinking", ["m-user", "m-tool", "m-assistant"]),
-        ("strip-all", ["m-user", "m-assistant"]),
-    ],
-)
-def test_apply_transform_contract(transform: str, expected_ids: list[str]) -> None:
-    session = _sample_session()
-
-    transformed = apply_transform([session], transform)
-
-    assert [message.id for message in transformed[0].messages] == expected_ids
+    assert projected == [session]
     assert [message.id for message in session.messages] == [
         "m-user",
         "m-thinking",
@@ -403,12 +330,6 @@ class TestBuildQueryExecutionPlan:
 
         plan = build_query_execution_plan({"list_mode": True, "query": ("abc",)})
         assert plan.prefers_summary_list() is True
-
-        transformed = build_query_execution_plan({"list_mode": True, "transform": "strip-tools", "query": ("abc",)})
-        assert transformed.prefers_summary_list() is False
-
-        projected = build_query_execution_plan({"list_mode": True, "prose_only": True, "query": ("abc",)})
-        assert projected.prefers_summary_list() is False
 
     def test_mutation_fields_are_normalized(self) -> None:
         from polylogue.cli.query_contracts import build_query_execution_plan
@@ -466,6 +387,7 @@ def test_async_execute_query_archive_lists_archive(
             tags: tuple[str, ...],
             excluded_tags: tuple[str, ...],
             repo_names: tuple[str, ...],
+            project_refs: tuple[str, ...],
             has_types: tuple[str, ...],
             has_tool_use: bool,
             has_thinking: bool,
@@ -913,6 +835,7 @@ def test_async_execute_query_archive_search_maps_provider_to_origin(
             tags: tuple[str, ...],
             excluded_tags: tuple[str, ...],
             repo_names: tuple[str, ...],
+            project_refs: tuple[str, ...],
             has_types: tuple[str, ...],
             has_tool_use: bool,
             has_thinking: bool,
@@ -1472,7 +1395,6 @@ def test_async_execute_query_archive_streams_session_messages(
                 "archive": True,
                 "conv_id": "codex-session:native-1",
                 "stream": True,
-                "dialogue_only": True,
                 "limit": 1,
                 "output_format": "json",
             },
@@ -2164,7 +2086,7 @@ def test_async_execute_query_archive_reads_session_by_id(
     assert payload["messages"][0]["blocks"][0]["text"] == "hello from v1"
 
 
-def test_async_execute_query_archive_projects_session_messages(
+def test_async_execute_query_archive_reads_session_messages_without_projection(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -2266,8 +2188,6 @@ def test_async_execute_query_archive_projects_session_messages(
             {
                 "archive": True,
                 "conv_id": "codex-session:native-1",
-                "dialogue_only": True,
-                "prose_only": True,
                 "output_format": "json",
             },
         )
@@ -2286,204 +2206,12 @@ def test_async_execute_query_archive_projects_session_messages(
             "tool_name": None,
         }
     ]
-    assert [block["text"] for block in payload["messages"][1]["blocks"]] == ["keep assistant prose"]
-
-
-def test_async_execute_query_archive_transforms_session_messages(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
-
-    archive_root = tmp_path / "archive"
-    archive_root.mkdir()
-    (archive_root / "index.db").touch()
-    config = MagicMock()
-    config.archive_root = archive_root
-    env = _make_env(repo=MagicMock(), config=config)
-
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
-        def resolve_session_id(self, token: str) -> str:
-            return token
-
-        def read_session(self, session_id: str) -> ArchiveSessionEnvelope:
-            return ArchiveSessionEnvelope(
-                session_id=session_id,
-                native_id="native-1",
-                origin="codex-session",
-                title="Transformed session",
-                active_leaf_message_id="codex-session:native-1:m2",
-                messages=(
-                    ArchiveMessageRow(
-                        message_id="codex-session:native-1:m1",
-                        native_id="m1",
-                        role="user",
-                        position=0,
-                        variant_index=0,
-                        is_active_path=True,
-                        is_active_leaf=False,
-                        blocks=(
-                            ArchiveBlockRow(
-                                block_id="codex-session:native-1:m1:0",
-                                message_id="codex-session:native-1:m1",
-                                block_type="text",
-                                text="survives",
-                            ),
-                        ),
-                    ),
-                    ArchiveMessageRow(
-                        message_id="codex-session:native-1:m2",
-                        native_id="m2",
-                        role="assistant",
-                        position=1,
-                        variant_index=0,
-                        is_active_path=True,
-                        is_active_leaf=True,
-                        blocks=(
-                            ArchiveBlockRow(
-                                block_id="codex-session:native-1:m2:0",
-                                message_id="codex-session:native-1:m2",
-                                block_type="tool_use",
-                                text=None,
-                                tool_name="Bash",
-                            ),
-                        ),
-                    ),
-                ),
-            )
-
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
-
-    asyncio.run(
-        async_execute_query(
-            env,
-            {
-                "archive": True,
-                "conv_id": "codex-session:native-1",
-                "transform": "strip-tools",
-                "output_format": "json",
-            },
-        )
-    )
-
-    payload = json.loads(capsys.readouterr().out)
-    assert [message["message_id"] for message in payload["messages"]] == ["codex-session:native-1:m1"]
-
-
-def test_async_execute_query_archive_transforms_first_list_match(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
-
-    archive_root = tmp_path / "archive"
-    archive_root.mkdir()
-    (archive_root / "index.db").touch()
-    config = MagicMock()
-    config.archive_root = archive_root
-    env = _make_env(repo=MagicMock(), config=config)
-
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
-        def list_summaries(self, **kwargs: object) -> list[ArchiveSessionSummary]:
-            return [
-                ArchiveSessionSummary(
-                    session_id="codex-session:native-1",
-                    native_id="native-1",
-                    origin="codex-session",
-                    provider=Provider.CODEX,
-                    title="Transformed list match",
-                    created_at=None,
-                    updated_at=None,
-                    message_count=2,
-                    word_count=1,
-                    tags=(),
-                )
-            ]
-
-        def read_session(self, session_id: str) -> ArchiveSessionEnvelope:
-            assert session_id == "codex-session:native-1"
-            return ArchiveSessionEnvelope(
-                session_id=session_id,
-                native_id="native-1",
-                origin="codex-session",
-                title="Transformed list match",
-                active_leaf_message_id="codex-session:native-1:m2",
-                messages=(
-                    ArchiveMessageRow(
-                        message_id="codex-session:native-1:m1",
-                        native_id="m1",
-                        role="user",
-                        position=0,
-                        variant_index=0,
-                        is_active_path=True,
-                        is_active_leaf=False,
-                        blocks=(
-                            ArchiveBlockRow(
-                                block_id="codex-session:native-1:m1:0",
-                                message_id="codex-session:native-1:m1",
-                                block_type="text",
-                                text="survives",
-                            ),
-                        ),
-                    ),
-                    ArchiveMessageRow(
-                        message_id="codex-session:native-1:m2",
-                        native_id="m2",
-                        role="assistant",
-                        position=1,
-                        variant_index=0,
-                        is_active_path=True,
-                        is_active_leaf=True,
-                        blocks=(
-                            ArchiveBlockRow(
-                                block_id="codex-session:native-1:m2:0",
-                                message_id="codex-session:native-1:m2",
-                                block_type="tool_use",
-                                text=None,
-                                tool_name="Bash",
-                            ),
-                        ),
-                    ),
-                ),
-            )
-
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
-
-    asyncio.run(
-        async_execute_query(
-            env,
-            {
-                "archive": True,
-                "transform": "strip-tools",
-                "output_format": "json",
-                "limit": 1,
-            },
-        )
-    )
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["mode"] == "session"
-    assert [message["message_id"] for message in payload["messages"]] == ["codex-session:native-1:m1"]
+    assert [block["block_type"] for block in payload["messages"][1]["blocks"]] == [
+        "thinking",
+        "tool_use",
+        "tool_result",
+        "text",
+    ]
 
 
 def test_async_execute_query_archive_rejects_unsupported_historical_filters(

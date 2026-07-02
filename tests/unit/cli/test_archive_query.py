@@ -12,7 +12,6 @@ from unittest.mock import MagicMock
 import click
 import pytest
 
-from polylogue.archive.message.roles import Role
 from polylogue.cli.archive_query import (
     _build_cursor,
     _csv,
@@ -23,8 +22,6 @@ from polylogue.cli.archive_query import (
     _has_value,
     _hit_line,
     _limit,
-    _message_removed_by_transform,
-    _message_roles,
     _message_type,
     _metadata_pairs,
     _offset,
@@ -40,12 +37,10 @@ from polylogue.cli.archive_query import (
     _stats_by_line,
     _summary_line,
     _tool_tokens,
-    _transform,
     _tuple_tokens,
 )
 from polylogue.operations import OperationSpec, build_runtime_operation_catalog
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
-from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow
 
 
 # Tests for _resolve_origins
@@ -248,34 +243,6 @@ class TestMessageType:
             _message_type("invalid-type")
 
 
-# Tests for _message_roles
-class TestMessageRoles:
-    """Tests for _message_roles."""
-
-    def test_dialogue_only_true(self) -> None:
-        """dialogue_only=True returns (USER, ASSISTANT)."""
-        params: dict[str, object] = {"dialogue_only": True}
-        result = _message_roles(params)
-        assert result == (Role.USER, Role.ASSISTANT)
-
-    def test_empty_params(self) -> None:
-        """Empty params returns empty tuple."""
-        result = _message_roles({})
-        assert result == ()
-
-    def test_message_role_param(self) -> None:
-        """message_role param is normalized."""
-        params: dict[str, object] = {"message_role": "user"}
-        result = _message_roles(params)
-        assert result == (Role.USER,)
-
-    def test_invalid_message_role(self) -> None:
-        """Invalid message role raises UsageError."""
-        params: dict[str, object] = {"message_role": "invalid-role"}
-        with pytest.raises(click.UsageError):
-            _message_roles(params)
-
-
 # Tests for _sort
 class TestSort:
     """Tests for _sort."""
@@ -300,32 +267,6 @@ class TestSort:
         """Invalid sort value raises UsageError."""
         with pytest.raises(click.UsageError, match="sort must be one of"):
             _sort("invalid-sort")
-
-
-# Tests for _transform
-class TestTransform:
-    """Tests for _transform."""
-
-    def test_none_value(self) -> None:
-        """None returns None."""
-        result = _transform(None)
-        assert result is None
-
-    def test_false_value(self) -> None:
-        """False returns None."""
-        result = _transform(False)
-        assert result is None
-
-    def test_valid_transforms(self) -> None:
-        """Valid transform values are returned."""
-        for transform_val in ["strip-tools", "strip-thinking", "strip-all"]:
-            result = _transform(transform_val)
-            assert result == transform_val
-
-    def test_invalid_transform_raises_error(self) -> None:
-        """Invalid transform raises UsageError."""
-        with pytest.raises(click.UsageError, match="transform must be one of"):
-            _transform("invalid-transform")
 
 
 # Tests for _optional_int
@@ -692,113 +633,6 @@ class TestStatsByLine:
         result = _stats_by_line(item)
         assert "claude-code" in result
         assert "42" in result
-
-
-# Tests for _message_removed_by_transform
-class TestMessageRemovedByTransform:
-    """Tests for _message_removed_by_transform."""
-
-    def test_no_transform_keeps_message(self) -> None:
-        """transform=None keeps message."""
-        message = cast(
-            ArchiveMessageRow,
-            types.SimpleNamespace(blocks=()),
-        )
-        assert _message_removed_by_transform(message, None) is False
-
-    def test_strip_tools_removes_tool_use(self) -> None:
-        """strip-tools removes message with tool_use block."""
-        block = cast(
-            ArchiveBlockRow,
-            types.SimpleNamespace(block_type="tool_use"),
-        )
-        message = cast(
-            ArchiveMessageRow,
-            types.SimpleNamespace(blocks=(block,)),
-        )
-        assert _message_removed_by_transform(message, "strip-tools") is True
-
-    def test_strip_tools_removes_tool_result(self) -> None:
-        """strip-tools removes message with tool_result block."""
-        block = cast(
-            ArchiveBlockRow,
-            types.SimpleNamespace(block_type="tool_result"),
-        )
-        message = cast(
-            ArchiveMessageRow,
-            types.SimpleNamespace(blocks=(block,)),
-        )
-        assert _message_removed_by_transform(message, "strip-tools") is True
-
-    def test_strip_tools_keeps_other_blocks(self) -> None:
-        """strip-tools keeps message without tool blocks."""
-        block = cast(
-            ArchiveBlockRow,
-            types.SimpleNamespace(block_type="text"),
-        )
-        message = cast(
-            ArchiveMessageRow,
-            types.SimpleNamespace(blocks=(block,)),
-        )
-        assert _message_removed_by_transform(message, "strip-tools") is False
-
-    def test_strip_thinking_removes_thinking(self) -> None:
-        """strip-thinking removes message with thinking block."""
-        block = cast(
-            ArchiveBlockRow,
-            types.SimpleNamespace(block_type="thinking"),
-        )
-        message = cast(
-            ArchiveMessageRow,
-            types.SimpleNamespace(blocks=(block,)),
-        )
-        assert _message_removed_by_transform(message, "strip-thinking") is True
-
-    def test_strip_thinking_keeps_other_blocks(self) -> None:
-        """strip-thinking keeps message without thinking block."""
-        block = cast(
-            ArchiveBlockRow,
-            types.SimpleNamespace(block_type="text"),
-        )
-        message = cast(
-            ArchiveMessageRow,
-            types.SimpleNamespace(blocks=(block,)),
-        )
-        assert _message_removed_by_transform(message, "strip-thinking") is False
-
-    def test_strip_all_removes_tool_or_thinking(self) -> None:
-        """strip-all removes message with tool or thinking."""
-        tool_block = cast(
-            ArchiveBlockRow,
-            types.SimpleNamespace(block_type="tool_use"),
-        )
-        message = cast(
-            ArchiveMessageRow,
-            types.SimpleNamespace(blocks=(tool_block,)),
-        )
-        assert _message_removed_by_transform(message, "strip-all") is True
-
-        thinking_block = cast(
-            ArchiveBlockRow,
-            types.SimpleNamespace(block_type="thinking"),
-        )
-        message2 = cast(
-            ArchiveMessageRow,
-            types.SimpleNamespace(blocks=(thinking_block,)),
-        )
-        assert _message_removed_by_transform(message2, "strip-all") is True
-
-    def test_strip_all_keeps_prose(self) -> None:
-        """strip-all keeps message with only prose."""
-        block = cast(
-            ArchiveBlockRow,
-            types.SimpleNamespace(block_type="text"),
-        )
-        message = cast(
-            ArchiveMessageRow,
-            types.SimpleNamespace(blocks=(block,)),
-        )
-        assert _message_removed_by_transform(message, "strip-all") is False
 
 
 # Tests for _decode_cursor and _build_cursor

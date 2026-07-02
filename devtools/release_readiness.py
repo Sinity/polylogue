@@ -73,7 +73,7 @@ REQUIRED_RELEASE_BODY_FIELDS: tuple[str, ...] = (
     "- Machine output:",
     "- README/demo:",
     "- Import/demo fixture:",
-    "- Recovery/digest:",
+    "- Session digest/context:",
     "- Web/API scope:",
     "- Packaging:",
     "- Known caveats scoped out:",

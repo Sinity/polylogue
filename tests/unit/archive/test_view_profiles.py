@@ -37,9 +37,9 @@ def test_every_read_view_profile_declares_contract_fields() -> None:
 def test_successor_handoff_profiles_are_evidence_or_caveat_bearing() -> None:
     handoff_profiles = [profile for profile in READ_VIEW_PROFILES if profile.successor_handoff]
 
-    assert {profile.view_id for profile in handoff_profiles} == {"context", "context-pack", "recovery"}
+    assert {profile.view_id for profile in handoff_profiles} == {"context", "context-image", "chronicle"}
     for profile in handoff_profiles:
-        assert profile.lossiness in {"derived", "summarized"}
+        assert profile.lossiness in {"derived", "summarized", "filtered"}
         assert profile.evidence_policy in {"required", "optional"}
 
 
@@ -49,14 +49,13 @@ def test_http_read_view_capabilities_are_profile_backed_and_payload_driving() ->
     assert choices == tuple(READ_VIEW_HTTP_CAPABILITIES)
     assert set(choices).issubset(READ_VIEW_PROFILE_BY_ID)
     assert "summary" not in choices
-    assert read_view_http_format_choices() == ("json", "markdown")
-    assert "report" in read_view_http_query_params()
+    assert read_view_http_format_choices() == ("json",)
+    assert "report" not in read_view_http_query_params()
     assert "max_tokens" in read_view_http_query_params()
 
     payloads = read_view_http_capability_payloads()
     assert set(payloads) == set(choices)
-    assert payloads["recovery"]["formats"] == ["json", "markdown"]
-    assert payloads["context-pack"]["query_params"] == [
+    assert payloads["context-image"]["query_params"] == [
         "include_messages",
         "max_tokens",
         "no_redact",

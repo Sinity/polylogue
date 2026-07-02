@@ -8,24 +8,28 @@ import click
 
 from polylogue.archive.viewport import read_view_choices
 from polylogue.cli.read_views.base import (
+    ReadViewChronicleOptions,
+    ReadViewContextImageOptions,
     ReadViewContextOptions,
-    ReadViewContextPackOptions,
     ReadViewCorrelationOptions,
     ReadViewHandler,
     ReadViewInvocation,
     ReadViewMessageOptions,
     ReadViewNeighborOptions,
     ReadViewOptions,
-    ReadViewRecoveryOptions,
 )
-from polylogue.cli.read_views.bulk import run_bulk_export_view
+from polylogue.cli.read_views.chronicle import (
+    CHRONICLE_READ_VIEW_OPTION_NAMES,
+    build_chronicle_options,
+    run_read_chronicle,
+)
 from polylogue.cli.read_views.context import (
-    CONTEXT_PACK_READ_VIEW_OPTION_NAMES,
+    CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES,
     CONTEXT_READ_VIEW_OPTION_NAMES,
+    build_context_image_options,
     build_context_options,
-    build_context_pack_options,
     run_read_context,
-    run_read_context_pack,
+    run_read_context_image,
 )
 from polylogue.cli.read_views.correlation import (
     CORRELATION_READ_VIEW_OPTION_NAMES,
@@ -43,8 +47,8 @@ from polylogue.cli.read_views.neighbors import (
     build_neighbor_options,
     run_read_neighbors,
 )
-from polylogue.cli.read_views.recovery import RECOVERY_READ_VIEW_OPTION_NAMES, build_recovery_options, run_read_recovery
-from polylogue.cli.read_views.standard import run_read_summary_or_transcript
+from polylogue.cli.read_views.query_set import run_query_set_read_view
+from polylogue.cli.read_views.standard import run_read_summary_or_transcript, run_read_temporal
 from polylogue.cli.shared.types import AppEnv
 
 if TYPE_CHECKING:
@@ -52,8 +56,20 @@ if TYPE_CHECKING:
 
 
 READ_VIEW_HANDLERS: dict[str, ReadViewHandler] = {
-    "summary": ReadViewHandler("summary", "optional", run_read_summary_or_transcript, default_format="markdown"),
-    "transcript": ReadViewHandler("transcript", "optional", run_read_summary_or_transcript, default_format="markdown"),
+    "summary": ReadViewHandler(
+        "summary",
+        "optional",
+        run_read_summary_or_transcript,
+        default_format="markdown",
+        accepts_query_set=True,
+    ),
+    "transcript": ReadViewHandler(
+        "transcript",
+        "optional",
+        run_read_summary_or_transcript,
+        default_format="markdown",
+        accepts_query_set=True,
+    ),
     "messages": ReadViewHandler(
         "messages",
         "required",
@@ -78,21 +94,13 @@ READ_VIEW_HANDLERS: dict[str, ReadViewHandler] = {
         accepted_options=CONTEXT_READ_VIEW_OPTION_NAMES,
         option_builder=build_context_options,
     ),
-    "context-pack": ReadViewHandler(
-        "context-pack",
+    "context-image": ReadViewHandler(
+        "context-image",
         "none",
-        run_read_context_pack,
+        run_read_context_image,
         default_format="markdown",
-        accepted_options=CONTEXT_PACK_READ_VIEW_OPTION_NAMES,
-        option_builder=build_context_pack_options,
-    ),
-    "recovery": ReadViewHandler(
-        "recovery",
-        "required",
-        run_read_recovery,
-        default_format="markdown",
-        accepted_options=RECOVERY_READ_VIEW_OPTION_NAMES,
-        option_builder=build_recovery_options,
+        accepted_options=CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES,
+        option_builder=build_context_image_options,
     ),
     "neighbors": ReadViewHandler(
         "neighbors",
@@ -109,6 +117,22 @@ READ_VIEW_HANDLERS: dict[str, ReadViewHandler] = {
         default_format="text",
         accepted_options=CORRELATION_READ_VIEW_OPTION_NAMES,
         option_builder=build_correlation_options,
+    ),
+    "temporal": ReadViewHandler(
+        "temporal",
+        "optional",
+        run_read_temporal,
+        default_format="markdown",
+        accepts_query_set=True,
+    ),
+    "chronicle": ReadViewHandler(
+        "chronicle",
+        "optional",
+        run_read_chronicle,
+        default_format="markdown",
+        accepted_options=CHRONICLE_READ_VIEW_OPTION_NAMES,
+        option_builder=build_chronicle_options,
+        accepts_query_set=True,
     ),
 }
 
@@ -167,18 +191,18 @@ validate_read_view_handler_registry()
 __all__ = [
     "READ_VIEW_HANDLERS",
     "ReadViewContextOptions",
-    "ReadViewContextPackOptions",
+    "ReadViewContextImageOptions",
     "ReadViewCorrelationOptions",
+    "ReadViewChronicleOptions",
     "ReadViewHandler",
     "ReadViewInvocation",
     "ReadViewMessageOptions",
     "ReadViewNeighborOptions",
     "ReadViewOptions",
-    "ReadViewRecoveryOptions",
     "read_view_handler_ids",
     "read_view_option_names",
     "read_view_options_for_view",
-    "run_bulk_export_view",
+    "run_query_set_read_view",
     "run_read_view",
     "validate_read_view_handler_registry",
 ]

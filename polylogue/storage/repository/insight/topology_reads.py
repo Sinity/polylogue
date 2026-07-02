@@ -3,7 +3,8 @@
 Exposes the lineage graph derived in
 :mod:`polylogue.storage.insights.topology` through a single async entry
 point. Surface adapters (MCP ``get_session_tree``, future reader panes,
-context packs) compose this rather than re-walking parent pointers.
+context image/bundle projections) compose this rather than re-walking parent
+pointers.
 """
 
 from __future__ import annotations

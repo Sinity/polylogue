@@ -576,7 +576,7 @@ class PolylogueInsightsMixin:
     # Topology read API (#1261 / #866 slice D)
     #
     # Surface the derived ``SessionTopology`` graph as a typed Python API
-    # so MCP, future reader panes, and context packs consume one read
+    # so MCP, future reader panes, and context image/bundle projections consume one read
     # model instead of re-walking parent pointers. Each helper accepts a
     # short or full session ID and resolves it before delegating.
     # ------------------------------------------------------------------

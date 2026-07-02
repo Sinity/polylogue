@@ -260,6 +260,7 @@ def _message_to_domain(message: ArchiveMessageRow, *, provider: Provider) -> Mes
         has_tool_use=message.has_tool_use,
         has_thinking=message.has_thinking,
         has_paste=message.has_paste,
+        paste_boundary_state=message.paste_boundary_state,
         duration_ms=message.duration_ms,
         branch_index=message.variant_index,
         parent_id=message.parent_message_id,

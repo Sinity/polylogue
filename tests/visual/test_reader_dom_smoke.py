@@ -384,15 +384,11 @@ def test_reader_cost_panel_evidence(reader_workspace: ReaderWorkspace, tmp_path:
 
 
 def test_reader_evidence_panel_endpoint_and_shell_smoke(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
-    """Evidence tab uses shared recovery/assertion DTOs without raw leakage (#1846)."""
+    """Evidence tab uses shared context/assertion DTOs without raw leakage (#1846)."""
 
     with running_reader_server(reader_workspace) as (_, base_url):
         seed_reader_assertion_claims(reader_workspace)
         status, content_type, shell = get_text(base_url, f"/s/{READER_C1}")
-        recovery = cast(
-            dict[str, object],
-            get_json(base_url, f"/api/sessions/{READER_C1}/recovery?report=work-packet&format=json"),
-        )
         assertions = cast(
             dict[str, object],
             get_json(base_url, f"/api/assertions?target_ref=session%3A{READER_C1}&limit=10"),
@@ -401,9 +397,9 @@ def test_reader_evidence_panel_endpoint_and_shell_smoke(reader_workspace: Reader
             dict[str, object],
             get_json(base_url, f"/api/sessions/{READER_C1}/read?view=context"),
         )
-        context_pack = cast(
+        context_image = cast(
             dict[str, object],
-            get_json(base_url, f"/api/sessions/{READER_C1}/read?view=context-pack&max_tokens=500"),
+            get_json(base_url, f"/api/sessions/{READER_C1}/read?view=context-image&max_messages=5"),
         )
 
     assert status == 200
@@ -415,19 +411,13 @@ def test_reader_evidence_panel_endpoint_and_shell_smoke(reader_workspace: Reader
         "renderBrowserCaptureChip",
         "renderReadViewExecution",
         "renderContextReadView",
-        "renderContextPackReadView",
+        "renderContextImageReadView",
         "loadEvidencePanel",
         "/api/assertions?target_ref=",
-        "/recovery?report=work-packet&format=json",
+        "/read?view=context-image",
         "/read?view=",
     ):
         assert phrase in shell, f"missing evidence shell hook {phrase!r}"
-
-    assert recovery["report"] == "work-packet"
-    packet = cast(dict[str, object], recovery["work_packet"])
-    assert packet["session_id"] == READER_C1
-    assert packet["evidence_refs"]
-    assert "raw_artifacts" not in json.dumps(recovery)
 
     claim_items = cast(list[dict[str, object]], assertions["items"])
     assert [item["assertion_id"] for item in claim_items] == ["reader-evidence-decision"]
@@ -435,16 +425,14 @@ def test_reader_evidence_panel_endpoint_and_shell_smoke(reader_workspace: Reader
     assert context["view"] == "context"
     context_payload = cast(dict[str, object], context["payload"])
     assert context_payload["preamble_version"] == "1.0"
-    assert context_pack["view"] == "context-pack"
-    context_pack_payload = cast(dict[str, object], context_pack["payload"])
-    context_spec = cast(dict[str, object], context_pack_payload["spec"])
-    assert context_spec["seed_refs"] == [f"session:{READER_C1}"]
-    assert context_spec["read_views"] == ["messages"]
-    assert context_pack_payload["redaction_policy"] == "default"
-    context_segments = cast(list[dict[str, object]], context_pack_payload["segments"])
-    assert context_segments[0]["payload_kind"] == "messages"
-    assert context_segments[0]["object_refs"]
-    assert cast(int, context_pack_payload["token_estimate"]) > 0
+    assert context_image["view"] == "context-image"
+    context_image_payload = cast(dict[str, object], context_image["payload"])
+    context_segments = cast(list[dict[str, object]], context_image_payload["segments"])
+    assert context_segments
+    context_object_refs = cast(list[dict[str, object]], context_image_payload["object_refs"])
+    assert context_object_refs[0]["kind"] == "session"
+    assert context_object_refs[0]["object_id"] == READER_C1
+    assert context_image_payload["redaction_policy"] == "default"
 
     write_evidence_manifest(
         tmp_path / "reader-evidence-panel-dom-evidence.json",
@@ -453,11 +441,9 @@ def test_reader_evidence_panel_endpoint_and_shell_smoke(reader_workspace: Reader
         fixture_id="reader-visual-synthetic-v1",
         checks={
             "shell_status": status,
-            "recovery_report": recovery["report"],
-            "work_packet_evidence_refs": len(cast(list[object], packet["evidence_refs"])),
             "assertion_count": assertions["total"],
-            "context_pack_segments": len(context_segments),
-            "raw_artifacts_absent_from_recovery": True,
+            "context_image_segments": len(context_segments),
+            "raw_artifacts_absent_from_context": "raw_artifacts" not in json.dumps(context_image),
             "private_path_safe": True,
         },
     )
@@ -545,15 +531,11 @@ def test_reader_operator_flow_evidence(reader_workspace: ReaderWorkspace, tmp_pa
         shell_status, content_type, shell = get_text(base_url, f"/s/{READER_C1}")
         search = cast(dict[str, object], get_json(base_url, "/api/sessions?query=Hello&limit=5"))
         messages = cast(dict[str, object], get_json(base_url, f"/api/sessions/{READER_C1}/read?view=messages"))
-        recovery = cast(
-            dict[str, object],
-            get_json(base_url, f"/api/sessions/{READER_C1}/read?view=recovery&format=json"),
-        )
         context = cast(dict[str, object], get_json(base_url, f"/api/sessions/{READER_C1}/read?view=context"))
         raw_view = cast(dict[str, object], get_json(base_url, f"/api/sessions/{READER_C1}/read?view=raw"))
-        work_packet = cast(
+        context_image = cast(
             dict[str, object],
-            get_json(base_url, f"/api/sessions/{READER_C1}/recovery?report=work-packet&format=json"),
+            get_json(base_url, f"/api/sessions/{READER_C1}/read?view=context-image&include_messages=0"),
         )
         assertions = cast(
             dict[str, object],
@@ -594,10 +576,9 @@ def test_reader_operator_flow_evidence(reader_workspace: ReaderWorkspace, tmp_pa
 
     assert search["total"] == 1
     assert messages["view"] == "messages"
-    assert recovery["view"] == "recovery"
     assert context["view"] == "context"
+    assert context_image["view"] == "context-image"
     assert raw_view["view"] == "raw"
-    assert work_packet["report"] == "work-packet"
     assert isinstance(assertions["total"], int)
     assert assertions["total"] >= 0
     assert mark_status in {200, 201}
@@ -621,8 +602,10 @@ def test_reader_operator_flow_evidence(reader_workspace: ReaderWorkspace, tmp_pa
         checks={
             "shell_status": shell_status,
             "search_total": search["total"],
-            "read_views": [messages["view"], recovery["view"], context["view"], raw_view["view"]],
-            "work_packet_report": work_packet["report"],
+            "read_views": [messages["view"], context_image["view"], context["view"], raw_view["view"]],
+            "context_image_segments": len(
+                cast(list[object], cast(dict[str, object], context_image["payload"])["segments"])
+            ),
             "mark_status": mark_status,
             "annotation_status": annotation_status,
             "annotation_target": annotation_payload["target_id"],
@@ -727,7 +710,7 @@ def test_reader_empty_and_degraded_evidence(reader_workspace: ReaderWorkspace, t
     assert "data-route-state-name" in empty_shell
     assert empty_facets["total_sessions"] == 0
     assert set(cast(list[str], empty_facets["complete_families"])) >= {"total_counts", "origins", "tags"}
-    assert empty_facets["deferred_families"] == {"repos": "deferred_by_default", "action_types": "deferred_by_default"}
+    assert empty_facets["deferred_families"] == {}
     assert degraded_status == 200
     degraded_payload = json.loads(degraded_body)
     assert degraded_payload["total"] is None

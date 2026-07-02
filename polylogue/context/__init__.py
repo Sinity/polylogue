@@ -8,9 +8,7 @@ __all__ = [
     "ContextSegment",
     "ContextSnapshotRecord",
     "ContextSpec",
-    "compile_recovery_context",
     "compose_context_preamble",
-    "context_image_from_recovery",
     "context_snapshot_record_from_image",
 ]
 
@@ -20,14 +18,6 @@ def __getattr__(name: str) -> object:
         from polylogue.context import compiler as compiler_module
 
         return getattr(compiler_module, name)
-    if name == "compile_recovery_context":
-        from polylogue.context.compiler import compile_recovery_context
-
-        return compile_recovery_context
-    if name == "context_image_from_recovery":
-        from polylogue.context.compiler import context_image_from_recovery
-
-        return context_image_from_recovery
     if name == "context_snapshot_record_from_image":
         from polylogue.context.compiler import context_snapshot_record_from_image
 

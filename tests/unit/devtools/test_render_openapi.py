@@ -13,18 +13,14 @@ def test_openapi_publishes_stable_evidence_routes() -> None:
     paths = document["paths"]
     schemas = document["components"]["schemas"]
 
-    recovery = paths["/api/sessions/{session_id}/recovery"]["get"]
     assertions = paths["/api/assertions"]["get"]
 
-    assert recovery["operationId"] == "readSessionRecovery"
-    assert recovery["responses"]["200"]["content"]["application/json"]["schema"] == {
-        "$ref": "#/components/schemas/RecoveryReadPayload"
-    }
     assert assertions["operationId"] == "listAssertionClaims"
     assert assertions["responses"]["200"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/AssertionClaimListPayload"
     }
-    assert "RecoveryReadPayload" in schemas
+    assert "/api/sessions/{session_id}/recovery" not in paths
+    assert "RecoveryReadPayload" not in schemas
     assert "AssertionClaimListPayload" in schemas
 
 
@@ -34,14 +30,11 @@ def test_openapi_publishes_route_contract_extension() -> None:
 
     contract_by_pattern = {(contract["method"], contract["pattern"]): contract for contract in contracts}
     query_units = contract_by_pattern[("GET", "/api/query-units")]
-    recovery = contract_by_pattern[("GET", "/api/sessions/:id/recovery")]
 
     assert query_units["kind"] == "read_query"
     assert query_units["stability"] == "stable"
     assert query_units["response_contract"] == "QueryUnitResultEnvelope"
-    assert recovery["kind"] == "read_detail"
-    assert recovery["auth_policy"] == "bearer_if_configured"
-    assert recovery["response_contract"] == "RecoveryReadPayload"
+    assert ("GET", "/api/sessions/:id/recovery") not in contract_by_pattern
 
 
 def test_openapi_read_view_route_uses_shared_http_capability_contract() -> None:
@@ -52,6 +45,6 @@ def test_openapi_read_view_route_uses_shared_http_capability_contract() -> None:
     assert parameters["view"]["schema"]["enum"] == list(read_view_http_choices())
     assert parameters["format"]["schema"]["enum"] == list(read_view_http_format_choices())
     assert set(read_view_http_query_params()).issubset(parameters)
-    assert "context-pack" in read_route["description"]
+    assert "context-image" in read_route["description"]
     assert "max_tokens" in parameters
-    assert parameters["message_role"]["schema"]["type"] == "string"
+    assert "message_role" not in parameters

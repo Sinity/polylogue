@@ -14,7 +14,7 @@ metric models (:mod:`polylogue.insights.postmortem`), the pathology detectors
 fail-closed sanitizer by its owning API method.
 
 The aggregator :func:`compile_portfolio_bundle` is pure: it consumes
-already-fetched profiles and recovery digests and performs no I/O.
+already-fetched profiles and session digests and performs no I/O.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ from polylogue.insights.postmortem import (
 
 if TYPE_CHECKING:
     from polylogue.archive.session.models import SessionProfile
-    from polylogue.insights.transforms import RecoveryDigest
+    from polylogue.insights.transforms import SessionDigest
 
 PORTFOLIO_SCHEMA_VERSION = 1
 
@@ -144,7 +144,7 @@ def _finding_sort_key(finding: PathologyFinding) -> tuple[int, int, str, str]:
 
 def compile_portfolio_bundle(
     profiles: Sequence[SessionProfile],
-    digests: Mapping[str, RecoveryDigest],
+    digests: Mapping[str, SessionDigest],
     *,
     scope: PostmortemScope,
     top_n: int = _DEFAULT_TOP_N,
@@ -152,7 +152,7 @@ def compile_portfolio_bundle(
     """Pure aggregator: build a :class:`PortfolioBundle` from fetched data.
 
     No I/O. ``profiles`` are the hydrated session profiles in scope; ``digests``
-    maps ``session_id`` to its recovery digest (a subset is fine). Reuses the
+    maps ``session_id`` to its session digest (a subset is fine). Reuses the
     postmortem aggregation idioms for session_count / cost / wallclock /
     repos_touched and adds per-session distributions plus the pathology
     distribution (#2383).
@@ -269,11 +269,11 @@ def compile_portfolio_bundle(
     if not projections:
         pathologies = PathologyField(
             status="unavailable",
-            detail="no run projection available in scope; pathology detection needs recovery-digest evidence",
+            detail="no run projection available in scope; pathology detection needs session-digest evidence",
         )
         context_loss = PathologyField(
             status="unavailable",
-            detail="no run projection available in scope; context-loss detection needs recovery-digest evidence",
+            detail="no run projection available in scope; context-loss detection needs session-digest evidence",
         )
         top_pathologies: tuple[PathologyFinding, ...] = ()
     else:

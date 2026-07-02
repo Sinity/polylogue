@@ -217,18 +217,3 @@ async def delete_sessions(
                 deleted_count += 1
 
     click.echo(f"Deleted {deleted_count} session(s)")
-
-
-def apply_transform(results: list[Session], transform: str) -> list[Session]:
-    """Apply a transform to filter messages from sessions."""
-    transformed = []
-    for conv in results:
-        proj = conv.project()
-        if transform == "strip-tools":
-            proj = proj.strip_tools()
-        elif transform == "strip-thinking":
-            proj = proj.strip_thinking()
-        elif transform == "strip-all":
-            proj = proj.strip_all()
-        transformed.append(proj.execute())
-    return transformed

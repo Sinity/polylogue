@@ -543,7 +543,7 @@ class SessionMessagePayload(SurfacePayloadModel):
     # #1487 envelope: per-message content flags. Surface what the storage
     # layer already projects (#1201/#1583) so the reader does not have
     # to re-derive them from the rendered text.
-    has_paste: bool = False
+    has_paste_evidence: bool = False
     has_tool_use: bool = False
     has_thinking: bool = False
     # #1487 envelope: usage/cost metadata. Carries through from parsers
@@ -568,8 +568,8 @@ class SessionMessagePayload(SurfacePayloadModel):
     raw_id: str | None = None
     source_path: str | None = None
     # #1655: paste boundary state — exact, projected, whole_message_fallback,
-    # hash_only, or None when the message has no paste evidence. Populated
-    # from the stored ``messages.paste_boundary_state`` column.
+    # hash_only, or None when the message has no paste evidence. Projected
+    # from the stored ``messages.paste_boundary`` column.
     paste_boundary_state: str | None = None
 
     @classmethod
@@ -615,7 +615,8 @@ class SessionMessagePayload(SurfacePayloadModel):
             content_blocks=message.blocks,
             parent_id=message.parent_id,
             branch_index=int(getattr(message, "branch_index", 0) or 0),
-            has_paste=bool(getattr(message, "has_paste", False)),
+            has_paste_evidence=bool(getattr(message, "has_paste", False)),
+            paste_boundary_state=getattr(message, "paste_boundary_state", None),
             has_tool_use=bool(getattr(message, "has_tool_use", False)),
             has_thinking=bool(getattr(message, "has_thinking", False)),
             input_tokens=int(getattr(message, "input_tokens", 0) or 0),
@@ -674,7 +675,8 @@ class SessionMessagePayload(SurfacePayloadModel):
             content_blocks=content_blocks,
             parent_id=getattr(message, "parent_message_id", None),
             branch_index=int(getattr(message, "variant_index", 0) or 0),
-            has_paste=bool(getattr(message, "has_paste", False)),
+            has_paste_evidence=bool(getattr(message, "has_paste", False)),
+            paste_boundary_state=getattr(message, "paste_boundary_state", None),
             has_tool_use=bool(getattr(message, "has_tool_use", False)),
             has_thinking=bool(getattr(message, "has_thinking", False)),
             attachment_refs=attachment_refs,
@@ -780,7 +782,7 @@ class SessionFlagsPayload(SurfacePayloadModel):
 
     has_tool_use: bool = False
     has_thinking: bool = False
-    has_paste: bool = False
+    has_paste_evidence: bool = False
 
 
 class SessionListRowPayload(SurfacePayloadModel):
@@ -1201,6 +1203,7 @@ class MessageQueryRowPayload(SurfacePayloadModel):
     role: str
     message_type: str
     material_origin: str = "unknown"
+    occurred_at_ms: int | None = None
     position: int
     word_count: int
     text: str
@@ -1215,6 +1218,7 @@ class MessageQueryRowPayload(SurfacePayloadModel):
             role=row.role,
             message_type=row.message_type,
             material_origin=row.material_origin,
+            occurred_at_ms=row.occurred_at_ms,
             position=row.position,
             word_count=row.word_count,
             text=row.text,
@@ -1235,6 +1239,7 @@ class ActionQueryRowPayload(SurfacePayloadModel):
     semantic_type: str | None = None
     tool_command: str | None = None
     tool_path: str | None = None
+    occurred_at_ms: int | None = None
     output_text: str | None = None
 
     @classmethod
@@ -1250,6 +1255,7 @@ class ActionQueryRowPayload(SurfacePayloadModel):
             semantic_type=row.semantic_type,
             tool_command=row.tool_command,
             tool_path=row.tool_path,
+            occurred_at_ms=row.occurred_at_ms,
             output_text=row.output_text,
         )
 
@@ -1643,43 +1649,6 @@ def _candidate_review_disabled_reasons(
         "defer": reason,
         "supersede": reason,
     }
-
-
-RecoveryReportKind: TypeAlias = Literal["digest", "work-packet"]
-RecoveryReportFormat: TypeAlias = Literal["json", "markdown"]
-
-
-class RecoveryReadPayload(SurfacePayloadModel):
-    """Shared recovery/read envelope for daemon web and future API/MCP parity."""
-
-    session_id: str
-    report: RecoveryReportKind
-    format: RecoveryReportFormat
-    digest: dict[str, object] | None = None
-    work_packet: dict[str, object] | None = None
-    markdown: str | None = None
-
-    @classmethod
-    def from_digest(cls, digest: BaseModel) -> RecoveryReadPayload:
-        return cls(
-            session_id=str(digest.model_dump(mode="python")["session_id"]),
-            report="digest",
-            format="json",
-            digest=cast(dict[str, object], model_json_document(digest, exclude_none=True)),
-        )
-
-    @classmethod
-    def from_work_packet_json(cls, packet: BaseModel) -> RecoveryReadPayload:
-        return cls(
-            session_id=str(packet.model_dump(mode="python")["session_id"]),
-            report="work-packet",
-            format="json",
-            work_packet=cast(dict[str, object], model_json_document(packet, exclude_none=True)),
-        )
-
-    @classmethod
-    def from_work_packet_markdown(cls, *, session_id: object, markdown: str) -> RecoveryReadPayload:
-        return cls(session_id=str(session_id), report="work-packet", format="markdown", markdown=markdown)
 
 
 class RefResolutionActionPayload(SurfacePayloadModel):
@@ -2724,10 +2693,14 @@ def _session_cwd(session: object) -> str | None:
 def _build_flags_from_session(session: object) -> SessionFlagsPayload | None:
     has_tool = bool(getattr(session, "has_tool_use", None))
     has_thinking = bool(getattr(session, "has_thinking", None))
-    has_paste = bool(getattr(session, "has_paste", None))
-    if not has_tool and not has_thinking and not has_paste:
+    has_paste_evidence = bool(getattr(session, "has_paste", None))
+    if not has_tool and not has_thinking and not has_paste_evidence:
         return None
-    return SessionFlagsPayload(has_tool_use=has_tool, has_thinking=has_thinking, has_paste=has_paste)
+    return SessionFlagsPayload(
+        has_tool_use=has_tool,
+        has_thinking=has_thinking,
+        has_paste_evidence=has_paste_evidence,
+    )
 
 
 METADATA_KEY_MAX_LENGTH = 200
@@ -2835,9 +2808,6 @@ __all__ = [
     "OtelLogRecordPayload",
     "OtelProjectionPayload",
     "OtelSpanPayload",
-    "RecoveryReadPayload",
-    "RecoveryReportFormat",
-    "RecoveryReportKind",
     "RefResolutionActionPayload",
     "RANKING_POLICY_MIXED",
     "RANKING_POLICY_VERSION",

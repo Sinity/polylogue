@@ -84,6 +84,14 @@ def active_archive_root(config: Config) -> Path | None:
     return archive_file_set_root_for_paths(archive_root_path=archive_root, db_anchor=db_anchor)
 
 
+def mcp_archive_root(config: Config) -> Path:
+    """Return the usable archive root for MCP read surfaces."""
+    active_root = active_archive_root(config)
+    if active_root is not None and (active_root / "index.db").exists():
+        return active_root
+    return config.archive_root
+
+
 def archive_index_active_paths(
     *,
     archive_root: Path,
@@ -213,7 +221,7 @@ def _project_archive_message(
             continue
         if block.block_type == "tool_result":
             semantic_type = tool_semantics.get(block.tool_id or "", block.semantic_type or "")
-            if semantic_type == "file_read" and not (projection.include_file_reads and projection.include_tool_outputs):
+            if semantic_type == "file_read" and not projection.include_file_reads:
                 continue
             if semantic_type != "file_read" and not projection.include_tool_outputs:
                 continue

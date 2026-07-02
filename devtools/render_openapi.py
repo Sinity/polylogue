@@ -43,7 +43,6 @@ from polylogue.surfaces.payloads import (
     AssertionClaimListPayload,
     QueryUnitAggregateEnvelope,
     QueryUnitEnvelope,
-    RecoveryReadPayload,
     SearchEnvelope,
     SessionListRowPayload,
     SessionReadViewEnvelope,
@@ -60,7 +59,6 @@ _PUBLISHED_MODELS: tuple[type[BaseModel], ...] = (
     QueryUnitEnvelope,
     QueryUnitAggregateEnvelope,
     SessionReadViewEnvelope,
-    RecoveryReadPayload,
     AssertionClaimListPayload,
     SessionSearchHitPayload,
     SessionListRowPayload,
@@ -103,7 +101,7 @@ def _read_view_parameter(name: str) -> dict[str, Any]:
             "schema": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.3},
         },
         "include_messages": {
-            "description": "Include message excerpts in context-pack payloads.",
+            "description": "Include message excerpts in context-image payloads.",
             "schema": {"type": "boolean", "default": True},
         },
         "limit": {
@@ -131,32 +129,20 @@ def _read_view_parameter(name: str) -> dict[str, Any]:
             "schema": {"type": "boolean", "default": False},
         },
         "no_redact": {
-            "description": "Return unredacted context-pack path/provenance details where available.",
+            "description": "Return unredacted context-image path/provenance details where available.",
             "schema": {"type": "boolean", "default": False},
         },
         "no_tool_calls": {
             "description": "Exclude tool-call material from the messages projection.",
             "schema": {"type": "boolean", "default": False},
         },
-        "no_tool_outputs": {
-            "description": "Exclude tool-output material from the messages projection.",
-            "schema": {"type": "boolean", "default": False},
-        },
         "offset": {
             "description": "Message offset for the messages view.",
             "schema": {"type": "integer", "minimum": 0},
         },
-        "prose_only": {
-            "description": "Show only prose text in the messages projection.",
-            "schema": {"type": "boolean", "default": False},
-        },
         "related_limit": {
             "description": "Number of related sessions to include in the context view.",
             "schema": {"type": "integer", "minimum": 1, "default": 5},
-        },
-        "report": {
-            "description": "Recovery report kind for the recovery view.",
-            "schema": {"type": "string", "enum": ["digest", "work-packet"], "default": "work-packet"},
         },
         "repo_path": {
             "description": "Repository path for correlation evidence.",
@@ -508,7 +494,7 @@ def _build_openapi_document() -> dict[str, Any]:
                             "schema": {"type": "boolean", "default": False},
                         },
                         {
-                            "name": "has_paste",
+                            "name": "has_paste_evidence",
                             "in": "query",
                             "description": "Restrict terminal rows to sessions with paste evidence.",
                             "required": False,
@@ -598,52 +584,6 @@ def _build_openapi_document() -> dict[str, Any]:
                             },
                         },
                         "400": {"description": "Unsupported view or format."},
-                        "404": {"description": "Session not found."},
-                    },
-                }
-            },
-            "/api/sessions/{session_id}/recovery": {
-                "get": {
-                    "summary": "Read recovery digest or work-packet evidence",
-                    "description": (
-                        "Returns the stable ``RecoveryReadPayload`` for one session. "
-                        "The route exposes storage-free recovery digest and work-packet "
-                        "DTOs shared with the web workbench and Python API. ``continue`` "
-                        "and ``blame`` are not accepted here; use the read-view route or "
-                        "CLI/MCP report surfaces when those workflows are needed."
-                    ),
-                    "operationId": "readSessionRecovery",
-                    "parameters": [
-                        {
-                            "name": "session_id",
-                            "in": "path",
-                            "description": "Resolved Polylogue session id.",
-                            "required": True,
-                            "schema": {"type": "string"},
-                        },
-                        {
-                            "name": "report",
-                            "in": "query",
-                            "description": "Recovery report kind.",
-                            "required": False,
-                            "schema": {"type": "string", "enum": ["digest", "work-packet"], "default": "work-packet"},
-                        },
-                        {
-                            "name": "format",
-                            "in": "query",
-                            "description": "Response format. Digest is JSON-only; work-packet also supports markdown.",
-                            "required": False,
-                            "schema": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
-                        },
-                    ],
-                    "responses": {
-                        "200": {
-                            "description": "Recovery digest/work-packet envelope.",
-                            "content": {
-                                "application/json": {"schema": {"$ref": "#/components/schemas/RecoveryReadPayload"}}
-                            },
-                        },
-                        "400": {"description": "Unsupported report or format."},
                         "404": {"description": "Session not found."},
                     },
                 }
