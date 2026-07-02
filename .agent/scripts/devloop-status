@@ -122,7 +122,7 @@ if [ "$format" = "--json" ]; then
   index_count_mode="exact"
   source_version=""
   raw_rows=""
-  raw_materialization_debt=""
+  raw_materialization_join_gaps=""
   raw_materialization_replayable=""
   ops_status_json=""
   raw_debt_json=""
@@ -141,7 +141,7 @@ if [ "$format" = "--json" ]; then
     raw_rows="$(sqlite3 "$archive_root/source.db" 'SELECT COUNT(*) FROM raw_sessions;' 2>/dev/null || true)"
   fi
   if [ -f "$archive_root/source.db" ] && [ -f "$archive_root/index.db" ]; then
-    raw_materialization_debt="$(
+    raw_materialization_join_gaps="$(
       sqlite3 "$archive_root/source.db" "
         ATTACH '$archive_root/index.db' AS idx;
         SELECT COUNT(*)
@@ -185,12 +185,12 @@ if [ "$format" = "--json" ]; then
   else
     worktree_gc_json='{}'
   fi
-  python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$observed_events" "$index_count_mode" "$source_version" "$raw_rows" "$raw_materialization_debt" "$raw_materialization_replayable" "$ops_status_json" "$raw_debt_json" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$polylogued_devloop_rows" "$polylogued_non_devloop_rows" "$worktree_gc_json" "$pressure_rows" "$performance_blocked" "$packet_bytes" "$packet_files" "$packet_dirs" "$operating_log_bytes" "$events_bytes" "$quick_reason" "$archive_writer_rows" <<'PY'
+  python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$observed_events" "$index_count_mode" "$source_version" "$raw_rows" "$raw_materialization_join_gaps" "$raw_materialization_replayable" "$ops_status_json" "$raw_debt_json" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$polylogued_devloop_rows" "$polylogued_non_devloop_rows" "$worktree_gc_json" "$pressure_rows" "$performance_blocked" "$packet_bytes" "$packet_files" "$packet_dirs" "$operating_log_bytes" "$events_bytes" "$quick_reason" "$archive_writer_rows" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-repo, current, archive_root, git_branch, git_head, git_tracked_changes, git_untracked_changes, index_version, sessions, messages, observed_events, index_count_mode, source_version, raw_rows, raw_materialization_debt, raw_materialization_replayable, ops_status_json, raw_debt_json, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows, polylogued_devloop_rows, polylogued_non_devloop_rows, worktree_gc_json, pressure_rows, performance_blocked, packet_bytes, packet_files, packet_dirs, operating_log_bytes, events_bytes, quick_reason, archive_writer_rows = sys.argv[1:]
+repo, current, archive_root, git_branch, git_head, git_tracked_changes, git_untracked_changes, index_version, sessions, messages, observed_events, index_count_mode, source_version, raw_rows, raw_materialization_join_gap_count, raw_materialization_replayable, ops_status_json, raw_debt_json, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows, polylogued_devloop_rows, polylogued_non_devloop_rows, worktree_gc_json, pressure_rows, performance_blocked, packet_bytes, packet_files, packet_dirs, operating_log_bytes, events_bytes, quick_reason, archive_writer_rows = sys.argv[1:]
 
 def int_or_none(value: str):
     try:
@@ -230,8 +230,8 @@ except json.JSONDecodeError:
     ops_status = {}
 raw_readiness = ops_status.get("raw_materialization_readiness") or {}
 raw_component = (ops_status.get("component_readiness") or {}).get("raw_materialization") or {}
-raw_materialization_join_gaps = int_or_none(raw_materialization_debt)
-raw_materialization_debt_count = raw_materialization_join_gaps
+raw_materialization_join_gaps = int_or_none(raw_materialization_join_gap_count)
+raw_materialization_debt_count = None
 try:
     raw_debt = json.loads(raw_debt_json) if raw_debt_json else {}
 except json.JSONDecodeError:
@@ -469,7 +469,7 @@ if [ -f "$archive_root/source.db" ]; then
 fi
 
 if [ -f "$archive_root/source.db" ] && [ -f "$archive_root/index.db" ]; then
-  raw_materialization_debt="$(
+  raw_materialization_join_gaps="$(
     sqlite3 "$archive_root/source.db" "
       ATTACH '$archive_root/index.db' AS idx;
       SELECT COUNT(*)
@@ -497,7 +497,7 @@ if [ -f "$archive_root/source.db" ] && [ -f "$archive_root/index.db" ]; then
     " 2>/dev/null || true
   )"
   printf 'convergence: raw_materialization_join_gaps=%s replayable_acquired_unparsed=%s\n' \
-    "${raw_materialization_debt:-?}" "${raw_materialization_replayable:-?}"
+    "${raw_materialization_join_gaps:-?}" "${raw_materialization_replayable:-?}"
   raw_debt_json=""
   if [ "$quick" = false ]; then
     raw_debt_json="$(raw_materialization_debt_payload)"

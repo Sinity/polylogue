@@ -657,18 +657,40 @@ def _raw_materialization_debt_row(
         )
     elif category == "parsed-without-session":
         severity = "warning"
-        status = "open"
+        status = "actionable"
         stage = "parse"
+        sample_raw_id = str(sample_rows[0]["raw_id"]) if sample_rows else ""
         summary = f"{count} {origin} raw artifact(s) parsed but have no materialized session"
         details = (
             f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size_text}. "
-            "These rows already passed parsing, so blind replay is not the primary repair. They need an auditable "
-            "skip reason or parser/materialization classification."
+            "Replay these raw rows through the raw-materialization target. If the current parser still emits no "
+            "session, the row needs an explicit non-session classification or parser/source-shape repair."
         )
-        actions = ()
+        actions = (
+            ArchiveDebtActionPayload(
+                label="Explain parser output",
+                command=("polylogue", "import", "--explain"),
+                description="Pass one of the sampled source paths and compare parser output with index materialization.",
+            ),
+            ArchiveDebtActionPayload(
+                label="Preview targeted raw replay",
+                command=(
+                    "polylogue",
+                    "ops",
+                    "maintenance",
+                    "run",
+                    "--target",
+                    "raw_materialization",
+                    "--raw-artifact",
+                    sample_raw_id,
+                    "--dry-run",
+                ),
+                description="Preview reparsing one sampled raw artifact before a broader raw-materialization repair.",
+            ),
+        )
     elif category == "parsed-session-unmaterialized":
         severity = "warning"
-        status = "open"
+        status = "actionable"
         stage = "parse"
         sample_raw_id = str(sample_rows[0]["raw_id"]) if sample_rows else ""
         sample_session_ids = _sample_parsed_session_native_ids(archive_root, sample_rows)
@@ -683,7 +705,8 @@ def _raw_materialization_debt_row(
         details = (
             f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size_text}. "
             f"Sample source shapes: {shape_text}.{sample_session_text} "
-            "These rows need parser/materialization classification, not blind replay."
+            "Replay these rows through the raw-materialization target so parsed sessions are written into the "
+            "current index tier."
         )
         actions = (
             ArchiveDebtActionPayload(
@@ -705,8 +728,8 @@ def _raw_materialization_debt_row(
                     "--dry-run",
                 ),
                 description=(
-                    "Preview reparsing one sampled session-shaped raw artifact. Broad raw-materialization repair stays "
-                    "limited to acquired-but-unparsed rows."
+                    "Preview reparsing one sampled session-shaped raw artifact before a broader "
+                    "raw-materialization repair."
                 ),
             ),
         )

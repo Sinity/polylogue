@@ -439,9 +439,9 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
     assert payload.totals.affected_critical == 1
     assert payload.totals.affected_warning == 4
     assert payload.totals.affected_info == 4
-    assert payload.totals.affected_actionable == 2
+    assert payload.totals.affected_actionable == 5
     assert payload.totals.classified == 2
-    assert payload.totals.affected_open == 3
+    assert payload.totals.affected_open == 0
     assert payload.totals.affected_classified == 4
 
     by_ref = {row.debt_ref: row for row in payload.rows}
@@ -475,18 +475,27 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
 
     parsed_gap = by_ref["debt:raw-materialization:aistudio-drive:parsed-without-session"]
     assert parsed_gap.severity == "warning"
-    assert parsed_gap.status == "open"
+    assert parsed_gap.status == "actionable"
     assert parsed_gap.category == "parsed-without-session"
     assert parsed_gap.affected_count == 1
     assert "parsed but have no materialized session" in parsed_gap.summary
-    assert "blind replay is not the primary repair" in (parsed_gap.details or "")
+    assert "Replay these raw rows through the raw-materialization target" in (parsed_gap.details or "")
     assert "passed=1" in (parsed_gap.details or "")
     assert "max raw payload size: 4.0 KiB (4,096 bytes)" in (parsed_gap.details or "")
-    assert parsed_gap.actions == ()
+    assert parsed_gap.actions[0].label == "Explain parser output"
+    assert parsed_gap.actions[1].label == "Preview targeted raw replay"
+    assert parsed_gap.actions[1].command[:6] == (
+        "polylogue",
+        "ops",
+        "maintenance",
+        "run",
+        "--target",
+        "raw_materialization",
+    )
 
     session_shaped = by_ref["debt:raw-materialization:codex-session:parsed-session-unmaterialized"]
     assert session_shaped.severity == "warning"
-    assert session_shaped.status == "open"
+    assert session_shaped.status == "actionable"
     assert session_shaped.category == "parsed-session-unmaterialized"
     assert session_shaped.affected_count == 1
     assert "Codex session event stream" in (session_shaped.details or "")
@@ -506,7 +515,7 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
 
     gemini_session = by_ref["debt:raw-materialization:gemini-cli-session:parsed-session-unmaterialized"]
     assert gemini_session.severity == "warning"
-    assert gemini_session.status == "open"
+    assert gemini_session.status == "actionable"
     assert gemini_session.category == "parsed-session-unmaterialized"
     assert "Gemini CLI chat session" in (gemini_session.details or "")
     assert "Sample parsed session native id(s): gemini-session-shaped" in (gemini_session.details or "")
