@@ -737,6 +737,108 @@ def test_async_execute_query_archive_outputs_stats(
     assert payload["origins"] == {"codex-session": 1}
 
 
+def test_async_execute_query_archive_count_uses_query_match_scope(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def count_search_sessions(self, query: str, **kwargs: object) -> int:
+            assert query == "needle"
+            assert kwargs["origin"] == "codex-session"
+            assert kwargs["tags"] == ("archive",)
+            return 2
+
+        def count_sessions(self, **_kwargs: object) -> int:
+            raise AssertionError("queried analyze --count must not count the unsearched archive")
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "query": ("needle",),
+                "count_only": True,
+                "origin": "codex-session",
+                "tag": "archive",
+                "output_format": "json",
+            },
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {"mode": "count", "origin": "codex-session", "count": 2}
+
+
+def test_async_execute_query_archive_search_stats_are_not_page_capped_by_default(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def search_session_ids(self, query: str, **kwargs: object) -> tuple[str, ...]:
+            assert query == "needle"
+            assert kwargs["limit"] is None
+            return ("codex-session:native-1", "codex-session:native-2")
+
+        def stats(self, **kwargs: object) -> ArchiveStats:
+            assert kwargs["session_ids"] == ("codex-session:native-1", "codex-session:native-2")
+            return ArchiveStats(total_sessions=2, total_messages=5)
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "query": ("needle",),
+                "stats_only": True,
+                "output_format": "json",
+            },
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mode"] == "stats"
+    assert payload["total_sessions"] == 2
+    assert payload["total_messages"] == 5
+
+
 def test_async_execute_query_archive_outputs_grouped_search_stats(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -756,21 +858,13 @@ def test_async_execute_query_archive_outputs_grouped_search_stats(
         def __exit__(self, *args: object) -> None:
             return None
 
-        def search_summaries(self, query: str, **kwargs: object) -> list[ArchiveSessionSearchHit]:
+        def search_session_ids(self, query: str, **kwargs: object) -> tuple[str, ...]:
             assert query == "needle"
             assert kwargs["limit"] == 10
-            return [
-                ArchiveSessionSearchHit(
-                    rank=1,
-                    session_id="codex-session:native-1",
-                    block_id="codex-session:native-1:m1:0",
-                    message_id="codex-session:native-1:m1",
-                    origin="codex-session",
-                    provider=Provider.CODEX,
-                    title="Copied",
-                    snippet="[needle]",
-                )
-            ]
+            return ("codex-session:native-1",)
+
+        def search_summaries(self, *_args: object, **_kwargs: object) -> list[ArchiveSessionSearchHit]:
+            raise AssertionError("stats grouping must not consume paged search hits")
 
         def stats_by(self, group_by: str, **kwargs: object) -> dict[str, int]:
             assert group_by == "tool"

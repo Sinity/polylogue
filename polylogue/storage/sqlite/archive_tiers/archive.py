@@ -4261,6 +4261,109 @@ class ArchiveStore:
         ).fetchone()
         return int(row[0] if row is not None else 0)
 
+    def search_session_ids(
+        self,
+        query: str,
+        *,
+        limit: int | None = None,
+        origin: str | None = None,
+        origins: tuple[str, ...] = (),
+        excluded_origins: tuple[str, ...] = (),
+        tags: tuple[str, ...] = (),
+        excluded_tags: tuple[str, ...] = (),
+        repo_names: tuple[str, ...] = (),
+        project_refs: tuple[str, ...] = (),
+        has_types: tuple[str, ...] = (),
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        has_paste: bool = False,
+        tool_terms: tuple[str, ...] = (),
+        excluded_tool_terms: tuple[str, ...] = (),
+        action_terms: tuple[str, ...] = (),
+        excluded_action_terms: tuple[str, ...] = (),
+        action_sequence: tuple[str, ...] = (),
+        action_text_terms: tuple[str, ...] = (),
+        referenced_paths: tuple[str, ...] = (),
+        cwd_prefix: str | None = None,
+        typed_only: bool = False,
+        message_type: str | None = None,
+        title: str | None = None,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
+        max_words: int | None = None,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+        since_session_id: str | None = None,
+        boolean_predicate: QueryPredicate | None = None,
+    ) -> tuple[str, ...]:
+        """Return distinct sessions matching the archive block FTS search."""
+        match_query = normalize_fts5_query(query)
+        if match_query is None:
+            return ()
+        _ensure_messages_fts_ready(self._conn)
+        where, filter_params = _session_filter_clause(
+            "s",
+            origin=origin,
+            origins=origins,
+            excluded_origins=excluded_origins,
+            tags=tags,
+            excluded_tags=excluded_tags,
+            repo_names=repo_names,
+            project_refs=project_refs,
+            has_types=has_types,
+            has_tool_use=has_tool_use,
+            has_thinking=has_thinking,
+            has_paste=has_paste,
+            tool_terms=tool_terms,
+            excluded_tool_terms=excluded_tool_terms,
+            action_terms=action_terms,
+            excluded_action_terms=excluded_action_terms,
+            action_sequence=action_sequence,
+            action_text_terms=action_text_terms,
+            referenced_paths=referenced_paths,
+            cwd_prefix=cwd_prefix,
+            typed_only=typed_only,
+            message_type=message_type,
+            title=title,
+            min_messages=min_messages,
+            max_messages=max_messages,
+            min_words=min_words,
+            max_words=max_words,
+            since_ms=since_ms,
+            until_ms=until_ms,
+            boolean_predicate=boolean_predicate,
+            tags_relation=self._tags_relation,
+            prefix="AND",
+        )
+        where, filter_params = _with_since_session_filter(
+            self._conn,
+            where,
+            filter_params,
+            "s",
+            since_session_id=since_session_id,
+            prefix="AND",
+        )
+        limit_clause = "" if limit is None else "LIMIT ?"
+        params: list[object] = [match_query, *filter_params]
+        if limit is not None:
+            params.append(max(int(limit), 0))
+        rows = self._conn.execute(
+            f"""
+            SELECT b.session_id, MIN(rank) AS best_rank
+            FROM messages_fts
+            JOIN blocks b ON b.rowid = messages_fts.rowid
+            JOIN sessions s ON s.session_id = b.session_id
+            WHERE messages_fts MATCH ?
+            {where}
+            GROUP BY b.session_id
+            ORDER BY best_rank, b.session_id
+            {limit_clause}
+            """,
+            params,
+        ).fetchall()
+        return tuple(str(row["session_id"]) for row in rows)
+
     def semantic_summaries(
         self,
         scored_message_ids: list[tuple[str, float]],

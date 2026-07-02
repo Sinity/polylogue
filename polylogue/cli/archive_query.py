@@ -316,7 +316,13 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         if params.get("stats_only") or params.get("stats_by"):
             if sample_count is not None:
                 raise click.UsageError("Root query does not combine --sample with stats.")
-            session_ids = _matched_session_ids_for_stats(archive, query=query, limit=limit, filter_kwargs=filter_kwargs)
+            aggregate_limit = _optional_int(params.get("limit"))
+            session_ids = _matched_session_ids_for_stats(
+                archive,
+                query=query,
+                limit=aggregate_limit,
+                filter_kwargs=filter_kwargs,
+            )
             if params.get("stats_by"):
                 group_by = str(params["stats_by"])
                 if query and not session_ids:
@@ -355,6 +361,44 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             _emit_stats(stats, output_format=output_format, origin=origin, query=query, fields=fields)
             return
         if params.get("count_only"):
+            if query:
+                _emit_count(
+                    archive.count_search_sessions(
+                        query,
+                        origin=origin,
+                        origins=origins,
+                        excluded_origins=excluded_origins,
+                        tags=tags,
+                        excluded_tags=excluded_tags,
+                        repo_names=repo_names,
+                        project_refs=project_refs,
+                        has_types=has_types,
+                        has_tool_use=has_tool_use,
+                        has_thinking=has_thinking,
+                        has_paste=has_paste,
+                        tool_terms=tool_terms,
+                        excluded_tool_terms=excluded_tool_terms,
+                        action_terms=action_terms,
+                        excluded_action_terms=excluded_action_terms,
+                        action_sequence=action_sequence,
+                        action_text_terms=action_text_terms,
+                        referenced_paths=referenced_paths,
+                        cwd_prefix=cwd_prefix,
+                        typed_only=typed_only,
+                        message_type=message_type,
+                        title=title_filter,
+                        min_messages=min_messages,
+                        max_messages=max_messages,
+                        min_words=min_words,
+                        max_words=max_words,
+                        since_ms=since_ms,
+                        until_ms=until_ms,
+                        since_session_id=since_session_id,
+                    ),
+                    output_format=output_format,
+                    origin=origin,
+                )
+                return
             _emit_count(
                 archive.count_sessions(
                     origin=origin,
@@ -1062,13 +1106,12 @@ def _matched_session_ids_for_stats(
     archive: ArchiveStore,
     *,
     query: str,
-    limit: int,
+    limit: int | None,
     filter_kwargs: _ArchiveFilterKwargs,
 ) -> tuple[str, ...]:
     if not query:
         return ()
-    hits = archive.search_summaries(query, limit=limit, **filter_kwargs)
-    return tuple(dict.fromkeys(hit.session_id for hit in hits))
+    return archive.search_session_ids(query, limit=limit, **filter_kwargs)
 
 
 def _emit_stats(
