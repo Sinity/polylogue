@@ -577,11 +577,12 @@ def _dump_actions(actions: Mapping[str, ReaderActionAvailabilityPayload]) -> dic
 
 
 def _staged_inbox_source(raw_path: object, inbox: Path) -> tuple[Path | None, str | None]:
-    """Resolve an ingest request to an existing file already staged in inbox.
+    """Resolve an ingest request to an existing client-staged inbox entry.
 
-    The HTTP API must not copy arbitrary local paths supplied by clients.
-    Clients with local filesystem access stage first; the daemon then
-    schedules the matching inbox entry for its normal watcher/convergence path.
+    ``polylogue import PATH`` accepts arbitrary user-supplied paths and stages
+    them before calling this route.  The daemon itself only resolves a matching
+    inbox entry so the loopback HTTP surface never becomes an arbitrary local
+    file copier.
     """
     if not isinstance(raw_path, str) or not raw_path.strip():
         return None, "missing_path"

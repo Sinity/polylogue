@@ -398,13 +398,15 @@ class TestDeleteEndpointAuthAndOriginGate:
 
 
 # ---------------------------------------------------------------------------
-# Ingest endpoint — arbitrary local paths are staged by clients, not copied
-# by the daemon from HTTP request data.
+# Ingest endpoint — user-facing clients accept arbitrary local paths, stage
+# them into the archive inbox, then ask the daemon to schedule that staged
+# entry. The daemon route itself must not become an arbitrary local file
+# copier from HTTP request data.
 # ---------------------------------------------------------------------------
 
 
 class TestIngestEndpointInboxBoundary:
-    """``POST /api/ingest`` schedules already-staged inbox artifacts only."""
+    """``POST /api/ingest`` schedules client-staged inbox artifacts only."""
 
     def test_accepts_absolute_reference_only_by_matching_inbox_entry(
         self,
