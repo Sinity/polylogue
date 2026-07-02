@@ -61,8 +61,10 @@ Nightly with `xpinstall.signatures.required = false`.
 polylogued browser-capture status
 ```
 
-Then navigate to `chatgpt.com` or `claude.ai`. The extension badge should
-turn green. Start a conversation — each exchange is captured as you type.
+Then navigate to `chatgpt.com`, `claude.ai`, or a supported Grok/X route.
+Open the popup and use **Capture page** for the current page or
+**Sync open tabs** for all currently open supported tabs. The extension does
+not continuously watch page mutations or capture while you type.
 
 For branch-local development, point **Local receiver URL** in the popup at the
 URL printed by `devtools workspace dev-loop`, usually
@@ -157,7 +159,7 @@ pages the badge shows grey and no data is sent.
 
 | Symptom | Check |
 |---------|-------|
-| Badge is grey | Navigate to a supported page (chatgpt.com or claude.ai) |
+| Badge is grey | Navigate to a supported page (chatgpt.com, claude.ai, or Grok/X) |
 | Badge is red | Receiver is not running — start `polylogue browser-capture serve` |
 | Captures not appearing in archive | Run `polylogue check` to verify the daemon is ingesting |
 | "Failed to load extension" in Chrome | Ensure you selected the `browser-extension/` directory (not `src/`) |
