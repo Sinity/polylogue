@@ -5,12 +5,10 @@ from __future__ import annotations
 import csv
 import io
 import json
-import sqlite3
 import webbrowser
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import redirect_stdout
 from dataclasses import replace
-from pathlib import Path
 from typing import NoReturn, TypeVar, cast
 from urllib.parse import quote
 
@@ -50,7 +48,6 @@ from polylogue.storage.sqlite.archive_tiers.archive import (
     ArchiveStore,
 )
 from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.surfaces.payloads import (
     SEARCH_CURSOR_VERSION,
     InvalidSearchCursorError,
@@ -697,38 +694,6 @@ def _validate_retrieval_params(params: dict[str, object]) -> None:
         raise click.UsageError("Root query retrieval lane must be auto, dialogue, semantic, or hybrid.")
 
 
-def _archive_embeddings_retrieval_ready(embeddings_db: Path) -> bool:
-    """Report whether the archive holds retrieval-ready (non-stale) embeddings.
-
-    Reads the ``embeddings.db`` provenance ledger (``message_embeddings_meta``, a
-    regular table that mirrors the ``message_embeddings`` vec0 rows). The archive
-    is retrieval-ready when at least one message is embedded and no embedded
-    message is flagged ``needs_reindex`` — i.e. live vectors outnumber stale ones,
-    matching the legacy ``embedded_messages > stale_messages`` gate (#1217/#1743).
-    A missing or unreadable ``embeddings.db`` is treated as "not ready" so ``auto``
-    stays on the lexical lane.
-    """
-    if not embeddings_db.exists():
-        return False
-    try:
-        conn = open_readonly_connection(embeddings_db)
-    except sqlite3.OperationalError:
-        return False
-    try:
-        meta_present = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'message_embeddings_meta' LIMIT 1"
-        ).fetchone()
-        if meta_present is None:
-            return False
-        embedded = int(conn.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] or 0)
-        stale = int(
-            conn.execute("SELECT COUNT(*) FROM message_embeddings_meta WHERE needs_reindex = 1").fetchone()[0] or 0
-        )
-        return embedded > 0 and embedded > stale
-    finally:
-        conn.close()
-
-
 def _query_hits(
     archive: ArchiveStore,
     *,
@@ -745,22 +710,10 @@ def _query_hits(
 ) -> tuple[list[ArchiveSessionSearchHit], str]:
     archive_root = archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
     embeddings_db = archive_root / "embeddings.db"
-    # #1743: the implicit ``auto`` lane elevates to hybrid (FTS5 + vector RRF)
-    # only when (a) a vector provider is configured, (b) the active archive holds
-    # retrieval-ready (non-stale) embeddings, and (c) the query carries lexical
-    # terms. Otherwise ``auto`` stays on the fast lexical (dialogue) lane.
-    # ``--lexical`` (dialogue), ``--semantic`` (similar_text), and an explicit
-    # ``--hybrid`` bypass this branch and are honored as written.
-    elevated_vector_provider = None
-    if (
-        retrieval_lane == "auto"
-        and similar_text is None
-        and query
-        and _archive_embeddings_retrieval_ready(embeddings_db)
-    ):
-        elevated_vector_provider = create_vector_provider(config, db_path=embeddings_db)
-        if elevated_vector_provider is not None:
-            retrieval_lane = "hybrid"
+    # ``auto`` is intentionally lexical. A default ``find`` must not open or scan
+    # embeddings.db before returning FTS results; large active archives can make
+    # that probe block in I/O wait. Vector retrieval remains explicit through
+    # ``--semantic`` / ``--similar`` / ``--retrieval-lane hybrid``.
     if similar_text is None and retrieval_lane in {"auto", "dialogue"}:
         return (
             archive.search_summaries(
@@ -776,7 +729,7 @@ def _query_hits(
         )
     if retrieval_lane == "hybrid" and not query:
         raise click.UsageError("Hybrid retrieval requires lexical query terms.")
-    vector_provider = elevated_vector_provider or create_vector_provider(config, db_path=embeddings_db)
+    vector_provider = create_vector_provider(config, db_path=embeddings_db)
     if vector_provider is None:
         raise click.UsageError("Vector retrieval requires configured sqlite-vec and Voyage embeddings.")
     semantic_query = similar_text or query

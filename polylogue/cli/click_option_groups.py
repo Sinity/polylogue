@@ -131,7 +131,7 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         "lexical",
         is_flag=True,
         default=False,
-        help="Force FTS-only search (overrides hybrid auto-elevation when embeddings are populated).",
+        help="Force FTS-only search.",
     ),
     click.option(
         "--semantic",

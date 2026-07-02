@@ -69,9 +69,7 @@ Options:
   --exclude-text TEXT             Exclude FTS term
   --retrieval-lane LANE           Query lane: dialogue FTS, action text, or
                                   hybrid
-  --lexical                       Force FTS-only search (overrides hybrid
-                                  auto-elevation when embeddings are
-                                  populated).
+  --lexical                       Force FTS-only search.
   --semantic                      Treat the query as a similarity prompt
                                   (vector-only; requires embeddings).
   --origin TEXT                   Include origins (comma = OR)

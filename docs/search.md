@@ -13,7 +13,7 @@ payloads — apply across the CLI, MCP, Python API, and daemon HTTP surfaces.
 Quick links:
 
 - [Retrieval Lanes](#retrieval-lanes) — `dialogue`, `actions`, `hybrid`,
-  `semantic`, and how `auto` elevates.
+  `semantic`, and the default lexical `auto` lane.
 - [Terminal Unit Queries](#terminal-unit-queries) — `messages/actions/blocks/
   files/assertions/runs/observed-events/context-snapshots where ...` row
   results.
@@ -572,12 +572,12 @@ Verbs determine the action applied to the matched session set.
 
 Lane selection lives on the query as `retrieval_lane`. The resolved value
 appears in the `SearchEnvelope.retrieval_lane` field on every response so
-consumers can tell what actually ran (which matters because `auto` may
-elevate — see below).
+consumers can tell what actually ran (which matters because `auto` resolves to
+a concrete lane — see below).
 
 | Lane | Description | Score kind |
 |------|-------------|------------|
-| `auto` | Surface left the lane to the planner. May elevate to `hybrid` when embeddings are enabled and an FTS query is present (see [Auto Elevation](#auto-elevation)). | depends on chosen lane |
+| `auto` | Default lexical planner lane. Resolves to `dialogue` for ordinary text queries; vector work is explicit through `--semantic`, `--similar`, or `--retrieval-lane hybrid`. | `bm25` |
 | `dialogue` | FTS5 over message text (`messages_fts` virtual table, `unicode61` tokenizer). Default lexical lane. | `bm25` |
 | `actions` | FTS5 over tool-use/tool-result block text in `messages_fts`. Targets tool/file/shell evidence rather than prose. Public ranked-hit payloads currently carry action rank/evidence without a numeric action BM25 score. | `null` |
 | `hybrid` | Reciprocal Rank Fusion combining FTS5 and vector similarity (requires embeddings). | `rrf` |
@@ -689,22 +689,21 @@ Python API clients use the same contracts through
 `Polylogue.embedding_status(detail=False)` and
 `Polylogue.embedding_preflight(...)`.
 
-### Auto Elevation
+### Auto Lane
 
-When `retrieval_lane=auto` (the default), the planner picks a concrete
-lane based on archive state and the query shape:
+When `retrieval_lane=auto` (the default), ordinary text queries run on the
+lexical `dialogue` lane. The planner does not inspect `embeddings.db` before a
+default search, so keyword lookup stays fast and predictable on large archives.
 
 | Condition | Resolved lane |
 |-----------|---------------|
-| `--lexical` flag set | `dialogue` (forced FTS-only, even with embeddings enabled) |
+| `--lexical` flag set | `dialogue` (forced FTS-only) |
 | `--semantic` flag set, or `--similar <text>` given | `semantic` (vector-only) |
-| Embeddings retrieval-ready + FTS query present | `hybrid` |
+| `--retrieval-lane hybrid` with an FTS query | `hybrid` |
 | Otherwise | `dialogue` |
 
-The elevation rule lives in
-`polylogue/cli/query.py:_maybe_elevate_to_hybrid`. The resolved lane is
-always echoed back in `SearchEnvelope.retrieval_lane` so callers do not
-have to re-derive what ran.
+The resolved lane is always echoed back in `SearchEnvelope.retrieval_lane` so
+callers do not have to re-derive what ran.
 
 Two ergonomic overrides on the root CLI surface ([#1217](https://github.com/Sinity/polylogue/issues/1217)):
 

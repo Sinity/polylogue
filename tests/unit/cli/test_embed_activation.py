@@ -9,8 +9,8 @@ Covers the new ``polylogue ops embed`` group:
 * ``backfill`` honours the cost cap and the ``--yes`` non-interactive switch.
 * ``--lexical`` / ``--semantic`` desugar correctly at the root request layer.
 
-Native ``auto``→``hybrid`` retrieval elevation is covered by
-``TestHybridAutoElevation`` below (#1743).
+Native ``auto`` retrieval remains lexical by default; explicit semantic/hybrid
+retrieval is covered below (#1743).
 """
 
 from __future__ import annotations
@@ -777,7 +777,7 @@ class TestLexicalSemanticShortcuts:
 
 
 # ---------------------------------------------------------------------------
-# Native auto -> hybrid retrieval elevation (#1743)
+# Native retrieval lane behavior (#1743)
 # ---------------------------------------------------------------------------
 
 
@@ -799,8 +799,8 @@ def _seed_searchable_archive(archive_root: Path) -> None:
 def _seed_embeddings_meta(archive_root: Path, *, needs_reindex: int) -> None:
     """Write a single ``message_embeddings_meta`` row into ``embeddings.db``.
 
-    The freshness predicate reads this regular table (not the vec0 virtual
-    table), so the embedding extension is not required to drive elevation.
+    Native auto search intentionally does not read this table; explicit vector
+    lanes still use the configured embeddings database.
     """
     conn = sqlite3.connect(archive_root / "embeddings.db")
     try:
@@ -838,41 +838,8 @@ def _run_native_search(archive_root: Path, state_dir: Path, monkeypatch: pytest.
     return payload
 
 
-class TestHybridAutoElevationPredicate:
-    """The freshness gate that decides whether auto may elevate."""
-
-    def test_missing_embeddings_db_is_not_ready(self, tmp_path: Path) -> None:
-        from polylogue.cli.archive_query import _archive_embeddings_retrieval_ready
-
-        assert _archive_embeddings_retrieval_ready(tmp_path / "embeddings.db") is False
-
-    def test_empty_meta_is_not_ready(self, tmp_path: Path) -> None:
-        from polylogue.cli.archive_query import _archive_embeddings_retrieval_ready
-
-        conn = sqlite3.connect(tmp_path / "embeddings.db")
-        conn.executescript(
-            "CREATE TABLE message_embeddings_meta (message_id TEXT PRIMARY KEY, model TEXT, "
-            "dimension INTEGER, content_hash BLOB, embedded_at_ms INTEGER, needs_reindex INTEGER);"
-        )
-        conn.commit()
-        conn.close()
-        assert _archive_embeddings_retrieval_ready(tmp_path / "embeddings.db") is False
-
-    def test_fresh_embeddings_are_ready(self, tmp_path: Path) -> None:
-        from polylogue.cli.archive_query import _archive_embeddings_retrieval_ready
-
-        _seed_embeddings_meta(tmp_path, needs_reindex=0)
-        assert _archive_embeddings_retrieval_ready(tmp_path / "embeddings.db") is True
-
-    def test_stale_embeddings_are_not_ready(self, tmp_path: Path) -> None:
-        from polylogue.cli.archive_query import _archive_embeddings_retrieval_ready
-
-        _seed_embeddings_meta(tmp_path, needs_reindex=1)
-        assert _archive_embeddings_retrieval_ready(tmp_path / "embeddings.db") is False
-
-
 class TestHybridAutoElevation:
-    """End-to-end native search elevation behavior driven via CliRunner."""
+    """End-to-end native search retrieval-lane behavior driven via CliRunner."""
 
     def test_auto_without_embeddings_stays_dialogue(
         self, cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch
@@ -885,7 +852,7 @@ class TestHybridAutoElevation:
         assert payload["retrieval_lane"] == "dialogue"
         assert payload["items"]
 
-    def test_auto_with_fresh_embeddings_elevates_to_hybrid(
+    def test_auto_with_fresh_embeddings_stays_dialogue(
         self, cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         archive_root = cli_workspace["archive_root"]
@@ -897,9 +864,8 @@ class TestHybridAutoElevation:
         with patch("polylogue.cli.archive_query.create_vector_provider", return_value=fake_provider):
             payload = _run_native_search(archive_root, cli_workspace["state_dir"], monkeypatch)
 
-        assert payload["retrieval_lane"] == "hybrid"
-        # Hybrid fuses the lexical leg with the (empty) vector leg, so lexical
-        # matches still surface even though the stub provider returned nothing.
+        assert payload["retrieval_lane"] == "dialogue"
+        fake_provider.query.assert_not_called()
         assert payload["items"]
 
     def test_auto_with_stale_embeddings_stays_dialogue(

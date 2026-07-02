@@ -1023,16 +1023,16 @@ The CLI orchestrates substrate primitives under
 
 ### Search defaults (#1217)
 
-Once `embedding_enabled = true` and at least one message is embedded,
-`polylogue` searches automatically promote `retrieval_lane=auto` to
-`hybrid` (FTS5 + vector RRF) when an FTS query is present. The
-elevation lives in
-`polylogue/cli/query.py:_maybe_elevate_to_hybrid`. Two ergonomic
-overrides land on the root query surface:
+Default `polylogue` searches stay lexical: `retrieval_lane=auto` resolves to
+`dialogue` for ordinary FTS queries and does not probe `embeddings.db` before
+returning keyword results. Vector retrieval is explicit on the root query
+surface:
 
 - `--lexical` — force `retrieval_lane=dialogue` (FTS-only).
 - `--semantic` — promote the query string into `similar_text` so the
   request runs as a vector-only similarity probe (no FTS leg).
+- `--retrieval-lane hybrid` — combine FTS5 and vector similarity via RRF
+  when embeddings are configured and populated.
 
 See [docs/search.md § Retrieval Lanes](search.md#retrieval-lanes) for the
 full lane semantics, ranking policy, and `SearchEnvelope` contract.
@@ -1204,6 +1204,15 @@ schema shape:
 - Schema bumps are deletes-then-defines, never deltas. A schema change
   edits the owning tier DDL/version and documents the re-ingest expectation.
   No upgrade helpers are added for the bump.
+- Index schema version 23 adds `idx_blocks_search_text_populated`, a partial
+  index over text-bearing `blocks` rows, and makes `fts_freshness_state` part of
+  the canonical fresh index tier. Message search readiness compares that source
+  set with `messages_fts_docsize` and consults the durable freshness marker
+  before running user FTS queries; without the partial index and ledger, large
+  archives can spend the query budget scanning `blocks` merely to decide whether
+  `polylogue find hermes` is allowed to run. Existing index tiers must be
+  rebuilt from source evidence (`polylogue ops reset --index && polylogued
+  run`).
 - Index schema version 22 adds `idx_blocks_tool_result_outcome`, a partial
   index over structured `tool_result` outcome fields. Claim-vs-evidence and
   action-outcome reads anchor on provider-reported `is_error` / non-zero

@@ -9,6 +9,8 @@ from polylogue.storage.fts.freshness import READY, STALE, freshness_ready_record
 from polylogue.storage.fts.fts_lifecycle import (
     _triggers_present_sync,
     ensure_fts_index_sync,
+    reset_message_fts_index_sync,
+    restore_fts_triggers_sync,
 )
 from polylogue.storage.fts.sql import (
     FTS_INDEX_DOC_COUNT_SQL,
@@ -256,6 +258,13 @@ def repair_stale_fts_rows(conn: sqlite3.Connection) -> DanglingFtsRepairOutcome:
     )
 
 
+def reset_and_repair_fts_rows(conn: sqlite3.Connection) -> DanglingFtsRepairOutcome:
+    """Recover the FTS surfaces when targeted repair cannot be trusted."""
+    restore_fts_triggers_sync(conn)
+    reset_message_fts_index_sync(conn)
+    return repair_stale_fts_rows(conn)
+
+
 def repair_missing_fts_rows(conn: sqlite3.Connection) -> DanglingFtsRepairOutcome:
     """Repair missing message and derived FTS rows without full invariant snapshots."""
     before_messages = int(conn.execute(FTS_INDEX_DOC_COUNT_SQL).fetchone()[0] or 0)
@@ -322,5 +331,6 @@ __all__ = [
     "dry_run_dangling_fts_repair",
     "insert_missing_message_fts_rows_sync",
     "repair_missing_fts_rows",
+    "reset_and_repair_fts_rows",
     "repair_stale_fts_rows",
 ]

@@ -1254,6 +1254,7 @@ def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
         configure_bounded_repair_connection,
         dry_run_dangling_fts_repair,
         repair_missing_fts_rows,
+        reset_and_repair_fts_rows,
     )
 
     try:
@@ -1278,6 +1279,8 @@ def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
                     detail=outcome.detail,
                 )
             outcome = repair_missing_fts_rows(conn)
+            if not outcome.success:
+                outcome = reset_and_repair_fts_rows(conn)
             conn.commit()
             if outcome.success:
                 _resolve_convergence_debt(

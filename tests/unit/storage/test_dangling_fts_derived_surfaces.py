@@ -8,7 +8,11 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from polylogue.storage.fts.dangling_repair import repair_missing_fts_rows, repair_stale_fts_rows
+from polylogue.storage.fts.dangling_repair import (
+    repair_missing_fts_rows,
+    repair_stale_fts_rows,
+    reset_and_repair_fts_rows,
+)
 from polylogue.storage.fts.freshness import message_fts_recorded_state_async, message_fts_recorded_state_sync
 from polylogue.storage.fts.fts_lifecycle import message_fts_search_readiness_sync, restore_fts_triggers_sync
 
@@ -49,6 +53,71 @@ def test_repair_missing_fts_rows_marks_derived_surfaces_ready(tmp_path: Path) ->
     assert threads == 1
     assert states["session_work_events_fts"] == "ready"
     assert states["threads_fts"] == "ready"
+
+
+def test_reset_and_repair_fts_rows_recovers_excess_message_rows(tmp_path: Path) -> None:
+    db = tmp_path / "archive.db"
+    conn = sqlite3.connect(db)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE blocks (
+                block_id TEXT, message_id TEXT, session_id TEXT, block_type TEXT, text TEXT, search_text TEXT
+            );
+            CREATE VIRTUAL TABLE messages_fts USING fts5(
+                block_id UNINDEXED, message_id UNINDEXED, session_id UNINDEXED, block_type UNINDEXED, text,
+                content='', contentless_delete=1
+            );
+            CREATE TABLE session_work_events (event_id TEXT PRIMARY KEY, session_id TEXT,
+                work_event_type TEXT, search_text TEXT);
+            CREATE VIRTUAL TABLE session_work_events_fts USING fts5(event_id UNINDEXED, session_id UNINDEXED,
+                work_event_type UNINDEXED, text);
+            CREATE TABLE threads (thread_id TEXT PRIMARY KEY, search_text TEXT);
+            CREATE VIRTUAL TABLE threads_fts USING fts5(thread_id UNINDEXED, root_id UNINDEXED, text);
+            """
+        )
+        restore_fts_triggers_sync(conn)
+        conn.execute(
+            "INSERT INTO blocks VALUES ('block-1', 'msg-1', 'conv-1', 'text', 'orphan needle', 'orphan needle')"
+        )
+        conn.execute(
+            "INSERT INTO blocks VALUES ('block-2', 'msg-2', 'conv-1', 'text', 'survivor needle', 'survivor needle')"
+        )
+        conn.execute("INSERT INTO session_work_events VALUES ('event-1', 'conv-1', 'decision', 'ship it')")
+        conn.execute("INSERT INTO threads VALUES ('thread-1', 'startup fts repair')")
+        conn.execute("DROP TRIGGER messages_fts_ad")
+        conn.execute("DELETE FROM blocks WHERE block_id = 'block-1'")
+
+        assert repair_missing_fts_rows(conn).success is False
+
+        outcome = reset_and_repair_fts_rows(conn)
+        message_state = conn.execute(
+            """
+            SELECT state, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows
+            FROM fts_freshness_state
+            WHERE surface='messages_fts'
+            """
+        ).fetchone()
+        trigger_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM sqlite_master
+            WHERE type='trigger'
+              AND name IN ('messages_fts_ai', 'messages_fts_ad', 'messages_fts_au')
+            """
+        ).fetchone()[0]
+        survivor_hits = conn.execute(
+            "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'survivor'"
+        ).fetchone()[0]
+        orphan_hits = conn.execute("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'orphan'").fetchone()[0]
+    finally:
+        conn.close()
+
+    assert outcome.success is True
+    assert message_state == ("ready", 1, 1, 0, 0, 0)
+    assert trigger_count == 3
+    assert survivor_hits == 1
+    assert orphan_hits == 0
 
 
 def test_repair_stale_fts_rows_skips_ready_archive_surfaces(tmp_path: Path) -> None:
