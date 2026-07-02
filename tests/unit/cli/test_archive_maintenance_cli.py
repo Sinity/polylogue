@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
@@ -974,3 +975,64 @@ def test_archive_read_cli_searches_archive_blocks(
     assert payload["mode"] == "search"
     assert payload["hits"][0]["block_id"] == "codex-session:native-1:m1:0"
     assert payload["hits"][0]["snippet"] == "[needle]"
+
+
+def test_rebuild_index_replays_source_rows_with_materialization_controls(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_rebuild(config: SimpleNamespace, **kwargs: object) -> dict[str, object]:
+        captured["archive_root"] = config.archive_root
+        captured.update(kwargs)
+        return {
+            "parse_counts": {"sessions": 3, "messages": 9, "attachments": 0},
+            "changed_counts": {"sessions": 3, "messages": 9, "attachments": 0},
+            "processed_session_count": 3,
+            "parse_failure_count": 0,
+            "batch_count": 2,
+            "materialized": False,
+            "materialized_session_count": 0,
+            "materialized_rebuilt": False,
+            "materialize_observation": None,
+        }
+
+    monkeypatch.setattr("polylogue.cli.commands.maintenance._count_source_raw_sessions", lambda _root: 4)
+    monkeypatch.setattr("polylogue.cli.commands.maintenance._rebuild_index_from_source", fake_rebuild)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "rebuild-index",
+            "--batch-size",
+            "7",
+            "--workers",
+            "2",
+            "--force-write",
+            "--no-materialize",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["archive_root"] == str(cli_workspace["archive_root"])
+    assert payload["raw_session_count"] == 4
+    assert payload["processed_session_count"] == 3
+    assert payload["materialized"] is False
+    assert payload["status"] == "ok"
+    assert captured == {
+        "archive_root": cli_workspace["archive_root"],
+        "raw_batch_size": 7,
+        "ingest_workers": 2,
+        "force_write": True,
+        "materialize": False,
+        "progress_callback": None,
+    }

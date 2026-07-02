@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 from collections.abc import Callable
@@ -25,6 +26,7 @@ from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.maintenance.targets import MAINTENANCE_TARGET_NAMES, build_maintenance_target_catalog
 from polylogue.operations.archive_debt import _source_path_native_id_candidates
 from polylogue.paths import archive_file_set_root_for_paths, archive_root, blob_store_root, db_path, render_root
+from polylogue.protocols import ProgressCallback
 from polylogue.storage.blob_gc import read_gc_history, run_blob_gc_report
 from polylogue.storage.blob_integrity import (
     BlobReferenceDebtClassificationReport,
@@ -981,6 +983,173 @@ def run_command(
             completed = datetime.fromisoformat(result.completed_at)
             elapsed = (completed - started).total_seconds()
             click.echo(f"\nElapsed: {elapsed:.1f}s")
+
+
+def _count_source_raw_sessions(root: Path) -> int:
+    source_db = root / "source.db"
+    if not source_db.exists():
+        return 0
+    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0) as conn:
+        row = conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+async def _rebuild_index_from_source(
+    config: Config,
+    *,
+    raw_batch_size: int,
+    ingest_workers: int | None,
+    force_write: bool,
+    materialize: bool,
+    progress_callback: ProgressCallback | None,
+) -> dict[str, object]:
+    from polylogue.pipeline.run_stages import execute_materialize_stage
+    from polylogue.pipeline.services.parsing import ParsingService
+    from polylogue.storage.repository import SessionRepository
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+
+    backend = SQLiteBackend(db_path=config.archive_root / "index.db")
+    repository = SessionRepository(backend=backend, archive_root=config.archive_root)
+    try:
+        parser = ParsingService(
+            repository=repository,
+            archive_root=config.archive_root,
+            config=config,
+            raw_batch_size=raw_batch_size,
+            ingest_workers=ingest_workers,
+        )
+        parse_result = await parser.parse_from_raw(
+            progress_callback=progress_callback,
+            force_write=force_write,
+            repair_message_fts=True,
+        )
+        materialize_result = None
+        if materialize:
+            materialize_result = await execute_materialize_stage(
+                stage="materialize",
+                source_names=None,
+                processed_ids=set(),
+                backend=backend,
+                progress_callback=progress_callback,
+            )
+        return {
+            "parse_counts": dict(parse_result.counts),
+            "changed_counts": dict(parse_result.changed_counts),
+            "processed_session_count": len(parse_result.processed_ids),
+            "parse_failure_count": parse_result.parse_failures,
+            "batch_count": len(parse_result.batch_observations),
+            "materialized": materialize_result is not None,
+            "materialized_session_count": materialize_result.item_count if materialize_result is not None else 0,
+            "materialized_rebuilt": materialize_result.rebuilt if materialize_result is not None else False,
+            "materialize_observation": materialize_result.observation if materialize_result is not None else None,
+        }
+    finally:
+        await repository.close()
+
+
+@maintenance_group.command("rebuild-index")
+@click.option("--batch-size", type=int, default=50, show_default=True, help="Maximum raw records per ingest batch.")
+@click.option("--workers", type=int, default=None, help="Optional ingest worker count.")
+@click.option(
+    "--force-write",
+    is_flag=True,
+    help="Rewrite sessions even when the parsed content hash matches existing index rows.",
+)
+@click.option(
+    "--no-materialize",
+    is_flag=True,
+    help="Skip the final full session-insight materialization pass.",
+)
+@click.option(
+    "--output-format",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+    help="Output format.",
+)
+def rebuild_index_command(
+    batch_size: int,
+    workers: int | None,
+    force_write: bool,
+    no_materialize: bool,
+    output_format: str,
+) -> None:
+    """Replay durable source rows into index.db, then rebuild read models.
+
+    This is the canonical post-reset path for a rebuildable index tier:
+    ``source.db`` remains the durable evidence root, ``index.db`` is recreated
+    from those rows, and session insight tables are rebuilt from the resulting
+    sessions unless ``--no-materialize`` is supplied.
+    """
+    configure_logging()
+    if batch_size <= 0:
+        raise click.BadParameter("batch size must be positive", param_hint="--batch-size")
+    if workers is not None and workers <= 0:
+        raise click.BadParameter("workers must be positive", param_hint="--workers")
+
+    root = archive_root()
+    raw_count = _count_source_raw_sessions(root)
+    if raw_count == 0:
+        payload = {
+            "archive_root": str(root),
+            "raw_session_count": 0,
+            "status": "empty-source",
+            "materialized": False,
+        }
+        if output_format == "json":
+            click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            click.echo(f"Archive root: {root}")
+            click.echo("No source.db raw_sessions rows found.")
+        return
+
+    started = datetime.now(UTC)
+    config = Config(archive_root=root, render_root=render_root(), sources=[])
+
+    def _emit_progress(amount: int, desc: str | None = None) -> None:
+        del amount
+        if desc:
+            click.echo(f"  {desc}", err=True)
+
+    result = asyncio.run(
+        _rebuild_index_from_source(
+            config,
+            raw_batch_size=batch_size,
+            ingest_workers=workers,
+            force_write=force_write,
+            materialize=not no_materialize,
+            progress_callback=_emit_progress if output_format == "plain" else None,
+        )
+    )
+    completed = datetime.now(UTC)
+    payload = {
+        "archive_root": str(root),
+        "raw_session_count": raw_count,
+        "batch_size": batch_size,
+        "workers": workers,
+        "force_write": force_write,
+        "status": "ok" if result["parse_failure_count"] == 0 else "parse-failures",
+        "started_at": started.isoformat(),
+        "completed_at": completed.isoformat(),
+        "elapsed_s": round((completed - started).total_seconds(), 3),
+        **result,
+    }
+
+    if output_format == "json":
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    click.echo(f"Archive root: {root}")
+    click.echo(f"Raw rows:     {raw_count:,}")
+    click.echo(f"Parsed:       {result['processed_session_count']:,} changed session(s)")
+    click.echo(f"Batches:      {result['batch_count']:,}")
+    click.echo(f"Failures:     {result['parse_failure_count']:,}")
+    if result["materialized"]:
+        click.echo(f"Materialized: {result['materialized_session_count']:,} session insight row(s)")
+    else:
+        click.echo("Materialized: skipped")
+    click.echo(f"Elapsed:      {payload['elapsed_s']:.1f}s")
 
 
 @maintenance_group.command("missing-raw-blob-cursors")

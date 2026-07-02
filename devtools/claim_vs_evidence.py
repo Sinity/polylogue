@@ -54,6 +54,11 @@ def _rows(conn: Connection, sql: str, params: Iterable[object] = ()) -> list[dic
     return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
 
 
+def _scalar_int(conn: Connection, sql: str, params: Iterable[object] = ()) -> int:
+    row = conn.execute(sql, tuple(params)).fetchone()
+    return int(row[0]) if row is not None and row[0] is not None else 0
+
+
 def _ranked(mapping: dict[str, dict[str, int]]) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for name, counts in mapping.items():
@@ -88,6 +93,7 @@ def _structured_failure_rows(conn: Connection, *, limit: int) -> list[dict[str, 
                 u.message_id,
                 u.tool_name,
                 u.tool_command,
+                s.origin,
                 r.tool_result_is_error AS is_error,
                 r.tool_result_exit_code AS exit_code,
                 COALESCE(rm.position, m.position) AS position,
@@ -97,6 +103,7 @@ def _structured_failure_rows(conn: Connection, *, limit: int) -> list[dict[str, 
               ON u.tool_id = r.tool_id
              AND u.session_id = r.session_id
              AND u.block_type = 'tool_use'
+            JOIN sessions AS s ON s.session_id = r.session_id
             JOIN messages AS m ON m.message_id = u.message_id
             JOIN messages AS rm ON rm.message_id = r.message_id
             WHERE r.block_type = 'tool_result'
@@ -104,6 +111,7 @@ def _structured_failure_rows(conn: Connection, *, limit: int) -> list[dict[str, 
                   COALESCE(r.tool_result_is_error, 0) = 1
                   OR (r.tool_result_exit_code IS NOT NULL AND r.tool_result_exit_code != 0)
               )
+            ORDER BY r.session_id, COALESCE(rm.position, m.position), r.message_id, r.tool_id
             LIMIT ?
         ),
         next_message AS (
@@ -125,6 +133,7 @@ def _structured_failure_rows(conn: Connection, *, limit: int) -> list[dict[str, 
             n.message_id,
             n.tool_name,
             n.tool_command,
+            n.origin,
             n.is_error,
             n.exit_code,
             COALESCE(nm.model_name, n.tool_message_model, '') AS model_name,
@@ -138,12 +147,46 @@ def _structured_failure_rows(conn: Connection, *, limit: int) -> list[dict[str, 
             n.message_id,
             n.tool_name,
             n.tool_command,
+            n.origin,
             n.is_error,
             n.exit_code,
             model_name,
             n.next_message_id
         """,
         (limit,),
+    )
+
+
+def _structured_failure_count(conn: Connection) -> int:
+    return _scalar_int(
+        conn,
+        """
+        SELECT COUNT(*)
+        FROM blocks AS r INDEXED BY idx_blocks_tool_result_outcome
+        WHERE r.block_type = 'tool_result'
+          AND (
+              COALESCE(r.tool_result_is_error, 0) = 1
+              OR (r.tool_result_exit_code IS NOT NULL AND r.tool_result_exit_code != 0)
+          )
+        """,
+    )
+
+
+def _structured_failure_origin_counts(conn: Connection) -> list[dict[str, object]]:
+    return _rows(
+        conn,
+        """
+        SELECT s.origin, COUNT(*) AS failed_outcomes
+        FROM blocks AS r INDEXED BY idx_blocks_tool_result_outcome
+        JOIN sessions AS s ON s.session_id = r.session_id
+        WHERE r.block_type = 'tool_result'
+          AND (
+              COALESCE(r.tool_result_is_error, 0) = 1
+              OR (r.tool_result_exit_code IS NOT NULL AND r.tool_result_exit_code != 0)
+          )
+        GROUP BY s.origin
+        ORDER BY failed_outcomes DESC, s.origin
+        """,
     )
 
 
@@ -156,6 +199,8 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     index_db = config.db_path
     conn = open_readonly_connection(index_db)
     try:
+        total_structured_failures = _structured_failure_count(conn)
+        total_by_origin = _structured_failure_origin_counts(conn)
         rows = _structured_failure_rows(conn, limit=args.limit)
         schema_version = _user_version(conn)
     finally:
@@ -164,6 +209,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     totals = {"failed_outcomes": 0, "acknowledged": 0, "silent_proceed": 0, "ambiguous": 0}
     by_tool: dict[str, dict[str, int]] = {}
     by_model: dict[str, dict[str, int]] = {}
+    by_origin: dict[str, dict[str, int]] = {}
     samples_by_classification: dict[str, list[dict[str, object]]] = {
         "acknowledged": [],
         "silent_proceed": [],
@@ -173,6 +219,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         classification = _classify_failed_followup(str(row["next_text"]) if row["next_text"] is not None else None)
         tool = str(row["tool_name"] or "unknown")
         model = str(row["model_name"] or "unknown")
+        origin = str(row["origin"] or "unknown")
         sample = {
             "classification": classification,
             "session_ref": f"session:{row['session_id']}",
@@ -180,6 +227,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "next_message_ref": f"message:{row['next_message_id']}" if row["next_message_id"] else None,
             "tool_name": tool,
             "model_name": model,
+            "origin": origin,
             "exit_code": row["exit_code"],
             "is_error": row["is_error"],
             "tool_command_preview": str(row["tool_command"] or "")[:160],
@@ -188,10 +236,13 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         totals[classification] += 1
         by_tool.setdefault(tool, {"failed_outcomes": 0, "acknowledged": 0, "silent_proceed": 0, "ambiguous": 0})
         by_model.setdefault(model, {"failed_outcomes": 0, "acknowledged": 0, "silent_proceed": 0, "ambiguous": 0})
+        by_origin.setdefault(origin, {"failed_outcomes": 0, "acknowledged": 0, "silent_proceed": 0, "ambiguous": 0})
         by_tool[tool]["failed_outcomes"] += 1
         by_tool[tool][classification] += 1
         by_model[model]["failed_outcomes"] += 1
         by_model[model][classification] += 1
+        by_origin[origin]["failed_outcomes"] += 1
+        by_origin[origin][classification] += 1
         bucket = samples_by_classification[classification]
         if len(bucket) < args.sample_limit:
             bucket.append(sample)
@@ -207,6 +258,16 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "index_db": str(index_db),
         "index_schema_version": schema_version,
         "limit": args.limit,
+        "sample_frame": {
+            "total_structured_failures": total_structured_failures,
+            "inspected_structured_failures": len(rows),
+            "limit": args.limit,
+            "complete_failure_frame": len(rows) >= total_structured_failures,
+            "selection_order": "session_id, tool_result_message_position, tool_result_message_id, tool_id",
+            "failure_predicate": "tool_result_is_error = 1 OR tool_result_exit_code != 0",
+            "classification_scope": "immediately following assistant message only",
+            "total_by_origin": total_by_origin,
+        },
         "definition": (
             "Structured failures are normalized tool-result outcomes with is_error=1 or non-zero exit_code. "
             "The immediately following assistant message is classified only for explicit failure "
@@ -219,6 +280,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         },
         "by_tool": _ranked(by_tool),
         "by_model": _ranked(by_model),
+        "by_origin": _ranked(by_origin),
         "samples_by_classification": samples_by_classification,
     }
     if args.out_dir is not None:
@@ -251,6 +313,8 @@ def _write_artifacts(out_dir: Path, report: dict[str, Any]) -> None:
         ),
         "proof_report": {
             "failed_outcomes": totals["failed_outcomes"],
+            "total_structured_failures": report["sample_frame"]["total_structured_failures"],
+            "complete_failure_frame": report["sample_frame"]["complete_failure_frame"],
             "acknowledged": totals["acknowledged"],
             "silent_proceed": totals["silent_proceed"],
             "ambiguous": totals["ambiguous"],
@@ -271,6 +335,7 @@ def _write_artifacts(out_dir: Path, report: dict[str, Any]) -> None:
 def _write_readme(path: Path, report: dict[str, Any]) -> None:
     totals = report["totals"]
     rates = report["rates"]
+    frame = report["sample_frame"]
     lines = [
         "# Claim-vs-Evidence Failure Follow-Up",
         "",
@@ -286,13 +351,16 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
         "",
         "## Current Bounded Result",
         "",
+        f"- total structured failures in frame: {frame['total_structured_failures']:,}",
         f"- failed structured outcomes inspected: {totals['failed_outcomes']:,}",
+        f"- complete failure frame: {frame['complete_failure_frame']}",
         f"- acknowledged: {totals['acknowledged']:,}",
         f"- silent-proceed: {totals['silent_proceed']:,}",
         f"- ambiguous: {totals['ambiguous']:,}",
         f"- silent lower bound: {rates['silent_rate_lower_bound']:.1%}",
         f"- silent among classified: {rates['silent_rate_among_classified']:.1%}",
         f"- configured limit: {report['limit']:,}",
+        f"- selection order: {frame['selection_order']}",
         "",
         "## Regenerate",
         "",

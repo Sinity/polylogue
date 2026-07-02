@@ -152,6 +152,19 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
     )
 
     assert report["index_schema_version"] == 22
+    assert report["sample_frame"] == {
+        "classification_scope": "immediately following assistant message only",
+        "complete_failure_frame": True,
+        "failure_predicate": "tool_result_is_error = 1 OR tool_result_exit_code != 0",
+        "inspected_structured_failures": 3,
+        "limit": 3,
+        "selection_order": "session_id, tool_result_message_position, tool_result_message_id, tool_id",
+        "total_by_origin": [
+            {"failed_outcomes": 2, "origin": "claude-code-session"},
+            {"failed_outcomes": 1, "origin": "codex-session"},
+        ],
+        "total_structured_failures": 3,
+    }
     assert report["totals"] == {
         "failed_outcomes": 3,
         "acknowledged": 1,
@@ -164,5 +177,6 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
     assert summary["claim"]
     assert summary["non_claim"]
     assert summary["proof_report"]["failed_outcomes"] == 3
+    assert summary["proof_report"]["complete_failure_frame"] is True
     assert (out_dir / "claim-vs-evidence.report.json").exists()
     assert "Claim-vs-Evidence" in (out_dir / "README.md").read_text()
