@@ -265,6 +265,68 @@ def test_raw_materialization_replays_parsed_rows_when_index_is_empty(tmp_path: P
     assert "already parsed but not materialized" in result.detail
 
 
+def test_raw_materialization_replays_parsed_rows_after_interrupted_index_rebuild(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    blob_store = BlobStore(tmp_path / "blob")
+    remaining_raw_id, remaining_size = blob_store.write_from_bytes(b'{"mapping":{"remaining":{}}}')
+    done_raw_id, done_size = blob_store.write_from_bytes(b'{"mapping":{"done":{}}}')
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.executemany(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms, parsed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (
+                    remaining_raw_id,
+                    "chatgpt-export",
+                    "native-remaining",
+                    "remaining.json",
+                    0,
+                    bytes.fromhex(remaining_raw_id),
+                    remaining_size,
+                    1,
+                    2,
+                ),
+                (
+                    done_raw_id,
+                    "chatgpt-export",
+                    "native-done",
+                    "done.json",
+                    0,
+                    bytes.fromhex(done_raw_id),
+                    done_size,
+                    3,
+                    4,
+                ),
+            ),
+        )
+        source_conn.commit()
+
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        index_conn.execute(
+            """
+            INSERT INTO sessions (native_id, origin, raw_id, title, content_hash)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            ("native-done", "chatgpt-export", done_raw_id, "done", bytes(32)),
+        )
+        index_conn.commit()
+
+    result = repair_mod.repair_raw_materialization(config, dry_run=True)
+
+    assert result.repaired_count == 1
+    assert result.success is True
+    assert result.metrics["raw_materialization_candidate_count"] == 1.0
+    assert result.metrics["raw_materialization_already_parsed_count"] == 1.0
+    assert "already parsed but not materialized" in result.detail
+
+
 def test_raw_materialization_replay_uses_batch_parse_call(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

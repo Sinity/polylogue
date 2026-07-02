@@ -91,10 +91,11 @@ def _raw_materialization_candidate_ids(
     Raw evidence is the durable source of truth, but a raw row whose
     content-addressed blob is absent cannot be reparsed without outside
     evidence. Keep those rows as debt instead of mutating or deleting them.
-    Broad repair only queues acquired-but-unparsed rows. An explicit scope
-    (raw artifact, provider/origin, source family, or source root) may queue
-    already-parsed non-materialized rows because that is a deliberate bounded
-    replay, not a blind archive-wide retry.
+    Broad repair queues raw rows that are not materialized in the attached
+    index tier, including rows whose raw evidence was parsed before an index
+    reset or interrupted replay. Parse failures, intentionally skipped rows,
+    missing blobs, and source-path/native-id aliases remain excluded or counted
+    as debt instead of being blindly retried.
     """
     source_db = config.archive_root / "source.db"
     index_db = config.archive_root / "index.db"
@@ -128,16 +129,6 @@ def _raw_materialization_candidate_ids(
             normalized_root = str(source_root).rstrip("/")
             source_root_filter = " AND (r.source_path = ? OR r.source_path LIKE ?)"
             params.extend((normalized_root, f"{normalized_root}/%"))
-        index_session_count = 0
-        try:
-            row = conn.execute("SELECT COUNT(*) FROM index_tier.sessions").fetchone()
-            index_session_count = int(row[0] or 0) if row is not None else 0
-        except sqlite3.Error:
-            index_session_count = 0
-        include_already_parsed = index_session_count == 0 or any(
-            value is not None for value in (raw_artifact_id, provider_origin, source_family, source_root)
-        )
-        parsed_filter = "" if include_already_parsed else "AND r.parsed_at_ms IS NULL"
         rows = conn.execute(
             f"""
             SELECT r.raw_id, r.origin, r.native_id, r.source_path, r.blob_hash, r.blob_size, r.parsed_at_ms
@@ -150,7 +141,6 @@ def _raw_materialization_candidate_ids(
             WHERE s_by_raw.raw_id IS NULL
               AND s_by_native.native_id IS NULL
               AND r.parse_error IS NULL
-              {parsed_filter}
               AND NOT (
                 COALESCE(r.validation_status, '') = 'skipped'
                 AND r.parsed_at_ms IS NOT NULL
