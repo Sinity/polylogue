@@ -12,8 +12,6 @@ from typing import TYPE_CHECKING, Literal, NoReturn
 import click
 
 from polylogue.api.sync.bridge import run_coroutine_sync
-from polylogue.archive.query.spec import QuerySpecError
-from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.cli.query_contracts import (
     result_date,
     result_id,
@@ -25,6 +23,8 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.core.json import JSONDocument, dumps
 
 if TYPE_CHECKING:
+    from polylogue.archive.query.spec import QuerySpecError
+    from polylogue.archive.session.domain_models import Session, SessionSummary
     from polylogue.config import Config
 
 
@@ -138,7 +138,9 @@ def choose_select_row(env: AppEnv, rows: list[SelectSessionRow]) -> SelectSessio
         return None
     if len(rows) == 1:
         return rows[0]
-    if env.ui.plain or not sys.stdin.isatty() or not sys.stdout.isatty():
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        return None
+    if env.ui.plain:
         return None
 
     fzf_row = _choose_with_fzf(rows)
@@ -158,7 +160,6 @@ async def _select_session_rows_from_store(
     *,
     limit: int,
 ) -> list[SelectSessionRow]:
-    from polylogue.cli.query import _create_query_vector_provider
     from polylogue.paths import archive_file_set_root_for_paths
 
     spec = replace(request.query_spec(), limit=limit)
@@ -166,7 +167,11 @@ async def _select_session_rows_from_store(
         archive_root_path=config.archive_root,
         db_anchor=config.db_path,
     )
-    vector_provider = _create_query_vector_provider(config, db_path=archive_root / "embeddings.db")
+    vector_provider = None
+    if _spec_needs_vector_provider(spec):
+        from polylogue.cli.query import _create_query_vector_provider
+
+        vector_provider = _create_query_vector_provider(config, db_path=archive_root / "embeddings.db")
     filter_chain = spec.build_filter(config, vector_provider=vector_provider)
 
     if filter_chain.can_use_summaries():
@@ -174,6 +179,15 @@ async def _select_session_rows_from_store(
     else:
         results = list(await filter_chain.list())
     return [select_row_from_result(result) for result in results]
+
+
+def _spec_needs_vector_provider(spec: object) -> bool:
+    """Return whether a select query needs eager vector-provider setup."""
+    return bool(
+        getattr(spec, "similar_text", None)
+        or getattr(spec, "similar_session_id", None)
+        or getattr(spec, "retrieval_lane", "auto") == "hybrid"
+    )
 
 
 async def select_session_rows(env: AppEnv, request: RootModeRequest, *, limit: int) -> list[SelectSessionRow]:
@@ -186,6 +200,8 @@ async def select_session_rows(env: AppEnv, request: RootModeRequest, *, limit: i
 
 
 def _raise_select_query_error(exc: QuerySpecError) -> NoReturn:
+    from polylogue.archive.query.spec import QuerySpecError
+
     if isinstance(exc, QuerySpecError):
         if exc.field in {"since", "until"}:
             click.echo(f"Error: Cannot parse date: '{exc.value}'", err=True)
@@ -207,8 +223,12 @@ async def async_run_select(
 ) -> None:
     try:
         rows = await select_session_rows(env, request, limit=limit)
-    except QuerySpecError as exc:
-        _raise_select_query_error(exc)
+    except Exception as exc:
+        from polylogue.archive.query.spec import QuerySpecError
+
+        if isinstance(exc, QuerySpecError):
+            _raise_select_query_error(exc)
+        raise
     selected = choose_select_row(env, rows)
     if selected is None:
         if rows:

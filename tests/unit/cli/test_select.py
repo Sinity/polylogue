@@ -17,6 +17,7 @@ from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.select import (
     SelectSessionRow,
     _parse_fzf_output,
+    _spec_needs_vector_provider,
     async_run_select,
     choose_select_row,
     render_select_row,
@@ -196,15 +197,55 @@ async def test_select_session_rows_compiles_query_terms_before_filtering(tmp_pat
     request = RootModeRequest.from_params({"query": ("id:abc",)})
 
     with (
-        patch("polylogue.cli.query._create_query_vector_provider", return_value=None),
+        patch("polylogue.cli.query._create_query_vector_provider", return_value=None) as vector_provider,
         patch.object(SessionQuerySpec, "build_filter", _build_filter),
     ):
         assert await select_session_rows(env, request, limit=3) == []
+
+    vector_provider.assert_not_called()
 
     spec = captured["spec"]
     assert spec.session_id == "abc"
     assert spec.query_terms == ()
     assert spec.limit == 3
+
+
+def test_noninteractive_select_does_not_initialize_ui() -> None:
+    class _Env:
+        @property
+        def ui(self) -> object:
+            raise AssertionError("noninteractive selection should not touch UI")
+
+    with (
+        patch("sys.stdin.isatty", return_value=False),
+        patch("sys.stdout.isatty", return_value=True),
+    ):
+        assert choose_select_row(cast(AppEnv, _Env()), [_row(1), _row(2)]) is None
+
+
+@pytest.mark.parametrize(
+    ("retrieval_lane", "similar_text", "similar_session_id", "expected"),
+    [
+        ("auto", None, None, False),
+        ("dialogue", None, None, False),
+        ("hybrid", None, None, True),
+        ("auto", "semantic prompt", None, True),
+        ("auto", None, "session-ref", True),
+    ],
+)
+def test_spec_needs_vector_provider_only_for_semantic_shapes(
+    retrieval_lane: str,
+    similar_text: str | None,
+    similar_session_id: str | None,
+    expected: bool,
+) -> None:
+    spec = SimpleNamespace(
+        retrieval_lane=retrieval_lane,
+        similar_text=similar_text,
+        similar_session_id=similar_session_id,
+    )
+
+    assert _spec_needs_vector_provider(spec) is expected
 
 
 @pytest.mark.asyncio
