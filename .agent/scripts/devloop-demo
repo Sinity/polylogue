@@ -19,7 +19,7 @@ artifact_action="$4"
 proof_caveat="$5"
 next_question="$6"
 
-repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
+repo="${POLYLOGUE_REPO:-$(git rev-parse --show-toplevel 2>/dev/null || printf /realm/project/polylogue)}"
 current="${POLYLOGUE_AGENT_CURRENT:-$repo/.agent/conductor-devloop}"
 cd "$repo"
 

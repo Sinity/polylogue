@@ -40,7 +40,8 @@ case "$start_focus:$title" in
     start_focus="Meta"
     ;;
 esac
-root="${POLYLOGUE_AGENT_LOG_ROOT:-/realm/project/polylogue/.agent/conductor-devloop}"
+repo="${POLYLOGUE_REPO:-$(git rev-parse --show-toplevel 2>/dev/null || printf /realm/project/polylogue)}"
+root="${POLYLOGUE_AGENT_LOG_ROOT:-$repo/.agent/conductor-devloop}"
 next_focus="Evidence"
 next_decision="gather current evidence before editing"
 meta_origin="no"

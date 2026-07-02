@@ -12,7 +12,7 @@ EOF
   exit 0
 fi
 
-repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
+repo="${POLYLOGUE_REPO:-$(git rev-parse --show-toplevel 2>/dev/null || printf /realm/project/polylogue)}"
 packet="${POLYLOGUE_CONDUCTOR_PACKET:-$repo/.agent/conductor-devloop}"
 
 mkdir -p "$packet"

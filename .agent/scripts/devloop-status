@@ -17,7 +17,7 @@ EOF
   exit 0
 fi
 
-repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
+repo="${POLYLOGUE_REPO:-$(git rev-parse --show-toplevel 2>/dev/null || printf /realm/project/polylogue)}"
 archive_root="${POLYLOGUE_ARCHIVE_ROOT:-/home/sinity/.local/share/polylogue}"
 current="${POLYLOGUE_AGENT_CURRENT:-$repo/.agent/conductor-devloop}"
 format="text"
