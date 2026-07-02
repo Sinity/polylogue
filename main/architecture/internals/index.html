@@ -551,6 +551,13 @@ bumps, the operator moves the index database aside with
 <li>Schema bumps are deletes-then-defines, never deltas. A schema change
 edits the owning tier DDL/version and documents the re-ingest expectation.
 No upgrade helpers are added for the bump.</li>
+<li>Index schema version 22 adds <code>idx_blocks_tool_result_outcome</code>, a partial
+index over structured <code>tool_result</code> outcome fields. Claim-vs-evidence and
+action-outcome reads anchor on provider-reported <code>is_error</code> / non-zero
+<code>exit_code</code> rather than assistant prose; without an outcome-leading index,
+large archives must scan the whole tool-result block set before pairing
+actions. Existing index tiers must be rebuilt from source evidence
+(<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</li>
 <li>Index schema version 21 adds <code>idx_messages_embedding_prose</code>, a partial
 covering index for authored prose messages eligible for paid embeddings:
 standard <code>message</code> rows from <code>user</code>/<code>assistant</code> roles, with
