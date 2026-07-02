@@ -276,8 +276,24 @@ def select_pending_archive_session_window(
     join_clause = f"LEFT JOIN {status_table} e ON e.session_id = s.session_id" if status_table else ""
     if aggregate_expr is None:
         count_select = "NULL AS estimated_message_count"
+        floor_filter = ""
+        pending_filter = ""
     else:
         count_select = f"{aggregate_expr} AS estimated_message_count"
+        floor_filter = f"AND {aggregate_expr} >= ?" if min_messages is not None else ""
+        if min_messages is not None:
+            params.append(min_messages)
+        pending_filter = (
+            ""
+            if rebuild or not status_table
+            else f"""
+              AND (
+                    e.session_id IS NULL
+                 OR e.needs_reindex = 1
+                 OR COALESCE(e.message_count_embedded, 0) < {aggregate_expr}
+              )
+            """
+        )
     cursor = conn.execute(
         f"""
         SELECT s.session_id, s.title, {status_select}, {count_select}
@@ -285,6 +301,8 @@ def select_pending_archive_session_window(
         {join_clause}
         WHERE 1 = 1
           {id_filter}
+          {floor_filter}
+          {pending_filter}
         ORDER BY (s.sort_key_ms IS NULL), s.sort_key_ms DESC, s.session_id
         """,
         tuple(params),
@@ -305,25 +323,20 @@ def select_pending_archive_session_window(
                 continue
             if min_messages is not None and estimated_count < min_messages:
                 continue
-            message_count = count_archive_session_embeddable_messages(conn, session_id)
-            if message_count <= 0:
-                continue
-            if min_messages is not None and message_count < min_messages:
-                continue
             if not (
                 rebuild
                 or not status_table
                 or status_session_id is None
                 or needs_reindex == 1
-                or embedded_count < message_count
+                or embedded_count < estimated_count
             ):
                 continue
             if max_sessions is not None and len(pending) >= max_sessions:
                 return pending
-            if max_messages is not None and pending and message_total + message_count > max_messages:
+            if max_messages is not None and pending and message_total + estimated_count > max_messages:
                 return pending
-            pending.append(PendingSession(session_id=session_id, title=title, message_count=message_count))
-            message_total += message_count
+            pending.append(PendingSession(session_id=session_id, title=title, message_count=estimated_count))
+            message_total += estimated_count
             if max_messages is not None and message_total >= max_messages:
                 return pending
     return pending
