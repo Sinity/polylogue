@@ -150,47 +150,6 @@ def test_import_command_uses_daemon_url_env_by_default(
     assert (workspace_env["archive_root"] / "inbox" / source.name).is_file()
 
 
-def test_import_command_uses_daemon_url_env_by_default(
-    workspace_env: dict[str, Path],
-    tmp_path: Path,
-    monkeypatch: Any,
-) -> None:
-    """Dev-loop imports must not stage into one archive and schedule another daemon."""
-    from click.testing import CliRunner
-
-    from polylogue.cli.click_app import cli
-
-    source = tmp_path / "source.jsonl"
-    source.write_text('{"type":"session"}\n')
-    monkeypatch.setenv("POLYLOGUE_DAEMON_URL", "http://127.0.0.1:9876")
-
-    captured: dict[str, Any] = {}
-
-    def fake_urlopen(req: Request, timeout: int) -> _FakeDaemonResponse:
-        captured["request"] = req
-        assert req.data is not None
-        staged_path = json.loads(cast("bytes", req.data).decode("utf-8"))["path"]
-        return _FakeDaemonResponse(
-            {
-                "ok": True,
-                "operation_id": "import-source.jsonl",
-                "kind": "import",
-                "status": "pending",
-                "path": staged_path,
-                "message": "scheduled",
-            }
-        )
-
-    with patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen):
-        result = CliRunner().invoke(cli, ["import", str(source)])
-
-    assert result.exit_code == 0, result.output
-    request = cast("Request", captured["request"])
-    assert request.full_url == "http://127.0.0.1:9876/api/ingest"
-    assert "Daemon:       http://127.0.0.1:9876" in result.output
-    assert (workspace_env["archive_root"] / "inbox" / source.name).is_file()
-
-
 def test_import_demo_materializes_fixture_world_before_daemon_request(
     workspace_env: dict[str, Path],
 ) -> None:

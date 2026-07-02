@@ -269,10 +269,7 @@ def _raw_materialization_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]
         for row in candidate_rows:
             if row["parse_error"]:
                 category = _raw_materialization_category(conn, row, archive_root)
-            elif (
-                _raw_materialized_by_native_id(conn, row)
-                or _raw_materialized_by_source_path_native(conn, row)
-            ):
+            elif _raw_materialized_by_native_id(conn, row) or _raw_materialized_by_source_path_native(conn, row):
                 category = "materialized-alias"
             elif _raw_materialized_by_embedded_session_ids(conn, row):
                 continue

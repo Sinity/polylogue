@@ -862,59 +862,6 @@ class TestGetSessionTool:
         assert [message["text"] for message in payload["messages"]] == expected_texts
         assert payload["total"] == len(expected_texts)
 
-    def test_archive_message_payload_uses_shared_reader_envelope(self) -> None:
-        from polylogue.mcp.archive_support import archive_message_payload
-        from polylogue.storage.sqlite.archive_tiers.write import (
-            ArchiveAttachmentRow,
-            ArchiveBlockRow,
-            ArchiveMessageRow,
-        )
-
-        payload = archive_message_payload(
-            ArchiveMessageRow(
-                message_id="session-1:m2",
-                native_id="m2",
-                role="assistant",
-                position=1,
-                variant_index=3,
-                is_active_path=True,
-                is_active_leaf=True,
-                message_type="tool_result",
-                material_origin="agent_authored",
-                has_paste=True,
-                has_tool_use=True,
-                has_thinking=True,
-                occurred_at="2026-06-29T12:00:00+00:00",
-                parent_message_id="session-1:m1",
-                attachments=(ArchiveAttachmentRow(attachment_id="att-1", message_id="session-1:m2"),),
-                blocks=(
-                    ArchiveBlockRow(
-                        block_id="b1",
-                        message_id="session-1:m2",
-                        block_type="tool_result",
-                        text="done",
-                        tool_name="Bash",
-                        tool_id="tool-1",
-                        semantic_type="command",
-                    ),
-                ),
-            ),
-            session_id="session-1",
-        )
-
-        body = payload.model_dump(mode="json")
-        assert body["id"] == "session-1:m2"
-        assert body["target_ref"]["identity_key"] == "message:session-1:session-1:m2"
-        assert body["parent_id"] == "session-1:m1"
-        assert body["branch_index"] == 3
-        assert body["message_type"] == "tool_result"
-        assert body["material_origin"] == "agent_authored"
-        assert body["has_paste"] is True
-        assert body["has_tool_use"] is True
-        assert body["has_thinking"] is True
-        assert body["attachment_refs"] == ["att-1"]
-        assert body["content_blocks"][0]["tool_name"] == "Bash"
-
     def test_get_messages_rejects_unknown_message_type(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
             mock_poly = make_polylogue_mock()
