@@ -994,9 +994,32 @@ def _count_source_raw_sessions(root: Path) -> int:
     return int(row[0]) if row is not None else 0
 
 
+def _missing_index_raw_ids(root: Path) -> list[str]:
+    source_db = root / "source.db"
+    index_db = root / "index.db"
+    if not source_db.exists() or not index_db.exists():
+        return []
+    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0) as conn:
+        conn.execute("ATTACH DATABASE ? AS idx", (str(index_db),))
+        rows = conn.execute(
+            """
+            SELECT r.raw_id
+            FROM raw_sessions r
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM idx.sessions s
+                WHERE s.raw_id = r.raw_id
+            )
+            ORDER BY r.acquired_at_ms, r.raw_id
+            """
+        ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
 async def _rebuild_index_from_source(
     config: Config,
     *,
+    raw_ids: list[str] | None,
     raw_batch_size: int,
     ingest_workers: int | None,
     force_write: bool,
@@ -1019,6 +1042,7 @@ async def _rebuild_index_from_source(
             ingest_workers=ingest_workers,
         )
         parse_result = await parser.parse_from_raw(
+            raw_ids=raw_ids,
             progress_callback=progress_callback,
             force_write=force_write,
             repair_message_fts=True,
@@ -1051,6 +1075,11 @@ async def _rebuild_index_from_source(
 @click.option("--batch-size", type=int, default=50, show_default=True, help="Maximum raw records per ingest batch.")
 @click.option("--workers", type=int, default=None, help="Optional ingest worker count.")
 @click.option(
+    "--only-missing",
+    is_flag=True,
+    help="Replay only source raw rows that do not yet have index.sessions rows.",
+)
+@click.option(
     "--force-write",
     is_flag=True,
     help="Rewrite sessions even when the parsed content hash matches existing index rows.",
@@ -1071,6 +1100,7 @@ async def _rebuild_index_from_source(
 def rebuild_index_command(
     batch_size: int,
     workers: int | None,
+    only_missing: bool,
     force_write: bool,
     no_materialize: bool,
     output_format: str,
@@ -1090,10 +1120,13 @@ def rebuild_index_command(
 
     root = archive_root()
     raw_count = _count_source_raw_sessions(root)
+    raw_ids = _missing_index_raw_ids(root) if only_missing else None
+    selected_raw_count = len(raw_ids) if raw_ids is not None else raw_count
     if raw_count == 0:
         payload = {
             "archive_root": str(root),
             "raw_session_count": 0,
+            "selected_raw_count": 0,
             "status": "empty-source",
             "materialized": False,
         }
@@ -1102,6 +1135,32 @@ def rebuild_index_command(
         else:
             click.echo(f"Archive root: {root}")
             click.echo("No source.db raw_sessions rows found.")
+        return
+    if only_missing and selected_raw_count == 0 and no_materialize:
+        payload = {
+            "archive_root": str(root),
+            "raw_session_count": raw_count,
+            "selected_raw_count": 0,
+            "only_missing": True,
+            "status": "ok",
+            "materialized": False,
+            "parse_counts": {},
+            "changed_counts": {},
+            "processed_session_count": 0,
+            "parse_failure_count": 0,
+            "batch_count": 0,
+            "materialized_session_count": 0,
+            "materialized_rebuilt": False,
+            "materialize_observation": None,
+        }
+        if output_format == "json":
+            click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            click.echo(f"Archive root: {root}")
+            click.echo(f"Raw rows:     {raw_count:,}")
+            click.echo("Selected:     0 missing raw row(s)")
+            click.echo("Materialized: skipped")
+            click.echo("Elapsed:      0.0s")
         return
 
     started = datetime.now(UTC)
@@ -1115,6 +1174,7 @@ def rebuild_index_command(
     result = asyncio.run(
         _rebuild_index_from_source(
             config,
+            raw_ids=raw_ids,
             raw_batch_size=batch_size,
             ingest_workers=workers,
             force_write=force_write,
@@ -1126,6 +1186,8 @@ def rebuild_index_command(
     payload = {
         "archive_root": str(root),
         "raw_session_count": raw_count,
+        "selected_raw_count": selected_raw_count,
+        "only_missing": only_missing,
         "batch_size": batch_size,
         "workers": workers,
         "force_write": force_write,
@@ -1142,6 +1204,8 @@ def rebuild_index_command(
 
     click.echo(f"Archive root: {root}")
     click.echo(f"Raw rows:     {raw_count:,}")
+    if only_missing:
+        click.echo(f"Selected:     {selected_raw_count:,} missing raw row(s)")
     click.echo(f"Parsed:       {result['processed_session_count']:,} changed session(s)")
     click.echo(f"Batches:      {result['batch_count']:,}")
     click.echo(f"Failures:     {result['parse_failure_count']:,}")

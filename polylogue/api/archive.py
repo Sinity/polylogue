@@ -22,7 +22,7 @@ from polylogue.archive.message.roles import MessageRoleFilter, Role
 from polylogue.archive.message.types import MessageType, validate_message_type_filter
 from polylogue.archive.query.predicate import QueryFieldPredicate, QueryFieldRef
 from polylogue.archive.query.spec import normalize_action_sequence, normalize_action_terms, parse_query_date
-from polylogue.archive.semantic.content_projection import ContentProjectionSpec
+from polylogue.archive.semantic.content_projection import ContentProjectionSpec, project_message_content
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.context.compiler import (
@@ -3826,20 +3826,34 @@ class PolylogueArchiveMixin:
 
         Raises ``SessionNotFoundError`` if the session does not exist.
         """
-        session = await self.get_session(session_id, content_projection=content_projection)
-        if session is None:
+        if material_origin:
+            session = await self.get_session(session_id, content_projection=content_projection)
+            if session is None:
+                raise SessionNotFoundError(session_id)
+            messages = [
+                message
+                for message in session.messages
+                if _archive_message_matches(
+                    message,
+                    message_role=message_role,
+                    message_type=message_type,
+                    material_origin=material_origin,
+                )
+            ]
+            return messages[offset : offset + limit], len(messages)
+
+        messages, total = await self.repository.get_messages_paginated(
+            session_id,
+            message_role=message_role,
+            message_type=message_type,
+            limit=limit,
+            offset=offset,
+        )
+        if total == 0 and await self.repository.resolve_id(session_id) is None:
             raise SessionNotFoundError(session_id)
-        messages = [
-            message
-            for message in session.messages
-            if _archive_message_matches(
-                message,
-                message_role=message_role,
-                message_type=message_type,
-                material_origin=material_origin,
-            )
-        ]
-        return messages[offset : offset + limit], len(messages)
+        if content_projection is not None and content_projection.filters_content():
+            messages = project_message_content(messages, content_projection)
+        return messages, total
 
     async def bulk_get_messages(
         self,

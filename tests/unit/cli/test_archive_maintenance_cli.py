@@ -1030,9 +1030,58 @@ def test_rebuild_index_replays_source_rows_with_materialization_controls(
     assert payload["status"] == "ok"
     assert captured == {
         "archive_root": cli_workspace["archive_root"],
+        "raw_ids": None,
         "raw_batch_size": 7,
         "ingest_workers": 2,
         "force_write": True,
         "materialize": False,
         "progress_callback": None,
     }
+
+
+def test_rebuild_index_can_replay_only_missing_source_rows(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_rebuild(config: SimpleNamespace, **kwargs: object) -> dict[str, object]:
+        captured["archive_root"] = config.archive_root
+        captured.update(kwargs)
+        return {
+            "parse_counts": {"sessions": 2},
+            "changed_counts": {"sessions": 2},
+            "processed_session_count": 2,
+            "parse_failure_count": 0,
+            "batch_count": 1,
+            "materialized": True,
+            "materialized_session_count": 5,
+            "materialized_rebuilt": True,
+            "materialize_observation": None,
+        }
+
+    monkeypatch.setattr("polylogue.cli.commands.maintenance._count_source_raw_sessions", lambda _root: 10)
+    monkeypatch.setattr("polylogue.cli.commands.maintenance._missing_index_raw_ids", lambda _root: ["raw-a", "raw-b"])
+    monkeypatch.setattr("polylogue.cli.commands.maintenance._rebuild_index_from_source", fake_rebuild)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "rebuild-index",
+            "--only-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["raw_session_count"] == 10
+    assert payload["selected_raw_count"] == 2
+    assert payload["only_missing"] is True
+    assert captured["raw_ids"] == ["raw-a", "raw-b"]
