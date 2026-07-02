@@ -346,8 +346,8 @@ def test_status_text_detail_does_not_claim_zero_cost_when_exact_pending_count_ti
         )
 
     assert result.exit_code == 0
-    assert "Pending:               1 convs, msgs not calculated" in result.output
-    assert "Estimated total cost:  unknown" in result.output
+    assert "Pending:              1 convs, msgs not calculated" in result.output
+    assert "Estimated total cost: unknown" in result.output
     assert "use --detail" not in result.output
 
 
@@ -611,10 +611,13 @@ def test_status_text_prints_machine_readable_next_action(tmp_path: Path) -> None
 
     output = _run_status_text(db_path, cfg=_Cfg(embedding_enabled=False, voyage_api_key="vk-live"))
 
-    assert "Configured model:      voyage-4 (1024d)" in output
-    assert "Monthly cost cap:      $5.00" in output
-    assert "Next action:           enable_embeddings" in output
-    assert "Command:               polylogue ops embed enable --yes" in output
+    assert "Configured model:     voyage-4 (1024d)" in output
+    assert "Monthly cost cap:     $5.00" in output
+    assert "Total sessions:       2" in output
+    assert "Embedded sessions:    0" in output
+    assert "Embedded messages:    0" in output
+    assert "Next action:          enable_embeddings" in output
+    assert "Command:              polylogue ops embed enable --yes" in output
 
 
 def test_status_text_prints_manual_backfill_when_config_disabled_but_partial(tmp_path: Path) -> None:
@@ -623,8 +626,8 @@ def test_status_text_prints_manual_backfill_when_config_disabled_but_partial(tmp
 
     output = _run_status_text(db_anchor, cfg=_Cfg(embedding_enabled=False, voyage_api_key="vk-live"))
 
-    assert "Next action:           continue_backfill" in output
-    assert "Command:               polylogue ops embed backfill --yes --max-sessions 10" in output
+    assert "Next action:          continue_backfill" in output
+    assert "Command:              polylogue ops embed backfill --yes --max-sessions 10" in output
 
 
 def test_status_text_prints_daemon_catchup_when_enabled(tmp_path: Path) -> None:
@@ -633,8 +636,8 @@ def test_status_text_prints_daemon_catchup_when_enabled(tmp_path: Path) -> None:
 
     output = _run_status_text(db_path, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
-    assert "Next action:           drain_backlog" in output
-    assert "Command:               polylogue ops embed backfill --yes --max-sessions 10" in output
+    assert "Next action:          drain_backlog" in output
+    assert "Command:              polylogue ops embed backfill --yes --max-sessions 10" in output
 
 
 def test_status_json_reports_ready_next_action(tmp_path: Path) -> None:

@@ -13,6 +13,8 @@ from polylogue.storage.embeddings.status_payload import (
     embedding_status_payload,
 )
 
+_FIELD_WIDTH = 22
+
 
 def _payload_int(value: object) -> int:
     if isinstance(value, bool):
@@ -29,16 +31,20 @@ def _payload_int(value: object) -> int:
     return 0
 
 
+def _render_field(label: str, value: object) -> None:
+    click.echo(f"  {label + ':':<{_FIELD_WIDTH}}{value}")
+
+
 def _render_embedding_window(payload: EmbeddingStatusPayload) -> None:
     if payload["oldest_embedded_at"] or payload["newest_embedded_at"]:
-        click.echo(
-            f"  Embedded at:           {payload['oldest_embedded_at'] or '-'} -> {payload['newest_embedded_at'] or '-'}"
+        _render_field(
+            "Embedded at", f"{payload['oldest_embedded_at'] or '-'} -> {payload['newest_embedded_at'] or '-'}"
         )
 
 
 def _render_named_counts(label: str, values: Mapping[str, int] | Mapping[int, int]) -> None:
     if values:
-        click.echo(f"  {label}:                {', '.join(f'{name} ({count})' for name, count in values.items())}")
+        _render_field(label, ", ".join(f"{name} ({count})" for name, count in values.items()))
 
 
 def _render_retrieval_bands(payload: EmbeddingStatusPayload) -> None:
@@ -81,9 +87,9 @@ def _render_next_actions(payload: EmbeddingStatusPayload) -> None:
     command = action["command"]
     if command is None:
         return
-    click.echo(f"  Next action:           {action['code']}")
-    click.echo(f"  Reason:                {action['reason']}")
-    click.echo(f"  Command:               {command}")
+    _render_field("Next action", action["code"])
+    _render_field("Reason", action["reason"])
+    _render_field("Command", command)
 
 
 def render_embedding_stats(payload: EmbeddingStatusPayload, *, json_output: bool = False) -> None:
@@ -93,31 +99,31 @@ def render_embedding_stats(payload: EmbeddingStatusPayload, *, json_output: bool
         return
 
     click.echo("\nEmbedding Statistics")
-    click.echo(f"  Config enabled:        {'yes' if payload['config_enabled'] else 'no'}")
-    click.echo(f"  Voyage key:            {'present' if payload['has_voyage_api_key'] else 'missing'}")
-    click.echo(f"  Daemon stage:          {'enabled' if payload['daemon_stage_enabled'] else 'disabled'}")
-    click.echo(f"  Configured model:      {payload['configured_model']} ({payload['configured_dimension']}d)")
+    _render_field("Config enabled", "yes" if payload["config_enabled"] else "no")
+    _render_field("Voyage key", "present" if payload["has_voyage_api_key"] else "missing")
+    _render_field("Daemon stage", "enabled" if payload["daemon_stage_enabled"] else "disabled")
+    _render_field("Configured model", f"{payload['configured_model']} ({payload['configured_dimension']}d)")
     if payload["monthly_cost_cap_usd"] > 0:
-        click.echo(f"  Monthly cost cap:      ${payload['monthly_cost_cap_usd']:.2f}")
+        _render_field("Monthly cost cap", f"${payload['monthly_cost_cap_usd']:.2f}")
     else:
-        click.echo("  Monthly cost cap:      unbounded")
-    click.echo(f"  Status:                {payload['status']}")
-    click.echo(f"  Total sessions:   {payload['total_sessions']}")
-    click.echo(f"  Embedded sessions:{payload['embedded_sessions']:>4}")
-    click.echo(f"  Embedded messages:     {payload['embedded_messages']}")
-    click.echo(f"  Coverage:              {payload['embedding_coverage_percent']:.1f}%")
+        _render_field("Monthly cost cap", "unbounded")
+    _render_field("Status", payload["status"])
+    _render_field("Total sessions", payload["total_sessions"])
+    _render_field("Embedded sessions", payload["embedded_sessions"])
+    _render_field("Embedded messages", payload["embedded_messages"])
+    _render_field("Coverage", f"{payload['embedding_coverage_percent']:.1f}%")
     pending_messages = (
         f"{payload['pending_messages']} msgs" if payload["pending_messages_exact"] else "msgs not calculated"
     )
-    click.echo(f"  Pending:               {payload['pending_sessions']} convs, {pending_messages}")
-    click.echo(f"  Retrieval ready:       {'yes' if payload['retrieval_ready'] else 'no'}")
-    click.echo(f"  Freshness:             {payload['freshness_status']}")
-    click.echo(f"  Stale messages:        {payload['stale_messages']}")
-    click.echo(f"  Missing provenance:    {payload['messages_missing_provenance']}")
+    _render_field("Pending", f"{payload['pending_sessions']} convs, {pending_messages}")
+    _render_field("Retrieval ready", "yes" if payload["retrieval_ready"] else "no")
+    _render_field("Freshness", payload["freshness_status"])
+    _render_field("Stale messages", payload["stale_messages"])
+    _render_field("Missing provenance", payload["messages_missing_provenance"])
     if payload["total_estimated_cost_usd"] is None:
-        click.echo("  Estimated total cost:  unknown")
+        _render_field("Estimated total cost", "unknown")
     else:
-        click.echo(f"  Estimated total cost:  ~${payload['total_estimated_cost_usd']:.2f}")
+        _render_field("Estimated total cost", f"~${payload['total_estimated_cost_usd']:.2f}")
     _render_next_actions(payload)
     _render_embedding_window(payload)
     _render_named_counts("Models", payload["embedding_models"])

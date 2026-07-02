@@ -160,8 +160,8 @@ class TestShowEmbeddingStats:
 
         captured = capsys.readouterr()
         assert "Embedding Statistics" in captured.out
-        assert f"Coverage:              {expected_coverage}" in captured.out
-        assert f"Pending:               {expected_pending}" in captured.out
+        assert f"Coverage:             {expected_coverage}" in captured.out
+        assert f"Pending:              {expected_pending}" in captured.out
         assert "Retrieval ready:" in captured.out
 
     def test_show_stats_embedding_status_missing(self, mock_env: MagicMock, capsys: pytest.CaptureFixture[str]) -> None:
