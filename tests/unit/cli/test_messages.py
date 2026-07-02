@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from pathlib import Path
 from types import TracebackType
 from typing import cast
@@ -9,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from polylogue.cli.messages import run_messages, run_raw
+from polylogue.cli.read_views.messages import _write_messages_file
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
@@ -37,36 +39,7 @@ class _FakeApi:
         self.messages_calls: list[dict[str, object]] = []
         self.raw_kwargs: dict[str, object] = {}
 
-    async def __aenter__(self) -> _FakeApi:
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        return None
-
-    async def get_messages_paginated(
-        self, session_id: str, **kwargs: object
-    ) -> tuple[list[dict[str, object]], int] | None:
-        self.messages_kwargs = {"session_id": session_id, **kwargs}
-        self.messages_calls.append(self.messages_kwargs)
-        if self.messages_result is None:
-            from polylogue.api.archive import SessionNotFoundError
-
-            raise SessionNotFoundError("missing")
-        msgs, total = self.messages_result
-        if self.paginate_messages:
-            offset_value = kwargs.get("offset", 0)
-            limit_value = kwargs.get("limit", len(msgs))
-            assert isinstance(offset_value, int)
-            assert isinstance(limit_value, int)
-            offset = offset_value
-            limit = limit_value
-            msgs = msgs[offset : offset + limit]
-        # Convert dicts to fake objects with attribute access for Message compat
+    def _message_objects(self, msgs: list[dict[str, object]]) -> list[object]:
         defaults: dict[str, object] = {
             "blocks": [],
             "parent_id": None,
@@ -82,23 +55,63 @@ class _FakeApi:
             "cache_write_tokens": 0,
             "model_name": None,
         }
-        objs = (
-            [
-                type(
-                    "_FakeMsg",
-                    (),
-                    {
-                        **defaults,
-                        **m,
-                        "message_type": type("_FakeMT", (), {"value": m.get("message_type", "")})(),
-                    },
-                )()
-                for m in msgs
-            ]
-            if msgs
-            else []
-        )
+        return [
+            type(
+                "_FakeMsg",
+                (),
+                {
+                    **defaults,
+                    **m,
+                    "message_type": type("_FakeMT", (), {"value": m.get("message_type", "")})(),
+                },
+            )()
+            for m in msgs
+        ]
+
+    async def __aenter__(self) -> _FakeApi:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        return None
+
+    async def get_messages_paginated(self, session_id: str, **kwargs: object) -> tuple[list[object], int] | None:
+        self.messages_kwargs = {"session_id": session_id, **kwargs}
+        self.messages_calls.append(self.messages_kwargs)
+        if self.messages_result is None:
+            from polylogue.api.archive import SessionNotFoundError
+
+            raise SessionNotFoundError("missing")
+        msgs, total = self.messages_result
+        if self.paginate_messages:
+            offset_value = kwargs.get("offset", 0)
+            limit_value = kwargs.get("limit", len(msgs))
+            assert isinstance(offset_value, int)
+            assert isinstance(limit_value, int)
+            offset = offset_value
+            limit = limit_value
+            msgs = msgs[offset : offset + limit]
+        objs = self._message_objects(msgs) if msgs else []
         return objs, total
+
+    async def iter_messages(
+        self,
+        session_id: str,
+        *,
+        limit: int | None = None,
+        **_kwargs: object,
+    ) -> AsyncIterator[object]:
+        del session_id
+        if self.messages_result is None:
+            return
+        msgs, _total = self.messages_result
+        selected = msgs if limit is None else msgs[:limit]
+        for obj in self._message_objects(selected):
+            yield obj
 
     async def get_raw_artifacts_for_session(
         self, session_id: str, **kwargs: object
@@ -227,6 +240,39 @@ def test_run_messages_json_is_single_finite_document(tmp_path: Path, capsys: pyt
     assert payload["session_id"] == "conv-1"
     assert [m["text"] for m in payload["messages"]] == ["[bold]first[/bold]", "second"]
     assert payload["total"] == 2
+
+
+def test_write_messages_file_streams_json_payload(tmp_path: Path) -> None:
+    env = _env()
+    out = tmp_path / "messages.json"
+    api = _FakeApi(
+        messages_result=(
+            [
+                {"id": "m1", "role": "user", "message_type": "message", "text": "first"},
+                {"id": "m2", "role": "assistant", "message_type": "message", "text": "second"},
+            ],
+            2,
+        )
+    )
+
+    with patch("polylogue.api.Polylogue.open", return_value=api):
+        _write_messages_file(
+            env,
+            _request(tmp_path),
+            session_id="conv-1",
+            limit=1,
+            offset=1,
+            full=False,
+            output_format="json",
+            out_path=out,
+        )
+
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["session_id"] == "conv-1"
+    assert payload["total"] == 2
+    assert payload["limit"] == 1
+    assert payload["offset"] == 1
+    assert [message["text"] for message in payload["messages"]] == ["second"]
 
 
 def test_run_messages_ndjson_emits_one_json_document_per_line(

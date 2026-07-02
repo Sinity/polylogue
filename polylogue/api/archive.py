@@ -3855,6 +3855,40 @@ class PolylogueArchiveMixin:
             messages = project_message_content(messages, content_projection)
         return messages, total
 
+    def iter_messages(
+        self,
+        session_id: str,
+        *,
+        message_roles: MessageRoleFilter = (),
+        material_origin: tuple[MaterialOrigin, ...] = (),
+        limit: int | None = None,
+    ) -> AsyncIterator[Message]:
+        async def _iter() -> AsyncIterator[Message]:
+            if not material_origin:
+                async for message in self.repository.iter_messages(
+                    session_id,
+                    message_roles=message_roles,
+                    limit=limit,
+                ):
+                    yield message
+                return
+
+            session = await self.get_session(session_id)
+            if session is None:
+                return
+            count = 0
+            for message in session.messages:
+                if message_roles and message.role not in message_roles:
+                    continue
+                if message.material_origin not in material_origin:
+                    continue
+                if limit is not None and count >= limit:
+                    break
+                count += 1
+                yield message
+
+        return _iter()
+
     async def bulk_get_messages(
         self,
         session_ids: Sequence[str],
