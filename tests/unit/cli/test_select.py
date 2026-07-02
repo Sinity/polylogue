@@ -108,9 +108,24 @@ def test_render_select_rows_emits_one_row_per_line() -> None:
     rows = [_row(1), _row(2)]
 
     assert render_select_rows(rows, "id") == "conv-1\nconv-2"
-    assert render_select_rows(rows, "json").splitlines() == [
-        '{"id":"conv-1","origin":"claude-code-session","title":"Session 1","date":"2026-05-02"}',
-        '{"id":"conv-2","origin":"claude-code-session","title":"Session 2","date":"2026-05-02"}',
+
+
+def test_render_select_rows_json_emits_single_array() -> None:
+    rows = [_row(1), _row(2)]
+
+    assert json.loads(render_select_rows(rows, "json")) == [
+        {
+            "id": "conv-1",
+            "origin": "claude-code-session",
+            "title": "Session 1",
+            "date": "2026-05-02",
+        },
+        {
+            "id": "conv-2",
+            "origin": "claude-code-session",
+            "title": "Session 2",
+            "date": "2026-05-02",
+        },
     ]
 
 

@@ -81,6 +81,8 @@ def render_select_row(row: SelectSessionRow, print_field: SelectPrintField) -> s
 
 def render_select_rows(rows: list[SelectSessionRow], print_field: SelectPrintField) -> str:
     """Render one or more selector rows for noninteractive output."""
+    if print_field == "json":
+        return dumps([row.to_json() for row in rows])
     return "\n".join(render_select_row(row, print_field) for row in rows)
 
 

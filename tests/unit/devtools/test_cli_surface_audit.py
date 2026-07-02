@@ -71,6 +71,15 @@ def test_cli_surface_audit_prunes_stale_unbounded_output_by_default(
     assert "`status_plain`" in readme
 
 
+def test_cli_surface_audit_records_json_array_shape() -> None:
+    payload = [{"id": "s1"}, {"id": "s2"}]
+
+    assert cli_surface_audit._json_top_level_bytes(json.dumps(payload)) == {
+        "$array_bytes": len(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()),
+        "$array_items": 2,
+    }
+
+
 def test_cli_surface_audit_can_include_unbounded_diagnostic(
     tmp_path: Path,
     monkeypatch: Any,

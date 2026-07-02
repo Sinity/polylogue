@@ -362,7 +362,8 @@ Options:
   -n, --limit INTEGER RANGE  Max candidate sessions.  [default: 20; x>=1]
   --print [id|title|origin]  Field to print for selected or candidate
                              sessions.  [default: id]
-  --json                     Print selected or candidate sessions as JSON.
+  --json                     Shortcut for --format json.
+  -f, --format [json]
   --help                     Show this message and exit.
 ```
 
