@@ -195,6 +195,26 @@ def test_status_json_reads_archive_file_set_from_archive_index(tmp_path: Path) -
     assert payload["embedding_dimensions"] == {"1024": 1} or payload["embedding_dimensions"] == {1024: 1}
 
 
+def test_status_json_reports_manual_backfill_when_config_disabled_but_partial(tmp_path: Path) -> None:
+    db_anchor = tmp_path / "custom.sqlite"
+    _seed_archive_file_set_from_archive_tiers(tmp_path / "index.db")
+
+    payload = _run_status(db_anchor, cfg=_Cfg(embedding_enabled=False, voyage_api_key="vk-live"))
+
+    assert payload["status"] == "partial"
+    assert payload["retrieval_ready"] is True
+    assert payload["config_enabled"] is False
+    assert payload["daemon_stage_enabled"] is False
+    assert payload["next_action"] == {
+        "code": "continue_backfill",
+        "command": "polylogue ops embed backfill --max-sessions 10",
+        "reason": (
+            "Manual embedding coverage exists, but daemon convergence is disabled; "
+            "continue bounded backfill or enable daemon catch-up."
+        ),
+    }
+
+
 def test_status_json_reads_latest_catchup_from_ops_db(tmp_path: Path) -> None:
     db_anchor = tmp_path / "index.db"
     archive_db = tmp_path / "index.db"
@@ -351,6 +371,16 @@ def test_status_text_prints_machine_readable_next_action(tmp_path: Path) -> None
     assert "Monthly cost cap:      $5.00" in output
     assert "Next action:           enable_embeddings" in output
     assert "Command:               polylogue ops embed enable --yes" in output
+
+
+def test_status_text_prints_manual_backfill_when_config_disabled_but_partial(tmp_path: Path) -> None:
+    db_anchor = tmp_path / "custom.sqlite"
+    _seed_archive_file_set_from_archive_tiers(tmp_path / "index.db")
+
+    output = _run_status_text(db_anchor, cfg=_Cfg(embedding_enabled=False, voyage_api_key="vk-live"))
+
+    assert "Next action:           continue_backfill" in output
+    assert "Command:               polylogue ops embed backfill --max-sessions 10" in output
 
 
 def test_status_text_prints_daemon_catchup_when_enabled(tmp_path: Path) -> None:

@@ -208,6 +208,7 @@ def _next_action(
     config_enabled: bool,
     has_voyage_api_key: bool,
     total_sessions: int,
+    embedded_sessions: int,
     pending_sessions: int,
     retrieval_ready: bool,
     stale_messages: int,
@@ -226,6 +227,21 @@ def _next_action(
             "reason": "Semantic retrieval needs a Voyage API key before embedding can run.",
         }
     if not config_enabled:
+        if pending_sessions <= 0 and retrieval_ready:
+            return {
+                "code": "ready",
+                "command": "polylogue --semantic <query>",
+                "reason": "Embeddings are retrieval-ready.",
+            }
+        if embedded_sessions > 0 and pending_sessions > 0:
+            return {
+                "code": "continue_backfill",
+                "command": "polylogue ops embed backfill --max-sessions 10",
+                "reason": (
+                    "Manual embedding coverage exists, but daemon convergence is disabled; "
+                    "continue bounded backfill or enable daemon catch-up."
+                ),
+            }
         return {
             "code": "enable_embeddings",
             "command": "polylogue ops embed enable --yes",
@@ -321,6 +337,7 @@ def _payload_from_stats(
             config_enabled=config_enabled,
             has_voyage_api_key=has_voyage_api_key,
             total_sessions=total_sessions,
+            embedded_sessions=embedded_sessions,
             pending_sessions=pending_sessions,
             retrieval_ready=retrieval_ready,
             stale_messages=stats.stale_messages,
