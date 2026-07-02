@@ -21,10 +21,15 @@ repo="${POLYLOGUE_REPO:-$(git rev-parse --show-toplevel 2>/dev/null || printf /r
 archive_root="${POLYLOGUE_ARCHIVE_ROOT:-/home/sinity/.local/share/polylogue}"
 current="${POLYLOGUE_AGENT_CURRENT:-$repo/.agent/conductor-devloop}"
 format="text"
+quick=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --json|--quick|--focus)
+    --json|--focus)
       format="$1"
+      shift
+      ;;
+    --quick)
+      quick=true
       shift
       ;;
     *)
@@ -144,8 +149,10 @@ if [ "$format" = "--json" ]; then
       " 2>/dev/null || true
     )"
   fi
-  ops_status_json="$(polylogue ops status --format json 2>/dev/null || true)"
-  raw_debt_json="$(raw_materialization_debt_payload)"
+  if [ "$quick" = false ]; then
+    ops_status_json="$(polylogue ops status --format json 2>/dev/null || true)"
+    raw_debt_json="$(raw_materialization_debt_payload)"
+  fi
   prod_state="$(systemctl --user show polylogued.service -p ActiveState --value 2>/dev/null || true)"
   prod_sub_state="$(systemctl --user show polylogued.service -p SubState --value 2>/dev/null || true)"
   devloop_state="$(systemctl --user show polylogued-devloop.service -p ActiveState --value 2>/dev/null || true)"
@@ -153,7 +160,11 @@ if [ "$format" = "--json" ]; then
   polylogued_rows="$(polylogued_process_rows)"
   polylogued_devloop_rows="$(polylogued_devloop_rows "$repo")"
   polylogued_non_devloop_rows="$(polylogued_non_devloop_rows "$repo")"
-  worktree_gc_json="$(POLYLOGUE_TASK_HISTORY_DISABLE=1 devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"
+  if [ "$quick" = false ]; then
+    worktree_gc_json="$(POLYLOGUE_TASK_HISTORY_DISABLE=1 devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"
+  else
+    worktree_gc_json='{}'
+  fi
   python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$observed_events" "$source_version" "$raw_rows" "$raw_materialization_debt" "$raw_materialization_replayable" "$ops_status_json" "$raw_debt_json" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$polylogued_devloop_rows" "$polylogued_non_devloop_rows" "$worktree_gc_json" "$pressure_rows" "$performance_blocked" "$packet_bytes" "$packet_files" "$packet_dirs" "$operating_log_bytes" "$events_bytes" <<'PY'
 import json
 import sys
@@ -560,7 +571,7 @@ if [ -n "$non_devloop_rows" ]; then
 fi
 
 printf '\n== worktrees ==\n'
-if [ "$format" = "--quick" ]; then
+if [ "$quick" = true ]; then
   printf 'skipped in --quick mode; run full status or devtools workspace worktree-gc --json for details\n'
 else
   worktree_gc_json="$(POLYLOGUE_TASK_HISTORY_DISABLE=1 devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"

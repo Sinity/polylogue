@@ -847,18 +847,36 @@ PY
   fi
 fi
 
+prod_active_state="$(
+  systemctl --user show polylogued.service -p ActiveState --value 2>/dev/null || true
+)"
+prod_sub_state="$(
+  systemctl --user show polylogued.service -p SubState --value 2>/dev/null || true
+)"
+prod_active_state="${prod_active_state:-unknown}"
+prod_sub_state="${prod_sub_state:-unknown}"
+prod_active_running=false
+if [ "$prod_active_state" = "active" ] && [ "$prod_sub_state" = "running" ]; then
+  prod_active_running=true
+fi
+
 polylogued_pids="$(polylogued_process_rows)"
 polylogued_devloop_pids="$(polylogued_devloop_rows "$repo")"
 polylogued_non_devloop_pids="$(polylogued_non_devloop_rows "$repo")"
 if [ -z "$polylogued_pids" ]; then
-  warn "polylogued is not running; acceptable only between convergence restarts"
+  if [ "$prod_active_running" = true ]; then
+    ok "no branch-local devloop daemon; prod polylogued.service is active"
+  else
+    warn "polylogued is not running; acceptable only between convergence restarts"
+  fi
 else
   count="$(printf '%s\n' "$polylogued_pids" | wc -l)"
   devloop_count="$(printf '%s\n' "$polylogued_devloop_pids" | sed '/^$/d' | wc -l)"
-  if [ "$count" -eq 1 ] && [ "$devloop_count" -eq 1 ] && [ -z "$polylogued_non_devloop_pids" ]; then
-    ok "one devloop polylogued run process"
+  non_devloop_count="$(printf '%s\n' "$polylogued_non_devloop_pids" | sed '/^$/d' | wc -l)"
+  if [ "$devloop_count" -eq 1 ] && [ "$non_devloop_count" -le 1 ]; then
+    ok "one devloop polylogued run process; prod daemon may also be active"
   else
-    warn "polylogued process shape is not the expected single devloop daemon: total=$count devloop=$devloop_count"
+    warn "polylogued process shape is not expected: total=$count devloop=$devloop_count non_devloop=$non_devloop_count"
     printf '%s\n' "$polylogued_pids"
     if [ -n "$polylogued_non_devloop_pids" ]; then
       printf 'non-devloop polylogued rows:\n%s\n' "$polylogued_non_devloop_pids"
@@ -901,30 +919,42 @@ PY
   fi
 fi
 
-prod_active_state="$(
-  systemctl --user show polylogued.service -p ActiveState --value 2>/dev/null || true
-)"
-prod_sub_state="$(
-  systemctl --user show polylogued.service -p SubState --value 2>/dev/null || true
-)"
-prod_active_state="${prod_active_state:-unknown}"
-prod_sub_state="${prod_sub_state:-unknown}"
 if [ "$prod_active_state" = "inactive" ] && { [ "$prod_sub_state" = "dead" ] || [ "$prod_sub_state" = "unknown" ]; }; then
   ok "prod polylogued.service inactive"
 elif [ "$prod_active_state" = "unknown" ]; then
   ok "prod polylogued.service unavailable/inactive"
+elif [ "$prod_active_state" = "active" ] && [ "$prod_sub_state" = "running" ]; then
+  ok "prod polylogued.service active on canonical archive"
 else
-  warn "prod polylogued.service state is $prod_active_state/$prod_sub_state; devloop expects inactive/dead"
+  warn "prod polylogued.service state is $prod_active_state/$prod_sub_state; expected inactive/dead or active/running"
 fi
 
-status_json="$("$repo/.agent/scripts/devloop-status" --json 2>/dev/null || true)"
+status_json="$("$repo/.agent/scripts/devloop-status" --quick --json 2>/dev/null || true)"
+
+status_sessions="?"
+status_messages="?"
+if [ -n "$status_json" ]; then
+  mapfile -t status_count_fields < <(
+    python3 - "$status_json" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+
+data = json.loads(sys.argv[1])
+index = data.get("index") or {}
+print(index.get("sessions") if index.get("sessions") is not None else "?")
+print(index.get("messages") if index.get("messages") is not None else "?")
+PY
+  )
+  status_sessions="${status_count_fields[0]:-?}"
+  status_messages="${status_count_fields[1]:-?}"
+fi
 
 if [ -f "$archive_root/index.db" ]; then
   version="$(sqlite3 "$archive_root/index.db" 'PRAGMA user_version;' 2>/dev/null || true)"
-  sessions="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM sessions;' 2>/dev/null || true)"
-  messages="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM messages;' 2>/dev/null || true)"
   if [ "$version" = "$expected_index_version" ]; then
-    ok "active archive root $archive_root schema v$version sessions=${sessions:-?} messages=${messages:-?}"
+    ok "active archive root $archive_root schema v$version sessions=${status_sessions:-?} messages=${status_messages:-?}"
   else
     warn "active archive root $archive_root schema v${version:-unknown}, expected v$expected_index_version"
   fi
@@ -1018,7 +1048,7 @@ PY
     warn "devloop-status --quick raw join-gap count disagrees with JSON status"
   fi
 else
-  warn "devloop-status --json failed before raw materialization review"
+  warn "devloop-status --quick --json failed before raw materialization review"
 fi
 
 if [ -e /realm/tmp/polylogue-dev/archive/index.db ]; then
@@ -1028,9 +1058,9 @@ else
 fi
 
 if [ -z "$status_json" ]; then
-  warn "devloop-status --json failed"
+  warn "devloop-status --quick --json failed"
 else
-  ok "devloop-status --json works"
+  ok "devloop-status --quick --json works"
   if [ -f "$current/ACTIVE-LOOP.md" ]; then
     if python3 - "$status_json" <<'PY'
 from __future__ import annotations
@@ -1052,7 +1082,7 @@ PY
     then
       ok "devloop-status reports active slice, focus, and next action"
     else
-      warn "devloop-status --json omits active loop resume fields"
+      warn "devloop-status --quick --json omits active loop resume fields"
     fi
   fi
 fi

@@ -19,9 +19,10 @@ data, not cleanup for its own sake. Start every loop by running
 `.agent/scripts/devloop-status --json` and `.agent/scripts/devloop-review`,
 reading `ACTIVE-LOOP.md`, and naming the current focus transition with trigger
 and decision. Keep one canonical active archive at
-`/home/sinity/.local/share/polylogue`; keep prod `polylogued.service` inactive
-unless explicitly re-enabled; run one devloop daemon against the canonical root;
-quote counts only with archive root and schema version.
+`/home/sinity/.local/share/polylogue`; prod `polylogued.service` is the
+canonical live daemon when enabled, and the branch-local devloop daemon must use
+isolated ports plus the branch-local dev archive; quote counts only with archive
+root and schema version.
 
 Use focus modes as scopes of attention. `Direction` chooses the next capability
 slice. `Evidence` inspects live source, archive, code, history, and artifacts.
