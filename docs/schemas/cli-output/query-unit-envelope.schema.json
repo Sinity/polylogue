@@ -4,6 +4,30 @@
       "additionalProperties": false,
       "description": "Shared terminal-query row for normalized tool/action evidence.",
       "properties": {
+        "exit_code": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exit Code"
+        },
+        "is_error": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Is Error"
+        },
         "message_id": {
           "title": "Message Id",
           "type": "string"

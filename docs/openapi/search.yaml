@@ -1225,6 +1225,18 @@ components:
           - type: 'null'
           default: null
           title: Output Text
+        is_error:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Is Error
+        exit_code:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Exit Code
       required:
       - session_id
       - message_id
