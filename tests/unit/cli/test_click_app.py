@@ -209,6 +209,52 @@ def test_read_verb_messages_view_forwards_options(cli_runner: CliRunner) -> None
     assert mock_run_messages.call_args.kwargs["session_id"] == "conv-1"
     assert mock_run_messages.call_args.kwargs["output_format"] == "json"
     assert mock_run_messages.call_args.kwargs["limit"] == 2
+    assert mock_run_messages.call_args.kwargs["full"] is False
+
+
+def test_read_verb_messages_view_forwards_full(cli_runner: CliRunner) -> None:
+    """read --view messages --full requests the full single-session body."""
+    with patch("polylogue.cli.messages.run_messages") as mock_run_messages:
+        result = cli_runner.invoke(
+            click_cli,
+            [
+                "--plain",
+                "--id",
+                "conv-1",
+                "read",
+                "--view",
+                "messages",
+                "--full",
+                "-f",
+                "json",
+            ],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0
+    assert mock_run_messages.call_args.kwargs["session_id"] == "conv-1"
+    assert mock_run_messages.call_args.kwargs["limit"] == 50
+    assert mock_run_messages.call_args.kwargs["full"] is True
+
+
+def test_read_verb_messages_full_conflicts_with_limit(cli_runner: CliRunner) -> None:
+    result = cli_runner.invoke(
+        click_cli,
+        [
+            "--plain",
+            "--id",
+            "conv-1",
+            "read",
+            "--view",
+            "messages",
+            "--full",
+            "--limit",
+            "10",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--full and --limit are mutually exclusive" in result.output
 
 
 def test_read_verb_messages_requires_id(cli_runner: CliRunner) -> None:
@@ -536,7 +582,7 @@ def test_read_views_plain_lists_profile_metadata(cli_runner: CliRunner) -> None:
     assert "recovery" not in result.output
     assert "evidence=required" in result.output
     assert "handoff" in result.output
-    assert "options=--limit, --offset" in result.output
+    assert "options=--full, --limit, --offset" in result.output
     assert "options=--confidence-threshold, --github-api, --otlp, --repo-path, --since-hours" in result.output
     assert "scope=query-set" in result.output
     assert (
@@ -576,7 +622,7 @@ def test_read_views_json_outputs_profile_payload(cli_runner: CliRunner) -> None:
     assert views["raw"]["lossiness"] == "raw"
     assert "recovery" not in views
     assert views["context-image"]["successor_handoff"] is True
-    assert views["raw"]["cli_options"] == ["limit", "offset"]
+    assert views["raw"]["cli_options"] == ["full", "limit", "offset"]
     assert views["raw"]["session_policy"] == "required"
     assert views["dialogue"]["accepts_query_set"] is True
     assert views["chronicle"]["accepts_query_set"] is True

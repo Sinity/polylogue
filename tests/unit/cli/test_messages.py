@@ -28,10 +28,13 @@ class _FakeApi:
         *,
         messages_result: tuple[list[dict[str, object]], int] | None = None,
         raw_result: tuple[list[dict[str, object]], int] = ([], 0),
+        paginate_messages: bool = False,
     ) -> None:
         self.messages_result = messages_result
         self.raw_result = raw_result
+        self.paginate_messages = paginate_messages
         self.messages_kwargs: dict[str, object] = {}
+        self.messages_calls: list[dict[str, object]] = []
         self.raw_kwargs: dict[str, object] = {}
 
     async def __aenter__(self) -> _FakeApi:
@@ -49,11 +52,20 @@ class _FakeApi:
         self, session_id: str, **kwargs: object
     ) -> tuple[list[dict[str, object]], int] | None:
         self.messages_kwargs = {"session_id": session_id, **kwargs}
+        self.messages_calls.append(self.messages_kwargs)
         if self.messages_result is None:
             from polylogue.api.archive import SessionNotFoundError
 
             raise SessionNotFoundError("missing")
         msgs, total = self.messages_result
+        if self.paginate_messages:
+            offset_value = kwargs.get("offset", 0)
+            limit_value = kwargs.get("limit", len(msgs))
+            assert isinstance(offset_value, int)
+            assert isinstance(limit_value, int)
+            offset = offset_value
+            limit = limit_value
+            msgs = msgs[offset : offset + limit]
         # Convert dicts to fake objects with attribute access for Message compat
         defaults: dict[str, object] = {
             "blocks": [],
@@ -154,6 +166,39 @@ def test_run_messages_emits_json_and_passes_pagination(tmp_path: Path, capsys: p
     assert api.messages_kwargs["session_id"] == "conv-1"
     assert api.messages_kwargs["limit"] == 5
     assert api.messages_kwargs["offset"] == 2
+
+
+def test_run_messages_full_rereads_with_total_limit(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    env = _env()
+    api = _FakeApi(
+        messages_result=(
+            [
+                {"id": "msg-1", "role": "user", "message_type": "message", "text": "hello"},
+                {"id": "msg-2", "role": "assistant", "message_type": "message", "text": "world"},
+            ],
+            2,
+        ),
+        paginate_messages=True,
+    )
+
+    with patch("polylogue.api.Polylogue.open", return_value=api):
+        run_messages(
+            env,
+            _request(tmp_path),
+            session_id="conv-1",
+            limit=1,
+            offset=0,
+            full=True,
+            output_format="json",
+        )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert len(payload["messages"]) == 2
+    assert payload["limit"] == 2
+    assert api.messages_calls == [
+        {"session_id": "conv-1", "limit": 1, "offset": 0},
+        {"session_id": "conv-1", "limit": 2, "offset": 0},
+    ]
 
 
 def test_run_messages_json_is_single_finite_document(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

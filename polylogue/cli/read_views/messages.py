@@ -24,6 +24,7 @@ def build_message_options(values: ReadViewOptionValues) -> ReadViewMessageOption
     return ReadViewMessageOptions(
         limit=cast(int | None, values.get("limit")),
         offset=cast(int, values.get("offset", 0)),
+        full=cast(bool, values.get("full", False)),
     )
 
 
@@ -36,6 +37,8 @@ def run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVie
     options = cast(ReadViewMessageOptions, invocation.options or ReadViewMessageOptions())
     projection = invocation.projection_spec.projection if invocation.projection_spec is not None else None
     limit = projection.body_limit if projection is not None and projection.body_limit is not None else options.limit
+    if options.full:
+        limit = None
     limit = limit if limit is not None else 50
     offset = projection.body_offset if projection is not None and projection.body_offset is not None else options.offset
 
@@ -54,6 +57,7 @@ def run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVie
                 session_id=invocation.session_id,
                 limit=limit,
                 offset=offset,
+                full=options.full,
                 output_format=invocation.output_format,
             )
         finally:
@@ -67,6 +71,7 @@ def run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVie
         session_id=invocation.session_id,
         limit=limit,
         offset=offset,
+        full=options.full,
         output_format=invocation.output_format,
     )
 

@@ -27,6 +27,7 @@ class ReadViewMessageOptions:
 
     limit: int | None = None
     offset: int = 0
+    full: bool = False
 
 
 @dataclass(frozen=True, slots=True)

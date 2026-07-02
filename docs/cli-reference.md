@@ -348,6 +348,7 @@ Correlation view:
                                   (--view correlation).
 
 Other options:
+  --full  Read a full single-session body for views that paginate.
   --help  Show this message and exit.
 ```
 

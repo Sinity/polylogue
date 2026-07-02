@@ -16,7 +16,7 @@ ReadViewSessionPolicy = Literal["optional", "required", "query_or_session", "non
 ReadViewOptionName = str
 
 
-MESSAGE_READ_VIEW_OPTION_NAMES = frozenset({"limit", "offset"})
+MESSAGE_READ_VIEW_OPTION_NAMES = frozenset({"full", "limit", "offset"})
 CONTEXT_READ_VIEW_OPTION_NAMES = frozenset({"related_limit"})
 CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES = frozenset(
     {

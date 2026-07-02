@@ -25,6 +25,7 @@ def run_messages(
     session_id: str,
     limit: int = 50,
     offset: int = 0,
+    full: bool = False,
     output_format: str | None = None,
 ) -> None:
     """Execute the messages verb."""
@@ -32,12 +33,21 @@ def run_messages(
 
     async def _run() -> None:
         async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
+            effective_limit = limit
             try:
                 messages, total = await api.get_messages_paginated(
                     session_id,
-                    limit=limit,
+                    limit=effective_limit,
                     offset=offset,
                 )
+                if full and offset + len(messages) < total:
+                    full_limit = max(total - offset, 0)
+                    messages, total = await api.get_messages_paginated(
+                        session_id,
+                        limit=full_limit,
+                        offset=offset,
+                    )
+                    effective_limit = full_limit
             except SessionNotFoundError:
                 env.ui.error(f"Session not found: {session_id}")
                 return
@@ -64,7 +74,7 @@ def run_messages(
                             SessionMessageRowPayload.from_message(m, session_id=session_id) for m in messages
                         ),
                         total=total,
-                        limit=limit,
+                        limit=effective_limit,
                         offset=offset,
                     ),
                     exclude_none=True,

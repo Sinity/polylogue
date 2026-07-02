@@ -388,6 +388,7 @@ def _read_view_option_values(
     *,
     limit: int | None,
     offset: int,
+    full: bool,
     related_limit: int,
     project_path: str | None,
     project_repo: str | None,
@@ -409,6 +410,7 @@ def _read_view_option_values(
     return {
         "limit": limit,
         "offset": offset,
+        "full": full,
         "related_limit": related_limit,
         "project_path": project_path,
         "project_repo": project_repo,
@@ -854,6 +856,7 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, output_format:
 )
 @click.option("--out", "out_path", type=click.Path(), default=None, help="File path for --to file.")
 @click.option("--all", "all_matches", is_flag=True, help="Read all matched sessions.")
+@click.option("--full", "full", is_flag=True, help="Read a full single-session body for views that paginate.")
 @click.option("--limit", "-l", "-n", type=int, default=None, help="Max items to return.")
 @click.option("--offset", type=int, default=0, help="Pagination offset.")
 @click.option(
@@ -939,6 +942,7 @@ def read_verb(
     timestamp_policy: str | None,
     out_path: str | None,
     all_matches: bool,
+    full: bool,
     limit: int | None,
     offset: int,
     window_hours: int,
@@ -1036,6 +1040,8 @@ def read_verb(
     primary_view = view_tokens[0]
     if all_matches and first_only:
         raise click.UsageError("read --all and --first are mutually exclusive.")
+    if full and limit is not None and primary_view in {"messages", "raw"}:
+        raise click.UsageError("read --full and --limit are mutually exclusive for paginated session-body views.")
     if destination == "file" and not out_path:
         raise click.UsageError("read --to file requires --out.")
     (
@@ -1287,6 +1293,7 @@ def read_verb(
                 _read_view_option_values(
                     limit=limit,
                     offset=offset,
+                    full=full,
                     related_limit=related_limit,
                     project_path=project_path,
                     project_repo=project_repo,
