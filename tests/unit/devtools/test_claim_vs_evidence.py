@@ -13,7 +13,14 @@ def _seed_archive(root: Path) -> None:
     conn = sqlite3.connect(root / "index.db")
     conn.executescript(
         """
-        PRAGMA user_version=21;
+        PRAGMA user_version=22;
+        CREATE TABLE sessions (
+            session_id TEXT PRIMARY KEY,
+            origin TEXT NOT NULL,
+            title TEXT,
+            created_at_ms INTEGER,
+            updated_at_ms INTEGER
+        );
         CREATE TABLE messages (
             session_id TEXT NOT NULL,
             message_id TEXT PRIMARY KEY,
@@ -41,9 +48,39 @@ def _seed_archive(root: Path) -> None:
             PRIMARY KEY(message_id, position)
         );
         CREATE INDEX idx_blocks_type ON blocks(block_type);
+        CREATE INDEX idx_blocks_tool_result_outcome
+        ON blocks(block_type, tool_result_is_error, tool_result_exit_code, session_id, tool_id, message_id)
+        WHERE block_type = 'tool_result';
         CREATE INDEX idx_blocks_tool_id ON blocks(tool_id) WHERE tool_id IS NOT NULL;
         CREATE INDEX idx_messages_session_position ON messages(session_id, position);
+        CREATE VIEW actions AS
+        SELECT
+            u.session_id,
+            u.message_id,
+            u.block_id AS tool_use_block_id,
+            u.tool_name,
+            u.semantic_type,
+            u.tool_command,
+            u.tool_path,
+            u.tool_input,
+            r.text AS output_text,
+            r.tool_result_is_error AS is_error,
+            r.tool_result_exit_code AS exit_code,
+            r.block_id AS tool_result_block_id
+        FROM blocks u
+        LEFT JOIN blocks r
+            ON r.tool_id = u.tool_id
+           AND r.session_id = u.session_id
+           AND r.block_type = 'tool_result'
+        WHERE u.block_type = 'tool_use';
         """
+    )
+    conn.executemany(
+        "INSERT INTO sessions(session_id, origin, title, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?)",
+        [
+            ("s1", "claude-code-session", "fixture one", 1, 4),
+            ("s2", "codex-session", "fixture two", 1, 1),
+        ],
     )
     conn.executemany(
         "INSERT INTO messages(session_id, message_id, role, position, model_name) VALUES (?, ?, ?, ?, ?)",
@@ -114,7 +151,7 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
         )
     )
 
-    assert report["index_schema_version"] == 21
+    assert report["index_schema_version"] == 22
     assert report["totals"] == {
         "failed_outcomes": 3,
         "acknowledged": 1,

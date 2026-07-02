@@ -1311,6 +1311,8 @@ class ActionQueryRowPayload(SurfacePayloadModel):
     tool_path: str | None = None
     occurred_at_ms: int | None = None
     output_text: str | None = None
+    is_error: int | None = None
+    exit_code: int | None = None
 
     @classmethod
     def from_row(cls, row: ArchiveActionQueryRow) -> ActionQueryRowPayload:
@@ -1327,6 +1329,8 @@ class ActionQueryRowPayload(SurfacePayloadModel):
             tool_path=row.tool_path,
             occurred_at_ms=row.occurred_at_ms,
             output_text=row.output_text,
+            is_error=row.is_error,
+            exit_code=row.exit_code,
         )
 
 

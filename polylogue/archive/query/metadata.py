@@ -303,6 +303,8 @@ _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS = {
     "cache_write_tokens",
     "duration_ms",
     "time",
+    "is_error",
+    "exit_code",
 }
 _MESSAGE_STRUCTURAL_FIELDS = {
     "role",
@@ -321,7 +323,18 @@ _MESSAGE_STRUCTURAL_FIELDS = {
     "duration_ms",
     "time",
 }
-_ACTION_STRUCTURAL_FIELDS = {"tool", "action", "type", "command", "path", "output", "text", "time"}
+_ACTION_STRUCTURAL_FIELDS = {
+    "tool",
+    "action",
+    "type",
+    "command",
+    "path",
+    "output",
+    "text",
+    "time",
+    "is_error",
+    "exit_code",
+}
 _BLOCK_STRUCTURAL_FIELDS = {"type", "text", "tool", "action", "command", "path", "time"}
 _FILE_STRUCTURAL_FIELDS = {"tool", "action", "type", "command", "path", "text", "time"}
 _ASSERTION_STRUCTURAL_FIELDS = {
@@ -459,6 +472,8 @@ def _field_info(name: str, description: str, example: str) -> StructuralQueryFie
 _COMMON_STRUCTURAL_FIELD_INFO: dict[str, StructuralQueryFieldInfo] = {
     "action": _field_info("action", "Semantic action category on tool/action evidence.", "action:file_edit"),
     "command": _field_info("command", "Tool command or invocation text substring.", 'command:"pytest"'),
+    "exit_code": _field_info("exit_code", "Tool/action exit-code predicate.", "exit_code > 0"),
+    "is_error": _field_info("is_error", "Tool/action structured error flag.", "is_error:true"),
     "output": _field_info("output", "Tool output substring.", "output:FAILED"),
     "path": _field_info("path", "Referenced file or artifact path substring.", "path:polylogue/archive"),
     "role": _field_info("role", "Message role.", "role:assistant"),
@@ -738,7 +753,7 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         payload_model="ActionQueryRowPayload",
         sql_query_method="query_actions",
         cli_plain_renderer="action",
-        aggregate_group_fields=("tool", "action", "type", "session.origin", "session.repo"),
+        aggregate_group_fields=("tool", "action", "type", "is_error", "exit_code", "session.origin", "session.repo"),
         fields=_unit_info("action").fields,
         description=_unit_info("action").description,
         example=_unit_info("action").example,
@@ -970,6 +985,13 @@ NUMERIC_QUERY_FIELD_REGISTRY: dict[str, NumericQueryFieldInfo] = {
             "session": "reported_duration_ms",
             "message": "duration_ms",
         },
+    ),
+    "exit_code": NumericQueryFieldInfo(
+        description="Tool/action exit-code predicate.",
+        operators=(">=", "<=", "=", ">", "<"),
+        range_keyword="between",
+        example="exit_code > 0",
+        unit_columns={"action": "exit_code"},
     ),
     "input_tokens": NumericQueryFieldInfo(
         description="Message input-token predicate.",

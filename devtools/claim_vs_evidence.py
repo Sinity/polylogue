@@ -90,14 +90,15 @@ def _structured_failure_rows(conn: Connection, *, limit: int) -> list[dict[str, 
                 u.tool_command,
                 r.tool_result_is_error AS is_error,
                 r.tool_result_exit_code AS exit_code,
-                m.position,
+                COALESCE(rm.position, m.position) AS position,
                 m.model_name AS tool_message_model
-            FROM blocks AS r INDEXED BY idx_blocks_type
+            FROM blocks AS r INDEXED BY idx_blocks_tool_result_outcome
             JOIN blocks AS u INDEXED BY idx_blocks_tool_id
               ON u.tool_id = r.tool_id
              AND u.session_id = r.session_id
              AND u.block_type = 'tool_use'
             JOIN messages AS m ON m.message_id = u.message_id
+            JOIN messages AS rm ON rm.message_id = r.message_id
             WHERE r.block_type = 'tool_result'
               AND (
                   COALESCE(r.tool_result_is_error, 0) = 1
@@ -207,7 +208,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "index_schema_version": schema_version,
         "limit": args.limit,
         "definition": (
-            "Structured failures are tool_result rows with is_error=1 or non-zero exit_code. "
+            "Structured failures are normalized tool-result outcomes with is_error=1 or non-zero exit_code. "
             "The immediately following assistant message is classified only for explicit failure "
             "acknowledgment markers; this is not an LLM judgment or prose-mined outcome."
         ),
@@ -259,7 +260,7 @@ def _write_artifacts(out_dir: Path, report: dict[str, Any]) -> None:
         "caveats": [
             "The report is bounded by --limit for fast active-archive regeneration.",
             "Classification inspects only the next assistant message for explicit acknowledgment markers.",
-            "Structured failure truth comes from tool_result is_error/exit_code fields, not assistant prose.",
+            "Structured failure truth comes from normalized action result is_error/exit_code fields, not assistant prose.",
         ],
         "source_files": ["claim-vs-evidence.report.json"],
     }
@@ -281,7 +282,7 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
         "",
         "This demo anchors on structured tool-result evidence and asks what the next assistant",
         "turn did with that failure. It does not infer truth from assistant prose: the failure",
-        "predicate is `is_error=1` or a non-zero `exit_code` on `tool_result` rows.",
+        "predicate is `is_error=1` or a non-zero `exit_code` on normalized `actions` rows.",
         "",
         "## Current Bounded Result",
         "",

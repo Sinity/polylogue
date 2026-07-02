@@ -5,6 +5,7 @@ from pathlib import Path
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
+from polylogue.archive.query.expression import parse_unit_source_expression
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedPasteEvidence, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -114,7 +115,13 @@ def test_archive_tiers_archive_facade_queries_session_actions_by_session_index(t
                         tool_id="tool-1",
                         tool_input={"command": "pytest tests/unit/storage/test_archive_tiers_archive.py"},
                     ),
-                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="tool-1", text="passed"),
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT,
+                        tool_id="tool-1",
+                        text="failed",
+                        is_error=True,
+                        exit_code=2,
+                    ),
                 ],
             )
         ],
@@ -125,15 +132,27 @@ def test_archive_tiers_archive_facade_queries_session_actions_by_session_index(t
 
     with ArchiveStore.open_existing(root) as facade:
         rows = facade.query_session_actions([session_id], limit=10)
+        failed_source = parse_unit_source_expression("actions where is_error:true AND exit_code > 0")
+        assert failed_source is not None
+        failed_rows = facade.query_actions(failed_source.predicate, limit=10)
+        error_counts = facade.query_unit_counts("action", failed_source.predicate, group_by="is_error")
+        exit_counts = facade.query_unit_counts("action", failed_source.predicate, group_by="exit_code")
 
-    assert [(row.session_id, row.tool_name, row.tool_command, row.output_text) for row in rows] == [
+    assert [
+        (row.session_id, row.tool_name, row.tool_command, row.output_text, row.is_error, row.exit_code) for row in rows
+    ] == [
         (
             session_id,
             "Bash",
             "pytest tests/unit/storage/test_archive_tiers_archive.py",
-            "passed",
+            "failed",
+            1,
+            2,
         )
     ]
+    assert [(row.session_id, row.is_error, row.exit_code) for row in failed_rows] == [(session_id, 1, 2)]
+    assert [(row.group_key, row.count) for row in error_counts] == [("1", 1)]
+    assert [(row.group_key, row.count) for row in exit_counts] == [("2", 1)]
 
 
 def test_archive_tiers_archive_facade_links_raw_and_parsed_rows(tmp_path: Path) -> None:

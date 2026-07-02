@@ -33,7 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 21
+INDEX_SCHEMA_VERSION = 22
 
 INDEX_DDL = f"""
 CREATE TABLE IF NOT EXISTS sessions (
@@ -213,6 +213,15 @@ ON blocks(session_id, message_id, position);
 
 CREATE INDEX IF NOT EXISTS idx_blocks_type
 ON blocks(block_type);
+
+-- Serves structured failure/outcome reports and action predicates that anchor
+-- on provider-reported tool-result failure rather than prose. The predicate
+-- remains on the tool_result block because the public actions relation is a
+-- view over paired tool_use/tool_result blocks; starting from failed result
+-- rows avoids scanning every tool invocation in large archives.
+CREATE INDEX IF NOT EXISTS idx_blocks_tool_result_outcome
+ON blocks(block_type, tool_result_is_error, tool_result_exit_code, session_id, tool_id, message_id)
+WHERE block_type = 'tool_result';
 
 CREATE INDEX IF NOT EXISTS idx_blocks_type_tool
 ON blocks(

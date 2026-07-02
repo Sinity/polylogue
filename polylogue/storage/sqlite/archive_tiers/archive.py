@@ -261,6 +261,8 @@ class ArchiveActionQueryRow:
     tool_path: str | None
     occurred_at_ms: int | None
     output_text: str | None
+    is_error: int | None
+    exit_code: int | None
 
 
 def _archive_action_query_row(row: sqlite3.Row) -> ArchiveActionQueryRow:
@@ -277,6 +279,8 @@ def _archive_action_query_row(row: sqlite3.Row) -> ArchiveActionQueryRow:
         tool_path=str(row["tool_path"]) if row["tool_path"] is not None else None,
         occurred_at_ms=int(row["occurred_at_ms"]) if row["occurred_at_ms"] is not None else None,
         output_text=str(row["output_text"]) if row["output_text"] is not None else None,
+        is_error=int(row["is_error"]) if row["is_error"] is not None else None,
+        exit_code=int(row["exit_code"]) if row["exit_code"] is not None else None,
     )
 
 
@@ -879,6 +883,8 @@ def _query_unit_group_expression(unit: str, row_alias: str, group_by: str | None
             "tool": f"COALESCE(NULLIF({row_alias}.tool_name, ''), 'unknown')",
             "action": f"COALESCE(NULLIF({row_alias}.semantic_type, ''), 'unknown')",
             "type": f"COALESCE(NULLIF({row_alias}.semantic_type, ''), 'unknown')",
+            "is_error": f"COALESCE(CAST({row_alias}.is_error AS TEXT), 'unknown')",
+            "exit_code": f"COALESCE(CAST({row_alias}.exit_code AS TEXT), 'unknown')",
         },
         "file": {
             "path": f"COALESCE(NULLIF({row_alias}.path, ''), 'unknown')",
@@ -4697,7 +4703,9 @@ class ArchiveStore:
                 a.tool_command,
                 a.tool_path,
                 m.occurred_at_ms,
-                a.output_text
+                a.output_text,
+                a.is_error,
+                a.exit_code
             FROM actions a
             JOIN sessions s ON s.session_id = a.session_id
             JOIN messages m ON m.message_id = a.message_id
@@ -4743,7 +4751,9 @@ class ArchiveStore:
                 u.tool_command,
                 u.tool_path,
                 m.occurred_at_ms,
-                r.text AS output_text
+                r.text AS output_text,
+                r.tool_result_is_error AS is_error,
+                r.tool_result_exit_code AS exit_code
             FROM blocks u INDEXED BY idx_blocks_session_position
             JOIN sessions s ON s.session_id = u.session_id
             JOIN messages m ON m.message_id = u.message_id
@@ -6615,6 +6625,21 @@ def _action_field_predicate_clause(action_alias: str, predicate: QueryFieldPredi
         return _like_clause(f"REPLACE(COALESCE({action_alias}.tool_path, ''), char(92), '/')", predicate.values)
     if field == "output":
         return _like_clause(f"COALESCE({action_alias}.output_text, '')", predicate.values)
+    if field == "is_error":
+        normalized = {value.strip().lower() for value in predicate.values if value.strip()}
+        if not normalized:
+            return "", []
+        truthy = normalized & {"1", "true", "yes", "y", "error", "failed", "failure"}
+        falsy = normalized & {"0", "false", "no", "n", "ok", "success", "passed"}
+        if truthy and falsy:
+            return f"COALESCE({action_alias}.is_error, 0) IN (0, 1)", []
+        if truthy:
+            return f"COALESCE({action_alias}.is_error, 0) = 1", []
+        if falsy:
+            return f"COALESCE({action_alias}.is_error, 0) = 0", []
+        return "0=1", []
+    if field == "exit_code":
+        return _numeric_predicate_clause(f"COALESCE({action_alias}.exit_code, 0)", predicate)
     if field == "text":
         return _like_clause(
             f"""
