@@ -582,8 +582,9 @@ def embed_archive_session_sync(
             SELECT m.message_id, m.role, m.content_hash, m.material_origin, m.message_type,
                    GROUP_CONCAT(b.text, char(10) || char(10)) AS text
             FROM {messages_ref}
-            LEFT JOIN blocks b
-              ON b.message_id = m.message_id
+            LEFT JOIN blocks AS b INDEXED BY idx_blocks_session_position
+              ON b.session_id = m.session_id
+             AND b.message_id = m.message_id
              AND b.block_type = 'text'
              AND b.text IS NOT NULL
             WHERE m.session_id = ?
