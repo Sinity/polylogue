@@ -22,7 +22,7 @@ import os
 import sqlite3
 import time
 from pathlib import Path
-from typing import cast
+from typing import TypedDict, cast
 
 import click
 
@@ -134,6 +134,33 @@ def _preflight_payload(report: PreflightReport) -> dict[str, object]:
 
 def _render_preflight_json(report: PreflightReport) -> None:
     click.echo(json.dumps(_preflight_payload(report), indent=2, sort_keys=True))
+
+
+class BackfillSessionPayload(TypedDict):
+    index: int
+    total: int
+    session_id: str
+    title: str | None
+    status: str
+    embedded_message_count: int
+    estimated_cost_usd: float
+    error: str | None
+
+
+class BackfillResultPayload(TypedDict):
+    status: str
+    embedded_sessions: int
+    error_count: int
+    estimated_cost_usd: float
+    stopped_reason: str | None
+    candidate_sessions: int
+    processed_sessions: int
+    preflight: dict[str, object]
+    sessions: list[BackfillSessionPayload]
+
+
+def _render_backfill_json(payload: BackfillResultPayload) -> None:
+    click.echo(json.dumps(payload, indent=2, sort_keys=True))
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +479,14 @@ def preflight_subcommand(
     is_flag=True,
     help="Skip the cost confirmation prompt.",
 )
+@click.option(
+    "--format",
+    "-f",
+    "output_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format.",
+)
 @click.pass_obj
 def backfill_subcommand(
     env: AppEnv,
@@ -463,6 +498,7 @@ def backfill_subcommand(
     rebuild: bool,
     yes: bool,
     min_messages: int | None,
+    output_format: str,
 ) -> None:
     """Run the first embedding batch with per-session cost feedback.
 
@@ -471,6 +507,9 @@ def backfill_subcommand(
     user can interrupt before the soft monthly cap kicks in.
     """
     from polylogue.storage.search_providers import create_vector_provider
+
+    if output_format == "json" and not yes:
+        raise click.UsageError("backfill --format json requires --yes so stdout stays machine-readable.")
 
     key = _resolve_voyage_key(env, None)
     if not key:
@@ -488,7 +527,8 @@ def backfill_subcommand(
         max_cost_usd=max_cost_usd,
         min_messages=min_messages,
     )
-    _render_preflight(env, report)
+    if output_format == "text":
+        _render_preflight(env, report)
     if not yes and not click.confirm("\nProceed with backfill?", default=False):
         click.echo("Cancelled.")
         return
@@ -520,7 +560,7 @@ def backfill_subcommand(
         click.echo("Error: vector provider unavailable (sqlite-vec or voyage init failed).", err=True)
         raise click.Abort()
 
-    _run_archive_backfill(
+    payload = _run_archive_backfill(
         env,
         index_db,
         vec_provider,
@@ -530,7 +570,10 @@ def backfill_subcommand(
         stop_after_seconds=stop_after_seconds,
         max_errors=max_errors,
         min_messages=min_messages,
+        output_format=output_format,
     )
+    if output_format == "json":
+        _render_backfill_json(payload)
 
 
 def _run_archive_backfill(
@@ -544,7 +587,8 @@ def _run_archive_backfill(
     stop_after_seconds: int | None,
     max_errors: int | None,
     min_messages: int | None = None,
-) -> None:
+    output_format: str = "text",
+) -> BackfillResultPayload:
     from polylogue.protocols import VectorProvider
     from polylogue.storage.embeddings.materialization import (
         embed_archive_session_sync,
@@ -575,13 +619,27 @@ def _run_archive_backfill(
     finally:
         conn.close()
     if not pending:
-        click.echo("All sessions are already embedded.")
-        return
+        payload: BackfillResultPayload = {
+            "status": "complete",
+            "embedded_sessions": 0,
+            "error_count": 0,
+            "estimated_cost_usd": 0.0,
+            "stopped_reason": None,
+            "candidate_sessions": 0,
+            "processed_sessions": 0,
+            "preflight": _preflight_payload(report),
+            "sessions": [],
+        }
+        if output_format == "text":
+            click.echo("All sessions are already embedded.")
+        return payload
 
     cap = _effective_cost_cap(report.cost_cap_usd, report.max_cost_usd)
     cumulative_cost = 0.0
     embedded = 0
     errors = 0
+    processed = 0
+    session_payloads: list[BackfillSessionPayload] = []
     console = env.ui.console
     started_at = time.monotonic()
     stopped_reason: str | None = None
@@ -592,35 +650,68 @@ def _run_archive_backfill(
             stopped_reason = f"time limit reached ({stop_after_seconds}s)"
             break
         outcome = embed_archive_session_sync(index_db, typed_provider, item.session_id)
+        processed += 1
+        batch_cost = 0.0
         if outcome.status == "embedded":
             embedded += 1
             batch_cost = (
                 outcome.embedded_message_count * ESTIMATED_TOKENS_PER_MESSAGE * VOYAGE_4_COST_PER_1M_TOKENS / 1_000_000
             )
             cumulative_cost += batch_cost
-            console.print(
-                f"  [{index}/{len(pending)}] {item.title or item.session_id[:12]}: "
-                f"{outcome.embedded_message_count} msgs (~${batch_cost:.4f}, cumulative ~${cumulative_cost:.4f})"
-            )
+            if output_format == "text":
+                console.print(
+                    f"  [{index}/{len(pending)}] {item.title or item.session_id[:12]}: "
+                    f"{outcome.embedded_message_count} msgs (~${batch_cost:.4f}, cumulative ~${cumulative_cost:.4f})"
+                )
             if cap > 0 and cumulative_cost > cap:
                 stopped_reason = f"cost cap reached (~${cumulative_cost:.4f} > ${cap:.2f})"
-                console.print(
-                    f"[yellow]Cost cap reached (~${cumulative_cost:.4f} > ${cap:.2f}). "
-                    f"Stopping after {embedded} sessions.[/yellow]"
-                )
-                break
+                if output_format == "text":
+                    console.print(
+                        f"[yellow]Cost cap reached (~${cumulative_cost:.4f} > ${cap:.2f}). "
+                        f"Stopping after {embedded} sessions.[/yellow]"
+                    )
         elif outcome.status in {"no_messages", "no_embeddable_messages"}:
-            console.print(f"  [{index}/{len(pending)}] {item.title or item.session_id[:12]}: no embeddable messages")
+            if output_format == "text":
+                console.print(
+                    f"  [{index}/{len(pending)}] {item.title or item.session_id[:12]}: no embeddable messages"
+                )
         elif outcome.status == "error":
             errors += 1
-            console.print(f"  [{index}/{len(pending)}] {item.session_id}: error {outcome.error}")
+            if output_format == "text":
+                console.print(f"  [{index}/{len(pending)}] {item.session_id}: error {outcome.error}")
             if max_errors is not None and errors >= max_errors:
                 stopped_reason = f"max errors reached ({max_errors})"
-                break
+        session_payloads.append(
+            {
+                "index": index,
+                "total": len(pending),
+                "session_id": item.session_id,
+                "title": item.title,
+                "status": outcome.status,
+                "embedded_message_count": outcome.embedded_message_count,
+                "estimated_cost_usd": round(batch_cost, 8),
+                "error": outcome.error,
+            }
+        )
+        if stopped_reason:
+            break
 
-    click.echo(f"\nBackfill complete. Embedded {embedded}, errors {errors}, est. cost ~${cumulative_cost:.4f}.")
-    if stopped_reason:
-        click.echo(f"Stopped early: {stopped_reason}.")
+    payload = {
+        "status": "stopped" if stopped_reason else "complete",
+        "embedded_sessions": embedded,
+        "error_count": errors,
+        "estimated_cost_usd": round(cumulative_cost, 8),
+        "stopped_reason": stopped_reason,
+        "candidate_sessions": len(pending),
+        "processed_sessions": processed,
+        "preflight": _preflight_payload(report),
+        "sessions": session_payloads,
+    }
+    if output_format == "text":
+        click.echo(f"\nBackfill complete. Embedded {embedded}, errors {errors}, est. cost ~${cumulative_cost:.4f}.")
+        if stopped_reason:
+            click.echo(f"Stopped early: {stopped_reason}.")
+    return payload
 
 
 @embed_command.command("status")

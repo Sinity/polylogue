@@ -519,6 +519,76 @@ class TestBackfillCommand:
         fake_embed.assert_called_once_with(index_db, fake_provider, "codex-session:v1")
         old_iter.assert_not_called()
 
+    def test_backfill_json_outputs_structured_result(
+        self,
+        cli_runner: CliRunner,
+        stub_env: Any,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("VOYAGE_API_KEY", "pa-test")
+        from polylogue.storage.embeddings.materialization import (
+            EmbedSessionOutcome,
+            PendingSession,
+        )
+
+        index_db = tmp_path / "index.db"
+        sqlite3.connect(index_db).close()
+        pending = [PendingSession(session_id="codex-session:v1", title="v1", message_count=2)]
+        with (
+            _patch_preflight(_make_report(pending_sessions=1, pending_messages=2, max_messages=2)),
+            patch("polylogue.cli.commands.embed._active_archive_index_path", return_value=index_db),
+            patch("polylogue.storage.search_providers.create_vector_provider", return_value=MagicMock()),
+            patch(
+                "polylogue.storage.embeddings.materialization.select_pending_archive_session_window",
+                return_value=pending,
+            ),
+            patch(
+                "polylogue.storage.embeddings.materialization.embed_archive_session_sync",
+                return_value=EmbedSessionOutcome(
+                    status="embedded",
+                    session_id="codex-session:v1",
+                    embedded_message_count=2,
+                ),
+            ),
+        ):
+            result = cli_runner.invoke(embed_command, ["backfill", "--yes", "--format", "json"], obj=stub_env)
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["status"] == "complete"
+        assert payload["embedded_sessions"] == 1
+        assert payload["error_count"] == 0
+        assert payload["candidate_sessions"] == 1
+        assert payload["processed_sessions"] == 1
+        assert payload["estimated_cost_usd"] == 0.0001
+        assert payload["preflight"]["pending_messages"] == 2
+        assert payload["sessions"] == [
+            {
+                "embedded_message_count": 2,
+                "error": None,
+                "estimated_cost_usd": 0.0001,
+                "index": 1,
+                "session_id": "codex-session:v1",
+                "status": "embedded",
+                "title": "v1",
+                "total": 1,
+            }
+        ]
+
+    def test_backfill_json_requires_yes_for_clean_stdout(
+        self,
+        cli_runner: CliRunner,
+        stub_env: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("VOYAGE_API_KEY", "pa-test")
+
+        result = cli_runner.invoke(embed_command, ["backfill", "--format", "json"], obj=stub_env)
+
+        assert result.exit_code != 0
+        assert "requires --yes" in result.output
+
     def test_backfill_stop_after_seconds_stops_before_next_session(
         self,
         cli_runner: CliRunner,
