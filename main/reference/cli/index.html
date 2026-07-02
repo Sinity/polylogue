@@ -457,16 +457,13 @@ Options:
   --has-tool-use                  Only sessions with tool use (SQL pushdown)
   --has-thinking                  Only sessions with thinking blocks (SQL
                                   pushdown)
-  --has-paste                     Only sessions with pasted content (SQL
+  --has-paste                     Only sessions with paste evidence (SQL
                                   pushdown)
   --typed-only                    Only sessions without pasted content (typed
                                   prose only)
   --min-messages INTEGER          Minimum message count
   --max-messages INTEGER          Maximum message count
   --min-words INTEGER             Minimum total word count
-  --message-type TYPE             Filter by message content type (message,
-                                  summary, tool_use, tool_result, thinking,
-                                  context, protocol)
   --since-session TEXT            Show sessions in same cwd after this session
                                   ID
   --since TEXT                    After date (ISO, 'yesterday', 'last week')
@@ -492,27 +489,8 @@ Options:
                                   shell pipelines and LLM tool-use harnesses.
   --explain                       Explain query DSL parsing and lowering
                                   instead of executing the query.
-  --transform [strip-tools|strip-thinking|strip-all]
-                                  Remove content: strip-tools (tool calls),
-                                  strip-thinking (reasoning), strip-all (both)
-  --no-code-blocks                Exclude fenced and structured code blocks
-                                  from output
-  --no-tool-calls                 Exclude tool invocation records from output
-  --no-tool-outputs               Exclude tool-result payloads from output
-  --no-file-reads                 Exclude file-read payloads while keeping
-                                  other tool output
-  --prose-only                    Show only authored prose text
   --stream                        Stream output (low memory). Requires
-                                  --latest or -i ID. Incompatible with
-                                  --transform
-  -d, --dialogue-only             Show only user/assistant messages
-  --message-role TEXT             Show only selected message roles (repeatable
-                                  or comma-separated: user, assistant, system,
-                                  tool, unknown)
-  --material-origin TEXT          Show only selected material origins
-                                  (repeatable or comma-separated:
-                                  human_authored, runtime_protocol,
-                                  tool_result, unknown)
+                                  --latest or -i ID.
   --set TEXT...                   Set metadata key value
   --add-tag TEXT                  Add tags (comma-separated)
   --plain                         Force non-interactive plain output
@@ -617,6 +595,7 @@ Commands:
 
   Routes to the appropriate renderer based on --view and delivers the
   output to --to (terminal, stdout, browser, clipboard, or file).
+  Use --views to inspect which options belong to each read view.
 
   Examples:
       polylogue --id abc123 read
@@ -625,40 +604,66 @@ Commands:
       polylogue find id:abc then read --to browser
       polylogue find 'repo:polylogue has:paste' then read --all --format ndjson
       polylogue find id:abc then read --view context --related-limit 5
-      polylogue find 'cost tracking' then read --view context-pack --max-sessions 5
-      polylogue read --view context-pack --project-repo github.com/Sinity/polylogue --since 2026-01-01
-      polylogue find id:abc then read --view recovery
+      polylogue find 'cost tracking' then read --view context-image --max-sessions 5
+      polylogue read --view context-image --project-repo github.com/Sinity/polylogue --since 2026-01-01
       polylogue read --views
       polylogue read --views --format json
+      polylogue find 'repo:polylogue' then read --view temporal,chronicle --spec
       polylogue find id:abc then read --view neighbors --window-hours 48
       polylogue --latest read --view neighbors --format json
       polylogue find id:abc then read --view correlation --since-hours 4
       polylogue --latest read --view correlation --otlp --format json
       polylogue read session:abc123 --format json
 
-  Reserved views (not yet implemented):
-      timeline, tools, files, metadata, continuation
+Projection:
+  -v, --view VIEW[,VIEW...]  What to render (summary, transcript, messages,
+                             raw, context, context-image, neighbors,
+                             correlation, temporal, chronicle).  [default:
+                             summary]
+  --views                    List executable read-view profiles, formats, and
+                             options.
+  --spec                     Print the composed selection/projection/render
+                             spec as JSON.
 
-Options:
-  -v, --view VIEW[,VIEW...]       What to render (summary, transcript,
-                                  messages, raw, context, context-pack,
-                                  recovery, neighbors, correlation).
-                                  [default: summary]
+Delivery and format:
   --to [terminal|stdout|browser|clipboard|file]
                                   Output destination.  [default: terminal]
   --json                          Shortcut for --format json.
   -f, --format [csv|html|json|markdown|ndjson|obsidian|org|plaintext|text|yaml]
                                   Output format (where applicable).
   --out PATH                      File path for --to file.
-  --all                           Apply to all matched sessions (bulk export).
-  -r, --message-role TEXT         Filter by message role (--view messages).
-  --material-origin ORIGIN        Filter by material origin (--view messages).
-  --message-type TYPE             Filter by message content type (--view
-                                  messages).
-  -l, -n, --limit INTEGER         Max items to return.
-  --offset INTEGER                Pagination offset.
-  --window-hours INTEGER          Neighboring time window around the seed
-                                  session (--view neighbors).  [default: 24]
+  --fields TEXT                   Fields for JSON/YAML outputs (--all).
+
+Cardinality and pagination:
+  --all                    Read all matched sessions.
+  -l, -n, --limit INTEGER  Max items to return.
+  --offset INTEGER         Pagination offset.
+  --first                  Read the first matched session only.
+
+Context-image projection:
+  --project-path TEXT     Filter by cwd prefix pattern (--view context-image).
+  --project-repo TEXT     Filter by git repo URL or name (--view context-
+                          image).
+  --since TEXT            Start date, ISO 8601 (--view context-image).
+  --until TEXT            End date, ISO 8601 (--view context-image).
+  --context-origin TEXT   Source-origin filter (--view context-image).
+  --query TEXT            Free-text query (--view context-image).
+  --max-sessions INTEGER  Max sessions, 1-20 (--view context-image).
+                          [default: 5]
+  --max-tokens INTEGER    Bound accumulated output to a token budget; over-
+                          budget segments are reported as omissions.
+  --include-assertions    Include context-inject assertion claims in the
+                          compiled context image.
+  --no-redact             Do not redact filesystem paths (--view context-
+                          image).
+
+Context and neighbor views:
+  --window-hours INTEGER   Neighboring time window around the seed session
+                           (--view neighbors).  [default: 24]
+  --related-limit INTEGER  Number of related sessions to include (--view
+                           context).  [default: 5]
+
+Correlation view:
   --repo-path TEXT                Git repository path for correlation (--view
                                   correlation). Defaults to the session's
                                   repo/cwd.
@@ -671,37 +676,9 @@ Options:
                                   GitHub API via gh CLI (--view correlation).
   --otlp                          Add OTLP span evidence to correlation output
                                   (--view correlation).
-  --related-limit INTEGER         Number of related sessions to include
-                                  (--view context).  [default: 5]
-  --report [continue|blame|work-packet]
-                                  Render a recovery report preset (--view
-                                  recovery): continue, blame, or work-packet.
-  --project-path TEXT             Filter by cwd prefix pattern (--view
-                                  context-pack).
-  --project-repo TEXT             Filter by git repo URL or name (--view
-                                  context-pack).
-  --since TEXT                    Start date, ISO 8601 (--view context-pack).
-  --until TEXT                    End date, ISO 8601 (--view context-pack).
-  --pack-origin TEXT              Source-origin filter (--view context-pack).
-  --query TEXT                    Free-text query (--view context-pack).
-  --max-sessions INTEGER          Max sessions, 1-20 (--view context-pack).
-                                  [default: 5]
-  --max-tokens INTEGER            Bound accumulated output to a token budget;
-                                  over-budget segments are reported as
-                                  omissions.
-  --include-assertions            Include context-inject assertion claims in
-                                  the compiled context image.
-  --no-redact                     Do not redact filesystem paths (--view
-                                  context-pack).
-  --no-code-blocks                Exclude code blocks (--view messages).
-  --no-tool-calls                 Exclude tool calls (--view messages).
-  --no-tool-outputs               Exclude tool outputs (--view messages).
-  --no-file-reads                 Exclude file reads (--view messages).
-  --prose-only                    Show only prose text (--view messages).
-  --fields TEXT                   Fields for JSON/YAML outputs (--all).
-  --views                         List executable read-view profiles and exit.
-  --first                         Read the first matched session only.
-  --help                          Show this message and exit.
+
+Other options:
+  --help  Show this message and exit.
 </code></pre>
 <h2>Select Verb</h2>
 <pre><code class="language-text">Usage: polylogue select [OPTIONS]

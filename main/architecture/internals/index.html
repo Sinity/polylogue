@@ -605,10 +605,10 @@ alongside.)</li>
 <li>Index schema version 11 materializes the run projection into three derived
 read-model tables — <code>session_runs</code>, <code>session_observed_events</code>, and
 <code>session_context_snapshots</code> — recomputed by the session-insight materializer
-(<code>compile_recovery_digest(...).run_projection</code>) exactly like <code>session_profiles</code>.
+(<code>compile_session_digest(...).run_projection</code>) exactly like <code>session_profiles</code>.
 They give the <code>run</code> / <code>observed-event</code> / <code>context-snapshot</code> query units a
 durable SQL-backed lowerer (terminal rows, <code>exists</code>, and sort) instead of the
-per-query recovery-transform scan. They are derived/rebuildable, not a new
+per-query session-digest scan. They are derived/rebuildable, not a new
 source of truth; the durable evidence stays <code>session_events</code> + <code>messages</code> +
 <code>topology_edges</code>. Existing index tiers must be rebuilt from source evidence
 (<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</li>

@@ -357,11 +357,12 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
             
 <p><a href="https://github.com/Sinity/polylogue/blob/master/docs/README.md">← Back to Docs</a></p>
 <h1>Export</h1>
-<p>Polylogue exports sessions in multiple formats, both singly and in bulk. Export
-is delivered through the <code>read</code> verb of the query-first CLI.</p>
-<h2>Single Export</h2>
-<p>Export one session by ID with a root filter that narrows the archive to a
-single match:</p>
+<p>Polylogue does not have a separate export command. Export is query selection
+plus a <code>read</code> projection plus a renderer. Use <code>read</code> for one selected session
+and <code>read --all</code> when the query result set itself is the export target.</p>
+<h2>Single Session</h2>
+<p>Read one session by ID with a root filter that narrows the archive to a single
+match:</p>
 <pre><code class="language-bash">polylogue --id claude-ai:abc123 read
 </code></pre>
 <p>Specify format:</p>
@@ -369,8 +370,8 @@ single match:</p>
 polylogue --id claude-ai:abc123 read --format html
 polylogue --id claude-ai:abc123 read --format obsidian
 </code></pre>
-<h2>Bulk Export</h2>
-<p>Export every session matching a filter chain with <code>read --all</code>:</p>
+<h2>Query-Set Reads</h2>
+<p>Read every session matching a filter chain with <code>read --all</code>:</p>
 <pre><code class="language-bash">polylogue --origin claude-code-session --since 2026-01 read --all
 polylogue --tag important read --all --format markdown
 polylogue &quot;refactor&quot; --has-tool-use read --all --format ndjson
@@ -404,7 +405,7 @@ polylogue --since &quot;last month&quot; read --all --format ndjson | wc -l
 </tr>
 <tr>
 <td><code>ndjson</code></td>
-<td>One JSON object per line (bulk default)</td>
+<td>One JSON object per line (query-set default)</td>
 </tr>
 <tr>
 <td><code>yaml</code></td>
@@ -433,24 +434,17 @@ polylogue --since &quot;last month&quot; read --all --format ndjson | wc -l
 polylogue --since yesterday read --all --format html
 </code></pre>
 <h2>Content Blocks</h2>
-<p>Exports include all content blocks: text, thinking blocks, tool use, tool
-results, images, code blocks, and document references. Use output modifiers to
-filter:</p>
-<pre><code class="language-bash">polylogue --id &lt;id&gt; read --prose-only        # Only authored prose
-polylogue --id &lt;id&gt; read --no-tool-calls     # Strip tool call blocks
-polylogue --id &lt;id&gt; read --no-tool-outputs   # Strip tool result blocks
-polylogue --id &lt;id&gt; read --no-code-blocks    # Strip code blocks
-polylogue --id &lt;id&gt; read --no-file-reads     # Strip file read blocks
-polylogue --dialogue-only --id &lt;id&gt; read     # User/assistant messages only
-</code></pre>
+<p>Reads include all selected content blocks: text, thinking blocks, tool use, tool
+results, images, code blocks, and document references. Use query-unit
+expressions or explicit read views to narrow what is selected before rendering.</p>
 <h2>Sharing Considerations</h2>
 <ul>
-<li>Exports contain full message content including tool inputs/outputs and
+<li>Rendered output can contain full message content including tool inputs/outputs and
 thinking blocks. Review before sharing.</li>
 <li>Cost estimates are approximate; API-reported token counts are exact where
 available.</li>
-<li>Attachment references are preserved but binary blobs are not exported.</li>
-<li>Use <code>--prose-only</code> or content filters to produce cleaner output for
+<li>Attachment references are preserved but binary blobs are not rendered.</li>
+<li>Use query-unit filters or a narrower read view to produce cleaner output for
 non-technical audiences.</li>
 </ul>
 

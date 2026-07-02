@@ -543,7 +543,7 @@ text terms.</p>
 </tr>
 <tr>
 <td><code>has</code></td>
-<td>Content presence (<code>paste</code>, <code>tools</code>, <code>thinking</code>, or stored type)</td>
+<td>Content/evidence presence (<code>paste</code> evidence, <code>tools</code>, <code>thinking</code>, or stored type)</td>
 <td><code>has:paste</code></td>
 </tr>
 <tr>
@@ -756,7 +756,7 @@ inventory and does not claim that a file still exists on disk.</p>
 <p><code>runs</code>, <code>observed-events</code>, and <code>context-snapshots</code> are SQL-backed row sources
 over the materialized run-projection tables (<code>session_runs</code>,
 <code>session_observed_events</code>, <code>session_context_snapshots</code>), which the session-insight
-materializer recomputes from each session's recovery/run-projection evidence.
+materializer recomputes from each session's run-projection evidence.
 They are both terminal unit sources (<code>runs where ...</code>) and <code>exists run(...)</code> /
 <code>exists observed-event(...)</code> / <code>exists context-snapshot(...)</code> session selectors,
 and they accept the full SQL-backed session filter surface (<code>session.action</code>,
@@ -769,7 +769,7 @@ and result-shaping modes that do not have row semantics yet, such as
 <code>delete</code>, <code>open</code>, <code>stats</code>, <code>count</code>, <code>--cursor</code>, and custom sort/reverse modes,
 are rejected instead of silently coercing row queries back to session queries.</p>
 <h2>Assertion Candidate Judgment</h2>
-<p>Transform and recovery jobs may emit assertion rows with <code>status:candidate</code>.
+<p>Transform and session-analysis jobs may emit assertion rows with <code>status:candidate</code>.
 Candidate rows are private, carry <code>context_policy.inject=false</code>, and keep
 <code>promotion_required=true</code> until an operator makes an explicit judgment. They
 can be inspected like any other assertion row, or through the review list that
@@ -803,7 +803,7 @@ explicitly.</p>
 </code></pre>
 <h2>Public Ref Resolution</h2>
 <p>Query/read payloads carry public object and evidence refs so agents and the web
-shell can jump from a row, work packet, or assertion back to the exact archive
+shell can jump from a row, context image, or assertion back to the exact archive
 object it cites. Resolve refs through the shared resolver rather than turning
 them into broad text search:</p>
 <pre><code class="language-bash">polylogue read session:codex-session:abc123 --format json
@@ -913,7 +913,7 @@ can resolve deliberately when the operator wants to inspect source evidence.</p>
 </tr>
 <tr>
 <td><code>--has-paste</code></td>
-<td>Only sessions with pasted content</td>
+<td>Only sessions with paste evidence</td>
 </tr>
 <tr>
 <td><code>--typed-only</code></td>
@@ -945,10 +945,6 @@ can resolve deliberately when the operator wants to inspect source evidence.</p>
 <tr>
 <td><code>--min-words</code></td>
 <td>Minimum word count</td>
-</tr>
-<tr>
-<td><code>--message-type</code></td>
-<td>Filter by message type</td>
 </tr>
 </tbody>
 </table>
@@ -1068,49 +1064,6 @@ can resolve deliberately when the operator wants to inspect source evidence.</p>
 </tr>
 </tbody>
 </table>
-<h3>Output modifiers</h3>
-<table>
-<thead>
-<tr>
-<th>Flag</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>--no-code-blocks</code></td>
-<td>Strip code blocks from output</td>
-</tr>
-<tr>
-<td><code>--no-tool-calls</code></td>
-<td>Strip tool call blocks</td>
-</tr>
-<tr>
-<td><code>--no-tool-outputs</code></td>
-<td>Strip tool result blocks</td>
-</tr>
-<tr>
-<td><code>--no-file-reads</code></td>
-<td>Strip file read blocks</td>
-</tr>
-<tr>
-<td><code>--prose-only</code></td>
-<td>Show only authored prose text</td>
-</tr>
-<tr>
-<td><code>--dialogue-only</code></td>
-<td>Show only provider-role user/assistant messages</td>
-</tr>
-<tr>
-<td><code>--message-role</code></td>
-<td>Filter by provider role (<code>user</code>, <code>assistant</code>, <code>system</code>, <code>tool</code>)</td>
-</tr>
-<tr>
-<td><code>--material-origin</code></td>
-<td>Filter message rows by authoredness/material source (<code>human_authored</code>, <code>runtime_protocol</code>, <code>tool_result</code>, <code>unknown</code>, etc.)</td>
-</tr>
-</tbody>
-</table>
 <h2>Verbs</h2>
 <p>Verbs determine the action applied to the matched session set.</p>
 <table>
@@ -1123,7 +1076,7 @@ can resolve deliberately when the operator wants to inspect source evidence.</p>
 <tbody>
 <tr>
 <td><code>read --all</code></td>
-<td>List/export matched sessions with metadata</td>
+<td>Read every matched session with metadata</td>
 </tr>
 <tr>
 <td><code>analyze --count</code></td>
@@ -1143,7 +1096,7 @@ can resolve deliberately when the operator wants to inspect source evidence.</p>
 </tr>
 <tr>
 <td><code>read --all --format ...</code></td>
-<td>Export matched sessions</td>
+<td>Render every matched session in the selected format</td>
 </tr>
 <tr>
 <td><code>read --view messages</code></td>
@@ -1621,7 +1574,7 @@ tokenizer. Prefix queries use <code>*</code>:</p>
 </tr>
 <tr>
 <td><code>jsonl</code></td>
-<td>One JSON object per line (used by <code>bulk-export</code>)</td>
+<td>One JSON object per line (used by <code>read --all --format ndjson</code>)</td>
 </tr>
 <tr>
 <td><code>yaml</code></td>
@@ -1651,7 +1604,7 @@ tokenizer. Prefix queries use <code>*</code>:</p>
 </table>
 <p>Set format with <code>-f</code> / <code>--format</code> on a verb:</p>
 <pre><code class="language-bash">polylogue &quot;sqlite locking&quot; read --all --format json
-polylogue --since yesterday bulk-export --format jsonl
+polylogue --since yesterday read --all --format ndjson
 </code></pre>
 <h2>Facets (Scoped vs Global)</h2>
 <p>Facets summarize the archive as aggregate counts. Polylogue exposes the
