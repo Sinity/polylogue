@@ -50,7 +50,7 @@ _TABLES_CONDITIONALLY_POPULATED = frozenset(
         "session_tag_rollups",
         "session_events",
         "session_commits",
-        "topology_edges",
+        "session_links",
     }
 )
 

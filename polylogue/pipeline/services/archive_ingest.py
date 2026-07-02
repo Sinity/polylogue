@@ -93,8 +93,8 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
 
     Source files are parsed across a process pool (``POLYLOGUE_INGEST_PARSE_WORKERS``)
     while the main process remains the single SQLite writer. Write order does
-    not matter: archive writes are idempotent by content hash and lineage edges
-    resolve out-of-order via ``topology_edges``. Blob writes from workers are
+    not matter: archive writes are idempotent by content hash and session links
+    resolve out-of-order. Blob writes from workers are
     content-addressed and atomic, so concurrent worker writes are process-safe.
     """
     result = ParseResult()

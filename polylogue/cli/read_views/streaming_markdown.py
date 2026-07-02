@@ -84,16 +84,32 @@ def _resolve_session_id(conn: sqlite3.Connection, token: str) -> str | None:
 
 
 def _has_prefix_sharing_edge(conn: sqlite3.Connection, session_id: str) -> bool:
+    if not _table_exists(conn, "session_links"):
+        return False
     row = conn.execute(
         """
         SELECT 1
-        FROM topology_edges
+        FROM session_links
         WHERE src_session_id = ?
           AND resolved_dst_session_id IS NOT NULL
+          AND inheritance = 'prefix-sharing'
           AND branch_point_message_id IS NOT NULL
         LIMIT 1
         """,
         (session_id,),
+    ).fetchone()
+    return row is not None
+
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table' AND name = ?
+        LIMIT 1
+        """,
+        (name,),
     ).fetchone()
     return row is not None
 

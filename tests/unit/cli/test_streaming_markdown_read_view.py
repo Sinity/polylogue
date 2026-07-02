@@ -17,10 +17,14 @@ def _seed_minimal_index(root: Path) -> None:
             title TEXT,
             updated_at_ms INTEGER
         );
-        CREATE TABLE topology_edges (
+        CREATE TABLE session_links (
             src_session_id TEXT,
+            dst_origin TEXT,
+            dst_native_id TEXT,
+            link_type TEXT,
             resolved_dst_session_id TEXT,
-            branch_point_message_id TEXT
+            branch_point_message_id TEXT,
+            inheritance TEXT
         );
         CREATE TABLE messages (
             message_id TEXT PRIMARY KEY,
@@ -84,8 +88,32 @@ def test_stream_exact_session_markdown_prose_only_omits_tools(tmp_path: Path) ->
 def test_stream_exact_session_markdown_defers_lineage_composition(tmp_path: Path) -> None:
     _seed_minimal_index(tmp_path)
     conn = sqlite3.connect(tmp_path / "index.db")
-    conn.execute("INSERT INTO topology_edges VALUES ('codex-session:abc', 'codex-session:parent', 'parent-message')")
+    conn.execute(
+        """
+        INSERT INTO session_links VALUES (
+            'codex-session:abc',
+            'codex-session',
+            'parent',
+            'branch',
+            'codex-session:parent',
+            'parent-message',
+            'prefix-sharing'
+        )
+        """
+    )
     conn.commit()
     conn.close()
 
     assert not stream_exact_session_markdown(tmp_path, "abc", tmp_path / "out.md", prose_only=False)
+
+
+def test_stream_exact_session_markdown_without_session_links_streams(tmp_path: Path) -> None:
+    _seed_minimal_index(tmp_path)
+    conn = sqlite3.connect(tmp_path / "index.db")
+    conn.execute("DROP TABLE session_links")
+    conn.commit()
+    conn.close()
+
+    out = tmp_path / "out.md"
+
+    assert stream_exact_session_markdown(tmp_path, "abc", out, prose_only=False)
