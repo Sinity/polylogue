@@ -680,17 +680,14 @@ _READY_DESCRIPTORS: tuple[SessionInsightReadyDescriptor, ...] = (
     SessionInsightReadyDescriptor(
         ready_key="run_rows_ready",
         table_key="session_runs",
-        zero_counts=("missing_run_materialization_count",),
     ),
     SessionInsightReadyDescriptor(
         ready_key="observed_event_rows_ready",
         table_key="session_observed_events",
-        zero_counts=("missing_observed_event_materialization_count",),
     ),
     SessionInsightReadyDescriptor(
         ready_key="context_snapshot_rows_ready",
         table_key="session_context_snapshots",
-        zero_counts=("missing_context_snapshot_materialization_count",),
     ),
     SessionInsightReadyDescriptor(
         ready_key="threads_ready",

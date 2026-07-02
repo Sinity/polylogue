@@ -127,6 +127,7 @@ class InsightReadinessSpec:
     # over ``sessions`` itself) already expose those columns directly.
     provider_via_session: bool = True
     fallback_payload_columns: tuple[str, ...] = ()
+    empty_is_ready: bool = False
 
 
 _SPECS: tuple[InsightReadinessSpec, ...] = (
@@ -173,27 +174,27 @@ _SPECS: tuple[InsightReadinessSpec, ...] = (
         display_name="Session Runs",
         table_name="session_runs",
         row_count_attr="run_count",
-        missing_count_attr="missing_run_materialization_count",
         ready_flags=("run_rows_ready",),
         artifacts=("session_runs",),
+        empty_is_ready=True,
     ),
     InsightReadinessSpec(
         insight_name="session_observed_events",
         display_name="Observed Events",
         table_name="session_observed_events",
         row_count_attr="observed_event_count",
-        missing_count_attr="missing_observed_event_materialization_count",
         ready_flags=("observed_event_rows_ready",),
         artifacts=("session_observed_events",),
+        empty_is_ready=True,
     ),
     InsightReadinessSpec(
         insight_name="session_context_snapshots",
         display_name="Context Snapshots",
         table_name="session_context_snapshots",
         row_count_attr="context_snapshot_count",
-        missing_count_attr="missing_context_snapshot_materialization_count",
         ready_flags=("context_snapshot_rows_ready",),
         artifacts=("session_context_snapshots",),
+        empty_is_ready=True,
     ),
     InsightReadinessSpec(
         insight_name="threads",
@@ -294,6 +295,7 @@ def _entry_verdict(
     incompatible_count: int,
     degraded_count: int,
     ready_flags: dict[str, bool],
+    empty_is_ready: bool = False,
 ) -> InsightReadinessVerdict:
     if not table_present:
         return "missing"
@@ -303,12 +305,12 @@ def _entry_verdict(
         return "stale"
     if missing_count or (expected_row_count is not None and row_count < expected_row_count):
         return "partial"
-    if row_count == 0:
-        return "empty"
     if degraded_count:
         return "degraded"
     if ready_flags and all(ready_flags.values()):
         return "ready"
+    if row_count == 0:
+        return "ready" if empty_is_ready else "empty"
     if not ready_flags:
         return "ready"
     return "unknown"
@@ -538,6 +540,7 @@ async def _entry(
         incompatible_count=incompatible_count,
         degraded_count=degraded_count,
         ready_flags=ready_flags,
+        empty_is_ready=spec.empty_is_ready,
     )
     return InsightReadinessEntry(
         insight_name=spec.insight_name,

@@ -8,6 +8,8 @@ from pathlib import Path
 
 import aiosqlite
 
+from polylogue.insights.readiness import InsightReadinessQuery, build_insight_readiness_report
+from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.insights.session.status import (
     SessionInsightCountDescriptor,
     SessionInsightFtsDescriptor,
@@ -335,7 +337,7 @@ def test_session_insight_status_requires_latency_rows_for_ready_profiles() -> No
     assert status.stale_latency_profile_row_count == 1
 
 
-def test_status_tracks_run_projection_materialization_ledger() -> None:
+def test_status_treats_run_projection_materialization_as_optional_cache() -> None:
     with sqlite3.connect(":memory:") as conn:
         conn.executescript(
             f"""
@@ -387,9 +389,43 @@ def test_status_tracks_run_projection_materialization_ledger() -> None:
     assert ready.observed_event_rows_ready is True
     assert ready.context_snapshot_rows_ready is True
     assert missing.missing_run_materialization_count == 1
-    assert missing.run_rows_ready is False
+    assert missing.run_rows_ready is True
     assert stale.missing_run_materialization_count == 1
-    assert stale.run_rows_ready is False
+    assert stale.run_rows_ready is True
+
+
+async def test_readiness_report_treats_empty_run_projection_cache_as_ready(tmp_path: Path) -> None:
+    db_path = tmp_path / "insights.db"
+    async with aiosqlite.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        await conn.executescript(
+            """
+            CREATE TABLE session_runs (session_id TEXT NOT NULL);
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                origin TEXT NOT NULL,
+                sort_key_ms INTEGER
+            );
+            """
+        )
+        await conn.commit()
+        report = await build_insight_readiness_report(
+            conn,
+            SessionInsightStatusSnapshot(
+                total_sessions=1,
+                run_count=0,
+                missing_run_materialization_count=1,
+                run_rows_ready=True,
+            ),
+            InsightReadinessQuery(insights=("session_runs",)),
+        )
+
+    entry = report.insights[0]
+    assert entry.insight_name == "session_runs"
+    assert entry.row_count == 0
+    assert entry.missing_count == 0
+    assert entry.ready_flags == {"run_rows_ready": True}
+    assert entry.verdict == "ready"
 
 
 def test_status_tracks_work_and_phase_staleness_from_materialization_ledger() -> None:

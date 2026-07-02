@@ -70,9 +70,6 @@ def _session_insight_row_repair_count(status: SessionInsightStatusSnapshot) -> i
         + status.missing_phase_materialization_count
         + status.stale_phase_inference_count
         + status.orphan_phase_inference_count
-        + status.missing_run_materialization_count
-        + status.missing_observed_event_materialization_count
-        + status.missing_context_snapshot_materialization_count
         + status.missing_thread_materialization_count
         + status.stale_thread_count
         + status.orphan_thread_count

@@ -1334,7 +1334,7 @@ def test_repair_session_insights_refreshes_stale_thread_materialization_as_aggre
     assert calls == [("rebuild", ()), ("aggregate", None)]
 
 
-def test_repair_assessment_counts_missing_run_projection_materialization() -> None:
+def test_repair_assessment_ignores_optional_run_projection_cache_gaps() -> None:
     status = SessionInsightStatusSnapshot(
         total_sessions=1,
         profile_rows_ready=True,
@@ -1342,9 +1342,9 @@ def test_repair_assessment_counts_missing_run_projection_materialization() -> No
         work_event_inference_rows_ready=True,
         work_event_inference_fts_ready=True,
         phase_inference_rows_ready=True,
-        run_rows_ready=False,
+        run_rows_ready=True,
         observed_event_rows_ready=True,
-        context_snapshot_rows_ready=False,
+        context_snapshot_rows_ready=True,
         threads_ready=True,
         threads_fts_ready=True,
         tag_rollups_ready=True,
@@ -1354,7 +1354,7 @@ def test_repair_assessment_counts_missing_run_projection_materialization() -> No
 
     assessment = assess_session_insight_repairs(status)
 
-    assert assessment.row_debt == 2
+    assert assessment.row_debt == 0
 
 
 def test_repair_session_insights_uses_stale_profile_candidates(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
