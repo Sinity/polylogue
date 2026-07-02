@@ -65,6 +65,35 @@ class _MCPEmbeddingStatusEnv:
     config: Config
 
 
+def _stats_embedding_overrides(config: Config) -> dict[str, object]:
+    """Return split-tier embedding fields for MCP stats when available."""
+
+    from polylogue.storage.embeddings.status_payload import embedding_status_payload
+
+    payload = embedding_status_payload(
+        _MCPEmbeddingStatusEnv(config),
+        include_retrieval_bands=False,
+        include_detail=False,
+    )
+    embedded_messages = int(payload.get("embedded_messages") or 0)
+    status = str(payload.get("status") or "none")
+    if embedded_messages <= 0 and status == "none":
+        return {}
+    return {
+        "embedded_sessions": int(payload.get("embedded_sessions") or 0),
+        "embedded_messages": embedded_messages,
+        "pending_embedding_sessions": int(payload.get("pending_sessions") or 0),
+        "embedding_coverage_percent": float(payload.get("embedding_coverage_percent") or 0.0),
+        "stale_embedding_messages": int(payload.get("stale_messages") or 0),
+        "messages_missing_embedding_provenance": int(payload.get("messages_missing_provenance") or 0),
+        "embedding_readiness_status": str(payload.get("freshness_status") or status),
+        "embedding_models": dict(cast(dict[str, int], payload.get("embedding_models") or {})),
+        "embedding_dimensions": dict(cast(dict[int, int], payload.get("embedding_dimensions") or {})),
+        "embedding_oldest_at": payload.get("oldest_embedded_at"),
+        "embedding_newest_at": payload.get("newest_embedded_at"),
+    }
+
+
 @dataclass(frozen=True)
 class _MCPReadToolSpec:
     name: str
@@ -578,13 +607,15 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             config = hooks.get_config()
             with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
                 archive_stats = archive.stats()
-            return hooks.json_payload(
-                MCPArchiveStatsPayload.from_archive_stats(
-                    archive_stats,
-                    include_embedded=True,
-                    include_db_size=True,
-                )
+            payload = MCPArchiveStatsPayload.from_archive_stats(
+                archive_stats,
+                include_embedded=True,
+                include_db_size=True,
             )
+            overrides = _stats_embedding_overrides(config)
+            if overrides:
+                payload = payload.model_copy(update=overrides)
+            return hooks.json_payload(payload)
 
         return await hooks.async_safe_call("stats", run)
 

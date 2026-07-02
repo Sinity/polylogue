@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import sqlite3
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1403,11 +1404,64 @@ class TestStatsTool:
                             provider_message_id="m1",
                             role=Role.USER,
                             text="stats v1",
+                            material_origin=MaterialOrigin.HUMAN_AUTHORED,
                             blocks=[ParsedContentBlock(type=BlockType.TEXT, text="stats v1")],
                         )
                     ],
                 )
             )
+        index_conn = sqlite3.connect(archive_root / "index.db")
+        try:
+            status_session_id = str(
+                index_conn.execute(
+                    "SELECT session_id FROM messages WHERE native_id = ?",
+                    ("m1",),
+                ).fetchone()[0]
+            )
+        finally:
+            index_conn.close()
+        embeddings_db = archive_root / "embeddings.db"
+        conn = sqlite3.connect(embeddings_db)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS message_embeddings_meta (
+                    message_id TEXT PRIMARY KEY,
+                    model TEXT NOT NULL,
+                    dimension INTEGER NOT NULL,
+                    content_hash BLOB NOT NULL,
+                    embedded_at_ms INTEGER,
+                    needs_reindex INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS embedding_status (
+                    session_id TEXT PRIMARY KEY,
+                    origin TEXT NOT NULL DEFAULT '',
+                    message_count_embedded INTEGER NOT NULL DEFAULT 0,
+                    last_embedded_at_ms INTEGER,
+                    needs_reindex INTEGER NOT NULL DEFAULT 0,
+                    error_message TEXT
+                );
+                INSERT INTO message_embeddings_meta (
+                    message_id, model, dimension, content_hash, embedded_at_ms, needs_reindex
+                ) VALUES ('mcp-split-message', 'voyage-4', 1024, zeroblob(32), 1700000000000, 0);
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO embedding_status (
+                    session_id,
+                    origin,
+                    message_count_embedded,
+                    last_embedded_at_ms,
+                    needs_reindex,
+                    error_message
+                ) VALUES (?, 'codex-session', 1, 1700000000000, 0, NULL)
+                """,
+                (status_session_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
         with (
             patch("polylogue.mcp.server._get_config") as mock_get_config,
@@ -1424,6 +1478,10 @@ class TestStatsTool:
         assert data["total_sessions"] == 1
         assert data["total_messages"] == 1
         assert data["origins"] == {"codex-session": 1}
+        assert data["embedded_messages"] == 1
+        assert data["embedded_sessions"] == 1
+        assert data["pending_embedding_sessions"] == 0
+        assert data["embedding_readiness_status"] == "complete"
 
 
 class TestMutationTools:
