@@ -339,6 +339,7 @@ class TestPreflightCommand:
         assert payload["monthly_cost_cap_usd"] == 5.0
         assert payload["effective_cost_cap_usd"] == 0.10
         assert payload["pricing"]["approximate"] is True
+        assert payload["min_messages"] == 5
         assert payload["backfill_args"] == [
             "ops",
             "embed",
