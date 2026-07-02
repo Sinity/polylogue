@@ -140,7 +140,7 @@ if [ "$format" = "--json" ]; then
     source_version="$(sqlite3 "$archive_root/source.db" 'PRAGMA user_version;' 2>/dev/null || true)"
     raw_rows="$(sqlite3 "$archive_root/source.db" 'SELECT COUNT(*) FROM raw_sessions;' 2>/dev/null || true)"
   fi
-  if [ "$quick" = false ] && [ -f "$archive_root/source.db" ] && [ -f "$archive_root/index.db" ]; then
+  if [ -f "$archive_root/source.db" ] && [ -f "$archive_root/index.db" ]; then
     raw_materialization_debt="$(
       sqlite3 "$archive_root/source.db" "
         ATTACH '$archive_root/index.db' AS idx;
@@ -468,7 +468,7 @@ if [ -f "$archive_root/source.db" ]; then
   printf 'source: v%s raw_sessions=%s\n' "${source_version:-?}" "${raw_rows:-?}"
 fi
 
-if [ "$quick" = false ] && [ -f "$archive_root/source.db" ] && [ -f "$archive_root/index.db" ]; then
+if [ -f "$archive_root/source.db" ] && [ -f "$archive_root/index.db" ]; then
   raw_materialization_debt="$(
     sqlite3 "$archive_root/source.db" "
       ATTACH '$archive_root/index.db' AS idx;

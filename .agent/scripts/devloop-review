@@ -867,6 +867,8 @@ polylogued_non_devloop_pids="$(polylogued_non_devloop_rows "$repo")"
 if [ -z "$polylogued_pids" ]; then
   if [ "$prod_active_running" = true ]; then
     ok "no branch-local devloop daemon; prod polylogued.service is active"
+  elif grep -q '`polylogued is not running`' "$current/ACTIVE-LOOP.md" 2>/dev/null; then
+    ok "polylogued is intentionally stopped for current active slice"
   else
     warn "polylogued is not running; acceptable only between convergence restarts"
   fi
