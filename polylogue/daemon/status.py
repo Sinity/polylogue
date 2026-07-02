@@ -100,6 +100,7 @@ class EmbeddingReadiness(BaseModel):
     embedding_failure_count: int = 0
     embedding_estimated_cost_usd: float = 0.0
     embedding_latest_catchup_run: dict[str, object] | None = None
+    embedding_latest_material_catchup_run: dict[str, object] | None = None
 
 
 class RawMaterializationReadiness(BaseModel):
@@ -1932,6 +1933,10 @@ def build_daemon_status(
             dict[str, object] | None,
             embedding_info.get("embedding_latest_catchup_run"),
         ),
+        embedding_latest_material_catchup_run=cast(
+            dict[str, object] | None,
+            embedding_info.get("embedding_latest_material_catchup_run"),
+        ),
     )
 
     insight_freshness = InsightFreshness(
@@ -2364,6 +2369,17 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
                     f"{_safe_int(latest.get('planned_sessions'))} convs, "
                     f"{_safe_int(latest.get('embedded_messages')):,} msgs embedded"
                 )
+            material = embedding.get("embedding_latest_material_catchup_run")
+            if isinstance(material, dict) and (
+                not isinstance(latest, dict) or material.get("run_id") != latest.get("run_id")
+            ):
+                lines.append(
+                    "  latest material catch-up: "
+                    f"{material.get('status', 'unknown')}, "
+                    f"{_safe_int(material.get('processed_sessions'))}/"
+                    f"{_safe_int(material.get('planned_sessions'))} convs, "
+                    f"{_safe_int(material.get('embedded_messages')):,} msgs embedded"
+                )
         else:
             pending = _safe_int(embedding.get("embedding_pending_count"))
             key_state = "key present" if embedding.get("embedding_has_voyage_key") else "key missing"
@@ -2378,5 +2394,15 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
                     f"{latest.get('status', 'unknown')}, "
                     f"{_safe_int(latest.get('processed_sessions'))}/"
                     f"{_safe_int(latest.get('planned_sessions'))} convs"
+                )
+            material = embedding.get("embedding_latest_material_catchup_run")
+            if isinstance(material, dict) and (
+                not isinstance(latest, dict) or material.get("run_id") != latest.get("run_id")
+            ):
+                lines.append(
+                    "  latest material catch-up: "
+                    f"{material.get('status', 'unknown')}, "
+                    f"{_safe_int(material.get('processed_sessions'))}/"
+                    f"{_safe_int(material.get('planned_sessions'))} convs"
                 )
     return lines

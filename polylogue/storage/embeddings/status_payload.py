@@ -41,6 +41,38 @@ class _HasConfig(Protocol):
     def config(self) -> Config: ...
 
 
+class _ArchiveEmbeddingRunRow(Protocol):
+    @property
+    def run_id(self) -> str: ...
+
+    @property
+    def started_at_ms(self) -> int: ...
+
+    @property
+    def finished_at_ms(self) -> int | None: ...
+
+    @property
+    def status(self) -> str: ...
+
+    @property
+    def scanned_sessions(self) -> int: ...
+
+    @property
+    def embedded_sessions(self) -> int: ...
+
+    @property
+    def error_count(self) -> int: ...
+
+    @property
+    def embedded_messages(self) -> int: ...
+
+    @property
+    def estimated_cost_usd(self) -> float | None: ...
+
+    @property
+    def error_message(self) -> str | None: ...
+
+
 class RetrievalBandPayload(TypedDict, total=False):
     ready: bool
     status: str
@@ -83,6 +115,7 @@ class EmbeddingStatusPayload(TypedDict):
     failure_count: int
     total_estimated_cost_usd: float
     latest_catchup_run: EmbeddingCatchupRunPayload | None
+    latest_material_catchup_run: EmbeddingCatchupRunPayload | None
     next_action: EmbeddingNextActionPayload
 
 
@@ -395,6 +428,7 @@ def _payload_from_stats(
     total_sessions: int,
     stats: EmbeddingStatsSnapshot,
     latest_catchup_run: EmbeddingCatchupRunPayload | None,
+    latest_material_catchup_run: EmbeddingCatchupRunPayload | None,
     pending_messages_exact: bool,
 ) -> EmbeddingStatusPayload:
     embedded_sessions = stats.embedded_sessions
@@ -440,6 +474,7 @@ def _payload_from_stats(
         "failure_count": stats.failure_count,
         "total_estimated_cost_usd": stats.total_estimated_cost_usd,
         "latest_catchup_run": latest_catchup_run,
+        "latest_material_catchup_run": latest_material_catchup_run,
         "next_action": _next_action(
             config_enabled=config_enabled,
             has_voyage_api_key=has_voyage_api_key,
@@ -661,7 +696,7 @@ def _archive_embedding_status_payload(
     finally:
         conn.close()
 
-    latest_catchup_run = _archive_latest_catchup_run(index_db.with_name("ops.db"))
+    latest_catchup_run, latest_material_catchup_run = _archive_catchup_runs(index_db.with_name("ops.db"))
 
     return _payload_from_stats(
         config_enabled=bool(getattr(cfg, "embedding_enabled", False)),
@@ -672,28 +707,25 @@ def _archive_embedding_status_payload(
         total_sessions=total_sessions,
         stats=stats,
         latest_catchup_run=latest_catchup_run,
+        latest_material_catchup_run=latest_material_catchup_run,
         pending_messages_exact=pending_messages_exact,
     )
 
 
-def _archive_latest_catchup_run(ops_db: Path) -> EmbeddingCatchupRunPayload | None:
-    if not ops_db.exists():
-        return None
-    try:
-        from polylogue.storage.sqlite.archive_tiers.ops_write import list_embedding_catchup_runs
+def _run_has_material_signal(run: EmbeddingCatchupRunPayload) -> bool:
+    return (
+        run["embedded_messages"] > 0
+        or run["embedded_sessions"] > 0
+        or run["error_count"] > 0
+        or bool(run["stop_reason"])
+    )
 
-        conn = open_readonly_connection(ops_db)
-        try:
-            runs = list_embedding_catchup_runs(conn)
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return None
-    if not runs:
-        return None
-    run = runs[0]
-    started_at = _iso_from_epoch_ms(run.started_at_ms) or ""
-    finished_at = _iso_from_epoch_ms(run.finished_at_ms)
+
+def _archive_run_payload(run: _ArchiveEmbeddingRunRow) -> EmbeddingCatchupRunPayload:
+    started_at_ms = run.started_at_ms
+    finished_at_ms = run.finished_at_ms
+    started_at = _iso_from_epoch_ms(started_at_ms) or ""
+    finished_at = _iso_from_epoch_ms(finished_at_ms)
     return {
         "run_id": run.run_id,
         "started_at": started_at,
@@ -716,6 +748,31 @@ def _archive_latest_catchup_run(ops_db: Path) -> EmbeddingCatchupRunPayload | No
         "estimated_cost_usd": float(run.estimated_cost_usd or 0.0),
         "last_session_id": None,
     }
+
+
+def _archive_catchup_runs(
+    ops_db: Path,
+) -> tuple[EmbeddingCatchupRunPayload | None, EmbeddingCatchupRunPayload | None]:
+    if not ops_db.exists():
+        return None, None
+    try:
+        from polylogue.storage.sqlite.archive_tiers.ops_write import list_embedding_catchup_runs
+
+        conn = open_readonly_connection(ops_db)
+        try:
+            runs = list_embedding_catchup_runs(conn)
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None, None
+    if not runs:
+        return None, None
+    latest = _archive_run_payload(runs[0])
+    latest_material = next(
+        (payload for payload in (_archive_run_payload(run) for run in runs) if _run_has_material_signal(payload)),
+        None,
+    )
+    return latest, latest_material
 
 
 def embedding_status_payload(
@@ -745,6 +802,7 @@ def embedding_status_payload(
             total_sessions=0,
             stats=EmbeddingStatsSnapshot(),
             latest_catchup_run=None,
+            latest_material_catchup_run=None,
             pending_messages_exact=include_detail,
         )
 
@@ -769,5 +827,8 @@ def embedding_status_payload(
         total_sessions=total_sessions,
         stats=embedding_stats,
         latest_catchup_run=latest_run,
+        latest_material_catchup_run=latest_run
+        if latest_run is not None and _run_has_material_signal(latest_run)
+        else None,
         pending_messages_exact=include_detail,
     )

@@ -1404,6 +1404,17 @@ def _render_direct_embedding_status(env: AppEnv, payload: dict[str, Any]) -> Non
             f"{latest.get('status', 'unknown')}, {processed:,}/{planned:,} convs, "
             f"{embedded:,} msgs embedded, {errors:,} errors"
         )
+    material = payload.get("latest_material_catchup_run")
+    if isinstance(material, dict) and (not isinstance(latest, dict) or material.get("run_id") != latest.get("run_id")):
+        processed = int(material.get("processed_sessions", 0) or 0)
+        planned = int(material.get("planned_sessions", 0) or 0)
+        embedded = int(material.get("embedded_messages", 0) or 0)
+        errors = int(material.get("error_count", 0) or 0)
+        env.ui.console.print(
+            "  Embedding material catch-up: "
+            f"{material.get('status', 'unknown')}, {processed:,}/{planned:,} convs, "
+            f"{embedded:,} msgs embedded, {errors:,} errors"
+        )
 
 
 def _show_direct_status(

@@ -371,6 +371,56 @@ def test_status_json_reads_latest_catchup_from_ops_db(tmp_path: Path) -> None:
     assert latest["error_count"] == 0
     assert latest["embedded_messages"] == 4
     assert latest["estimated_cost_usd"] == 0.001
+    assert payload["latest_material_catchup_run"] == latest
+
+
+def test_status_json_distinguishes_latest_material_archive_catchup(tmp_path: Path) -> None:
+    db_anchor = tmp_path / "index.db"
+    archive_db = tmp_path / "index.db"
+    ops_db = tmp_path / "ops.db"
+    _seed_archive_file_set_from_archive_tiers(archive_db)
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.ops_write import upsert_embedding_catchup_run
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    with sqlite3.connect(ops_db) as conn:
+        upsert_embedding_catchup_run(
+            conn,
+            run_id="material-run",
+            status="completed",
+            started_at_ms=1_767_225_700_000,
+            finished_at_ms=1_767_225_705_000,
+            scanned_sessions=63,
+            embedded_sessions=63,
+            error_count=0,
+            embedded_messages=2_818,
+            estimated_cost_usd=0.1409,
+        )
+        upsert_embedding_catchup_run(
+            conn,
+            run_id="zero-progress-run",
+            status="completed",
+            started_at_ms=1_767_225_800_000,
+            finished_at_ms=1_767_225_801_000,
+            scanned_sessions=25,
+            embedded_sessions=0,
+            error_count=0,
+            embedded_messages=0,
+            estimated_cost_usd=0.0,
+        )
+
+    payload = _run_status(db_anchor, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+
+    latest = payload["latest_catchup_run"]
+    material = payload["latest_material_catchup_run"]
+    assert latest["run_id"] == "zero-progress-run"
+    assert latest["processed_sessions"] == 25
+    assert latest["embedded_messages"] == 0
+    assert material["run_id"] == "material-run"
+    assert material["embedded_sessions"] == 63
+    assert material["embedded_messages"] == 2_818
+    assert material["estimated_cost_usd"] == 0.1409
 
 
 def test_status_json_reads_index_when_db_anchor_exists(tmp_path: Path) -> None:

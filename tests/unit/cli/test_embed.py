@@ -102,6 +102,7 @@ def _embedding_status_payload(
         "failure_count": 0,
         "total_estimated_cost_usd": 0.0,
         "latest_catchup_run": None,
+        "latest_material_catchup_run": None,
         "next_action": {
             "code": "archive_empty" if total_sessions == 0 else "set_voyage_key",
             "command": None if total_sessions == 0 else "polylogue ops embed enable --voyage-api-key ...",

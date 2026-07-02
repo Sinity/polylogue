@@ -38,6 +38,7 @@ def _defaults(*, enabled: bool, config_enabled: bool, has_key: bool, model: str,
         "embedding_failure_count": 0,
         "embedding_estimated_cost_usd": 0.0,
         "embedding_latest_catchup_run": None,
+        "embedding_latest_material_catchup_run": None,
     }
 
 
@@ -105,6 +106,7 @@ def embedding_readiness_info(db_file: Path, *, detail: bool = False) -> dict[str
         "embedding_failure_count": payload["failure_count"],
         "embedding_estimated_cost_usd": payload["total_estimated_cost_usd"],
         "embedding_latest_catchup_run": payload["latest_catchup_run"],
+        "embedding_latest_material_catchup_run": payload["latest_material_catchup_run"],
     }
 
 
@@ -305,6 +307,7 @@ def _archive_embedding_readiness_info(
                 "embedding_failure_count": failure_count,
                 "embedding_estimated_cost_usd": _estimated_cost(pending_messages) if detail else 0.0,
                 "embedding_latest_catchup_run": None,
+                "embedding_latest_material_catchup_run": None,
             }
         finally:
             conn.close()

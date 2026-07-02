@@ -66,6 +66,14 @@ def _render_latest_catchup_run(payload: EmbeddingStatusPayload) -> None:
     )
     if latest["stop_reason"]:
         click.echo(f"    reason: {latest['stop_reason']}")
+    material = payload["latest_material_catchup_run"]
+    if material is not None and material["run_id"] != latest["run_id"]:
+        click.echo(
+            "  Latest material catch-up: "
+            f"{material['status']}; processed={material['processed_sessions']:,}/{material['planned_sessions']:,} convs; "
+            f"embedded={material['embedded_messages']:,} msgs; errors={material['error_count']:,}; "
+            f"est. cost ~${material['estimated_cost_usd']:.4f}"
+        )
 
 
 def _render_next_actions(payload: EmbeddingStatusPayload) -> None:
