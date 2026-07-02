@@ -272,7 +272,7 @@ def select_pending_archive_session_window(
     if status_table is None:
         status_table = "embedding_status" if _table_exists(conn, "embedding_status") else ""
     aggregate_expr = _archive_session_embeddable_count_expression(conn)
-    status_select = "e.session_id, e.needs_reindex, e.message_count_embedded" if status_table else "NULL, NULL, NULL"
+    status_select = "e.session_id, e.needs_reindex" if status_table else "NULL, NULL"
     join_clause = f"LEFT JOIN {status_table} e ON e.session_id = s.session_id" if status_table else ""
     if aggregate_expr is None:
         count_select = "NULL AS estimated_message_count"
@@ -286,11 +286,10 @@ def select_pending_archive_session_window(
         pending_filter = (
             ""
             if rebuild or not status_table
-            else f"""
+            else """
               AND (
                     e.session_id IS NULL
                  OR e.needs_reindex = 1
-                 OR COALESCE(e.message_count_embedded, 0) < {aggregate_expr}
               )
             """
         )
@@ -317,19 +316,12 @@ def select_pending_archive_session_window(
             title = None if title_value is None else str(title_value)
             status_session_id = _row_value(row, 2, "status_session_id")
             needs_reindex = _row_int(row, 3, "needs_reindex") if status_session_id is not None else 0
-            embedded_count = _row_int(row, 4, "message_count_embedded") if status_session_id is not None else 0
-            estimated_count = _row_int(row, 5, "estimated_message_count")
+            estimated_count = _row_int(row, 4, "estimated_message_count")
             if estimated_count <= 0:
                 continue
             if min_messages is not None and estimated_count < min_messages:
                 continue
-            if not (
-                rebuild
-                or not status_table
-                or status_session_id is None
-                or needs_reindex == 1
-                or embedded_count < estimated_count
-            ):
+            if not (rebuild or not status_table or status_session_id is None or needs_reindex == 1):
                 continue
             if max_sessions is not None and len(pending) >= max_sessions:
                 return pending
