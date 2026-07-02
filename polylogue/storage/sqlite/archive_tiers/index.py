@@ -33,7 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 22
+INDEX_SCHEMA_VERSION = 23
 
 INDEX_DDL = f"""
 CREATE TABLE IF NOT EXISTS sessions (
@@ -233,6 +233,14 @@ CREATE INDEX IF NOT EXISTS idx_blocks_tool_id
 ON blocks(tool_id)
 WHERE tool_id IS NOT NULL;
 
+-- Serves message FTS readiness and repair. Search readiness compares the
+-- text-bearing block set with messages_fts_docsize; without this partial index
+-- the source-side count scans every block in large archives before the user can
+-- run even a simple MATCH query.
+CREATE INDEX IF NOT EXISTS idx_blocks_search_text_populated
+ON blocks(message_id, position)
+WHERE search_text != '';
+
 CREATE TABLE IF NOT EXISTS web_content_constructs (
     construct_id    TEXT GENERATED ALWAYS AS (block_id || ':' || position) STORED UNIQUE,
     session_id      TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
@@ -300,6 +308,18 @@ AFTER UPDATE ON blocks BEGIN
     SELECT new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, new.search_text
     WHERE new.search_text != '';
 END;
+
+CREATE TABLE IF NOT EXISTS fts_freshness_state (
+    surface TEXT PRIMARY KEY,
+    state TEXT NOT NULL CHECK (state IN ('ready', 'stale', 'unknown')),
+    checked_at TEXT NOT NULL,
+    source_rows INTEGER NOT NULL DEFAULT 0,
+    indexed_rows INTEGER NOT NULL DEFAULT 0,
+    missing_rows INTEGER NOT NULL DEFAULT 0,
+    excess_rows INTEGER NOT NULL DEFAULT 0,
+    duplicate_rows INTEGER NOT NULL DEFAULT 0,
+    detail TEXT
+) STRICT;
 
 CREATE VIEW IF NOT EXISTS actions AS
 SELECT

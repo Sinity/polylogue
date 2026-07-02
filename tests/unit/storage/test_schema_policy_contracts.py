@@ -106,8 +106,14 @@ def test_fresh_database_initialises_to_current_version(tmp_path: Path) -> None:
     conn = sqlite3.connect(db_path)
     _ensure_schema(conn)
     version = conn.execute("PRAGMA user_version").fetchone()[0]
+    freshness_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='fts_freshness_state'"
+    ).fetchone()
+    block_indexes = {row[1] for row in conn.execute("PRAGMA index_list(blocks)")}
     conn.close()
     assert version == SCHEMA_VERSION
+    assert freshness_table is not None
+    assert "idx_blocks_search_text_populated" in block_indexes
 
 
 def test_matching_version_database_opens_cleanly(tmp_path: Path) -> None:
