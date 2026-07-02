@@ -104,6 +104,7 @@ if [ "$format" = "--json" ]; then
   sessions=""
   messages=""
   observed_events=""
+  index_count_mode="exact"
   source_version=""
   raw_rows=""
   raw_materialization_debt=""
@@ -113,7 +114,11 @@ if [ "$format" = "--json" ]; then
   if [ -f "$archive_root/index.db" ]; then
     index_version="$(sqlite3 "$archive_root/index.db" 'PRAGMA user_version;' 2>/dev/null || true)"
     sessions="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM sessions;' 2>/dev/null || true)"
-    messages="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM messages;' 2>/dev/null || true)"
+    if [ "$quick" = false ]; then
+      messages="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM messages;' 2>/dev/null || true)"
+    else
+      index_count_mode="quick-no-large-counts"
+    fi
     observed_events="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM session_observed_events;' 2>/dev/null || true)"
   fi
   if [ -f "$archive_root/source.db" ]; then
@@ -165,12 +170,12 @@ if [ "$format" = "--json" ]; then
   else
     worktree_gc_json='{}'
   fi
-  python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$observed_events" "$source_version" "$raw_rows" "$raw_materialization_debt" "$raw_materialization_replayable" "$ops_status_json" "$raw_debt_json" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$polylogued_devloop_rows" "$polylogued_non_devloop_rows" "$worktree_gc_json" "$pressure_rows" "$performance_blocked" "$packet_bytes" "$packet_files" "$packet_dirs" "$operating_log_bytes" "$events_bytes" <<'PY'
+  python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$observed_events" "$index_count_mode" "$source_version" "$raw_rows" "$raw_materialization_debt" "$raw_materialization_replayable" "$ops_status_json" "$raw_debt_json" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$polylogued_devloop_rows" "$polylogued_non_devloop_rows" "$worktree_gc_json" "$pressure_rows" "$performance_blocked" "$packet_bytes" "$packet_files" "$packet_dirs" "$operating_log_bytes" "$events_bytes" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-repo, current, archive_root, git_branch, git_head, git_tracked_changes, git_untracked_changes, index_version, sessions, messages, observed_events, source_version, raw_rows, raw_materialization_debt, raw_materialization_replayable, ops_status_json, raw_debt_json, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows, polylogued_devloop_rows, polylogued_non_devloop_rows, worktree_gc_json, pressure_rows, performance_blocked, packet_bytes, packet_files, packet_dirs, operating_log_bytes, events_bytes = sys.argv[1:]
+repo, current, archive_root, git_branch, git_head, git_tracked_changes, git_untracked_changes, index_version, sessions, messages, observed_events, index_count_mode, source_version, raw_rows, raw_materialization_debt, raw_materialization_replayable, ops_status_json, raw_debt_json, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows, polylogued_devloop_rows, polylogued_non_devloop_rows, worktree_gc_json, pressure_rows, performance_blocked, packet_bytes, packet_files, packet_dirs, operating_log_bytes, events_bytes = sys.argv[1:]
 
 def int_or_none(value: str):
     try:
@@ -339,6 +344,7 @@ print(json.dumps({
         "sessions": int_or_none(sessions),
         "messages": int_or_none(messages),
         "observed_events": int_or_none(observed_events),
+        "count_mode": index_count_mode,
     },
     "source": {
         "schema_version": int_or_none(source_version),
@@ -422,7 +428,11 @@ fi
 if [ -f "$archive_root/index.db" ]; then
   version="$(sqlite3 "$archive_root/index.db" 'PRAGMA user_version;' 2>/dev/null || true)"
   sessions="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM sessions;' 2>/dev/null || true)"
-  messages="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM messages;' 2>/dev/null || true)"
+  if [ "$quick" = false ]; then
+    messages="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM messages;' 2>/dev/null || true)"
+  else
+    messages="skipped-quick"
+  fi
   observed_events="$(sqlite3 "$archive_root/index.db" 'SELECT COUNT(*) FROM session_observed_events;' 2>/dev/null || true)"
   printf 'index: v%s sessions=%s messages=%s observed_events=%s\n' \
     "${version:-?}" "${sessions:-?}" "${messages:-?}" "${observed_events:-?}"
@@ -466,7 +476,10 @@ if [ -f "$archive_root/source.db" ] && [ -f "$archive_root/index.db" ]; then
   )"
   printf 'convergence: raw_materialization_join_gaps=%s replayable_acquired_unparsed=%s\n' \
     "${raw_materialization_debt:-?}" "${raw_materialization_replayable:-?}"
-  raw_debt_json="$(raw_materialization_debt_payload)"
+  raw_debt_json=""
+  if [ "$quick" = false ]; then
+    raw_debt_json="$(raw_materialization_debt_payload)"
+  fi
   if [ -n "$raw_debt_json" ]; then
     python3 - "$raw_debt_json" <<'PY'
 from __future__ import annotations
