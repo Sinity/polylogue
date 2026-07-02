@@ -639,6 +639,7 @@ def _run_archive_backfill(
     embedded = 0
     errors = 0
     processed = 0
+    started_at_ms = int(time.time() * 1000)
     session_payloads: list[BackfillSessionPayload] = []
     console = env.ui.console
     started_at = time.monotonic()
@@ -707,11 +708,57 @@ def _run_archive_backfill(
         "preflight": _preflight_payload(report),
         "sessions": session_payloads,
     }
+    _record_archive_backfill_run(
+        index_db,
+        started_at_ms=started_at_ms,
+        status=payload["status"],
+        processed_sessions=processed,
+        embedded_sessions=embedded,
+        error_count=errors,
+        embedded_messages=sum(item["embedded_message_count"] for item in session_payloads),
+        estimated_cost_usd=cumulative_cost,
+        stop_reason=stopped_reason,
+    )
     if output_format == "text":
         click.echo(f"\nBackfill complete. Embedded {embedded}, errors {errors}, est. cost ~${cumulative_cost:.4f}.")
         if stopped_reason:
             click.echo(f"Stopped early: {stopped_reason}.")
     return payload
+
+
+def _record_archive_backfill_run(
+    index_db: Path,
+    *,
+    started_at_ms: int,
+    status: str,
+    processed_sessions: int,
+    embedded_sessions: int,
+    error_count: int,
+    embedded_messages: int,
+    estimated_cost_usd: float,
+    stop_reason: str | None,
+) -> None:
+    """Persist archive backfill outcome in the ops-tier run ledger."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.ops_write import upsert_embedding_catchup_run
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    ops_db = index_db.with_name("ops.db")
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    terminal_status = "cancelled" if status == "stopped" else "completed"
+    with sqlite3.connect(ops_db, timeout=30.0) as conn:
+        upsert_embedding_catchup_run(
+            conn,
+            started_at_ms=started_at_ms,
+            finished_at_ms=int(time.time() * 1000),
+            status=terminal_status,
+            scanned_sessions=processed_sessions,
+            embedded_sessions=embedded_sessions,
+            error_count=error_count,
+            embedded_messages=embedded_messages,
+            estimated_cost_usd=estimated_cost_usd,
+            error_message=stop_reason,
+        )
 
 
 @embed_command.command("status")

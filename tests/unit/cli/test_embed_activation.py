@@ -575,6 +575,17 @@ class TestBackfillCommand:
                 "total": 1,
             }
         ]
+        from polylogue.storage.sqlite.archive_tiers.ops_write import list_embedding_catchup_runs
+
+        with sqlite3.connect(tmp_path / "ops.db") as conn:
+            runs = list_embedding_catchup_runs(conn)
+        assert len(runs) == 1
+        assert runs[0].status == "completed"
+        assert runs[0].scanned_sessions == 1
+        assert runs[0].embedded_sessions == 1
+        assert runs[0].embedded_messages == 2
+        assert runs[0].error_count == 0
+        assert runs[0].estimated_cost_usd == 0.0001
 
     def test_backfill_json_requires_yes_for_clean_stdout(
         self,
