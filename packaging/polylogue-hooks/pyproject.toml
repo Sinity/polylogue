@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "polylogue-hooks"
-version = "0.1.0"  # x-release-please-version
+version = "0.2.0"  # x-release-please-version
 description = "Polylogue hook adapter for Claude Code / Codex session lifecycle capture"
 readme = "README.md"
 license = { text = "MIT" }

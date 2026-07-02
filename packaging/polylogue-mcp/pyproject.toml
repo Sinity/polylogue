@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "polylogue-mcp"
-version = "0.1.0"  # x-release-please-version
+version = "0.2.0"  # x-release-please-version
 description = "MCP server entrypoint for the Polylogue AI chat archive"
 readme = "README.md"
 license = { text = "MIT" }
@@ -27,7 +27,7 @@ requires-python = ">=3.11"
 # synchronized X.Y.Z bump across the polylogue, polylogue-mcp, and
 # polylogue-hooks packages (#1309).
 dependencies = [
-  "polylogue==0.1.0",  # x-release-please-version
+  "polylogue==0.2.0",  # x-release-please-version
 ]
 
 [project.urls]
