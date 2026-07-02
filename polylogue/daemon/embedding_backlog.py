@@ -156,6 +156,7 @@ def _drain_archive_embedding_backlog_once(index_db: Path) -> int:
     embedded = 0
     embedded_messages = 0
     errors = 0
+    skipped = 0
     processed = 0
     error_message: str | None = None
     cumulative_cost = 0.0
@@ -179,6 +180,7 @@ def _drain_archive_embedding_backlog_once(index_db: Path) -> int:
                 )
                 break
         elif outcome.status in {"no_messages", "no_embeddable_messages"}:
+            skipped += 1
             logger.info("embed: archive %s has no embeddable messages", item.session_id)
         elif outcome.status == "error":
             errors += 1
@@ -195,6 +197,7 @@ def _drain_archive_embedding_backlog_once(index_db: Path) -> int:
         finished_at_ms=int(time.time() * 1000),
         scanned_sessions=processed,
         embedded_sessions=embedded,
+        skipped_sessions=skipped,
         error_count=errors,
         embedded_messages=embedded_messages,
         estimated_cost_usd=cumulative_cost,
@@ -232,6 +235,7 @@ def _upsert_archive_embedding_catchup_run(
     finished_at_ms: int | None = None,
     scanned_sessions: int = 0,
     embedded_sessions: int = 0,
+    skipped_sessions: int = 0,
     error_count: int = 0,
     embedded_messages: int = 0,
     estimated_cost_usd: float | None = None,
@@ -254,6 +258,7 @@ def _upsert_archive_embedding_catchup_run(
             finished_at_ms=finished_at_ms,
             scanned_sessions=scanned_sessions,
             embedded_sessions=embedded_sessions,
+            skipped_sessions=skipped_sessions,
             error_count=error_count,
             embedded_messages=embedded_messages,
             estimated_cost_usd=estimated_cost_usd,

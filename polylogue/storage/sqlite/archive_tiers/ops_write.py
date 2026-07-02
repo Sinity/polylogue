@@ -38,6 +38,7 @@ class ArchiveEmbeddingCatchupRun:
     origin: str | None
     scanned_sessions: int
     embedded_sessions: int
+    skipped_sessions: int
     error_count: int
     embedded_messages: int
     estimated_cost_usd: float | None
@@ -496,6 +497,7 @@ def upsert_embedding_catchup_run(
     origin: Origin | str | None = None,
     scanned_sessions: int = 0,
     embedded_sessions: int = 0,
+    skipped_sessions: int = 0,
     error_count: int = 0,
     embedded_messages: int = 0,
     estimated_cost_usd: float | None = None,
@@ -515,12 +517,13 @@ def upsert_embedding_catchup_run(
             origin,
             scanned_sessions,
             embedded_sessions,
+            skipped_sessions,
             error_count,
             embedded_messages,
             estimated_cost_usd,
             error_message
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (run_id) DO UPDATE SET
             started_at_ms = excluded.started_at_ms,
             finished_at_ms = excluded.finished_at_ms,
@@ -528,6 +531,7 @@ def upsert_embedding_catchup_run(
             origin = excluded.origin,
             scanned_sessions = excluded.scanned_sessions,
             embedded_sessions = excluded.embedded_sessions,
+            skipped_sessions = excluded.skipped_sessions,
             error_count = excluded.error_count,
             embedded_messages = excluded.embedded_messages,
             estimated_cost_usd = excluded.estimated_cost_usd,
@@ -541,6 +545,7 @@ def upsert_embedding_catchup_run(
             _origin_value(origin),
             scanned_sessions,
             embedded_sessions,
+            skipped_sessions,
             error_count,
             embedded_messages,
             estimated_cost_usd,
@@ -561,7 +566,7 @@ def list_embedding_catchup_runs(
     query = """
         SELECT
             run_id, started_at_ms, finished_at_ms, status, origin,
-            scanned_sessions, {embedded_sessions}, {error_count},
+            scanned_sessions, {embedded_sessions}, {skipped_sessions}, {error_count},
             embedded_messages, estimated_cost_usd, error_message
         FROM embedding_catchup_runs
     """.format(**outcome_columns)
@@ -581,7 +586,7 @@ def read_embedding_catchup_run(conn: sqlite3.Connection, run_id: str) -> Archive
         """
         SELECT
             run_id, started_at_ms, finished_at_ms, status, origin,
-            scanned_sessions, {embedded_sessions}, {error_count},
+            scanned_sessions, {embedded_sessions}, {skipped_sessions}, {error_count},
             embedded_messages, estimated_cost_usd, error_message
         FROM embedding_catchup_runs
         WHERE run_id = ?
@@ -597,6 +602,7 @@ def _ensure_embedding_catchup_run_outcome_columns(conn: sqlite3.Connection) -> N
     existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(embedding_catchup_runs)")}
     additions = {
         "embedded_sessions": "INTEGER NOT NULL DEFAULT 0 CHECK(embedded_sessions >= 0)",
+        "skipped_sessions": "INTEGER NOT NULL DEFAULT 0 CHECK(skipped_sessions >= 0)",
         "error_count": "INTEGER NOT NULL DEFAULT 0 CHECK(error_count >= 0)",
     }
     for name, definition in additions.items():
@@ -608,6 +614,7 @@ def _embedding_catchup_run_outcome_columns(conn: sqlite3.Connection) -> dict[str
     existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(embedding_catchup_runs)")}
     return {
         "embedded_sessions": "embedded_sessions" if "embedded_sessions" in existing else "0 AS embedded_sessions",
+        "skipped_sessions": "skipped_sessions" if "skipped_sessions" in existing else "0 AS skipped_sessions",
         "error_count": "error_count"
         if "error_count" in existing
         else "CASE WHEN error_message IS NULL THEN 0 ELSE 1 END AS error_count",

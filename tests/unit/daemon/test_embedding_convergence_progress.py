@@ -105,8 +105,52 @@ def test_daemon_embedding_backlog_drain_processes_archive(
     assert runs[0].status == "completed"
     assert runs[0].scanned_sessions == 2
     assert runs[0].embedded_sessions == 2
+    assert runs[0].skipped_sessions == 0
     assert runs[0].error_count == 0
     assert runs[0].embedded_messages == 4
+
+
+def test_daemon_embedding_backlog_records_skipped_sessions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_anchor_path = tmp_path / "index.db"
+    db_anchor_path.touch()
+    with sqlite3.connect(db_anchor_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                title TEXT,
+                message_count INTEGER NOT NULL,
+                sort_key_ms INTEGER
+            );
+            INSERT INTO sessions VALUES ('codex-session:skip-a', 'Skip A', 1, 2);
+            INSERT INTO sessions VALUES ('codex-session:skip-b', 'Skip B', 1, 1);
+            """
+        )
+
+    def fake_embed(_db_path: Path, _provider: object, session_id: str) -> EmbedSessionOutcome:
+        return EmbedSessionOutcome(status="no_embeddable_messages", session_id=session_id)
+
+    monkeypatch.setattr(convergence_stages, "load_polylogue_config", lambda: _EmbeddingConfig())
+    monkeypatch.setattr(embedding_backlog, "load_polylogue_config", lambda: _EmbeddingConfig())
+    monkeypatch.setattr("polylogue.storage.search_providers.create_vector_provider", lambda **_: MagicMock())
+    monkeypatch.setattr("polylogue.storage.embeddings.materialization.embed_archive_session_sync", fake_embed)
+
+    processed = embedding_backlog.drain_embedding_backlog_once(db_anchor_path)
+
+    assert processed == 2
+    from polylogue.storage.sqlite.archive_tiers.ops_write import list_embedding_catchup_runs
+
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        runs = list_embedding_catchup_runs(conn)
+    assert len(runs) == 1
+    assert runs[0].scanned_sessions == 2
+    assert runs[0].embedded_sessions == 0
+    assert runs[0].skipped_sessions == 2
+    assert runs[0].error_count == 0
+    assert runs[0].embedded_messages == 0
 
 
 def test_archive_convergence_embedding_uses_embeddings_tier(

@@ -318,6 +318,7 @@ def test_upsert_embedding_catchup_run_writes_and_reads_row(tmp_path: Path) -> No
         origin=Origin.CLAUDE_CODE_SESSION,
         scanned_sessions=2,
         embedded_sessions=1,
+        skipped_sessions=1,
         error_count=1,
         embedded_messages=5,
         estimated_cost_usd=0.123,
@@ -332,6 +333,7 @@ def test_upsert_embedding_catchup_run_writes_and_reads_row(tmp_path: Path) -> No
         origin=Origin.CLAUDE_CODE_SESSION.value,
         scanned_sessions=2,
         embedded_sessions=1,
+        skipped_sessions=1,
         error_count=1,
         embedded_messages=5,
         estimated_cost_usd=0.123,
@@ -357,6 +359,7 @@ def test_upsert_embedding_catchup_run_refreshes_status_and_list_filters(tmp_path
         finished_at_ms=1_700_000_700,
         scanned_sessions=2,
         embedded_sessions=2,
+        skipped_sessions=0,
         error_count=0,
     )
     upsert_embedding_catchup_run(
@@ -377,6 +380,7 @@ def test_upsert_embedding_catchup_run_refreshes_status_and_list_filters(tmp_path
         origin=None,
         scanned_sessions=2,
         embedded_sessions=2,
+        skipped_sessions=0,
         error_count=0,
         embedded_messages=0,
         estimated_cost_usd=None,

@@ -558,6 +558,7 @@ class TestBackfillCommand:
         payload = json.loads(result.output)
         assert payload["status"] == "complete"
         assert payload["embedded_sessions"] == 1
+        assert payload["skipped_sessions"] == 0
         assert payload["error_count"] == 0
         assert payload["candidate_sessions"] == 1
         assert payload["processed_sessions"] == 1
@@ -583,6 +584,7 @@ class TestBackfillCommand:
         assert runs[0].status == "completed"
         assert runs[0].scanned_sessions == 1
         assert runs[0].embedded_sessions == 1
+        assert runs[0].skipped_sessions == 0
         assert runs[0].embedded_messages == 2
         assert runs[0].error_count == 0
         assert runs[0].estimated_cost_usd == 0.0001

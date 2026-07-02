@@ -150,6 +150,7 @@ class BackfillSessionPayload(TypedDict):
 class BackfillResultPayload(TypedDict):
     status: str
     embedded_sessions: int
+    skipped_sessions: int
     error_count: int
     estimated_cost_usd: float
     stopped_reason: str | None
@@ -622,6 +623,7 @@ def _run_archive_backfill(
         payload: BackfillResultPayload = {
             "status": "complete",
             "embedded_sessions": 0,
+            "skipped_sessions": 0,
             "error_count": 0,
             "estimated_cost_usd": 0.0,
             "stopped_reason": None,
@@ -637,6 +639,7 @@ def _run_archive_backfill(
     cap = _effective_cost_cap(report.cost_cap_usd, report.max_cost_usd)
     cumulative_cost = 0.0
     embedded = 0
+    skipped = 0
     errors = 0
     processed = 0
     started_at_ms = int(time.time() * 1000)
@@ -672,6 +675,7 @@ def _run_archive_backfill(
                         f"Stopping after {embedded} sessions.[/yellow]"
                     )
         elif outcome.status in {"no_messages", "no_embeddable_messages"}:
+            skipped += 1
             if output_format == "text":
                 console.print(
                     f"  [{index}/{len(pending)}] {item.title or item.session_id[:12]}: no embeddable messages"
@@ -700,6 +704,7 @@ def _run_archive_backfill(
     payload = {
         "status": "stopped" if stopped_reason else "complete",
         "embedded_sessions": embedded,
+        "skipped_sessions": skipped,
         "error_count": errors,
         "estimated_cost_usd": round(cumulative_cost, 8),
         "stopped_reason": stopped_reason,
@@ -714,6 +719,7 @@ def _run_archive_backfill(
         status=payload["status"],
         processed_sessions=processed,
         embedded_sessions=embedded,
+        skipped_sessions=skipped,
         error_count=errors,
         embedded_messages=sum(item["embedded_message_count"] for item in session_payloads),
         estimated_cost_usd=cumulative_cost,
@@ -733,6 +739,7 @@ def _record_archive_backfill_run(
     status: str,
     processed_sessions: int,
     embedded_sessions: int,
+    skipped_sessions: int,
     error_count: int,
     embedded_messages: int,
     estimated_cost_usd: float,
@@ -754,6 +761,7 @@ def _record_archive_backfill_run(
             status=terminal_status,
             scanned_sessions=processed_sessions,
             embedded_sessions=embedded_sessions,
+            skipped_sessions=skipped_sessions,
             error_count=error_count,
             embedded_messages=embedded_messages,
             estimated_cost_usd=estimated_cost_usd,

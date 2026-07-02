@@ -61,6 +61,9 @@ class _ArchiveEmbeddingRunRow(Protocol):
     def embedded_sessions(self) -> int: ...
 
     @property
+    def skipped_sessions(self) -> int: ...
+
+    @property
     def error_count(self) -> int: ...
 
     @property
@@ -716,6 +719,7 @@ def _run_has_material_signal(run: EmbeddingCatchupRunPayload) -> bool:
     return (
         run["embedded_messages"] > 0
         or run["embedded_sessions"] > 0
+        or run["skipped_sessions"] > 0
         or run["error_count"] > 0
         or bool(run["stop_reason"])
     )
@@ -742,7 +746,7 @@ def _archive_run_payload(run: _ArchiveEmbeddingRunRow) -> EmbeddingCatchupRunPay
         "planned_messages": 0,
         "processed_sessions": run.scanned_sessions,
         "embedded_sessions": run.embedded_sessions,
-        "skipped_sessions": 0,
+        "skipped_sessions": run.skipped_sessions,
         "error_count": run.error_count,
         "embedded_messages": run.embedded_messages,
         "estimated_cost_usd": float(run.estimated_cost_usd or 0.0),

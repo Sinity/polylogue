@@ -423,6 +423,40 @@ def test_status_json_distinguishes_latest_material_archive_catchup(tmp_path: Pat
     assert material["estimated_cost_usd"] == 0.1409
 
 
+def test_status_json_treats_skipped_archive_catchup_as_material(tmp_path: Path) -> None:
+    db_anchor = tmp_path / "index.db"
+    archive_db = tmp_path / "index.db"
+    ops_db = tmp_path / "ops.db"
+    _seed_archive_file_set_from_archive_tiers(archive_db)
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.ops_write import upsert_embedding_catchup_run
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    with sqlite3.connect(ops_db) as conn:
+        upsert_embedding_catchup_run(
+            conn,
+            run_id="skipped-run",
+            status="completed",
+            started_at_ms=1_767_225_900_000,
+            finished_at_ms=1_767_225_901_000,
+            scanned_sessions=25,
+            embedded_sessions=0,
+            skipped_sessions=25,
+            error_count=0,
+            embedded_messages=0,
+            estimated_cost_usd=0.0,
+        )
+
+    payload = _run_status(db_anchor, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+
+    latest = payload["latest_catchup_run"]
+    material = payload["latest_material_catchup_run"]
+    assert latest["run_id"] == "skipped-run"
+    assert latest["skipped_sessions"] == 25
+    assert material == latest
+
+
 def test_status_json_reads_index_when_db_anchor_exists(tmp_path: Path) -> None:
     db_anchor = tmp_path / "custom.sqlite"
     _seed_archive_without_embedding_ledgers(db_anchor)

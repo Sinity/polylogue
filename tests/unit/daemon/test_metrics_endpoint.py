@@ -682,6 +682,7 @@ class TestFormatMetricsReadsArchiveState:
                 finished_at_ms=1_767_225_701_000,
                 scanned_sessions=2,
                 embedded_sessions=2,
+                skipped_sessions=1,
                 error_count=0,
                 embedded_messages=4,
                 estimated_cost_usd=0.001,
@@ -699,6 +700,7 @@ class TestFormatMetricsReadsArchiveState:
         assert 'polylogue_embedding_latest_catchup_run_info{rebuild="false",status="completed"} 1' in body
         assert 'polylogue_embedding_latest_catchup_sessions{state="processed"} 2' in body
         assert 'polylogue_embedding_latest_catchup_sessions{state="embedded"} 2' in body
+        assert 'polylogue_embedding_latest_catchup_sessions{state="skipped"} 1' in body
         assert 'polylogue_embedding_latest_catchup_messages{state="embedded"} 4' in body
         assert "polylogue_embedding_latest_catchup_estimated_cost_usd 0.001" in body
         assert 'polylogue_archive_sessions_total{source="codex-session"} 2' in body
