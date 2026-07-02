@@ -277,6 +277,9 @@ def select_pending_archive_session_window(
     exact_counts_available = _archive_session_embeddable_counts_available(conn)
     aggregate_expr = _archive_session_embeddable_count_expression(conn)
     clean_status_is_authoritative = _archive_session_embeddable_count_uses_prose_rollups(conn)
+    clean_status_needs_exact_refinement = bool(
+        exact_counts_available and clean_status_is_authoritative and status_table and not rebuild
+    )
     status_select = (
         "e.session_id AS status_session_id, e.needs_reindex, e.message_count_embedded"
         if status_table
@@ -296,11 +299,12 @@ def select_pending_archive_session_window(
             params.append(max_messages)
         pending_filter = (
             ""
-            if rebuild or not status_table or aggregate_expr is None or not clean_status_is_authoritative
+            if rebuild or not status_table or aggregate_expr is None
             else """
               AND (
                     e.session_id IS NULL
                  OR e.needs_reindex = 1
+                 OR e.message_count_embedded < {aggregate_expr}
               )
             """
         ).format(aggregate_expr=aggregate_expr or "0")
@@ -327,7 +331,7 @@ def select_pending_archive_session_window(
             """
         ).format(aggregate_expr=aggregate_expr)
     limit_clause = ""
-    if aggregate_expr is not None and max_sessions is not None:
+    if aggregate_expr is not None and max_sessions is not None and not clean_status_needs_exact_refinement:
         limit_clause = "LIMIT ?"
         params.append(max_sessions)
     cursor = conn.execute(
@@ -359,10 +363,10 @@ def select_pending_archive_session_window(
             estimated_count = _row_int(row, 5, "estimated_message_count")
             needs_exact_count = (
                 exact_counts_available
-                and not clean_status_is_authoritative
                 and status_session_id is not None
                 and needs_reindex == 0
                 and message_count_embedded > 0
+                and (not clean_status_is_authoritative or message_count_embedded < estimated_count)
             )
             if needs_exact_count:
                 estimated_count = count_archive_session_embeddable_messages(conn, session_id)
@@ -375,7 +379,7 @@ def select_pending_archive_session_window(
                 or not status_table
                 or status_session_id is None
                 or needs_reindex == 1
-                or (not clean_status_is_authoritative and message_count_embedded < estimated_count)
+                or message_count_embedded < estimated_count
             ):
                 continue
             if max_sessions is not None and len(pending) >= max_sessions:
@@ -568,6 +572,57 @@ def archive_embedding_messages_table_ref(conn: sqlite3.Connection, *, alias: str
     if _index_exists(conn, "idx_messages_session_material_origin"):
         return f"messages AS {alias} INDEXED BY idx_messages_session_material_origin"
     return archive_messages_table_ref(conn, alias=alias)
+
+
+def archive_embeddable_messages_relation(conn: sqlite3.Connection, *, alias: str) -> str:
+    """Return a relation containing messages the archive embedder will send."""
+
+    message_columns = _table_columns(conn, "messages")
+    base_alias = f"{alias}_base"
+    messages_ref = archive_embedding_messages_table_ref(conn, alias=base_alias)
+    content_hash_expr = f"{base_alias}.content_hash" if "content_hash" in message_columns else "NULL"
+    selected_columns = (
+        f"{base_alias}.message_id AS message_id, "
+        f"{base_alias}.session_id AS session_id, "
+        f"{content_hash_expr} AS content_hash"
+    )
+    base_where = archive_embeddable_message_where(base_alias)
+    if _archive_message_blocks_available(conn):
+        blocks_ref = (
+            "blocks AS b INDEXED BY idx_blocks_session_position"
+            if _index_exists(conn, "idx_blocks_session_position")
+            else "blocks AS b"
+        )
+        return f"""
+        (
+            SELECT {selected_columns}
+            FROM {messages_ref}
+            LEFT JOIN {blocks_ref}
+              ON b.session_id = {base_alias}.session_id
+             AND b.message_id = {base_alias}.message_id
+             AND b.block_type = 'text'
+             AND b.text IS NOT NULL
+            WHERE {base_where}
+            GROUP BY {base_alias}.message_id, {base_alias}.session_id, {content_hash_expr}
+            HAVING LENGTH(TRIM(COALESCE(GROUP_CONCAT(b.text, char(10) || char(10)), ''))) >= 20
+        ) AS {alias}
+        """
+    if "text" in message_columns:
+        return f"""
+        (
+            SELECT {selected_columns}
+            FROM {messages_ref}
+            WHERE {base_where}
+              AND LENGTH(TRIM(COALESCE({base_alias}.text, ''))) >= 20
+        ) AS {alias}
+        """
+    return f"""
+    (
+        SELECT {selected_columns}
+        FROM {messages_ref}
+        WHERE {base_where}
+    ) AS {alias}
+    """
 
 
 def _archive_session_embeddable_count_expression(conn: sqlite3.Connection) -> str | None:
@@ -996,6 +1051,7 @@ __all__ = [
     "EmbedSessionOutcome",
     "EmbedSingleStatus",
     "PendingSession",
+    "archive_embeddable_messages_relation",
     "archive_embeddable_message_where",
     "archive_embedding_messages_table_ref",
     "archive_messages_table_ref",

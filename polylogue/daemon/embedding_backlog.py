@@ -164,6 +164,16 @@ def _drain_archive_embedding_backlog_once(index_db: Path) -> int:
     for item in pending:
         if time.monotonic() - start_monotonic >= _DAEMON_EMBED_STOP_AFTER_SECONDS:
             break
+        estimated_batch_cost = (
+            item.message_count * ESTIMATED_TOKENS_PER_MESSAGE * VOYAGE_4_COST_PER_1M_TOKENS / 1_000_000
+        )
+        if monthly_cap > 0.0 and cumulative_cost + estimated_batch_cost > monthly_cap:
+            logger.info(
+                "embed: archive cost cap would be exceeded (%.4f > %.2f); backlog drain paused",
+                cumulative_cost + estimated_batch_cost,
+                monthly_cap,
+            )
+            break
         outcome = embed_archive_session_sync(index_db, vec_provider, item.session_id)
         processed += 1
         if outcome.status == "embedded":

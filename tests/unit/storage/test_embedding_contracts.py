@@ -613,11 +613,7 @@ def test_pending_archive_window_reselects_status_with_lower_actual_count() -> No
         conn.close()
 
 
-def test_pending_archive_window_does_not_treat_aggregate_overcount_as_stale(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from polylogue.storage.embeddings import materialization
-
+def test_pending_archive_window_does_not_treat_aggregate_overcount_as_stale() -> None:
     conn = sqlite3.connect(":memory:")
     try:
         conn.executescript(
@@ -653,11 +649,6 @@ def test_pending_archive_window_does_not_treat_aggregate_overcount_as_stale(
             """
         )
 
-        def fail_exact_count(_conn: sqlite3.Connection, _session_id: str) -> int:
-            raise AssertionError("aggregate-backed archive windows must not exact-recount")
-
-        monkeypatch.setattr(materialization, "count_archive_session_embeddable_messages", fail_exact_count)
-
         pending = select_pending_archive_session_window(
             conn,
             status_table="embedding_status",
@@ -668,6 +659,52 @@ def test_pending_archive_window_does_not_treat_aggregate_overcount_as_stale(
 
         assert [item.session_id for item in pending] == ["pending-older"]
         assert pending[0].message_count == 12
+    finally:
+        conn.close()
+
+
+def test_pending_archive_window_reselects_clean_status_with_new_eligible_prose() -> None:
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                origin TEXT NOT NULL DEFAULT 'unknown-export',
+                title TEXT,
+                sort_key_ms INTEGER,
+                authored_user_message_count INTEGER NOT NULL DEFAULT 0,
+                assistant_message_count INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE messages (
+                message_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                text TEXT,
+                role TEXT NOT NULL DEFAULT 'user',
+                message_type TEXT NOT NULL DEFAULT 'message',
+                material_origin TEXT NOT NULL DEFAULT 'human_authored',
+                word_count INTEGER NOT NULL DEFAULT 8
+            );
+            CREATE TABLE embedding_status (
+                session_id TEXT PRIMARY KEY,
+                message_count_embedded INTEGER NOT NULL DEFAULT 0,
+                needs_reindex INTEGER NOT NULL DEFAULT 0,
+                error_message TEXT
+            );
+            INSERT INTO sessions VALUES ('changed', 'codex-session', 'changed', 1, 2, 0);
+            INSERT INTO messages (
+                message_id, session_id, text, role, message_type, material_origin, word_count
+            ) VALUES
+                ('m-old', 'changed', 'old authored prose long enough', 'user', 'message', 'human_authored', 5),
+                ('m-new', 'changed', 'new authored prose long enough', 'user', 'message', 'human_authored', 5);
+            INSERT INTO embedding_status VALUES ('changed', 1, 0, NULL);
+            """
+        )
+
+        pending = select_pending_archive_session_window(conn, status_table="embedding_status")
+
+        assert [item.session_id for item in pending] == ["changed"]
+        assert pending[0].message_count == 2
     finally:
         conn.close()
 

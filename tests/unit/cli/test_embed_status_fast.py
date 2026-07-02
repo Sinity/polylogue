@@ -577,6 +577,38 @@ def test_status_json_detail_mode_stays_embedding_scoped(tmp_path: Path) -> None:
     assert payload["retrieval_bands"] == {}
 
 
+def test_status_json_detail_matches_archive_embedding_text_floor(tmp_path: Path) -> None:
+    index_db = tmp_path / "index.db"
+    with sqlite3.connect(index_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE sessions (session_id TEXT PRIMARY KEY);
+            CREATE TABLE messages (
+                message_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                text TEXT,
+                role TEXT NOT NULL DEFAULT 'user',
+                message_type TEXT NOT NULL DEFAULT 'message',
+                material_origin TEXT NOT NULL DEFAULT 'human_authored',
+                word_count INTEGER NOT NULL DEFAULT 1,
+                content_hash TEXT
+            );
+            INSERT INTO sessions VALUES ('conv-1');
+            INSERT INTO messages (
+                message_id, session_id, text, role, message_type, material_origin, word_count, content_hash
+            ) VALUES
+                ('msg-long', 'conv-1', 'authored prose long enough', 'user', 'message', 'human_authored', 4, 'h1'),
+                ('msg-short', 'conv-1', 'tiny', 'user', 'message', 'human_authored', 1, 'h2');
+            """
+        )
+        conn.commit()
+
+    payload = _run_status(index_db, "--detail")
+
+    assert payload["pending_messages"] == 1
+    assert payload["pending_messages_exact"] is True
+
+
 def test_status_json_includes_latest_catchup_run(tmp_path: Path) -> None:
     db_path = tmp_path / "archive.db"
     _seed_archive_without_embedding_ledgers(db_path)

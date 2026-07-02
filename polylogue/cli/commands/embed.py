@@ -653,6 +653,17 @@ def _run_archive_backfill(
         if stop_after_seconds is not None and time.monotonic() - started_at >= stop_after_seconds:
             stopped_reason = f"time limit reached ({stop_after_seconds}s)"
             break
+        estimated_batch_cost = (
+            item.message_count * ESTIMATED_TOKENS_PER_MESSAGE * VOYAGE_4_COST_PER_1M_TOKENS / 1_000_000
+        )
+        if cap > 0 and cumulative_cost + estimated_batch_cost > cap:
+            stopped_reason = f"cost cap would be exceeded (~${cumulative_cost + estimated_batch_cost:.4f} > ${cap:.2f})"
+            if output_format == "text":
+                console.print(
+                    f"[yellow]Cost cap would be exceeded by {item.title or item.session_id[:12]} "
+                    f"(~${cumulative_cost + estimated_batch_cost:.4f} > ${cap:.2f}). Stopping.[/yellow]"
+                )
+            break
         outcome = embed_archive_session_sync(index_db, typed_provider, item.session_id)
         processed += 1
         batch_cost = 0.0

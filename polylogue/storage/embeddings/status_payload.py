@@ -16,8 +16,7 @@ from typing import TYPE_CHECKING, Protocol
 from typing_extensions import TypedDict
 
 from polylogue.storage.embeddings.materialization import (
-    archive_embeddable_message_where,
-    archive_embedding_messages_table_ref,
+    archive_embeddable_messages_relation,
     count_archive_embedding_session_state,
 )
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
@@ -598,11 +597,10 @@ def _archive_embedding_status_payload(
                 oldest_embedded_at = _iso_from_epoch_ms(bounds_rows[0][0])
                 newest_embedded_at = _iso_from_epoch_ms(bounds_rows[0][1])
         if include_detail and has_messages:
-            messages_ref = archive_embedding_messages_table_ref(conn, alias="m")
-            embeddable_where = archive_embeddable_message_where("m")
+            messages_ref = archive_embeddable_messages_relation(conn, alias="m")
             total_messages = _scalar_int_with_timeout(
                 conn,
-                f"SELECT COUNT(*) FROM {messages_ref} WHERE {embeddable_where}",
+                f"SELECT COUNT(*) FROM {messages_ref}",
                 timeout_ms=DETAIL_QUERY_TIMEOUT_MS,
             )
             if total_messages is None:
@@ -622,8 +620,7 @@ def _archive_embedding_status_payload(
                     FROM {messages_ref}
                     LEFT JOIN {meta_table} em {meta_join}
                     {status_join}
-                    WHERE {embeddable_where}
-                      AND (
+                    WHERE (
                         {meta_missing_column} IS NULL
                         OR COALESCE(em.needs_reindex, 0) = 1
                         {status_reindex_clause}
@@ -668,8 +665,7 @@ def _archive_embedding_status_payload(
                         SELECT COUNT(*)
                         FROM {messages_ref}
                         JOIN {meta_table} em {meta_join}
-                        WHERE {embeddable_where}
-                          AND (
+                        WHERE (
                             COALESCE(em.needs_reindex, 0) = 1
                             OR (em.content_hash IS NOT NULL AND em.content_hash != m.content_hash)
                           )

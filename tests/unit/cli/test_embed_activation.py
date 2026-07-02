@@ -693,7 +693,7 @@ class TestBackfillCommand:
         assert fake_embed.call_count == 1
         assert "Stopped early: max errors reached" in result.output
 
-    def test_backfill_run_cost_cap_stops_after_window_overshoot(
+    def test_backfill_run_cost_cap_stops_before_provider_call(
         self,
         cli_runner: CliRunner,
         stub_env: Any,
@@ -735,8 +735,8 @@ class TestBackfillCommand:
             )
 
         assert result.exit_code == 0, result.output
-        assert fake_embed.call_count == 1
-        assert "Stopped early: cost cap reached" in result.output
+        assert fake_embed.call_count == 0
+        assert "Stopped early: cost cap would be exceeded" in result.output
 
 
 # ---------------------------------------------------------------------------
