@@ -679,12 +679,6 @@ through the normal pipeline.</p>
 <li><code>disk_space</code> — free disk space (warns at 500 MB, critical at 100 MB)</li>
 <li><code>wal_size</code> — WAL file size (warns at 50 MB, errors at 200 MB)</li>
 <li><code>source_availability</code> — watch roots exist and are readable</li>
-<li><code>fts_trigger_drift</code> — checks the three canonical message/block FTS sync
-triggers (<code>messages_fts_a{i,d,u}</code>); critical when
-any are missing. With <code>[health] fts_auto_restore = true</code> (or
-<code>POLYLOGUE_HEALTH_FTS_AUTO_RESTORE=1</code>), the daemon restores triggers
-and rebuilds the FTS index in place, then emits a WARNING-level
-recovery alert so the operator is told the self-heal happened.</li>
 </ul>
 <p><strong>Medium</strong> (sub-10s queries):</p>
 <ul>

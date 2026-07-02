@@ -443,11 +443,15 @@ complete without pretending the archive recovered per-message timing.</p>
 <code>--query</code>.</p>
 <p>The merged profile tier also includes probabilistic enrichment fields:
 <code>enrichment.intent_summary</code>, <code>enrichment.outcome_summary</code>,
-<code>enrichment.blockers</code>, <code>enrichment.confidence</code>,
+<code>enrichment.blockers</code>, <code>enrichment.goal_text</code>,
+<code>enrichment.goal_outcome</code>, <code>enrichment.confidence</code>,
 <code>enrichment.support_level</code>, and <code>enrichment.support_signals</code>. These fields are
 derived summaries over the session profile evidence and should be interpreted
-through the confidence/support fields, not as raw archive facts. The evidence
-and inference tiers intentionally omit the enrichment payload.</p>
+through the confidence/support fields, not as raw archive facts.
+<code>enrichment.goal_outcome</code> is a boundary-derived posture such as
+<code>ended_cleanly</code>, <code>ended_with_error</code>, <code>awaiting_user</code>, or <code>pending_tool</code>; it is
+not a task-success judgment. The evidence and inference tiers intentionally
+omit the enrichment payload.</p>
 <p>The storage column <code>engaged_duration_ms</code> is message-clustered wall clock: it
 sums phase intervals separated by no more than the fixed five-minute idle
 threshold. It does not measure human attention, keyboard focus, or operator
@@ -470,7 +474,8 @@ topic with the first inferred repo name. The raw <code>title</code> remains unch
 provenance and provider fidelity.</p>
 <p><code>workflow_shape</code> is a threshold classifier over observable session features:
 tool-call density, read/edit/run/subagent mix, compaction count, thinking ratio,
-and user/assistant turn counts. <code>chat</code> means a short low-tool session;
+and user/assistant turn counts. <code>chat</code> means low-tool dialogue, whether short
+or sustained;
 <code>exploratory</code> means mixed read/search/tool activity without a strong edit loop;
 <code>agentic_loop</code> means sustained tool use with edits or repeated commands;
 <code>subagent_dispatch</code> means Task/subagent-style delegation is present;
