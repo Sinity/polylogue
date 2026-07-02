@@ -268,6 +268,7 @@ def _raw_materialization_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]
         embedded_coverage: dict[str, tuple[int, int]] = {}
         grouped: dict[tuple[str, str], list[sqlite3.Row]] = {}
         for row in candidate_rows:
+            category: str
             if row["parse_error"]:
                 category = _raw_materialization_category(conn, row, archive_root)
             elif _raw_materialized_by_native_id(conn, row) or _raw_materialized_by_source_path_native(conn, row):

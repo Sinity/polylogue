@@ -288,6 +288,26 @@ SESSION_TERMINAL_ACTIONS: frozenset[SessionTerminalAction] = frozenset(
 )
 
 
+def _session_terminal_action(action: str) -> SessionTerminalAction:
+    if action == "read":
+        return "read"
+    if action == "analyze":
+        return "analyze"
+    if action == "select":
+        return "select"
+    if action == "mark":
+        return "mark"
+    if action == "delete":
+        return "delete"
+    if action == "continue":
+        return "continue"
+    supported = ", ".join(sorted(SESSION_TERMINAL_ACTIONS))
+    raise UnsupportedSessionTerminalActionError(
+        f"unsupported session terminal action: {action!r}; supported actions: {supported}",
+        field=None,
+    )
+
+
 @dataclass(frozen=True)
 class QueryUnitSessionScopeStage:
     """Session-source stage in a terminal query-unit pipeline."""
@@ -2870,15 +2890,9 @@ def build_session_terminal_pipeline(
     predicate: QueryPredicate | None = None,
 ) -> SessionQueryPipeline:
     """Build a typed session-source pipeline for a root query terminal verb."""
-    if action not in SESSION_TERMINAL_ACTIONS:
-        supported = ", ".join(sorted(SESSION_TERMINAL_ACTIONS))
-        raise UnsupportedSessionTerminalActionError(
-            f"unsupported session terminal action: {action!r}; supported actions: {supported}",
-            field=None,
-        )
     return SessionQueryPipeline(
         predicate=predicate,
-        terminal=SessionQueryTerminalStage(action=action, args=args),
+        terminal=SessionQueryTerminalStage(action=_session_terminal_action(action), args=args),
     )
 
 

@@ -346,9 +346,11 @@ def _archive_embedding_status_payload(
         if embeddings_db.exists():
             conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
             status_table = _attached_table_name(conn, "embeddings", "embedding_status")
+            vector_table = _attached_table_name(conn, "embeddings", "message_embeddings")
             meta_table = _attached_table_name(conn, "embeddings", "message_embeddings_meta")
         else:
             status_table = ""
+            vector_table = ""
             meta_table = ""
         has_messages = _table_exists(conn, "messages")
         has_status = bool(status_table)
@@ -408,31 +410,31 @@ def _archive_embedding_status_payload(
             else:
                 pending_messages = total_messages
             if has_meta and embedded_messages == 0:
-                missing_provenance = total_messages
-                stale_messages = total_messages
+                missing_provenance = 0
+                stale_messages = 0
             elif has_meta:
                 meta_join = "ON em.message_id = m.message_id"
                 meta_missing_column = "em.message_id"
-                missing_provenance = _scalar_int(
-                    conn,
-                    f"""
-                    SELECT COUNT(*)
-                    FROM {messages_ref}
-                    LEFT JOIN {meta_table} em {meta_join}
-                    WHERE {embeddable_where}
-                      AND {meta_missing_column} IS NULL
-                    """,
-                )
+                if vector_table:
+                    missing_provenance = _scalar_int(
+                        conn,
+                        f"""
+                        SELECT COUNT(*)
+                        FROM {vector_table} me
+                        LEFT JOIN {meta_table} em
+                          ON em.message_id = me.message_id
+                        WHERE em.message_id IS NULL
+                        """,
+                    )
                 stale_messages = _scalar_int(
                     conn,
                     f"""
                     SELECT COUNT(*)
                     FROM {messages_ref}
-                    LEFT JOIN {meta_table} em {meta_join}
+                    JOIN {meta_table} em {meta_join}
                     WHERE {embeddable_where}
                       AND (
-                        {meta_missing_column} IS NULL
-                        OR COALESCE(em.needs_reindex, 0) = 1
+                        COALESCE(em.needs_reindex, 0) = 1
                         OR (em.content_hash IS NOT NULL AND em.content_hash != m.content_hash)
                       )
                     """,

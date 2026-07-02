@@ -187,6 +187,9 @@ def test_status_json_reads_archive_file_set_from_archive_index(tmp_path: Path) -
     assert payload["embedded_messages"] == 1
     assert payload["pending_messages"] == 2
     assert payload["pending_messages_exact"] is True
+    assert payload["stale_messages"] == 0
+    assert payload["retrieval_ready"] is True
+    assert payload["freshness_status"] == "partial"
     assert payload["embedding_coverage_percent"] == 50.0
     assert payload["embedding_models"] == {"voyage-4": 1}
     assert payload["embedding_dimensions"] == {"1024": 1} or payload["embedding_dimensions"] == {1024: 1}
