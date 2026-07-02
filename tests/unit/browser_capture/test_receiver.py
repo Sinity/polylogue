@@ -90,6 +90,7 @@ def _seed_browser_capture_archive(
     raw_id: str = "raw-capture",
     message_count: int = 1,
     parse_error: str | None = None,
+    updated_at_ms: int | None = None,
 ) -> None:
     with sqlite3.connect(archive_root / "source.db") as conn:
         conn.execute(
@@ -117,16 +118,17 @@ def _seed_browser_capture_archive(
                 session_id TEXT,
                 raw_id TEXT,
                 native_id TEXT,
-                message_count INTEGER
+                message_count INTEGER,
+                updated_at_ms INTEGER
             )
             """
         )
         conn.execute(
             """
-            INSERT INTO sessions (session_id, raw_id, native_id, message_count)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO sessions (session_id, raw_id, native_id, message_count, updated_at_ms)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (f"chatgpt-export:{native_id}", raw_id, native_id, message_count),
+            (f"chatgpt-export:{native_id}", raw_id, native_id, message_count, updated_at_ms),
         )
 
 
@@ -335,6 +337,29 @@ def test_receiver_archive_state_reports_archived_only_with_raw_index_and_message
     assert state.state == "archived"
     assert state.lifecycle == "archived"
     assert state.captured is True
+    assert state.raw_row_exists is True
+    assert state.indexed_session_exists is True
+    assert state.indexed_message_count == 1
+
+
+def test_receiver_archive_state_reports_stale_when_spool_is_newer(tmp_path: Path) -> None:
+    payload = _payload()
+    payload["session"] = {
+        **cast(dict[str, object], payload["session"]),
+        "updated_at": "2026-04-24T00:00:00+00:00",
+    }
+    envelope = BrowserCaptureEnvelope.model_validate(payload)
+    write_capture_envelope(envelope, spool_path=tmp_path)
+    _seed_browser_capture_archive(tmp_path, updated_at_ms=1_744_588_800_000)
+
+    state = BrowserCaptureArchiveStatePayload.model_validate(
+        existing_capture_state("chatgpt", "conv-123", spool_path=tmp_path, archive_root=tmp_path)
+    )
+
+    assert state.state == "stale"
+    assert state.lifecycle == "stale"
+    assert state.captured is False
+    assert state.spooled is True
     assert state.raw_row_exists is True
     assert state.indexed_session_exists is True
     assert state.indexed_message_count == 1

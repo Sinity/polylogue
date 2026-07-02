@@ -25,6 +25,7 @@ from polylogue.browser_capture.models import (
     BrowserPostCommandRequest,
 )
 from polylogue.core.hashing import hash_text_short
+from polylogue.core.timestamps import parse_timestamp
 from polylogue.paths import archive_root as default_archive_root
 from polylogue.paths import browser_capture_spool_root
 
@@ -93,6 +94,7 @@ class _IndexArchiveLookup:
     indexed_session_exists: bool = False
     indexed_session_id: str | None = None
     indexed_message_count: int | None = None
+    indexed_updated_at_ms: int | None = None
 
 
 def _is_extension_origin_pattern(origin: str) -> bool:
@@ -126,6 +128,11 @@ def capture_response_id(provider: str, provider_session_id: str, capture_id: str
     while value.startswith(f"{prefix}{prefix}"):
         value = value[len(prefix) :]
     return value if value.startswith(prefix) else f"{prefix}{value}"
+
+
+def _timestamp_ms(value: object) -> int | None:
+    parsed = parse_timestamp(value if isinstance(value, (str, int, float)) else None)
+    return int(parsed.timestamp() * 1000) if parsed is not None else None
 
 
 def _open_readonly_sqlite(path: Path) -> sqlite3.Connection | None:
@@ -254,6 +261,8 @@ def _lookup_index_archive_state(
         select = ["session_id"] if "session_id" in columns else []
         if "message_count" in columns:
             select.append("message_count")
+        if "updated_at_ms" in columns:
+            select.append("updated_at_ms")
         if not select:
             return _IndexArchiveLookup(indexed_session_exists=True)
         where: list[str] = []
@@ -292,6 +301,9 @@ def _lookup_index_archive_state(
             indexed_session_exists=True,
             indexed_session_id=session_id,
             indexed_message_count=message_count,
+            indexed_updated_at_ms=(
+                int(row["updated_at_ms"]) if "updated_at_ms" in row_keys and row["updated_at_ms"] is not None else None
+            ),
         )
     except (sqlite3.Error, ValueError):
         return _IndexArchiveLookup()
@@ -368,6 +380,7 @@ def existing_capture_state(
     artifact_ref = capture_artifact_ref(envelope, spool_path)
     capture_id: str | None = None
     updated_at: str | None = None
+    spooled_updated_at_ms: int | None = None
     artifact_readable: bool | None = None
     spooled = path.exists()
     latest_failure: str | None = None
@@ -379,6 +392,7 @@ def existing_capture_state(
             raw_updated_at = payload.get("session", {}).get("updated_at")
             capture_id = raw_capture_id if isinstance(raw_capture_id, str) else None
             updated_at = raw_updated_at if isinstance(raw_updated_at, str) else None
+            spooled_updated_at_ms = _timestamp_ms(updated_at)
         except (OSError, json.JSONDecodeError, AttributeError):
             artifact_readable = False
             latest_failure = "spool_unreadable"
@@ -399,10 +413,28 @@ def existing_capture_state(
     latest_failure = latest_failure or raw.latest_failure
     failure_source = failure_source or raw.failure_source
     lifecycle: BrowserCaptureArchiveLifecycle
+    archive_current_for_spool = not (
+        spooled_updated_at_ms is not None
+        and index.indexed_updated_at_ms is not None
+        and spooled_updated_at_ms > index.indexed_updated_at_ms
+    )
     if latest_failure is not None:
         lifecycle = "failed"
-    elif raw.raw_row_exists and index.indexed_session_exists and (index.indexed_message_count or 0) > 0:
+    elif (
+        raw.raw_row_exists
+        and index.indexed_session_exists
+        and (index.indexed_message_count or 0) > 0
+        and archive_current_for_spool
+    ):
         lifecycle = "archived"
+    elif (
+        spooled
+        and raw.raw_row_exists
+        and index.indexed_session_exists
+        and (index.indexed_message_count or 0) > 0
+        and not archive_current_for_spool
+    ):
+        lifecycle = "stale"
     elif raw.raw_row_exists:
         lifecycle = "ingest_pending"
     elif spooled:
