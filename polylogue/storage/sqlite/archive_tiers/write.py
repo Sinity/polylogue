@@ -258,6 +258,16 @@ def write_parsed_session_to_archive(
     origin = origin_from_provider(session.source_name)
     native_id = session.provider_session_id
     session_id = archive_session_id(origin.value, native_id)
+    incoming_freshness_ms = _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at)
+    if not merge_append and incoming_freshness_ms is not None:
+        row = conn.execute(
+            "SELECT updated_at_ms FROM sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        existing_updated_at_ms = int(row[0]) if row is not None and row[0] is not None else None
+        if existing_updated_at_ms is not None and incoming_freshness_ms < existing_updated_at_ms:
+            add_timing("index.skip_stale_replace", t0)
+            return session_id
     # This session's own rows are about to be rewritten; drop any stale memoized
     # own-signatures so the batch cache never serves pre-write rows for it.
     if signature_cache is not None:

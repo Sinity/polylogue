@@ -149,6 +149,44 @@ async def test_changed_content_updates_hash_and_text(async_backend: SQLiteBacken
     assert row["text"] == "Modified text"
 
 
+async def test_older_full_replace_does_not_overwrite_newer_session_body(async_backend: SQLiteBackend) -> None:
+    def _make(*, text: str, updated_at: str) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="conv-freshness",
+            title="Freshness",
+            created_at="2024-01-01T00:00:00Z",
+            updated_at=updated_at,
+            messages=[
+                ParsedMessage(
+                    provider_message_id="msg-1",
+                    role=Role.USER,
+                    text=text,
+                    timestamp=updated_at,
+                )
+            ],
+            attachments=[],
+        )
+
+    session_id = await ingest_session(
+        _make(text="newer browser capture text", updated_at="2024-01-03T00:00:00Z"),
+        async_backend,
+    )
+    newer_hash = (await _session_row(async_backend, session_id))["content_hash"]
+
+    older_id = await ingest_session(
+        _make(text="older zip export text", updated_at="2024-01-02T00:00:00Z"),
+        async_backend,
+    )
+
+    assert older_id == session_id
+    assert (await _session_row(async_backend, session_id))["content_hash"] == newer_hash
+    async with async_backend.connection() as conn:
+        row = await (await conn.execute("SELECT text FROM blocks WHERE session_id = ?", (session_id,))).fetchone()
+    assert row is not None
+    assert row["text"] == "newer browser capture text"
+
+
 # ---------------------------------------------------------------------------
 # Session events
 # ---------------------------------------------------------------------------
