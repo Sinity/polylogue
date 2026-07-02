@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterable, Sequence
 from datetime import datetime
@@ -378,7 +379,7 @@ def _codex_tool_message(
             output = payload.get("tools")
         if output is None:
             output = payload.get("result")
-        output_text = output if isinstance(output, str) else json.dumps(output, sort_keys=True) if output else None
+        output_text = _codex_tool_output_text(output)
         if not tool_id and not output_text:
             return None
         # Keystone: Codex shell/function results wrap the payload as
@@ -419,6 +420,45 @@ def _codex_tool_message(
             blocks=blocks,
         )
     return None
+
+
+def _codex_tool_output_text(output: object) -> str | None:
+    if output is None:
+        return None
+    if isinstance(output, str):
+        sanitized = _sanitize_codex_large_inline_payloads(output)
+        if sanitized != output:
+            return str(sanitized)
+        try:
+            parsed = json.loads(output)
+        except (ValueError, TypeError):
+            return output
+        sanitized_parsed = _sanitize_codex_large_inline_payloads(parsed)
+        if sanitized_parsed != parsed:
+            return json.dumps(sanitized_parsed, sort_keys=True)
+        return output
+    sanitized = _sanitize_codex_large_inline_payloads(output)
+    return json.dumps(sanitized, sort_keys=True) if sanitized else None
+
+
+def _sanitize_codex_large_inline_payloads(value: object) -> object:
+    if isinstance(value, str):
+        return _sanitize_codex_data_url(value)
+    if isinstance(value, list):
+        return [_sanitize_codex_large_inline_payloads(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _sanitize_codex_large_inline_payloads(item) for key, item in value.items()}
+    return value
+
+
+def _sanitize_codex_data_url(value: str) -> str:
+    if not value.startswith("data:image/") or ";base64," not in value:
+        return value
+    header, encoded = value.split(",", 1)
+    mime = header.removeprefix("data:").split(";", 1)[0] or "image/unknown"
+    digest = hashlib.sha256(encoded.encode("ascii", errors="ignore")).hexdigest()
+    approx_bytes = (len(encoded.rstrip("=")) * 3) // 4
+    return f"<inline image omitted; mime={mime}; approx_bytes={approx_bytes}; sha256_base64={digest}>"
 
 
 def _message_signature(role: Role | str, text: str | None) -> tuple[str, str]:

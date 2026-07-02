@@ -857,6 +857,32 @@ class TestGitContextAndInstructions:
         }
         assert all("raw" not in event.payload for event in result.session_events)
 
+    def test_function_call_output_omits_inline_image_data_urls_from_text(self) -> None:
+        payload = [
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "call-image",
+                    "output": [
+                        {
+                            "type": "input_image",
+                            "image_url": "data:image/png;base64," + ("a" * 4096),
+                        }
+                    ],
+                },
+            }
+        ]
+
+        result = parse(payload, "fallback")
+
+        assert len(result.messages) == 1
+        message = result.messages[0]
+        assert "data:image/png;base64" not in (message.text or "")
+        assert "<inline image omitted;" in (message.text or "")
+        assert "mime=image/png" in (message.text or "")
+        assert "sha256_base64=" in (message.text or "")
+
 
 # =============================================================================
 # Edge Cases
