@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 
 
 EmbedSingleStatus = Literal["embedded", "no_messages", "no_embeddable_messages", "not_found", "error"]
+ARCHIVE_EMBED_MESSAGE_BATCH_SIZE = 128
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,12 +276,14 @@ def select_pending_archive_session_window(
         status_table = "embedding_status" if _table_exists(conn, "embedding_status") else ""
     exact_counts_available = _archive_session_embeddable_counts_available(conn)
     aggregate_expr = _archive_session_embeddable_count_expression(conn)
+    clean_status_is_authoritative = _archive_session_embeddable_count_uses_prose_rollups(conn)
     status_select = (
         "e.session_id AS status_session_id, e.needs_reindex, e.message_count_embedded"
         if status_table
         else "NULL AS status_session_id, NULL AS needs_reindex, NULL AS message_count_embedded"
     )
     join_clause = f"LEFT JOIN {status_table} e ON e.session_id = s.session_id" if status_table else ""
+    max_message_filter = ""
     if exact_counts_available:
         count_select = (
             f"{aggregate_expr} AS estimated_message_count" if aggregate_expr else "NULL AS estimated_message_count"
@@ -288,14 +291,16 @@ def select_pending_archive_session_window(
         floor_filter = f"AND {aggregate_expr} >= ?" if aggregate_expr and min_messages is not None else ""
         if floor_filter:
             params.append(min_messages)
+        max_message_filter = f"AND {aggregate_expr} <= ?" if aggregate_expr and max_messages is not None else ""
+        if max_message_filter:
+            params.append(max_messages)
         pending_filter = (
             ""
-            if rebuild or not status_table or aggregate_expr is None
+            if rebuild or not status_table or aggregate_expr is None or not clean_status_is_authoritative
             else """
               AND (
                     e.session_id IS NULL
                  OR e.needs_reindex = 1
-                 OR e.message_count_embedded < {aggregate_expr}
               )
             """
         ).format(aggregate_expr=aggregate_expr or "0")
@@ -308,6 +313,9 @@ def select_pending_archive_session_window(
         floor_filter = f"AND {aggregate_expr} >= ?" if min_messages is not None else ""
         if min_messages is not None:
             params.append(min_messages)
+        max_message_filter = f"AND {aggregate_expr} <= ?" if max_messages is not None else ""
+        if max_message_filter:
+            params.append(max_messages)
         pending_filter = (
             ""
             if rebuild or not status_table
@@ -319,6 +327,10 @@ def select_pending_archive_session_window(
               )
             """
         ).format(aggregate_expr=aggregate_expr)
+    limit_clause = ""
+    if aggregate_expr is not None and max_sessions is not None:
+        limit_clause = "LIMIT ?"
+        params.append(max_sessions)
     cursor = conn.execute(
         f"""
         SELECT s.session_id, s.title, {status_select}, {count_select}
@@ -327,8 +339,10 @@ def select_pending_archive_session_window(
         WHERE 1 = 1
           {id_filter}
           {floor_filter}
+          {max_message_filter}
           {pending_filter}
         ORDER BY (s.sort_key_ms IS NULL), s.sort_key_ms DESC, s.session_id
+        {limit_clause}
         """,
         tuple(params),
     )
@@ -346,6 +360,7 @@ def select_pending_archive_session_window(
             estimated_count = _row_int(row, 5, "estimated_message_count")
             needs_exact_count = (
                 exact_counts_available
+                and not clean_status_is_authoritative
                 and status_session_id is not None
                 and needs_reindex == 0
                 and message_count_embedded > 0
@@ -361,7 +376,7 @@ def select_pending_archive_session_window(
                 or not status_table
                 or status_session_id is None
                 or needs_reindex == 1
-                or message_count_embedded < estimated_count
+                or (not clean_status_is_authoritative and message_count_embedded < estimated_count)
             ):
                 continue
             if max_sessions is not None and len(pending) >= max_sessions:
@@ -567,6 +582,11 @@ def _archive_session_embeddable_count_expression(conn: sqlite3.Connection) -> st
     return None
 
 
+def _archive_session_embeddable_count_uses_prose_rollups(conn: sqlite3.Connection) -> bool:
+    columns = _table_columns(conn, "sessions")
+    return {"authored_user_message_count", "assistant_message_count"}.issubset(columns)
+
+
 def _archive_session_embeddable_counts_available(conn: sqlite3.Connection) -> bool:
     """Return whether exact per-session prose counts can be computed."""
 
@@ -738,31 +758,34 @@ def embed_archive_session_sync(
                 title=None if session["title"] is None else str(session["title"]),
             )
 
-        embeddings = text_provider._get_embeddings([str(row["text"]) for row in embeddable], input_type="document")
-        if len(embeddings) != len(embeddable):
-            raise RuntimeError("embedding provider returned a mismatched vector count")
         now_ms = int(datetime.now(UTC).timestamp() * 1000)
         from polylogue.storage.sqlite.archive_tiers.embedding_write import (
             ArchiveEmbeddingWrite,
             upsert_message_embeddings,
         )
 
-        writes: list[ArchiveEmbeddingWrite] = []
-        for row, embedding in zip(embeddable, embeddings, strict=True):
-            if row["content_hash"] is None:
-                raise ValueError("content_hash is required for message embedding metadata")
-            writes.append(
-                ArchiveEmbeddingWrite(
-                    message_id=str(row["message_id"]),
-                    session_id=session_id,
-                    origin=str(session["origin"]),
-                    embedding=embedding,
-                    model=text_provider.model,
-                    embedded_at_ms=now_ms,
-                    content_hash=bytes(row["content_hash"]),
+        batch_size = max(1, ARCHIVE_EMBED_MESSAGE_BATCH_SIZE)
+        for start in range(0, len(embeddable), batch_size):
+            batch = embeddable[start : start + batch_size]
+            embeddings = text_provider._get_embeddings([str(row["text"]) for row in batch], input_type="document")
+            if len(embeddings) != len(batch):
+                raise RuntimeError("embedding provider returned a mismatched vector count")
+            writes: list[ArchiveEmbeddingWrite] = []
+            for row, embedding in zip(batch, embeddings, strict=True):
+                if row["content_hash"] is None:
+                    raise ValueError("content_hash is required for message embedding metadata")
+                writes.append(
+                    ArchiveEmbeddingWrite(
+                        message_id=str(row["message_id"]),
+                        session_id=session_id,
+                        origin=str(session["origin"]),
+                        embedding=embedding,
+                        model=text_provider.model,
+                        embedded_at_ms=now_ms,
+                        content_hash=bytes(row["content_hash"]),
+                    )
                 )
-            )
-        upsert_message_embeddings(embeddings_conn, writes)
+            upsert_message_embeddings(embeddings_conn, writes)
         _record_archive_embedding_success(
             embeddings_conn,
             session_id=session_id,

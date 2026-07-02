@@ -613,6 +613,65 @@ def test_pending_archive_window_reselects_status_with_lower_actual_count() -> No
         conn.close()
 
 
+def test_pending_archive_window_does_not_treat_aggregate_overcount_as_stale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.embeddings import materialization
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                origin TEXT NOT NULL DEFAULT 'unknown-export',
+                title TEXT,
+                sort_key_ms INTEGER,
+                authored_user_message_count INTEGER NOT NULL DEFAULT 0,
+                assistant_message_count INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE messages (
+                message_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'user',
+                message_type TEXT NOT NULL DEFAULT 'message',
+                material_origin TEXT NOT NULL DEFAULT 'human_authored',
+                word_count INTEGER NOT NULL DEFAULT 8
+            );
+            CREATE TABLE embedding_status (
+                session_id TEXT PRIMARY KEY,
+                message_count_embedded INTEGER NOT NULL DEFAULT 0,
+                needs_reindex INTEGER NOT NULL DEFAULT 0,
+                error_message TEXT
+            );
+            INSERT INTO sessions VALUES ('complete', 'codex-session', 'complete', 3, 20, 20);
+            INSERT INTO sessions VALUES ('pending-newest', 'codex-session', 'pending', 2, 70, 48);
+            INSERT INTO sessions VALUES ('pending-older', 'codex-session', 'pending older', 1, 8, 4);
+            INSERT INTO embedding_status VALUES ('complete', 40, 0, NULL);
+            INSERT INTO embedding_status VALUES ('pending-newest', 50, 0, NULL);
+            INSERT INTO embedding_status VALUES ('pending-older', 0, 1, NULL);
+            """
+        )
+
+        def fail_exact_count(_conn: sqlite3.Connection, _session_id: str) -> int:
+            raise AssertionError("aggregate-backed archive windows must not exact-recount")
+
+        monkeypatch.setattr(materialization, "count_archive_session_embeddable_messages", fail_exact_count)
+
+        pending = select_pending_archive_session_window(
+            conn,
+            status_table="embedding_status",
+            max_sessions=1,
+            max_messages=200,
+            min_messages=2,
+        )
+
+        assert [item.session_id for item in pending] == ["pending-older"]
+        assert pending[0].message_count == 12
+    finally:
+        conn.close()
+
+
 def test_pending_archive_window_counts_only_embeddable_prose() -> None:
     conn = sqlite3.connect(":memory:")
     try:
@@ -931,6 +990,80 @@ def test_archive_embedding_only_sends_authored_prose_to_provider(tmp_path: Path)
         try_load_sqlite_vec(conn)
         assert conn.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0] == 2
         assert conn.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 2
+    finally:
+        conn.close()
+
+
+def test_archive_embedding_batches_large_sessions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType, MaterialOrigin, Provider
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.embeddings import materialization
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    class BatchRecordingProvider(_FakeV1VectorProvider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls: list[int] = []
+
+        def _get_embeddings(self, texts: list[str], input_type: str = "document") -> list[list[float]]:
+            self.calls.append(len(texts))
+            return super()._get_embeddings(texts, input_type=input_type)
+
+    monkeypatch.setattr(materialization, "ARCHIVE_EMBED_MESSAGE_BATCH_SIZE", 2)
+    archive_root = tmp_path / "archive"
+    messages = [
+        ParsedMessage(
+            provider_message_id=f"m{i}",
+            role=Role.USER,
+            text=f"This user-authored message {i} is long enough to be embedded safely.",
+            blocks=[
+                ParsedContentBlock(
+                    type=BlockType.TEXT,
+                    text=f"This user-authored message {i} is long enough to be embedded safely.",
+                )
+            ],
+            material_origin=MaterialOrigin.HUMAN_AUTHORED,
+        )
+        for i in range(5)
+    ]
+    with ArchiveStore(archive_root) as archive:
+        session_id = archive.write_parsed(
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="embed-batched",
+                title="batched embedding session",
+                messages=messages,
+            )
+        )
+
+    index_db = archive_root / "index.db"
+    embeddings_db = archive_root / "embeddings.db"
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
+
+    provider = BatchRecordingProvider()
+    outcome = embed_archive_session_sync(index_db, provider, session_id)
+
+    assert outcome.status == "embedded"
+    assert outcome.embedded_message_count == 5
+    assert provider.calls == [2, 2, 1]
+    conn = sqlite3.connect(embeddings_db)
+    try:
+        from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+
+        try_load_sqlite_vec(conn)
+        assert conn.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0] == 5
+        status = conn.execute(
+            "SELECT message_count_embedded, needs_reindex, error_message FROM embedding_status WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert status == (5, 0, None)
     finally:
         conn.close()
 
