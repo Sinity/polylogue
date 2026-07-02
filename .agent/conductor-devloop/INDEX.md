@@ -13,11 +13,12 @@ only. Historical audits and old backlog notes belong under `.agent/archive/` or
 4. `ACTIVE-LOOP.md`
 5. `OPERATING-LOG.md` tail
 6. `DEMO-RADAR.md` tail
-7. `VELOCITY.md`
-8. `PROCESS.md`
-9. `TACTICS.md`
-10. `ADVERSARIAL-REVIEW.md`
-11. `SELF-PROMPTS.md`
+7. `BACKLOG.md`
+8. `VELOCITY.md`
+9. `PROCESS.md`
+10. `TACTICS.md`
+11. `ADVERSARIAL-REVIEW.md`
+12. `SELF-PROMPTS.md`
 
 Then run:
 
@@ -37,6 +38,8 @@ Then run:
 - `OPERATING-LOG.md` — timestamped operating history.
 - `EVENTS.jsonl` — generated structured sidecar from the operating log.
 - `DEMO-RADAR.md` — current demo candidates, selected artifact, proof/caveat.
+- `BACKLOG.md` — current prioritized sidecar/research synthesis. Ignored local
+  state; refresh or rewrite it instead of treating it as append-only history.
 - `HANDOFF-LATEST.md` — latest resumable handoff.
 - `PROCESS.md`, `TACTICS.md`, `VELOCITY.md`, `ADVERSARIAL-REVIEW.md` — stable
   process guardrails.
