@@ -206,6 +206,8 @@ def test_status_json_reports_archive_embedding_metadata_without_detail(tmp_path:
     assert payload["pending_messages_exact"] is False
     assert payload["embedding_models"] == {"voyage-4": 1}
     assert payload["embedding_dimensions"] == {"1024": 1} or payload["embedding_dimensions"] == {1024: 1}
+    assert payload["oldest_embedded_at"] == "2026-01-01T00:01:40+00:00"
+    assert payload["newest_embedded_at"] == "2026-01-01T00:01:40+00:00"
 
 
 def test_status_json_uses_uniform_metadata_probe_when_grouping_times_out(

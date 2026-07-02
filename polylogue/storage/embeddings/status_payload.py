@@ -548,6 +548,17 @@ def _archive_embedding_status_payload(
                     embedded_messages=embedded_messages,
                     timeout_ms=METADATA_SUMMARY_TIMEOUT_MS,
                 )
+            bounds_rows = _rows_with_timeout(
+                conn,
+                f"""
+                SELECT MIN(embedded_at_ms), MAX(embedded_at_ms)
+                FROM {meta_table}
+                """,
+                timeout_ms=METADATA_SUMMARY_TIMEOUT_MS,
+            )
+            if bounds_rows:
+                oldest_embedded_at = _iso_from_epoch_ms(bounds_rows[0][0])
+                newest_embedded_at = _iso_from_epoch_ms(bounds_rows[0][1])
         if include_detail and has_messages:
             messages_ref = archive_embedding_messages_table_ref(conn, alias="m")
             embeddable_where = archive_embeddable_message_where("m")
@@ -632,16 +643,6 @@ def _archive_embedding_status_payload(
                         pending_messages_exact = False
                     else:
                         stale_messages = exact_stale_messages
-                if pending_messages_exact:
-                    bounds = conn.execute(
-                        f"""
-                        SELECT MIN(embedded_at_ms), MAX(embedded_at_ms)
-                        FROM {meta_table}
-                        """
-                    ).fetchone()
-                    if bounds is not None:
-                        oldest_embedded_at = _iso_from_epoch_ms(bounds[0])
-                        newest_embedded_at = _iso_from_epoch_ms(bounds[1])
         stats = EmbeddingStatsSnapshot(
             embedded_sessions=embedded_sessions,
             embedded_messages=embedded_messages,
