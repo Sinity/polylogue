@@ -372,13 +372,6 @@
     return { ok: true, envelope: finalEnvelope, captureResult, archiveState };
   }
 
-  let timer = 0;
-  function scheduleCapture() {
-    window.clearTimeout(timer);
-    timer = window.setTimeout(capture, 1200);
-  }
-
-  scheduleCapture();
   window.polylogueCapture.capturePage = capture;
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type !== "polylogue.capturePage") return false;
@@ -414,10 +407,5 @@
         sendResponse({ status: "failed", detail: String(error.message || error), observed_url: window.location.href })
       );
     return true;
-  });
-  new MutationObserver(scheduleCapture).observe(document.documentElement, {
-    childList: true,
-    subtree: true,
-    characterData: true
   });
 })();

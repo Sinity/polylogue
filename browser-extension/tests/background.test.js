@@ -147,10 +147,20 @@ describe("background receiver diagnostics", () => {
     expect(stored.polylogueState.last_receiver_request_id).toBe("reject-42");
   });
 
-  it("injects capture scripts into existing provider tabs after extension update", async () => {
+  it("does not capture existing provider tabs on extension update", async () => {
     expect(installedListener).toBeTypeOf("function");
 
     installedListener();
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalled();
+    expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("injects capture scripts into existing provider tabs on explicit sync", async () => {
+    await sendRuntimeMessage({ type: "polylogue.captureSupportedTabs", reason: "popup_sync_open_tabs" });
+
     await vi.waitFor(() => expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledTimes(1));
 
     expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledWith({
@@ -164,7 +174,7 @@ describe("background receiver diagnostics", () => {
     });
     expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
       type: "polylogue.capturePage",
-      reason: "extension_installed_or_updated",
+      reason: "popup_sync_open_tabs",
     });
     expect(stored.polylogueState.online).toBe(true);
     expect(stored.polylogueState.captured).toBe(true);
@@ -173,9 +183,9 @@ describe("background receiver diagnostics", () => {
 
   it("injects Grok DOM capture scripts for open Grok/X tabs", async () => {
     tabs = [{ id: 77, url: "https://x.com/i/grok", title: "Grok" }];
-    expect(installedListener).toBeTypeOf("function");
 
-    installedListener();
+    await sendRuntimeMessage({ type: "polylogue.captureSupportedTabs", reason: "popup_sync_open_tabs" });
+
     await vi.waitFor(() => expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledTimes(1));
 
     expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledWith({

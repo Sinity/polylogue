@@ -116,22 +116,10 @@
     return { ok: true, envelope, captureResult, archiveState };
   }
 
-  let timer = 0;
-  function scheduleCapture() {
-    window.clearTimeout(timer);
-    timer = window.setTimeout(capture, 1200);
-  }
-
-  scheduleCapture();
   window.polylogueCapture.capturePage = capture;
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type !== "polylogue.capturePage") return false;
     capture().then(sendResponse).catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
     return true;
-  });
-  new MutationObserver(scheduleCapture).observe(document.documentElement, {
-    childList: true,
-    subtree: true,
-    characterData: true,
   });
 })();

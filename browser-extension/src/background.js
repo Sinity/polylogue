@@ -162,6 +162,24 @@ async function getJson(path) {
   return { ...body, receiver_request_id: receiverRequestId };
 }
 
+async function refreshReceiverState() {
+  try {
+    const status = await getJson("/v1/status");
+    await setState({
+      online: true,
+      captured: false,
+      status,
+      last_receiver_request_id: status.receiver_request_id || null,
+    });
+  } catch (error) {
+    await setState({
+      online: false,
+      captured: false,
+      error: String(error.message || error),
+    });
+  }
+}
+
 async function ensureCaptureScripts(tab) {
   const plan = injectionPlanForUrl(tab?.url || tab?.pendingUrl || "");
   if (!tab?.id || !plan.length || !chrome.scripting?.executeScript) return false;
@@ -407,22 +425,11 @@ function stopPostPolling() {
 void startPostPolling();
 
 chrome.runtime.onInstalled?.addListener(() => {
-  void captureSupportedTabs("extension_installed_or_updated");
+  void refreshReceiverState();
 });
 
 chrome.runtime.onStartup?.addListener(() => {
-  void captureSupportedTabs("browser_started");
-});
-
-chrome.tabs?.onUpdated?.addListener((_tabId, changeInfo, tab) => {
-  if (changeInfo.status === "complete") {
-    void captureTab(tab, "tab_updated");
-  }
-});
-
-chrome.tabs?.onActivated?.addListener(async ({ tabId }) => {
-  const tab = await chrome.tabs.get(tabId).catch(() => null);
-  if (tab) void captureTab(tab, "tab_activated");
+  void refreshReceiverState();
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
