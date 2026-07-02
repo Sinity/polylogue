@@ -357,6 +357,12 @@ def disable_subcommand(env: AppEnv) -> None:
     help="Estimate only the next approximate cost window.",
 )
 @click.option(
+    "--min-messages",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Skip sessions below this eligible-message floor in the estimate.",
+)
+@click.option(
     "--rebuild",
     is_flag=True,
     help="Estimate re-embedding every session, not just pending ones.",
@@ -375,6 +381,7 @@ def preflight_subcommand(
     max_sessions: int | None,
     max_messages: int | None,
     max_cost_usd: float | None,
+    min_messages: int | None,
     rebuild: bool,
     output_format: str,
 ) -> None:
@@ -389,6 +396,7 @@ def preflight_subcommand(
         max_sessions=max_sessions,
         max_messages=max_messages,
         max_cost_usd=max_cost_usd,
+        min_messages=min_messages,
     )
     if output_format == "json":
         _render_preflight_json(report)

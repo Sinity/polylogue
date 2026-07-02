@@ -289,6 +289,8 @@ def preflight_backfill_args(report: PreflightReport) -> list[str] | None:
         args.extend(["--max-messages", str(report.max_messages)])
     if report.max_cost_usd is not None:
         args.extend(["--max-cost-usd", f"{report.max_cost_usd:.4f}".rstrip("0").rstrip(".")])
+    if report.min_messages is not None:
+        args.extend(["--min-messages", str(report.min_messages)])
     return args
 
 
