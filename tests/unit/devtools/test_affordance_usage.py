@@ -3,7 +3,11 @@ from __future__ import annotations
 import csv
 import json
 import sqlite3
+from contextlib import AbstractContextManager
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from devtools import affordance_usage
 
@@ -196,3 +200,86 @@ def test_affordance_usage_treats_like_wildcards_as_literals(tmp_path: Path) -> N
     assert tool_counts["codebase-memory/command-detail"]["raw_tool_names"] == "functions.exec_command"
     assert any("search_code" in str(row["detail"]) for row in report["samples"])
     assert all("search code" not in str(row["detail"]) for row in report["samples"])
+
+
+def test_affordance_usage_detail_fast_path_splits_mixed_known_families(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    _make_index_db(archive_root)
+    calls: list[tuple[str, ...]] = []
+
+    class FakeArchive(AbstractContextManager["FakeArchive"]):
+        def __enter__(self) -> FakeArchive:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def list_tool_action_evidence_count_rows(
+            self,
+            query: object = None,
+            *,
+            detail_patterns: tuple[str, ...],
+            since_ms: int | None = None,
+        ) -> list[dict[str, Any]]:
+            del query, since_ms
+            calls.append(detail_patterns)
+            if detail_patterns == ("serena",):
+                return [
+                    {
+                        "source_name": "claude-code",
+                        "origin": "claude-code-session",
+                        "normalized_tool_name": "serena/command-detail",
+                        "action_kind": "shell",
+                        "evidence_kind": "command_detail",
+                        "matched_by": "detail",
+                        "call_count": 4,
+                        "session_count": 2,
+                        "error_count": 1,
+                        "nonzero_exit_count": 0,
+                    }
+                ]
+            if detail_patterns == ("codebase-memory", "search_code"):
+                return [
+                    {
+                        "source_name": "claude-code",
+                        "origin": "claude-code-session",
+                        "normalized_tool_name": "codebase-memory/command-detail",
+                        "action_kind": "shell",
+                        "evidence_kind": "command_detail",
+                        "matched_by": "detail",
+                        "call_count": 2,
+                        "session_count": 1,
+                        "error_count": 0,
+                        "nonzero_exit_count": 0,
+                    }
+                ]
+            return []
+
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
+        lambda _root: FakeArchive(),
+    )
+    args = affordance_usage.AffordanceUsageArgs(
+        archive_root=archive_root,
+        out_dir=None,
+        days=36500,
+        family=(),
+        detail_pattern=("serena", "codebase-memory", "search_code", "find_symbol"),
+        sample_limit=10,
+        json=True,
+        all_time=False,
+    )
+
+    report = affordance_usage.build_report(args)
+
+    assert ("serena",) in calls
+    assert ("codebase-memory", "search_code") in calls
+    assert report["report_version"] == 2
+    assert report["action_scope"] == "product-action-evidence-recent-window-known-family-patterns"
+    families = {row["family"]: row for row in report["family_counts"]}
+    assert families["serena"]["actions"] == 4
+    assert families["codebase-memory"]["actions"] == 2
+    assert report["samples"] == []

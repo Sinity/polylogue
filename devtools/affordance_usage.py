@@ -16,6 +16,7 @@ from typing import Any, cast
 from polylogue.config import Config, get_config
 from polylogue.insights.affordance_usage import (
     DEFAULT_FAMILY_PATTERNS,
+    family_for_text,
     matched_by_row,
 )
 from polylogue.insights.affordance_usage import (
@@ -200,6 +201,217 @@ def _build_summary(
             "Failure rates are structured tool-result signals; they identify friction, not necessarily low utility.",
         ],
     }
+
+
+def _tool_family_from_normalized(tool_name: object) -> str:
+    normalized = str(tool_name or "")
+    if "/" in normalized:
+        return normalized.split("/", 1)[0] or "unknown"
+    return _family_for_row({"tool_name": normalized, "match_detail": ""})
+
+
+def _report_from_product_action_rows(
+    *,
+    args: AffordanceUsageArgs,
+    config: Config,
+    conn: Connection,
+    rows: list[dict[str, object]],
+    action_scope: str,
+    recent_cutoff_ms: int,
+    effective_detail_patterns: tuple[str, ...],
+) -> dict[str, Any]:
+    """Build a devtools report from grouped product action-evidence rows.
+
+    This keeps the report over the shared archive action-evidence lowerer
+    instead of fetching every matching action row into Python. It is used for
+    detail-pattern reports on large archives; synthetic fixtures that do not
+    satisfy the archive-tier opener can still use the local fallback.
+    """
+
+    origin_counts = _rows(
+        conn,
+        "SELECT origin, COUNT(*) AS sessions FROM sessions GROUP BY origin ORDER BY sessions DESC",
+    )
+    tool_counts: list[dict[str, object]] = []
+    tool_by_origin: list[dict[str, object]] = []
+    evidence_kind_counts_by_key: dict[tuple[str, str], dict[str, object]] = {}
+    family_counts_by_key: dict[str, dict[str, object]] = {}
+    for row in rows:
+        tool_name = str(row.get("normalized_tool_name") or "unknown")
+        family = _tool_family_from_normalized(tool_name)
+        evidence_kind = str(row.get("evidence_kind") or "unknown")
+        actions = _int(row.get("call_count"))
+        errors = _int(row.get("error_count"))
+        nonzero_exits = _int(row.get("nonzero_exit_count"))
+        sessions = _int(row.get("session_count"))
+        tool_counts.append(
+            {
+                "tool_name": tool_name,
+                "family": family,
+                "evidence_kind": evidence_kind,
+                "raw_tool_names": "",
+                "raw_tool_name_count": 0,
+                "sessions": sessions,
+                "actions": actions,
+                "errors": errors,
+                "nonzero_exits": nonzero_exits,
+                "failure_rate": round((errors + nonzero_exits) / actions, 3) if actions else 0.0,
+            }
+        )
+        tool_by_origin.append(
+            {
+                "origin": str(row.get("origin") or "unknown-export"),
+                "tool_name": tool_name,
+                "family": family,
+                "evidence_kind": evidence_kind,
+                "raw_tool_names": "",
+                "raw_tool_name_count": 0,
+                "actions": actions,
+            }
+        )
+        evidence_key = (family, evidence_kind)
+        evidence_bucket = evidence_kind_counts_by_key.setdefault(
+            evidence_key,
+            {"family": family, "evidence_kind": evidence_kind, "sessions": 0, "actions": 0},
+        )
+        evidence_bucket["sessions"] = _int(evidence_bucket["sessions"]) + sessions
+        evidence_bucket["actions"] = _int(evidence_bucket["actions"]) + actions
+        family_bucket = family_counts_by_key.setdefault(
+            family,
+            {"family": family, "tools": 0, "sessions": 0, "actions": 0, "errors": 0, "nonzero_exits": 0},
+        )
+        family_bucket["tools"] = _int(family_bucket["tools"]) + 1
+        family_bucket["sessions"] = _int(family_bucket["sessions"]) + sessions
+        family_bucket["actions"] = _int(family_bucket["actions"]) + actions
+        family_bucket["errors"] = _int(family_bucket["errors"]) + errors
+        family_bucket["nonzero_exits"] = _int(family_bucket["nonzero_exits"]) + nonzero_exits
+    family_rows = sorted(family_counts_by_key.values(), key=lambda row: (-_int(row["actions"]), str(row["family"])))
+    evidence_kind_counts = sorted(
+        evidence_kind_counts_by_key.values(),
+        key=lambda row: (-_int(row["actions"]), str(row["family"]), str(row["evidence_kind"])),
+    )
+    tool_counts = sorted(
+        tool_counts,
+        key=lambda row: (-_int(row["actions"]), str(row["family"]), str(row["tool_name"]), str(row["evidence_kind"])),
+    )
+    tool_by_origin = sorted(
+        tool_by_origin,
+        key=lambda row: (
+            -_int(row["actions"]),
+            str(row["origin"]),
+            str(row["family"]),
+            str(row["tool_name"]),
+            str(row["evidence_kind"]),
+        ),
+    )
+    recent_counts = tool_counts if not args.all_time else []
+    report: dict[str, Any] = {
+        "report_version": 2,
+        "captured_at": datetime.now(UTC).isoformat(),
+        "command": "devtools workspace affordance-usage",
+        "archive_root": str(config.archive_root),
+        "index_db": str(config.db_path),
+        "index_schema_version": _user_version(conn),
+        "patterns": list(args.family or (() if args.detail_pattern else DEFAULT_FAMILY_PATTERNS)),
+        "detail_patterns": list(args.detail_pattern),
+        "action_scope": action_scope,
+        "recent_window_days": args.days,
+        "recent_cutoff_ms": recent_cutoff_ms,
+        "origin_counts": origin_counts,
+        "family_counts": family_rows,
+        "evidence_kind_counts": evidence_kind_counts,
+        "tool_counts": tool_counts,
+        "tool_by_origin": tool_by_origin,
+        "recent_tool_counts": recent_counts,
+        "samples": [],
+        "summary": _build_summary(family_counts=family_rows, recent_counts=recent_counts, days=args.days),
+        "notes": [
+            "Detail-pattern counts used the shared product action-evidence lowerer.",
+            "Samples are omitted on this fast grouped path to avoid materializing every matching action row.",
+            f"Detail patterns: {', '.join(effective_detail_patterns) or 'none'}",
+        ],
+    }
+    return report
+
+
+def _try_product_detail_report(
+    *,
+    args: AffordanceUsageArgs,
+    config: Config,
+    conn: Connection,
+    recent_cutoff_ms: int,
+    effective_detail_patterns: tuple[str, ...],
+) -> dict[str, Any] | None:
+    if not effective_detail_patterns or args.family:
+        return None
+    try:
+        from polylogue.insights.tool_usage import ToolUsageInsightQuery
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    except Exception:
+        return None
+    pattern_groups: dict[str, list[str]] = {}
+    unknown_patterns: list[str] = []
+    for pattern in effective_detail_patterns:
+        family = family_for_text(pattern)
+        if family is None:
+            unknown_patterns.append(pattern)
+            continue
+        pattern_groups.setdefault(family, []).append(pattern)
+    if not pattern_groups:
+        return None
+    since_ms = None if args.all_time else recent_cutoff_ms
+    action_scope = "product-action-evidence-all-time" if args.all_time else "product-action-evidence-recent-window"
+    try:
+        with ArchiveStore.open_existing(config.archive_root) as archive:
+            merged_rows: dict[tuple[str, str, str, str, str, str], dict[str, object]] = {}
+            for family, patterns in pattern_groups.items():
+                rows = archive.list_tool_action_evidence_count_rows(
+                    ToolUsageInsightQuery(since_ms=since_ms, limit=None),
+                    detail_patterns=tuple(patterns),
+                    since_ms=since_ms,
+                )
+                for row in rows:
+                    key = (
+                        str(row.get("source_name") or ""),
+                        str(row.get("origin") or ""),
+                        str(row.get("normalized_tool_name") or ""),
+                        str(row.get("action_kind") or ""),
+                        str(row.get("evidence_kind") or ""),
+                        str(row.get("matched_by") or ""),
+                    )
+                    if key not in merged_rows:
+                        merged_rows[key] = dict(row)
+                        continue
+                    bucket = merged_rows[key]
+                    for field in ("call_count", "session_count", "error_count", "nonzero_exit_count"):
+                        bucket[field] = _int(bucket.get(field)) + _int(row.get(field))
+                    bucket["matched_by"] = str(bucket.get("matched_by") or row.get("matched_by") or "detail")
+                    bucket["normalized_tool_name"] = str(
+                        bucket.get("normalized_tool_name") or f"{family}/command-detail"
+                    )
+    except Exception:
+        return None
+    rows = sorted(
+        merged_rows.values(),
+        key=lambda item: (
+            -_int(item.get("call_count")),
+            str(item.get("origin")),
+            str(item.get("normalized_tool_name")),
+            str(item.get("evidence_kind")),
+        ),
+    )
+    used_patterns = tuple(pattern for patterns in pattern_groups.values() for pattern in patterns)
+    if unknown_patterns:
+        action_scope = f"{action_scope}-known-family-patterns"
+    return _report_from_product_action_rows(
+        args=args,
+        config=config,
+        conn=conn,
+        rows=rows,
+        action_scope=action_scope,
+        recent_cutoff_ms=recent_cutoff_ms,
+        effective_detail_patterns=used_patterns,
+    )
 
 
 def _failed_action(row: dict[str, object]) -> bool:
@@ -437,53 +649,72 @@ def build_report(args: AffordanceUsageArgs) -> dict[str, Any]:
             conn,
             "SELECT origin, COUNT(*) AS sessions FROM sessions GROUP BY origin ORDER BY sessions DESC",
         )
-        if args.all_time:
-            action_scope = "all-time"
-            action_rows = _annotate_rows(
-                _all_time_action_rows(conn, where_sql=where_sql, where_params=where_params),
-                tool_patterns=effective_tool_patterns,
-                detail_patterns=effective_detail_patterns,
-            )
-        else:
-            action_scope = "recent-session-window"
-            session_rows = _recent_session_rows(conn, recent_cutoff_ms)
-            action_rows = _annotate_rows(
-                _recent_action_rows(conn, session_rows=session_rows, where_sql=where_sql, where_params=where_params),
-                tool_patterns=effective_tool_patterns,
-                detail_patterns=effective_detail_patterns,
-            )
-        tool_counts = _aggregate_tool_counts(action_rows)
-        family_rows = _aggregate_family_counts(tool_counts, action_rows)
-        tool_by_origin = _aggregate_tool_by_origin(action_rows)
-        evidence_kind_counts = _aggregate_evidence_kind_counts(action_rows)
-        recent_counts = _aggregate_tool_counts(
-            [
-                row
-                for row in action_rows
-                if row.get("occurred_at_ms") is not None and _int(row["occurred_at_ms"]) >= recent_cutoff_ms
-            ]
+        product_report = _try_product_detail_report(
+            args=args,
+            config=config,
+            conn=conn,
+            recent_cutoff_ms=recent_cutoff_ms,
+            effective_detail_patterns=effective_detail_patterns,
         )
-        samples = action_rows[: args.sample_limit]
-        report: dict[str, Any] = {
-            "report_version": 1,
-            "captured_at": datetime.now(UTC).isoformat(),
-            "command": "devtools workspace affordance-usage",
-            "archive_root": str(config.archive_root),
-            "index_db": str(index_db),
-            "index_schema_version": _user_version(conn),
-            "patterns": list(args.family or (() if args.detail_pattern else DEFAULT_FAMILY_PATTERNS)),
-            "detail_patterns": list(args.detail_pattern),
-            "action_scope": action_scope,
-            "recent_window_days": args.days,
-            "origin_counts": origin_counts,
-            "family_counts": family_rows,
-            "evidence_kind_counts": evidence_kind_counts,
-            "tool_counts": tool_counts,
-            "tool_by_origin": tool_by_origin,
-            "recent_tool_counts": recent_counts,
-            "samples": samples,
-            "summary": _build_summary(family_counts=family_rows, recent_counts=recent_counts, days=args.days),
-        }
+        if product_report is not None:
+            report = product_report
+            origin_counts = cast(list[dict[str, object]], report["origin_counts"])
+            family_rows = cast(list[dict[str, object]], report["family_counts"])
+            evidence_kind_counts = cast(list[dict[str, object]], report["evidence_kind_counts"])
+            tool_counts = cast(list[dict[str, object]], report["tool_counts"])
+            tool_by_origin = cast(list[dict[str, object]], report["tool_by_origin"])
+            recent_counts = cast(list[dict[str, object]], report["recent_tool_counts"])
+            samples = cast(list[dict[str, object]], report["samples"])
+        else:
+            if args.all_time:
+                action_scope = "all-time"
+                action_rows = _annotate_rows(
+                    _all_time_action_rows(conn, where_sql=where_sql, where_params=where_params),
+                    tool_patterns=effective_tool_patterns,
+                    detail_patterns=effective_detail_patterns,
+                )
+            else:
+                action_scope = "recent-session-window"
+                session_rows = _recent_session_rows(conn, recent_cutoff_ms)
+                action_rows = _annotate_rows(
+                    _recent_action_rows(
+                        conn, session_rows=session_rows, where_sql=where_sql, where_params=where_params
+                    ),
+                    tool_patterns=effective_tool_patterns,
+                    detail_patterns=effective_detail_patterns,
+                )
+            tool_counts = _aggregate_tool_counts(action_rows)
+            family_rows = _aggregate_family_counts(tool_counts, action_rows)
+            tool_by_origin = _aggregate_tool_by_origin(action_rows)
+            evidence_kind_counts = _aggregate_evidence_kind_counts(action_rows)
+            recent_counts = _aggregate_tool_counts(
+                [
+                    row
+                    for row in action_rows
+                    if row.get("occurred_at_ms") is not None and _int(row["occurred_at_ms"]) >= recent_cutoff_ms
+                ]
+            )
+            samples = action_rows[: args.sample_limit]
+            report = {
+                "report_version": 1,
+                "captured_at": datetime.now(UTC).isoformat(),
+                "command": "devtools workspace affordance-usage",
+                "archive_root": str(config.archive_root),
+                "index_db": str(index_db),
+                "index_schema_version": _user_version(conn),
+                "patterns": list(args.family or (() if args.detail_pattern else DEFAULT_FAMILY_PATTERNS)),
+                "detail_patterns": list(args.detail_pattern),
+                "action_scope": action_scope,
+                "recent_window_days": args.days,
+                "origin_counts": origin_counts,
+                "family_counts": family_rows,
+                "evidence_kind_counts": evidence_kind_counts,
+                "tool_counts": tool_counts,
+                "tool_by_origin": tool_by_origin,
+                "recent_tool_counts": recent_counts,
+                "samples": samples,
+                "summary": _build_summary(family_counts=family_rows, recent_counts=recent_counts, days=args.days),
+            }
     finally:
         conn.close()
     if args.out_dir is not None:
@@ -506,6 +737,7 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
     top_families = cast(list[dict[str, object]], summary["top_families"])
     recent_top_families = cast(list[dict[str, object]], summary["recent_top_families"])
     interpretation = cast(list[str], summary["interpretation"])
+    notes = cast(list[str], report.get("notes", []))
     lines = [
         "# Agent Affordance Usage",
         "",
@@ -536,6 +768,7 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
             "",
             *[f"- {item}" for item in interpretation],
             "",
+            *(["## Notes", "", *[f"- {item}" for item in notes], ""] if notes else []),
             "## Files",
             "",
             "- `family-counts.csv`",
