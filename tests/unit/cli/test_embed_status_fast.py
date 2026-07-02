@@ -314,7 +314,41 @@ def test_status_json_detail_falls_back_when_exact_pending_count_times_out(
     assert payload["pending_sessions"] == 1
     assert payload["pending_messages"] is None
     assert payload["pending_messages_exact"] is False
+    assert payload["total_estimated_cost_usd"] is None
     assert payload["retrieval_ready"] is True
+
+
+def test_status_text_detail_does_not_claim_zero_cost_when_exact_pending_count_times_out(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_anchor = tmp_path / "custom.sqlite"
+    _seed_archive_file_set_from_archive_tiers(tmp_path / "index.db")
+    original_scalar = status_payload_mod._scalar_int_with_timeout
+
+    def fake_scalar_int_with_timeout(conn: sqlite3.Connection, sql: str, *, timeout_ms: int) -> int | None:
+        if "LEFT JOIN embeddings.message_embeddings_meta" in sql and "LEFT JOIN embeddings.embedding_status" in sql:
+            return None
+        return original_scalar(conn, sql, timeout_ms=timeout_ms)
+
+    monkeypatch.setattr(status_payload_mod, "_scalar_int_with_timeout", fake_scalar_int_with_timeout)
+
+    runner = CliRunner(env={"POLYLOGUE_FORCE_PLAIN": "1"})
+    with patch(
+        "polylogue.config.load_polylogue_config",
+        return_value=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"),
+    ):
+        result = runner.invoke(
+            embed_command,
+            ["status", "--detail"],
+            obj=_env(db_anchor),
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0
+    assert "Pending:               1 convs, msgs not calculated" in result.output
+    assert "Estimated total cost:  unknown" in result.output
+    assert "use --detail" not in result.output
 
 
 def test_status_json_reports_manual_backfill_when_config_disabled_but_partial(tmp_path: Path) -> None:

@@ -107,16 +107,17 @@ def render_embedding_stats(payload: EmbeddingStatusPayload, *, json_output: bool
     click.echo(f"  Embedded messages:     {payload['embedded_messages']}")
     click.echo(f"  Coverage:              {payload['embedding_coverage_percent']:.1f}%")
     pending_messages = (
-        f"{payload['pending_messages']} msgs"
-        if payload["pending_messages_exact"]
-        else "msgs not calculated (use --detail)"
+        f"{payload['pending_messages']} msgs" if payload["pending_messages_exact"] else "msgs not calculated"
     )
     click.echo(f"  Pending:               {payload['pending_sessions']} convs, {pending_messages}")
     click.echo(f"  Retrieval ready:       {'yes' if payload['retrieval_ready'] else 'no'}")
     click.echo(f"  Freshness:             {payload['freshness_status']}")
     click.echo(f"  Stale messages:        {payload['stale_messages']}")
     click.echo(f"  Missing provenance:    {payload['messages_missing_provenance']}")
-    click.echo(f"  Estimated total cost:  ~${payload['total_estimated_cost_usd']:.2f}")
+    if payload["total_estimated_cost_usd"] is None:
+        click.echo("  Estimated total cost:  unknown")
+    else:
+        click.echo(f"  Estimated total cost:  ~${payload['total_estimated_cost_usd']:.2f}")
     _render_next_actions(payload)
     _render_embedding_window(payload)
     _render_named_counts("Models", payload["embedding_models"])

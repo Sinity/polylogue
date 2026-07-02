@@ -116,7 +116,7 @@ class EmbeddingStatusPayload(TypedDict):
     embedding_dimensions: dict[int, int]
     retrieval_bands: dict[str, dict[str, object]]
     failure_count: int
-    total_estimated_cost_usd: float
+    total_estimated_cost_usd: float | None
     latest_catchup_run: EmbeddingCatchupRunPayload | None
     latest_material_catchup_run: EmbeddingCatchupRunPayload | None
     next_action: EmbeddingNextActionPayload
@@ -694,7 +694,9 @@ def _archive_embedding_status_payload(
             dimension_counts=dimension_counts,
             retrieval_bands={},
             failure_count=failure_count,
-            total_estimated_cost_usd=_estimated_cost(pending_messages) if include_detail else 0.0,
+            total_estimated_cost_usd=_estimated_cost(pending_messages)
+            if include_detail and pending_messages_exact
+            else None,
         )
     finally:
         conn.close()
