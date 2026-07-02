@@ -327,6 +327,24 @@ def test_archive_tiers_messages_have_role_leading_facet_index(tmp_path: Path) ->
     assert columns == ["role"]
 
 
+def test_archive_tiers_messages_have_embedding_prose_index(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    _apply_tier(conn, ArchiveTier.INDEX)
+
+    indexes = {row["name"] for row in conn.execute("PRAGMA index_list('messages')").fetchall()}
+    assert "idx_messages_embedding_prose" in indexes
+
+    columns = [row["name"] for row in conn.execute("PRAGMA index_info('idx_messages_embedding_prose')").fetchall()]
+    assert columns == ["session_id", "position", "variant_index", "message_id", "content_hash"]
+    ddl = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_messages_embedding_prose'"
+    ).fetchone()[0]
+    assert "message_type = 'message'" in ddl
+    assert "role IN ('user', 'assistant')" in ddl
+    assert "material_origin IN ('human_authored', 'assistant_authored')" in ddl
+    assert "word_count > 0" in ddl
+
+
 def test_archive_tiers_blocks_have_tool_family_index(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     _apply_tier(conn, ArchiveTier.INDEX)

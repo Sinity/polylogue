@@ -33,7 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 20
+INDEX_SCHEMA_VERSION = 21
 
 INDEX_DDL = f"""
 CREATE TABLE IF NOT EXISTS sessions (
@@ -158,6 +158,18 @@ ON messages(message_type);
 
 CREATE INDEX IF NOT EXISTS idx_messages_material_origin
 ON messages(material_origin);
+
+-- Serves the paid embedding selector and status/preflight counts. The predicate
+-- matches authored prose only: user/assistant message rows with human- or
+-- assistant-authored material and positive word count. Keeping this as a
+-- partial index avoids scanning tool, protocol, context-pack, and generated
+-- runtime rows when computing cost windows over large archives.
+CREATE INDEX IF NOT EXISTS idx_messages_embedding_prose
+ON messages(session_id, position, variant_index, message_id, content_hash)
+WHERE message_type = 'message'
+  AND role IN ('user', 'assistant')
+  AND material_origin IN ('human_authored', 'assistant_authored')
+  AND word_count > 0;
 
 CREATE INDEX IF NOT EXISTS idx_messages_active_path
 ON messages(session_id, is_active_path, position)
