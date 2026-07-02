@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from polylogue.archive.raw_materialization import parsed_non_session_artifact_reason, raw_jsonl_leading_objects
 from polylogue.core.enums import Origin
 from polylogue.core.sources import provider_from_origin
 from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
@@ -389,25 +390,12 @@ def _raw_materialization_category(conn: sqlite3.Connection, row: sqlite3.Row, ar
 
 
 def _parsed_non_session_artifact_reason(archive_root: Path, row: sqlite3.Row) -> str | None:
-    source_path = str(row["source_path"] or "")
-    if _source_path_is_known_sidecar(source_path):
-        return "source-path sidecar"
-    leading_objects = _raw_jsonl_leading_objects(_raw_blob_path(archive_root, row), limit=8)
-    first_types = tuple(value for item in leading_objects if isinstance((value := item.get("type")), str) and value)
-    if not leading_objects:
-        return None
-    origin = str(row["origin"] or "")
-    if origin == "claude-code-session":
-        if first_types and set(first_types) <= {"file-history-snapshot", "progress"}:
-            return "Claude Code file-history snapshot"
-        if first_types and first_types[0] in {"custom-title", "started"}:
-            return f"Claude Code {first_types[0]} sidecar"
-        first_keys = set(leading_objects[0])
-        if {"sessionId", "projectHash", "startTime", "lastUpdated", "kind"} <= first_keys:
-            return "Claude Code metadata-only session descriptor"
-    if origin == "codex-session" and set(first_types) == {"session_meta"}:
-        return "Codex metadata-only session file"
-    return None
+    return parsed_non_session_artifact_reason(
+        archive_root=archive_root,
+        origin=str(row["origin"] or ""),
+        source_path=str(row["source_path"] or ""),
+        blob_hash=row["blob_hash"],
+    )
 
 
 def _parsed_session_shape_reason(archive_root: Path, row: sqlite3.Row) -> str | None:
@@ -453,7 +441,7 @@ def _parsed_session_native_ids(archive_root: Path, row: sqlite3.Row) -> tuple[st
             ids.append(value)
 
     if origin == "codex-session":
-        for item in _raw_jsonl_leading_objects(blob_path, limit=200):
+        for item in raw_jsonl_leading_objects(blob_path, limit=200):
             if item.get("type") != "session_meta":
                 continue
             payload = item.get("payload")
@@ -513,48 +501,12 @@ def _gemini_messages_are_session_shaped(messages: object) -> bool:
     return bool(seen_types & {"user", "gemini"})
 
 
-def _source_path_is_known_sidecar(source_path: str) -> bool:
-    if not source_path:
-        return False
-    return any(
-        marker in source_path
-        for marker in (
-            "/analysis/",
-            "/subagents/workflows/",
-            "/history.jsonl",
-            "/sessions-index.json",
-        )
-    )
-
-
 def _raw_jsonl_leading_types(path: Path, *, limit: int) -> tuple[str, ...]:
     return tuple(
         value
-        for item in _raw_jsonl_leading_objects(path, limit=limit)
+        for item in raw_jsonl_leading_objects(path, limit=limit)
         if isinstance((value := item.get("type")), str) and value
     )
-
-
-def _raw_jsonl_leading_objects(path: Path, *, limit: int) -> tuple[dict[str, Any], ...]:
-    objects: list[dict[str, Any]] = []
-    try:
-        with path.open(encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                try:
-                    payload = json.loads(stripped)
-                except json.JSONDecodeError:
-                    return ()
-                if not isinstance(payload, dict):
-                    continue
-                objects.append(payload)
-                if len(objects) >= limit:
-                    break
-    except OSError:
-        return ()
-    return tuple(objects)
 
 
 def _embedded_source_path_session_ids(row: sqlite3.Row) -> tuple[str, ...]:

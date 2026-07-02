@@ -483,13 +483,54 @@ def test_raw_materialization_excludes_already_parsed_non_materialized_rows(tmp_p
 
     result = repair_mod.repair_raw_materialization(config, dry_run=True)
 
-    assert result.repaired_count == 1
-    assert "acquired-but-unparsed raw rows" in result.detail
+    assert result.repaired_count == 2
+    assert "1 already parsed but not materialized" in result.detail
 
     scoped = repair_mod.repair_raw_materialization(config, dry_run=True, raw_artifact_id=parsed_raw_id)
 
     assert scoped.repaired_count == 1
     assert "already parsed but not materialized" in scoped.detail
+
+
+def test_raw_materialization_excludes_parsed_non_session_artifacts(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    blob_store = BlobStore(tmp_path / "blob")
+    raw_id, raw_size = blob_store.write_from_bytes(
+        b'{"sessionId":"sidecar","projectHash":"abc","startTime":"now","lastUpdated":"now","kind":"metadata"}\n'
+    )
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
+                acquired_at_ms, parsed_at_ms, validation_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                raw_id,
+                "claude-code-session",
+                "sidecar",
+                "/captures/claude/sidecar.jsonl",
+                0,
+                bytes.fromhex(raw_id),
+                raw_size,
+                1,
+                123,
+                "passed",
+            ),
+        )
+        source_conn.commit()
+
+    broad = repair_mod.repair_raw_materialization(config, dry_run=True)
+    scoped = repair_mod.repair_raw_materialization(config, dry_run=True, raw_artifact_id=raw_id)
+
+    assert broad.repaired_count == 0
+    assert scoped.repaired_count == 0
+    assert broad.metrics["raw_materialization_candidate_count"] == 0.0
+    assert scoped.metrics["raw_materialization_candidate_count"] == 0.0
 
 
 def test_raw_materialization_explicit_scope_includes_already_parsed_rows(tmp_path: Path) -> None:
@@ -525,7 +566,7 @@ def test_raw_materialization_explicit_scope_includes_already_parsed_rows(tmp_pat
     by_family = repair_mod.repair_raw_materialization(config, dry_run=True, source_family="gemini-cli-session")
     by_root = repair_mod.repair_raw_materialization(config, dry_run=True, source_root=Path("/captures/gemini"))
 
-    assert broad.repaired_count == 0
+    assert broad.repaired_count == 1
     assert by_family.repaired_count == 1
     assert "already parsed but not materialized" in by_family.detail
     assert by_root.repaired_count == 1
