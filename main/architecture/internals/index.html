@@ -551,6 +551,11 @@ bumps, the operator moves the index database aside with
 <li>Schema bumps are deletes-then-defines, never deltas. A schema change
 edits the owning tier DDL/version and documents the re-ingest expectation.
 No upgrade helpers are added for the bump.</li>
+<li>Index schema version 24 admits <code>capture_gap</code> rows in <code>session_events</code>. These
+are narrow lifecycle evidence events emitted when ingest rejects a lower-
+precedence DOM browser-capture fallback because a richer source row already
+owns the session. Existing index tiers must be rebuilt from source evidence
+(<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</li>
 <li>Index schema version 23 adds <code>idx_blocks_search_text_populated</code>, a partial
 index over text-bearing <code>blocks</code> rows, and makes <code>fts_freshness_state</code> part of
 the canonical fresh index tier. Message search readiness compares that source
