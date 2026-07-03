@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
 import shutil
@@ -327,13 +328,19 @@ def _int_from_mapping(mapping: dict[str, Any], *keys: str) -> int:
     return 0
 
 
-def _load_claude_stats(path: Path) -> dict[str, dict[str, int]]:
+def _load_claude_stats(path: Path) -> tuple[dict[str, dict[str, int]], int | None, str | None]:
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError("Claude stats cache root must be a JSON object")
     model_usage = raw.get("modelUsage")
     if not isinstance(model_usage, dict):
         raise ValueError("Claude stats cache missing object field modelUsage")
+    cutoff_label = raw.get("lastComputedDate")
+    cutoff_ms: int | None = None
+    if isinstance(cutoff_label, str) and cutoff_label:
+        cutoff = dt.datetime.fromisoformat(f"{cutoff_label}T23:59:59.999+00:00")
+        cutoff_ms = int(cutoff.timestamp() * 1000)
+
     result: dict[str, dict[str, int]] = {}
     for model, value in model_usage.items():
         if not isinstance(value, dict):
@@ -345,12 +352,17 @@ def _load_claude_stats(path: Path) -> dict[str, dict[str, int]]:
             "cache_write_tokens": _int_from_mapping(value, "cacheCreationInputTokens", "cache_write_tokens"),
             "cost_usd": _int_from_mapping(value, "costUSD", "cost_usd"),
         }
-    return result
+    return result, cutoff_ms, cutoff_label if isinstance(cutoff_label, str) else None
 
 
-def _claude_archive_totals(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
+def _claude_archive_totals(conn: sqlite3.Connection, *, cutoff_ms: int | None = None) -> dict[str, dict[str, int]]:
+    cutoff_clause = ""
+    params: tuple[object, ...] = ()
+    if cutoff_ms is not None:
+        cutoff_clause = "AND COALESCE(s.updated_at_ms, s.created_at_ms, 0) <= ?"
+        params = (cutoff_ms,)
     rows = conn.execute(
-        """
+        f"""
         SELECT
           u.model_name,
           SUM(u.input_tokens) AS input_tokens,
@@ -360,8 +372,10 @@ def _claude_archive_totals(conn: sqlite3.Connection) -> dict[str, dict[str, int]
         FROM session_model_usage AS u
         JOIN sessions AS s ON s.session_id = u.session_id
         WHERE s.origin IN ('claude-code-session', 'claude-ai-export')
+          {cutoff_clause}
         GROUP BY u.model_name
-        """
+        """,
+        params,
     ).fetchall()
     return {
         str(row["model_name"]): {
@@ -400,8 +414,8 @@ def _probe_claude(
         )
 
     try:
-        archive = _claude_archive_totals(archive_conn)
-        external = _load_claude_stats(stats_cache)
+        external, cutoff_ms, cutoff_label = _load_claude_stats(stats_cache)
+        archive = _claude_archive_totals(archive_conn, cutoff_ms=cutoff_ms)
     except Exception as exc:
         return ProbeSection(
             "claude",
@@ -444,6 +458,8 @@ def _probe_claude(
             "archive_models": len(archive),
             "external_models": len(external),
             "tolerance": tolerance,
+            "external_last_computed_date": cutoff_label,
+            "archive_cutoff_ms": cutoff_ms,
             "lane_contract": "stats-cache modelUsage lanes map independently; cache is not folded into input",
             "cost_reconciliation": "skipped: stats-cache costUSD is not treated as authoritative",
         },
