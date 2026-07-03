@@ -332,9 +332,9 @@ async def message_fts_recorded_state_async(conn: aiosqlite.Connection) -> str | 
     return READY if await message_fts_recorded_ready_trusted_async(conn) else UNKNOWN
 
 
-def message_fts_recorded_ready_trusted_sync(conn: sqlite3.Connection) -> bool:
+def _message_fts_record_sync(conn: sqlite3.Connection) -> dict[str, object] | None:
     if not _table_exists_sync(conn):
-        return False
+        return None
     columns = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({FRESHNESS_TABLE})").fetchall()}
     selected = ["state"]
     for name in ("source_rows", "indexed_rows", "missing_rows", "excess_rows", "duplicate_rows"):
@@ -345,26 +345,13 @@ def message_fts_recorded_ready_trusted_sync(conn: sqlite3.Connection) -> bool:
         (MESSAGE_SURFACE,),
     ).fetchone()
     if row is None:
-        return False
-    record = dict(zip(selected, row, strict=True))
-    if not _message_fts_triggers_present_sync(conn):
-        return False
-    return freshness_ready_record_trusted(
-        state=str(record["state"]),
-        source_rows=_int_or_zero(record.get("source_rows")),
-        indexed_rows=_int_or_zero(record.get("indexed_rows")),
-        missing_rows=_int_or_zero(record.get("missing_rows")),
-        excess_rows=_int_or_zero(record.get("excess_rows")),
-        duplicate_rows=_int_or_zero(record.get("duplicate_rows")),
-        source_has_rows=_message_fts_source_has_rows_sync(conn)
-        if _int_or_zero(record.get("source_rows")) == 0 and _int_or_zero(record.get("indexed_rows")) == 0
-        else False,
-    )
+        return None
+    return dict(zip(selected, row, strict=True))
 
 
-async def message_fts_recorded_ready_trusted_async(conn: aiosqlite.Connection) -> bool:
+async def _message_fts_record_async(conn: aiosqlite.Connection) -> dict[str, object] | None:
     if not await _table_exists_async(conn):
-        return False
+        return None
     rows = await (await conn.execute(f"PRAGMA table_info({FRESHNESS_TABLE})")).fetchall()
     columns = {str(row[1]) for row in rows}
     selected = ["state"]
@@ -378,23 +365,125 @@ async def message_fts_recorded_ready_trusted_async(conn: aiosqlite.Connection) -
         )
     ).fetchone()
     if row is None:
-        return False
-    record = dict(zip(selected, row, strict=True))
-    source_rows = _int_or_zero(record.get("source_rows"))
-    indexed_rows = _int_or_zero(record.get("indexed_rows"))
-    if not await _message_fts_triggers_present_async(conn):
-        return False
+        return None
+    return dict(zip(selected, row, strict=True))
+
+
+def _recorded_counter(record: dict[str, object], name: str) -> int:
+    return _int_or_zero(record.get(name))
+
+
+def _recorded_ready_state_sync(conn: sqlite3.Connection, record: dict[str, object]) -> bool:
+    source_rows = _recorded_counter(record, "source_rows")
+    indexed_rows = _recorded_counter(record, "indexed_rows")
     return freshness_ready_record_trusted(
         state=str(record["state"]),
         source_rows=source_rows,
         indexed_rows=indexed_rows,
-        missing_rows=_int_or_zero(record.get("missing_rows")),
-        excess_rows=_int_or_zero(record.get("excess_rows")),
-        duplicate_rows=_int_or_zero(record.get("duplicate_rows")),
+        missing_rows=_recorded_counter(record, "missing_rows"),
+        excess_rows=_recorded_counter(record, "excess_rows"),
+        duplicate_rows=_recorded_counter(record, "duplicate_rows"),
+        source_has_rows=_message_fts_source_has_rows_sync(conn) if source_rows == 0 and indexed_rows == 0 else False,
+    )
+
+
+async def _recorded_ready_state_async(conn: aiosqlite.Connection, record: dict[str, object]) -> bool:
+    source_rows = _recorded_counter(record, "source_rows")
+    indexed_rows = _recorded_counter(record, "indexed_rows")
+    return freshness_ready_record_trusted(
+        state=str(record["state"]),
+        source_rows=source_rows,
+        indexed_rows=indexed_rows,
+        missing_rows=_recorded_counter(record, "missing_rows"),
+        excess_rows=_recorded_counter(record, "excess_rows"),
+        duplicate_rows=_recorded_counter(record, "duplicate_rows"),
         source_has_rows=await _message_fts_source_has_rows_async(conn)
         if source_rows == 0 and indexed_rows == 0
         else False,
     )
+
+
+def message_fts_recorded_readiness_sync(conn: sqlite3.Connection) -> dict[str, int | bool] | None:
+    """Return a trusted recorded search-readiness verdict when one exists.
+
+    ``ready`` rows are trusted only after the full consistency check. ``stale``
+    rows are also useful: they are already a durable negative verdict with
+    recorded counters, so the hot query path can fail fast instead of repeating
+    an exact archive-scale recount. ``unknown``/poisoned rows intentionally
+    return ``None`` so callers recompute and repair the ledger once.
+    """
+    record = _message_fts_record_sync(conn)
+    if record is None:
+        return None
+    state = str(record["state"])
+    exists = _named_table_exists_sync(conn, MESSAGE_SURFACE)
+    triggers_present = exists and _message_fts_triggers_present_sync(conn)
+    if state == READY:
+        if not triggers_present or not _recorded_ready_state_sync(conn, record):
+            return None
+        return {
+            "exists": True,
+            "indexed_rows": _recorded_counter(record, "indexed_rows"),
+            "total_rows": _recorded_counter(record, "source_rows"),
+            "ready": True,
+            "triggers_present": True,
+        }
+    if state == STALE:
+        return {
+            "exists": exists,
+            "indexed_rows": _recorded_counter(record, "indexed_rows"),
+            "total_rows": _recorded_counter(record, "source_rows"),
+            "ready": False,
+            "triggers_present": triggers_present,
+        }
+    return None
+
+
+async def message_fts_recorded_readiness_async(conn: aiosqlite.Connection) -> dict[str, int | bool] | None:
+    """Async counterpart to :func:`message_fts_recorded_readiness_sync`."""
+    record = await _message_fts_record_async(conn)
+    if record is None:
+        return None
+    state = str(record["state"])
+    exists = await _named_table_exists_async(conn, MESSAGE_SURFACE)
+    triggers_present = exists and await _message_fts_triggers_present_async(conn)
+    if state == READY:
+        if not triggers_present or not await _recorded_ready_state_async(conn, record):
+            return None
+        return {
+            "exists": True,
+            "indexed_rows": _recorded_counter(record, "indexed_rows"),
+            "total_rows": _recorded_counter(record, "source_rows"),
+            "ready": True,
+            "triggers_present": True,
+        }
+    if state == STALE:
+        return {
+            "exists": exists,
+            "indexed_rows": _recorded_counter(record, "indexed_rows"),
+            "total_rows": _recorded_counter(record, "source_rows"),
+            "ready": False,
+            "triggers_present": triggers_present,
+        }
+    return None
+
+
+def message_fts_recorded_ready_trusted_sync(conn: sqlite3.Connection) -> bool:
+    record = _message_fts_record_sync(conn)
+    if record is None:
+        return False
+    if not _message_fts_triggers_present_sync(conn):
+        return False
+    return _recorded_ready_state_sync(conn, record)
+
+
+async def message_fts_recorded_ready_trusted_async(conn: aiosqlite.Connection) -> bool:
+    record = await _message_fts_record_async(conn)
+    if record is None:
+        return False
+    if not await _message_fts_triggers_present_async(conn):
+        return False
+    return await _recorded_ready_state_async(conn, record)
 
 
 __all__ = [
@@ -412,6 +501,8 @@ __all__ = [
     "message_fts_marked_ready_sync",
     "message_fts_recorded_ready_trusted_async",
     "message_fts_recorded_ready_trusted_sync",
+    "message_fts_recorded_readiness_async",
+    "message_fts_recorded_readiness_sync",
     "message_fts_recorded_state_async",
     "message_fts_recorded_state_sync",
     "record_fts_invariant_snapshot_sync",

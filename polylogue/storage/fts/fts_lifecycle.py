@@ -700,42 +700,13 @@ def message_fts_search_readiness_sync(conn: sqlite3.Connection) -> dict[str, int
     from polylogue.storage.fts.freshness import (
         READY,
         STALE,
-        message_fts_recorded_state_sync,
+        message_fts_recorded_readiness_sync,
         record_fts_surface_state_sync,
     )
 
-    recorded_state = message_fts_recorded_state_sync(conn)
-    if recorded_state == READY:
-        return {
-            "exists": True,
-            "indexed_rows": 0,
-            "total_rows": 0,
-            "ready": True,
-            "triggers_present": True,
-        }
-    if recorded_state is not None:
-        readiness = message_fts_readiness_sync(conn, verify_total_rows=True)
-        if bool(readiness["ready"]):
-            with suppress(sqlite3.Error):
-                record_fts_surface_state_sync(
-                    conn,
-                    surface="messages_fts",
-                    state=READY,
-                    source_rows=int(readiness["total_rows"]),
-                    indexed_rows=int(readiness["indexed_rows"]),
-                    detail="stale freshness marker repaired during search readiness",
-                )
-        elif bool(readiness["exists"]):
-            with suppress(sqlite3.Error):
-                record_fts_surface_state_sync(
-                    conn,
-                    surface="messages_fts",
-                    state=STALE,
-                    source_rows=int(readiness["total_rows"]),
-                    indexed_rows=int(readiness["indexed_rows"]),
-                    detail="exact message readiness failed",
-                )
-        return readiness
+    recorded_readiness = message_fts_recorded_readiness_sync(conn)
+    if recorded_readiness is not None:
+        return recorded_readiness
     readiness = message_fts_readiness_sync(conn, verify_total_rows=True)
     if bool(readiness["ready"]):
         with suppress(sqlite3.Error):
@@ -799,42 +770,13 @@ async def message_fts_search_readiness_async(conn: aiosqlite.Connection) -> dict
     from polylogue.storage.fts.freshness import (
         READY,
         STALE,
-        message_fts_recorded_state_async,
+        message_fts_recorded_readiness_async,
         record_fts_surface_state_async,
     )
 
-    recorded_state = await message_fts_recorded_state_async(conn)
-    if recorded_state == READY:
-        return {
-            "exists": True,
-            "indexed_rows": 0,
-            "total_rows": 0,
-            "ready": True,
-            "triggers_present": True,
-        }
-    if recorded_state is not None:
-        readiness = await message_fts_readiness_async(conn, verify_total_rows=True)
-        if bool(readiness["ready"]):
-            with suppress(sqlite3.Error):
-                await record_fts_surface_state_async(
-                    conn,
-                    surface="messages_fts",
-                    state=READY,
-                    source_rows=int(readiness["total_rows"]),
-                    indexed_rows=int(readiness["indexed_rows"]),
-                    detail="stale freshness marker repaired during search readiness",
-                )
-        elif bool(readiness["exists"]):
-            with suppress(sqlite3.Error):
-                await record_fts_surface_state_async(
-                    conn,
-                    surface="messages_fts",
-                    state=STALE,
-                    source_rows=int(readiness["total_rows"]),
-                    indexed_rows=int(readiness["indexed_rows"]),
-                    detail="exact message readiness failed",
-                )
-        return readiness
+    recorded_readiness = await message_fts_recorded_readiness_async(conn)
+    if recorded_readiness is not None:
+        return recorded_readiness
     readiness = await message_fts_readiness_async(conn, verify_total_rows=True)
     if bool(readiness["ready"]):
         with suppress(sqlite3.Error):
