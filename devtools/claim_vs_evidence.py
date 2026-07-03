@@ -92,6 +92,12 @@ def _object_int(value: object) -> int:
     return int(str(value))
 
 
+def _object_str_list(value: object) -> list[str]:
+    if isinstance(value, list | tuple):
+        return [str(item) for item in value]
+    return []
+
+
 def _ranked(mapping: dict[str, dict[str, int]]) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for name, counts in mapping.items():
@@ -118,6 +124,15 @@ def _ranked(mapping: dict[str, dict[str, int]]) -> list[dict[str, object]]:
 
 def _empty_counts() -> dict[str, int]:
     return dict.fromkeys(_COUNT_KEYS, 0)
+
+
+def _empty_window_counts() -> dict[str, int]:
+    return {
+        "failed_outcomes": 0,
+        "acknowledged": 0,
+        "silent_proceed": 0,
+        "ambiguous": 0,
+    }
 
 
 def _refine_classification_reason(classification_evidence: Mapping[str, object], row: dict[str, object]) -> str:
@@ -326,10 +341,10 @@ def _paired_failure_rows(
                         w.is_error,
                         w.exit_code,
                         m.model_name AS tool_message_model,
+                        rm.position AS result_position,
                         (
                             SELECT nm.message_id
                             FROM messages AS nm
-                            JOIN messages AS rm ON rm.message_id = w.tool_result_message_id
                             WHERE nm.session_id = w.session_id
                               AND nm.role = 'assistant'
                               AND nm.position > rm.position
@@ -342,6 +357,7 @@ def _paired_failure_rows(
                      AND u.session_id = w.session_id
                      AND u.block_type = 'tool_use'
                     JOIN messages AS m ON m.message_id = u.message_id
+                    JOIN messages AS rm ON rm.message_id = w.tool_result_message_id
                 )
                 SELECT
                     p.session_id,
@@ -353,6 +369,7 @@ def _paired_failure_rows(
                     p.origin,
                     p.is_error,
                     p.exit_code,
+                    p.result_position,
                     COALESCE(nm.model_name, p.tool_message_model, '') AS model_name,
                     p.next_message_id
                 FROM paired AS p
@@ -365,15 +382,115 @@ def _paired_failure_rows(
     return paired_rows
 
 
+def _assistant_window_details(
+    conn: Connection,
+    rows: list[dict[str, object]],
+    *,
+    window_size: int = 3,
+    chunk_size: int = 250,
+) -> dict[int, dict[str, object]]:
+    details: dict[int, dict[str, Any]] = {}
+    for start in range(0, len(rows), chunk_size):
+        chunk = rows[start : start + chunk_size]
+        placeholders = ",".join("(?, ?, ?)" for _ in chunk)
+        params: list[object] = []
+        for index, row in enumerate(chunk, start=start):
+            params.extend([index, row["session_id"], row["result_position"]])
+        result_rows = _rows(
+            conn,
+            f"""
+            WITH wanted(sort_index, session_id, result_position) AS (
+                VALUES {placeholders}
+            ),
+            bounded AS (
+                SELECT
+                    w.*,
+                    (
+                        SELECT MIN(next_user.position)
+                        FROM messages AS next_user
+                        WHERE next_user.session_id = w.session_id
+                          AND next_user.role = 'user'
+                          AND next_user.position > w.result_position
+                    ) AS next_user_position
+                FROM wanted AS w
+            ),
+            assistant_window AS (
+                SELECT
+                    b.sort_index,
+                    m.message_id,
+                    m.position,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY b.sort_index
+                        ORDER BY m.position
+                    ) AS assistant_rank
+                FROM bounded AS b
+                JOIN messages AS m
+                  ON m.session_id = b.session_id
+                 AND m.role = 'assistant'
+                 AND m.position > b.result_position
+                 AND (
+                    b.next_user_position IS NULL
+                    OR m.position < b.next_user_position
+                 )
+            ),
+            top_window AS (
+                SELECT *
+                FROM assistant_window
+                WHERE assistant_rank <= ?
+            )
+            SELECT
+                w.sort_index,
+                w.message_id,
+                w.assistant_rank,
+                b.position AS block_position,
+                b.block_type,
+                COALESCE(b.text, '') AS text
+            FROM top_window AS w
+            LEFT JOIN blocks AS b ON b.message_id = w.message_id
+            ORDER BY w.sort_index, w.assistant_rank, b.position
+            """,
+            [*params, window_size],
+        )
+        for result_row in result_rows:
+            sort_index = _object_int(result_row["sort_index"])
+            detail = details.setdefault(
+                sort_index,
+                {
+                    "message_ids": [],
+                    "text_parts": [],
+                },
+            )
+            message_ids = detail["message_ids"]
+            text_parts = detail["text_parts"]
+            assert isinstance(message_ids, list)
+            assert isinstance(text_parts, list)
+            message_id = str(result_row["message_id"])
+            if message_id not in message_ids:
+                message_ids.append(message_id)
+            if str(result_row["block_type"]) == "text":
+                text_parts.append(str(result_row["text"] or ""))
+    return {
+        index: {
+            "message_ids": detail["message_ids"],
+            "text": "\n".join(str(part) for part in detail["text_parts"])[:2400],
+        }
+        for index, detail in details.items()
+    }
+
+
 def _structured_failure_rows(conn: Connection, *, limit: int, origin: str | None = None) -> list[dict[str, object]]:
     candidate_limit = max(limit * 2, limit + 100)
     rows = _paired_failure_rows(conn, _failure_outcome_rows(conn, limit=candidate_limit, origin=origin))[:limit]
     details = _next_message_details(conn, (row.get("next_message_id") for row in rows))
-    for row in rows:
+    window_details = _assistant_window_details(conn, rows)
+    for index, row in enumerate(rows):
         detail = details.get(str(row.get("next_message_id") or ""), {})
         row["next_text"] = detail.get("next_text", "")
         row["next_has_tool_use"] = detail.get("next_has_tool_use", 0)
         row["next_pre_tool_text_chars"] = detail.get("next_pre_tool_text_chars", 0)
+        window_detail = window_details.get(index, {})
+        row["next3_message_ids"] = window_detail.get("message_ids", [])
+        row["next3_text"] = window_detail.get("text", "")
     return rows
 
 
@@ -520,6 +637,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         conn.close()
 
     totals = _empty_counts()
+    window3_totals = _empty_window_counts()
     by_tool: dict[str, dict[str, int]] = {}
     by_model: dict[str, dict[str, int]] = {}
     by_origin: dict[str, dict[str, int]] = {}
@@ -536,6 +654,10 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         )
         classification = str(classification_evidence["classification"])
         classification_reason = _refine_classification_reason(classification_evidence, row)
+        next3_message_ids = _object_str_list(row["next3_message_ids"])
+        next3_text = str(row["next3_text"] or "")
+        window3_evidence = _classify_failed_followup_evidence(next3_text if next3_message_ids else None)
+        window3_classification = str(window3_evidence["classification"])
         tool = str(row["tool_name"] or "unknown")
         handler_class = _handler_class(tool)
         model = str(row["model_name"] or "unknown")
@@ -560,9 +682,16 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "next_text_preview": next_text[:500],
             "next_has_tool_use": bool(_object_int(row["next_has_tool_use"])),
             "next_pre_tool_text_chars": _object_int(row["next_pre_tool_text_chars"]),
+            "next3_message_refs": [f"message:{message_id}" for message_id in next3_message_ids],
+            "next3_classification": window3_classification,
+            "next3_classification_reason": window3_evidence["reason"],
+            "next3_matched_marker": window3_evidence["matched_marker"],
+            "next3_text_preview": next3_text[:500],
         }
         totals["failed_outcomes"] += 1
         totals[classification] += 1
+        window3_totals["failed_outcomes"] += 1
+        window3_totals[window3_classification] += 1
         ambiguous_counter_key = _ambiguous_counter_key(classification_reason)
         if ambiguous_counter_key is not None:
             totals[ambiguous_counter_key] += 1
@@ -601,9 +730,12 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         if len(origin_bucket) < args.sample_limit:
             origin_bucket.append(sample)
     totals["classified_outcomes"] = totals["acknowledged"] + totals["silent_proceed"]
+    window3_totals["classified_outcomes"] = window3_totals["acknowledged"] + window3_totals["silent_proceed"]
     silent = totals["silent_proceed"]
     failed = totals["failed_outcomes"]
     classified = totals["classified_outcomes"]
+    window3_silent = window3_totals["silent_proceed"]
+    window3_classified = window3_totals["classified_outcomes"]
     report: dict[str, Any] = {
         "report_version": 1,
         "captured_at": datetime.now(UTC).isoformat(),
@@ -627,6 +759,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "selection_order": "origin, session_id, tool_id, tool_result_message_id",
             "failure_predicate": "tool_result_is_error = 1 OR tool_result_exit_code != 0",
             "classification_scope": "immediately following assistant message only",
+            "sensitivity_scope": "next 3 assistant messages after the failed result, stopping before the next user message",
             "total_by_origin": total_by_origin,
             "sampled_by_origin": sampled_by_origin,
         },
@@ -636,9 +769,15 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "acknowledgment markers; this is not an LLM judgment or prose-mined outcome."
         ),
         "totals": totals,
+        "window3_totals": window3_totals,
         "rates": {
             "silent_rate_lower_bound": (silent / failed) if failed else 0.0,
             "silent_rate_among_classified": (silent / classified) if classified else 0.0,
+            "window3_silent_rate_lower_bound": (window3_silent / failed) if failed else 0.0,
+            "window3_silent_rate_among_classified": (
+                (window3_silent / window3_classified) if window3_classified else 0.0
+            ),
+            "ack_later_within_3": max(0, window3_totals["acknowledged"] - totals["acknowledged"]),
         },
         "by_tool": _ranked(by_tool),
         "by_model": _ranked(by_model),
@@ -665,6 +804,7 @@ def _write_artifacts(out_dir: Path, report: dict[str, Any]) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     _write_json(out_dir / "claim-vs-evidence.report.json", report)
     totals = report["totals"]
+    window3_totals = report["window3_totals"]
     rates = report["rates"]
     summary = {
         "artifact": "claim-vs-evidence",
@@ -688,18 +828,24 @@ def _write_artifacts(out_dir: Path, report: dict[str, Any]) -> None:
             "acknowledged": totals["acknowledged"],
             "silent_proceed": totals["silent_proceed"],
             "ambiguous": totals["ambiguous"],
+            "acknowledged_within_3": window3_totals["acknowledged"],
+            "silent_proceed_within_3": window3_totals["silent_proceed"],
+            "ambiguous_within_3": window3_totals["ambiguous"],
+            "ack_later_within_3": rates["ack_later_within_3"],
             "ambiguous_wordless_continuation": totals["ambiguous_wordless_continuation"],
             "ambiguous_prose_no_marker": totals["ambiguous_prose_no_marker"],
             "silent_rate_lower_bound": rates["silent_rate_lower_bound"],
+            "window3_silent_rate_lower_bound": rates["window3_silent_rate_lower_bound"],
             "by_handler_class": report["by_handler_class"],
             "handler_class_definition": report["handler_class_definition"],
             "limit": report["limit"],
             "time_window": report["sample_frame"]["time_window"],
+            "sensitivity_scope": report["sample_frame"]["sensitivity_scope"],
             "sampled_by_origin": report["sample_frame"]["sampled_by_origin"],
         },
         "caveats": [
             "The report is bounded by --limit for fast active-archive regeneration.",
-            "Classification inspects only the next assistant message for explicit acknowledgment markers.",
+            "The headline classification inspects only the next assistant message; the next-3 window is a sensitivity row.",
             "Structured failure truth comes from normalized action result is_error/exit_code fields, not assistant prose.",
             "Failed tool results without a paired tool-use row are reported as unpaired coverage gaps, not classified rows.",
         ],
@@ -711,6 +857,7 @@ def _write_artifacts(out_dir: Path, report: dict[str, Any]) -> None:
 
 def _write_readme(path: Path, report: dict[str, Any]) -> None:
     totals = report["totals"]
+    window3_totals = report["window3_totals"]
     rates = report["rates"]
     frame = report["sample_frame"]
     sampled_by_origin = [
@@ -757,6 +904,9 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
         f"- ambiguous prose without markers: {totals['ambiguous_prose_no_marker']:,}",
         f"- silent lower bound: {rates['silent_rate_lower_bound']:.1%}",
         f"- silent among classified: {rates['silent_rate_among_classified']:.1%}",
+        f"- acknowledged within next 3 assistant turns: {window3_totals['acknowledged']:,}",
+        f"- acknowledgments appearing only after the next turn: {rates['ack_later_within_3']:,}",
+        f"- silent lower bound after next-3 sensitivity: {rates['window3_silent_rate_lower_bound']:.1%}",
         f"- configured limit: {report['limit']:,}",
         f"- selection order: {frame['selection_order']}",
         f"- selection strategy: {frame['selection_strategy']}",

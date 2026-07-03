@@ -89,6 +89,7 @@ def _seed_archive(root: Path) -> None:
             ("s1", "next-ack", "assistant", 2, "claude-sonnet"),
             ("s1", "tool-silent", "tool", 3, "claude-opus"),
             ("s1", "next-silent", "assistant", 4, "claude-haiku"),
+            ("s1", "next-silent-ack", "assistant", 5, "claude-haiku"),
             ("s2", "tool-missing-next", "tool", 1, "codex"),
             ("s2", "next-prose", "assistant", 2, "codex"),
             ("s2", "tool-wordless", "tool", 3, "codex"),
@@ -125,6 +126,18 @@ def _seed_archive(root: Path) -> None:
                 0,
                 "text",
                 "I will continue by inspecting the neighboring module now.",
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+            (
+                "next-silent-ack",
+                "s1",
+                0,
+                "text",
+                "The ls command failed; I will switch to a different path.",
                 None,
                 None,
                 None,
@@ -197,6 +210,7 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
             "then proportional fill by origin failure count; each origin candidate frame is bounded "
             "before pairing to tool-use rows"
         ),
+        "sensitivity_scope": "next 3 assistant messages after the failed result, stopping before the next user message",
         "total_by_origin": [
             {"failed_outcomes": 2, "origin": "claude-code-session"},
             {"failed_outcomes": 2, "origin": "codex-session"},
@@ -213,7 +227,16 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
         "ambiguous_prose_no_marker": 1,
         "classified_outcomes": 2,
     }
+    assert report["window3_totals"] == {
+        "failed_outcomes": 4,
+        "acknowledged": 2,
+        "silent_proceed": 0,
+        "ambiguous": 2,
+        "classified_outcomes": 2,
+    }
     assert report["rates"]["silent_rate_lower_bound"] == 1 / 4
+    assert report["rates"]["ack_later_within_3"] == 1
+    assert report["rates"]["window3_silent_rate_lower_bound"] == 0
     assert report["by_handler_class"] == [
         {
             "name": "benign_recovery",
@@ -257,6 +280,10 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
         report["samples_by_origin_classification"]["claude-code-session"]["acknowledged"][0]["classification_reason"]
         == "explicit_acknowledgment_marker"
     )
+    silent_sample = report["samples_by_origin_classification"]["claude-code-session"]["silent_proceed"][0]
+    assert silent_sample["next3_classification"] == "acknowledged"
+    assert silent_sample["next3_matched_marker"] == "failed"
+    assert silent_sample["next3_message_refs"] == ["message:next-silent", "message:next-silent-ack"]
     assert report["samples_by_origin_classification"]["claude-code-session"]["acknowledged"][0]["matched_marker"] == (
         "failed"
     )
@@ -267,6 +294,10 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
     assert summary["proof_report"]["complete_failure_frame"] is True
     assert summary["proof_report"]["ambiguous_wordless_continuation"] == 1
     assert summary["proof_report"]["ambiguous_prose_no_marker"] == 1
+    assert summary["proof_report"]["acknowledged_within_3"] == 2
+    assert summary["proof_report"]["silent_proceed_within_3"] == 0
+    assert summary["proof_report"]["ack_later_within_3"] == 1
+    assert summary["proof_report"]["window3_silent_rate_lower_bound"] == 0
     assert summary["proof_report"]["by_handler_class"][0]["name"] == "benign_recovery"
     assert summary["proof_report"]["by_handler_class"][1]["silent_rate_lower_bound"] == 0.5
     assert summary["proof_report"]["time_window"] == "entire archive (no since/until filter)"
@@ -290,6 +321,8 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
     assert "- time window: entire archive (no since/until filter)" in readme
     assert "### Handler-Class Split" in readme
     assert "- consequential: failed 2; silent 1; ambiguous 0; silent lower bound 50.0%" in readme
+    assert "- acknowledgments appearing only after the next turn: 1" in readme
+    assert "- silent lower bound after next-3 sensitivity: 0.0%" in readme
     assert "- claude-code-session: inspected 2 / 2 structured failures (requested 2)" in readme
     assert "- codex-session: inspected 2 / 2 structured failures (requested 2)" in readme
 
