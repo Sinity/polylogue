@@ -367,7 +367,7 @@ payloads — apply across the CLI, MCP, Python API, and daemon HTTP surfaces.</p
 <p>Quick links:</p>
 <ul>
 <li><a href="#retrieval-lanes">Retrieval Lanes</a> — <code>dialogue</code>, <code>actions</code>, <code>hybrid</code>,
-<code>semantic</code>, and how <code>auto</code> elevates.</li>
+<code>semantic</code>, and the default lexical <code>auto</code> lane.</li>
 <li><a href="#terminal-unit-queries">Terminal Unit Queries</a> — <code>messages/actions/blocks/ files/assertions/runs/observed-events/context-snapshots where ...</code> row
 results.</li>
 <li><a href="#ranking-policy">Ranking Policy</a> — current <code>mixed-bm25-rrf-vector</code>
@@ -1123,8 +1123,8 @@ can resolve deliberately when the operator wants to inspect source evidence.</p>
 <h2>Retrieval Lanes</h2>
 <p>Lane selection lives on the query as <code>retrieval_lane</code>. The resolved value
 appears in the <code>SearchEnvelope.retrieval_lane</code> field on every response so
-consumers can tell what actually ran (which matters because <code>auto</code> may
-elevate — see below).</p>
+consumers can tell what actually ran (which matters because <code>auto</code> resolves to
+a concrete lane — see below).</p>
 <table>
 <thead>
 <tr>
@@ -1136,8 +1136,8 @@ elevate — see below).</p>
 <tbody>
 <tr>
 <td><code>auto</code></td>
-<td>Surface left the lane to the planner. May elevate to <code>hybrid</code> when embeddings are enabled and an FTS query is present (see <a href="#auto-elevation">Auto Elevation</a>).</td>
-<td>depends on chosen lane</td>
+<td>Default lexical planner lane. Resolves to <code>dialogue</code> for ordinary text queries; vector work is explicit through <code>--semantic</code>, <code>--similar</code>, or <code>--retrieval-lane hybrid</code>.</td>
+<td><code>bm25</code></td>
 </tr>
 <tr>
 <td><code>dialogue</code></td>
@@ -1261,9 +1261,10 @@ actually usable.</p>
 <p>Python API clients use the same contracts through
 <code>Polylogue.embedding_status(detail=False)</code> and
 <code>Polylogue.embedding_preflight(...)</code>.</p>
-<h3>Auto Elevation</h3>
-<p>When <code>retrieval_lane=auto</code> (the default), the planner picks a concrete
-lane based on archive state and the query shape:</p>
+<h3>Auto Lane</h3>
+<p>When <code>retrieval_lane=auto</code> (the default), ordinary text queries run on the
+lexical <code>dialogue</code> lane. The planner does not inspect <code>embeddings.db</code> before a
+default search, so keyword lookup stays fast and predictable on large archives.</p>
 <table>
 <thead>
 <tr>
@@ -1274,14 +1275,14 @@ lane based on archive state and the query shape:</p>
 <tbody>
 <tr>
 <td><code>--lexical</code> flag set</td>
-<td><code>dialogue</code> (forced FTS-only, even with embeddings enabled)</td>
+<td><code>dialogue</code> (forced FTS-only)</td>
 </tr>
 <tr>
 <td><code>--semantic</code> flag set, or <code>--similar &lt;text&gt;</code> given</td>
 <td><code>semantic</code> (vector-only)</td>
 </tr>
 <tr>
-<td>Embeddings retrieval-ready + FTS query present</td>
+<td><code>--retrieval-lane hybrid</code> with an FTS query</td>
 <td><code>hybrid</code></td>
 </tr>
 <tr>
@@ -1290,10 +1291,8 @@ lane based on archive state and the query shape:</p>
 </tr>
 </tbody>
 </table>
-<p>The elevation rule lives in
-<code>polylogue/cli/query.py:_maybe_elevate_to_hybrid</code>. The resolved lane is
-always echoed back in <code>SearchEnvelope.retrieval_lane</code> so callers do not
-have to re-derive what ran.</p>
+<p>The resolved lane is always echoed back in <code>SearchEnvelope.retrieval_lane</code> so
+callers do not have to re-derive what ran.</p>
 <p>Two ergonomic overrides on the root CLI surface (<a href="https://github.com/Sinity/polylogue/issues/1217">#1217</a>):</p>
 <ul>
 <li><code>--lexical</code> — force the FTS-only lane; useful when you want

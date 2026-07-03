@@ -796,16 +796,16 @@ provider calls are made (<a href="https://github.com/Sinity/polylogue/issues/150
 <code>ESTIMATED_TOKENS_PER_MESSAGE</code> / <code>VOYAGE_4_COST_PER_1M_TOKENS</code> from
 <code>polylogue.storage.search_providers.sqlite_vec_support</code>.</p>
 <h3>Search defaults (#1217)</h3>
-<p>Once <code>embedding_enabled = true</code> and at least one message is embedded,
-<code>polylogue</code> searches automatically promote <code>retrieval_lane=auto</code> to
-<code>hybrid</code> (FTS5 + vector RRF) when an FTS query is present. The
-elevation lives in
-<code>polylogue/cli/query.py:_maybe_elevate_to_hybrid</code>. Two ergonomic
-overrides land on the root query surface:</p>
+<p>Default <code>polylogue</code> searches stay lexical: <code>retrieval_lane=auto</code> resolves to
+<code>dialogue</code> for ordinary FTS queries and does not probe <code>embeddings.db</code> before
+returning keyword results. Vector retrieval is explicit on the root query
+surface:</p>
 <ul>
 <li><code>--lexical</code> — force <code>retrieval_lane=dialogue</code> (FTS-only).</li>
 <li><code>--semantic</code> — promote the query string into <code>similar_text</code> so the
 request runs as a vector-only similarity probe (no FTS leg).</li>
+<li><code>--retrieval-lane hybrid</code> — combine FTS5 and vector similarity via RRF
+when embeddings are configured and populated.</li>
 </ul>
 <p>See <a href="../../docs/search/#retrieval-lanes">docs/search.md § Retrieval Lanes</a> for the
 full lane semantics, ranking policy, and <code>SearchEnvelope</code> contract.</p>
