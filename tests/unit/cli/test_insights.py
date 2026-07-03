@@ -338,6 +338,37 @@ def test_insights_usage_timeline_json(cli_workspace: CliWorkspace) -> None:
     assert json_int(row["reasoning_output_tokens"]) == 75
 
 
+def test_usage_timeline_first_page_skips_later_provider_events(cli_workspace: CliWorkspace) -> None:
+    _seed_cost_products(cli_workspace)
+    db_path = cli_workspace["db_path"]
+    with open_index_db(db_path) as conn:
+        conn.execute(
+            "UPDATE session_provider_usage_events SET occurred_at_ms = ? WHERE session_id = ?",
+            (1775067600000, NID_PRICED_COST),
+        )
+        conn.commit()
+
+    with ArchiveStore.open_existing(db_path.parent, read_only=True) as archive:
+        cutoff_ms, skip_event_scan = archive._usage_timeline_event_scan_cutoff_ms(
+            origin="chatgpt-export",
+            model=None,
+            group_by="month-origin-model",
+            since_ms=None,
+            until_ms=None,
+            limit=1,
+        )
+        rows = archive.list_usage_timeline_insights(provider="chatgpt", limit=1)
+
+    assert cutoff_ms is not None
+    assert skip_event_scan is True
+    assert len(rows) == 1
+    assert rows[0].bucket == "2026-03"
+    assert rows[0].source_name == "chatgpt-export"
+    assert rows[0].event_count == 0
+    assert rows[0].stored_cost_usd == 0.0
+    assert rows[0].cost_provenance_counts == {"origin_reported": 1}
+
+
 def test_insights_profiles_support_wallclock_filters_and_sort(cli_workspace: CliWorkspace) -> None:
     _seed_products(cli_workspace)
 

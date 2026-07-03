@@ -1830,6 +1830,18 @@ class ArchiveStore:
         def key_for(bucket: str, source_name: str | None, model_name: str | None) -> tuple[str, str | None, str | None]:
             return (bucket, source_name if include_origin else None, model_name if include_model else None)
 
+        event_scan_cutoff_ms: int | None = None
+        skip_event_scan = False
+        if limit is not None and offset == 0 and limit > 0:
+            event_scan_cutoff_ms, skip_event_scan = self._usage_timeline_event_scan_cutoff_ms(
+                origin=origin,
+                model=model,
+                group_by=group_by,
+                since_ms=since_ms,
+                until_ms=until_ms,
+                limit=limit,
+            )
+
         where = ["COALESCE(e.occurred_at_ms, s.sort_key_ms, 0) > 0"]
         params: list[object] = []
         if origin is not None:
@@ -1844,27 +1856,33 @@ class ArchiveStore:
         if until_ms is not None:
             where.append("s.sort_key_ms <= ?")
             params.append(until_ms)
-        event_rows = self._conn.execute(
-            f"""
-            SELECT strftime('%Y-%m', COALESCE(e.occurred_at_ms, s.sort_key_ms)/1000, 'unixepoch') AS bucket,
-                   s.origin AS source_name,
-                   COALESCE(e.model_name, '') AS model_name,
-                   COUNT(*) AS event_count,
-                   COUNT(DISTINCT e.session_id) AS session_count,
-                   COALESCE(SUM(e.last_input_tokens), 0) AS input_tokens,
-                   COALESCE(SUM(e.last_output_tokens), 0) AS output_tokens,
-                   COALESCE(SUM(e.last_cached_input_tokens), 0) AS cache_read_tokens,
-                   COALESCE(SUM(e.last_cache_write_tokens), 0) AS cache_write_tokens,
-                   COALESCE(SUM(e.last_total_tokens), 0) AS total_tokens,
-                   COALESCE(SUM(e.last_reasoning_output_tokens), 0) AS reasoning_output_tokens,
-                   MAX(COALESCE(e.occurred_at_ms, s.sort_key_ms)) AS source_sort_key
-            FROM session_provider_usage_events e
-            JOIN sessions s ON s.session_id = e.session_id
-            WHERE {" AND ".join(where)}
-            GROUP BY bucket, s.origin, model_name
-            """,
-            tuple(params),
-        ).fetchall()
+        if event_scan_cutoff_ms is not None:
+            where.append("e.occurred_at_ms IS NOT NULL")
+            where.append("e.occurred_at_ms < ?")
+            params.append(event_scan_cutoff_ms)
+        event_rows = []
+        if not skip_event_scan:
+            event_rows = self._conn.execute(
+                f"""
+                SELECT strftime('%Y-%m', COALESCE(e.occurred_at_ms, s.sort_key_ms)/1000, 'unixepoch') AS bucket,
+                       s.origin AS source_name,
+                       COALESCE(e.model_name, '') AS model_name,
+                       COUNT(*) AS event_count,
+                       COUNT(DISTINCT e.session_id) AS session_count,
+                       COALESCE(SUM(e.last_input_tokens), 0) AS input_tokens,
+                       COALESCE(SUM(e.last_output_tokens), 0) AS output_tokens,
+                       COALESCE(SUM(e.last_cached_input_tokens), 0) AS cache_read_tokens,
+                       COALESCE(SUM(e.last_cache_write_tokens), 0) AS cache_write_tokens,
+                       COALESCE(SUM(e.last_total_tokens), 0) AS total_tokens,
+                       COALESCE(SUM(e.last_reasoning_output_tokens), 0) AS reasoning_output_tokens,
+                       MAX(COALESCE(e.occurred_at_ms, s.sort_key_ms)) AS source_sort_key
+                FROM session_provider_usage_events e
+                JOIN sessions s ON s.session_id = e.session_id
+                WHERE {" AND ".join(where)}
+                GROUP BY bucket, s.origin, model_name
+                """,
+                tuple(params),
+            ).fetchall()
 
         for row in event_rows:
             bucket = str(row["bucket"])
@@ -1987,6 +2005,98 @@ class ArchiveStore:
         if limit is not None:
             rows = rows[: max(int(limit), 0)]
         return rows
+
+    def _usage_timeline_event_scan_cutoff_ms(
+        self,
+        *,
+        origin: str | None,
+        model: str | None,
+        group_by: str,
+        since_ms: int | None,
+        until_ms: int | None,
+        limit: int,
+    ) -> tuple[int | None, bool]:
+        """Return an event scan upper bound for first-page timeline reads.
+
+        The timeline is sorted ascending by bucket/origin/model. When the first
+        page is fully determined by cheap session_model_usage rows that all sort
+        before the first provider usage event, scanning the multi-million-row
+        provider event table is avoidable. If provider events may affect the
+        first page, return a bucket-end cutoff so the event leg can still use
+        the occurred_at_ms runtime index instead of scanning the whole table.
+        """
+
+        include_origin = group_by in {"month-origin", "month-origin-model"}
+        include_model = group_by in {"month-model", "month-origin-model"}
+        group_columns = ["bucket"]
+        if include_origin:
+            group_columns.append("source_name")
+        if include_model:
+            group_columns.append("model_name")
+        where = ["s.sort_key_ms > 0"]
+        params: list[object] = []
+        if origin is not None:
+            where.append("s.origin = ?")
+            params.append(origin)
+        if model is not None:
+            where.append("u.model_name = ?")
+            params.append(model)
+        if since_ms is not None:
+            where.append("s.sort_key_ms >= ?")
+            params.append(since_ms)
+        if until_ms is not None:
+            where.append("s.sort_key_ms <= ?")
+            params.append(until_ms)
+        cost_page = self._conn.execute(
+            f"""
+            SELECT strftime('%Y-%m', s.sort_key_ms/1000, 'unixepoch') AS bucket,
+                   s.origin AS source_name,
+                   COALESCE(u.model_name, '') AS model_name
+            FROM session_model_usage u
+            JOIN sessions s ON s.session_id = u.session_id
+            WHERE {" AND ".join(where)}
+            GROUP BY {", ".join(group_columns)}
+            ORDER BY bucket, source_name, model_name
+            LIMIT ?
+            """,
+            (*params, max(int(limit), 0)),
+        ).fetchall()
+        if len(cost_page) < limit:
+            return None, False
+
+        last_bucket = str(cost_page[-1]["bucket"])
+        cutoff_ms = _month_bucket_end_ms(last_bucket)
+        event_where = ["e.occurred_at_ms IS NOT NULL"]
+        event_params: list[object] = []
+        if origin is not None:
+            event_where.append("s.origin = ?")
+            event_params.append(origin)
+        if model is not None:
+            event_where.append("e.model_name = ?")
+            event_params.append(model)
+        if since_ms is not None:
+            event_where.append("COALESCE(e.occurred_at_ms, s.sort_key_ms) >= ?")
+            event_params.append(since_ms)
+        if until_ms is not None:
+            event_where.append("COALESCE(e.occurred_at_ms, s.sort_key_ms) <= ?")
+            event_params.append(until_ms)
+        first_event = self._conn.execute(
+            f"""
+            SELECT e.occurred_at_ms
+            FROM session_provider_usage_events e
+            JOIN sessions s ON s.session_id = e.session_id
+            WHERE {" AND ".join(event_where)}
+            ORDER BY e.occurred_at_ms
+            LIMIT 1
+            """,
+            tuple(event_params),
+        ).fetchone()
+        if first_event is None:
+            return cutoff_ms, True
+        first_event_ms = int(first_event["occurred_at_ms"] or 0)
+        if first_event_ms >= cutoff_ms:
+            return cutoff_ms, True
+        return cutoff_ms, False
 
     def list_archive_debt_insights(
         self,
@@ -8730,6 +8840,14 @@ def _iso_from_ms(value: object) -> str | None:
     if not isinstance(value, int):
         return None
     return datetime.fromtimestamp(value / 1000, tz=UTC).isoformat().replace("+00:00", "Z")
+
+
+def _month_bucket_end_ms(bucket: str) -> int:
+    year_text, month_text = bucket.split("-", 1)
+    year = int(year_text)
+    month = int(month_text)
+    end = datetime(year + 1, 1, 1, tzinfo=UTC) if month == 12 else datetime(year, month + 1, 1, tzinfo=UTC)
+    return int(end.timestamp() * 1000)
 
 
 def _provider_for_origin(origin: str) -> Provider:
