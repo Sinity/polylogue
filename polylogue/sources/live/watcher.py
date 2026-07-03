@@ -457,6 +457,12 @@ class LiveWatcher:
             )
             if metrics is not None:
                 _log_ingest_metrics("live.watcher: changed-file batch", metrics)
+                if (
+                    getattr(metrics, "succeeded_file_count", 0) == 0
+                    and getattr(metrics, "failed_file_count", 0) == 0
+                    and needed
+                ):
+                    self._defer_unaccounted_failed_retries(needed)
             self._schedule_failed_retry_scan()
         except sqlite3.OperationalError as exc:
             if not _is_database_locked(exc):
@@ -470,6 +476,23 @@ class LiveWatcher:
     # ------------------------------------------------------------------
     # Shared helpers
     # ------------------------------------------------------------------
+
+    def _defer_unaccounted_failed_retries(self, paths: list[Path]) -> None:
+        """Move no-op failed retries back into backoff instead of hot-looping."""
+        deferred = 0
+        for path in paths:
+            record = self._cursor.get_record(path)
+            if record is None or record.excluded or record.failure_count <= 0:
+                continue
+            if not _retry_due(record.next_retry_at):
+                continue
+            self._cursor.mark_failed(path)
+            deferred += 1
+        if deferred:
+            logger.warning(
+                "live.watcher: deferred %d failed retry file(s) after no-op ingest batch",
+                deferred,
+            )
 
     def _needs_work(self, path: Path) -> bool:
         """Return True if the file is new, grown, or fingerprint-changed."""
