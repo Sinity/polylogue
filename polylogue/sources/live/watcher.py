@@ -452,6 +452,7 @@ class LiveWatcher:
                 if self._needs_work_from_state(path, stat=stat, cursor=cursor_records.get(path)):
                     needed.append(path)
             if not needed:
+                self._defer_unaccounted_failed_retries(paths)
                 return bool(paths)
 
             logger.info("live.watcher: batching %d changed file(s)", len(needed))

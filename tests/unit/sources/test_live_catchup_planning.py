@@ -429,6 +429,46 @@ def test_noop_failed_retry_batch_advances_backoff(tmp_path: Path, frozen_clock: 
     assert watcher._pending_paths == set()
 
 
+@pytest.mark.frozen_clock_modules("polylogue.sources.live.watcher", "polylogue.sources.live.cursor")
+def test_pending_failed_retry_without_needed_work_advances_backoff(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    failed = root / "failed.json"
+    failed.write_text('{"not":"a session"}\n')
+    polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    watcher = LiveWatcher(cast(Any, polylogue), (WatchSource(name="test", root=root),))
+    watcher._cursor.mark_failed(failed)
+    past = (frozen_clock.now() - timedelta(seconds=1)).isoformat()
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute("UPDATE ingest_cursor SET next_retry_at = ? WHERE source_path = ?", (past, str(failed)))
+        conn.commit()
+
+    async def fail_ingest_files(
+        paths: list[Path],
+        *,
+        queued_file_count: int | None = None,
+        skipped_file_count: int = 0,
+    ) -> SimpleNamespace:
+        del paths, queued_file_count, skipped_file_count
+        raise AssertionError("no-needed-work retry should not ingest")
+
+    watcher._ingest_files = fail_ingest_files  # type: ignore[assignment,method-assign]
+    watcher._needs_work_from_state = lambda *args, **kwargs: False  # type: ignore[assignment,method-assign]
+    watcher._pending_paths.add(failed)
+
+    asyncio.run(watcher._flush_pending())
+
+    record = watcher._cursor.get_record(failed)
+    assert record is not None
+    assert record.failure_count == 2
+    assert record.next_retry_at is not None
+    assert datetime.fromisoformat(record.next_retry_at) > frozen_clock.now()
+    assert watcher._pending_paths == set()
+
+
 @pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor", "polylogue.sources.live.convergence_debt_retry")
 def test_hot_insight_convergence_debt_uses_quiet_window_retry(
     tmp_path: Path,
