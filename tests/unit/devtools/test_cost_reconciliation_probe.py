@@ -154,7 +154,13 @@ def test_codex_probe_check_fails_outside_tolerance(tmp_path: Path, capsys: pytes
 def test_claude_probe_compares_model_usage_lanes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     archive = _archive_root(tmp_path)
     with sqlite3.connect(archive / "index.db") as conn:
-        _insert_session(conn, origin="claude-code-session", native_id="claude-1", model="claude-sonnet-4-5")
+        session_id = _insert_session(
+            conn, origin="claude-code-session", native_id="claude-1", model="claude-sonnet-4-5"
+        )
+        conn.execute(
+            "INSERT INTO session_profiles (session_id, logical_session_id) VALUES (?, ?)",
+            (session_id, "logical-root"),
+        )
     stats = tmp_path / "stats-cache.json"
     stats.write_text(
         json.dumps(
@@ -178,6 +184,7 @@ def test_claude_probe_compares_model_usage_lanes(tmp_path: Path, capsys: pytest.
     claude = payload["sections"][1]
     assert claude["status"] == "pass"
     assert claude["comparison"]["compared"] == 4
+    assert claude["comparison"]["samples"] == []
     assert claude["details"]["lane_contract"].startswith("stats-cache modelUsage lanes")
 
 
@@ -212,6 +219,44 @@ def test_claude_probe_honors_stats_cache_cutoff(tmp_path: Path, capsys: pytest.C
     assert claude["status"] == "pass"
     assert claude["details"]["external_last_computed_date"] == "2025-12-31"
     assert claude["comparison"]["median_ratio"] == 1.0
+
+
+def test_claude_probe_samples_include_lineage_diagnostics(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    archive = _archive_root(tmp_path)
+    with sqlite3.connect(archive / "index.db") as conn:
+        session_id = _insert_session(
+            conn,
+            origin="claude-code-session",
+            native_id="claude-1",
+            model="claude-sonnet",
+            input_tokens=20,
+        )
+        conn.execute(
+            "INSERT INTO session_profiles (session_id, logical_session_id) VALUES (?, ?)",
+            (session_id, "logical-root"),
+        )
+    stats = tmp_path / "stats-cache.json"
+    stats.write_text(
+        json.dumps(
+            {
+                "modelUsage": {
+                    "claude-sonnet": {
+                        "inputTokens": 10,
+                        "outputTokens": 5,
+                        "cacheReadInputTokens": 3,
+                        "cacheCreationInputTokens": 2,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert main(["--archive-root", str(archive), "--claude-stats-cache", str(stats), "--json", "--check"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    sample = payload["sections"][1]["comparison"]["samples"][0]
+    assert sample["archive_session_count"] == 1
+    assert sample["archive_nonroot_usage_rows"] == 1
 
 
 def test_missing_optional_and_required_external_store(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

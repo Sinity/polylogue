@@ -368,9 +368,17 @@ def _claude_archive_totals(conn: sqlite3.Connection, *, cutoff_ms: int | None = 
           SUM(u.input_tokens) AS input_tokens,
           SUM(u.output_tokens) AS output_tokens,
           SUM(u.cache_read_tokens) AS cache_read_tokens,
-          SUM(u.cache_write_tokens) AS cache_write_tokens
+          SUM(u.cache_write_tokens) AS cache_write_tokens,
+          COUNT(DISTINCT u.session_id) AS session_count,
+          SUM(
+            CASE
+              WHEN p.logical_session_id IS NOT NULL AND p.logical_session_id != u.session_id THEN 1
+              ELSE 0
+            END
+          ) AS nonroot_usage_rows
         FROM session_model_usage AS u
         JOIN sessions AS s ON s.session_id = u.session_id
+        LEFT JOIN session_profiles AS p ON p.session_id = u.session_id
         WHERE s.origin IN ('claude-code-session', 'claude-ai-export')
           {cutoff_clause}
         GROUP BY u.model_name
@@ -383,6 +391,8 @@ def _claude_archive_totals(conn: sqlite3.Connection, *, cutoff_ms: int | None = 
             "output_tokens": int(row["output_tokens"] or 0),
             "cache_read_tokens": int(row["cache_read_tokens"] or 0),
             "cache_write_tokens": int(row["cache_write_tokens"] or 0),
+            "session_count": int(row["session_count"] or 0),
+            "nonroot_usage_rows": int(row["nonroot_usage_rows"] or 0),
         }
         for row in rows
     }
@@ -434,7 +444,19 @@ def _probe_claude(
             ext_tokens = int(ext[lane])
             if ext_tokens <= 0:
                 continue
-            pairs.append((f"{model}:{lane}", int(arch[lane]), ext_tokens, {"model": model, "lane": lane}))
+            pairs.append(
+                (
+                    f"{model}:{lane}",
+                    int(arch[lane]),
+                    ext_tokens,
+                    {
+                        "model": model,
+                        "lane": lane,
+                        "archive_session_count": arch["session_count"],
+                        "archive_nonroot_usage_rows": arch["nonroot_usage_rows"],
+                    },
+                )
+            )
     comparison = _ratio_summary(pairs, tolerance=tolerance, max_samples=max_samples)
     comparison = ComparisonSummary(
         compared=comparison.compared,
