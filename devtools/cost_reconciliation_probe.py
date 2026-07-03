@@ -363,25 +363,70 @@ def _claude_archive_totals(conn: sqlite3.Connection, *, cutoff_ms: int | None = 
         params = (cutoff_ms,)
     rows = conn.execute(
         f"""
+        WITH filtered AS (
+          SELECT
+            u.session_id,
+            COALESCE(p.logical_session_id, u.session_id) AS logical_session_id,
+            u.model_name,
+            u.input_tokens,
+            u.output_tokens,
+            u.cache_read_tokens,
+            u.cache_write_tokens
+          FROM session_model_usage AS u
+          JOIN sessions AS s ON s.session_id = u.session_id
+          LEFT JOIN session_profiles AS p ON p.session_id = u.session_id
+          WHERE s.origin IN ('claude-code-session', 'claude-ai-export')
+            {cutoff_clause}
+        ),
+        physical AS (
+          SELECT
+            model_name,
+            SUM(input_tokens) AS input_tokens,
+            SUM(output_tokens) AS output_tokens,
+            SUM(cache_read_tokens) AS cache_read_tokens,
+            SUM(cache_write_tokens) AS cache_write_tokens,
+            COUNT(DISTINCT session_id) AS session_count,
+            COUNT(DISTINCT logical_session_id) AS logical_session_count,
+            SUM(CASE WHEN logical_session_id != session_id THEN 1 ELSE 0 END) AS nonroot_usage_rows
+          FROM filtered
+          GROUP BY model_name
+        ),
+        logical_model AS (
+          SELECT
+            logical_session_id,
+            model_name,
+            MAX(input_tokens) AS input_tokens,
+            MAX(output_tokens) AS output_tokens,
+            MAX(cache_read_tokens) AS cache_read_tokens,
+            MAX(cache_write_tokens) AS cache_write_tokens
+          FROM filtered
+          GROUP BY logical_session_id, model_name
+        ),
+        logical AS (
+          SELECT
+            model_name,
+            SUM(input_tokens) AS logical_input_tokens,
+            SUM(output_tokens) AS logical_output_tokens,
+            SUM(cache_read_tokens) AS logical_cache_read_tokens,
+            SUM(cache_write_tokens) AS logical_cache_write_tokens
+          FROM logical_model
+          GROUP BY model_name
+        )
         SELECT
-          u.model_name,
-          SUM(u.input_tokens) AS input_tokens,
-          SUM(u.output_tokens) AS output_tokens,
-          SUM(u.cache_read_tokens) AS cache_read_tokens,
-          SUM(u.cache_write_tokens) AS cache_write_tokens,
-          COUNT(DISTINCT u.session_id) AS session_count,
-          SUM(
-            CASE
-              WHEN p.logical_session_id IS NOT NULL AND p.logical_session_id != u.session_id THEN 1
-              ELSE 0
-            END
-          ) AS nonroot_usage_rows
-        FROM session_model_usage AS u
-        JOIN sessions AS s ON s.session_id = u.session_id
-        LEFT JOIN session_profiles AS p ON p.session_id = u.session_id
-        WHERE s.origin IN ('claude-code-session', 'claude-ai-export')
-          {cutoff_clause}
-        GROUP BY u.model_name
+          physical.model_name,
+          physical.input_tokens,
+          physical.output_tokens,
+          physical.cache_read_tokens,
+          physical.cache_write_tokens,
+          physical.session_count,
+          physical.logical_session_count,
+          physical.nonroot_usage_rows,
+          logical.logical_input_tokens,
+          logical.logical_output_tokens,
+          logical.logical_cache_read_tokens,
+          logical.logical_cache_write_tokens
+        FROM physical
+        LEFT JOIN logical ON logical.model_name = physical.model_name
         """,
         params,
     ).fetchall()
@@ -392,7 +437,12 @@ def _claude_archive_totals(conn: sqlite3.Connection, *, cutoff_ms: int | None = 
             "cache_read_tokens": int(row["cache_read_tokens"] or 0),
             "cache_write_tokens": int(row["cache_write_tokens"] or 0),
             "session_count": int(row["session_count"] or 0),
+            "logical_session_count": int(row["logical_session_count"] or 0),
             "nonroot_usage_rows": int(row["nonroot_usage_rows"] or 0),
+            "logical_input_tokens": int(row["logical_input_tokens"] or 0),
+            "logical_output_tokens": int(row["logical_output_tokens"] or 0),
+            "logical_cache_read_tokens": int(row["logical_cache_read_tokens"] or 0),
+            "logical_cache_write_tokens": int(row["logical_cache_write_tokens"] or 0),
         }
         for row in rows
     }
@@ -453,7 +503,10 @@ def _probe_claude(
                         "model": model,
                         "lane": lane,
                         "archive_session_count": arch["session_count"],
+                        "archive_logical_session_count": arch["logical_session_count"],
                         "archive_nonroot_usage_rows": arch["nonroot_usage_rows"],
+                        "archive_physical_tokens": arch[lane],
+                        "archive_logical_high_water_tokens": arch[f"logical_{lane}"],
                     },
                 )
             )
@@ -483,6 +536,10 @@ def _probe_claude(
             "external_last_computed_date": cutoff_label,
             "archive_cutoff_ms": cutoff_ms,
             "lane_contract": "stats-cache modelUsage lanes map independently; cache is not folded into input",
+            "archive_grains": {
+                "comparison_grain": "physical_session",
+                "logical_available_grain": "logical_session_model_high_water",
+            },
             "cost_reconciliation": "skipped: stats-cache costUSD is not treated as authoritative",
         },
     )

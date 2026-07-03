@@ -235,6 +235,20 @@ def test_claude_probe_samples_include_lineage_diagnostics(tmp_path: Path, capsys
             "INSERT INTO session_profiles (session_id, logical_session_id) VALUES (?, ?)",
             (session_id, "logical-root"),
         )
+        child_id = _insert_session(
+            conn,
+            origin="claude-code-session",
+            native_id="claude-1-child",
+            model="claude-sonnet",
+            input_tokens=15,
+            output_tokens=1,
+            cache_read_tokens=1,
+            cache_write_tokens=1,
+        )
+        conn.execute(
+            "INSERT INTO session_profiles (session_id, logical_session_id) VALUES (?, ?)",
+            (child_id, "logical-root"),
+        )
     stats = tmp_path / "stats-cache.json"
     stats.write_text(
         json.dumps(
@@ -255,8 +269,15 @@ def test_claude_probe_samples_include_lineage_diagnostics(tmp_path: Path, capsys
     assert main(["--archive-root", str(archive), "--claude-stats-cache", str(stats), "--json", "--check"]) == 1
     payload = json.loads(capsys.readouterr().out)
     sample = payload["sections"][1]["comparison"]["samples"][0]
-    assert sample["archive_session_count"] == 1
-    assert sample["archive_nonroot_usage_rows"] == 1
+    assert sample["archive_session_count"] == 2
+    assert sample["archive_logical_session_count"] == 1
+    assert sample["archive_nonroot_usage_rows"] == 2
+    assert sample["archive_physical_tokens"] == 35
+    assert sample["archive_logical_high_water_tokens"] == 20
+    assert payload["sections"][1]["details"]["archive_grains"] == {
+        "comparison_grain": "physical_session",
+        "logical_available_grain": "logical_session_model_high_water",
+    }
 
 
 def test_missing_optional_and_required_external_store(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
