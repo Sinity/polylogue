@@ -46,6 +46,9 @@ _CONSEQUENTIAL_TOOLS = frozenset(
 _CALIBRATION_LABELS = ("acknowledged", "silent_proceed", "ambiguous")
 _CALIBRATION_SAMPLE_FILE = "ack-marker-calibration.sample.csv"
 _CALIBRATION_LABELS_FILE = "ack-marker-calibration.labels.csv"
+_PUBLIC_SUMMARY_FILE = "public-summary.json"
+_PUBLIC_REPRODUCTION_FILE = "PUBLIC_REPRODUCTION.md"
+_COLD_READER_GATE_FILE = "COLD_READER_GATE.md"
 _CALIBRATION_FIELDS = (
     "sample_id",
     "human_label",
@@ -988,10 +991,185 @@ def _write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _format_rate_percent(value: int | float | str | None) -> str:
+    if value is None:
+        return "not enough labels"
+    return f"{float(value):.1%}"
+
+
+def _public_summary(report: dict[str, Any]) -> dict[str, Any]:
+    totals = report["totals"]
+    frame = report["sample_frame"]
+    rates = report["rates"]
+    calibration_metrics = report["calibration"]["metrics"]
+    return {
+        "artifact": "claim-vs-evidence-public-summary",
+        "generated_at": report["captured_at"],
+        "archive_root": report["archive_root"],
+        "index_schema_version": report["index_schema_version"],
+        "claim": (
+            "Polylogue can ground a failure-follow-up finding in normalized tool-result outcomes, "
+            "state the bounded sample frame, and publish aggregate rates without exposing raw private transcripts."
+        ),
+        "non_claim": (
+            "The live aggregate is not reproducible without the private archive; the deterministic demo archive "
+            "reproduces the method and artifact shape, not the private corpus rates."
+        ),
+        "proofs": [
+            {
+                "name": "structured_failure_frame",
+                "total_structured_failures": frame["total_structured_failures"],
+                "inspected_structured_failures": frame["inspected_structured_failures"],
+                "unpaired_structured_failures": frame["unpaired_structured_failures"],
+                "selection_strategy": frame["selection_strategy"],
+                "selection_order": frame["selection_order"],
+            },
+            {
+                "name": "next_turn_classification",
+                "acknowledged": totals["acknowledged"],
+                "silent_proceed": totals["silent_proceed"],
+                "ambiguous": totals["ambiguous"],
+                "silent_rate_lower_bound": rates["silent_rate_lower_bound"],
+                "silent_rate_among_classified": rates["silent_rate_among_classified"],
+            },
+            {
+                "name": "sensitivity_and_calibration",
+                "ack_later_within_3": rates["ack_later_within_3"],
+                "window3_silent_rate_lower_bound": rates["window3_silent_rate_lower_bound"],
+                "calibration_labeled_rows": calibration_metrics["labeled_rows"],
+                "ack_marker_precision": calibration_metrics["ack_marker_precision"],
+                "ack_marker_recall": calibration_metrics["ack_marker_recall"],
+            },
+        ],
+        "caveats": [
+            "Private live-archive counts are aggregate-only in this public summary.",
+            "Deterministic demo reproduction validates the method and renderer, not the private rate estimates.",
+            "The classifier is an explicit marker detector; ambiguous rows remain in the denominator.",
+            "The report is bounded by --limit unless the limit exceeds the full structured-failure frame.",
+        ],
+        "reproduction": {
+            "demo_archive_root": "/realm/tmp/polylogue-claim-vs-evidence-demo",
+            "commands": [
+                "export POLYLOGUE_ARCHIVE_ROOT=/realm/tmp/polylogue-claim-vs-evidence-demo",
+                'polylogue demo seed --root "$POLYLOGUE_ARCHIVE_ROOT" --force --with-overlays --format json',
+                'polylogue demo verify --root "$POLYLOGUE_ARCHIVE_ROOT" --require-overlays --format json',
+                (
+                    "devtools workspace claim-vs-evidence "
+                    '--archive-root "$POLYLOGUE_ARCHIVE_ROOT" '
+                    "--limit 5000 --out-dir /realm/tmp/polylogue-claim-vs-evidence-repro --json"
+                ),
+            ],
+        },
+    }
+
+
+def _write_public_reproduction(path: Path, report: dict[str, Any]) -> None:
+    summary = _public_summary(report)
+    proof_by_name = {str(item["name"]): item for item in summary["proofs"]}
+    frame = proof_by_name["structured_failure_frame"]
+    classification = proof_by_name["next_turn_classification"]
+    sensitivity = proof_by_name["sensitivity_and_calibration"]
+    commands = "\n".join(summary["reproduction"]["commands"])
+    path.write_text(
+        "\n".join(
+            [
+                "# Claim-vs-Evidence Public Reproduction",
+                "",
+                "This packet is the public-safe wrapper for the live claim-vs-evidence demo.",
+                "It contains aggregate live-archive findings and a private-data-free reproduction",
+                "path over Polylogue's deterministic demo archive.",
+                "",
+                "## What A Reader Can Claim",
+                "",
+                str(summary["claim"]),
+                "",
+                "## What A Reader Cannot Claim",
+                "",
+                str(summary["non_claim"]),
+                "",
+                "## Live Aggregate Evidence",
+                "",
+                f"- archive root: `{report['archive_root']}`",
+                f"- index schema: v{report['index_schema_version']}",
+                f"- total structured failures: {int(frame['total_structured_failures']):,}",
+                f"- inspected structured failures: {int(frame['inspected_structured_failures']):,}",
+                f"- unpaired structured failures: {int(frame['unpaired_structured_failures']):,}",
+                f"- acknowledged next turn: {int(classification['acknowledged']):,}",
+                f"- silent-proceed next turn: {int(classification['silent_proceed']):,}",
+                f"- ambiguous next turn: {int(classification['ambiguous']):,}",
+                f"- silent lower bound: {float(classification['silent_rate_lower_bound']):.1%}",
+                f"- next-3 silent lower bound: {float(sensitivity['window3_silent_rate_lower_bound']):.1%}",
+                f"- calibration labeled rows: {int(sensitivity['calibration_labeled_rows']):,}",
+                f"- acknowledged-marker precision: {_format_rate_percent(sensitivity['ack_marker_precision'])}",
+                f"- acknowledged-marker recall: {_format_rate_percent(sensitivity['ack_marker_recall'])}",
+                "",
+                "## Reproduce The Method Without Private Data",
+                "",
+                "```bash",
+                commands,
+                "```",
+                "",
+                "The reproduction output should contain the same artifact family:",
+                "`claim-vs-evidence.report.json`, `summary.json`, `README.md`,",
+                f"`{_PUBLIC_SUMMARY_FILE}`, and this public reproduction contract.",
+                "Counts will differ because the deterministic demo archive is synthetic.",
+                "",
+                "## Caveats",
+                "",
+                *[f"- {item}" for item in summary["caveats"]],
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_cold_reader_gate(path: Path, report: dict[str, Any]) -> None:
+    summary = _public_summary(report)
+    path.write_text(
+        "\n".join(
+            [
+                "# Cold-Reader Gate",
+                "",
+                "Give a fresh reader only this directory and ask:",
+                "",
+                "```text",
+                "Using only the files in this directory, state what the claim-vs-evidence",
+                "artifact proves, what it does not prove, what sample frame it used,",
+                "how to reproduce the method without private data, and the most important",
+                "caveats before quoting any rate.",
+                "```",
+                "",
+                "## Expected Passing Answer",
+                "",
+                "- Names structured tool-result outcomes as the failure evidence anchor.",
+                "- States that the live rate is aggregate private-archive evidence, not a seeded-corpus rate.",
+                "- Includes archive root, index schema, total failures, inspected failures, and unpaired failures.",
+                "- Reports next-turn silent lower bound, next-3 sensitivity, and calibration precision/recall.",
+                "- Explains that the deterministic demo archive reproduces the method and artifact shape only.",
+                "- Mentions ambiguous rows remain in the denominator and the classifier is marker-based.",
+                "",
+                "## Current Gate Evidence",
+                "",
+                f"- public summary: `{_PUBLIC_SUMMARY_FILE}`",
+                f"- public reproduction: `{_PUBLIC_REPRODUCTION_FILE}`",
+                f"- aggregate live archive root: `{summary['archive_root']}`",
+                f"- aggregate index schema: v{summary['index_schema_version']}",
+                "- status: ready for an external cold read; no private transcript previews are required.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
 def _write_artifacts(out_dir: Path, report: dict[str, Any]) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     _write_json(out_dir / "claim-vs-evidence.report.json", report)
     _write_csv(out_dir / _CALIBRATION_SAMPLE_FILE, report["calibration_sample"])
+    _write_json(out_dir / _PUBLIC_SUMMARY_FILE, _public_summary(report))
+    _write_public_reproduction(out_dir / _PUBLIC_REPRODUCTION_FILE, report)
+    _write_cold_reader_gate(out_dir / _COLD_READER_GATE_FILE, report)
     totals = report["totals"]
     window3_totals = report["window3_totals"]
     rates = report["rates"]
@@ -1050,6 +1228,9 @@ def _write_artifacts(out_dir: Path, report: dict[str, Any]) -> None:
         ],
         "source_files": [
             "claim-vs-evidence.report.json",
+            _PUBLIC_SUMMARY_FILE,
+            _PUBLIC_REPRODUCTION_FILE,
+            _COLD_READER_GATE_FILE,
             _CALIBRATION_SAMPLE_FILE,
             _CALIBRATION_LABELS_FILE,
         ],
@@ -1167,6 +1348,9 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
         "## Files",
         "",
         "- `claim-vs-evidence.report.json` — full machine-readable report.",
+        f"- `{_PUBLIC_SUMMARY_FILE}` — aggregate-only public-safe summary.",
+        f"- `{_PUBLIC_REPRODUCTION_FILE}` — seeded private-data-free reproduction instructions.",
+        f"- `{_COLD_READER_GATE_FILE}` — cold-reader prompt and passing-answer checklist.",
         f"- `{_CALIBRATION_SAMPLE_FILE}` — deterministic sample for marker calibration.",
         f"- `{_CALIBRATION_LABELS_FILE}` — optional human labels consumed on regeneration.",
         "- `summary.json` — current demo-shelf claim/non-claim/proof/caveat summary.",

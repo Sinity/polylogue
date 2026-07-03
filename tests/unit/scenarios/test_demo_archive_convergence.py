@@ -34,7 +34,7 @@ EXPECTED_DEMO_SESSIONS = (
         "63705dcc-f3e5-4378-8118-8bc21e53bbb6",
         1730589115737,
         1730589655737,
-        10,
+        12,
     ),
     (
         "codex-session:demo-00",
@@ -43,7 +43,7 @@ EXPECTED_DEMO_SESSIONS = (
         "Could you review this code for potential issues?",
         None,
         1705985522161,
-        6,
+        8,
     ),
 )
 
@@ -133,7 +133,7 @@ async def test_demo_fixture_world_converges_into_deterministic_archive(
 
     assert sorted(result.processed_ids) == [row[0] for row in EXPECTED_DEMO_SESSIONS]
     assert result.counts["sessions"] == 3
-    assert result.counts["messages"] == 19
+    assert result.counts["messages"] == 23
     assert result.changed_counts["sessions"] == 3
     assert _session_rows(archive_root) == EXPECTED_DEMO_SESSIONS
     assert _raw_source_paths(archive_root) == EXPECTED_DEMO_SOURCE_PATHS

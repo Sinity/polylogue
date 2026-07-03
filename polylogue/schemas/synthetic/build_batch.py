@@ -66,6 +66,8 @@ def _resolve_style(style: str) -> SyntheticStyle:
         return "demo"
     if style == "tool-heavy":
         return "tool-heavy"
+    if style == "demo-tool-heavy":
+        return "demo-tool-heavy"
     raise ValueError(f"Unknown synthetic style: {style}")
 
 
@@ -92,8 +94,12 @@ def generate_batch(
         n_messages = rng.choice(messages_per_session)
         theme = rng.choice(_DEMO_THEMES) if resolved_style == "demo" else None
         data = _generate_session(self, n_messages, rng, theme=theme)
-        if resolved_style == "tool-heavy":
-            data = _add_tool_heavy_blocks(self.provider, data)
+        if resolved_style in {"tool-heavy", "demo-tool-heavy"}:
+            data = _add_tool_heavy_blocks(
+                self.provider,
+                data,
+                include_failure_followups=resolved_style == "demo-tool-heavy",
+            )
         artifacts.append(
             SyntheticArtifact(
                 raw_bytes=self._serialize(data),
@@ -115,9 +121,10 @@ def generate_batch(
     return SyntheticGenerationBatch(artifacts=artifacts, report=report)
 
 
-def _tool_use_blocks(provider: str, index: int) -> list[JSONValue]:
+def _tool_use_blocks(provider: str, index: int, *, include_failures: bool = False) -> list[JSONValue]:
     read_id = f"{provider}-read-{index:04d}"
     bash_id = f"{provider}-bash-{index:04d}"
+    bash_failed = include_failures and index in {1, 3}
     return [
         {"type": "text", "text": f"Inspecting generated workload record {index}."},
         {
@@ -133,20 +140,33 @@ def _tool_use_blocks(provider: str, index: int) -> list[JSONValue]:
             "input": {"command": f"python -m pytest tests/generated/test_{index:04d}.py -q"},
         },
         {"type": "tool_result", "tool_use_id": read_id, "content": "read 4096 bytes"},
-        {"type": "tool_result", "tool_use_id": bash_id, "content": "1 passed"},
+        {
+            "type": "tool_result",
+            "tool_use_id": bash_id,
+            "content": "AssertionError: generated fixture mismatch",
+            "is_error": True,
+        }
+        if bash_failed
+        else {"type": "tool_result", "tool_use_id": bash_id, "content": "1 passed"},
     ]
 
 
-def _add_tool_heavy_blocks(provider: str, data: JSONValue) -> JSONValue:
+def _add_tool_heavy_blocks(
+    provider: str,
+    data: JSONValue,
+    *,
+    include_failure_followups: bool = False,
+) -> JSONValue:
     if provider not in {"claude-code", "codex"} or not isinstance(data, list):
         return data
+    followups: list[tuple[int, dict[str, JSONValue]]] = []
     for index, record in enumerate(data):
         if not isinstance(record, dict):
             continue
         role = _record_role(provider, record)
         if role not in {"assistant", "model"}:
             continue
-        blocks = _tool_use_blocks(provider, index)
+        blocks = _tool_use_blocks(provider, index, include_failures=include_failure_followups)
         if provider == "claude-code":
             message = record.get("message")
             if not isinstance(message, dict):
@@ -155,11 +175,43 @@ def _add_tool_heavy_blocks(provider: str, data: JSONValue) -> JSONValue:
             message["content"] = blocks
             message["role"] = "assistant"
             record["type"] = "assistant"
+            if include_failure_followups and index in {1, 3}:
+                followups.append((index + 1, _demo_failure_followup(provider, record, index)))
             continue
         record["content"] = blocks
         record["role"] = "assistant"
         record["type"] = "message"
+        if include_failure_followups and index in {1, 3}:
+            followups.append((index + 1, _demo_failure_followup(provider, record, index)))
+    for insert_at, followup in reversed(followups):
+        data.insert(insert_at, followup)
     return data
+
+
+def _demo_failure_followup(provider: str, record: dict[str, JSONValue], index: int) -> dict[str, JSONValue]:
+    text = (
+        "The pytest command failed with exit code 1; I will inspect the assertion before retrying."
+        if index == 1
+        else "I will inspect the generated fixture and adjust the next command."
+    )
+    if provider == "claude-code":
+        followup = dict(record)
+        previous_uuid = record.get("uuid")
+        followup["uuid"] = f"demo-{provider}-failure-followup-{index:04d}"
+        if isinstance(previous_uuid, str):
+            followup["parentUuid"] = previous_uuid
+        followup["type"] = "assistant"
+        followup["message"] = {
+            "role": "assistant",
+            "content": [{"type": "text", "text": text}],
+        }
+        return followup
+    followup = dict(record)
+    followup["id"] = f"demo-{provider}-failure-followup-{index:04d}"
+    followup["type"] = "message"
+    followup["role"] = "assistant"
+    followup["content"] = [{"type": "text", "text": text}]
+    return followup
 
 
 def _record_role(provider: str, record: dict[str, JSONValue]) -> str | None:

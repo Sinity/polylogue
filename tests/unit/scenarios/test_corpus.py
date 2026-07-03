@@ -188,8 +188,8 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
     )
     assert tuple(spec.style for spec in specs) == (
         "demo",
-        "tool-heavy",
-        "tool-heavy",
+        "demo-tool-heavy",
+        "demo-tool-heavy",
     )
     assert tuple(spec.seed for spec in specs) == (1843, 1844, 1845)
     assert all(spec.count == 1 for spec in specs)
@@ -247,6 +247,14 @@ def test_build_demo_corpus_specs_materializes_with_synthetic_generator(tmp_path:
         for tool_input in tool_inputs
         if "file_path" in tool_input
     )
+    failed_tool_results = tuple(
+        block
+        for session in parsed
+        for message in session.messages
+        for block in message.blocks
+        if block.type is BlockType.TOOL_RESULT and block.is_error is True
+    )
+    assert len(failed_tool_results) == 4
 
 
 def test_build_inferred_corpus_specs_uses_cluster_families_when_present() -> None:

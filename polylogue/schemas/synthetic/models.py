@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 SchemaScalar: TypeAlias = str | int | float | bool | None
 SchemaValue: TypeAlias = SchemaScalar | list["SchemaValue"] | dict[str, "SchemaValue"]
 SchemaRecord: TypeAlias = dict[str, SchemaValue]
-SyntheticStyle: TypeAlias = Literal["default", "demo", "tool-heavy"]
+SyntheticStyle: TypeAlias = Literal["default", "demo", "tool-heavy", "demo-tool-heavy"]
 
 
 @dataclass(frozen=True)

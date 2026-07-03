@@ -5,7 +5,10 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from devtools.claim_vs_evidence import build_report
+from polylogue.demo import seed_demo_archive
 
 
 def _report_args(
@@ -370,6 +373,21 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
     calibration_sample = (out_dir / "ack-marker-calibration.sample.csv").read_text()
     assert "sample_id,human_label,classification" in calibration_sample
     assert "acknowledged" in calibration_sample
+    public_summary = json.loads((out_dir / "public-summary.json").read_text())
+    assert public_summary["claim"].startswith("Polylogue can ground")
+    assert "private archive" in public_summary["non_claim"]
+    assert public_summary["proofs"][0]["total_structured_failures"] == 4
+    assert public_summary["proofs"][2]["ack_marker_precision"] == 1.0
+    assert "samples_by_classification" not in public_summary
+    assert "calibration_sample" not in public_summary
+    assert "next_text_preview" not in json.dumps(public_summary)
+    public_reproduction = (out_dir / "PUBLIC_REPRODUCTION.md").read_text()
+    assert "polylogue demo seed" in public_reproduction
+    assert "devtools workspace claim-vs-evidence" in public_reproduction
+    assert "reproduces the method and artifact shape" in public_reproduction
+    cold_reader_gate = (out_dir / "COLD_READER_GATE.md").read_text()
+    assert "Expected Passing Answer" in cold_reader_gate
+    assert "no private transcript previews" in cold_reader_gate
     readme = (out_dir / "README.md").read_text()
     assert "Claim-vs-Evidence" in readme
     assert "- time window: entire archive (no since/until filter)" in readme
@@ -381,6 +399,9 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
     assert "- calibration sample size: 3" in readme
     assert "- acknowledged-marker precision: 100.0%" in readme
     assert "- acknowledged-marker recall: 50.0%" in readme
+    assert "`public-summary.json`" in readme
+    assert "`PUBLIC_REPRODUCTION.md`" in readme
+    assert "`COLD_READER_GATE.md`" in readme
     assert "- claude-code-session: inspected 2 / 2 structured failures (requested 2)" in readme
     assert "- codex-session: inspected 2 / 2 structured failures (requested 2)" in readme
 
@@ -414,6 +435,53 @@ def test_claim_vs_evidence_bounded_sample_is_origin_stratified(tmp_path: Path) -
         },
     ]
     assert {row["name"] for row in report["by_origin"]} == {"claude-code-session", "codex-session"}
+
+
+def test_claim_vs_evidence_public_reproduction_handles_unlabeled_sample(tmp_path: Path) -> None:
+    archive = tmp_path / "archive"
+    out_dir = tmp_path / "out"
+    _seed_archive(archive)
+
+    report = build_report(
+        _report_args(
+            archive_root=archive,
+            out_dir=out_dir,
+            limit=4,
+            sample_limit=2,
+        )
+    )
+
+    assert report["calibration"]["metrics"]["labeled_rows"] == 0
+    public_reproduction = (out_dir / "PUBLIC_REPRODUCTION.md").read_text()
+    assert "- acknowledged-marker precision: not enough labels" in public_reproduction
+    assert "- acknowledged-marker recall: not enough labels" in public_reproduction
+
+
+@pytest.mark.asyncio
+async def test_claim_vs_evidence_seeded_demo_reproduces_method(tmp_path: Path) -> None:
+    archive = tmp_path / "demo-archive"
+    out_dir = tmp_path / "demo-report"
+
+    await seed_demo_archive(archive, force=True, with_overlays=True)
+    report = build_report(
+        _report_args(
+            archive_root=archive,
+            out_dir=out_dir,
+            limit=5000,
+            sample_limit=10,
+            calibration_size=10,
+        )
+    )
+
+    assert report["sample_frame"]["total_structured_failures"] == 4
+    assert report["sample_frame"]["inspected_structured_failures"] == 4
+    assert report["totals"]["acknowledged"] == 2
+    assert report["totals"]["silent_proceed"] == 2
+    assert report["totals"]["ambiguous"] == 0
+    public_summary = json.loads((out_dir / "public-summary.json").read_text())
+    assert public_summary["proofs"][0]["total_structured_failures"] == 4
+    public_reproduction = (out_dir / "PUBLIC_REPRODUCTION.md").read_text()
+    assert "Counts will differ because the deterministic demo archive is synthetic." in public_reproduction
 
 
 def test_claim_vs_evidence_keeps_same_message_tool_result_identities(tmp_path: Path) -> None:

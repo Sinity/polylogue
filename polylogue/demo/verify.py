@@ -94,8 +94,8 @@ def verify_demo_archive(
         problems.append(f"expected demo sessions {sorted(expected_ids)}, found {sorted(session_ids)}")
     if session_count != 3:
         problems.append(f"expected 3 sessions, found {session_count}")
-    if message_count != 19:
-        problems.append(f"expected 19 messages, found {message_count}")
+    if message_count != 23:
+        problems.append(f"expected 23 messages, found {message_count}")
     if DEMO_CLAUDE_CODE_SESSION_ID not in query_hits:
         problems.append(f"expected pytest query to include {DEMO_CLAUDE_CODE_SESSION_ID}, found {list(query_hits)}")
 
