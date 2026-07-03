@@ -1309,3 +1309,71 @@ def test_rebuild_index_filters_selected_rows_by_blob_size(
     assert payload["skipped_by_blob_limit_count"] == 1
     assert payload["max_blob_mb"] == 2.0
     assert captured["raw_ids"] == ["raw-small"]
+
+
+def test_rebuild_index_plan_reports_weighted_top_rows(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    archive_root = cli_workspace["archive_root"]
+    source_db = archive_root / "source.db"
+    index_db = archive_root / "index.db"
+    with sqlite3.connect(source_db) as conn:
+        initialize_archive_tier(conn, ArchiveTier.SOURCE)
+        for raw_id, native_id, blob_size, acquired_at_ms in (
+            ("raw-small", "small", 1_000, 1),
+            ("raw-large", "large", 5_000, 2),
+        ):
+            conn.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, source_index, blob_hash,
+                    blob_size, acquired_at_ms, validation_status
+                )
+                VALUES (?, 'codex-session', ?, ?, 0, randomblob(32), ?, ?, 'passed')
+                """,
+                (raw_id, native_id, f"/tmp/{raw_id}.jsonl", blob_size, acquired_at_ms),
+            )
+    with sqlite3.connect(index_db) as conn:
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        conn.execute(
+            """
+            INSERT INTO sessions (native_id, origin, raw_id, message_count, content_hash)
+            VALUES ('large', 'codex-session', 'raw-large', 42, randomblob(32))
+            """
+        )
+        session_id = conn.execute("SELECT session_id FROM sessions WHERE raw_id = 'raw-large'").fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO session_events (session_id, position, event_type, summary)
+            VALUES (?, 0, 'capture_gap', 'gap')
+            """,
+            (session_id,),
+        )
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "rebuild-index",
+            "--plan",
+            "--plan-limit",
+            "1",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["status"] == "ok"
+    assert payload["raw_session_count"] == 2
+    assert payload["selected_raw_count"] == 2
+    assert payload["totals"]["blob_bytes"] == 6_000
+    assert payload["totals"]["materialized_messages"] == 42
+    assert payload["totals"]["materialized_session_events"] == 1
+    assert [row["raw_id"] for row in payload["top_rows"]] == ["raw-large"]
+    assert payload["top_rows"][0]["materialized_messages"] == 42
