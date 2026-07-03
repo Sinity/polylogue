@@ -244,3 +244,43 @@ def test_claim_vs_evidence_bounded_sample_is_origin_stratified(tmp_path: Path) -
         },
     ]
     assert {row["name"] for row in report["by_origin"]} == {"claude-code-session", "codex-session"}
+
+
+def test_claim_vs_evidence_keeps_same_message_tool_result_identities(tmp_path: Path) -> None:
+    archive = tmp_path / "archive"
+    _seed_archive(archive)
+    conn = sqlite3.connect(archive / "index.db")
+    conn.executemany(
+        """
+        INSERT INTO blocks(
+            message_id, session_id, position, block_type, text, tool_name, tool_id,
+            tool_input, tool_result_is_error, tool_result_exit_code
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("tool-missing-next", "s2", 2, "tool_use", None, "Read", "t4", '{"path":"y"}', None, None),
+            ("tool-missing-next", "s2", 3, "tool_result", "also nope", None, "t4", None, 0, 1),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    report = build_report(
+        argparse.Namespace(
+            archive_root=archive,
+            out_dir=None,
+            limit=10,
+            sample_limit=10,
+            json=False,
+        )
+    )
+
+    assert report["sample_frame"]["total_structured_failures"] == 4
+    assert report["sample_frame"]["total_by_origin"] == [
+        {"failed_outcomes": 2, "origin": "claude-code-session"},
+        {"failed_outcomes": 2, "origin": "codex-session"},
+    ]
+    codex_samples = report["samples_by_origin_classification"]["codex-session"]["ambiguous"]
+    assert len(codex_samples) == 2
+    assert {sample["tool_result_tool_id"] for sample in codex_samples} == {"t3", "t4"}
+    assert {sample["tool_result_message_ref"] for sample in codex_samples} == {"message:tool-missing-next"}

@@ -90,24 +90,16 @@ def _structured_failure_rows(conn: Connection, *, limit: int, origin: str | None
         conn,
         f"""
         WITH failed AS (
-            SELECT DISTINCT
+            SELECT
                 r.session_id,
-                u.message_id,
                 r.message_id AS tool_result_message_id,
-                u.tool_name,
-                u.tool_command,
+                r.tool_id AS tool_result_tool_id,
                 s.origin,
                 r.tool_result_is_error AS is_error,
                 r.tool_result_exit_code AS exit_code,
-                COALESCE(rm.position, m.position) AS position,
-                m.model_name AS tool_message_model
+                rm.position AS position
             FROM blocks AS r INDEXED BY idx_blocks_tool_result_outcome
-            JOIN blocks AS u INDEXED BY idx_blocks_tool_id
-              ON u.tool_id = r.tool_id
-             AND u.session_id = r.session_id
-             AND u.block_type = 'tool_use'
             JOIN sessions AS s ON s.session_id = r.session_id
-            JOIN messages AS m ON m.message_id = u.message_id
             JOIN messages AS rm ON rm.message_id = r.message_id
             WHERE r.block_type = 'tool_result'
               {origin_predicate}
@@ -115,12 +107,23 @@ def _structured_failure_rows(conn: Connection, *, limit: int, origin: str | None
                   COALESCE(r.tool_result_is_error, 0) = 1
                   OR (r.tool_result_exit_code IS NOT NULL AND r.tool_result_exit_code != 0)
               )
-            ORDER BY r.session_id, COALESCE(rm.position, m.position), r.message_id, r.tool_id
+              AND EXISTS (
+                  SELECT 1
+                  FROM blocks AS u INDEXED BY idx_blocks_tool_id
+                  WHERE u.tool_id = r.tool_id
+                    AND u.session_id = r.session_id
+                    AND u.block_type = 'tool_use'
+              )
+            ORDER BY r.session_id, rm.position, r.message_id, r.tool_id
             LIMIT ?
         ),
         next_message AS (
             SELECT
                 f.*,
+                u.message_id,
+                u.tool_name,
+                u.tool_command,
+                m.model_name AS tool_message_model,
                 (
                     SELECT nm.message_id
                     FROM messages AS nm
@@ -131,11 +134,17 @@ def _structured_failure_rows(conn: Connection, *, limit: int, origin: str | None
                     LIMIT 1
                 ) AS next_message_id
             FROM failed AS f
+            JOIN blocks AS u INDEXED BY idx_blocks_tool_id
+              ON u.tool_id = f.tool_result_tool_id
+             AND u.session_id = f.session_id
+             AND u.block_type = 'tool_use'
+            JOIN messages AS m ON m.message_id = u.message_id
         )
         SELECT
             n.session_id,
             n.message_id,
             n.tool_result_message_id,
+            n.tool_result_tool_id,
             n.tool_name,
             n.tool_command,
             n.origin,
@@ -149,10 +158,8 @@ def _structured_failure_rows(conn: Connection, *, limit: int, origin: str | None
         LEFT JOIN blocks AS b ON b.message_id = n.next_message_id
         GROUP BY
             n.session_id,
-            n.message_id,
             n.tool_result_message_id,
-            n.tool_name,
-            n.tool_command,
+            n.tool_result_tool_id,
             n.origin,
             n.is_error,
             n.exit_code,
@@ -160,29 +167,6 @@ def _structured_failure_rows(conn: Connection, *, limit: int, origin: str | None
             n.next_message_id
         """,
         params,
-    )
-
-
-def _structured_failure_count(conn: Connection) -> int:
-    return _scalar_int(
-        conn,
-        """
-        SELECT COUNT(*)
-        FROM (
-            SELECT r.session_id, r.message_id, r.tool_id
-            FROM blocks AS r INDEXED BY idx_blocks_tool_result_outcome
-            JOIN blocks AS u INDEXED BY idx_blocks_tool_id
-              ON u.tool_id = r.tool_id
-             AND u.session_id = r.session_id
-             AND u.block_type = 'tool_use'
-            WHERE r.block_type = 'tool_result'
-              AND (
-                  COALESCE(r.tool_result_is_error, 0) = 1
-                  OR (r.tool_result_exit_code IS NOT NULL AND r.tool_result_exit_code != 0)
-              )
-            GROUP BY r.session_id, r.message_id, r.tool_id
-        )
-        """,
     )
 
 
@@ -212,24 +196,23 @@ def _structured_failure_origin_counts(conn: Connection) -> list[dict[str, object
     return _rows(
         conn,
         """
-        SELECT origin, COUNT(*) AS failed_outcomes
-        FROM (
-            SELECT s.origin, r.session_id, r.message_id, r.tool_id
-            FROM blocks AS r INDEXED BY idx_blocks_tool_result_outcome
-            JOIN blocks AS u INDEXED BY idx_blocks_tool_id
-              ON u.tool_id = r.tool_id
-             AND u.session_id = r.session_id
-             AND u.block_type = 'tool_use'
-            JOIN sessions AS s ON s.session_id = r.session_id
-            WHERE r.block_type = 'tool_result'
-              AND (
-                  COALESCE(r.tool_result_is_error, 0) = 1
-                  OR (r.tool_result_exit_code IS NOT NULL AND r.tool_result_exit_code != 0)
-              )
-            GROUP BY s.origin, r.session_id, r.message_id, r.tool_id
-        )
-        GROUP BY origin
-        ORDER BY failed_outcomes DESC, origin
+        SELECT s.origin, COUNT(*) AS failed_outcomes
+        FROM blocks AS r INDEXED BY idx_blocks_tool_result_outcome
+        JOIN sessions AS s ON s.session_id = r.session_id
+        WHERE r.block_type = 'tool_result'
+          AND (
+              COALESCE(r.tool_result_is_error, 0) = 1
+              OR (r.tool_result_exit_code IS NOT NULL AND r.tool_result_exit_code != 0)
+          )
+          AND EXISTS (
+              SELECT 1
+              FROM blocks AS u INDEXED BY idx_blocks_tool_id
+              WHERE u.tool_id = r.tool_id
+                AND u.session_id = r.session_id
+                AND u.block_type = 'tool_use'
+          )
+        GROUP BY s.origin
+        ORDER BY failed_outcomes DESC, s.origin
         """,
     )
 
@@ -286,9 +269,9 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     index_db = config.db_path
     conn = open_readonly_connection(index_db)
     try:
-        total_structured_failures = _structured_failure_count(conn)
-        unpaired_structured_failures = _unpaired_structured_failure_count(conn)
         total_by_origin = _structured_failure_origin_counts(conn)
+        total_structured_failures = sum(int(row["failed_outcomes"]) for row in total_by_origin)
+        unpaired_structured_failures = _unpaired_structured_failure_count(conn)
         origin_limits = _origin_sample_limits(total_by_origin, args.limit)
         rows = []
         sampled_by_origin: list[dict[str, object]] = []
@@ -333,6 +316,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "session_ref": f"session:{row['session_id']}",
             "tool_message_ref": f"message:{row['message_id']}",
             "tool_result_message_ref": f"message:{row['tool_result_message_id']}",
+            "tool_result_tool_id": row["tool_result_tool_id"],
             "next_message_ref": f"message:{row['next_message_id']}" if row["next_message_id"] else None,
             "tool_name": tool,
             "model_name": model,
