@@ -320,13 +320,9 @@ def _archive_embedding_session_state_summary(
     *,
     status_table: str,
     total_sessions: int,
-    include_detail: bool,
 ) -> tuple[int, int]:
     """Return embedded/pending session counts without exact prose scans by default."""
 
-    if include_detail:
-        session_state = count_archive_embedding_session_state(conn, status_table=status_table, rebuild=False)
-        return session_state.embedded_sessions, session_state.pending_sessions
     if total_sessions <= 0:
         return 0, 0
     if not status_table:
@@ -342,6 +338,36 @@ def _archive_embedding_session_state_summary(
     )
     pending_sessions = max(total_sessions - embedded_sessions, 0)
     return embedded_sessions, pending_sessions
+
+
+def _archive_embedding_session_state_exact_with_timeout(
+    conn: sqlite3.Connection,
+    *,
+    status_table: str,
+    timeout_ms: int,
+) -> tuple[int, int] | None:
+    """Return exact embedded/pending session counts, or ``None`` when too costly."""
+
+    from polylogue.storage.embeddings.support import is_missing_table_error
+
+    deadline = time.monotonic() + (timeout_ms / 1000.0)
+
+    def _interrupt_when_expired() -> int:
+        return 1 if time.monotonic() >= deadline else 0
+
+    conn.set_progress_handler(_interrupt_when_expired, 10_000)
+    try:
+        session_state = count_archive_embedding_session_state(conn, status_table=status_table, rebuild=False)
+    except sqlite3.OperationalError as exc:
+        message = str(exc).lower()
+        if is_missing_table_error(exc):
+            return (0, 0)
+        if "interrupted" in message or "locked" in message or "busy" in message:
+            return None
+        raise
+    finally:
+        conn.set_progress_handler(None, 0)
+    return session_state.embedded_sessions, session_state.pending_sessions
 
 
 def _embedding_status(
@@ -551,8 +577,18 @@ def _archive_embedding_status_payload(
             conn,
             status_table=status_table,
             total_sessions=total_sessions,
-            include_detail=include_detail,
         )
+        pending_messages_exact = include_detail
+        if include_detail:
+            exact_session_state = _archive_embedding_session_state_exact_with_timeout(
+                conn,
+                status_table=status_table,
+                timeout_ms=DETAIL_QUERY_TIMEOUT_MS,
+            )
+            if exact_session_state is None:
+                pending_messages_exact = False
+            else:
+                embedded_sessions, pending_sessions = exact_session_state
         if has_status:
             embedded_messages = _scalar_int(
                 conn,
@@ -576,7 +612,6 @@ def _archive_embedding_status_payload(
             else 0
         )
         pending_messages = 0
-        pending_messages_exact = include_detail
         stale_messages = 0
         missing_provenance = 0
         oldest_embedded_at: str | None = None

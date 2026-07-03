@@ -338,6 +338,28 @@ def test_status_json_detail_falls_back_when_exact_pending_count_times_out(
     assert payload["retrieval_ready"] is True
 
 
+def test_status_json_detail_falls_back_when_exact_session_state_times_out(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_anchor = tmp_path / "custom.sqlite"
+    _seed_archive_file_set_from_archive_tiers(tmp_path / "index.db")
+
+    def interrupted_session_state(*args: object, **kwargs: object) -> object:
+        raise sqlite3.OperationalError("interrupted")
+
+    monkeypatch.setattr(status_payload_mod, "count_archive_embedding_session_state", interrupted_session_state)
+
+    payload = _run_status(db_anchor, "--detail", cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+
+    assert payload["status"] == "partial"
+    assert payload["embedded_sessions"] == 1
+    assert payload["pending_sessions"] == 1
+    assert payload["pending_messages"] is None
+    assert payload["pending_messages_exact"] is False
+    assert payload["total_estimated_cost_usd"] is None
+
+
 def test_status_text_detail_does_not_claim_zero_cost_when_exact_pending_count_times_out(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
