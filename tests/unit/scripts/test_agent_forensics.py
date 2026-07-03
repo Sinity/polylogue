@@ -66,6 +66,11 @@ def test_classify_failed_followup_uses_only_explicit_acknowledgment_markers() ->
     assert agent_forensics._classify_failed_followup(None) == "ambiguous"
     assert agent_forensics._classify_failed_followup("ok") == "ambiguous"
     assert agent_forensics._classify_failed_followup("The command failed with exit code 2.") == "acknowledged"
+    assert agent_forensics._classify_failed_followup_evidence("The command failed with exit code 2.") == {
+        "classification": "acknowledged",
+        "reason": "explicit_acknowledgment_marker",
+        "matched_marker": "failed",
+    }
     assert (
         agent_forensics._classify_failed_followup("I will continue by inspecting the next module now.")
         == "silent_proceed"

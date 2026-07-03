@@ -198,6 +198,13 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
         report["samples_by_origin_classification"]["claude-code-session"]["acknowledged"][0]["next_text_preview"]
         == "The command failed with exit code 2, so I will fix it."
     )
+    assert (
+        report["samples_by_origin_classification"]["claude-code-session"]["acknowledged"][0]["classification_reason"]
+        == "explicit_acknowledgment_marker"
+    )
+    assert report["samples_by_origin_classification"]["claude-code-session"]["acknowledged"][0]["matched_marker"] == (
+        "failed"
+    )
     summary = json.loads((out_dir / "summary.json").read_text())
     assert summary["claim"]
     assert summary["non_claim"]

@@ -406,8 +406,8 @@ _ACKNOWLEDGMENT_MARKERS = (
 )
 
 
-def _classify_failed_followup(text: str | None) -> str:
-    """Classify the next assistant turn after a structured tool failure.
+def _classify_failed_followup_evidence(text: str | None) -> dict[str, str | None]:
+    """Classify the next assistant turn and report the exact heuristic used.
 
     This deliberately avoids mining a positive success claim from prose. The
     structured failure is the anchor; the next assistant turn is only checked
@@ -416,13 +416,22 @@ def _classify_failed_followup(text: str | None) -> str:
     """
 
     if text is None:
-        return "ambiguous"
+        return {"classification": "ambiguous", "reason": "missing_next_assistant_message", "matched_marker": None}
     normalized = " ".join(text.lower().split())
     if len(normalized) < 20:
-        return "ambiguous"
-    if any(marker in normalized for marker in _ACKNOWLEDGMENT_MARKERS):
-        return "acknowledged"
-    return "silent_proceed"
+        return {"classification": "ambiguous", "reason": "short_next_assistant_message", "matched_marker": None}
+    matched_marker = next((marker for marker in _ACKNOWLEDGMENT_MARKERS if marker in normalized), None)
+    if matched_marker is not None:
+        return {
+            "classification": "acknowledged",
+            "reason": "explicit_acknowledgment_marker",
+            "matched_marker": matched_marker,
+        }
+    return {"classification": "silent_proceed", "reason": "no_explicit_acknowledgment_marker", "matched_marker": None}
+
+
+def _classify_failed_followup(text: str | None) -> str:
+    return str(_classify_failed_followup_evidence(text)["classification"])
 
 
 def _structured_failure_followups(

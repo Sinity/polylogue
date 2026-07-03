@@ -13,7 +13,7 @@ from typing import Any
 
 from polylogue.config import Config, get_config
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-from scripts.agent_forensics import _classify_failed_followup
+from scripts.agent_forensics import _classify_failed_followup_evidence
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -318,13 +318,18 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     }
     samples_by_origin_classification: dict[str, dict[str, list[dict[str, object]]]] = {}
     for row in rows:
-        classification = _classify_failed_followup(str(row["next_text"]) if row["next_text"] is not None else None)
+        classification_evidence = _classify_failed_followup_evidence(
+            str(row["next_text"]) if row["next_text"] is not None else None
+        )
+        classification = str(classification_evidence["classification"])
         tool = str(row["tool_name"] or "unknown")
         model = str(row["model_name"] or "unknown")
         origin = str(row["origin"] or "unknown")
         next_text = str(row["next_text"] or "")
         sample = {
             "classification": classification,
+            "classification_reason": classification_evidence["reason"],
+            "matched_marker": classification_evidence["matched_marker"],
             "session_ref": f"session:{row['session_id']}",
             "tool_message_ref": f"message:{row['message_id']}",
             "tool_result_message_ref": f"message:{row['tool_result_message_id']}",
