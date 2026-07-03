@@ -3,12 +3,13 @@
 `scripts/agent_forensics.py` mines a Polylogue archive for longitudinal usage
 findings and emits a Markdown report plus standalone SVG charts. It is the kind
 of analysis only a full personal AI-session archive can produce: token economy,
-cost (API-equivalent *and* subscription-credit views), model evolution,
-temporal rhythm, and workflow shape — over the whole corpus.
+cost (stored/provider-priced rows, catalog API-equivalent estimates, and
+subscription-credit views), model evolution, temporal rhythm, and workflow
+shape — over the whole corpus.
 
-It is **pure standard library** (no third-party dependencies, no network), reads
-the archive **read-only**, and writes nothing to it. Anyone can run it against
-any archive and reproduce the report.
+It uses Polylogue's shared action-followup and pricing substrate, performs
+**no network access**, reads the archive **read-only**, and writes nothing to
+it. Anyone can run it against any archive and reproduce the report.
 
 ## Run it
 
@@ -33,15 +34,18 @@ The report renders in any Markdown viewer; the SVG charts embed inline on GitHub
 - **Scale & span** — sessions, messages, origins, date range.
 - **Temporal rhythm** — sessions/month and tokens/month (the adoption curve).
 - **Token economy** — input / output / cache-read / cache-write / reasoning,
-  **split by cost provenance**. `priced` rows (Claude Code) carry a computed
-  `cost_usd`; `origin_reported` rows (other providers) report token counts with
-  no per-token cost. The two are never conflated.
+  **split by evidence provenance**. `priced` rows carry stored archive
+  `cost_usd`; `origin_reported` rows carry provider-reported token counts but no
+  stored dollar amount. The report layers a separate catalog API-equivalent
+  estimate over both provenances when the shared vendored LiteLLM catalog can
+  match the model. The two are never conflated.
 - **Cache amplification** — within the priced subset, cache-read tokens vs fresh
   input. In agentic loops this is the dominant volume and the dominant cost
   driver; a token counter that ignores cache reads understates real usage by
   orders of magnitude.
-- **Cost** — API-list-equivalent cost by model, per-session cost distribution,
-  and provenance breakdown.
+- **Cost** — catalog API-equivalent cost by model, stored/provider-priced cost,
+  per-session stored-cost distribution, catalog coverage/caveats, and
+  provenance breakdown.
 - **Subscription reality** — the API-list-equivalent cost is *not* what a Claude
   Max/Pro subscriber pays. On a plan, **cache reads are free** and usage is
   metered in credits (`(input + cache_write) × in_rate + output × out_rate`).
@@ -67,13 +71,20 @@ handles explicitly:
    carries both `last_*` (per-event delta) and `total_*` (cumulative running
    total) columns. Reasoning/token sums use the `last_*` deltas; summing the
    cumulative columns over-counts by orders of magnitude.
-2. **Cost provenance.** Only `priced` rows have a real `cost_usd`. Pairing that
-   cost with the all-provenance token total would misstate both, so they are
-   reported separately.
+2. **Cost provenance.** Only `priced` rows have stored `cost_usd`.
+   `origin_reported` rows can still be catalog-priced as an API-equivalent
+   estimate when their model matches the shared vendored LiteLLM catalog, but
+   that derived estimate is not provider billing truth and does not change the
+   underlying provenance.
 3. **Failure claims.** The structured failure follow-up section does not infer a
    successful or failed outcome from assistant prose. It anchors on structured
    tool-result fields and treats the next assistant message as a lexical
    acknowledgment signal only.
+
+Current caveat: logical-session token attribution is still being repaired, so
+fork/resume inherited-prefix usage can inflate all-provider headline totals
+until that bead lands. Treat the forensics report as the current archive
+measurement, not final billing reconciliation.
 
 ## Privacy
 

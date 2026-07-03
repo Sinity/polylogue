@@ -3,11 +3,13 @@
 
 Reads a Polylogue ``index.db`` (read-only) and emits a Markdown findings report
 plus standalone SVG charts: corpus scale, token economy, cost, model evolution,
-temporal rhythm, and workflow/failure signals.
+temporal rhythm, and workflow/failure signals. It uses Polylogue's shared
+action-followup and pricing substrate; it does not maintain a separate report
+catalog.
 
-Pure standard library — no third-party dependencies, no network, no writes to
-the archive. A stranger can run it against any archive (including the synthetic
-``polylogue demo seed`` archive) and reproduce the report.
+No network, no writes to the archive. A stranger can run it against any archive
+(including the synthetic ``polylogue demo seed`` archive) and reproduce the
+report.
 
     python scripts/agent_forensics.py --archive ~/.local/share/polylogue --out ./forensics
 
@@ -20,6 +22,8 @@ import argparse
 import json
 import os
 import sqlite3
+import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -27,6 +31,13 @@ from typing import Any
 from polylogue.archive.actions.followup import (
     classify_failed_followup,
     classify_failed_followup_evidence,
+)
+from polylogue.archive.semantic.pricing import (
+    CATALOG_EFFECTIVE_DATE,
+    CATALOG_PROVENANCE,
+    PRICING,
+    _normalize_model,
+    estimate_cost,
 )
 
 # --------------------------------------------------------------------------- #
@@ -243,13 +254,79 @@ def _scalar(conn: sqlite3.Connection, sql: str, default: Any = 0) -> Any:
     return row[0]
 
 
+def _catalog_cost_row(row: sqlite3.Row) -> dict[str, Any]:
+    model_name = str(row["model_name"] or "")
+    input_tokens = int(row["input_tokens"] or 0)
+    output_tokens = int(row["output_tokens"] or 0)
+    cache_read_tokens = int(row["cache_read_tokens"] or 0)
+    cache_write_tokens = int(row["cache_write_tokens"] or 0)
+    stored_cost = float(row["stored_cost"] or 0.0)
+    normalized_model = _normalize_model(model_name)
+    pricing = PRICING.get(normalized_model)
+    billable_tokens = input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
+    catalog_cost = (
+        estimate_cost(
+            input_tokens,
+            output_tokens,
+            model_name,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
+        )
+        if pricing is not None
+        else 0.0
+    )
+    missing_reasons: list[str] = []
+    if pricing is None and billable_tokens > 0:
+        missing_reasons.append("missing_price")
+    elif pricing is not None and (pricing.input_usd_per_1m > 0 or pricing.output_usd_per_1m > 0):
+        if cache_read_tokens > 0 and pricing.cache_read_usd_per_1m == 0.0:
+            missing_reasons.append("missing_cache_read_price")
+        if cache_write_tokens > 0 and pricing.cache_write_usd_per_1m == 0.0:
+            missing_reasons.append("missing_cache_write_price")
+    return {
+        "model": model_name or "unknown",
+        "normalized_model": normalized_model or "unknown",
+        "provenance": str(row["cost_provenance"] or "unknown"),
+        "sessions": int(row["sessions"] or 0),
+        "rows": int(row["rows"] or 0),
+        "input": input_tokens,
+        "output": output_tokens,
+        "cache_read": cache_read_tokens,
+        "cache_write": cache_write_tokens,
+        "stored_cost": stored_cost,
+        "catalog_cost": catalog_cost,
+        "catalog_priced": pricing is not None,
+        "missing_reasons": missing_reasons,
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Findings
 # --------------------------------------------------------------------------- #
 
 
-def analyze(conn: sqlite3.Connection, *, failure_followup_limit: int | None = None) -> dict[str, Any]:
+def _stage_timer(enabled: bool) -> Any:
+    last = time.perf_counter()
+
+    def mark(name: str) -> None:
+        nonlocal last
+        if not enabled:
+            return
+        now = time.perf_counter()
+        print(f"timing {name}: {now - last:.3f}s", file=sys.stderr, flush=True)
+        last = now
+
+    return mark
+
+
+def analyze(
+    conn: sqlite3.Connection,
+    *,
+    failure_followup_limit: int | None = None,
+    timings: bool = False,
+) -> dict[str, Any]:
     f: dict[str, Any] = {}
+    mark_stage = _stage_timer(timings)
 
     # 1. Scale & span -------------------------------------------------------- #
     f["sessions"] = int(_scalar(conn, "SELECT COUNT(*) FROM sessions"))
@@ -261,46 +338,108 @@ def analyze(conn: sqlite3.Connection, *, failure_followup_limit: int | None = No
     ).fetchone()
     f["span_start"], f["span_end"] = span[0], span[1]
     f["origins"] = conn.execute("SELECT origin, COUNT(*) c FROM sessions GROUP BY origin ORDER BY c DESC").fetchall()
+    mark_stage("scale_and_span")
 
     # 2. Token economy + 3. cost (session_model_usage) ----------------------- #
     if _has_table(conn, "session_model_usage"):
-        tot = conn.execute(
+        model_rows = conn.execute(
             """
             SELECT cost_provenance,
-                   COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
-                   COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_write_tokens),0),
-                   COALESCE(SUM(cost_usd),0), COUNT(DISTINCT session_id)
-            FROM session_model_usage GROUP BY cost_provenance
+                   COALESCE(model_name, '') AS model_name,
+                   COUNT(*) AS rows,
+                   COUNT(DISTINCT session_id) AS sessions,
+                   COALESCE(SUM(input_tokens),0) AS input_tokens,
+                   COALESCE(SUM(output_tokens),0) AS output_tokens,
+                   COALESCE(SUM(cache_read_tokens),0) AS cache_read_tokens,
+                   COALESCE(SUM(cache_write_tokens),0) AS cache_write_tokens,
+                   COALESCE(SUM(cost_usd),0) AS stored_cost
+            FROM session_model_usage
+            GROUP BY cost_provenance, model_name
             """
         ).fetchall()
-        # Token accounting splits by cost provenance: 'priced' rows carry a
-        # computed cost_usd; 'origin_reported' rows are provider-reported token
-        # counts with NO cost. Pairing the priced cost with the all-provenance
-        # token total would be wrong, so we keep them separate.
+        catalog_rows = [_catalog_cost_row(row) for row in model_rows]
+        # Token accounting splits by evidence provenance. Stored `cost_usd`
+        # remains the archive/provider cost row; catalog API-equivalent is a
+        # derived estimate layered on top when the vendored pricing catalog can
+        # match the model. Do not relabel origin_reported evidence as priced.
         econ: dict[str, dict[str, int | float]] = {}
-        for r in tot:
-            econ[str(r[0])] = {
-                "input": int(r[1]),
-                "output": int(r[2]),
-                "cache_read": int(r[3]),
-                "cache_write": int(r[4]),
-                "cost": float(r[5]),
-                "sessions": int(r[6]),
-            }
+        missing_reasons: dict[str, int] = {}
+        for row in catalog_rows:
+            prov = str(row["provenance"])
+            bucket = econ.setdefault(
+                prov,
+                {
+                    "input": 0,
+                    "output": 0,
+                    "cache_read": 0,
+                    "cache_write": 0,
+                    "stored_cost": 0.0,
+                    "catalog_cost": 0.0,
+                    "sessions": 0,
+                    "rows": 0,
+                    "catalog_priced_rows": 0,
+                    "catalog_unpriced_rows": 0,
+                },
+            )
+            bucket["input"] = int(bucket["input"]) + int(row["input"])
+            bucket["output"] = int(bucket["output"]) + int(row["output"])
+            bucket["cache_read"] = int(bucket["cache_read"]) + int(row["cache_read"])
+            bucket["cache_write"] = int(bucket["cache_write"]) + int(row["cache_write"])
+            bucket["stored_cost"] = float(bucket["stored_cost"]) + float(row["stored_cost"])
+            bucket["catalog_cost"] = float(bucket["catalog_cost"]) + float(row["catalog_cost"])
+            bucket["sessions"] = int(bucket["sessions"]) + int(row["sessions"])
+            bucket["rows"] = int(bucket["rows"]) + int(row["rows"])
+            if row["catalog_priced"]:
+                bucket["catalog_priced_rows"] = int(bucket["catalog_priced_rows"]) + int(row["rows"])
+            else:
+                bucket["catalog_unpriced_rows"] = int(bucket["catalog_unpriced_rows"]) + int(row["rows"])
+            for reason in row["missing_reasons"]:
+                missing_reasons[str(reason)] = missing_reasons.get(str(reason), 0) + int(row["rows"])
         f["economy_by_provenance"] = econ
-        f["total_cost"] = sum(float(v["cost"]) for v in econ.values())
+        f["stored_cost_usd"] = sum(float(v["stored_cost"]) for v in econ.values())
+        f["catalog_api_equivalent_usd"] = sum(float(v["catalog_cost"]) for v in econ.values())
+        f["catalog_api_equivalent_by_provenance"] = {prov: float(v["catalog_cost"]) for prov, v in sorted(econ.items())}
+        f["catalog_price_missing_reasons"] = missing_reasons
+        f["catalog_pricing_metadata"] = {
+            "provenance": CATALOG_PROVENANCE,
+            "effective_date": CATALOG_EFFECTIVE_DATE,
+        }
         f["tok_input"] = sum(int(v["input"]) for v in econ.values())
         f["tok_output"] = sum(int(v["output"]) for v in econ.values())
         f["tok_cache_read"] = sum(int(v["cache_read"]) for v in econ.values())
         f["tok_cache_write"] = sum(int(v["cache_write"]) for v in econ.values())
         f["priced_sessions"] = int(econ.get("priced", {}).get("sessions", 0))
-        f["cost_by_model"] = conn.execute(
-            """
-            SELECT model_name, COUNT(DISTINCT session_id) sess, SUM(cost_usd) cost
-            FROM session_model_usage GROUP BY model_name
-            HAVING cost > 0 ORDER BY cost DESC LIMIT 10
-            """
-        ).fetchall()
+        by_model: dict[str, dict[str, Any]] = {}
+        for row in catalog_rows:
+            key = str(row["model"])
+            current = by_model.setdefault(
+                key,
+                {
+                    "model": key,
+                    "normalized_model": str(row["normalized_model"]),
+                    "provenances": set(),
+                    "sessions": 0,
+                    "stored_cost": 0.0,
+                    "catalog_cost": 0.0,
+                    "catalog_priced": bool(row["catalog_priced"]),
+                    "missing_reasons": set(),
+                },
+            )
+            current["provenances"].add(str(row["provenance"]))
+            current["sessions"] = int(current["sessions"]) + int(row["sessions"])
+            current["stored_cost"] = float(current["stored_cost"]) + float(row["stored_cost"])
+            current["catalog_cost"] = float(current["catalog_cost"]) + float(row["catalog_cost"])
+            current["catalog_priced"] = bool(current["catalog_priced"]) or bool(row["catalog_priced"])
+            current["missing_reasons"].update(str(reason) for reason in row["missing_reasons"])
+        f["cost_by_model"] = [
+            {
+                **entry,
+                "provenances": sorted(entry["provenances"]),
+                "missing_reasons": sorted(entry["missing_reasons"]),
+            }
+            for entry in sorted(by_model.values(), key=lambda item: -float(item["catalog_cost"]))[:12]
+            if float(entry["catalog_cost"]) > 0 or float(entry["stored_cost"]) > 0
+        ]
         f["cost_provenance"] = conn.execute(
             "SELECT cost_provenance, COUNT(*) c, SUM(cost_usd) cost FROM session_model_usage GROUP BY cost_provenance ORDER BY c DESC"
         ).fetchall()
@@ -328,6 +467,7 @@ def analyze(conn: sqlite3.Connection, *, failure_followup_limit: int | None = No
             """
         ).fetchall()
         f["subscription_credits"] = _subscription_credits(per_model_classes)
+        mark_stage("token_economy_and_cost")
     if _has_table(conn, "session_provider_usage_events"):
         # Use the per-event delta (last_*), NOT the cumulative running total
         # (total_*) — summing the cumulative column across a session's events
@@ -335,6 +475,7 @@ def analyze(conn: sqlite3.Connection, *, failure_followup_limit: int | None = No
         f["tok_reasoning"] = int(
             _scalar(conn, "SELECT COALESCE(SUM(last_reasoning_output_tokens),0) FROM session_provider_usage_events")
         )
+        mark_stage("reasoning_deltas")
 
     # 4. Temporal rhythm ----------------------------------------------------- #
     f["sessions_per_month"] = conn.execute(
@@ -346,6 +487,7 @@ def analyze(conn: sqlite3.Connection, *, failure_followup_limit: int | None = No
             "SELECT strftime('%Y-%m', occurred_at_ms/1000,'unixepoch') ym, SUM(last_total_tokens) t "
             "FROM session_provider_usage_events WHERE occurred_at_ms>0 GROUP BY ym ORDER BY ym"
         ).fetchall()
+    mark_stage("temporal_rhythm")
 
     # 5. Model evolution (tokens by month, top models) ----------------------- #
     if _has_table(conn, "session_provider_usage_events"):
@@ -369,12 +511,14 @@ def analyze(conn: sqlite3.Connection, *, failure_followup_limit: int | None = No
                 top_models,
             ).fetchall()
             f["model_evolution"] = rows
+    mark_stage("model_evolution")
 
     # 6. Workflow / failure signals ----------------------------------------- #
     if _has_table(conn, "session_work_events"):
         f["work_event_types"] = conn.execute(
             "SELECT work_event_type, COUNT(*) c FROM session_work_events GROUP BY work_event_type ORDER BY c DESC LIMIT 12"
         ).fetchall()
+    mark_stage("work_events")
     msg_counts = [
         int(r[0]) for r in conn.execute("SELECT message_count FROM sessions WHERE message_count > 0").fetchall()
     ]
@@ -389,6 +533,7 @@ def analyze(conn: sqlite3.Connection, *, failure_followup_limit: int | None = No
             conn,
             failed_outcome_limit=failure_followup_limit,
         )
+    mark_stage("message_lengths_and_failure_followups")
     return f
 
 
@@ -419,29 +564,47 @@ def _structured_failure_followups(
     limit_clause = ""
     params: tuple[int, ...] = ()
     if failed_outcome_limit is not None:
-        limit_clause = "ORDER BY session_id, position LIMIT ?"
+        # Keep the bounded demo path genuinely bounded. A global ORDER BY over
+        # all failed outcomes can dominate runtime on live archives under I/O
+        # pressure; the report labels this as action-view order.
+        limit_clause = "LIMIT ?"
         params = (failed_outcome_limit,)
     rows = conn.execute(
         f"""
-        WITH failed_all AS (
+        WITH failed_results AS MATERIALIZED (
             SELECT
-                a.session_id,
-                a.message_id,
-                a.tool_name,
-                a.tool_command,
-                a.is_error,
-                a.exit_code,
+                session_id,
+                message_id,
+                tool_id,
+                tool_result_is_error,
+                tool_result_exit_code
+            FROM blocks INDEXED BY idx_blocks_tool_result_outcome
+            WHERE block_type = 'tool_result'
+              AND (
+                    COALESCE(tool_result_is_error, 0) = 1
+                 OR (tool_result_exit_code IS NOT NULL AND tool_result_exit_code != 0)
+              )
+            {limit_clause}
+        ),
+        failed_all AS (
+            SELECT
+                u.session_id,
+                u.message_id,
+                u.tool_name,
+                u.tool_input AS tool_command,
+                r.tool_result_is_error AS is_error,
+                r.tool_result_exit_code AS exit_code,
                 m.position,
                 m.model_name AS tool_message_model
-            FROM actions AS a
-            JOIN messages AS m ON m.message_id = a.message_id
-            WHERE COALESCE(a.is_error, 0) = 1
-               OR (a.exit_code IS NOT NULL AND a.exit_code != 0)
+            FROM failed_results AS r
+            CROSS JOIN blocks AS u INDEXED BY idx_blocks_tool_id
+              ON u.session_id = r.session_id
+             AND u.tool_id = r.tool_id
+             AND u.block_type = 'tool_use'
+            JOIN messages AS m ON m.message_id = u.message_id
         ),
         failed AS (
-            SELECT *
-            FROM failed_all
-            {limit_clause}
+            SELECT * FROM failed_all
         ),
         next_message AS (
             SELECT
@@ -644,11 +807,14 @@ def build_report(f: dict[str, Any], out_dir: Path, *, archive_label: str) -> str
     if "tok_input" in f:
         total_tok = int(f["tok_input"]) + int(f["tok_output"]) + int(f["tok_cache_read"]) + int(f["tok_cache_write"])
         md.append(f"- **Total tokens accounted:** {_fmt_num(total_tok)} (all providers)")
-    if "total_cost" in f:
+    if "catalog_api_equivalent_usd" in f:
         md.append(
-            f"- **Priced cost (Claude Code only):** {_fmt_usd(float(f['total_cost']))} "
-            f"— list-price equivalent for the priced subset; other providers report token "
-            f"counts without per-token cost (see Token economy)."
+            f"- **Catalog API-equivalent cost:** {_fmt_usd(float(f['catalog_api_equivalent_usd']))} "
+            f"(all matched provenances, provisional; see cost caveats)."
+        )
+        md.append(
+            f"- **Stored/provider-priced subset:** {_fmt_usd(float(f.get('stored_cost_usd', 0)))} "
+            "from archive `cost_usd` rows."
         )
     md.append("")
 
@@ -693,27 +859,35 @@ def build_report(f: dict[str, Any], out_dir: Path, *, archive_label: str) -> str
         md.append("## Token economy")
         md.append("")
         md.append(
-            "Token classes are priced very differently and are accounted by two "
-            "provenances: **priced** rows (Claude Code, carrying a computed "
-            "`cost_usd`) and **origin_reported** rows (other providers report token "
-            "counts but no per-token cost). They are kept separate below — pairing "
-            "the priced cost with the all-provider token total would misstate both."
+            "Token classes are priced very differently and are accounted by evidence "
+            "provenance. **priced** rows carry stored archive `cost_usd`; "
+            "**origin_reported** rows carry provider-reported token counts but no "
+            "stored dollar amount. The report layers a separate catalog "
+            "API-equivalent estimate over both provenances when the shared vendored "
+            "LiteLLM catalog can match the model. This is not provider billing truth, "
+            "and it is still subject to the logical-session attribution caveat."
         )
         md.append("")
-        md.append("| provenance | input | output | cache read | cache write | cost |")
-        md.append("|---|---|---|---|---|---|")
+        md.append(
+            "| provenance | input | output | cache read | cache write | stored cost | catalog API-equivalent | catalog matched rows |"
+        )
+        md.append("|---|---|---|---|---|---|---|---:|")
         for prov in ("priced", "origin_reported"):
             v = econ.get(prov)
             if not v:
                 continue
-            cost_cell = _fmt_usd(float(v["cost"])) if float(v["cost"]) > 0 else "—"
+            stored_cost_cell = _fmt_usd(float(v["stored_cost"])) if float(v["stored_cost"]) > 0 else "—"
+            catalog_cost_cell = _fmt_usd(float(v["catalog_cost"])) if float(v["catalog_cost"]) > 0 else "—"
             md.append(
                 f"| {prov} | {_fmt_num(int(v['input']))} | {_fmt_num(int(v['output']))} | "
-                f"{_fmt_num(int(v['cache_read']))} | {_fmt_num(int(v['cache_write']))} | {cost_cell} |"
+                f"{_fmt_num(int(v['cache_read']))} | {_fmt_num(int(v['cache_write']))} | "
+                f"{stored_cost_cell} | {catalog_cost_cell} | "
+                f"{_fmt_int(int(v['catalog_priced_rows']))}/{_fmt_int(int(v['rows']))} |"
             )
         md.append(
             f"| **all** | {_fmt_num(ci)} | {_fmt_num(co)} | {_fmt_num(cr)} | {_fmt_num(cw)} | "
-            f"**{_fmt_usd(float(f.get('total_cost', 0)))}** |"
+            f"**{_fmt_usd(float(f.get('stored_cost_usd', 0)))}** | "
+            f"**{_fmt_usd(float(f.get('catalog_api_equivalent_usd', 0)))}** | — |"
         )
         md.append("")
         # The headline efficiency finding lives in the priced (Claude Code) subset,
@@ -722,7 +896,7 @@ def build_report(f: dict[str, Any], out_dir: Path, *, archive_label: str) -> str
         if pv and int(pv["input"]) > 0:
             ratio = int(pv["cache_read"]) / int(pv["input"])
             priced_tok = int(pv["input"]) + int(pv["output"]) + int(pv["cache_read"]) + int(pv["cache_write"])
-            blended = float(pv["cost"]) / priced_tok * 1e6 if priced_tok else 0.0
+            blended = float(pv["stored_cost"]) / priced_tok * 1e6 if priced_tok else 0.0
             md.append(
                 f"**Cache amplification (Claude Code): {ratio:.0f}×.** Prompt caching served "
                 f"{_fmt_num(int(pv['cache_read']))} cache-read tokens against only "
@@ -749,17 +923,22 @@ def build_report(f: dict[str, Any], out_dir: Path, *, archive_label: str) -> str
     if "cost_by_model" in f:
         md.append("## Cost")
         md.append("")
-        cbm = f["cost_by_model"]
-        labels = [str(r[0]) for r in cbm]
-        vals = [float(r[2]) for r in cbm]
+        cbm = [item for item in f["cost_by_model"] if isinstance(item, dict)]
+        labels = [str(r["model"]) for r in cbm]
+        vals = [float(r["catalog_cost"]) for r in cbm]
         md.append(
-            f"![cost by model]({write_chart('cost_by_model.svg', hbar_chart('Cost by model (USD)', labels, vals, unit=''))})"
+            f"![cost by model]({write_chart('cost_by_model.svg', hbar_chart('Catalog API-equivalent cost by model (USD)', labels, vals, unit=''))})"
         )
         md.append("")
-        md.append("| model | sessions | cost |")
-        md.append("|-------|----------|------|")
+        md.append("| model | provenances | sessions | stored cost | catalog API-equivalent | normalized | caveats |")
+        md.append("|-------|-------------|----------|-------------|------------------------|------------|---------|")
         for r in cbm:
-            md.append(f"| {_esc(str(r[0]))} | {_fmt_int(int(r[1]))} | {_fmt_usd(float(r[2]))} |")
+            md.append(
+                f"| {_esc(str(r['model']))} | {_esc(', '.join(str(p) for p in r['provenances']))} | "
+                f"{_fmt_int(int(r['sessions']))} | {_fmt_usd(float(r['stored_cost']))} | "
+                f"{_fmt_usd(float(r['catalog_cost']))} | {_esc(str(r['normalized_model']))} | "
+                f"{_esc(', '.join(str(reason) for reason in r['missing_reasons']) or '—')} |"
+            )
         md.append("")
         if "cost_median" in f:
             md.append(
@@ -783,12 +962,33 @@ def build_report(f: dict[str, Any], out_dir: Path, *, archive_label: str) -> str
                 + "."
             )
             md.append("")
+        pricing_meta = f.get("catalog_pricing_metadata") or {}
+        missing = f.get("catalog_price_missing_reasons") or {}
+        md.append(
+            "Catalog pricing source: "
+            f"`{_esc(str(pricing_meta.get('provenance', CATALOG_PROVENANCE)))}` "
+            f"(effective date `{_esc(str(pricing_meta.get('effective_date', CATALOG_EFFECTIVE_DATE)))}`). "
+            "Provider-reported token rows remain `origin_reported`; the catalog column is a derived "
+            "API-list-equivalent estimate using stored disjoint token lanes."
+        )
+        if isinstance(missing, dict) and missing:
+            md.append(
+                "Catalog caveats by affected row count: "
+                + ", ".join(f"{_esc(str(k))}={_fmt_int(int(v))}" for k, v in sorted(missing.items()))
+                + "."
+            )
+        md.append(
+            "Known construct-validity caveat: logical-session token attribution is still under active "
+            "repair, so fork/resume inherited-prefix usage can inflate all-provider headline totals. "
+            "Treat this report as the current archive measurement, not final billing reconciliation."
+        )
+        md.append("")
 
     # Subscription reality (the priced cost above is API-list-equivalent)
     sub = f.get("subscription_credits") or {}
     if sub.get("matched") and float(sub.get("total", 0)) > 0:
         credits = float(sub["total"])
-        api_cost = float(f.get("total_cost", 0))
+        api_cost = float((f.get("economy_by_provenance") or {}).get("priced", {}).get("stored_cost", 0))
         md.append("## Subscription reality")
         md.append("")
         md.append(
@@ -882,7 +1082,7 @@ def build_report(f: dict[str, Any], out_dir: Path, *, archive_label: str) -> str
                 md.append("")
                 md.append(
                     f"This run is bounded to the first **{_fmt_int(limit)}** structured failed outcome(s) "
-                    "in deterministic archive order. Use the same command without "
+                    "returned by the canonical action view. Use the same command without "
                     "`--failure-followup-limit` for a deliberate whole-archive scan."
                 )
             md.append("")
@@ -988,6 +1188,7 @@ def main() -> None:
             "Other report sections still run their normal archive-wide aggregates."
         ),
     )
+    ap.add_argument("--timings", action="store_true", help="Print stage timings to stderr while analyzing.")
     args = ap.parse_args()
     if args.failure_followup_limit is not None and args.failure_followup_limit <= 0:
         ap.error("--failure-followup-limit must be positive")
@@ -997,7 +1198,7 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     conn = connect_ro(index_db)
     try:
-        findings = analyze(conn, failure_followup_limit=args.failure_followup_limit)
+        findings = analyze(conn, failure_followup_limit=args.failure_followup_limit, timings=args.timings)
     finally:
         conn.close()
     followups = findings.get("structured_failure_followups")

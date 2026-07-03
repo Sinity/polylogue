@@ -340,9 +340,10 @@ devtools lab smoke run reader-visual-smoke
 ## Mining the archive
 
 `scripts/agent_forensics.py` turns an archive into a longitudinal findings
-report — token economy, cost (API-equivalent *and* subscription-credit views),
-cache amplification, model evolution, and the adoption curve — with SVG charts.
-Pure standard library, read-only, reproducible against any archive:
+report — token economy, stored/provider-priced cost, catalog API-equivalent
+estimates, subscription-credit views, cache amplification, model evolution, and
+the adoption curve — with SVG charts. It is read-only, uses Polylogue's shared
+pricing substrate, and is reproducible against any archive:
 
 ```bash
 python scripts/agent_forensics.py --archive ~/.local/share/polylogue --out ./forensics
@@ -353,7 +354,7 @@ python scripts/agent_forensics.py --archive /tmp/demo --out ./forensics-demo
 
 See [docs/agent-forensics.md](docs/agent-forensics.md) for what it reports and
 the token-accounting traps it handles (per-event deltas vs cumulative totals,
-cost provenance, subscription cache-read economics).
+stored-vs-catalog cost provenance, subscription cache-read economics).
 
 `scripts/cost_accounting_demo.py` proves the cross-provider cost accounting end
 to end with no mocks: it ingests a crafted Codex session through Polylogue's
