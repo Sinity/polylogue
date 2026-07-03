@@ -124,6 +124,8 @@ def test_read_package_dry_run_emits_summary_without_writing(
     assert payload["artifacts"][0]["view"] == "dialogue"
     assert payload["artifacts"][0]["projection"] == {}
     assert payload["artifacts"][0]["render"] == {}
+    assert payload["artifacts"][0]["status"] == "planned"
+    assert payload["artifacts"][0]["duration_ms"] is None
     assert not (tmp_path / "out").exists()
 
 
@@ -395,6 +397,8 @@ def test_read_package_json_keeps_child_output_off_stdout(
             "019f",
             "--out-dir",
             str(tmp_path / "out"),
+            "--runner",
+            "subprocess",
             "--json",
         ]
     )
@@ -404,6 +408,8 @@ def test_read_package_json_keeps_child_output_off_stdout(
     assert "child progress line" not in captured.out
     assert "child progress line" in captured.err
     payload = json.loads(captured.out)
+    assert payload["artifacts"][0]["status"] == "rendered"
+    assert isinstance(payload["artifacts"][0]["duration_ms"], float)
     assert payload["artifacts"][0]["bytes"] == 2
 
 
@@ -444,6 +450,8 @@ def test_read_package_json_reports_pruned_files(
             "019f",
             "--out-dir",
             str(out_dir),
+            "--runner",
+            "subprocess",
             "--json",
         ]
     )
@@ -453,6 +461,82 @@ def test_read_package_json_reports_pruned_files(
     assert payload["prune"] == ["stale.md", "missing.md"]
     assert payload["pruned"] == [str(out_dir / "stale.md")]
     assert not (out_dir / "stale.md").exists()
+
+
+def test_read_package_default_runner_invokes_polylogue_in_process(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive"))
+    spec_path = tmp_path / "package.json"
+    _write_read_package_spec(spec_path)
+
+    from polylogue.cli import click_app
+
+    def fake_cli_main(*, args: list[str], prog_name: str, standalone_mode: bool) -> None:
+        assert prog_name == "polylogue"
+        assert standalone_mode is False
+        out_index = args.index("--out") + 1
+        Path(args[out_index]).write_text("{}", encoding="utf-8")
+        print("in-process progress")
+
+    monkeypatch.setattr(click_app.cli, "main", fake_cli_main)
+
+    result = main(
+        [
+            "--spec",
+            str(spec_path),
+            "--session-id",
+            "019f",
+            "--out-dir",
+            str(tmp_path / "out"),
+            "--json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert "in-process progress" not in captured.out
+    assert "in-process progress" in captured.err
+    payload = json.loads(captured.out)
+    assert payload["artifacts"][0]["status"] == "rendered"
+    assert payload["artifacts"][0]["bytes"] == 2
+
+
+def test_read_package_fails_when_runner_does_not_write_declared_artifact(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive"))
+    spec_path = tmp_path / "package.json"
+    _write_read_package_spec(spec_path)
+
+    from polylogue.cli import click_app
+
+    def fake_cli_main(*, args: list[str], prog_name: str, standalone_mode: bool) -> None:
+        del args, prog_name, standalone_mode
+        print("claimed success")
+
+    monkeypatch.setattr(click_app.cli, "main", fake_cli_main)
+
+    result = main(
+        [
+            "--spec",
+            str(spec_path),
+            "--session-id",
+            "019f",
+            "--out-dir",
+            str(tmp_path / "out"),
+            "--json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "claimed success" in captured.err
+    assert "did not write" in captured.err
 
 
 def test_read_package_json_reports_successor_freshness(
@@ -525,6 +609,8 @@ def test_read_package_json_reports_successor_freshness(
             "parent-native",
             "--out-dir",
             str(tmp_path / "out"),
+            "--runner",
+            "subprocess",
             "--json",
         ]
     )

@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import json
 import os
 import sqlite3
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TextIO
 
 import yaml
 
@@ -101,6 +103,23 @@ class ReadPackagePlanItem:
     artifact: ReadPackageArtifact
     out_path: Path
     argv: tuple[str, ...]
+
+
+ReadPackageRunner = Literal["in-process", "subprocess"]
+
+
+@dataclass(frozen=True, slots=True)
+class ReadPackageArtifactResult:
+    status: str
+    duration_ms: float | None
+    bytes: int | None
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "duration_ms": self.duration_ms,
+            "bytes": self.bytes,
+        }
 
 
 def _utc_now_iso() -> str:
@@ -442,9 +461,44 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--session-id", required=True, help="Session id or native id accepted by `polylogue --id`.")
     parser.add_argument("--out-dir", type=Path, required=True, help="Directory for generated package artifacts.")
     parser.add_argument("--polylogue-bin", default=os.environ.get("POLYLOGUE_BIN", "polylogue"))
+    parser.add_argument(
+        "--runner",
+        choices=("in-process", "subprocess"),
+        default="in-process",
+        help="Artifact execution strategy. In-process avoids one Python cold start per artifact.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print the plan without running commands.")
     parser.add_argument("--json", action="store_true", help="Emit a machine-readable summary.")
     return parser
+
+
+def _planned_artifact_results(plan: tuple[ReadPackagePlanItem, ...]) -> dict[str, ReadPackageArtifactResult]:
+    return {
+        item.artifact.name: ReadPackageArtifactResult(status="planned", duration_ms=None, bytes=None) for item in plan
+    }
+
+
+def _run_artifact_command(
+    item: ReadPackagePlanItem,
+    *,
+    runner: ReadPackageRunner,
+    progress_stream: TextIO,
+) -> ReadPackageArtifactResult:
+    started = time.perf_counter()
+    print(f"[read-package] {item.artifact.name}: rendering {item.out_path}", file=progress_stream)
+    if runner == "in-process":
+        from polylogue.cli.click_app import cli
+
+        with contextlib.redirect_stdout(progress_stream), contextlib.redirect_stderr(progress_stream):
+            cli.main(args=list(item.argv[1:]), prog_name=item.argv[0], standalone_mode=False)
+    else:
+        subprocess.run(item.argv, check=True, stdout=progress_stream, stderr=progress_stream)
+    duration_ms = round((time.perf_counter() - started) * 1000, 3)
+    if not item.out_path.exists():
+        raise RuntimeError(f"read-package artifact {item.artifact.name!r} did not write {item.out_path}")
+    size = item.out_path.stat().st_size
+    print(f"[read-package] {item.artifact.name}: wrote {size} byte(s) in {duration_ms:.1f} ms", file=progress_stream)
+    return ReadPackageArtifactResult(status="rendered", duration_ms=duration_ms, bytes=size)
 
 
 def _summary(
@@ -457,6 +511,7 @@ def _summary(
     pruned: list[str],
     dry_run: bool,
     generated_at: str,
+    artifact_results: dict[str, ReadPackageArtifactResult],
 ) -> dict[str, object]:
     return {
         "generated_at": generated_at,
@@ -478,7 +533,7 @@ def _summary(
                 "render": item.artifact.render.as_payload(),
                 "path": str(item.out_path),
                 "argv": list(item.argv),
-                "bytes": item.out_path.stat().st_size if item.out_path.exists() else None,
+                **artifact_results[item.artifact.name].as_payload(),
             }
             for item in plan
         ],
@@ -501,6 +556,7 @@ def main(argv: list[str] | None = None) -> int:
         polylogue_bin=args.polylogue_bin,
     )
     pruned = []
+    artifact_results = _planned_artifact_results(plan)
     if not args.dry_run:
         out_dir.mkdir(parents=True, exist_ok=True)
         for rel in spec.prune:
@@ -508,10 +564,18 @@ def main(argv: list[str] | None = None) -> int:
             if target.exists():
                 target.unlink()
                 pruned.append(str(target))
+        progress_stream = sys.stderr if args.json else sys.stdout
         for item in plan:
             item.out_path.parent.mkdir(parents=True, exist_ok=True)
-            child_stdout = sys.stderr if args.json else None
-            subprocess.run(item.argv, check=True, stdout=child_stdout)
+            try:
+                artifact_results[item.artifact.name] = _run_artifact_command(
+                    item,
+                    runner=args.runner,
+                    progress_stream=progress_stream,
+                )
+            except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+                print(f"read-package: {exc}", file=sys.stderr)
+                return 1
 
     generated_at = _utc_now_iso()
     summary = _summary(
@@ -523,6 +587,7 @@ def main(argv: list[str] | None = None) -> int:
         pruned=pruned,
         dry_run=args.dry_run,
         generated_at=generated_at,
+        artifact_results=artifact_results,
     )
     if args.json:
         print(json.dumps(summary, indent=2))
