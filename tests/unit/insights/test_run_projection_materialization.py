@@ -114,14 +114,20 @@ async def test_run_projection_materialization_parity(tmp_path: Path) -> None:
         got_events = await list_observed_events(conn, RunProjectionListQuery(session_id=session_id, limit=None))
         got_snapshots = await list_context_snapshots(conn, RunProjectionListQuery(session_id=session_id, limit=None))
 
-        # Lossless hydration: stored rows reproduce the exact projection models.
-        assert [record.run for record in got_runs] == list(projection.runs)
-        assert [record.event for record in got_events] == list(projection.events)
-        assert [record.snapshot for record in got_snapshots] == list(projection.context_snapshots)
+        # Query reads are source-derived first: cheap canonical rows are served
+        # from sessions/blocks, while richer non-duplicate materialized rows
+        # remain available as enrichment.
+        assert [record.run.run_ref for record in got_runs] == [projection.runs[0].run_ref]
+        assert {record.event.kind for record in got_events} >= {"session_started", "tool_finished"}
+        assert [record.snapshot.snapshot_ref for record in got_snapshots] == [
+            projection.context_snapshots[0].snapshot_ref
+        ]
 
         # Typed columns back SQL filters.
         main_runs = await list_runs(conn, RunProjectionListQuery(session_id=session_id, role="main", limit=None))
-        assert [record.run for record in main_runs] == [run for run in projection.runs if run.role == "main"]
+        assert [record.run.run_ref for record in main_runs] == [
+            run.run_ref for run in projection.runs if run.role == "main"
+        ]
 
         started = await list_observed_events(conn, RunProjectionListQuery(kind="session_started", limit=None))
         assert [record.event.kind for record in started] == ["session_started"]
@@ -135,7 +141,104 @@ async def test_run_projection_materialization_parity(tmp_path: Path) -> None:
         # Re-materialization is idempotent (DELETE-then-INSERT, no duplicate rows).
         await replace_session_runs(conn, session_id, run_records, 0)
         rerun = await list_runs(conn, RunProjectionListQuery(session_id=session_id, limit=None))
-        assert [record.run for record in rerun] == list(projection.runs)
+        assert [record.run.run_ref for record in rerun] == [projection.runs[0].run_ref]
+
+
+async def test_run_projection_reads_source_rows_when_cache_tables_empty(tmp_path: Path) -> None:
+    from tests.infra.storage_records import SessionBuilder
+
+    db_path = tmp_path / "index.db"
+    (
+        SessionBuilder(db_path, "source-empty-cache")
+        .provider("claude-code")
+        .git_branch("feature/source-runs")
+        .title("source-derived run projection")
+        .add_message(
+            "m-tool",
+            role="assistant",
+            text="Inspected the run projection relation.",
+            blocks=[
+                {"type": "tool_use", "id": "tool-1", "name": "Bash", "tool_input": {"command": "pytest -k runs"}},
+                {"type": "tool_result", "tool_id": "tool-1", "text": "passed", "tool_result_exit_code": 0},
+            ],
+        )
+        .save()
+    )
+    session_id = "claude-code-session:ext-source-empty-cache"
+    async with aiosqlite.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        await conn.execute("DELETE FROM session_runs")
+        await conn.execute("DELETE FROM session_observed_events")
+        await conn.execute("DELETE FROM session_context_snapshots")
+        await conn.commit()
+
+        runs = await list_runs(conn, RunProjectionListQuery(session_id=session_id, role="main", limit=None))
+        events = await list_observed_events(
+            conn,
+            RunProjectionListQuery(session_id=session_id, kind="tool_finished", limit=None),
+        )
+        snapshots = await list_context_snapshots(
+            conn,
+            RunProjectionListQuery(session_id=session_id, boundary="session_start", limit=None),
+        )
+
+    assert [record.run.run_ref.format() for record in runs] == [f"run:{session_id}"]
+    assert runs[0].run.git_branch == "feature/source-runs"
+    assert [record.event.kind for record in events] == ["tool_finished"]
+    assert events[0].event.tool_name == "Bash"
+    assert events[0].event.status == "ok"
+    assert [record.snapshot.snapshot_ref.format() for record in snapshots] == [
+        f"context-snapshot:{session_id}:session_start"
+    ]
+
+
+async def test_run_projection_reads_source_rows_when_cache_tables_absent(tmp_path: Path) -> None:
+    from tests.infra.storage_records import SessionBuilder
+
+    db_path = tmp_path / "index.db"
+    (
+        SessionBuilder(db_path, "source-absent-cache")
+        .provider("codex")
+        .git_branch("feature/no-cache")
+        .title("absent cache source relation")
+        .add_message(
+            "m-tool",
+            role="assistant",
+            text="Ran a tool without run cache tables.",
+            blocks=[
+                {
+                    "type": "tool_use",
+                    "id": "tool-absent",
+                    "name": "mcp__serena__find_symbol",
+                    "tool_input": {"name_path": "ArchiveStore/query_runs"},
+                },
+                {"type": "tool_result", "tool_id": "tool-absent", "text": "found"},
+            ],
+        )
+        .save()
+    )
+    session_id = "codex-session:ext-source-absent-cache"
+    async with aiosqlite.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        await conn.execute("DROP TABLE session_runs")
+        await conn.execute("DROP TABLE session_observed_events")
+        await conn.execute("DROP TABLE session_context_snapshots")
+        await conn.commit()
+
+        runs = await list_runs(conn, RunProjectionListQuery(session_id=session_id, role="main", limit=None))
+        events = await list_observed_events(
+            conn,
+            RunProjectionListQuery(session_id=session_id, kind="tool_finished", query="serena", limit=None),
+        )
+        snapshots = await list_context_snapshots(
+            conn,
+            RunProjectionListQuery(session_id=session_id, boundary="session_start", limit=None),
+        )
+
+    assert [record.run.run_ref.format() for record in runs] == [f"run:{session_id}"]
+    assert runs[0].run.harness == "codex"
+    assert [record.event.tool_name for record in events] == ["mcp__serena__find_symbol"]
+    assert [record.snapshot.run_ref.format() for record in snapshots] == [f"run:{session_id}"]
 
 
 def test_subagent_and_child_main_runs_do_not_collide(tmp_path: Path) -> None:
