@@ -456,7 +456,7 @@ def test_pending_failed_retry_without_needed_work_advances_backoff(
         raise AssertionError("no-needed-work retry should not ingest")
 
     watcher._ingest_files = fail_ingest_files  # type: ignore[assignment,method-assign]
-    watcher._needs_work_from_state = lambda *args, **kwargs: False  # type: ignore[assignment,method-assign]
+    watcher._needs_work_from_state = lambda *args, **kwargs: False  # type: ignore[method-assign]
     watcher._pending_paths.add(failed)
 
     asyncio.run(watcher._flush_pending())

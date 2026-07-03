@@ -235,10 +235,15 @@ class TestAttachBehaviour:
             "claude-code-session:ext-evidence:m-user",
             "claude-code-session:ext-evidence:m-assistant",
         }
-        assert attached["action"][session_id][0]["tool_name"] == "Edit"
-        assert attached["action"][session_id][0]["semantic_type"] == "file_edit"
-        assert len(attached["action"][session_id][0]["output_text"]) == 2000
-        assert attached["action"][session_id][0]["output_text_truncated_chars"] > 0
+        action_payload = attached["action"][session_id][0]
+        output_text = action_payload["output_text"]
+        truncated_chars = action_payload["output_text_truncated_chars"]
+        assert action_payload["tool_name"] == "Edit"
+        assert action_payload["semantic_type"] == "file_edit"
+        assert isinstance(output_text, str)
+        assert isinstance(truncated_chars, int)
+        assert len(output_text) == 2000
+        assert truncated_chars > 0
         assert attached["file"][session_id][0]["path"] == "polylogue/archive/query/expression.py"
 
     def test_fetch_attached_units_applies_payload_field_selection(self, tmp_path: Path) -> None:

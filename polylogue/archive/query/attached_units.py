@@ -82,7 +82,7 @@ def _compact_attached_payload(payload: JSONDocument) -> JSONDocument:
         if isinstance(value, str) and len(value) > _MAX_ATTACHED_TEXT_CHARS:
             compacted[field] = value[:_MAX_ATTACHED_TEXT_CHARS]
             compacted[f"{field}_truncated_chars"] = len(value) - _MAX_ATTACHED_TEXT_CHARS
-    return cast(JSONDocument, compacted)
+    return compacted
 
 
 def _select_payload_fields(

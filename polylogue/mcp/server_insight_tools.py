@@ -46,6 +46,12 @@ _COMPLETE_BY_DEFAULT_INSIGHT_TOOLS = frozenset(
 )
 
 
+def _object_int(value: object) -> int:
+    if value is None:
+        return 0
+    return int(str(value))
+
+
 def _origin_to_provider_token(value: str | None) -> str | None:
     if value is None or value == "":
         return None
@@ -70,7 +76,7 @@ def _register_list_tool(
             explicit_limit = "limit" in kwargs and kwargs["limit"] is not None
             normalized_kwargs = spec.normalize_kwargs(hooks.clamp_limit, kwargs)
             requested_limit = normalized_kwargs.get("limit") if explicit_limit else None
-            requested_offset = int(normalized_kwargs.get("offset") or 0)
+            requested_offset = _object_int(normalized_kwargs.get("offset"))
             if pt.name in _COMPLETE_BY_DEFAULT_INSIGHT_TOOLS:
                 normalized_kwargs["limit"] = None
                 normalized_kwargs["offset"] = 0
@@ -81,7 +87,7 @@ def _register_list_tool(
                 if requested_offset:
                     page = page[requested_offset:]
                 if requested_limit is not None:
-                    page = page[: int(requested_limit)]
+                    page = page[: _object_int(requested_limit)]
             payload = insight_items_payload(page, pt, item_key="items")
             if pt.name in _COMPLETE_BY_DEFAULT_INSIGHT_TOOLS:
                 payload["total"] = total

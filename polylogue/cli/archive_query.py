@@ -10,7 +10,7 @@ import webbrowser
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import redirect_stdout
 from dataclasses import replace
-from typing import NoReturn, TypeVar, cast
+from typing import Any, NoReturn, TypeVar, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
@@ -26,6 +26,7 @@ from polylogue.archive.query.expression import (
     split_with_projection_clause,
 )
 from polylogue.archive.query.metadata import query_unit_descriptor
+from polylogue.archive.query.predicate import QueryPredicate
 from polylogue.archive.query.spec import (
     QuerySpecError,
     SessionQuerySpec,
@@ -76,6 +77,12 @@ _QueryUnitTextLine = Callable[[dict[str, object]], str]
 _DAEMON_FAST_PATH_TIMEOUT_S = 0.75
 
 
+def _object_int(value: object) -> int:
+    if value is None:
+        return 0
+    return int(str(value))
+
+
 class _ArchiveFilterKwargs(TypedDict):
     origin: str | None
     origins: tuple[str, ...]
@@ -106,7 +113,7 @@ class _ArchiveFilterKwargs(TypedDict):
     since_ms: int | None
     until_ms: int | None
     since_session_id: str | None
-    boolean_predicate: NotRequired[object]
+    boolean_predicate: NotRequired[QueryPredicate]
 
 
 def execute_delete_by_session_ids(
@@ -376,7 +383,11 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                     )
                     return
                 try:
-                    grouped = archive.stats_by(group_by, **_stats_filter_kwargs(filter_kwargs), session_ids=session_ids)
+                    grouped = archive.stats_by(
+                        group_by,
+                        **cast(Any, _stats_filter_kwargs(filter_kwargs)),
+                        session_ids=session_ids,
+                    )
                 except ValueError as exc:
                     raise click.UsageError(str(exc)) from exc
                 _emit_stats_by(
@@ -397,7 +408,10 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                     fields=fields,
                 )
                 return
-            stats = archive.stats(**_stats_filter_kwargs(filter_kwargs), session_ids=session_ids)
+            stats = archive.stats(
+                **cast(Any, _stats_filter_kwargs(filter_kwargs)),
+                session_ids=session_ids,
+            )
             _emit_stats(stats, output_format=output_format, origin=origin, query=query, fields=fields)
             return
         if params.get("count_only"):
@@ -1066,7 +1080,7 @@ def _emit_daemon_list_payload(
     fields: str | None,
 ) -> None:
     items = [dict(item) for item in cast(list[object], payload.get("items") or []) if isinstance(item, Mapping)]
-    total = int(payload.get("total") or len(items))
+    total = _object_int(payload.get("total") or len(items))
     next_offset = offset + limit if total > offset + limit else None
     envelope: dict[str, object] = {
         "mode": "list",
@@ -1094,7 +1108,7 @@ def _emit_daemon_search_payload(
     typo_hint: str | None,
 ) -> None:
     hits = [dict(item) for item in cast(list[object], payload.get("hits") or []) if isinstance(item, Mapping)]
-    total = int(payload.get("total") or len(hits))
+    total = _object_int(payload.get("total") or len(hits))
     envelope: dict[str, object] = {
         "mode": "search",
         "origin": origin,

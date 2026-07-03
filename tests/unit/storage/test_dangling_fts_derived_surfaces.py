@@ -315,7 +315,7 @@ async def test_async_search_readiness_trusts_stale_ledger_without_exact_recount(
         try:
             readiness = await message_fts_search_readiness_async(conn)
         finally:
-            await conn.set_trace_callback(None)
+            await conn.set_trace_callback(lambda _statement: None)
 
     assert readiness == {
         "exists": True,
