@@ -210,6 +210,26 @@ def test_status_json_reports_archive_embedding_metadata_without_detail(tmp_path:
     assert payload["newest_embedded_at"] == "2026-01-01T00:01:40+00:00"
 
 
+def test_status_json_default_does_not_exact_count_archive_session_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_anchor = tmp_path / "custom.sqlite"
+    _seed_archive_file_set_from_archive_tiers(tmp_path / "index.db")
+
+    def fail_exact_session_state(*args: object, **kwargs: object) -> object:
+        raise AssertionError("default status must not scan exact archive embedding session state")
+
+    monkeypatch.setattr(status_payload_mod, "count_archive_embedding_session_state", fail_exact_session_state)
+
+    payload = _run_status(db_anchor, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+
+    assert payload["status"] == "partial"
+    assert payload["embedded_sessions"] == 1
+    assert payload["pending_sessions"] == 1
+    assert payload["pending_messages"] is None
+    assert payload["pending_messages_exact"] is False
+
+
 def test_status_json_uses_uniform_metadata_probe_when_grouping_times_out(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

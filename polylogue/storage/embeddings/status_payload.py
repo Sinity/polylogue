@@ -315,6 +315,35 @@ def _coverage_percent(*, embedded_sessions: int, eligible_sessions: int, total_s
     return embedded_sessions / eligible_sessions * 100
 
 
+def _archive_embedding_session_state_summary(
+    conn: sqlite3.Connection,
+    *,
+    status_table: str,
+    total_sessions: int,
+    include_detail: bool,
+) -> tuple[int, int]:
+    """Return embedded/pending session counts without exact prose scans by default."""
+
+    if include_detail:
+        session_state = count_archive_embedding_session_state(conn, status_table=status_table, rebuild=False)
+        return session_state.embedded_sessions, session_state.pending_sessions
+    if total_sessions <= 0:
+        return 0, 0
+    if not status_table:
+        return 0, total_sessions
+    embedded_sessions = _scalar_int(
+        conn,
+        f"""
+        SELECT COUNT(*)
+        FROM {status_table}
+        WHERE COALESCE(needs_reindex, 0) = 0
+          AND error_message IS NULL
+        """,
+    )
+    pending_sessions = max(total_sessions - embedded_sessions, 0)
+    return embedded_sessions, pending_sessions
+
+
 def _embedding_status(
     *,
     total_sessions: int,
@@ -518,9 +547,12 @@ def _archive_embedding_status_payload(
         has_status = bool(status_table)
         has_meta = bool(meta_table)
         total_sessions = _scalar_int(conn, "SELECT COUNT(*) FROM sessions")
-        session_state = count_archive_embedding_session_state(conn, status_table=status_table, rebuild=False)
-        embedded_sessions = session_state.embedded_sessions if has_status else 0
-        pending_sessions = session_state.pending_sessions
+        embedded_sessions, pending_sessions = _archive_embedding_session_state_summary(
+            conn,
+            status_table=status_table,
+            total_sessions=total_sessions,
+            include_detail=include_detail,
+        )
         if has_status:
             embedded_messages = _scalar_int(
                 conn,
