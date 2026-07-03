@@ -20,6 +20,7 @@ from polylogue.cli.archive_query import (
     _ellipsize,
     _emit_delete,
     _emit_no_results,
+    _emit_stats,
     _has_value,
     _hit_line,
     _limit,
@@ -68,6 +69,43 @@ def test_emit_no_results_json_includes_convergence_warning(capsys: pytest.Captur
     assert payload["convergence_warning"] == warning
     assert payload["items"] == []
     assert payload["total"] == 0
+
+
+def test_emit_stats_includes_convergence_warning(capsys: pytest.CaptureFixture[str]) -> None:
+    from polylogue.archive.stats import ArchiveStats
+
+    warning = "Archive is converging: 3 index rebuild attempt(s) active; results may be partial."
+    stats = ArchiveStats(
+        total_sessions=3,
+        total_messages=12,
+        total_attachments=0,
+        origins={"codex-session": 3},
+    )
+
+    with patch("polylogue.cli.convergence_feedback.convergence_warning_line", return_value=warning):
+        _emit_stats(stats, output_format="plaintext", origin=None, query="", fields=None)
+
+    assert capsys.readouterr().out.splitlines()[:2] == [warning, "Sessions: 3"]
+
+
+def test_emit_stats_json_includes_convergence_warning(capsys: pytest.CaptureFixture[str]) -> None:
+    from polylogue.archive.stats import ArchiveStats
+
+    warning = "Archive is converging: 3 index rebuild attempt(s) active; results may be partial."
+    stats = ArchiveStats(
+        total_sessions=3,
+        total_messages=12,
+        total_attachments=0,
+        origins={"codex-session": 3},
+    )
+
+    with patch("polylogue.cli.convergence_feedback.convergence_warning_line", return_value=warning):
+        _emit_stats(stats, output_format="json", origin=None, query="", fields=None)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["archive_converging"] is True
+    assert payload["convergence_warning"] == warning
+    assert payload["total_sessions"] == 3
 
 
 # Tests for _resolve_origins

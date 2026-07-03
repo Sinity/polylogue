@@ -1472,12 +1472,18 @@ def _emit_stats(
     query: str,
     fields: str | None,
 ) -> None:
+    from polylogue.cli.convergence_feedback import convergence_warning_line
+
+    convergence_warning = convergence_warning_line()
     payload = {
         "mode": "stats",
         "origin": origin,
         "query": query or None,
         **stats.to_dict(),
     }
+    if convergence_warning is not None:
+        payload["archive_converging"] = True
+        payload["convergence_warning"] = convergence_warning
     if output_format == "json":
         click.echo(json.dumps(_project_payload(payload, fields), indent=2, sort_keys=True))
         return
@@ -1488,17 +1494,16 @@ def _emit_stats(
         return
     if output_format not in {"markdown", "plaintext"}:
         raise click.UsageError(f"Stats do not support --format {output_format}.")
-    click.echo(
-        "\n".join(
-            [
-                f"Sessions: {stats.total_sessions}",
-                f"Messages: {stats.total_messages}",
-                f"Attachments: {stats.total_attachments}",
-                f"Origins: {stats.origin_count}",
-                f"Average messages: {stats.avg_messages_per_session:.1f}",
-            ]
-        )
-    )
+    lines = [
+        f"Sessions: {stats.total_sessions}",
+        f"Messages: {stats.total_messages}",
+        f"Attachments: {stats.total_attachments}",
+        f"Origins: {stats.origin_count}",
+        f"Average messages: {stats.avg_messages_per_session:.1f}",
+    ]
+    if convergence_warning is not None:
+        lines.insert(0, convergence_warning)
+    click.echo("\n".join(lines))
 
 
 def _emit_stats_by(
