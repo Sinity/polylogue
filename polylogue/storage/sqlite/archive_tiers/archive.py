@@ -34,6 +34,7 @@ from polylogue.archive.semantic.pricing import (
     CostUsagePayload,
     _normalize_model,
 )
+from polylogue.archive.semantic.subscription_pricing import compute_credit_cost
 from polylogue.archive.stats import ArchiveStats
 from polylogue.core.dates import parse_date
 from polylogue.core.enums import Provider
@@ -175,24 +176,6 @@ from polylogue.storage.sqlite.queries.sessions_identity import session_id_prefix
 from polylogue.storage.sqlite.queries.tool_usage import ToolUsageProviderCoverageRow, ToolUsageRow
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 from polylogue.types import SessionId
-
-_SUBSCRIPTION_CREDIT_RATES: dict[str, tuple[float, float]] = {
-    "opus": (10 / 15, 50 / 15),
-    "sonnet": (6 / 15, 30 / 15),
-    "haiku": (2 / 15, 10 / 15),
-}
-
-
-def _subscription_credit_estimate(
-    model_name: str, input_tokens: int, output_tokens: int, cache_write_tokens: int
-) -> float:
-    """Estimate Claude subscription credits; cache reads are not metered on plans."""
-
-    lowered = model_name.lower()
-    for family, (input_rate, output_rate) in _SUBSCRIPTION_CREDIT_RATES.items():
-        if family in lowered:
-            return (input_tokens + cache_write_tokens) * input_rate + output_tokens * output_rate
-    return 0.0
 
 
 @dataclass(slots=True)
@@ -1958,10 +1941,11 @@ class ArchiveStore:
             item.stored_cost_usd += float(row["stored_cost_usd"] or 0.0)
             item.subscription_credits += float(row["stored_credits"] or 0.0)
             if not float(row["stored_credits"] or 0.0):
-                item.subscription_credits += _subscription_credit_estimate(
-                    str(row["model_name"] or ""),
+                item.subscription_credits += compute_credit_cost(
+                    _normalize_model(str(row["model_name"] or "")),
                     int(row["input_tokens"] or 0),
                     int(row["output_tokens"] or 0),
+                    0,
                     int(row["cache_write_tokens"] or 0),
                 )
             provenance = str(row["cost_provenance"] or "unknown")

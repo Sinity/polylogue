@@ -39,6 +39,7 @@ from polylogue.archive.semantic.pricing import (
     _normalize_model,
     estimate_cost,
 )
+from polylogue.archive.semantic.subscription_pricing import compute_credit_cost
 
 # --------------------------------------------------------------------------- #
 # SVG charting (dependency-free)
@@ -457,8 +458,8 @@ def analyze(
             f["cost_max"] = per_session[-1]
             f["cost_hist"] = _log_histogram(per_session)
         # Subscription (Claude Max/Pro) credit view. Cache reads are FREE on
-        # plans; usage is metered in credits with per-family rates, cache writes
-        # billed at the input rate. (Rates reverse-engineered by she-llac.com.)
+        # plans; usage is metered in credits through the shared subscription
+        # pricing catalog, with cache writes billed at the input rate.
         per_model_classes = conn.execute(
             """
             SELECT model_name, COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
@@ -734,24 +735,8 @@ def _log_histogram(values: list[float]) -> list[tuple[str, int]]:
     return out
 
 
-# Claude subscription credit rates (credits/token), reverse-engineered by
-# she-llac.com/claude-limits. Cache reads are FREE on plans; cache writes are
-# billed at the input rate. Output is 5× input; Opus is 5× Haiku.
-_CREDIT_RATES = {
-    "opus": (10 / 15, 50 / 15),
-    "sonnet": (6 / 15, 30 / 15),
-    "haiku": (2 / 15, 10 / 15),
-}
 # Max-20× plan capacity (credits): 11M/5h, ~83.333M/week, ~361.1M/month.
 _MAX20_CREDITS_PER_MONTH = 361_100_000.0
-
-
-def _model_family(model_name: str) -> str | None:
-    m = model_name.lower()
-    for fam in _CREDIT_RATES:
-        if fam in m:
-            return fam
-    return None
 
 
 def _subscription_credits(per_model_classes: list[Any]) -> dict[str, Any]:
@@ -761,18 +746,23 @@ def _subscription_credits(per_model_classes: list[Any]) -> dict[str, Any]:
     are free. Rows are (model_name, input, output, cache_write).
     """
     total = 0.0
-    by_family: dict[str, float] = {}
+    by_model: dict[str, float] = {}
     matched = False
     for model_name, inp, outp, cwrite in per_model_classes:
-        fam = _model_family(str(model_name))
-        if fam is None:
+        normalized_model = _normalize_model(str(model_name))
+        credits = compute_credit_cost(
+            normalized_model,
+            int(inp),
+            int(outp),
+            cache_read_tokens=0,
+            cache_write_tokens=int(cwrite),
+        )
+        if credits <= 0:
             continue
         matched = True
-        in_rate, out_rate = _CREDIT_RATES[fam]
-        credits = (int(inp) + int(cwrite)) * in_rate + int(outp) * out_rate
-        by_family[fam] = by_family.get(fam, 0.0) + credits
+        by_model[normalized_model] = by_model.get(normalized_model, 0.0) + credits
         total += credits
-    return {"total": total, "by_family": by_family, "matched": matched}
+    return {"total": total, "by_family": by_model, "matched": matched}
 
 
 # --------------------------------------------------------------------------- #
@@ -996,9 +986,9 @@ def build_report(f: dict[str, Any], out_dir: Path, *, archive_label: str) -> str
             "Claude Code on a **Max subscription**, where the economics differ "
             "sharply: **cache reads are free** (the API charges 10% of input), and "
             "usage is metered in *credits* — `(input + cache_write) × in_rate + "
-            "output × out_rate`, cache reads excluded. (Credit rates "
-            "reverse-engineered by [she-llac.com](https://she-llac.com/claude-limits); "
-            "estimate, not official.)"
+            "output × out_rate`, cache reads excluded. Credit rates come from "
+            "Polylogue's dated subscription-pricing catalog; estimate, not "
+            "provider billing truth.)"
         )
         md.append("")
         bf = sub.get("by_family") or {}
