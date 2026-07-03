@@ -854,6 +854,8 @@ _QUERY_UNIT_BY_UNIT: dict[QueryUnitName, QueryUnitDescriptor] = {
     descriptor.unit: descriptor for descriptor in QUERY_UNIT_DESCRIPTORS
 }
 
+PROJECTION_QUERY_UNITS: frozenset[QueryUnitName] = frozenset({"action", "assertion", "file", "message"})
+
 
 def query_unit_descriptors(
     *,
@@ -873,6 +875,12 @@ def query_unit_descriptors(
     if lowerer_kind is not None:
         descriptors = tuple(descriptor for descriptor in descriptors if descriptor.lowerer_kind == lowerer_kind)
     return descriptors
+
+
+def projection_query_unit_descriptors() -> tuple[QueryUnitDescriptor, ...]:
+    """Return query-unit descriptors supported by session ``with <units>`` projection."""
+
+    return tuple(descriptor for descriptor in QUERY_UNIT_DESCRIPTORS if descriptor.unit in PROJECTION_QUERY_UNITS)
 
 
 _SOURCE_WHERE_SOURCES: tuple[tuple[str, QueryUnitName], ...] = tuple(
@@ -1322,6 +1330,8 @@ __all__ = [
     "date_query_operators",
     "numeric_query_fields",
     "numeric_query_operators",
+    "projection_query_unit_descriptors",
+    "PROJECTION_QUERY_UNITS",
     "query_unit_descriptor",
     "query_unit_descriptors",
     "query_unit_field_info",

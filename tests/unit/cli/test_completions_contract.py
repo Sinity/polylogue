@@ -139,6 +139,21 @@ class TestQueryCompletionMetadata:
         assert isinstance(candidates, list)
         assert [candidate["value"] for candidate in candidates] == ["boundary"]
 
+    def test_query_completions_prints_projection_units(self, runner: CliRunner) -> None:
+        result = runner.invoke(
+            cli,
+            ["config", "query-completions", "--kind", "projection-unit", "--incomplete", "f"],
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["kind"] == "projection-unit"
+        candidates = payload["candidates"]
+        assert isinstance(candidates, list)
+        assert [candidate["value"] for candidate in candidates] == ["file"]
+        assert candidates[0]["insert"] == "files"
+        assert candidates[0]["kind"] == "query-projection-unit"
+
     def test_query_completions_reports_missing_context_cleanly(self, runner: CliRunner) -> None:
         result = runner.invoke(cli, ["config", "query-completions", "--kind", "terminal-field"])
 

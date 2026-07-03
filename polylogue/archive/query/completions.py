@@ -18,6 +18,7 @@ from polylogue.archive.query.metadata import (
     date_query_operators,
     numeric_query_fields,
     numeric_query_operators,
+    projection_query_unit_descriptors,
     query_unit_descriptor,
     structural_query_field_info,
     structural_query_fields,
@@ -42,6 +43,7 @@ QUERY_COMPLETION_KINDS: tuple[str, ...] = (
     "terminal-source",
     "terminal-field",
     "pipeline-stage",
+    "projection-unit",
     "count-operator",
     "numeric-operator",
     "date-operator",
@@ -351,6 +353,33 @@ def query_pipeline_stage_candidates(source: str, incomplete: str) -> list[QueryC
     return candidates
 
 
+def query_projection_unit_candidates(incomplete: str) -> list[QueryCompletionCandidate]:
+    """Return unit candidates accepted after a session-query ``with`` clause."""
+
+    current = incomplete.strip().lower()
+    candidates: list[QueryCompletionCandidate] = []
+    for descriptor in projection_query_unit_descriptors():
+        aliases = descriptor.source_aliases
+        if current and not any(alias.startswith(current) for alias in aliases):
+            continue
+        insert = descriptor.plural_source if descriptor.plural_source.startswith(current) else descriptor.unit
+        candidates.append(
+            QueryCompletionCandidate(
+                value=descriptor.unit,
+                insert=insert,
+                display=descriptor.plural_source,
+                kind="query-projection-unit",
+                group="query projection units",
+                description=(
+                    f"Attach {descriptor.plural_source} to selected session results. {descriptor.description}"
+                ),
+                source="QUERY_UNIT_DESCRIPTORS/PROJECTION_QUERY_UNITS",
+                payload_model=descriptor.payload_model,
+            )
+        )
+    return candidates
+
+
 def query_count_operator_candidates(field: str, incomplete: str) -> list[QueryCompletionCandidate]:
     """Return readable count operators accepted by the query grammar."""
 
@@ -507,6 +536,8 @@ def query_completion_candidates(
         if unit is None:
             raise QueryCompletionError("--unit is required for pipeline-stage completion")
         return query_pipeline_stage_candidates(unit, incomplete)
+    if kind == "projection-unit":
+        return query_projection_unit_candidates(incomplete)
     if kind == "count-operator":
         if field is None:
             raise QueryCompletionError("--field is required for count-operator completion")
@@ -555,6 +586,7 @@ __all__ = [
     "query_field_candidates",
     "query_numeric_operator_candidates",
     "query_pipeline_stage_candidates",
+    "query_projection_unit_candidates",
     "query_session_field_candidates",
     "query_structural_field_candidates",
     "query_structural_unit_candidates",

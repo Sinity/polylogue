@@ -55,6 +55,22 @@ def test_terminal_query_completion_payloads_are_lightweight() -> None:
     assert field_candidate["source"] == "QUERY_UNIT_DESCRIPTORS"
 
 
+def test_projection_unit_completion_payloads_are_lightweight() -> None:
+    from polylogue.archive.query.completions import query_completion_payload
+
+    payload = query_completion_payload("projection-unit", incomplete="a")
+    candidates = [cast(dict[str, object], candidate) for candidate in cast(list[object], payload["candidates"])]
+
+    assert payload["kind"] == "projection-unit"
+    assert [candidate["value"] for candidate in candidates] == ["action", "assertion"]
+    action_candidate = candidates[0]
+    assert action_candidate["insert"] == "actions"
+    assert action_candidate["display"] == "actions"
+    assert action_candidate["kind"] == "query-projection-unit"
+    assert action_candidate["source"] == "QUERY_UNIT_DESCRIPTORS/PROJECTION_QUERY_UNITS"
+    assert action_candidate["payload_model"] == "ActionQueryRowPayload"
+
+
 def test_query_unit_descriptors_own_terminal_aliases() -> None:
     from polylogue.archive.query.metadata import (
         query_unit_descriptor,

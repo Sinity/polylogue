@@ -13,6 +13,13 @@ devloop backlog shape. The restored transcript remains at
   stored message role/type/material-origin and text/block content, and archive
   embedding pending selection reselects clean sessions whose
   `message_embeddings_meta.content_hash` is stale.
+- Session-query `with <units>` projection now supports messages, actions, and
+  files as well as assertions. Attached evidence uses exact session-id archive
+  readers for the active archive and caps large text/output fields with
+  explicit `*_truncated_chars` metadata.
+- Query-completion metadata now exposes projection-unit candidates through the
+  same CLI/API/MCP/daemon completion payload used for fields and terminal
+  query units.
 
 ## High-Value Backlog
 
@@ -23,9 +30,9 @@ devloop backlog shape. The restored transcript remains at
   grouped by structural success/failure, with coverage caveats per origin.
 - Promote claim-vs-evidence demos: PR/session claims should link to structural
   tool outcome rows and raw evidence, not assistant prose.
-- Improve DSL projection/composition: unit queries can filter through
-  `session.*`, but result shape is still fixed. Add declared projections and
-  attached unit composition where it helps read packages and demos.
+- Improve DSL projection/composition beyond bare unit attachment: add
+  projection predicates/windows, declared field selection, and render/layout
+  stages where they help read packages and demos.
 - Surface query completions and DSL explanations in the web UI search box; the
   backend already has query-completion and expression-explain substrate.
 - Treat `.agent` conductor state as a product dogfood target: focus
