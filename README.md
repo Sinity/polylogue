@@ -339,22 +339,26 @@ devtools lab smoke run reader-visual-smoke
 
 ## Mining the archive
 
-`scripts/agent_forensics.py` turns an archive into a longitudinal findings
-report — token economy, stored/provider-priced cost, catalog API-equivalent
-estimates, subscription-credit views, cache amplification, model evolution, and
-the adoption curve — with SVG charts. It is read-only, uses Polylogue's shared
-pricing substrate, and is reproducible against any archive:
+Polylogue exposes usage forensics through the normal archive analysis surfaces:
+coverage, provider/model cost rollups, monthly usage timelines, and structured
+claim-vs-evidence packets. These commands read the archive without writing to
+it and keep stored/provider-priced cost, catalog API-equivalent estimates,
+subscription-credit views, cache amplification, model evolution, and adoption
+curves as separate evidence streams:
 
 ```bash
-python scripts/agent_forensics.py --archive ~/.local/share/polylogue --out ./forensics
-# or against the synthetic demo archive (no private data):
-polylogue demo seed --root /tmp/demo --force --with-overlays --format json
-python scripts/agent_forensics.py --archive /tmp/demo --out ./forensics-demo
+polylogue analyze insights coverage --group-by month --format json
+polylogue analyze insights cost-rollups --format json
+polylogue analyze insights usage-timeline --group-by month-origin-model --format json
+
+devtools workspace claim-vs-evidence --limit 5000 \
+  --out-dir .agent/demos/claim-vs-evidence --json
 ```
 
-See [docs/agent-forensics.md](docs/agent-forensics.md) for what it reports and
-the token-accounting traps it handles (per-event deltas vs cumulative totals,
-stored-vs-catalog cost provenance, subscription cache-read economics).
+See [docs/agent-forensics.md](docs/agent-forensics.md) for the supported
+queries and the token-accounting traps they handle: per-event deltas vs
+cumulative totals, stored-vs-catalog cost provenance, and subscription
+cache-read economics.
 
 `scripts/cost_accounting_demo.py` proves the cross-provider cost accounting end
 to end with no mocks: it ingests a crafted Codex session through Polylogue's

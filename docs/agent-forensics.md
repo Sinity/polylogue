@@ -1,95 +1,88 @@
-# AI-Agent Forensics
+# Agent Usage Forensics
 
-`scripts/agent_forensics.py` mines a Polylogue archive for longitudinal usage
-findings and emits a Markdown report plus standalone SVG charts. It is the kind
-of analysis only a full personal AI-session archive can produce: token economy,
-cost (stored/provider-priced rows, catalog API-equivalent estimates, and
-subscription-credit views), model evolution, temporal rhythm, and workflow
-shape — over the whole corpus.
+Polylogue mines longitudinal agent usage through the normal archive analysis
+surfaces, not a standalone report script. The useful outputs are composable:
+coverage describes archive shape, cost rollups describe provider/model spend
+evidence, usage timelines describe monthly token/cost movement, and the
+claim-vs-evidence workspace packet turns structured tool failures into an
+inspectable proof artifact.
 
-It uses Polylogue's shared action-followup and pricing substrate, performs
-**no network access**, reads the archive **read-only**, and writes nothing to
-it. Anyone can run it against any archive and reproduce the report.
+All commands below are read-only against the archive unless an explicit
+`--out-dir` is supplied for a demo packet.
 
-## Run it
+## Queries
 
 ```bash
-# Against your archive (defaults to $POLYLOGUE_ARCHIVE_ROOT, then the XDG dir):
-python scripts/agent_forensics.py --archive ~/.local/share/polylogue --out ./forensics
+# Scale and adoption curve.
+polylogue analyze insights coverage --group-by month --format json
 
-# Fast focused claim-vs-evidence packet for the current demo shelf:
-devtools workspace claim-vs-evidence --limit 5000 --out-dir .agent/demos/claim-vs-evidence --json
+# Provider/model cost and subscription-credit evidence.
+polylogue analyze insights cost-rollups --format json
+polylogue analyze insights cost-rollups --model gpt-5-codex --format json
 
-# Reproduce against the synthetic demo archive (no private data):
-polylogue demo seed --root /tmp/demo-archive --force --with-overlays --format json
-python scripts/agent_forensics.py --archive /tmp/demo-archive --out ./forensics-demo
+# Monthly usage movement by origin and model.
+polylogue analyze insights usage-timeline --group-by month-origin-model --format json
 
-open ./forensics/report.md      # report.md + charts/*.svg
+# Focused claim-vs-evidence packet for the current demo shelf.
+devtools workspace claim-vs-evidence --limit 5000 \
+  --out-dir .agent/demos/claim-vs-evidence --json
 ```
 
-The report renders in any Markdown viewer; the SVG charts embed inline on GitHub.
+The same analysis can be reproduced against the deterministic demo archive:
 
-## What it reports
+```bash
+polylogue demo seed --root /tmp/demo-archive --force --with-overlays --format json
+POLYLOGUE_ARCHIVE_ROOT=/tmp/demo-archive \
+  polylogue analyze insights usage-timeline --format json
+POLYLOGUE_ARCHIVE_ROOT=/tmp/demo-archive \
+  devtools workspace claim-vs-evidence --limit 5000 --out-dir /tmp/claim-vs-evidence --json
+```
 
-- **Scale & span** — sessions, messages, origins, date range.
-- **Temporal rhythm** — sessions/month and tokens/month (the adoption curve).
-- **Token economy** — input / output / cache-read / cache-write / reasoning,
-  **split by evidence provenance**. `priced` rows carry stored archive
-  `cost_usd`; `origin_reported` rows carry provider-reported token counts but no
-  stored dollar amount. The report layers a separate catalog API-equivalent
-  estimate over both provenances when the shared vendored LiteLLM catalog can
-  match the model. The two are never conflated.
-- **Cache amplification** — within the priced subset, cache-read tokens vs fresh
-  input. In agentic loops this is the dominant volume and the dominant cost
-  driver; a token counter that ignores cache reads understates real usage by
-  orders of magnitude.
-- **Cost** — catalog API-equivalent cost by model, stored/provider-priced cost,
-  per-session stored-cost distribution, catalog coverage/caveats, and
-  provenance breakdown.
-- **Subscription reality** — the API-list-equivalent cost is *not* what a Claude
-  Max/Pro subscriber pays. On a plan, **cache reads are free** and usage is
-  metered in credits (`(input + cache_write) × in_rate + output × out_rate`).
-  The report estimates credits consumed (per the
-  [she-llac.com](https://she-llac.com/claude-limits) rate analysis — an
-  estimate, not official) and frames the API-vs-plan value gap.
-- **Model evolution** — tokens/month by top model.
-- **Workflow shape** — work-event types and session-length distribution.
-- **Structured failure follow-up** — the current claim-vs-evidence proof:
-  structured tool failures (`is_error=1` or non-zero `exit_code`) are the
-  evidence anchor, and only the immediately following assistant turn is
-  classified for explicit acknowledgment markers. Silent-proceed rates are
-  reported as conservative lower bounds; ambiguous rows stay in the denominator.
+## What The Surfaces Report
 
-## Accuracy notes
+- **Scale and span:** sessions, messages, origins, and time buckets through
+  `coverage`.
+- **Token economy:** input, output, cache-read, cache-write, total, and
+  reasoning token lanes through `usage-timeline`.
+- **Cost evidence:** stored/provider-priced cost, catalog API-equivalent
+  estimates, catalog coverage gaps, and subscription-credit estimates through
+  `cost-rollups` and `usage-timeline`.
+- **Model evolution:** usage buckets grouped by month, origin, and model.
+- **Structured failure follow-up:** `claim-vs-evidence` anchors on structured
+  tool-result failures (`is_error=1` or non-zero `exit_code`) and classifies the
+  immediately following assistant turn for explicit acknowledgment markers.
 
-Numbers are read directly from the archive's materialized analytics tables
-(`session_model_usage`, `session_provider_usage_events`, `session_work_events`,
-`sessions`, `actions`, `messages`, `blocks`). Three accounting traps the tool
-handles explicitly:
+## Accuracy Notes
+
+These surfaces read the archive's materialized analytics tables
+(`session_model_usage`, `session_provider_usage_events`, `sessions`,
+`actions`, `messages`, and `blocks`) and keep distinct evidence streams
+distinct:
 
 1. **Per-event deltas vs cumulative totals.** `session_provider_usage_events`
-   carries both `last_*` (per-event delta) and `total_*` (cumulative running
-   total) columns. Reasoning/token sums use the `last_*` deltas; summing the
-   cumulative columns over-counts by orders of magnitude.
-2. **Cost provenance.** Only `priced` rows have stored `cost_usd`.
-   `origin_reported` rows can still be catalog-priced as an API-equivalent
-   estimate when their model matches the shared vendored LiteLLM catalog, but
-   that derived estimate is not provider billing truth and does not change the
-   underlying provenance.
-3. **Failure claims.** The structured failure follow-up section does not infer a
-   successful or failed outcome from assistant prose. It anchors on structured
-   tool-result fields and treats the next assistant message as a lexical
-   acknowledgment signal only.
+   carries both `last_*` per-event deltas and `total_*` cumulative running
+   totals. Usage timelines sum the `last_*` deltas; summing cumulative columns
+   would over-count.
+2. **Cost provenance.** Only `priced` rows carry stored `cost_usd`.
+   `origin_reported` rows can be catalog-priced as an API-equivalent estimate
+   when their model matches the shared pricing catalog, but that derived
+   estimate is not provider billing truth and does not change the underlying
+   provenance.
+3. **Subscription reality.** API-list-equivalent cost is not the same thing as
+   a Claude Max/Pro subscription. Subscription-credit estimates use the shared
+   dated pricing catalog and do not charge cache-read tokens.
+4. **Failure claims.** Claim-vs-evidence does not infer tool success or failure
+   from assistant prose. Structured tool-result fields are the evidence anchor;
+   prose is only a follow-up acknowledgment signal.
 
 Current caveat: logical-session token attribution is still being repaired, so
 fork/resume inherited-prefix usage can inflate all-provider headline totals
-until that bead lands. Treat the forensics report as the current archive
-measurement, not final billing reconciliation.
+until that bead lands. Treat usage totals as current archive measurements, not
+final billing reconciliation.
 
 ## Privacy
 
-The report is **aggregate statistics only** — no message content, session
-titles, or paths. Even so, an archive owner's usage totals and spend are
-personal; run it against your own archive for your own numbers. The author's
-real 3.5-year run is kept private (not committed). The committed, reproducible
-example uses the synthetic demo archive.
+The query outputs are aggregate statistics by default: no message content,
+session titles, or source paths. Demo packets that include samples should stay
+inside the local `.agent/demos/` shelf unless they have been explicitly
+redacted for publication.
