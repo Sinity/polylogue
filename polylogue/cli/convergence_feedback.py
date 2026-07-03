@@ -52,6 +52,12 @@ def _raw_materialization_warning(readiness: dict[str, object]) -> str | None:
     )
     count = affected or rows
     if count <= 0:
+        unchecked = _safe_int(readiness.get("affected_unchecked")) or _safe_int(readiness.get("unchecked"))
+        if unchecked > 0:
+            return (
+                f"Archive materialization needs classification: {unchecked:,} raw/index join gap(s) found; "
+                "results may be partial until `polylogue ops debt list --kind raw-materialization` explains them."
+            )
         return None
     return f"Archive is converging: {count:,} raw artifact(s) are not materialized; results may be partial."
 

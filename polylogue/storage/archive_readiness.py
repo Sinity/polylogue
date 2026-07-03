@@ -82,56 +82,89 @@ def raw_materialization_ready(readiness: Mapping[str, Any] | object | None) -> b
         "affected_actionable",
         "affected_blocked",
         "affected_open",
+        "unchecked",
+        "affected_unchecked",
     )
     return all(_read_int(readiness, key) == 0 for key in blocking_keys)
 
 
 def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, object]:
-    """Return compact raw→index materialization readiness for an archive root."""
-    try:
-        from polylogue.operations.archive_debt import archive_debt_list
+    """Return compact raw→index materialization readiness for an archive root.
 
-        payload = archive_debt_list(
-            archive_root=active_archive,
-            kinds=("raw-materialization",),
-            limit=None,
-            exact_fts=False,
-        )
+    This function is used by status/readiness surfaces and must stay cheap on
+    large archives. It deliberately reports the indexed raw-id join gap without
+    opening raw blob payloads to classify sidecars or aliases; the exact
+    classifier lives in ``polylogue ops debt list --kind raw-materialization``.
+    """
+    source_db = active_archive / "source.db"
+    index_db = active_archive / "index.db"
+    if not source_db.exists() or not index_db.exists():
+        return {"available": False, "error": "source.db or index.db missing"}
+    try:
+        with sqlite3.connect(f"file:{index_db}?mode=ro", uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
+            row = conn.execute(
+                """
+                WITH gaps AS (
+                    SELECT r.raw_id, r.origin, r.validation_status, r.parse_error, r.parsed_at_ms
+                    FROM source.raw_sessions r
+                    LEFT JOIN main.sessions s ON s.raw_id = r.raw_id
+                    WHERE s.raw_id IS NULL
+                )
+                SELECT
+                    COUNT(*) AS total,
+                    COALESCE(SUM(CASE WHEN validation_status = 'skipped' THEN 1 ELSE 0 END), 0) AS skipped,
+                    COALESCE(SUM(CASE WHEN parse_error IS NOT NULL THEN 1 ELSE 0 END), 0) AS parse_failed,
+                    COALESCE(SUM(CASE WHEN parsed_at_ms IS NOT NULL AND parse_error IS NULL THEN 1 ELSE 0 END), 0)
+                        AS parsed_without_index_session
+                FROM gaps
+                """
+            ).fetchone()
+            family_rows = conn.execute(
+                """
+                SELECT r.origin, COUNT(*) AS count
+                FROM source.raw_sessions r
+                LEFT JOIN main.sessions s ON s.raw_id = r.raw_id
+                WHERE s.raw_id IS NULL
+                GROUP BY r.origin
+                ORDER BY count DESC, r.origin
+                LIMIT 16
+                """
+            ).fetchall()
     except Exception as exc:
         return {
             "available": False,
             "error": str(exc),
         }
-
-    rows = [row for row in payload.rows if row.kind == "raw-materialization"]
-    affected_actionable = 0
-    affected_blocked = 0
-    affected_open = 0
-    affected_classified = 0
-    for row in rows:
-        affected = max(1, int(row.affected_count or 1))
-        if row.status == "actionable":
-            affected_actionable += affected
-        elif row.status == "blocked":
-            affected_blocked += affected
-        elif row.status == "open":
-            affected_open += affected
-        elif row.status == "classified":
-            affected_classified += affected
-
+    total = int(row["total"] or 0)
+    skipped = int(row["skipped"] or 0)
+    parse_failed = int(row["parse_failed"] or 0)
+    parsed_without_index_session = int(row["parsed_without_index_session"] or 0)
     return {
         "available": True,
-        "total": len(rows),
-        "critical": sum(1 for row in rows if row.severity == "critical"),
-        "warning": sum(1 for row in rows if row.severity == "warning"),
-        "actionable": sum(1 for row in rows if row.status == "actionable"),
-        "blocked": sum(1 for row in rows if row.status == "blocked"),
-        "classified": sum(1 for row in rows if row.status == "classified"),
-        "affected_total": int(payload.totals.affected_total),
-        "affected_actionable": affected_actionable,
-        "affected_blocked": affected_blocked,
-        "affected_open": affected_open,
-        "affected_classified": affected_classified,
+        "classification": "not_run",
+        "precision": "raw_id_join_gap",
+        "total": total,
+        "critical": 0,
+        "warning": 0,
+        "actionable": 0,
+        "blocked": 0,
+        "classified": 0,
+        "unchecked": total,
+        "affected_total": total,
+        "affected_actionable": 0,
+        "affected_blocked": 0,
+        "affected_open": 0,
+        "affected_classified": 0,
+        "affected_unchecked": total,
+        "category_counts": {
+            "raw_id_join_gap": total,
+            "skipped": skipped,
+            "parse_failed": parse_failed,
+            "parsed_without_index_session": parsed_without_index_session,
+        },
+        "source_family_counts": {str(item["origin"]): int(item["count"] or 0) for item in family_rows},
     }
 
 

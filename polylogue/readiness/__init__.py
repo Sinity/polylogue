@@ -12,6 +12,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from polylogue.config import Config, load_polylogue_config
 from polylogue.core.json import JSONDocument, json_document
@@ -35,6 +36,7 @@ from polylogue.readiness.capability import (
     component_from_raw_materialization_readiness,
     component_from_transform_registry,
 )
+from polylogue.storage.archive_readiness import raw_materialization_ready
 from polylogue.storage.repair import ArchiveDebtStatus
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 
@@ -65,6 +67,8 @@ class ReadinessReport(OutcomeReport):
     timestamp: int = field(default_factory=lambda: int(time.time()))
     derived_models: dict[str, DerivedModelStatus] = field(default_factory=dict)
     archive_debt: dict[str, ArchiveDebtStatus] = field(default_factory=dict)
+    active_rebuild_index_attempts: list[dict[str, object]] = field(default_factory=list)
+    raw_materialization_readiness: dict[str, object] = field(default_factory=dict)
 
     @property
     def summary(self) -> dict[str, int]:
@@ -74,11 +78,22 @@ class ReadinessReport(OutcomeReport):
     def provenance(self) -> _ReportProvenance:
         return _ReportProvenance()
 
+    @property
+    def archive_convergence(self) -> dict[str, object]:
+        materialization_ready = raw_materialization_ready(self.raw_materialization_readiness)
+        return {
+            "converging": bool(self.active_rebuild_index_attempts) or not materialization_ready,
+            "materialization_ready": materialization_ready,
+            "active_rebuild_index_attempts": self.active_rebuild_index_attempts,
+            "raw_materialization_readiness": self.raw_materialization_readiness,
+        }
+
     def to_dict(self) -> JSONDocument:
         return json_document(
             {
                 "timestamp": self.timestamp,
                 "provenance": self.provenance.to_dict(),
+                "archive_convergence": self.archive_convergence,
                 "checks": [
                     {
                         "name": check.name,
@@ -113,6 +128,27 @@ def _summarize_db_error(exc: Exception) -> str:
     return detail
 
 
+def _config_archive_root(config: Config) -> Path:
+    return Path(config.archive_root)
+
+
+def _config_db_path(config: Config) -> Path:
+    db_path = getattr(config, "db_path", None)
+    if db_path is not None:
+        return Path(db_path)
+    return _config_archive_root(config) / "index.db"
+
+
+def _config_render_root(config: Config) -> Path | None:
+    render_root = getattr(config, "render_root", None)
+    return Path(render_root) if render_root is not None else None
+
+
+def _config_sources(config: Config) -> list[Any]:
+    sources = getattr(config, "sources", None)
+    return list(sources) if sources is not None else []
+
+
 @contextmanager
 def _open_readiness_probe_connection(db_path: Path) -> Iterator[sqlite3.Connection]:
     """Open a read-only probe connection over the archive."""
@@ -132,8 +168,11 @@ def _module_available(module_name: str) -> bool:
 
 def _config_path_checks(config: Config) -> list[ReadinessCheck]:
     checks: list[ReadinessCheck] = []
-    for path_name in ("archive_root", "render_root"):
-        path = getattr(config, path_name)
+    paths = {"archive_root": _config_archive_root(config)}
+    render_root = _config_render_root(config)
+    if render_root is not None:
+        paths["render_root"] = render_root
+    for path_name, path in paths.items():
         if path.exists():
             checks.append(ReadinessCheck(path_name, VerifyStatus.OK, summary=str(path)))
         else:
@@ -144,7 +183,7 @@ def _config_path_checks(config: Config) -> list[ReadinessCheck]:
 def _database_probe_checks(config: Config, *, deep: bool) -> tuple[list[ReadinessCheck], str | None]:
     checks: list[ReadinessCheck] = []
     try:
-        with _open_readiness_probe_connection(config.db_path) as conn:
+        with _open_readiness_probe_connection(_config_db_path(config)) as conn:
             checks.append(ReadinessCheck("database", VerifyStatus.OK, summary="DB reachable"))
             if deep:
                 integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
@@ -478,6 +517,9 @@ def _collect_table_status_best_effort(
     from polylogue.storage.derived.derived_status import collect_derived_model_statuses_sync
     from polylogue.storage.repair import collect_archive_debt_statuses_sync
 
+    if probe_only and not deep:
+        return {}, {}
+
     try:
         derived_statuses = collect_derived_model_statuses_sync(conn, verify_full=deep)
     except sqlite3.OperationalError:
@@ -497,6 +539,14 @@ def _collect_table_status_best_effort(
 
 def run_archive_readiness(config: Config, *, deep: bool = False, probe_only: bool = False) -> ReadinessReport:
     checks: list[ReadinessCheck] = []
+    from polylogue.storage.archive_readiness import (
+        active_rebuild_index_attempts,
+        raw_materialization_readiness_snapshot,
+    )
+
+    archive_root = _config_archive_root(config)
+    active_rebuild_attempts = active_rebuild_index_attempts(archive_root / "ops.db")
+    raw_materialization_readiness = raw_materialization_readiness_snapshot(archive_root)
     checks.append(ReadinessCheck("config", VerifyStatus.OK, summary="XDG defaults active"))
     checks.extend(_config_path_checks(config))
 
@@ -512,21 +562,40 @@ def run_archive_readiness(config: Config, *, deep: bool = False, probe_only: boo
     # --- derived models, debt, duplicates, providers ---
     derived_statuses: dict[str, DerivedModelStatus] = {}
     archive_debt: dict[str, ArchiveDebtStatus] = {}
-    with _open_readiness_probe_connection(config.db_path) as conn:
-        exact_index_counts = deep or not probe_only
+    db_path = _config_db_path(config)
+    with _open_readiness_probe_connection(db_path) as conn:
+        exact_index_counts = deep
         checks.append(_message_index_check(conn, exact_counts=exact_index_counts))
 
         # Integrity probes over the archive tables.
-        checks.append(_orphaned_messages_check(conn))
+        if deep:
+            checks.append(_orphaned_messages_check(conn))
+        else:
+            checks.append(
+                ReadinessCheck(
+                    "orphaned_messages",
+                    VerifyStatus.SKIP,
+                    summary="Skipped exact orphaned-message scan in default readiness; use deep readiness for exact count",
+                )
+            )
         checks.append(_fts_sync_check(conn))
-        checks.append(_empty_sessions_check(conn))
+        if deep:
+            checks.append(_empty_sessions_check(conn))
+        else:
+            checks.append(
+                ReadinessCheck(
+                    "empty_sessions",
+                    VerifyStatus.SKIP,
+                    summary="Skipped exact empty-session scan in default readiness; use deep readiness for exact count",
+                )
+            )
         checks.append(_duplicate_sessions_check(conn))
         checks.append(_provider_distribution_check(conn))
 
         # Run table-dependent collectors best-effort so archive integrity
         # probes above always register.
         derived_statuses, archive_debt = _collect_table_status_best_effort(
-            conn, db_path=config.db_path, deep=deep, probe_only=probe_only
+            conn, db_path=db_path, deep=deep, probe_only=probe_only or not deep
         )
         checks.extend(_archive_debt_checks(archive_debt, deep=deep))
         checks.extend(_derived_model_checks(derived_statuses))
@@ -536,7 +605,13 @@ def run_archive_readiness(config: Config, *, deep: bool = False, probe_only: boo
     checks.extend(_build_source_readiness_checks(config))
     checks.extend(_build_schema_readiness_checks())
 
-    return ReadinessReport(checks=checks, derived_models=derived_statuses, archive_debt=archive_debt)
+    return ReadinessReport(
+        checks=checks,
+        derived_models=derived_statuses,
+        archive_debt=archive_debt,
+        active_rebuild_index_attempts=active_rebuild_attempts,
+        raw_materialization_readiness=raw_materialization_readiness,
+    )
 
 
 def get_readiness(config: Config, *, deep: bool = False, probe_only: bool = False) -> ReadinessReport:
@@ -552,7 +627,7 @@ def get_readiness(config: Config, *, deep: bool = False, probe_only: bool = Fals
 def run_runtime_readiness(config: Config) -> ReadinessReport:
     checks: list[ReadinessCheck] = []
 
-    db = config.db_path
+    db = _config_db_path(config)
     if db.exists():
         try:
             with open(db, "a"):
@@ -576,7 +651,7 @@ def run_runtime_readiness(config: Config) -> ReadinessReport:
             checks.append(ReadinessCheck("db_writable", VerifyStatus.WARNING, summary=f"Parent missing: {parent}"))
 
     try:
-        with _open_readiness_probe_connection(config.db_path) as conn:
+        with _open_readiness_probe_connection(_config_db_path(config)) as conn:
             current = conn.execute("PRAGMA user_version").fetchone()[0]
             if current == INDEX_SCHEMA_VERSION:
                 checks.append(ReadinessCheck("schema_version", VerifyStatus.OK, summary=f"v{current} (current)"))
@@ -599,7 +674,7 @@ def run_runtime_readiness(config: Config) -> ReadinessReport:
         )
 
     try:
-        with _open_readiness_probe_connection(config.db_path) as conn:
+        with _open_readiness_probe_connection(_config_db_path(config)) as conn:
             fts = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
             if fts:
                 conn.execute("SELECT * FROM messages_fts LIMIT 0")
@@ -620,7 +695,11 @@ def run_runtime_readiness(config: Config) -> ReadinessReport:
             )
         )
 
-    for label, path in [("archive_root", config.archive_root), ("render_root", config.render_root)]:
+    runtime_paths = [("archive_root", _config_archive_root(config))]
+    render_root = _config_render_root(config)
+    if render_root is not None:
+        runtime_paths.append(("render_root", render_root))
+    for label, path in runtime_paths:
         if path.exists():
             writable = os.access(path, os.W_OK)
             status = VerifyStatus.OK if writable else VerifyStatus.ERROR
@@ -643,12 +722,13 @@ def run_runtime_readiness(config: Config) -> ReadinessReport:
     else:
         checks.append(ReadinessCheck("config_home", VerifyStatus.OK, summary=f"Not yet created: {cfg_home}"))
 
-    drive_sources = [source for source in config.sources if source.is_drive]
-    if drive_sources and config.drive_config:
+    drive_config = getattr(config, "drive_config", None)
+    drive_sources = [source for source in _config_sources(config) if getattr(source, "is_drive", False)]
+    if drive_sources and drive_config:
         from polylogue.sources.drive.auth import default_credentials_path, default_token_path
 
-        cred = default_credentials_path(config.drive_config)
-        token = default_token_path(config.drive_config)
+        cred = default_credentials_path(drive_config)
+        token = default_token_path(drive_config)
         if cred.exists():
             checks.append(ReadinessCheck("drive_credentials", VerifyStatus.OK, summary=str(cred)))
         else:
@@ -701,27 +781,31 @@ def _build_source_readiness_checks(config: Config) -> list[ReadinessCheck]:
     from polylogue.sources.drive.auth import default_credentials_path, default_token_path
 
     checks: list[ReadinessCheck] = []
-    for source in config.sources:
-        if source.folder:
-            cred_path = default_credentials_path(config.drive_config)
-            token_path = default_token_path(config.drive_config)
+    drive_config = getattr(config, "drive_config", None)
+    for source in _config_sources(config):
+        source_name = str(getattr(source, "name", "unknown"))
+        source_folder = getattr(source, "folder", None)
+        source_path = getattr(source, "path", None)
+        if source_folder and drive_config:
+            cred_path = default_credentials_path(drive_config)
+            token_path = default_token_path(drive_config)
             cred_status = VerifyStatus.OK if cred_path.exists() else VerifyStatus.WARNING
             token_status = VerifyStatus.OK if token_path.exists() else VerifyStatus.WARNING
             checks.append(
                 ReadinessCheck(
-                    f"source:{source.name}",
+                    f"source:{source_name}",
                     cred_status,
-                    summary=f"drive folder '{source.folder}' credentials: {cred_path}",
+                    summary=f"drive folder '{source_folder}' credentials: {cred_path}",
                 )
             )
             checks.append(
-                ReadinessCheck(f"source:{source.name}:token", token_status, summary=f"drive token: {token_path}")
+                ReadinessCheck(f"source:{source_name}:token", token_status, summary=f"drive token: {token_path}")
             )
-        elif source.path and source.path.exists():
-            checks.append(ReadinessCheck(f"source:{source.name}", VerifyStatus.OK, summary=str(source.path)))
+        elif source_path and Path(source_path).exists():
+            checks.append(ReadinessCheck(f"source:{source_name}", VerifyStatus.OK, summary=str(source_path)))
         else:
             checks.append(
-                ReadinessCheck(f"source:{source.name}", VerifyStatus.WARNING, summary=f"missing path: {source.path}")
+                ReadinessCheck(f"source:{source_name}", VerifyStatus.WARNING, summary=f"missing path: {source_path}")
             )
     return checks
 

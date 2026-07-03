@@ -172,6 +172,26 @@ def test_raw_materialization_readiness_maps_classified_info_debt_to_ready_with_c
     assert component.repair_hint is None
 
 
+def test_raw_materialization_readiness_maps_unchecked_join_gaps_to_degraded() -> None:
+    component = component_from_raw_materialization_readiness(
+        {
+            "available": True,
+            "classification": "not_run",
+            "total": 3,
+            "unchecked": 3,
+            "affected_total": 3,
+            "affected_unchecked": 3,
+            "category_counts": {"raw_id_join_gap": 3},
+        }
+    )
+
+    assert component.state is CapabilityReadinessState.DEGRADED
+    assert component.summary == "raw/index join gaps need classification"
+    assert component.counts["affected_unchecked"] == 3
+    assert component.caveats == ("raw_index_join_gaps_unclassified_by_fast_readiness",)
+    assert component.repair_hint == "polylogue ops debt list --kind raw-materialization"
+
+
 def test_embedding_payload_maps_missing_blocked_stale_and_ready() -> None:
     base = {
         "config_enabled": True,

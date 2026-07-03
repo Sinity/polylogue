@@ -61,3 +61,29 @@ def test_convergence_warning_line_omits_classified_raw_gaps(monkeypatch: pytest.
     )
 
     assert convergence_warning_line() is None
+
+
+def test_convergence_warning_line_reports_unclassified_join_gaps(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: Path("/archive"))
+    monkeypatch.setattr("polylogue.storage.archive_readiness.active_rebuild_index_attempts", lambda _ops_db: [])
+    monkeypatch.setattr(
+        "polylogue.storage.archive_readiness.raw_materialization_readiness_snapshot",
+        lambda _root: {
+            "available": True,
+            "classification": "not_run",
+            "unchecked": 3,
+            "affected_unchecked": 3,
+            "actionable": 0,
+            "blocked": 0,
+            "affected_actionable": 0,
+            "affected_blocked": 0,
+            "affected_open": 0,
+        },
+    )
+
+    warning = convergence_warning_line()
+
+    assert warning == (
+        "Archive materialization needs classification: 3 raw/index join gap(s) found; "
+        "results may be partial until `polylogue ops debt list --kind raw-materialization` explains them."
+    )

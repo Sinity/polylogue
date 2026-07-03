@@ -12,7 +12,7 @@ from polylogue.context.compiler import ContextImage
 from polylogue.core.json import JSONDocument
 from polylogue.core.user_state_targets import TARGET_SESSION
 from polylogue.core.web_urls import canonical_session_url
-from polylogue.readiness import component_from_outcome_check
+from polylogue.readiness import component_from_outcome_check, component_from_raw_materialization_readiness
 from polylogue.surfaces.payloads import (
     AssertionClaimListPayload,
     AssertionClaimPayload,
@@ -858,6 +858,7 @@ class MCPReadinessReportPayload(SurfacePayloadModel):
     checks: list[MCPReadinessCheckPayload]
     summary: str | dict[str, int]
     source: str | None = None
+    archive_convergence: dict[str, Any] | None = None
     component_readiness: dict[str, Any] | None = None
 
     @classmethod
@@ -870,6 +871,7 @@ class MCPReadinessReportPayload(SurfacePayloadModel):
         include_cached: bool,
         include_component_readiness: bool = True,
     ) -> MCPReadinessReportPayload:
+        archive_convergence = _extract_archive_convergence(report)
         return cls(
             checks=[
                 MCPReadinessCheckPayload.from_check(
@@ -881,13 +883,32 @@ class MCPReadinessReportPayload(SurfacePayloadModel):
             ],
             summary=report.summary,
             source=_extract_readiness_source(report) if include_cached else None,
-            component_readiness={
-                check.name: component_from_outcome_check(check, scope="mcp_readiness").to_dict()
-                for check in report.checks
-            }
+            archive_convergence=archive_convergence,
+            component_readiness=_readiness_components(report, archive_convergence)
             if include_component_readiness
             else None,
         )
+
+
+def _extract_archive_convergence(report: ReadinessReport) -> dict[str, Any] | None:
+    payload = getattr(report, "archive_convergence", None)
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _readiness_components(
+    report: ReadinessReport,
+    archive_convergence: dict[str, Any] | None,
+) -> dict[str, Any]:
+    components = {
+        check.name: component_from_outcome_check(check, scope="mcp_readiness").to_dict() for check in report.checks
+    }
+    if archive_convergence is not None:
+        raw_readiness = archive_convergence.get("raw_materialization_readiness")
+        if isinstance(raw_readiness, dict):
+            components["raw_materialization"] = component_from_raw_materialization_readiness(raw_readiness).to_dict()
+    return components
 
 
 __all__ = [

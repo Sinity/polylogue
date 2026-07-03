@@ -165,6 +165,8 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
     affected_actionable = int(payload.get("affected_actionable") or 0)
     affected_open = int(payload.get("affected_open") or 0)
     affected_classified = int(payload.get("affected_classified") or 0)
+    unchecked = int(payload.get("unchecked") or 0)
+    affected_unchecked = int(payload.get("affected_unchecked") or 0)
     if not available:
         state = CapabilityReadinessState.UNKNOWN
         summary = "unknown"
@@ -180,6 +182,9 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
     elif warning > 0 or actionable > 0 or affected_actionable > 0:
         state = CapabilityReadinessState.STALE
         summary = "raw evidence pending materialization"
+    elif unchecked > 0 or affected_unchecked > 0:
+        state = CapabilityReadinessState.DEGRADED
+        summary = "raw/index join gaps need classification"
     elif classified > 0 or affected_classified > 0:
         state = CapabilityReadinessState.READY
         summary = "raw evidence classified; no materialization debt"
@@ -189,6 +194,8 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
     caveats: tuple[str, ...]
     if state is CapabilityReadinessState.READY and (classified > 0 or affected_classified > 0):
         caveats = ("raw_index_join_gaps_classified_not_materialization_debt",)
+    elif state is CapabilityReadinessState.DEGRADED and (unchecked > 0 or affected_unchecked > 0):
+        caveats = ("raw_index_join_gaps_unclassified_by_fast_readiness",)
     elif state is CapabilityReadinessState.DEGRADED:
         caveats = ("raw_index_join_gaps_classified_not_replayable",)
     elif state is CapabilityReadinessState.BLOCKED:
@@ -213,6 +220,8 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
             "affected_actionable": affected_actionable,
             "affected_open": affected_open,
             "affected_classified": affected_classified,
+            "unchecked": unchecked,
+            "affected_unchecked": affected_unchecked,
         },
         caveats=caveats,
         metadata={

@@ -1988,6 +1988,21 @@ class TestMutationTools:
         mock_report.checks = [mock_check]
         mock_report.summary = "Healthy"
         mock_report.provenance = MagicMock(source="live")
+        mock_report.archive_convergence = {
+            "converging": True,
+            "materialization_ready": False,
+            "active_rebuild_index_attempts": [],
+            "raw_materialization_readiness": {
+                "available": True,
+                "total": 1,
+                "critical": 0,
+                "warning": 1,
+                "actionable": 1,
+                "blocked": 0,
+                "affected_total": 4,
+                "affected_actionable": 4,
+            },
+        }
 
         with (
             patch("polylogue.mcp.server._get_config") as mock_get_config,
@@ -2001,6 +2016,9 @@ class TestMutationTools:
         parsed = json.loads(result)
         assert parsed["summary"] == "Healthy"
         assert parsed["checks"][0]["name"] == "database"
+        assert parsed["archive_convergence"]["converging"] is True
+        assert parsed["component_readiness"]["raw_materialization"]["state"] == "stale"
+        assert parsed["component_readiness"]["raw_materialization"]["counts"]["affected_actionable"] == 4
 
     def test_rebuild_index_success(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
