@@ -214,6 +214,32 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
         "classified_outcomes": 2,
     }
     assert report["rates"]["silent_rate_lower_bound"] == 1 / 4
+    assert report["by_handler_class"] == [
+        {
+            "name": "benign_recovery",
+            "failed_outcomes": 2,
+            "acknowledged": 0,
+            "silent_proceed": 0,
+            "ambiguous": 2,
+            "ambiguous_wordless_continuation": 1,
+            "ambiguous_prose_no_marker": 1,
+            "classified_outcomes": 0,
+            "silent_rate_lower_bound": 0.0,
+            "silent_rate_among_classified": 0.0,
+        },
+        {
+            "name": "consequential",
+            "failed_outcomes": 2,
+            "acknowledged": 1,
+            "silent_proceed": 1,
+            "ambiguous": 0,
+            "ambiguous_wordless_continuation": 0,
+            "ambiguous_prose_no_marker": 0,
+            "classified_outcomes": 2,
+            "silent_rate_lower_bound": 0.5,
+            "silent_rate_among_classified": 0.5,
+        },
+    ]
     assert set(report["samples_by_origin_classification"]) == {"claude-code-session", "codex-session"}
     assert report["samples_by_origin_classification"]["codex-session"]["ambiguous"][0]["origin"] == "codex-session"
     codex_ambiguous = report["samples_by_origin_classification"]["codex-session"]["ambiguous"]
@@ -221,6 +247,7 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
         "prose_no_marker",
         "wordless_tool_continuation",
     }
+    assert {sample["handler_class"] for sample in codex_ambiguous} == {"benign_recovery"}
     assert any(sample["next_has_tool_use"] for sample in codex_ambiguous)
     assert (
         report["samples_by_origin_classification"]["claude-code-session"]["acknowledged"][0]["next_text_preview"]
@@ -240,6 +267,8 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
     assert summary["proof_report"]["complete_failure_frame"] is True
     assert summary["proof_report"]["ambiguous_wordless_continuation"] == 1
     assert summary["proof_report"]["ambiguous_prose_no_marker"] == 1
+    assert summary["proof_report"]["by_handler_class"][0]["name"] == "benign_recovery"
+    assert summary["proof_report"]["by_handler_class"][1]["silent_rate_lower_bound"] == 0.5
     assert summary["proof_report"]["time_window"] == "entire archive (no since/until filter)"
     assert summary["proof_report"]["sampled_by_origin"] == [
         {
@@ -259,6 +288,8 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
     readme = (out_dir / "README.md").read_text()
     assert "Claim-vs-Evidence" in readme
     assert "- time window: entire archive (no since/until filter)" in readme
+    assert "### Handler-Class Split" in readme
+    assert "- consequential: failed 2; silent 1; ambiguous 0; silent lower bound 50.0%" in readme
     assert "- claude-code-session: inspected 2 / 2 structured failures (requested 2)" in readme
     assert "- codex-session: inspected 2 / 2 structured failures (requested 2)" in readme
 

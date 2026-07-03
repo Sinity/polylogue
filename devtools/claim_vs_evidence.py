@@ -25,6 +25,23 @@ _COUNT_KEYS = (
     "ambiguous_prose_no_marker",
 )
 
+# This is a methodology split, not a truth claim about any single tool result.
+# Read/search tools often fail as part of ordinary path discovery; shell/build/
+# edit tools are closer to consequential failures for a coding-agent workflow.
+_BENIGN_RECOVERY_TOOLS = frozenset({"glob", "grep", "ls", "read"})
+_CONSEQUENTIAL_TOOLS = frozenset(
+    {
+        "bash",
+        "edit",
+        "multi_edit",
+        "notebook_edit",
+        "patch",
+        "run_command",
+        "shell",
+        "write",
+    }
+)
+
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -122,6 +139,15 @@ def _ambiguous_counter_key(classification_reason: str) -> str | None:
     if classification_reason == "prose_no_marker":
         return "ambiguous_prose_no_marker"
     return None
+
+
+def _handler_class(tool_name: str) -> str:
+    normalized = tool_name.strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized in _BENIGN_RECOVERY_TOOLS:
+        return "benign_recovery"
+    if normalized in _CONSEQUENTIAL_TOOLS:
+        return "consequential"
+    return "other"
 
 
 def _next_message_details(
@@ -497,6 +523,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     by_tool: dict[str, dict[str, int]] = {}
     by_model: dict[str, dict[str, int]] = {}
     by_origin: dict[str, dict[str, int]] = {}
+    by_handler_class: dict[str, dict[str, int]] = {}
     samples_by_classification: dict[str, list[dict[str, object]]] = {
         "acknowledged": [],
         "silent_proceed": [],
@@ -510,6 +537,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         classification = str(classification_evidence["classification"])
         classification_reason = _refine_classification_reason(classification_evidence, row)
         tool = str(row["tool_name"] or "unknown")
+        handler_class = _handler_class(tool)
         model = str(row["model_name"] or "unknown")
         origin = str(row["origin"] or "unknown")
         next_text = str(row["next_text"] or "")
@@ -523,6 +551,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "tool_result_tool_id": row["tool_result_tool_id"],
             "next_message_ref": f"message:{row['next_message_id']}" if row["next_message_id"] else None,
             "tool_name": tool,
+            "handler_class": handler_class,
             "model_name": model,
             "origin": origin,
             "exit_code": row["exit_code"],
@@ -540,6 +569,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         by_tool.setdefault(tool, _empty_counts())
         by_model.setdefault(model, _empty_counts())
         by_origin.setdefault(origin, _empty_counts())
+        by_handler_class.setdefault(handler_class, _empty_counts())
         by_tool[tool]["failed_outcomes"] += 1
         by_tool[tool][classification] += 1
         if ambiguous_counter_key is not None:
@@ -552,6 +582,10 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         by_origin[origin][classification] += 1
         if ambiguous_counter_key is not None:
             by_origin[origin][ambiguous_counter_key] += 1
+        by_handler_class[handler_class]["failed_outcomes"] += 1
+        by_handler_class[handler_class][classification] += 1
+        if ambiguous_counter_key is not None:
+            by_handler_class[handler_class][ambiguous_counter_key] += 1
         bucket = samples_by_classification[classification]
         if len(bucket) < args.sample_limit:
             bucket.append(sample)
@@ -609,6 +643,12 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "by_tool": _ranked(by_tool),
         "by_model": _ranked(by_model),
         "by_origin": _ranked(by_origin),
+        "by_handler_class": _ranked(by_handler_class),
+        "handler_class_definition": {
+            "benign_recovery": sorted(_BENIGN_RECOVERY_TOOLS),
+            "consequential": sorted(_CONSEQUENTIAL_TOOLS),
+            "other": "Any tool name outside the explicit benign/consequential methodology sets.",
+        },
         "samples_by_classification": samples_by_classification,
         "samples_by_origin_classification": samples_by_origin_classification,
     }
@@ -651,6 +691,8 @@ def _write_artifacts(out_dir: Path, report: dict[str, Any]) -> None:
             "ambiguous_wordless_continuation": totals["ambiguous_wordless_continuation"],
             "ambiguous_prose_no_marker": totals["ambiguous_prose_no_marker"],
             "silent_rate_lower_bound": rates["silent_rate_lower_bound"],
+            "by_handler_class": report["by_handler_class"],
+            "handler_class_definition": report["handler_class_definition"],
             "limit": report["limit"],
             "time_window": report["sample_frame"]["time_window"],
             "sampled_by_origin": report["sample_frame"]["sampled_by_origin"],
@@ -678,6 +720,15 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
             f"(requested {int(row['requested_limit']):,})"
         )
         for row in frame["sampled_by_origin"]
+    ]
+    handler_class_rows = [
+        (
+            f"- {row['name']}: failed {int(row['failed_outcomes']):,}; "
+            f"silent {int(row['silent_proceed']):,}; "
+            f"ambiguous {int(row['ambiguous']):,}; "
+            f"silent lower bound {float(row['silent_rate_lower_bound']):.1%}"
+        )
+        for row in report["by_handler_class"]
     ]
     lines = [
         "# Claim-vs-Evidence Failure Follow-Up",
@@ -709,6 +760,16 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
         f"- configured limit: {report['limit']:,}",
         f"- selection order: {frame['selection_order']}",
         f"- selection strategy: {frame['selection_strategy']}",
+        "",
+        "### Handler-Class Split",
+        "",
+        "The headline should not mix ordinary read/search recovery with more consequential",
+        "shell/build/edit failures without saying so. Handler classes are explicit and",
+        "methodological: `benign_recovery` covers read/search/path-discovery tools,",
+        "`consequential` covers shell/build/edit/write-class tools, and `other` is not",
+        "folded into either claim.",
+        "",
+        *handler_class_rows,
         "",
         "### Inspected vs Total by Origin",
         "",
