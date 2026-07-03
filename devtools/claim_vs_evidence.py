@@ -316,6 +316,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "silent_proceed": [],
         "ambiguous": [],
     }
+    samples_by_origin_classification: dict[str, dict[str, list[dict[str, object]]]] = {}
     for row in rows:
         classification = _classify_failed_followup(str(row["next_text"]) if row["next_text"] is not None else None)
         tool = str(row["tool_name"] or "unknown")
@@ -348,6 +349,17 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         bucket = samples_by_classification[classification]
         if len(bucket) < args.sample_limit:
             bucket.append(sample)
+        origin_buckets = samples_by_origin_classification.setdefault(
+            origin,
+            {
+                "acknowledged": [],
+                "silent_proceed": [],
+                "ambiguous": [],
+            },
+        )
+        origin_bucket = origin_buckets[classification]
+        if len(origin_bucket) < args.sample_limit:
+            origin_bucket.append(sample)
     totals["classified_outcomes"] = totals["acknowledged"] + totals["silent_proceed"]
     silent = totals["silent_proceed"]
     failed = totals["failed_outcomes"]
@@ -390,6 +402,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "by_model": _ranked(by_model),
         "by_origin": _ranked(by_origin),
         "samples_by_classification": samples_by_classification,
+        "samples_by_origin_classification": samples_by_origin_classification,
     }
     if args.out_dir is not None:
         _write_artifacts(args.out_dir, report)

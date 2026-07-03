@@ -192,6 +192,8 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
         "classified_outcomes": 2,
     }
     assert report["rates"]["silent_rate_lower_bound"] == 1 / 3
+    assert set(report["samples_by_origin_classification"]) == {"claude-code-session", "codex-session"}
+    assert report["samples_by_origin_classification"]["codex-session"]["ambiguous"][0]["origin"] == "codex-session"
     summary = json.loads((out_dir / "summary.json").read_text())
     assert summary["claim"]
     assert summary["non_claim"]
