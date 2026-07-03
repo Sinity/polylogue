@@ -202,6 +202,20 @@ Throughput discipline (operator directive 2026-07-03):
 - **State the lane in the claim.** When claiming for a wave, note the files
   you own vs avoid in the bead (one `--append-notes` line) so a conductor or
   sibling agent can route around you without asking.
+- **Spine and waves.** `spine`-labeled beads are the value-critical path — the
+  set whose completion means "Polylogue fits its blueprint where it matters."
+  Prefer spine work within a priority tier. `wave:1` marks the current
+  conflict-free dispatch set (disjoint write scopes, no unmet deps); when
+  wave:1 thins out, the conductor relabels the next wave from the ready set.
+- **Contract-first keystones.** Keystone beads (o21, 9l5.7, 37t.11, 0aj) carry
+  a CONTRACT-FIRST SPLIT note: ship the protocol/spec slice first (size:S/M)
+  so dependents build against the interface in parallel; the full
+  implementation follows as non-blocking slices. Never hold a wave waiting for
+  a keystone's completion when its contract slice would do.
+- **Shared-resource verification.** The live archive is a serial resource:
+  acceptance runs on the SEEDED corpus by default; live-archive verification
+  batches at wave boundaries (one agent, one pass, many beads' live checks).
+  An AC that says "on the live archive" means "at wave close", not "per PR".
 - **Size labels.** `size:S` (one focused session), `size:M` (day-scale slice),
   `size:L` (multi-session; consider splitting). Label on create/claim;
   `devloop-status` renders velocity as size-weighted points (S=1, M=3, L=8) so
