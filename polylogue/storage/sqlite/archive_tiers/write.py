@@ -8,7 +8,7 @@ import re
 import sqlite3
 import time
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -532,7 +532,14 @@ def write_parsed_session_to_archive(
             _refresh_session_counts(conn, session_id)
         add_timing("index.session_counts", t0)
         t0 = time.perf_counter()
-        _resolve_session_graph(conn, session_id, native_id, origin.value, cache=signature_cache)
+        _resolve_session_graph(
+            conn,
+            session_id,
+            native_id,
+            origin.value,
+            cache=signature_cache,
+            add_timing=add_timing,
+        )
         add_timing("index.graph_resolve", t0)
         if session.ingest_flags:
             t0 = time.perf_counter()
@@ -2033,7 +2040,13 @@ def _resolve_session_graph(
     origin: str,
     *,
     cache: dict[str, list[tuple[str, str]]] | None = None,
+    add_timing: Callable[[str, float], None] | None = None,
 ) -> None:
+    def record_substage(name: str, started_at: float) -> None:
+        if add_timing is not None:
+            add_timing(f"index.graph_resolve.{name}", started_at)
+
+    t0 = time.perf_counter()
     conn.execute(
         """
         UPDATE sessions
@@ -2042,7 +2055,11 @@ def _resolve_session_graph(
         """,
         (session_id,),
     )
+    record_substage("root_init", t0)
+    t0 = time.perf_counter()
     _resolve_outbound_session_links(conn, session_id, origin)
+    record_substage("outbound_links", t0)
+    t0 = time.perf_counter()
     has_outbound_link = (
         conn.execute("SELECT 1 FROM session_links WHERE src_session_id = ? LIMIT 1", (session_id,)).fetchone()
         is not None
@@ -2057,9 +2074,14 @@ def _resolve_session_graph(
         """,
         (native_id, origin),
     ).fetchall()
+    record_substage("inbound_lookup", t0)
+    t0 = time.perf_counter()
     if not has_outbound_link and not inbound_rows and _root_projection_current(conn, session_id):
+        record_substage("root_current_check", t0)
         return
+    record_substage("root_current_check", t0)
     composed_cache: dict[str, list[tuple[str, str]]] = {}
+    t0 = time.perf_counter()
     for row in inbound_rows:
         conn.execute(
             """
@@ -2083,14 +2105,20 @@ def _resolve_session_graph(
             cache=cache,
             composed_cache=composed_cache,
         )
+    record_substage("reextract_prefix_tails", t0)
 
     impacted_session_ids = {session_id, *(str(row[0]) for row in inbound_rows)}
+    t0 = time.perf_counter()
     old_root_ids = _root_ids(conn, impacted_session_ids)
+    projection_seen: set[str] = set()
     for impacted_session_id in impacted_session_ids:
-        _refresh_session_projection(conn, impacted_session_id, seen=set())
+        _refresh_session_projection(conn, impacted_session_id, seen=projection_seen)
     root_ids_to_refresh = old_root_ids | _root_ids(conn, impacted_session_ids)
+    record_substage("projection_refresh", t0)
+    t0 = time.perf_counter()
     for root_session_id in root_ids_to_refresh:
         _refresh_thread(conn, root_session_id)
+    record_substage("thread_refresh", t0)
 
 
 def _root_projection_current(conn: sqlite3.Connection, session_id: str) -> bool:
