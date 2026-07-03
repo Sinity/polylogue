@@ -1089,6 +1089,20 @@ PY
   fi
 fi
 
+if command -v bd >/dev/null 2>&1 && [ -d "$repo/.beads" ] && [ -f "$repo/.beads/issues.jsonl" ]; then
+  beads_export_tmp="$(mktemp "${TMPDIR:-/tmp}/polylogue-beads-export.XXXXXX")"
+  if (cd "$repo" && bd export --output "$beads_export_tmp" >/dev/null 2>&1); then
+    if cmp -s "$beads_export_tmp" "$repo/.beads/issues.jsonl"; then
+      ok "tracked Beads issues snapshot matches current bd export"
+    else
+      warn "tracked Beads issues snapshot is stale; run bd export --output .beads/issues.jsonl"
+    fi
+  else
+    warn "bd export failed; Beads snapshot freshness unknown"
+  fi
+  rm -f "$beads_export_tmp"
+fi
+
 worktree_gc_json="$(POLYLOGUE_TASK_HISTORY_DISABLE=1 devtools workspace worktree-gc --json 2>/dev/null || printf '{}')"
 if python3 - "$worktree_gc_json" <<'PY'
 from __future__ import annotations

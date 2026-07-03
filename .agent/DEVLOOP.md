@@ -138,6 +138,11 @@ Core moves:
   --reason "..."` with the proof when it lands.
 - Discovered follow-up work: `bd create` with
   `--deps discovered-from:<current-id>`.
+- After any Beads write (`bd update`, `bd create`, `bd close`, `bd note`,
+  priority changes), refresh the tracked snapshot with
+  `bd export --output .beads/issues.jsonl` before staging or committing Beads
+  state. The Beads database is authoritative during the loop; the JSONL file is
+  the git-visible snapshot.
 - `bd remember "<insight>"` / `bd memories <kw>` — durable repo-operational
   lore that must survive context loss.
 - `bd human <id>` — flag a decision only the operator can make.

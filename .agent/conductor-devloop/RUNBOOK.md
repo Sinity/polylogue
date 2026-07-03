@@ -359,6 +359,8 @@ Before ending:
    updated with `--notes` on partial progress), discovered work exists as
    linked beads, and nothing is left `in_progress` that this session is not
    actually progressing.
+   After any Beads write, run `bd export --output .beads/issues.jsonl` before
+   staging the tracked Beads snapshot.
 4. `.agent/conductor-devloop` ignored generated state has been refreshed with
    `devloop-sync`.
 5. `devloop-review` warnings are fixed or explicitly accepted.
