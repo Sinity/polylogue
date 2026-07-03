@@ -371,6 +371,7 @@ def _write_session(
     *,
     force_write: bool = False,
     signature_cache: dict[str, list[tuple[str, str]]] | None = None,
+    stage_timings_s: dict[str, float] | None = None,
 ) -> tuple[bool, dict[str, int]]:
     """Write one parsed session payload into the current archive index.
 
@@ -447,6 +448,7 @@ def _write_session(
         raw_id=payload.raw_id,
         merge_append=merge_append,
         signature_cache=signature_cache,
+        stage_timings_s=stage_timings_s,
     )
     counts["sessions"] = 1
     counts["messages"] = len(session_to_write.messages)
@@ -523,7 +525,16 @@ def _write_session_entry(
 ) -> bool:
     try:
         t_write = time.perf_counter()
-        content_changed, counts = _write_session(conn, cdata, force_write=force_write, signature_cache=signature_cache)
+        write_stage_timings: dict[str, float] = {}
+        content_changed, counts = _write_session(
+            conn,
+            cdata,
+            force_write=force_write,
+            signature_cache=signature_cache,
+            stage_timings_s=write_stage_timings,
+        )
+        for stage, elapsed_s in write_stage_timings.items():
+            summary.stage_timings_s[stage] = summary.stage_timings_s.get(stage, 0.0) + elapsed_s
         write_elapsed = time.perf_counter() - t_write
         summary.write_elapsed_s += write_elapsed
         if write_elapsed > summary.max_write_elapsed_s:
@@ -544,6 +555,7 @@ def _write_session_entry(
                 skipped_messages=counts["skipped_messages"],
                 changed_session_events=counts["session_events"],
                 attachments=cdata.attachment_count,
+                stage_top=_top_stage_timings(write_stage_timings),
             )
         return True
     except Exception as exc:
@@ -551,6 +563,15 @@ def _write_session_entry(
         summary.parse_failures += 1
         summary.failed_raw_ids[raw_id] = str(exc)[:500]
         return False
+
+
+def _top_stage_timings(stage_timings_s: dict[str, float], *, limit: int = 5) -> dict[str, float]:
+    if not stage_timings_s:
+        return {}
+    return {
+        stage: round(elapsed_s, 3)
+        for stage, elapsed_s in sorted(stage_timings_s.items(), key=lambda item: item[1], reverse=True)[:limit]
+    }
 
 
 def _delete_stale_sessions_for_raw_entries(conn: sqlite3.Connection, ready_entries: list[_SessionEntry]) -> None:
