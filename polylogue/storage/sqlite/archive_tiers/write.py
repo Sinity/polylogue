@@ -2199,6 +2199,35 @@ def _refresh_thread(conn: sqlite3.Connection, root_session_id: str) -> None:
         """,
         (root_session_id, root_session_id),
     ).fetchall()
+    desired_session_ids = [str(row[0]) for row in session_rows]
+    existing_thread = conn.execute(
+        """
+        SELECT created_at_ms, session_count, depth
+        FROM threads
+        WHERE thread_id = ?
+        """,
+        (root_session_id,),
+    ).fetchone()
+    if existing_thread is not None:
+        existing_session_ids = [
+            str(row[0])
+            for row in conn.execute(
+                """
+                SELECT session_id
+                FROM thread_sessions
+                WHERE thread_id = ?
+                ORDER BY position
+                """,
+                (root_session_id,),
+            ).fetchall()
+        ]
+        if (
+            int(existing_thread[0] or 0) == int(root[2] or root[3] or 0)
+            and int(existing_thread[1] or 0) == len(desired_session_ids)
+            and int(existing_thread[2] or 0) == max(len(desired_session_ids) - 1, 0)
+            and existing_session_ids == desired_session_ids
+        ):
+            return
     for position, row in enumerate(session_rows):
         conn.execute(
             """
