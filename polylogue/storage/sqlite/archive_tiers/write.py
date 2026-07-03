@@ -2104,6 +2104,7 @@ def _resolve_session_graph(
             session_id,
             cache=cache,
             composed_cache=composed_cache,
+            add_timing=add_timing,
         )
     record_substage("reextract_prefix_tails", t0)
 
@@ -3462,12 +3463,19 @@ def _reextract_prefix_tail_db(
     *,
     cache: dict[str, list[tuple[str, str]]] | None = None,
     composed_cache: dict[str, list[tuple[str, str]]] | None = None,
+    add_timing: Callable[[str, float], None] | None = None,
 ) -> None:
     """Normalize a child that was stored whole because its parent was ingested
     later (#2467). Aligns the child's already-stored messages against the parent's
     composed transcript, deletes the inherited-prefix rows, and records the edge.
     Only runs while the lineage edge is still un-extracted (``inheritance`` NULL).
     """
+
+    def record_substage(name: str, started_at: float) -> None:
+        if add_timing is not None:
+            add_timing(f"index.graph_resolve.reextract_prefix_tails.{name}", started_at)
+
+    t0 = time.perf_counter()
     edge = conn.execute(
         """
         SELECT dst_origin, dst_native_id, link_type
@@ -3479,25 +3487,32 @@ def _reextract_prefix_tail_db(
         """,
         (child_session_id, parent_session_id),
     ).fetchone()
+    record_substage("edge_lookup", t0)
     if edge is None:
         return
     dst_origin, dst_native_id, link_type = edge
+    t0 = time.perf_counter()
     parent_composed = _composed_db_signatures(
         conn,
         parent_session_id,
         cache=cache,
         composed_cache=composed_cache,
     )
+    record_substage("parent_composed", t0)
+    t0 = time.perf_counter()
     child_composed = _composed_db_signatures(
         conn,
         child_session_id,
         cache=cache,
         composed_cache=composed_cache,
     )
+    record_substage("child_composed", t0)
+    t0 = time.perf_counter()
     k = 0
     limit = min(len(parent_composed), len(child_composed))
     while k < limit and parent_composed[k][1] == child_composed[k][1]:
         k += 1
+    record_substage("signature_compare", t0)
 
     def _set_edge(branch_point_message_id: str | None, inheritance: str) -> None:
         conn.execute(
@@ -3510,9 +3525,12 @@ def _reextract_prefix_tail_db(
         )
 
     if k == 0:
+        t0 = time.perf_counter()
         _set_edge(None, "spawned-fresh")
+        record_substage("edge_update", t0)
         return
     prefix_message_ids = [child_composed[i][0] for i in range(k)]
+    t0 = time.perf_counter()
     _reextract_provider_usage_tail_db(
         conn,
         child_session_id,
@@ -3520,23 +3538,33 @@ def _reextract_prefix_tail_db(
         parent_composed[k - 1][0],
         prefix_message_ids=prefix_message_ids,
     )
+    record_substage("provider_usage_tail", t0)
+    t0 = time.perf_counter()
     if k == len(child_composed):
         _delete_all_session_message_dependents(conn, child_session_id, prefix_message_ids)
+        record_substage("dependent_delete", t0)
     else:
         placeholders = ",".join("?" for _ in prefix_message_ids)
         _delete_prefix_message_dependents(conn, prefix_message_ids)
+        record_substage("dependent_delete", t0)
+        t0 = time.perf_counter()
         conn.execute(
             f"DELETE FROM messages WHERE message_id IN ({placeholders})",
             tuple(prefix_message_ids),
         )
+        record_substage("message_delete", t0)
     # The child's own rows just changed (inherited prefix deleted); drop its
     # memoized own-signatures so any later compose in this batch recomputes them.
+    t0 = time.perf_counter()
     if cache is not None:
         cache.pop(child_session_id, None)
     if composed_cache is not None:
         composed_cache.pop(child_session_id, None)
     _set_edge(parent_composed[k - 1][0], "prefix-sharing")
+    record_substage("edge_update", t0)
+    t0 = time.perf_counter()
     _refresh_session_counts(conn, child_session_id)
+    record_substage("count_refresh", t0)
 
 
 def _delete_all_session_message_dependents(
