@@ -295,6 +295,24 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
         f"({getattr(report, 'logical_model_rollup_grain', 'logical_session_model_high_water')}): "
         f"{_usage_counter_line(getattr(report, 'logical_model_rollup_usage', None))}"
     )
+    pricing_lanes = tuple(getattr(report, "pricing_lanes", ()))
+    if pricing_lanes:
+        env.ui.console.print(
+            f"  stored/provider-priced cost: ${float(getattr(report, 'stored_provider_priced_usd', 0.0) or 0.0):,.2f}"
+        )
+        env.ui.console.print(
+            f"  catalog API-equivalent cost: ${float(getattr(report, 'catalog_api_equivalent_usd', 0.0) or 0.0):,.2f}"
+        )
+        for lane in pricing_lanes:
+            env.ui.console.print(
+                "    pricing lane "
+                f"{getattr(lane, 'provenance', 'unknown')}: "
+                f"rows={getattr(lane, 'row_count', 0)} "
+                f"matched={getattr(lane, 'matched_model_row_count', 0)} "
+                f"unmatched={getattr(lane, 'unmatched_model_row_count', 0)} "
+                f"stored=${float(getattr(lane, 'stored_cost_usd', 0.0) or 0.0):,.2f} "
+                f"catalog=${float(getattr(lane, 'catalog_api_equivalent_usd', 0.0) or 0.0):,.2f}"
+            )
     if not origins:
         env.ui.console.print("  No sessions matched.")
         return

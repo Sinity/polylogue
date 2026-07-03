@@ -15,6 +15,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+from polylogue.archive.semantic.pricing import (
+    CATALOG_EFFECTIVE_DATE,
+    CATALOG_PROVENANCE,
+    PRICING,
+    _normalize_model,
+    estimate_cost,
+)
 from polylogue.core.enums import Origin, Provider
 
 UsageReportDetail = Literal["headline", "full"]
@@ -296,6 +303,45 @@ class OriginUsageReport:
 
 
 @dataclass(frozen=True, slots=True)
+class PricingLaneReport:
+    """Fast repricing headline for one ``session_model_usage`` provenance lane."""
+
+    provenance: str
+    row_count: int = 0
+    session_count: int = 0
+    matched_model_row_count: int = 0
+    unmatched_model_row_count: int = 0
+    usage: UsageCounters = field(default_factory=UsageCounters)
+    stored_cost_usd: float = 0.0
+    catalog_api_equivalent_usd: float = 0.0
+    caveats: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "provenance": self.provenance,
+            "row_count": self.row_count,
+            "session_count": self.session_count,
+            "matched_model_row_count": self.matched_model_row_count,
+            "unmatched_model_row_count": self.unmatched_model_row_count,
+            "usage": self.usage.to_dict(),
+            "stored_cost_usd": round(self.stored_cost_usd, 6),
+            "catalog_api_equivalent_usd": round(self.catalog_api_equivalent_usd, 6),
+            "caveats": list(self.caveats),
+        }
+
+
+@dataclass(slots=True)
+class _PricingLaneAccumulator:
+    row_count: int = 0
+    session_count: int = 0
+    matched_model_row_count: int = 0
+    unmatched_model_row_count: int = 0
+    usage: UsageCounters = field(default_factory=UsageCounters)
+    stored_cost_usd: float = 0.0
+    catalog_api_equivalent_usd: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderUsageReport:
     """Archive-level provider usage accounting report."""
 
@@ -306,6 +352,11 @@ class ProviderUsageReport:
     model_rollup_usage: UsageCounters = field(default_factory=UsageCounters)
     logical_model_rollup_grain: str = "logical_session_model_high_water"
     logical_model_rollup_usage: UsageCounters = field(default_factory=UsageCounters)
+    pricing_catalog_provenance: str = CATALOG_PROVENANCE
+    pricing_catalog_effective_date: str = CATALOG_EFFECTIVE_DATE
+    pricing_lanes: tuple[PricingLaneReport, ...] = ()
+    stored_provider_priced_usd: float = 0.0
+    catalog_api_equivalent_usd: float = 0.0
     caveats: tuple[str, ...] = ()
     coverage_matrix: tuple[ProviderUsageCoverage, ...] = _PROVIDER_USAGE_COVERAGE
 
@@ -318,6 +369,11 @@ class ProviderUsageReport:
             "model_rollup_usage": self.model_rollup_usage.to_dict(),
             "logical_model_rollup_grain": self.logical_model_rollup_grain,
             "logical_model_rollup_usage": self.logical_model_rollup_usage.to_dict(),
+            "pricing_catalog_provenance": self.pricing_catalog_provenance,
+            "pricing_catalog_effective_date": self.pricing_catalog_effective_date,
+            "pricing_lanes": [lane.to_dict() for lane in self.pricing_lanes],
+            "stored_provider_priced_usd": round(self.stored_provider_priced_usd, 6),
+            "catalog_api_equivalent_usd": round(self.catalog_api_equivalent_usd, 6),
             "origins": [origin.to_dict() for origin in self.origins],
             "caveats": list(self.caveats),
         }
@@ -384,6 +440,7 @@ def provider_usage_report_from_connection(
     logical_model_by_origin = _logical_model_rollup_stats(conn, origin) if model_table_present else {}
     model_counts_by_origin = _model_row_counts(conn, origin) if model_table_present else {}
     multi_model_by_origin = _multi_model_session_counts(conn, origin) if model_table_present else {}
+    pricing_lanes = _pricing_lane_reports(conn, origin) if model_table_present else ()
     raw_by_origin, raw_samples, raw_caveat = _source_raw_stats(
         conn, archive_root=Path(archive_root), origin=origin, limit=limit
     )
@@ -517,6 +574,9 @@ def provider_usage_report_from_connection(
         detail_level=detail,
         model_rollup_usage=_sum_usage_counters(row.model_rollup_usage for row in reports),
         logical_model_rollup_usage=_sum_usage_counters(row.logical_model_rollup_usage for row in reports),
+        pricing_lanes=pricing_lanes,
+        stored_provider_priced_usd=sum(lane.stored_cost_usd for lane in pricing_lanes if lane.provenance == "priced"),
+        catalog_api_equivalent_usd=sum(lane.catalog_api_equivalent_usd for lane in pricing_lanes),
         caveats=tuple(caveats),
     )
 
@@ -1086,6 +1146,106 @@ def _multi_model_session_counts(conn: sqlite3.Connection, origin: str | None) ->
         _origin_args(origin),
     ).fetchall()
     return {str(row["origin"]): _int(row["session_count"]) for row in rows}
+
+
+def _pricing_lane_reports(conn: sqlite3.Connection, origin: str | None) -> tuple[PricingLaneReport, ...]:
+    session_count_rows = conn.execute(
+        f"""
+        SELECT COALESCE(u.cost_provenance, 'unknown') AS provenance,
+               COUNT(DISTINCT u.session_id) AS session_count
+        FROM session_model_usage u
+        JOIN sessions s ON s.session_id = u.session_id
+        {_where_origin(origin, table_alias="s")}
+        GROUP BY provenance
+        """,
+        _origin_args(origin),
+    ).fetchall()
+    session_counts = {str(row["provenance"] or "unknown"): _int(row["session_count"]) for row in session_count_rows}
+    rows = conn.execute(
+        f"""
+        SELECT COALESCE(u.cost_provenance, 'unknown') AS provenance,
+               COALESCE(NULLIF(TRIM(u.model_name), ''), '') AS model_name,
+               COUNT(*) AS row_count,
+               COALESCE(SUM(u.input_tokens), 0) AS input_tokens,
+               COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
+               COALESCE(SUM(u.cache_read_tokens), 0) AS cached_input_tokens,
+               COALESCE(SUM(u.cache_write_tokens), 0) AS cache_write_tokens,
+               0 AS reasoning_output_tokens,
+               COALESCE(SUM(u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens), 0) AS total_tokens,
+               COALESCE(SUM(u.cost_usd), 0.0) AS stored_cost_usd
+        FROM session_model_usage u
+        JOIN sessions s ON s.session_id = u.session_id
+        {_where_origin(origin, table_alias="s")}
+        GROUP BY provenance, model_name
+        ORDER BY provenance, model_name
+        """,
+        _origin_args(origin),
+    ).fetchall()
+    by_provenance: dict[str, _PricingLaneAccumulator] = {}
+    caveats_by_provenance: dict[str, set[str]] = defaultdict(set)
+    for row in rows:
+        provenance = str(row["provenance"] or "unknown")
+        bucket = by_provenance.setdefault(provenance, _PricingLaneAccumulator())
+        model_name = str(row["model_name"] or "")
+        usage = UsageCounters.from_row(
+            row,
+            input_key="input_tokens",
+            output_key="output_tokens",
+            cached_input_key="cached_input_tokens",
+            cache_write_key="cache_write_tokens",
+            reasoning_output_key="reasoning_output_tokens",
+            total_key="total_tokens",
+        )
+        row_count = _int(row["row_count"])
+        bucket.row_count += row_count
+        bucket.session_count = session_counts.get(provenance, 0)
+        bucket.usage = bucket.usage.plus(usage)
+        stored_cost = float(row["stored_cost_usd"] or 0.0)
+        bucket.stored_cost_usd += stored_cost
+        catalog_cost = 0.0
+        if provenance == "priced" and stored_cost > 0:
+            catalog_cost = stored_cost
+            bucket.matched_model_row_count += row_count
+        elif model_name:
+            normalized = _normalize_model(model_name)
+            if normalized in PRICING:
+                catalog_cost = estimate_cost(
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                    cache_read_tokens=usage.cached_input_tokens,
+                    cache_write_tokens=usage.cache_write_tokens,
+                    model=normalized,
+                )
+                bucket.matched_model_row_count += row_count
+            else:
+                bucket.unmatched_model_row_count += row_count
+                caveats_by_provenance[provenance].add("missing_price")
+        else:
+            bucket.unmatched_model_row_count += row_count
+            caveats_by_provenance[provenance].add("missing_model")
+        if usage.cached_input_tokens and catalog_cost == 0.0 and provenance != "priced":
+            caveats_by_provenance[provenance].add("unpriced_cache_read_or_missing_price")
+        bucket.catalog_api_equivalent_usd += catalog_cost
+
+    result: list[PricingLaneReport] = []
+    for provenance, bucket in sorted(
+        by_provenance.items(),
+        key=lambda item: (0 if item[0] == "priced" else 1 if item[0] == "origin_reported" else 2, item[0]),
+    ):
+        result.append(
+            PricingLaneReport(
+                provenance=provenance,
+                row_count=bucket.row_count,
+                session_count=bucket.session_count,
+                matched_model_row_count=bucket.matched_model_row_count,
+                unmatched_model_row_count=bucket.unmatched_model_row_count,
+                usage=bucket.usage,
+                stored_cost_usd=round(bucket.stored_cost_usd, 6),
+                catalog_api_equivalent_usd=round(bucket.catalog_api_equivalent_usd, 6),
+                caveats=tuple(sorted(caveats_by_provenance.get(provenance, ()))),
+            )
+        )
+    return tuple(result)
 
 
 def _provider_event_stats(conn: sqlite3.Connection, origin: str | None) -> dict[str, dict[str, object]]:

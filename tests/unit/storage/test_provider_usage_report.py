@@ -4,6 +4,8 @@ import hashlib
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
@@ -257,6 +259,53 @@ def test_provider_usage_report_labels_physical_and_logical_model_rollups(tmp_pat
     report_payload = report.to_dict()
     assert report_payload["model_rollup_grain"] == "physical_session"
     assert report_payload["logical_model_rollup_grain"] == "logical_session_model_high_water"
+
+
+def test_provider_usage_report_separates_priced_and_origin_reported_repricing(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    conn.execute(
+        """
+        INSERT INTO sessions (
+            origin, native_id, title, session_kind,
+            created_at_ms, updated_at_ms, message_count, word_count, content_hash
+        ) VALUES
+            ('claude-code-session', 'priced', 'priced', 'standard', 1, 1, 1, 1, zeroblob(32)),
+            ('codex-session', 'origin', 'origin', 'standard', 2, 2, 1, 1, zeroblob(32)),
+            ('codex-session', 'unknown', 'unknown', 'standard', 3, 3, 1, 1, zeroblob(32))
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO session_model_usage (
+            session_id, model_name, input_tokens, output_tokens,
+            cache_read_tokens, cache_write_tokens, message_count, cost_provenance, cost_usd
+        ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+        """,
+        [
+            ("claude-code-session:priced", "claude-sonnet-4-5", 1000, 100, 2000, 0, "priced", 1.25),
+            ("codex-session:origin", "gpt-4o", 1_000_000, 100_000, 0, 0, "origin_reported", None),
+            ("codex-session:origin", "gpt-4o-mini", 1_000_000, 0, 0, 0, "origin_reported", None),
+            ("codex-session:unknown", "not-in-price-catalog", 1000, 100, 0, 0, "origin_reported", None),
+        ],
+    )
+
+    report = provider_usage_report_from_connection(conn, archive_root=tmp_path, detail="headline", limit=0)
+
+    lanes = {lane.provenance: lane for lane in report.pricing_lanes}
+    assert report.stored_provider_priced_usd == pytest.approx(1.25)
+    assert report.catalog_api_equivalent_usd == pytest.approx(4.9)
+    assert lanes["priced"].stored_cost_usd == pytest.approx(1.25)
+    assert lanes["priced"].catalog_api_equivalent_usd == pytest.approx(1.25)
+    assert lanes["origin_reported"].stored_cost_usd == 0
+    assert lanes["origin_reported"].catalog_api_equivalent_usd == pytest.approx(3.65)
+    assert lanes["origin_reported"].row_count == 3
+    assert lanes["origin_reported"].session_count == 2
+    assert lanes["origin_reported"].matched_model_row_count == 2
+    assert lanes["origin_reported"].unmatched_model_row_count == 1
+    assert lanes["origin_reported"].caveats == ("missing_price",)
+    payload = report.to_dict()
+    assert payload["pricing_catalog_provenance"] == "litellm-model-prices-vendored+polylogue-curated-overrides"
+    assert payload["stored_provider_priced_usd"] == pytest.approx(1.25)
 
 
 def test_provider_usage_report_handles_empty_origin_filter(tmp_path: Path) -> None:
