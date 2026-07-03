@@ -2242,7 +2242,6 @@ def _refresh_thread(conn: sqlite3.Connection, root_session_id: str) -> None:
         """,
         (root_session_id, root[2] or root[3] or 0),
     )
-    conn.execute("DELETE FROM thread_sessions WHERE thread_id = ?", (root_session_id,))
     session_rows = conn.execute(
         """
         SELECT session_id
@@ -2281,6 +2280,7 @@ def _refresh_thread(conn: sqlite3.Connection, root_session_id: str) -> None:
             and existing_session_ids == desired_session_ids
         ):
             return
+    conn.execute("DELETE FROM thread_sessions WHERE thread_id = ?", (root_session_id,))
     for position, row in enumerate(session_rows):
         conn.execute(
             """

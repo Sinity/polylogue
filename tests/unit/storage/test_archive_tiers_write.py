@@ -2326,6 +2326,69 @@ def test_archive_tiers_writer_resolves_parent_link_when_parent_already_exists(tm
     assert "SCAN sessions" not in plan
 
 
+def test_refresh_thread_fast_path_keeps_current_thread_membership(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    parent = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="parent-fast-path",
+        updated_at="2026-01-01T00:00:01+00:00",
+        messages=[
+            ParsedMessage(
+                provider_message_id="p1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="parent")],
+            )
+        ],
+    )
+    child = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="child-fast-path",
+        parent_session_provider_id="parent-fast-path",
+        branch_type=BranchType.SIDECHAIN,
+        updated_at="2026-01-01T00:00:02+00:00",
+        messages=[
+            ParsedMessage(
+                provider_message_id="c1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="child")],
+            )
+        ],
+    )
+
+    parent_id = write_parsed_session_to_archive(conn, parent)
+    child_id = write_parsed_session_to_archive(conn, child)
+    before = conn.execute(
+        """
+        SELECT session_id, position
+        FROM thread_sessions
+        WHERE thread_id = ?
+        ORDER BY position
+        """,
+        (parent_id,),
+    ).fetchall()
+    statements: list[str] = []
+    conn.set_trace_callback(statements.append)
+
+    archive_tier_write._refresh_thread(conn, parent_id)
+
+    conn.set_trace_callback(None)
+    after = conn.execute(
+        """
+        SELECT session_id, position
+        FROM thread_sessions
+        WHERE thread_id = ?
+        ORDER BY position
+        """,
+        (parent_id,),
+    ).fetchall()
+    mutating_thread_statements = [
+        stmt for stmt in statements if ("DELETE FROM thread_sessions" in stmt or "INSERT INTO thread_sessions" in stmt)
+    ]
+    assert [(row[0], row[1]) for row in before] == [(parent_id, 0), (child_id, 1)]
+    assert [(row[0], row[1]) for row in after] == [(parent_id, 0), (child_id, 1)]
+    assert mutating_thread_statements == []
+
+
 def test_archive_tiers_writer_resolves_existing_child_link_when_parent_arrives_later(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     child = ParsedSession(
