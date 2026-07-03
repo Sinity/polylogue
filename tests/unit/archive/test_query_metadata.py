@@ -71,6 +71,20 @@ def test_projection_unit_completion_payloads_are_lightweight() -> None:
     assert action_candidate["payload_model"] == "ActionQueryRowPayload"
 
 
+def test_projection_field_completion_payloads_use_output_fields() -> None:
+    from polylogue.archive.query.completions import query_completion_payload
+
+    payload = query_completion_payload("projection-field", unit="messages", incomplete="message")
+    candidates = [cast(dict[str, object], candidate) for candidate in cast(list[object], payload["candidates"])]
+
+    assert payload["kind"] == "projection-field"
+    assert [candidate["value"] for candidate in candidates] == ["message_id", "message_type"]
+    first = candidates[0]
+    assert first["kind"] == "query-projection-field"
+    assert first["group"] == "messages projection fields"
+    assert first["source"] == "MessageQueryRowPayload.model_fields"
+
+
 def test_query_unit_descriptors_own_terminal_aliases() -> None:
     from polylogue.archive.query.metadata import (
         query_unit_descriptor,

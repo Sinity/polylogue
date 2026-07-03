@@ -44,6 +44,7 @@ QUERY_COMPLETION_KINDS: tuple[str, ...] = (
     "terminal-field",
     "pipeline-stage",
     "projection-unit",
+    "projection-field",
     "count-operator",
     "numeric-operator",
     "date-operator",
@@ -380,6 +381,38 @@ def query_projection_unit_candidates(incomplete: str) -> list[QueryCompletionCan
     return candidates
 
 
+def query_projection_field_candidates(unit: str, incomplete: str) -> list[QueryCompletionCandidate]:
+    """Return output payload fields accepted by ``with <unit>(...)``."""
+
+    descriptor = query_unit_descriptor(unit)
+    if descriptor is None:
+        raise QueryCompletionError(f"unknown projection unit: {unit}")
+    current = incomplete.strip().lower()
+    from polylogue.surfaces import payloads as surface_payloads
+
+    payload_model = getattr(surface_payloads, descriptor.payload_model, None)
+    model_fields = getattr(payload_model, "model_fields", None)
+    if not isinstance(model_fields, dict):
+        return []
+    candidates: list[QueryCompletionCandidate] = []
+    for field_name in sorted(model_fields):
+        if current and not field_name.startswith(current):
+            continue
+        candidates.append(
+            QueryCompletionCandidate(
+                value=field_name,
+                insert=field_name,
+                display=field_name,
+                kind="query-projection-field",
+                group=f"{descriptor.plural_source} projection fields",
+                description=f"Emit the {field_name} field for attached {descriptor.plural_source}.",
+                source=f"{descriptor.payload_model}.model_fields",
+                payload_model=descriptor.payload_model,
+            )
+        )
+    return candidates
+
+
 def query_count_operator_candidates(field: str, incomplete: str) -> list[QueryCompletionCandidate]:
     """Return readable count operators accepted by the query grammar."""
 
@@ -538,6 +571,10 @@ def query_completion_candidates(
         return query_pipeline_stage_candidates(unit, incomplete)
     if kind == "projection-unit":
         return query_projection_unit_candidates(incomplete)
+    if kind == "projection-field":
+        if unit is None:
+            raise QueryCompletionError("--unit is required for projection-field completion")
+        return query_projection_field_candidates(unit, incomplete)
     if kind == "count-operator":
         if field is None:
             raise QueryCompletionError("--field is required for count-operator completion")

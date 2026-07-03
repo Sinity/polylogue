@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import builtins
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, TypeVar
 
@@ -489,6 +489,10 @@ class SessionQuerySpec:
     #: projection, not a filter/sort/limit, so it is deliberately absent from
     #: :class:`~polylogue.archive.query.plan.SessionQueryPlan`.
     with_units: tuple[str, ...] = ()
+    #: Optional payload-field allowlists keyed by canonical query unit for the
+    #: same post-selection projection. Empty/missing means the unit's default
+    #: payload is emitted.
+    with_unit_fields: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     @classmethod
     def from_params(cls, params: Mapping[str, object], *, strict: bool = False) -> SessionQuerySpec:
@@ -592,6 +596,7 @@ class SessionQuerySpec:
             vector_provider=vector_provider,
             query_plan=self.to_plan(vector_provider=vector_provider),
             with_units=self.with_units,
+            with_unit_fields=self.with_unit_fields,
         )
 
 

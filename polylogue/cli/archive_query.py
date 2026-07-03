@@ -23,7 +23,7 @@ from polylogue.archive.query.attached_units import fetch_attached_units
 from polylogue.archive.query.expression import (
     QueryUnitSource,
     parse_unit_source_expression,
-    split_with_clause,
+    split_with_projection_clause,
 )
 from polylogue.archive.query.metadata import query_unit_descriptor
 from polylogue.archive.query.spec import (
@@ -170,11 +170,13 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     # is not searched literally; the units drive the attached-unit projection.
     unit_source_query = raw_query
     with_units: tuple[str, ...] = ()
+    with_unit_fields: dict[str, tuple[str, ...]] = {}
     if unit_source_query and not (unit_source_query.startswith("{") or unit_source_query.startswith("[")):
-        unit_source_query, with_units = split_with_clause(unit_source_query)
+        unit_source_query, with_units, with_unit_fields = split_with_projection_clause(unit_source_query)
     query = _query_text(compiled_spec.query_terms, {"contains": compiled_spec.contains_terms})
     if compiled_spec.with_units:
         with_units = compiled_spec.with_units
+        with_unit_fields = compiled_spec.with_unit_fields
 
     tags_to_add = _tuple_tokens(params.get("add_tag"))
     metadata_to_set = _metadata_pairs(params.get("set_meta"))
@@ -266,6 +268,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         compiled_spec=compiled_spec,
         unit_source=unit_source,
         with_units=with_units,
+        with_unit_fields=with_unit_fields,
         query=query,
         limit=limit,
         offset=page_offset,
@@ -543,6 +546,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                         fields=fields,
                         typo_hint=typo_hint,
                         with_units=with_units,
+                        with_unit_fields=with_unit_fields,
                     )
                     return
                 if stream:
@@ -639,6 +643,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 fields=fields,
                 typo_hint=typo_hint,
                 with_units=with_units,
+                with_unit_fields=with_unit_fields,
             )
             return
         if params.get("latest"):
@@ -719,6 +724,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             fields=fields,
             archive=archive,
             with_units=with_units,
+            with_unit_fields=with_unit_fields,
         )
 
 
@@ -817,6 +823,7 @@ def _try_emit_daemon_session_page(
     compiled_spec: SessionQuerySpec,
     unit_source: QueryUnitSource | None,
     with_units: tuple[str, ...],
+    with_unit_fields: dict[str, tuple[str, ...]],
     query: str,
     limit: int,
     offset: int,
@@ -847,6 +854,7 @@ def _try_emit_daemon_session_page(
         compiled_spec=compiled_spec,
         unit_source=unit_source,
         with_units=with_units,
+        with_unit_fields=with_unit_fields,
         tags_to_add=tags_to_add,
         metadata_to_set=metadata_to_set,
         delete_matched=delete_matched,
@@ -894,6 +902,7 @@ def _daemon_session_page_supported(
     compiled_spec: SessionQuerySpec,
     unit_source: QueryUnitSource | None,
     with_units: tuple[str, ...],
+    with_unit_fields: dict[str, tuple[str, ...]],
     tags_to_add: tuple[str, ...],
     metadata_to_set: tuple[tuple[str, str], ...],
     delete_matched: bool,
@@ -905,7 +914,7 @@ def _daemon_session_page_supported(
     similar_text: str | None,
     retrieval_lane: str,
 ) -> bool:
-    if unit_source is not None or with_units:
+    if unit_source is not None or with_units or with_unit_fields:
         return False
     if any(params.get(key) for key in ("stats_only", "stats_by", "count_only", "conv_id", "latest", "open_result")):
         return False
@@ -1603,6 +1612,7 @@ def _inject_attached_units(
     *,
     archive: ArchiveStore | None,
     with_units: tuple[str, ...],
+    with_unit_fields: dict[str, tuple[str, ...]] | None = None,
 ) -> None:
     """Attach ``with <units>`` projection rows to each rendered row payload.
 
@@ -1613,7 +1623,7 @@ def _inject_attached_units(
 
     if not with_units or archive is None or not items:
         return
-    attached = fetch_attached_units(archive, session_ids, with_units)
+    attached = fetch_attached_units(archive, session_ids, with_units, unit_fields=with_unit_fields)
     for item, session_id in zip(items, session_ids, strict=False):
         item["attached_units"] = {unit: list(by_session.get(session_id, ())) for unit, by_session in attached.items()}
 
@@ -1629,6 +1639,7 @@ def _emit_list(
     fields: str | None,
     archive: ArchiveStore | None = None,
     with_units: tuple[str, ...] = (),
+    with_unit_fields: dict[str, tuple[str, ...]] | None = None,
 ) -> None:
     items = [_summary_payload(summary) for summary in summaries]
     _inject_attached_units(
@@ -1636,6 +1647,7 @@ def _emit_list(
         [summary.session_id for summary in summaries],
         archive=archive,
         with_units=with_units,
+        with_unit_fields=with_unit_fields,
     )
     envelope: dict[str, object] = {
         "mode": "list",
@@ -1667,6 +1679,7 @@ def _emit_search(
     fields: str | None,
     typo_hint: str | None = None,
     with_units: tuple[str, ...] = (),
+    with_unit_fields: dict[str, tuple[str, ...]] | None = None,
 ) -> None:
     items = [
         _hit_payload(
@@ -1681,6 +1694,7 @@ def _emit_search(
         [hit.session_id for hit in hits],
         archive=archive,
         with_units=with_units,
+        with_unit_fields=with_unit_fields,
     )
     envelope: dict[str, object] = {
         "mode": "search",

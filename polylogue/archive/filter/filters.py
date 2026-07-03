@@ -43,6 +43,7 @@ class SessionFilter(SessionFilterBuilderMixin):
         vector_provider: VectorProvider | None = None,
         query_plan: SessionQueryPlan | None = None,
         with_units: tuple[str, ...] = (),
+        with_unit_fields: dict[str, tuple[str, ...]] | None = None,
     ) -> None:
         self._archive_root = archive_root
         self._config = config
@@ -50,6 +51,7 @@ class SessionFilter(SessionFilterBuilderMixin):
         #: ``with <units>`` projection (#2492). Carried alongside the plan
         #: because it is a post-selection projection, not a filter/sort/limit.
         self._with_units = with_units
+        self._with_unit_fields = with_unit_fields or {}
 
     @classmethod
     def from_query_plan(
@@ -59,8 +61,15 @@ class SessionFilter(SessionFilterBuilderMixin):
         archive_root: Path,
         config: Config | None = None,
         with_units: tuple[str, ...] = (),
+        with_unit_fields: dict[str, tuple[str, ...]] | None = None,
     ) -> SessionFilter:
-        return cls(archive_root=archive_root, config=config, query_plan=query_plan, with_units=with_units)
+        return cls(
+            archive_root=archive_root,
+            config=config,
+            query_plan=query_plan,
+            with_units=with_units,
+            with_unit_fields=with_unit_fields,
+        )
 
     @property
     def _since_date(self) -> datetime | None:
@@ -106,6 +115,7 @@ class SessionFilter(SessionFilterBuilderMixin):
             archive_root=self._archive_root,
             config=self._config,
             with_units=self._with_units,
+            with_unit_fields=self._with_unit_fields,
         )
 
     async def list_summaries(self) -> builtins.list[SessionSummary]:
@@ -114,6 +124,7 @@ class SessionFilter(SessionFilterBuilderMixin):
             archive_root=self._archive_root,
             config=self._config,
             with_units=self._with_units,
+            with_unit_fields=self._with_unit_fields,
         )
 
     async def list_all_summaries(self) -> builtins.list[SessionSummary]:
@@ -129,6 +140,7 @@ class SessionFilter(SessionFilterBuilderMixin):
             config=self._config,
             default_limit=1_000_000,
             with_units=self._with_units,
+            with_unit_fields=self._with_unit_fields,
         )
 
     async def list_all(self) -> builtins.list[Session]:
@@ -139,6 +151,7 @@ class SessionFilter(SessionFilterBuilderMixin):
             config=self._config,
             default_limit=1_000_000,
             with_units=self._with_units,
+            with_unit_fields=self._with_unit_fields,
         )
 
     async def first(self) -> Session | None:

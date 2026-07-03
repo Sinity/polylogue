@@ -409,6 +409,7 @@ def _attach_units_to_domain(
     items: builtins.list[_AttachableT],
     archive: ArchiveStore,
     with_units: tuple[str, ...],
+    with_unit_fields: dict[str, tuple[str, ...]] | None = None,
 ) -> builtins.list[_AttachableT]:
     """Attach ``with <units>`` projection rows onto domain models (#2492).
 
@@ -421,7 +422,7 @@ def _attach_units_to_domain(
     from polylogue.archive.query.attached_units import fetch_attached_units
 
     session_ids = [item.id for item in items]
-    attached = fetch_attached_units(archive, session_ids, with_units)
+    attached = fetch_attached_units(archive, session_ids, with_units, unit_fields=with_unit_fields)
     updated: builtins.list[_AttachableT] = []
     for item in items:
         per_session = {unit: tuple(by_session.get(item.id, ())) for unit, by_session in attached.items()}
@@ -436,6 +437,7 @@ async def list_summaries_archive(
     config: Config | None,
     default_limit: int = 50,
     with_units: tuple[str, ...] = (),
+    with_unit_fields: dict[str, tuple[str, ...]] | None = None,
 ) -> builtins.list[SessionSummary]:
     rank_first = bool(plan.fts_terms and plan.sort is None)
     with _open_archive(archive_root) as archive:
@@ -450,6 +452,7 @@ async def list_summaries_archive(
             [_summary_to_domain(summary) for summary in archive_rows],
             archive,
             with_units,
+            with_unit_fields,
         )
     filtered = plan._apply_common_filters(summaries, sql_pushed=True)
     ordered = filtered if rank_first else plan._sort_summaries(filtered)
@@ -463,6 +466,7 @@ async def list_archive(
     config: Config | None,
     default_limit: int = 50,
     with_units: tuple[str, ...] = (),
+    with_unit_fields: dict[str, tuple[str, ...]] | None = None,
 ) -> builtins.list[Session]:
     rank_first = bool(plan.fts_terms and plan.sort is None)
     with _open_archive(archive_root) as archive:
@@ -477,6 +481,7 @@ async def list_archive(
             [_session_to_session(archive.read_session(summary.session_id)) for summary in archive_rows],
             archive,
             with_units,
+            with_unit_fields,
         )
     filtered = plan._apply_full_filters(sessions, sql_pushed=True)
     ordered = filtered if rank_first else plan._sort_sessions(filtered)

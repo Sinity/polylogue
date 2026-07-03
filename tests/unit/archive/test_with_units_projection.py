@@ -20,6 +20,7 @@ from polylogue.archive.query.expression import (
     compile_expression_into,
     parse_expression_ast,
     split_with_clause,
+    split_with_projection_clause,
 )
 from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.archive.query.spec import SessionQuerySpec
@@ -65,6 +66,29 @@ class TestWithClauseParsing:
         spec = compile_expression("repo:polylogue with messages, actions, files")
         assert spec.with_units == ("message", "action", "file")
 
+    def test_unit_field_selection_is_parsed(self) -> None:
+        spec = compile_expression("repo:polylogue with messages(message_id, role, text), actions(tool_name,is_error)")
+        assert spec.with_units == ("message", "action")
+        assert spec.with_unit_fields == {
+            "message": ("message_id", "role", "text"),
+            "action": ("tool_name", "is_error"),
+        }
+
+    def test_split_with_projection_clause_returns_field_map(self) -> None:
+        head, units, fields = split_with_projection_clause(
+            "repo:polylogue with files(path,action_count), assertions(assertion_id,body_text)"
+        )
+        assert head == "repo:polylogue"
+        assert units == ("file", "assertion")
+        assert fields == {
+            "file": ("path", "action_count"),
+            "assertion": ("assertion_id", "body_text"),
+        }
+
+    def test_empty_unit_field_selection_raises(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="field selection"):
+            compile_expression("repo:polylogue with messages(message_id,)")
+
     def test_duplicate_units_dedup(self) -> None:
         _head, units = split_with_clause("repo:polylogue with assertions, assertions")
         assert units == ("assertion",)
@@ -93,6 +117,18 @@ class TestWithClauseParsing:
         merged = compile_expression_into("repo:polylogue with assertions", base)
         assert merged.with_units == ("assertion",)
         assert merged.repo_names == ("polylogue",)
+
+    def test_compile_expression_into_merges_unit_fields(self) -> None:
+        base = SessionQuerySpec(
+            with_units=("message",),
+            with_unit_fields={"message": ("message_id",)},
+        )
+        merged = compile_expression_into("repo:polylogue with messages(role,text), actions(tool_name)", base)
+        assert merged.with_units == ("message", "action")
+        assert merged.with_unit_fields == {
+            "message": ("role", "text"),
+            "action": ("tool_name",),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +241,45 @@ class TestAttachBehaviour:
         assert attached["action"][session_id][0]["output_text_truncated_chars"] > 0
         assert attached["file"][session_id][0]["path"] == "polylogue/archive/query/expression.py"
 
+    def test_fetch_attached_units_applies_payload_field_selection(self, tmp_path: Path) -> None:
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = tmp_path / "index.db"
+        (
+            SessionBuilder(index_db, "field-select")
+            .provider("claude-code")
+            .title("Field selection")
+            .add_message("m-user", role="user", text="please edit field projection")
+            .save()
+        )
+        session_id = "claude-code-session:ext-field-select"
+
+        with ArchiveStore.open_existing(tmp_path) as archive:
+            attached = fetch_attached_units(
+                archive,
+                [session_id],
+                ["message"],
+                unit_fields={"message": ("message_id", "role")},
+            )
+
+        assert attached["message"][session_id] == (
+            {
+                "message_id": "claude-code-session:ext-field-select:m-user",
+                "role": "user",
+            },
+        )
+
+    def test_fetch_attached_units_rejects_unknown_payload_field(self, tmp_path: Path) -> None:
+        session_id = _seed_session_with_assertion(tmp_path)
+        with ArchiveStore.open_existing(tmp_path) as archive:
+            with pytest.raises(ValueError, match="unsupported field"):
+                fetch_attached_units(
+                    archive,
+                    [session_id],
+                    ["assertion"],
+                    unit_fields={"assertion": ("not_a_payload_field",)},
+                )
+
     async def test_spec_path_attaches_units_to_summaries(self, tmp_path: Path) -> None:
         session_id = _seed_session_with_assertion(tmp_path)
         summaries = await list_summaries_archive(
@@ -217,6 +292,23 @@ class TestAttachBehaviour:
         assert "assertion" in target.attached_units
         assert len(target.attached_units["assertion"]) == 1
         assert target.attached_units["assertion"][0]["body_text"] == "Review findings not read yet."
+
+    async def test_spec_path_applies_unit_field_selection(self, tmp_path: Path) -> None:
+        session_id = _seed_session_with_assertion(tmp_path)
+        summaries = await list_summaries_archive(
+            SessionQueryPlan(),
+            archive_root=tmp_path,
+            config=None,
+            with_units=("assertion",),
+            with_unit_fields={"assertion": ("assertion_id", "body_text")},
+        )
+        target = next(summary for summary in summaries if summary.id == session_id)
+        assert target.attached_units["assertion"] == (
+            {
+                "assertion_id": "caveat-alpha",
+                "body_text": "Review findings not read yet.",
+            },
+        )
 
     async def test_spec_path_no_units_leaves_attached_empty(self, tmp_path: Path) -> None:
         session_id = _seed_session_with_assertion(tmp_path)

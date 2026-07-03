@@ -85,6 +85,36 @@ def _compact_attached_payload(payload: JSONDocument) -> JSONDocument:
     return cast(JSONDocument, compacted)
 
 
+def _select_payload_fields(
+    payload: JSONDocument,
+    fields: Sequence[str],
+) -> JSONDocument:
+    if not fields:
+        return payload
+    selected = set(fields)
+    return cast(JSONDocument, {key: value for key, value in payload.items() if key in selected})
+
+
+def _validate_payload_fields(
+    unit: str,
+    payload_model: Any,
+    fields: Sequence[str],
+) -> None:
+    if not fields:
+        return
+    model_fields = getattr(payload_model, "model_fields", None)
+    if not isinstance(model_fields, dict):
+        return
+    supported = set(model_fields)
+    unknown = sorted(set(fields) - supported)
+    if unknown:
+        supported_text = ", ".join(sorted(supported))
+        raise ValueError(
+            f"with {unit} field selection contains unsupported field(s): {', '.join(unknown)}; "
+            f"supported fields: {supported_text}"
+        )
+
+
 def _fetch_unit_rows(
     archive: ArchiveStore,
     descriptor: QueryUnitDescriptor,
@@ -139,6 +169,7 @@ def fetch_attached_units(
     archive: ArchiveStore,
     session_ids: Sequence[str],
     units: Sequence[str],
+    unit_fields: dict[str, tuple[str, ...]] | None = None,
 ) -> dict[str, dict[str, tuple[JSONDocument, ...]]]:
     """Return attached-unit rows per unit, bucketed by session id.
 
@@ -163,6 +194,8 @@ def fetch_attached_units(
         payload_model = getattr(surface_payloads, descriptor.payload_model, None)
         if payload_model is None or not hasattr(payload_model, "from_row"):
             raise ValueError(f"query unit {descriptor.unit!r} has no row payload model")
+        selected_fields = () if unit_fields is None else unit_fields.get(descriptor.unit, ())
+        _validate_payload_fields(descriptor.unit, payload_model, selected_fields)
         rows = _fetch_session_unit_rows(archive, descriptor, session_ids, limit=fetch_limit)
         if rows is None:
             rows = _fetch_unit_rows(archive, descriptor, predicate, limit=fetch_limit)
@@ -172,8 +205,12 @@ def fetch_attached_units(
             if session_id is None or session_id not in selected:
                 continue
             payload = cast(Any, payload_model).from_row(row)
+            payload_document = model_json_document(payload, exclude_none=not bool(selected_fields))
             buckets.setdefault(session_id, []).append(
-                _compact_attached_payload(model_json_document(payload, exclude_none=True))
+                _select_payload_fields(
+                    _compact_attached_payload(payload_document),
+                    selected_fields,
+                )
             )
         result[descriptor.unit] = {session_id: tuple(rows) for session_id, rows in buckets.items()}
     return result

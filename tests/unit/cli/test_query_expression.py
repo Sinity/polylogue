@@ -2983,16 +2983,18 @@ class TestBooleanQueryExpression:
                 "--format",
                 "json",
                 "find",
-                "sessions where title:attached with messages, actions, files",
+                "sessions where title:attached with messages(message_id,role), "
+                "actions(tool_name,semantic_type,is_error), files(path)",
             ],
         )
 
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
         attached = payload["items"][0]["attached_units"]
+        assert {tuple(row) for row in attached["message"]} == {("message_id", "role")}
         assert {row["role"] for row in attached["message"]} == {"user", "assistant"}
-        assert attached["action"][0]["semantic_type"] == "file_edit"
-        assert attached["file"][0]["path"] == "polylogue/archive/query/expression.py"
+        assert attached["action"][0] == {"tool_name": "Edit", "semantic_type": "file_edit", "is_error": None}
+        assert attached["file"][0] == {"path": "polylogue/archive/query/expression.py"}
 
     def test_query_action_read_accepts_shell_quoted_terminal_action_source(
         self, workspace_env: dict[str, Path]

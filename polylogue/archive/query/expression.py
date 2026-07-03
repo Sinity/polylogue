@@ -1527,25 +1527,70 @@ def _iter_top_level_with_positions(expression: str) -> list[int]:
     return positions
 
 
-def _canonicalize_with_units(tail: str) -> tuple[str, ...]:
-    """Validate and canonicalize the ``with`` clause unit list.
-
-    ``tail`` is the text after the ``with`` keyword (for example
-    ``"assertions"`` or ``"assertions, actions"``). Every token must resolve to
-    a known query unit and be wired for projection; otherwise an
-    :class:`ExpressionCompileError` is raised so an unknown or unsupported unit
-    never silently no-ops.
-    """
-
-    tokens = [token.strip() for token in tail.split(",")]
-    if any(not token for token in tokens):
+def _split_projection_items(tail: str) -> tuple[str, ...]:
+    items: list[str] = []
+    start = 0
+    depth = 0
+    for idx, char in enumerate(tail):
+        if char == "(":
+            depth += 1
+            continue
+        if char == ")":
+            depth = max(0, depth - 1)
+            continue
+        if char == "," and depth == 0:
+            item = tail[start:idx].strip()
+            if not item:
+                raise ExpressionCompileError(
+                    "with clause units must be a comma-separated list of query units (for example: with assertions)",
+                    field=None,
+                )
+            items.append(item)
+            start = idx + 1
+    final = tail[start:].strip()
+    if not final:
         raise ExpressionCompileError(
             "with clause units must be a comma-separated list of query units (for example: with assertions)",
             field=None,
         )
+    items.append(final)
+    return tuple(items)
+
+
+def _parse_projection_item(item: str) -> tuple[str, tuple[str, ...]]:
+    match = re.fullmatch(r"(?P<unit>[A-Za-z0-9_.-]+)(?:\((?P<fields>[^()]*)\))?", item)
+    if match is None:
+        raise ExpressionCompileError(
+            f"invalid with clause item {item!r}; use unit or unit(field, field)",
+            field=None,
+        )
+    raw_fields = match.group("fields")
+    if raw_fields is None:
+        return match.group("unit"), ()
+    fields = tuple(field.strip() for field in raw_fields.split(","))
+    if any(not field for field in fields):
+        raise ExpressionCompileError(
+            f"with {match.group('unit')} field selection must be a comma-separated list of payload fields",
+            field=None,
+        )
+    return match.group("unit"), fields
+
+
+def _canonicalize_with_projection(tail: str) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]]]:
+    """Validate and canonicalize the ``with`` clause unit list.
+
+    ``tail`` is the text after the ``with`` keyword (for example
+    ``"assertions"`` or ``"messages(message_id,text), actions(tool_name)"``).
+    Every token must resolve to a known query unit and be wired for projection; otherwise an
+    :class:`ExpressionCompileError` is raised so an unknown or unsupported unit
+    never silently no-ops.
+    """
+
     canonical: list[str] = []
     seen: set[str] = set()
-    for token in tokens:
+    field_map: dict[str, tuple[str, ...]] = {}
+    for item in _split_projection_items(tail):
+        token, fields = _parse_projection_item(item)
         descriptor = query_unit_descriptor(token)
         if descriptor is None:
             supported = ", ".join(sorted(WITH_PROJECTION_SUPPORTED_UNITS))
@@ -1562,15 +1607,30 @@ def _canonicalize_with_units(tail: str) -> tuple[str, ...]:
         if descriptor.unit not in seen:
             seen.add(descriptor.unit)
             canonical.append(descriptor.unit)
-    return tuple(canonical)
+        if fields:
+            if descriptor.unit in field_map:
+                merged = (
+                    *field_map[descriptor.unit],
+                    *(field for field in fields if field not in field_map[descriptor.unit]),
+                )
+                field_map[descriptor.unit] = merged
+            else:
+                field_map[descriptor.unit] = fields
+    return tuple(canonical), field_map
 
 
-def _split_with_clause(expression: str) -> tuple[str, tuple[str, ...]]:
+def _canonicalize_with_units(tail: str) -> tuple[str, ...]:
+    units, _fields = _canonicalize_with_projection(tail)
+    return units
+
+
+def _split_with_projection_clause(expression: str) -> tuple[str, tuple[str, ...], dict[str, tuple[str, ...]]]:
     """Split a trailing ``with <unit>[, <unit>]`` projection clause.
 
-    Returns ``(head, units)`` where ``head`` is the selection expression with
-    the clause removed and ``units`` are canonical query-unit names. When no
-    top-level ``with`` keyword is present, returns ``(expression, ())``.
+    Returns ``(head, units, fields)`` where ``head`` is the selection
+    expression with the clause removed, ``units`` are canonical query-unit
+    names, and ``fields`` maps units to payload-field allowlists. When no
+    top-level ``with`` keyword is present, returns ``(expression, (), {})``.
 
     The split happens outside the Lark grammar — mirroring
     :func:`_split_pipeline_stages` — so quoting and nesting are honored and a
@@ -1579,25 +1639,31 @@ def _split_with_clause(expression: str) -> tuple[str, tuple[str, ...]]:
 
     positions = _iter_top_level_with_positions(expression)
     if not positions:
-        return expression, ()
+        return expression, (), {}
     split_at = positions[-1]
     tail = expression[split_at + 4 :].strip()
     if not tail:
         # A bare trailing ``with`` is not a projection clause; leave it intact.
-        return expression, ()
-    units = _canonicalize_with_units(tail)
+        return expression, (), {}
+    units, fields = _canonicalize_with_projection(tail)
     head = expression[:split_at].strip()
     if not head:
         raise ExpressionCompileError(
             "with clause requires a selection expression before it (for example: repo:polylogue with assertions)",
             field=None,
         )
+    return head, units, fields
+
+
+def _split_with_clause(expression: str) -> tuple[str, tuple[str, ...]]:
+    head, units, _fields = _split_with_projection_clause(expression)
     return head, units
 
 
 #: Public alias for the trailing ``with <units>`` projection-clause splitter,
 #: used by surface adapters (CLI raw path) that strip the clause from FTS text.
 split_with_clause = _split_with_clause
+split_with_projection_clause = _split_with_projection_clause
 
 
 def _session_source_predicate(stage: str) -> QueryPredicate:
@@ -2053,7 +2119,7 @@ def parse_expression_ast(expression: str) -> QueryExpressionAST:
     if not expression:
         return QueryExpressionAST(())
     if not (expression.startswith("{") or expression.startswith("[")):
-        expression, _with_units = _split_with_clause(expression)
+        expression, _with_units, _with_unit_fields = _split_with_projection_clause(expression)
         if not expression:
             return QueryExpressionAST(())
     source_where = _parse_source_where_predicate(expression)
@@ -2776,7 +2842,7 @@ def compile_expression(expression: str) -> SessionQuerySpec:
 
     # Split a trailing ``with <units>`` projection clause off the selection
     # expression before parsing it (outside the Lark grammar, like ``|`` stages).
-    expression, with_units = _split_with_clause(expression)
+    expression, with_units, with_unit_fields = _split_with_projection_clause(expression)
 
     ast = parse_expression_ast(expression)
     if ast.boolean_predicate is not None:
@@ -2785,6 +2851,7 @@ def compile_expression(expression: str) -> SessionQuerySpec:
             similar_text=similar_text,
             boolean_predicate=residual_predicate,
             with_units=with_units,
+            with_unit_fields=with_unit_fields,
         )
     tokens = list(ast.clauses)
 
@@ -2814,7 +2881,7 @@ def compile_expression(expression: str) -> SessionQuerySpec:
         acc.apply_token(tok)
     spec = acc.to_spec()
     if with_units:
-        spec = replace(spec, with_units=with_units)
+        spec = replace(spec, with_units=with_units, with_unit_fields=with_unit_fields)
     return spec
 
 
@@ -2867,6 +2934,7 @@ def compile_expression_into(expression: str, base: SessionQuerySpec) -> SessionQ
         cursor=expr_spec.cursor if expr_spec.cursor is not None else base.cursor,
         boolean_predicate=boolean_predicate,
         with_units=base.with_units + tuple(u for u in expr_spec.with_units if u not in base.with_units),
+        with_unit_fields={**base.with_unit_fields, **expr_spec.with_unit_fields},
     )
 
 
@@ -2944,6 +3012,7 @@ __all__ = [
     "parse_unit_source_expression",
     "parse_expression_ast",
     "split_with_clause",
+    "split_with_projection_clause",
     "WITH_PROJECTION_SUPPORTED_UNITS",
     "structural_query_fields",
     "structural_query_units",
