@@ -1000,6 +1000,32 @@ class TestReaderSessionState:
         )
         assert payload["messages"][0]["anchor"] == "message-claude-code-session-c1-m-c1"
 
+    def test_session_routes_accept_list_emitted_encoded_ids(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            list_payload = cast(dict[str, object], _get_json(base_url, "/api/sessions"))
+            items = cast(list[dict[str, object]], list_payload["items"])
+            list_item = next(item for item in items if item["id"] == C1)
+            emitted_id = cast(str, list_item["id"])
+            identity_key = cast(str, cast(dict[str, object], list_item["target_ref"])["identity_key"])
+
+            for route_id in (emitted_id, identity_key):
+                encoded = quote(route_id, safe="")
+                routes = (
+                    f"/api/sessions/{encoded}",
+                    f"/api/sessions/{encoded}/messages",
+                    f"/api/sessions/{encoded}/read?view=messages",
+                    f"/api/sessions/{encoded}/raw",
+                    f"/api/sessions/{encoded}/cost",
+                    f"/api/sessions/{encoded}/provenance",
+                    f"/api/sessions/{encoded}/topology",
+                    f"/api/sessions/{encoded}/similar",
+                    f"/api/sessions/{encoded}/attachments",
+                    f"/api/insights/sessions/{encoded}",
+                )
+                for route in routes:
+                    status, body = _get_json_ex(base_url, route)
+                    assert status == 200, (route, body)
+
     def test_session_messages_envelope_carries_messages_and_total(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
             payload = _get_json(base_url, "/api/sessions/claude-code-session:c1/messages")

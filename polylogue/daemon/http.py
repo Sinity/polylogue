@@ -18,7 +18,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from polylogue.archive.viewport import READ_VIEW_HTTP_CAPABILITIES, read_view_http_capability_payloads
 from polylogue.core.enums import AssertionKind, AssertionStatus
@@ -302,6 +302,12 @@ def _parameterized_get_routes() -> tuple[_ParameterizedGetRoute, ...]:
         _parameterized_get_route("/api/raw_artifacts/:id", "_handle_get_raw_artifact"),
         _parameterized_get_route("/api/maintenance/status/:id", "_handle_maintenance_status"),
     )
+
+
+def _normalize_session_route_id(identifier: str) -> str:
+    """Accept session target-ref identity keys in session route ids."""
+
+    return identifier.removeprefix("session:")
 
 
 def _observability_post_routes() -> tuple[_StaticPostRoute, ...]:
@@ -1205,7 +1211,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     def _parse_path(self) -> tuple[list[str], dict[str, list[str]]]:
         parsed = urlparse(self.path)
-        path = parsed.path.strip("/").split("/")
+        path = [unquote(segment) for segment in parsed.path.strip("/").split("/")]
         params = parse_qs(parsed.query)
         return path, params
 
@@ -1337,6 +1343,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             ):
                 handler = cast(Callable[..., None], getattr(self, route.handler_name))
                 identifier = path[len(route.prefix)]
+                if route.pattern.startswith(("/api/sessions/:id", "/api/insights/sessions/:id")):
+                    identifier = _normalize_session_route_id(identifier)
                 if route.passes_params:
                     handler(identifier, params)
                 else:
