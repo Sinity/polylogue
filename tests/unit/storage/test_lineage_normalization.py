@@ -447,6 +447,77 @@ def test_child_before_parent_reextracts_cleanly_when_foreign_keys_suspended(tmp_
     conn.close()
 
 
+def test_child_before_parent_reextracts_empty_tail_by_session(tmp_path: Path) -> None:
+    """A child that is entirely inherited should remove dependents by session.
+
+    This covers the rebuild hot path where a large child replay is later found to
+    have no divergent tail. The cleanup must remove message-owned projections
+    even while foreign keys are suspended.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="child",
+        title="child",
+        parent_session_provider_id="parent",
+        branch_type=BranchType.SUBAGENT,
+        messages=[
+            _msg("c0", Role.USER, "hello", 0),
+            _msg("c1", Role.ASSISTANT, "hi there", 1),
+        ],
+    )
+    child_id = write_parsed_session_to_archive(conn, child)
+    row = conn.execute(
+        """
+        SELECT m.message_id, b.block_id
+        FROM messages m
+        JOIN blocks b ON b.message_id = m.message_id
+        WHERE m.session_id = ?
+        ORDER BY m.position, b.position
+        LIMIT 1
+        """,
+        (child_id,),
+    ).fetchone()
+    conn.execute(
+        """
+        INSERT INTO web_content_constructs (
+            session_id, message_id, block_id, position, provider, construct_type, provider_key
+        ) VALUES (?, ?, ?, 0, 'codex', 'content_reference', 'test')
+        """,
+        (child_id, row["message_id"], row["block_id"]),
+    )
+    conn.commit()
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("BEGIN IMMEDIATE")
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="parent",
+        title="parent",
+        messages=[
+            _msg("p0", Role.USER, "hello", 0),
+            _msg("p1", Role.ASSISTANT, "hi there", 1),
+        ],
+    )
+    write_parsed_session_to_archive(conn, parent, manage_transaction=False)
+
+    assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (child_id,)).fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM blocks WHERE session_id = ?", (child_id,)).fetchone()[0] == 0
+    assert (
+        conn.execute("SELECT COUNT(*) FROM web_content_constructs WHERE session_id = ?", (child_id,)).fetchone()[0] == 0
+    )
+    link = conn.execute(
+        "SELECT inheritance, branch_point_message_id FROM session_links WHERE src_session_id = ?",
+        (child_id,),
+    ).fetchone()
+    assert link["inheritance"] == "prefix-sharing"
+    assert link["branch_point_message_id"] is not None
+    conn.rollback()
+    conn.close()
+
+
 def test_child_before_parent_reextracts_provider_usage_tail(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     conn = _connect(db)

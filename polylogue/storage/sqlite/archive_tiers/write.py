@@ -3485,7 +3485,6 @@ def _reextract_prefix_tail_db(
         _set_edge(None, "spawned-fresh")
         return
     prefix_message_ids = [child_composed[i][0] for i in range(k)]
-    placeholders = ",".join("?" for _ in prefix_message_ids)
     _reextract_provider_usage_tail_db(
         conn,
         child_session_id,
@@ -3493,11 +3492,15 @@ def _reextract_prefix_tail_db(
         parent_composed[k - 1][0],
         prefix_message_ids=prefix_message_ids,
     )
-    _delete_prefix_message_dependents(conn, prefix_message_ids)
-    conn.execute(
-        f"DELETE FROM messages WHERE message_id IN ({placeholders})",
-        tuple(prefix_message_ids),
-    )
+    if k == len(child_composed):
+        _delete_all_session_message_dependents(conn, child_session_id, prefix_message_ids)
+    else:
+        placeholders = ",".join("?" for _ in prefix_message_ids)
+        _delete_prefix_message_dependents(conn, prefix_message_ids)
+        conn.execute(
+            f"DELETE FROM messages WHERE message_id IN ({placeholders})",
+            tuple(prefix_message_ids),
+        )
     # The child's own rows just changed (inherited prefix deleted); drop its
     # memoized own-signatures so any later compose in this batch recomputes them.
     if cache is not None:
@@ -3506,6 +3509,52 @@ def _reextract_prefix_tail_db(
         composed_cache.pop(child_session_id, None)
     _set_edge(parent_composed[k - 1][0], "prefix-sharing")
     _refresh_session_counts(conn, child_session_id)
+
+
+def _delete_all_session_message_dependents(
+    conn: sqlite3.Connection,
+    session_id: str,
+    prefix_message_ids: Sequence[str],
+) -> None:
+    """Delete a child whose entire stored transcript was inherited.
+
+    Partial re-extraction deletes by message id because a divergent tail must
+    survive. Empty-tail re-extraction can use the existing session indexes
+    instead, avoiding huge ``IN (...)`` cleanup for replayed long sessions.
+    """
+    if not prefix_message_ids:
+        return
+    placeholders = ",".join("?" for _ in prefix_message_ids)
+    params = tuple(prefix_message_ids)
+    conn.execute(
+        f"""
+        UPDATE messages
+        SET parent_message_id = NULL
+        WHERE parent_message_id IN ({placeholders})
+        """,
+        params,
+    )
+    conn.execute(
+        f"""
+        UPDATE session_events
+        SET source_message_id = NULL
+        WHERE source_message_id IN ({placeholders})
+        """,
+        params,
+    )
+    conn.execute(
+        f"""
+        UPDATE session_agent_policies
+        SET source_message_id = NULL
+        WHERE source_message_id IN ({placeholders})
+        """,
+        params,
+    )
+    conn.execute("DELETE FROM web_content_constructs WHERE session_id = ?", (session_id,))
+    conn.execute("DELETE FROM attachment_refs WHERE session_id = ?", (session_id,))
+    conn.execute("DELETE FROM paste_spans WHERE session_id = ?", (session_id,))
+    conn.execute("DELETE FROM blocks WHERE session_id = ?", (session_id,))
+    conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
 
 
 def _delete_prefix_message_dependents(conn: sqlite3.Connection, prefix_message_ids: Sequence[str]) -> None:
