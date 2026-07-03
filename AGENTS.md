@@ -16,6 +16,19 @@ AI chat export archiver — ingests Claude, ChatGPT, Codex, Gemini exports into 
 Rules for AI agents working on this repository. These override default
 agent behavior.
 
+### Beads issue tracking
+
+This repository uses `bd` (Beads) for durable project task tracking. Run
+`bd prime` when task context, ready work, blockers, or durable project memory
+matter. Use `bd ready --json`, `bd show <id> --json`,
+`bd update <id> --claim --json`, and `bd close <id> --reason "..." --json`
+for tracked work. Create linked Beads issues for discovered follow-up work
+instead of leaving markdown TODO lists as the source of truth.
+
+`bd dolt push` follows the same repo policy as `git push`: push feature
+branches and PR updates proactively after verification, but do not push
+directly to protected/default branches outside the PR flow.
+
 ### Issue-first for non-trivial work
 
 Open an issue before starting work that is non-trivial, spans multiple
