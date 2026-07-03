@@ -6,7 +6,6 @@ import json
 import os
 import sqlite3
 import time
-from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -1490,50 +1489,9 @@ def _direct_component_readiness(
 
 
 def _direct_raw_materialization_readiness(active_root: Path) -> dict[str, Any]:
-    try:
-        from polylogue.operations.archive_debt import archive_debt_list
+    from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
 
-        payload = archive_debt_list(
-            archive_root=active_root,
-            kinds=("raw-materialization",),
-            limit=None,
-            exact_fts=False,
-        )
-    except Exception:
-        return {
-            "available": False,
-            "total": 0,
-            "critical": 0,
-            "warning": 0,
-            "actionable": 0,
-            "blocked": 0,
-            "sampled_rows": [],
-        }
-    rows = [row for row in payload.rows if row.kind == "raw-materialization"]
-    category_counts: Counter[str] = Counter()
-    source_family_counts: Counter[str] = Counter()
-    for row in rows:
-        affected = int(row.affected_count or 1)
-        category_counts[str(row.category)] += affected
-        if row.source_family:
-            source_family_counts[str(row.source_family)] += affected
-    return {
-        "available": True,
-        "total": len(rows),
-        "critical": sum(1 for row in rows if row.severity == "critical"),
-        "warning": sum(1 for row in rows if row.severity == "warning"),
-        "actionable": sum(1 for row in rows if row.status == "actionable"),
-        "blocked": sum(1 for row in rows if row.status == "blocked"),
-        "classified": int(payload.totals.classified),
-        "affected_total": int(payload.totals.affected_total),
-        "affected_actionable": int(payload.totals.affected_actionable),
-        "affected_blocked": int(payload.totals.affected_blocked),
-        "affected_open": int(payload.totals.affected_open),
-        "affected_classified": int(payload.totals.affected_classified),
-        "category_counts": dict(sorted(category_counts.items())),
-        "source_family_counts": dict(sorted(source_family_counts.items())),
-        "sampled_rows": [row.model_dump(mode="json", exclude_none=True) for row in rows[:5]],
-    }
+    return raw_materialization_readiness_snapshot(active_root)
 
 
 def _direct_raw_materialization_component(readiness: dict[str, Any] | None) -> dict[str, Any]:
@@ -1785,13 +1743,18 @@ def _show_direct_status(
             materialization = _direct_raw_materialization_readiness(active_root)
             materialization_total = _safe_int(materialization.get("total"))
             if materialization_total:
-                env.ui.console.print(
-                    "  Raw materialization: "
-                    f"{materialization_total} debt row(s), "
-                    f"{_safe_int(materialization.get('critical'))} critical, "
-                    f"{_safe_int(materialization.get('warning'))} warning, "
-                    f"{_safe_int(materialization.get('blocked'))} blocked"
-                )
+                if _safe_int(materialization.get("affected_unchecked")) or _safe_int(materialization.get("unchecked")):
+                    env.ui.console.print(
+                        f"  Raw materialization: {materialization_total} raw/index join gap(s) need classification"
+                    )
+                else:
+                    env.ui.console.print(
+                        "  Raw materialization: "
+                        f"{materialization_total} debt row(s), "
+                        f"{_safe_int(materialization.get('critical'))} critical, "
+                        f"{_safe_int(materialization.get('warning'))} warning, "
+                        f"{_safe_int(materialization.get('blocked'))} blocked"
+                    )
             _render_archive_facade_routes(env, _archive_facade_route_status())
             _render_archive_cli_routes(env, _archive_cli_route_status())
             _render_archive_runtime_paths(env, _archive_runtime_path_status())

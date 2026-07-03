@@ -2664,12 +2664,18 @@ class TestReaderInformability:
         with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         assert "var readiness = s.component_readiness || {};" in body
+        assert "index DB:" in body
         assert "renderFtsChip(readiness.search || null, s.fts_readiness || {})" in body
+        assert (
+            "renderMaterializationChip(readiness.raw_materialization || null, s.raw_materialization_readiness || {})"
+            in body
+        )
         assert "renderSemanticChip(readiness.embeddings || null)" in body
         assert "renderInsightChip(readiness.session_profiles || null, s.insight_freshness || {})" in body
         assert "renderIngestChip(readiness.daemon_ingest || null, s.live || {})" in body
         assert "renderBrowserCaptureChip(readiness.browser_capture || null, s.browser_capture || {})" in body
         assert "function renderComponentReadinessChip(" in body
+        assert "function renderMaterializationChip(" in body
         assert "function readinessQuality(" in body
         assert "function renderBrowserCaptureChip(" in body
 
@@ -2747,17 +2753,22 @@ class TestReaderInformability:
         assert "'FTS: partial'" in body
         assert "'FTS: unavailable'" in body
 
-    def test_semantic_and_ingest_readiness_chips_render_present(self, workspace_env: dict[str, Path]) -> None:
-        """Semantic and ingest state have first-class status-strip chips fed
-        by ``component_readiness.embeddings`` and
-        ``component_readiness.daemon_ingest``.
+    def test_materialization_semantic_and_ingest_readiness_chips_render_present(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """Materialization, semantic, and ingest state have first-class
+        status-strip chips fed by ``component_readiness``.
         """
         with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
+        assert 'id="status-materialization"' in body
         assert 'id="status-semantic"' in body
         assert 'id="status-ingest"' in body
+        assert "function renderMaterializationChip(" in body
         assert "function renderSemanticChip(" in body
         assert "function renderIngestChip(" in body
+        assert "'materialization'" in body
         assert "'semantic'" in body
         assert "'ingest'" in body
 

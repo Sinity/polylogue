@@ -367,35 +367,30 @@ def test_daemon_status_payload_links_unified_archive_debt(monkeypatch: pytest.Mo
 def test_daemon_status_marks_raw_materialization_debt_not_ready(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from polylogue.surfaces.payloads import (
-        ArchiveDebtListPayload,
-        ArchiveDebtRowPayload,
-        ArchiveDebtTotalsPayload,
-    )
-
-    payload = ArchiveDebtListPayload(
-        generated_at="2026-06-22T00:00:00+00:00",
-        archive_root=str(tmp_path),
-        rows=(
-            ArchiveDebtRowPayload(
-                debt_ref="debt:raw-materialization:aistudio-drive:parsed-without-session",
-                kind="raw-materialization",
-                category="parsed-without-session",
-                stage="parse",
-                subject_ref="raw-origin:aistudio-drive",
-                severity="warning",
-                status="actionable",
-                owner="daemon",
-                summary="238 aistudio-drive raw artifact(s) parsed but have no materialized session",
-                affected_count=238,
-                source_family="aistudio-drive",
-            ),
-        ),
-        totals=ArchiveDebtTotalsPayload(total=1, warning=1, actionable=1, affected_total=238, affected_actionable=238),
-    )
-
     monkeypatch.setattr("polylogue.daemon.status.archive_root", lambda: tmp_path)
-    monkeypatch.setattr("polylogue.operations.archive_debt.archive_debt_list", lambda **_kwargs: payload)
+    monkeypatch.setattr(
+        "polylogue.daemon.status.raw_materialization_readiness_snapshot",
+        lambda _root: {
+            "available": True,
+            "classification": "not_run",
+            "precision": "raw_id_join_gap",
+            "total": 238,
+            "critical": 0,
+            "warning": 0,
+            "actionable": 0,
+            "blocked": 0,
+            "classified": 0,
+            "unchecked": 238,
+            "affected_total": 238,
+            "affected_actionable": 0,
+            "affected_blocked": 0,
+            "affected_open": 0,
+            "affected_classified": 0,
+            "affected_unchecked": 238,
+            "category_counts": {"raw_id_join_gap": 238},
+            "source_family_counts": {"aistudio-drive": 238},
+        },
+    )
 
     with (
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
@@ -406,27 +401,29 @@ def test_daemon_status_marks_raw_materialization_debt_not_ready(
         status_payload = daemon_status_payload(sources=())
 
     materialization = cast(dict[str, object], status_payload["raw_materialization_readiness"])
-    assert materialization["total"] == 1
-    assert materialization["warning"] == 1
+    assert materialization["total"] == 238
+    assert materialization["warning"] == 0
     assert materialization["affected_total"] == 238
-    assert materialization["affected_actionable"] == 238
+    assert materialization["affected_actionable"] == 0
+    assert materialization["affected_unchecked"] == 238
     assert materialization["affected_open"] == 0
-    assert materialization["category_counts"] == {"parsed-without-session": 238}
+    assert materialization["category_counts"] == {"raw_id_join_gap": 238}
     assert materialization["source_family_counts"] == {"aistudio-drive": 238}
 
     readiness = cast(dict[str, object], status_payload["component_readiness"])
     raw_component = cast(dict[str, object], readiness["raw_materialization"])
-    assert raw_component["state"] == "stale"
-    assert raw_component["summary"] == "raw evidence pending materialization"
+    assert raw_component["state"] == "degraded"
+    assert raw_component["summary"] == "raw/index join gaps need classification"
     assert raw_component["repair_hint"] == "polylogue ops debt list --kind raw-materialization"
     counts = cast(dict[str, object], raw_component["counts"])
-    assert counts["total"] == 1
+    assert counts["total"] == 238
     assert counts["affected_total"] == 238
+    assert counts["affected_unchecked"] == 238
     metadata = cast(dict[str, object], raw_component["metadata"])
-    assert metadata["category_counts"] == {"parsed-without-session": 238}
+    assert metadata["category_counts"] == {"raw_id_join_gap": 238}
 
     lines = format_daemon_status_lines(status_payload)
-    assert "Raw materialization: 1 debt row(s), 0 critical, 1 warning, 0 blocked" in lines
+    assert "Raw materialization: 238 raw/index join gap(s) need classification" in lines
 
 
 def test_daemon_status_payload_maps_component_readiness(tmp_path: Path) -> None:

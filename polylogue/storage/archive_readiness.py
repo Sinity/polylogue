@@ -111,6 +111,7 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
                     FROM source.raw_sessions r
                     LEFT JOIN main.sessions s ON s.raw_id = r.raw_id
                     WHERE s.raw_id IS NULL
+                      AND COALESCE(r.validation_status, '') != 'skipped'
                 )
                 SELECT
                     COUNT(*) AS total,
@@ -127,6 +128,7 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
                 FROM source.raw_sessions r
                 LEFT JOIN main.sessions s ON s.raw_id = r.raw_id
                 WHERE s.raw_id IS NULL
+                  AND COALESCE(r.validation_status, '') != 'skipped'
                 GROUP BY r.origin
                 ORDER BY count DESC, r.origin
                 LIMIT 16

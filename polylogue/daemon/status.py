@@ -7,7 +7,6 @@ import json
 import os
 import re
 import sqlite3
-from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, cast
@@ -56,7 +55,11 @@ from polylogue.paths import archive_root, db_path, index_db_path, resolve_active
 from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.watcher import default_sources
-from polylogue.storage.archive_readiness import active_rebuild_index_attempts, raw_materialization_ready
+from polylogue.storage.archive_readiness import (
+    active_rebuild_index_attempts,
+    raw_materialization_readiness_snapshot,
+    raw_materialization_ready,
+)
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -123,17 +126,21 @@ class EmbeddingReadiness(BaseModel):
 
 class RawMaterializationReadiness(BaseModel):
     available: bool = True
+    classification: str | None = None
+    precision: str | None = None
     total: int = 0
     critical: int = 0
     warning: int = 0
     actionable: int = 0
     blocked: int = 0
     classified: int = 0
+    unchecked: int = 0
     affected_total: int = 0
     affected_actionable: int = 0
     affected_blocked: int = 0
     affected_open: int = 0
     affected_classified: int = 0
+    affected_unchecked: int = 0
     category_counts: dict[str, int] = Field(default_factory=dict)
     source_family_counts: dict[str, int] = Field(default_factory=dict)
     sampled_rows: list[dict[str, object]] = Field(default_factory=list)
@@ -1801,58 +1808,13 @@ def _component_from_live_ingest(summary: LiveIngestAttemptSummary) -> ComponentR
 def _raw_materialization_readiness_info() -> RawMaterializationReadiness:
     """Summarize acquired-but-not-materialized raw evidence for readiness.
 
-    This is intentionally narrower than the full archive-debt endpoint: daemon
-    status needs the invariant that raw acquisition and index materialization
-    do not silently diverge.
+    This is intentionally cheaper than the full archive-debt endpoint: daemon
+    status needs the invariant that raw acquisition and index materialization do
+    not silently diverge, but normal status reads must not open raw blobs or run
+    the exact classifier over large archives.
     """
-    try:
-        from polylogue.operations.archive_debt import archive_debt_list
-
-        payload = archive_debt_list(
-            archive_root=archive_root(),
-            kinds=("raw-materialization",),
-            limit=None,
-            exact_fts=False,
-        )
-    except Exception:
-        return RawMaterializationReadiness(available=False)
-
-    rows = [row for row in payload.rows if row.kind == "raw-materialization"]
-    affected_counts = [max(1, int(row.affected_count or 1)) for row in rows]
-    category_counts: Counter[str] = Counter()
-    source_family_counts: Counter[str] = Counter()
-    affected_actionable = 0
-    affected_blocked = 0
-    affected_open = 0
-    affected_classified = 0
-    for row, affected_count in zip(rows, affected_counts, strict=True):
-        category_counts[row.category or "unspecified"] += affected_count
-        source_family_counts[row.source_family or "unspecified"] += affected_count
-        if row.status == "actionable":
-            affected_actionable += affected_count
-        elif row.status == "blocked":
-            affected_blocked += affected_count
-        elif row.status == "classified":
-            affected_classified += affected_count
-        elif row.status == "open":
-            affected_open += affected_count
-    return RawMaterializationReadiness(
-        available=True,
-        total=len(rows),
-        critical=sum(1 for row in rows if row.severity == "critical"),
-        warning=sum(1 for row in rows if row.severity == "warning"),
-        actionable=sum(1 for row in rows if row.status == "actionable"),
-        blocked=sum(1 for row in rows if row.status == "blocked"),
-        classified=sum(1 for row in rows if row.status == "classified"),
-        affected_total=sum(affected_counts),
-        affected_actionable=affected_actionable,
-        affected_blocked=affected_blocked,
-        affected_open=affected_open,
-        affected_classified=affected_classified,
-        category_counts=dict(sorted(category_counts.items())),
-        source_family_counts=dict(sorted(source_family_counts.items())),
-        sampled_rows=[row.model_dump(mode="json", exclude_none=True) for row in rows[:5]],
-    )
+    payload = raw_materialization_readiness_snapshot(archive_root())
+    return RawMaterializationReadiness.model_validate(payload)
 
 
 def build_daemon_status(
@@ -2332,13 +2294,16 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     if isinstance(materialization, dict):
         materialization_total = _safe_int(materialization.get("total"))
         if materialization_total > 0:
-            lines.append(
-                "Raw materialization: "
-                f"{materialization_total} debt row(s), "
-                f"{_safe_int(materialization.get('critical'))} critical, "
-                f"{_safe_int(materialization.get('warning'))} warning, "
-                f"{_safe_int(materialization.get('blocked'))} blocked"
-            )
+            if _safe_int(materialization.get("affected_unchecked")) or _safe_int(materialization.get("unchecked")):
+                lines.append(f"Raw materialization: {materialization_total} raw/index join gap(s) need classification")
+            else:
+                lines.append(
+                    "Raw materialization: "
+                    f"{materialization_total} debt row(s), "
+                    f"{_safe_int(materialization.get('critical'))} critical, "
+                    f"{_safe_int(materialization.get('warning'))} warning, "
+                    f"{_safe_int(materialization.get('blocked'))} blocked"
+                )
     # Health summary
     health = payload.get("health")
     if isinstance(health, dict):

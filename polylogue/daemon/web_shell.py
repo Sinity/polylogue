@@ -266,9 +266,10 @@ __ATTACHMENT_CSS__
     <span class="chip" id="status-label">checking</span>
     <span class="chip q-partial" id="status-convs">convs checking</span>
     <span class="chip q-partial" id="status-msgs">msgs checking</span>
-    <span class="chip" id="status-db">--</span>
+    <span class="chip" id="status-db">index DB: --</span>
     <span class="spacer"></span>
     <span class="chip" id="status-fts" title="FTS readiness">FTS: --</span>
+    <span class="chip" id="status-materialization" title="Raw materialization readiness">materialization: --</span>
     <span class="chip" id="status-semantic" title="Semantic readiness">semantic: --</span>
     <span class="chip" id="status-insights" title="Session insight freshness" style="display:none">insights: --</span>
     <span class="chip" id="status-ingest" style="display:none">live</span>
@@ -824,7 +825,7 @@ async function loadStatus() {
     dot.className = 'dot ' + (h.ok ? 'ok' : 'err');
     document.getElementById('status-label').textContent = h.ok ? 'healthy' : (h.quick_check || 'issues');
     var dbGB = ((h.db_size_bytes || 0) / 1073741824).toFixed(1);
-    document.getElementById('status-db').textContent = 'DB: ' + dbGB + ' GB';
+    document.getElementById('status-db').textContent = 'index DB: ' + dbGB + ' GB';
     setRouteState('health', {state: h.ok ? 'ready' : 'error', route: healthRoute, status: '200', error: h.ok ? '' : (h.quick_check || 'issues')});
   } catch(e) {
     document.getElementById('status-dot').className = 'dot err';
@@ -843,6 +844,7 @@ async function loadStatus() {
     setChipQuality(convs, s.total_sessions != null ? 'canonical' : 'partial');
     setChipQuality(msgs, s.total_messages != null ? 'canonical' : 'partial');
     renderFtsChip(readiness.search || null, s.fts_readiness || {});
+    renderMaterializationChip(readiness.raw_materialization || null, s.raw_materialization_readiness || {});
     renderSemanticChip(readiness.embeddings || null);
     renderInsightChip(readiness.session_profiles || null, s.insight_freshness || {});
     renderIngestChip(readiness.daemon_ingest || null, s.live || {});
@@ -914,6 +916,25 @@ function renderFtsChip(component, fts) {
   else { label = 'FTS: unavailable'; quality = 'unavailable'; }
   el.textContent = label;
   setChipQuality(el, quality);
+}
+
+function renderMaterializationChip(component, materialization) {
+  var el = document.getElementById('status-materialization');
+  if (!el) return;
+  if (component) {
+    renderComponentReadinessChip(el, 'materialization', component);
+    return;
+  }
+  var total = Number((materialization && materialization.total) || 0);
+  if (total > 0) {
+    el.textContent = 'materialization: partial';
+    setChipQuality(el, 'partial');
+    el.title = 'Raw materialization: ' + total.toLocaleString() + ' raw/index join gap(s)';
+  } else {
+    el.textContent = 'materialization: ok';
+    setChipQuality(el, 'canonical');
+    el.title = 'Raw materialization ready';
+  }
 }
 
 function renderSemanticChip(component) {
