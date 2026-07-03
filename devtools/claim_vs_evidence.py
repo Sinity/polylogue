@@ -322,6 +322,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         tool = str(row["tool_name"] or "unknown")
         model = str(row["model_name"] or "unknown")
         origin = str(row["origin"] or "unknown")
+        next_text = str(row["next_text"] or "")
         sample = {
             "classification": classification,
             "session_ref": f"session:{row['session_id']}",
@@ -334,6 +335,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "exit_code": row["exit_code"],
             "is_error": row["is_error"],
             "tool_command_preview": str(row["tool_command"] or "")[:160],
+            "next_text_preview": next_text[:500],
         }
         totals["failed_outcomes"] += 1
         totals[classification] += 1
