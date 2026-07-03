@@ -2059,6 +2059,7 @@ def _resolve_session_graph(
     ).fetchall()
     if not has_outbound_link and not inbound_rows and _root_projection_current(conn, session_id):
         return
+    composed_cache: dict[str, list[tuple[str, str]]] = {}
     for row in inbound_rows:
         conn.execute(
             """
@@ -2075,7 +2076,13 @@ def _resolve_session_graph(
         # stored whole (the inherited prefix could not be aligned yet). Now that
         # the parent exists, normalize the child the same way the parent-known
         # write path does — drop the inherited prefix rows and record the edge.
-        _reextract_prefix_tail_db(conn, str(row[0]), session_id, cache=cache)
+        _reextract_prefix_tail_db(
+            conn,
+            str(row[0]),
+            session_id,
+            cache=cache,
+            composed_cache=composed_cache,
+        )
 
     impacted_session_ids = {session_id, *(str(row[0]) for row in inbound_rows)}
     old_root_ids = _root_ids(conn, impacted_session_ids)
@@ -3322,6 +3329,7 @@ def _composed_db_signatures(
     session_id: str,
     *,
     cache: dict[str, list[tuple[str, str]]] | None = None,
+    composed_cache: dict[str, list[tuple[str, str]]] | None = None,
     _depth: int = 0,
 ) -> list[tuple[str, str]]:
     """Return ``[(message_id, signature), ...]`` for ``session_id``'s composed
@@ -3329,10 +3337,15 @@ def _composed_db_signatures(
     prefix-sharing lineage edge. Mirrors the read-side composition.
 
     When ``cache`` is supplied, each session's OWN signatures are memoized by
-    ``session_id`` for the life of one ingest batch. The composed (prefix+own)
-    result is never cached because it embeds ancestor signatures that could be
-    rewritten in the same batch; only the own-row leg is stable per session.
+    ``session_id`` for the life of one ingest batch. When ``composed_cache`` is
+    supplied, composed (prefix+own) results are memoized only for one graph
+    resolution operation; that avoids cross-write stale ancestors while letting
+    sibling delayed-tail repairs share the same parent composition.
     """
+    if composed_cache is not None:
+        composed = composed_cache.get(session_id)
+        if composed is not None:
+            return composed
     own = cache.get(session_id) if cache is not None else None
     if own is None:
         own = _own_db_signatures(conn, session_id)
@@ -3340,6 +3353,8 @@ def _composed_db_signatures(
             cache[session_id] = own
 
     if _depth >= _MAX_LINEAGE_DEPTH:
+        if composed_cache is not None:
+            composed_cache[session_id] = own
         return own
     edge = conn.execute(
         """
@@ -3354,15 +3369,26 @@ def _composed_db_signatures(
         (session_id,),
     ).fetchone()
     if edge is None:
+        if composed_cache is not None:
+            composed_cache[session_id] = own
         return own
     parent_id, branch_point_message_id = edge
-    parent_composed = _composed_db_signatures(conn, str(parent_id), cache=cache, _depth=_depth + 1)
+    parent_composed = _composed_db_signatures(
+        conn,
+        str(parent_id),
+        cache=cache,
+        composed_cache=composed_cache,
+        _depth=_depth + 1,
+    )
     prefix: list[tuple[str, str]] = []
     for entry in parent_composed:
         prefix.append(entry)
         if entry[0] == branch_point_message_id:
             break
-    return prefix + own
+    composed = prefix + own
+    if composed_cache is not None:
+        composed_cache[session_id] = composed
+    return composed
 
 
 def _reextract_prefix_tail_db(
@@ -3371,6 +3397,7 @@ def _reextract_prefix_tail_db(
     parent_session_id: str,
     *,
     cache: dict[str, list[tuple[str, str]]] | None = None,
+    composed_cache: dict[str, list[tuple[str, str]]] | None = None,
 ) -> None:
     """Normalize a child that was stored whole because its parent was ingested
     later (#2467). Aligns the child's already-stored messages against the parent's
@@ -3391,8 +3418,18 @@ def _reextract_prefix_tail_db(
     if edge is None:
         return
     dst_origin, dst_native_id, link_type = edge
-    parent_composed = _composed_db_signatures(conn, parent_session_id, cache=cache)
-    child_composed = _composed_db_signatures(conn, child_session_id, cache=cache)
+    parent_composed = _composed_db_signatures(
+        conn,
+        parent_session_id,
+        cache=cache,
+        composed_cache=composed_cache,
+    )
+    child_composed = _composed_db_signatures(
+        conn,
+        child_session_id,
+        cache=cache,
+        composed_cache=composed_cache,
+    )
     k = 0
     limit = min(len(parent_composed), len(child_composed))
     while k < limit and parent_composed[k][1] == child_composed[k][1]:
@@ -3428,6 +3465,8 @@ def _reextract_prefix_tail_db(
     # memoized own-signatures so any later compose in this batch recomputes them.
     if cache is not None:
         cache.pop(child_session_id, None)
+    if composed_cache is not None:
+        composed_cache.pop(child_session_id, None)
     _set_edge(parent_composed[k - 1][0], "prefix-sharing")
     _refresh_session_counts(conn, child_session_id)
 
