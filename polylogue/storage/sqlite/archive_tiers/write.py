@@ -281,6 +281,7 @@ def write_parsed_session_to_archive(
     # an incremental extend of the same session.
     branch_point_message_id: str | None = None
     lineage_inheritance: str | None = None
+    parent_session_id: str | None = None
     if not merge_append:
         parent_session_id = _existing_parent_session_id(conn, session, origin.value)
         if parent_session_id is not None and messages:
@@ -479,6 +480,13 @@ def write_parsed_session_to_archive(
         add_timing("index.session_link", t0)
         t0 = time.perf_counter()
         event_position_offset = _next_session_event_position(conn, session_id)
+        provider_usage_baseline = (
+            _provider_usage_cumulative_baseline(conn, parent_session_id, branch_point_message_id)
+            if parent_session_id is not None
+            and branch_point_message_id is not None
+            and lineage_inheritance == "prefix-sharing"
+            else None
+        )
         session_event_result = _write_session_events(
             conn,
             session_id,
@@ -487,6 +495,7 @@ def write_parsed_session_to_archive(
             position_offset=position_offset,
             event_position_offset=event_position_offset,
             duplicate_native_ids=duplicate_message_native_ids,
+            provider_usage_baseline=provider_usage_baseline,
         )
         add_timing("index.session_events", t0)
         t0 = time.perf_counter()
@@ -2333,6 +2342,7 @@ def _write_session_events(
     position_offset: int = 0,
     event_position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
+    provider_usage_baseline: Mapping[str, int] | None = None,
 ) -> SessionEventWriteResult:
     by_native_id = {
         message.provider_message_id: _message_id(
@@ -2378,8 +2388,18 @@ def _write_session_events(
             )
             position += 1
         elif event.event_type in {"token_count", "message_usage"}:
-            provider_usage_rows.append(_provider_usage_event_row(session_id, source_message_id, position, event))
-            wrote_provider_usage_events = True
+            if event.source_message_provider_id and source_message_id is None:
+                continue
+            row = _provider_usage_event_row(
+                session_id,
+                source_message_id,
+                position,
+                event,
+                provider_usage_baseline=provider_usage_baseline,
+            )
+            if _provider_usage_event_row_has_usage(row):
+                provider_usage_rows.append(row)
+                wrote_provider_usage_events = True
             position += 1
     if session_event_rows:
         conn.executemany(
@@ -2425,9 +2445,24 @@ def _provider_usage_event_row(
     source_message_id: str | None,
     position: int,
     event: ParsedSessionEvent,
+    *,
+    provider_usage_baseline: Mapping[str, int] | None = None,
 ) -> tuple[object, ...]:
     last_usage = _payload_mapping(event.payload, "last_token_usage")
     total_usage = _payload_mapping(event.payload, "total_token_usage")
+    total_input = _payload_int(total_usage, "input_tokens")
+    total_output = _payload_int(total_usage, "output_tokens")
+    total_cache_read = _payload_int(total_usage, "cached_input_tokens")
+    total_cache_write = _payload_int(total_usage, "cache_write_tokens")
+    total_reasoning = _payload_int(total_usage, "reasoning_output_tokens")
+    total_tokens = _payload_int(total_usage, "total_tokens")
+    if provider_usage_baseline is not None and event.event_type == "token_count":
+        total_input = max(total_input - provider_usage_baseline.get("total_input_tokens", 0), 0)
+        total_output = max(total_output - provider_usage_baseline.get("total_output_tokens", 0), 0)
+        total_cache_read = max(total_cache_read - provider_usage_baseline.get("total_cached_input_tokens", 0), 0)
+        total_cache_write = max(total_cache_write - provider_usage_baseline.get("total_cache_write_tokens", 0), 0)
+        total_reasoning = max(total_reasoning - provider_usage_baseline.get("total_reasoning_output_tokens", 0), 0)
+        total_tokens = max(total_tokens - provider_usage_baseline.get("total_tokens", 0), 0)
     return (
         session_id,
         source_message_id,
@@ -2440,16 +2475,74 @@ def _provider_usage_event_row(
         _payload_int(last_usage, "cache_write_tokens"),
         _payload_int(last_usage, "reasoning_output_tokens"),
         _payload_int(last_usage, "total_tokens"),
-        _payload_int(total_usage, "input_tokens"),
-        _payload_int(total_usage, "output_tokens"),
-        _payload_int(total_usage, "cached_input_tokens"),
-        _payload_int(total_usage, "cache_write_tokens"),
-        _payload_int(total_usage, "reasoning_output_tokens"),
-        _payload_int(total_usage, "total_tokens"),
+        total_input,
+        total_output,
+        total_cache_read,
+        total_cache_write,
+        total_reasoning,
+        total_tokens,
         _payload_optional_int(event.payload, "model_context_window"),
         _json_dumps(event.payload),
         _timestamp_ms(event.timestamp),
     )
+
+
+def _provider_usage_event_row_has_usage(row: tuple[object, ...]) -> bool:
+    return any(isinstance(value, int) and value for value in row[5:17])
+
+
+def _provider_usage_cumulative_baseline(
+    conn: sqlite3.Connection,
+    parent_session_id: str,
+    branch_point_message_id: str,
+) -> dict[str, int]:
+    branch_row = conn.execute(
+        "SELECT position FROM messages WHERE message_id = ?",
+        (branch_point_message_id,),
+    ).fetchone()
+    if branch_row is None:
+        return {}
+    branch_position = int(branch_row[0] or 0)
+    row = conn.execute(
+        """
+        SELECT
+          e.total_input_tokens,
+          e.total_output_tokens,
+          e.total_cached_input_tokens,
+          e.total_cache_write_tokens,
+          e.total_reasoning_output_tokens,
+          e.total_tokens
+        FROM session_provider_usage_events AS e
+        LEFT JOIN messages AS m ON m.message_id = e.source_message_id
+        WHERE e.session_id = ?
+          AND e.provider_event_type = 'token_count'
+          AND (
+            m.position <= ?
+            OR (e.source_message_id IS NULL AND e.position <= ?)
+          )
+          AND (
+            e.total_input_tokens != 0
+            OR e.total_output_tokens != 0
+            OR e.total_cached_input_tokens != 0
+            OR e.total_cache_write_tokens != 0
+            OR e.total_reasoning_output_tokens != 0
+            OR e.total_tokens != 0
+          )
+        ORDER BY e.position DESC
+        LIMIT 1
+        """,
+        (parent_session_id, branch_position, branch_position),
+    ).fetchone()
+    if row is None:
+        return {}
+    return {
+        "total_input_tokens": int(row[0] or 0),
+        "total_output_tokens": int(row[1] or 0),
+        "total_cached_input_tokens": int(row[2] or 0),
+        "total_cache_write_tokens": int(row[3] or 0),
+        "total_reasoning_output_tokens": int(row[4] or 0),
+        "total_tokens": int(row[5] or 0),
+    }
 
 
 def _provider_usage_disjoint_lanes(
@@ -3324,12 +3417,92 @@ def _reextract_prefix_tail_db(
         f"DELETE FROM messages WHERE message_id IN ({placeholders})",
         tuple(prefix_message_ids),
     )
+    _reextract_provider_usage_tail_db(
+        conn,
+        child_session_id,
+        parent_session_id,
+        parent_composed[k - 1][0],
+        prefix_message_ids=prefix_message_ids,
+    )
     # The child's own rows just changed (inherited prefix deleted); drop its
     # memoized own-signatures so any later compose in this batch recomputes them.
     if cache is not None:
         cache.pop(child_session_id, None)
     _set_edge(parent_composed[k - 1][0], "prefix-sharing")
     _refresh_session_counts(conn, child_session_id)
+
+
+def _reextract_provider_usage_tail_db(
+    conn: sqlite3.Connection,
+    child_session_id: str,
+    parent_session_id: str,
+    branch_point_message_id: str,
+    *,
+    prefix_message_ids: Sequence[str],
+) -> None:
+    if not prefix_message_ids:
+        return
+    placeholders = ",".join("?" for _ in prefix_message_ids)
+    conn.execute(
+        f"""
+        DELETE FROM session_provider_usage_events
+        WHERE session_id = ?
+          AND source_message_id IN ({placeholders})
+        """,
+        (child_session_id, *prefix_message_ids),
+    )
+    baseline = _provider_usage_cumulative_baseline(conn, parent_session_id, branch_point_message_id)
+    if baseline:
+        conn.execute(
+            """
+            UPDATE session_provider_usage_events
+            SET total_input_tokens = MAX(total_input_tokens - ?, 0),
+                total_output_tokens = MAX(total_output_tokens - ?, 0),
+                total_cached_input_tokens = MAX(total_cached_input_tokens - ?, 0),
+                total_cache_write_tokens = MAX(total_cache_write_tokens - ?, 0),
+                total_reasoning_output_tokens = MAX(total_reasoning_output_tokens - ?, 0),
+                total_tokens = MAX(total_tokens - ?, 0)
+            WHERE session_id = ?
+              AND provider_event_type = 'token_count'
+            """,
+            (
+                baseline.get("total_input_tokens", 0),
+                baseline.get("total_output_tokens", 0),
+                baseline.get("total_cached_input_tokens", 0),
+                baseline.get("total_cache_write_tokens", 0),
+                baseline.get("total_reasoning_output_tokens", 0),
+                baseline.get("total_tokens", 0),
+                child_session_id,
+            ),
+        )
+    conn.execute(
+        """
+        DELETE FROM session_provider_usage_events
+        WHERE session_id = ?
+          AND last_input_tokens = 0
+          AND last_output_tokens = 0
+          AND last_cached_input_tokens = 0
+          AND last_cache_write_tokens = 0
+          AND last_reasoning_output_tokens = 0
+          AND last_total_tokens = 0
+          AND total_input_tokens = 0
+          AND total_output_tokens = 0
+          AND total_cached_input_tokens = 0
+          AND total_cache_write_tokens = 0
+          AND total_reasoning_output_tokens = 0
+          AND total_tokens = 0
+        """,
+        (child_session_id,),
+    )
+    conn.execute(
+        """
+        DELETE FROM session_model_usage
+        WHERE session_id = ?
+          AND cost_provenance = 'origin_reported'
+        """,
+        (child_session_id,),
+    )
+    _aggregate_provider_usage_into_model_usage(conn, child_session_id)
 
 
 def _extract_prefix_tail(

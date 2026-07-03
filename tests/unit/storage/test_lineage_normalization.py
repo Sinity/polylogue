@@ -19,6 +19,7 @@ from polylogue.sources.parsers.base import (
     ParsedContentBlock,
     ParsedMessage,
     ParsedSession,
+    ParsedSessionEvent,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -141,6 +142,112 @@ def test_prefix_sharing_child_stores_only_tail_and_composes(tmp_path: Path) -> N
     assert composed == ["hello", "hi there", "child diverges here", "child reply"]
 
 
+def test_prefix_sharing_child_provider_usage_rollup_counts_only_tail(tmp_path: Path) -> None:
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="parent",
+        title="parent",
+        messages=[
+            _msg("p0", Role.USER, "hello", 0),
+            _msg("p1", Role.ASSISTANT, "hi there", 1),
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                source_message_provider_id="p1",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-5-codex",
+                    "total_token_usage": {
+                        "input_tokens": 100,
+                        "cached_input_tokens": 20,
+                        "output_tokens": 10,
+                        "total_tokens": 110,
+                    },
+                },
+            )
+        ],
+    )
+    write_parsed_session_to_archive(conn, parent)
+
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="child",
+        title="child",
+        parent_session_provider_id="parent",
+        branch_type=BranchType.FORK,
+        messages=[
+            _msg("c0", Role.USER, "hello", 0),
+            _msg("c1", Role.ASSISTANT, "hi there", 1),
+            _msg("cx", Role.USER, "child diverges here", 2),
+            _msg("cy", Role.ASSISTANT, "child reply", 3),
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                source_message_provider_id="c1",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-5-codex",
+                    "total_token_usage": {
+                        "input_tokens": 100,
+                        "cached_input_tokens": 20,
+                        "output_tokens": 10,
+                        "total_tokens": 110,
+                    },
+                },
+            ),
+            ParsedSessionEvent(
+                event_type="token_count",
+                source_message_provider_id="cy",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-5-codex",
+                    "total_token_usage": {
+                        "input_tokens": 160,
+                        "cached_input_tokens": 30,
+                        "output_tokens": 25,
+                        "total_tokens": 185,
+                    },
+                },
+            ),
+        ],
+    )
+    child_id = write_parsed_session_to_archive(conn, child)
+
+    usage = conn.execute(
+        """
+        SELECT input_tokens, output_tokens, cache_read_tokens, cost_provenance
+        FROM session_model_usage
+        WHERE session_id = ? AND model_name = 'gpt-5-codex'
+        """,
+        (child_id,),
+    ).fetchone()
+    # Child total after subtracting the parent branch-point baseline:
+    # input 60, cached 10, output 15. Disjoint billing lanes therefore store
+    # fresh input 50, cache read 10, output 15.
+    assert dict(usage) == {
+        "input_tokens": 50,
+        "output_tokens": 15,
+        "cache_read_tokens": 10,
+        "cost_provenance": "origin_reported",
+    }
+    events = conn.execute(
+        "SELECT source_message_id, total_input_tokens, total_tokens FROM session_provider_usage_events WHERE session_id = ?",
+        (child_id,),
+    ).fetchall()
+    assert [dict(row) for row in events] == [
+        {
+            "source_message_id": f"{child_id}:cy",
+            "total_input_tokens": 60,
+            "total_tokens": 75,
+        }
+    ]
+
+
 def test_child_before_parent_is_reextracted_on_resolution(tmp_path: Path) -> None:
     """A prefix-sharing child ingested before its parent is stored whole, then
     normalized (inherited prefix deleted) once the parent arrives."""
@@ -195,6 +302,102 @@ def test_child_before_parent_is_reextracted_on_resolution(tmp_path: Path) -> Non
     conn.close()
     composed = asyncio.run(_read_texts(db, child_id))
     assert composed == ["hello", "hi there", "child diverges here", "child reply"]
+
+
+def test_child_before_parent_reextracts_provider_usage_tail(tmp_path: Path) -> None:
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="child",
+        title="child",
+        parent_session_provider_id="parent",
+        branch_type=BranchType.FORK,
+        messages=[
+            _msg("c0", Role.USER, "hello", 0),
+            _msg("c1", Role.ASSISTANT, "hi there", 1),
+            _msg("cx", Role.USER, "child diverges here", 2),
+            _msg("cy", Role.ASSISTANT, "child reply", 3),
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                source_message_provider_id="c1",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-5-codex",
+                    "total_token_usage": {
+                        "input_tokens": 100,
+                        "cached_input_tokens": 20,
+                        "output_tokens": 10,
+                        "total_tokens": 110,
+                    },
+                },
+            ),
+            ParsedSessionEvent(
+                event_type="token_count",
+                source_message_provider_id="cy",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-5-codex",
+                    "total_token_usage": {
+                        "input_tokens": 160,
+                        "cached_input_tokens": 30,
+                        "output_tokens": 25,
+                        "total_tokens": 185,
+                    },
+                },
+            ),
+        ],
+    )
+    child_id = write_parsed_session_to_archive(conn, child)
+    assert (
+        conn.execute("SELECT input_tokens FROM session_model_usage WHERE session_id = ?", (child_id,)).fetchone()[0]
+        == 130
+    )
+
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="parent",
+        title="parent",
+        messages=[
+            _msg("p0", Role.USER, "hello", 0),
+            _msg("p1", Role.ASSISTANT, "hi there", 1),
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                source_message_provider_id="p1",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-5-codex",
+                    "total_token_usage": {
+                        "input_tokens": 100,
+                        "cached_input_tokens": 20,
+                        "output_tokens": 10,
+                        "total_tokens": 110,
+                    },
+                },
+            )
+        ],
+    )
+    write_parsed_session_to_archive(conn, parent)
+
+    usage = conn.execute(
+        """
+        SELECT input_tokens, output_tokens, cache_read_tokens, cost_provenance
+        FROM session_model_usage
+        WHERE session_id = ? AND model_name = 'gpt-5-codex'
+        """,
+        (child_id,),
+    ).fetchone()
+    assert dict(usage) == {
+        "input_tokens": 50,
+        "output_tokens": 15,
+        "cache_read_tokens": 10,
+        "cost_provenance": "origin_reported",
+    }
 
 
 def test_parent_reingest_keeps_child_composing(tmp_path: Path) -> None:
