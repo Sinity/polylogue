@@ -128,6 +128,52 @@ def test_paths_json_reports_running_rebuild_as_not_ready(
     assert isinstance(payload["blob_store_root"], str)
 
 
+def test_paths_json_reports_raw_materialization_debt_as_not_ready(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.surfaces.payloads import ArchiveDebtListPayload, ArchiveDebtRowPayload, ArchiveDebtTotalsPayload
+
+    payload = ArchiveDebtListPayload(
+        generated_at="2026-07-03T00:00:00+00:00",
+        archive_root=str(cli_workspace["archive_root"]),
+        rows=(
+            ArchiveDebtRowPayload(
+                debt_ref="debt:raw-materialization:chatgpt-export:parsed-without-session",
+                kind="raw-materialization",
+                category="parsed-without-session",
+                stage="parse",
+                subject_ref="raw-origin:chatgpt-export",
+                severity="warning",
+                status="actionable",
+                owner="daemon",
+                summary="4 chatgpt-export raw artifact(s) parsed but have no materialized session",
+                affected_count=4,
+                source_family="chatgpt-export",
+            ),
+        ),
+        totals=ArchiveDebtTotalsPayload(total=1, warning=1, actionable=1, affected_total=4, affected_actionable=4),
+    )
+    monkeypatch.setattr("polylogue.operations.archive_debt.archive_debt_list", lambda **_kwargs: payload)
+
+    result = cli_runner.invoke(
+        paths_command,
+        ["--format", "json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    result_payload = json.loads(result.output)
+    assert result_payload["archive_schema_ready"] is True
+    assert result_payload["archive_ready"] is False
+    assert result_payload["archive_materialization_ready"] is False
+    readiness = result_payload["raw_materialization_readiness"]
+    assert readiness["available"] is True
+    assert readiness["actionable"] == 1
+    assert readiness["affected_actionable"] == 4
+
+
 def test_paths_json_paths_are_absolute(cli_workspace: dict[str, Path], cli_runner: CliRunner) -> None:
     """The paths JSON output contains absolute paths."""
     result = cli_runner.invoke(

@@ -39,7 +39,7 @@ from polylogue.paths import archive_root, db_path, index_db_path, resolve_active
 from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.watcher import default_sources
-from polylogue.storage.archive_readiness import active_rebuild_index_attempts
+from polylogue.storage.archive_readiness import active_rebuild_index_attempts, raw_materialization_ready
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -1862,6 +1862,15 @@ def build_daemon_status(
     fts = _fts_readiness_info()
     freshness = _insight_freshness_info()
     raw_materialization_readiness = _raw_materialization_readiness_info()
+    materialization_ready = storage_info.archive_materialization_ready and raw_materialization_ready(
+        raw_materialization_readiness
+    )
+    storage_info = storage_info.model_copy(
+        update={
+            "archive_materialization_ready": materialization_ready,
+            "archive_ready": storage_info.archive_ready and materialization_ready,
+        }
+    )
     live_cursor = _live_cursor_summary_info()
     live_ingest_attempts = _live_ingest_attempt_summary_info()
     active_db = _active_status_db_path()

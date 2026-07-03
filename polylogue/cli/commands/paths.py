@@ -10,7 +10,7 @@ from pathlib import Path
 import click
 
 from polylogue.storage import archive_layout
-from polylogue.storage.archive_readiness import active_rebuild_index_attempts
+from polylogue.storage.archive_readiness import active_rebuild_index_attempts, raw_materialization_ready
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -60,7 +60,21 @@ def paths_command(output_format: str) -> None:
         tier_versions[name]["version_status"] == "ok" for name in ("source", "index", "embeddings", "ops", "user")
     )
     active_rebuild_attempts = active_rebuild_index_attempts(ops_db)
-    archive_ready = source_db.exists() and db.exists() and archive_schema_ready and not active_rebuild_attempts
+    raw_materialization_readiness = _raw_materialization_readiness(active_archive)
+    archive_materialization_ready = (
+        source_db.exists()
+        and db.exists()
+        and archive_schema_ready
+        and not active_rebuild_attempts
+        and raw_materialization_ready(raw_materialization_readiness)
+    )
+    archive_ready = (
+        source_db.exists()
+        and db.exists()
+        and archive_schema_ready
+        and not active_rebuild_attempts
+        and archive_materialization_ready
+    )
     final_shape_ready = not missing_tiers
     missing_backup_required = [tier for tier in archive_layout.BACKUP_REQUIRED_TIERS if tier in missing_tiers]
     layout_blockers = archive_layout.archive_layout_blockers(
@@ -99,7 +113,8 @@ def paths_command(output_format: str) -> None:
             "active_database_size_bytes": active_db.stat().st_size if active_db.exists() else None,
             "storage_layout": storage_layout,
             "archive_ready": archive_ready,
-            "archive_materialization_ready": archive_ready,
+            "archive_materialization_ready": archive_materialization_ready,
+            "raw_materialization_readiness": raw_materialization_readiness,
             "active_rebuild_index_attempts": active_rebuild_attempts,
             "final_shape_ready": final_shape_ready,
             "archive_schema_ready": archive_schema_ready,
@@ -148,7 +163,7 @@ def paths_command(output_format: str) -> None:
     if active_rebuild_attempts:
         _print_line("Archive materialization", "rebuilding", extra=f"attempts={len(active_rebuild_attempts)}")
     else:
-        _print_line("Archive materialization", "ready" if archive_ready else "not ready")
+        _print_line("Archive materialization", "ready" if archive_materialization_ready else "not ready")
     _print_line("Source DB", str(source_db), extra=_tier_extra("source", source_db, tier_versions))
     _print_line("Index DB", str(db), extra=_tier_extra("index", db, tier_versions))
     _print_line(
@@ -319,6 +334,54 @@ def _parse_mount_source(raw: str) -> str | None:
     if raw.startswith("/"):
         return raw
     return None
+
+
+def _raw_materialization_readiness(active_archive: Path) -> dict[str, object]:
+    try:
+        from polylogue.operations.archive_debt import archive_debt_list
+
+        payload = archive_debt_list(
+            archive_root=active_archive,
+            kinds=("raw-materialization",),
+            limit=None,
+            exact_fts=False,
+        )
+    except Exception as exc:
+        return {
+            "available": False,
+            "error": str(exc),
+        }
+
+    rows = [row for row in payload.rows if row.kind == "raw-materialization"]
+    affected_actionable = 0
+    affected_blocked = 0
+    affected_open = 0
+    affected_classified = 0
+    for row in rows:
+        affected = max(1, int(row.affected_count or 1))
+        if row.status == "actionable":
+            affected_actionable += affected
+        elif row.status == "blocked":
+            affected_blocked += affected
+        elif row.status == "open":
+            affected_open += affected
+        elif row.status == "classified":
+            affected_classified += affected
+
+    return {
+        "available": True,
+        "total": len(rows),
+        "critical": sum(1 for row in rows if row.severity == "critical"),
+        "warning": sum(1 for row in rows if row.severity == "warning"),
+        "actionable": sum(1 for row in rows if row.status == "actionable"),
+        "blocked": sum(1 for row in rows if row.status == "blocked"),
+        "classified": sum(1 for row in rows if row.status == "classified"),
+        "affected_total": int(payload.totals.affected_total),
+        "affected_actionable": affected_actionable,
+        "affected_blocked": affected_blocked,
+        "affected_open": affected_open,
+        "affected_classified": affected_classified,
+    }
 
 
 def _size_fmt(p: Path) -> str:

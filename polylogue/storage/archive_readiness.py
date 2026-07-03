@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 
 def active_rebuild_index_attempts(ops_db: Path) -> list[dict[str, object]]:
@@ -38,4 +40,40 @@ def active_rebuild_index_attempts(ops_db: Path) -> list[dict[str, object]]:
     ]
 
 
-__all__ = ["active_rebuild_index_attempts"]
+def _read_int(readiness: Mapping[str, Any], key: str) -> int:
+    try:
+        return int(readiness.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def raw_materialization_ready(readiness: Mapping[str, Any] | object | None) -> bool:
+    """Return whether raw acquisition and index materialization are converged.
+
+    Classified alias/non-session join gaps are acceptable: they mean the raw
+    row has been explained. Actionable/open/blocking debt is not acceptable for
+    product archive readiness.
+    """
+    if readiness is None:
+        return False
+    if not isinstance(readiness, Mapping):
+        model_dump = getattr(readiness, "model_dump", None)
+        if callable(model_dump):
+            readiness = model_dump()
+        else:
+            return False
+    if not bool(readiness.get("available", False)):
+        return False
+    blocking_keys = (
+        "critical",
+        "warning",
+        "actionable",
+        "blocked",
+        "affected_actionable",
+        "affected_blocked",
+        "affected_open",
+    )
+    return all(_read_int(readiness, key) == 0 for key in blocking_keys)
+
+
+__all__ = ["active_rebuild_index_attempts", "raw_materialization_ready"]

@@ -886,6 +886,58 @@ def test_archive_storage_info_uses_configured_archive_root(tmp_path: Path) -> No
     assert storage.missing_tiers == ["source", "index", "embeddings", "user"]
 
 
+def test_build_daemon_status_downgrades_archive_ready_for_raw_materialization_debt(tmp_path: Path) -> None:
+    storage = status_module.ArchiveStorageStatus(
+        active_store="archive_file_set",
+        active_db_path=str(tmp_path / "index.db"),
+        archive_root=str(tmp_path),
+        configured_archive_root=str(tmp_path),
+        archive_ready=True,
+        archive_materialization_ready=True,
+        final_shape_ready=True,
+        archive_schema_ready=True,
+        present_tiers=["source", "index", "embeddings", "user", "ops"],
+    )
+    raw_readiness = status_module.RawMaterializationReadiness(
+        available=True,
+        total=1,
+        warning=1,
+        actionable=1,
+        affected_total=4,
+        affected_actionable=4,
+    )
+
+    with (
+        patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status._archive_storage_info", return_value=storage),
+        patch("polylogue.daemon.status._raw_materialization_readiness_info", return_value=raw_readiness),
+        patch("polylogue.daemon.status._db_size_info", return_value={}),
+        patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
+        patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
+        patch("polylogue.daemon.status._live_cursor_summary_info", return_value=status_module.LiveCursorSummary()),
+        patch(
+            "polylogue.daemon.status._live_ingest_attempt_summary_info",
+            return_value=status_module.LiveIngestAttemptSummary(),
+        ),
+        patch(
+            "polylogue.daemon.status.convergence_debt_summary_info",
+            return_value=status_module.ConvergenceDebtSummary(),
+        ),
+        patch("polylogue.daemon.status.cursor_lag_summary_info", return_value=status_module.CursorLagSummary()),
+        patch("polylogue.daemon.status.catchup_status_info", return_value=status_module.CatchupStatus()),
+        patch("polylogue.daemon.status._raw_failure_info", return_value={}),
+        patch("polylogue.daemon.status.embedding_readiness_info", return_value={}),
+        patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
+    ):
+        status = build_daemon_status(sources=(), browser_capture_enabled=False)
+
+    assert status.archive_storage.archive_schema_ready is True
+    assert status.archive_storage.archive_materialization_ready is False
+    assert status.archive_storage.archive_ready is False
+    raw_component = cast(dict[str, object], status.component_readiness["raw_materialization"])
+    assert raw_component["state"] == "stale"
+
+
 def test_daemon_status_payload_reuses_bounded_probe_results(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     db.touch()
