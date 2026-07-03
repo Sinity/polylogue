@@ -21,6 +21,7 @@ polylogue analyze insights cost-rollups --format json
 polylogue analyze insights cost-rollups --model gpt-5-codex --format json
 
 # Provider usage audit with physical/logical token-grain labels.
+polylogue analyze usage --format json --limit 0
 polylogue analyze usage --origin claude-code-session --format json --limit 0
 polylogue analyze usage --origin codex-session --format json --limit 0
 

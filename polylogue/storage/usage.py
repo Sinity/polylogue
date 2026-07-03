@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -295,6 +296,10 @@ class ProviderUsageReport:
 
     archive_root: str
     origins: tuple[OriginUsageReport, ...]
+    model_rollup_grain: str = "physical_session"
+    model_rollup_usage: UsageCounters = field(default_factory=UsageCounters)
+    logical_model_rollup_grain: str = "logical_session_model_high_water"
+    logical_model_rollup_usage: UsageCounters = field(default_factory=UsageCounters)
     caveats: tuple[str, ...] = ()
     coverage_matrix: tuple[ProviderUsageCoverage, ...] = _PROVIDER_USAGE_COVERAGE
 
@@ -302,6 +307,10 @@ class ProviderUsageReport:
         return {
             "archive_root": self.archive_root,
             "coverage_matrix": [item.to_dict() for item in self.coverage_matrix],
+            "model_rollup_grain": self.model_rollup_grain,
+            "model_rollup_usage": self.model_rollup_usage.to_dict(),
+            "logical_model_rollup_grain": self.logical_model_rollup_grain,
+            "logical_model_rollup_usage": self.logical_model_rollup_usage.to_dict(),
             "origins": [origin.to_dict() for origin in self.origins],
             "caveats": list(self.caveats),
         }
@@ -466,7 +475,20 @@ def provider_usage_report_from_connection(
     if origin is not None and not reports:
         caveats.append(f"no sessions found for origin {origin!r}")
         caveats.append(f"no raw rows found for origin {origin!r}")
-    return ProviderUsageReport(archive_root=str(archive_root), origins=tuple(reports), caveats=tuple(caveats))
+    return ProviderUsageReport(
+        archive_root=str(archive_root),
+        origins=tuple(reports),
+        model_rollup_usage=_sum_usage_counters(row.model_rollup_usage for row in reports),
+        logical_model_rollup_usage=_sum_usage_counters(row.logical_model_rollup_usage for row in reports),
+        caveats=tuple(caveats),
+    )
+
+
+def _sum_usage_counters(counters: Iterable[UsageCounters]) -> UsageCounters:
+    total = UsageCounters()
+    for counter in counters:
+        total = total.plus(counter)
+    return total
 
 
 def _coverage_for_origin(origin: str) -> ProviderUsageCoverage:

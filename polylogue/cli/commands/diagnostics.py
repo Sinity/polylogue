@@ -271,6 +271,16 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
     env.ui.console.print(f"[bold]Provider usage accounting[/bold] ({getattr(report, 'archive_root', '')})")
     for caveat in getattr(report, "caveats", ()):
         env.ui.console.print(f"  [yellow]note[/yellow] {caveat}")
+    env.ui.console.print(
+        "  all-origin model rollup usage "
+        f"({getattr(report, 'model_rollup_grain', 'physical_session')}): "
+        f"{_usage_counter_line(getattr(report, 'model_rollup_usage', None))}"
+    )
+    env.ui.console.print(
+        "  all-origin model rollup usage "
+        f"({getattr(report, 'logical_model_rollup_grain', 'logical_session_model_high_water')}): "
+        f"{_usage_counter_line(getattr(report, 'logical_model_rollup_usage', None))}"
+    )
     if not origins:
         env.ui.console.print("  No sessions matched.")
         return

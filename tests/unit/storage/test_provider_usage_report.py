@@ -164,7 +164,11 @@ def test_provider_usage_report_labels_physical_and_logical_model_rollups(tmp_pat
             ('claude-code-session', 'child-a', 'child a', 'standard',
              2, 2, 1, 1, zeroblob(32)),
             ('claude-code-session', 'child-b', 'child b', 'standard',
-             3, 3, 1, 1, zeroblob(32))
+             3, 3, 1, 1, zeroblob(32)),
+            ('codex-session', 'codex-root', 'codex root', 'standard',
+             4, 4, 1, 1, zeroblob(32)),
+            ('codex-session', 'codex-child', 'codex child', 'standard',
+             5, 5, 1, 1, zeroblob(32))
         """
     )
     conn.executemany(
@@ -176,6 +180,8 @@ def test_provider_usage_report_labels_physical_and_logical_model_rollups(tmp_pat
             ("claude-code-session:root", "claude-code-session:root"),
             ("claude-code-session:child-a", "claude-code-session:root"),
             ("claude-code-session:child-b", "claude-code-session:root"),
+            ("codex-session:codex-root", "codex-session:codex-root"),
+            ("codex-session:codex-child", "codex-session:codex-root"),
         ],
     )
     conn.executemany(
@@ -189,12 +195,14 @@ def test_provider_usage_report_labels_physical_and_logical_model_rollups(tmp_pat
             ("claude-code-session:root", 100, 10, 1000, 50),
             ("claude-code-session:child-a", 140, 12, 1300, 60),
             ("claude-code-session:child-b", 90, 50, 800, 20),
+            ("codex-session:codex-root", 1000, 100, 10_000, 0),
+            ("codex-session:codex-child", 1200, 150, 12_000, 0),
         ],
     )
 
     report = provider_usage_report_from_connection(conn, archive_root=tmp_path)
 
-    row = report.origins[0]
+    row = next(item for item in report.origins if item.origin == "claude-code-session")
     assert row.model_rollup_grain == "physical_session"
     assert row.model_rollup_usage.to_dict() == {
         "input_tokens": 330,
@@ -216,6 +224,27 @@ def test_provider_usage_report_labels_physical_and_logical_model_rollups(tmp_pat
     payload = row.to_dict()
     assert payload["model_rollup_grain"] == "physical_session"
     assert payload["logical_model_rollup_grain"] == "logical_session_model_high_water"
+    assert report.model_rollup_grain == "physical_session"
+    assert report.model_rollup_usage.to_dict() == {
+        "input_tokens": 2530,
+        "output_tokens": 322,
+        "cached_input_tokens": 25100,
+        "cache_write_tokens": 130,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 28082,
+    }
+    assert report.logical_model_rollup_grain == "logical_session_model_high_water"
+    assert report.logical_model_rollup_usage.to_dict() == {
+        "input_tokens": 1340,
+        "output_tokens": 200,
+        "cached_input_tokens": 13300,
+        "cache_write_tokens": 60,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 14900,
+    }
+    report_payload = report.to_dict()
+    assert report_payload["model_rollup_grain"] == "physical_session"
+    assert report_payload["logical_model_rollup_grain"] == "logical_session_model_high_water"
 
 
 def test_provider_usage_report_handles_empty_origin_filter(tmp_path: Path) -> None:

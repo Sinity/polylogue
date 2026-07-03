@@ -349,7 +349,7 @@ curves as separate evidence streams:
 ```bash
 polylogue analyze insights coverage --group-by month --format json
 polylogue analyze insights cost-rollups --format json
-polylogue analyze usage --origin claude-code-session --format json --limit 0
+polylogue analyze usage --format json --limit 0
 polylogue analyze insights usage-timeline --group-by month-origin-model --format json
 
 devtools workspace claim-vs-evidence --limit 5000 \
