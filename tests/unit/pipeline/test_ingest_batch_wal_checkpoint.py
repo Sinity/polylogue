@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -170,8 +171,16 @@ def test_process_ingest_batch_sync_records_wal_checkpoint_observation(
             elapsed_s=0.25,
         )
 
+    optimize_calls: list[str] = []
+
+    def fake_optimize(conn: object, *, reason: str) -> object:
+        del conn
+        optimize_calls.append(reason)
+        return type("OptimizeObservation", (), {"error": None})()
+
     monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest_record)
     monkeypatch.setattr("polylogue.storage.sqlite.wal_checkpoint.maybe_checkpoint_wal", fake_checkpoint)
+    monkeypatch.setattr("polylogue.storage.sqlite.maintenance.maybe_optimize_sqlite", fake_optimize)
 
     summary = _process_ingest_batch_sync(
         [raw_record],
@@ -188,6 +197,22 @@ def test_process_ingest_batch_sync_records_wal_checkpoint_observation(
     assert summary.wal_bytes_after_checkpoint == 900
     assert summary.wal_checkpointed_pages == 7
     assert summary.wal_checkpoint_elapsed_s == 0.25
+    assert optimize_calls == ["ingest_batch_commit"]
+
+
+def test_maybe_optimize_sqlite_runs_bounded_pragma(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.maintenance import maybe_optimize_sqlite
+
+    db_path = tmp_path / "optimize.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT)")
+        conn.executemany("INSERT INTO sample(value) VALUES (?)", [("a",), ("b",)])
+        observation = maybe_optimize_sqlite(conn, reason="test", analysis_limit=17)
+
+    assert observation.ran is True
+    assert observation.reason == "test"
+    assert observation.analysis_limit == 17
+    assert observation.error is None
 
 
 def test_process_ingest_batch_sync_does_not_force_memory_release_before_returning(

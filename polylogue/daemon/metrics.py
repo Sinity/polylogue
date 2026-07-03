@@ -61,6 +61,8 @@ varies on a known-bounded dimension):
 - ``polylogue_archive_tier_present`` (gauge) — labels: tier
 - ``polylogue_archive_tier_count`` (gauge) — labels: state
 - ``polylogue_archive_tier_file_size_bytes`` (gauge) — labels: tier, kind
+- ``polylogue_db_wal_file_size_bytes`` (gauge)
+- ``polylogue_db_sqlite_stat1_rows`` (gauge)
 - ``polylogue_archive_tier_user_version`` (gauge) — labels: tier
 - ``polylogue_archive_storage_layout`` (gauge) — labels: layout
 - ``polylogue_archive_storage_ready`` (gauge) — labels: state
@@ -1373,22 +1375,33 @@ def _emit_db_space_metrics(lines: list[str], db: Path) -> None:
     if not db.exists():
         for name in (
             "polylogue_db_file_size_bytes",
+            "polylogue_db_wal_file_size_bytes",
             "polylogue_db_allocated_bytes",
             "polylogue_db_freelist_bytes",
             "polylogue_db_page_size",
             "polylogue_db_page_count",
+            "polylogue_db_sqlite_stat1_rows",
         ):
             _emit_metric(lines, name=name, help_text=name, metric_type="gauge", samples=[])
         return
 
     try:
         file_size = db.stat().st_size
+        wal_file = db.with_suffix(".db-wal")
+        wal_size = wal_file.stat().st_size if wal_file.exists() else 0
         _emit_metric(
             lines,
             name="polylogue_db_file_size_bytes",
             help_text="On-disk size of the archive SQLite database.",
             metric_type="gauge",
             samples=[(None, file_size)],
+        )
+        _emit_metric(
+            lines,
+            name="polylogue_db_wal_file_size_bytes",
+            help_text="On-disk size of the archive SQLite WAL sidecar.",
+            metric_type="gauge",
+            samples=[(None, wal_size)],
         )
 
         from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -1400,6 +1413,11 @@ def _emit_db_space_metrics(lines: list[str], db: Path) -> None:
             freelist = int(space_conn.execute("PRAGMA freelist_count").fetchone()[0])
             allocated = page_size * page_count
             freelist_bytes = page_size * freelist
+            stat1_rows = (
+                int(space_conn.execute("SELECT COUNT(*) FROM sqlite_stat1").fetchone()[0])
+                if _table_exists(space_conn, "sqlite_stat1")
+                else 0
+            )
 
             _emit_metric(
                 lines,
@@ -1428,6 +1446,13 @@ def _emit_db_space_metrics(lines: list[str], db: Path) -> None:
                 help_text="Freelist (reusable) space in bytes.",
                 metric_type="gauge",
                 samples=[(None, freelist_bytes)],
+            )
+            _emit_metric(
+                lines,
+                name="polylogue_db_sqlite_stat1_rows",
+                help_text="Number of planner-stat rows present in sqlite_stat1.",
+                metric_type="gauge",
+                samples=[(None, stat1_rows)],
             )
         finally:
             space_conn.close()

@@ -1069,6 +1069,16 @@ def _process_ingest_batch_sync(
                     busy_pages=wal_observation.busy_pages,
                     blocking_processes=wal_observation.blocking_processes[:5],
                 )
+            from polylogue.storage.sqlite.maintenance import maybe_optimize_sqlite
+
+            optimize_observation = maybe_optimize_sqlite(conn, reason="ingest_batch_commit")
+            if optimize_observation.error is not None:
+                logger.warning(
+                    "sqlite_optimize_failed",
+                    reason=optimize_observation.reason,
+                    analysis_limit=optimize_observation.analysis_limit,
+                    error=optimize_observation.error,
+                )
     except Exception:
         # Roll back the row writes.  If a caller explicitly opted into
         # dropped-trigger bulk mode, restore triggers before propagating

@@ -206,6 +206,22 @@ def test_daemon_workload_probe_table_count_uses_sqlite_stats_for_estimates(
         assert _table_count(conn, "missing", exact=False) == -1
 
 
+def test_daemon_workload_probe_reports_sqlite_maintenance_state(tmp_path: Path) -> None:
+    db = tmp_path / "index.db"
+    _seed_minimal_archive(db, tmp_path / "session.jsonl")
+    with sqlite3.connect(db) as conn:
+        conn.execute("ANALYZE")
+
+    payload = probe(db)
+
+    maintenance = payload["sqlite_maintenance"]
+    assert maintenance["tiers"]["index"]["exists"] is True
+    assert maintenance["tiers"]["index"]["sqlite_stat1_rows"] > 0
+    assert maintenance["tiers"]["index"]["planner_stats_present"] is True
+    assert maintenance["tiers"]["index"]["wal_bytes"] >= 0
+    assert maintenance["total_wal_bytes"] >= 0
+
+
 def test_daemon_workload_probe_reports_missing_database(tmp_path: Path) -> None:
     payload = probe(tmp_path / "missing.sqlite")
 

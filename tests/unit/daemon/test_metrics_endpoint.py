@@ -173,6 +173,20 @@ class TestFormatMetricsExpositionShape:
         assert 'polylogue_fts_trigger_present{trigger="messages_fts_ad"} 1' in body
         assert 'polylogue_fts_trigger_present{trigger="messages_fts_au"} 1' in body
 
+    def test_db_space_metrics_report_wal_and_planner_stats(self, tmp_path: Path) -> None:
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+        index_db = tmp_path / "index.db"
+        initialize_archive_database(index_db, ArchiveTier.INDEX)
+        with sqlite3.connect(index_db) as conn:
+            conn.execute("ANALYZE")
+
+        body = format_metrics(index_db)
+
+        assert "polylogue_db_wal_file_size_bytes " in body
+        assert "polylogue_db_sqlite_stat1_rows " in body
+
     def test_archive_storage_metrics_report_layout_blockers(self, tmp_path: Path) -> None:
         """Partial archive roots expose blockers without activating unrelated files."""
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database

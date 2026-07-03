@@ -29,7 +29,7 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 # Bumped when the JSON shape gains new top-level keys or changes a field type.
 # The compare path uses this to refuse incompatible inputs loudly.
-REPORT_VERSION = 13  # v13 adds exact missing referenced-blob debt.
+REPORT_VERSION = 14  # v14 adds SQLite WAL/stat maintenance visibility.
 UNKNOWN_TABLE_COUNT = -2
 
 _EXPECTED_FTS_TRIGGERS: tuple[str, ...] = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
@@ -192,6 +192,54 @@ def _presence_count(conn: sqlite3.Connection, table: str) -> int:
     except sqlite3.Error:
         return 0
     return 1 if row is not None else 0
+
+
+def _wal_file_size(db: Path) -> int:
+    wal = db.with_suffix(".db-wal")
+    if not wal.exists():
+        return 0
+    try:
+        return wal.stat().st_size
+    except OSError:
+        return 0
+
+
+def _sqlite_stat1_rows(conn: sqlite3.Connection) -> int:
+    if not _table_exists(conn, "sqlite_stat1"):
+        return 0
+    return _scalar_int(conn, "SELECT COUNT(*) FROM sqlite_stat1")
+
+
+def _sqlite_maintenance_state(db: Path, observed_db: Path | None) -> dict[str, Any]:
+    root = db.parent
+    tiers: dict[str, dict[str, Any]] = {}
+    for tier, spec in ARCHIVE_TIER_SPECS.items():
+        tier_db = root / spec.filename
+        tier_state: dict[str, Any] = {
+            "path": str(tier_db),
+            "exists": tier_db.exists(),
+            "wal_bytes": _wal_file_size(tier_db),
+            "sqlite_stat1_rows": 0,
+            "planner_stats_present": False,
+        }
+        if tier_db.exists():
+            try:
+                conn = open_readonly_connection(tier_db)
+                try:
+                    rows = _sqlite_stat1_rows(conn)
+                finally:
+                    conn.close()
+                tier_state["sqlite_stat1_rows"] = rows
+                tier_state["planner_stats_present"] = rows > 0
+            except sqlite3.Error as exc:
+                tier_state["error"] = str(exc)
+        tiers[tier.value] = tier_state
+    return {
+        "observed_db": None if observed_db is None else str(observed_db),
+        "tiers": tiers,
+        "total_wal_bytes": sum(int(tier.get("wal_bytes") or 0) for tier in tiers.values()),
+        "tiers_with_planner_stats": sum(1 for tier in tiers.values() if bool(tier.get("planner_stats_present"))),
+    }
 
 
 def _readiness_count(conn: sqlite3.Connection, table: str, *, exact: bool) -> int:
@@ -2204,6 +2252,7 @@ def probe(
                 exact_derived_counts=exact_derived_counts,
                 exact_table_counts=exact_table_counts,
             ),
+            "sqlite_maintenance": _sqlite_maintenance_state(db, observed_db),
             "topology_quarantine_state": _topology_quarantine_state(conn),
             "blob_lease_state": _tier_state_or_current(conn, db.with_name("source.db"), _blob_lease_state),
             "blob_reference_debt": _blob_reference_debt_state(db, enabled=blob_reference_debt),
