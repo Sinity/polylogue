@@ -1052,6 +1052,26 @@ def _filter_raw_ids_by_max_blob_size(root: Path, raw_ids: list[str], max_blob_mb
     return [str(row[0]) for row in rows]
 
 
+def _selected_raw_blob_bytes(root: Path, raw_ids: list[str]) -> int:
+    if not raw_ids:
+        return 0
+    source_db = root / "source.db"
+    if not source_db.exists():
+        return 0
+    total = 0
+    chunk_size = 900
+    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0) as conn:
+        for offset in range(0, len(raw_ids), chunk_size):
+            chunk = raw_ids[offset : offset + chunk_size]
+            placeholders = ",".join("?" for _ in chunk)
+            row = conn.execute(
+                f"SELECT COALESCE(SUM(blob_size), 0) FROM raw_sessions WHERE raw_id IN ({placeholders})",
+                tuple(chunk),
+            ).fetchone()
+            total += int(row[0] or 0) if row is not None else 0
+    return total
+
+
 def _rebuild_index_selection_plan(
     root: Path,
     *,
@@ -1442,6 +1462,7 @@ def rebuild_index_command(
     selected_raw_ids = _filter_raw_ids_by_max_blob_size(root, selected_raw_ids, max_blob_mb)
     selected_raw_count = len(selected_raw_ids)
     skipped_by_blob_limit_count = unfiltered_selected_raw_count - selected_raw_count
+    selected_blob_bytes = _selected_raw_blob_bytes(root, selected_raw_ids)
     if plan_only:
         payload = _rebuild_index_selection_plan(
             root,
@@ -1492,6 +1513,7 @@ def rebuild_index_command(
             "raw_session_count": raw_count,
             "selected_raw_count": 0,
             "skipped_by_blob_limit_count": 0,
+            "selected_blob_bytes": 0,
             "only_missing": True,
             "status": "ok",
             "materialized": False,
@@ -1524,6 +1546,9 @@ def rebuild_index_command(
         parsed_raw_count=0,
         materialized_count=0,
     )
+    if output_format == "plain":
+        click.echo(f"Selected:     {selected_raw_count:,} raw row(s)")
+        click.echo(f"Blob bytes:   {selected_blob_bytes:,}")
 
     def _emit_progress(amount: int, desc: str | None = None) -> None:
         del amount
@@ -1571,6 +1596,7 @@ def rebuild_index_command(
         "archive_root": str(root),
         "raw_session_count": raw_count,
         "selected_raw_count": selected_raw_count,
+        "selected_blob_bytes": selected_blob_bytes,
         "skipped_by_blob_limit_count": skipped_by_blob_limit_count,
         "only_missing": only_missing,
         "raw_id_count": len(raw_ids),
