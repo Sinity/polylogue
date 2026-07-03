@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +59,26 @@ def raw_jsonl_leading_objects(path: Path, *, limit: int) -> tuple[dict[str, Any]
     except OSError:
         return ()
     return tuple(objects)
+
+
+def source_path_native_id_candidates(source_path: str) -> tuple[str, ...]:
+    """Return provider-native id candidates encoded in acquired source names."""
+    if not source_path:
+        return ()
+    name = Path(source_path).name
+    candidates: list[str] = []
+    current = name
+    for _ in range(4):
+        stem = Path(current).stem
+        if stem == current:
+            break
+        current = stem
+        if current and current not in candidates:
+            candidates.append(current)
+        unsplit = re.sub(r"_\d+$", "", current)
+        if unsplit and unsplit != current and unsplit not in candidates:
+            candidates.append(unsplit)
+    return tuple(candidates)
 
 
 def _raw_blob_path(archive_root: Path, blob_hash: bytes | str | None) -> Path:
@@ -149,4 +170,4 @@ def _source_path_is_known_sidecar(source_path: str) -> bool:
     )
 
 
-__all__ = ["parsed_non_session_artifact_reason", "raw_jsonl_leading_objects"]
+__all__ = ["parsed_non_session_artifact_reason", "raw_jsonl_leading_objects", "source_path_native_id_candidates"]

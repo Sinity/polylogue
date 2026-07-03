@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sqlite3
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from polylogue.archive.raw_materialization import parsed_non_session_artifact_reason, raw_jsonl_leading_objects
+from polylogue.archive.raw_materialization import (
+    parsed_non_session_artifact_reason,
+    raw_jsonl_leading_objects,
+    source_path_native_id_candidates,
+)
 from polylogue.core.enums import Origin
 from polylogue.core.sources import provider_from_origin
 from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
@@ -327,7 +330,7 @@ def _raw_materialized_by_source_path_native(conn: sqlite3.Connection, row: sqlit
     origin = str(row["origin"] or "")
     if not origin:
         return False
-    for native_id in _source_path_native_id_candidates(str(row["source_path"] or "")):
+    for native_id in source_path_native_id_candidates(str(row["source_path"] or "")):
         existing = conn.execute(
             """
             SELECT 1
@@ -350,25 +353,6 @@ def _raw_materialized_by_embedded_session_ids(conn: sqlite3.Connection, row: sql
     return _embedded_session_materialization_counts(conn, str(row["origin"] or ""), embedded_ids)[1] == len(
         embedded_ids
     )
-
-
-def _source_path_native_id_candidates(source_path: str) -> tuple[str, ...]:
-    if not source_path:
-        return ()
-    name = Path(source_path).name
-    candidates: list[str] = []
-    current = name
-    for _ in range(4):
-        stem = Path(current).stem
-        if stem == current:
-            break
-        current = stem
-        if current and current not in candidates:
-            candidates.append(current)
-        unsplit = re.sub(r"_\d+$", "", current)
-        if unsplit and unsplit != current and unsplit not in candidates:
-            candidates.append(unsplit)
-    return tuple(candidates)
 
 
 def _raw_materialization_category(conn: sqlite3.Connection, row: sqlite3.Row, archive_root: Path) -> str:

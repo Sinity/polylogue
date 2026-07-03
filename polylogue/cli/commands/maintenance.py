@@ -12,6 +12,7 @@ from typing import Any
 
 import click
 
+from polylogue.archive.raw_materialization import source_path_native_id_candidates
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.core.enums import Origin
@@ -24,7 +25,6 @@ from polylogue.maintenance.registry import MaintenanceOperationRegistry, Operati
 from polylogue.maintenance.replay import ReplayProgress, execute_replay
 from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.maintenance.targets import MAINTENANCE_TARGET_NAMES, build_maintenance_target_catalog
-from polylogue.operations.archive_debt import _source_path_native_id_candidates
 from polylogue.paths import archive_file_set_root_for_paths, archive_root, blob_store_root, db_path, render_root
 from polylogue.protocols import ProgressCallback
 from polylogue.storage.blob_gc import read_gc_history, run_blob_gc_report
@@ -301,7 +301,7 @@ def _raw_materialized_by_source_path_candidate(conn: sqlite3.Connection, row: sq
     origin = str(row["origin"] or "")
     if not origin:
         return False
-    for native_id in _source_path_native_id_candidates(str(row["source_path"] or "")):
+    for native_id in source_path_native_id_candidates(str(row["source_path"] or "")):
         existing = conn.execute(
             """
             SELECT 1

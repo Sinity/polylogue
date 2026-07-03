@@ -4,9 +4,15 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from collections import Counter
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+
+from polylogue.archive.raw_materialization import (
+    parsed_non_session_artifact_reason,
+    source_path_native_id_candidates,
+)
 
 ACTIVE_REBUILD_STALE_AFTER_S = 180.0
 """Maximum heartbeat/start age for a rebuild-index row to count as active."""
@@ -92,9 +98,10 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
     """Return compact raw→index materialization readiness for an archive root.
 
     This function is used by status/readiness surfaces and must stay cheap on
-    large archives. It deliberately reports the indexed raw-id join gap without
-    opening raw blob payloads to classify sidecars or aliases; the exact
-    classifier lives in ``polylogue ops debt list --kind raw-materialization``.
+    large archives. It classifies only cheap structural explanations for
+    raw-id join gaps: rows already materialized by provider/source aliases and
+    parsed sidecar/metadata artifacts. The exact debt explainer lives in
+    ``polylogue ops debt list --kind raw-materialization``.
     """
     source_db = active_archive / "source.db"
     index_db = active_archive / "index.db"
@@ -104,6 +111,9 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
         with sqlite3.connect(f"file:{index_db}?mode=ro", uri=True) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
+            raw_columns = _table_columns(conn, "source", "raw_sessions")
+            session_columns = _table_columns(conn, "main", "sessions")
+            raw_select_columns = _raw_gap_select_columns(raw_columns)
             row = conn.execute(
                 """
                 WITH raw_rows AS (
@@ -164,6 +174,31 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
                 LIMIT 16
                 """
             ).fetchall()
+            gap_rows = conn.execute(
+                f"""
+                WITH raw_rows AS (
+                    SELECT
+                        {raw_select_columns},
+                        EXISTS (
+                            SELECT 1
+                            FROM main.sessions s
+                            WHERE s.raw_id = r.raw_id
+                        ) AS is_materialized
+                    FROM source.raw_sessions r
+                    WHERE COALESCE(r.validation_status, '') != 'skipped'
+                )
+                SELECT *
+                FROM raw_rows
+                WHERE NOT is_materialized
+                """,
+            ).fetchall()
+            classified_counts = _classify_raw_gap_rows(
+                conn,
+                active_archive,
+                gap_rows,
+                raw_columns=raw_columns,
+                session_columns=session_columns,
+            )
     except Exception as exc:
         return {
             "available": False,
@@ -177,9 +212,20 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
     skipped = int(row["skipped"] or 0)
     parse_failed = int(row["parse_failed"] or 0)
     parsed_without_index_session = int(row["parsed_without_index_session"] or 0)
+    classified = sum(classified_counts.values())
+    unchecked = max(total - classified, 0)
+    classification = "cheap_projection" if classified else "not_run"
+    raw_id_join_gap_count = unchecked
+    category_counts: dict[str, int] = {
+        "raw_id_join_gap": raw_id_join_gap_count,
+        "skipped": skipped,
+        "parse_failed": parse_failed,
+        "parsed_without_index_session": parsed_without_index_session,
+    }
+    category_counts.update(dict(classified_counts))
     return {
         "available": True,
-        "classification": "not_run",
+        "classification": classification,
         "precision": "raw_id_join_gap",
         "raw_artifact_count": raw_artifact_count,
         "materialized_raw_artifact_count": materialized_raw_artifact_count,
@@ -190,22 +236,121 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
         "warning": 0,
         "actionable": 0,
         "blocked": 0,
-        "classified": 0,
-        "unchecked": total,
+        "classified": classified,
+        "unchecked": unchecked,
         "affected_total": total,
         "affected_actionable": 0,
         "affected_blocked": 0,
         "affected_open": 0,
-        "affected_classified": 0,
-        "affected_unchecked": total,
-        "category_counts": {
-            "raw_id_join_gap": total,
-            "skipped": skipped,
-            "parse_failed": parse_failed,
-            "parsed_without_index_session": parsed_without_index_session,
-        },
+        "affected_classified": classified,
+        "affected_unchecked": unchecked,
+        "category_counts": category_counts,
         "source_family_counts": {str(item["origin"]): int(item["count"] or 0) for item in family_rows},
     }
+
+
+def _table_columns(conn: sqlite3.Connection, schema: str, table: str) -> frozenset[str]:
+    try:
+        rows = conn.execute(f"PRAGMA {schema}.table_info({table})").fetchall()
+    except sqlite3.Error:
+        return frozenset()
+    return frozenset(str(row["name"] if isinstance(row, sqlite3.Row) else row[1]) for row in rows)
+
+
+def _raw_gap_select_columns(raw_columns: frozenset[str]) -> str:
+    def column(name: str) -> str:
+        return f"r.{name}" if name in raw_columns else f"NULL AS {name}"
+
+    names = (
+        "raw_id",
+        "origin",
+        "native_id",
+        "source_path",
+        "blob_hash",
+        "validation_status",
+        "parse_error",
+        "parsed_at_ms",
+    )
+    return ",\n                        ".join(column(name) for name in names)
+
+
+def _classify_raw_gap_rows(
+    conn: sqlite3.Connection,
+    archive_root: Path,
+    rows: list[sqlite3.Row],
+    *,
+    raw_columns: frozenset[str],
+    session_columns: frozenset[str],
+) -> Counter[str]:
+    if not rows:
+        return Counter()
+    counts: Counter[str] = Counter()
+    for row in rows:
+        if _raw_gap_materialized_by_alias(conn, row, session_columns=session_columns):
+            counts["materialized-alias"] += 1
+            continue
+        if _raw_gap_parsed_non_session_artifact(archive_root, row, raw_columns=raw_columns):
+            counts["parsed-non-session-artifact"] += 1
+    return counts
+
+
+def _raw_gap_materialized_by_alias(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    session_columns: frozenset[str],
+) -> bool:
+    if not {"origin", "native_id"} <= session_columns:
+        return False
+    origin = str(row["origin"] or "")
+    if not origin:
+        return False
+    native_ids: list[str] = []
+
+    def add(value: object) -> None:
+        if isinstance(value, str) and value and value not in native_ids:
+            native_ids.append(value)
+
+    add(row["native_id"])
+    for candidate in source_path_native_id_candidates(str(row["source_path"] or "")):
+        add(candidate)
+    if not native_ids:
+        return False
+    for native_id in native_ids:
+        existing = conn.execute(
+            """
+            SELECT 1
+            FROM main.sessions
+            WHERE origin = ?
+              AND native_id = ?
+            LIMIT 1
+            """,
+            (origin, native_id),
+        ).fetchone()
+        if existing is not None:
+            return True
+    return False
+
+
+def _raw_gap_parsed_non_session_artifact(
+    archive_root: Path,
+    row: sqlite3.Row,
+    *,
+    raw_columns: frozenset[str],
+) -> bool:
+    if "blob_hash" not in raw_columns:
+        return False
+    if row["parse_error"] or row["parsed_at_ms"] is None:
+        return False
+    return (
+        parsed_non_session_artifact_reason(
+            archive_root=archive_root,
+            origin=str(row["origin"] or ""),
+            source_path=str(row["source_path"] or ""),
+            blob_hash=row["blob_hash"],
+        )
+        is not None
+    )
 
 
 __all__ = [
