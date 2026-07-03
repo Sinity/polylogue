@@ -281,6 +281,13 @@ def _probe_codex(
         for _, archive_tokens, external_tokens, _ in pairs
         if external_tokens <= 0 or not (low <= archive_tokens / external_tokens <= high)
     )
+    outside_external_flags: Counter[str] = Counter()
+    for _, archive_tokens, external_tokens, extra in pairs:
+        if external_tokens > 0 and low <= archive_tokens / external_tokens <= high:
+            continue
+        outside_external_flags[f"archived={extra.get('external_archived')}"] += 1
+        outside_external_flags[f"has_user_event={extra.get('external_has_user_event')}"] += 1
+        outside_external_flags[f"source={extra.get('external_source')}"] += 1
     status: ProbeStatus = "pass" if comparison.outside_tolerance == 0 else "fail"
     return ProbeSection(
         "codex",
@@ -300,6 +307,9 @@ def _probe_codex(
                 {"tokens_used": tokens, "count": count}
                 for tokens, count in outside_external_tokens.most_common(10)
                 if count > 1
+            ],
+            "outside_external_flag_counts": [
+                {"flag": flag, "count": count} for flag, count in outside_external_flags.most_common(20)
             ],
             "lane_contract": (
                 "archive session_model_usage disjoint lanes and Codex threads.tokens_used both include cached input; "

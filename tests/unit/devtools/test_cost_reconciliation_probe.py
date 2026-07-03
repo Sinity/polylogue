@@ -148,6 +148,7 @@ def test_codex_probe_check_fails_outside_tolerance(tmp_path: Path, capsys: pytes
     assert payload["sections"][0]["comparison"]["outside_tolerance"] == 1
     assert payload["sections"][0]["comparison"]["samples"][0]["external_cli_version"] == "0.test"
     assert payload["sections"][0]["details"]["outside_external_token_values"] == [{"tokens_used": 100, "count": 1}]
+    assert {"flag": "archived=0", "count": 1} in payload["sections"][0]["details"]["outside_external_flag_counts"]
 
 
 def test_claude_probe_compares_model_usage_lanes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
