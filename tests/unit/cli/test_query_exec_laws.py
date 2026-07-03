@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -783,6 +784,28 @@ def test_async_execute_query_archive_keeps_stats_local(
     payload = json.loads(capsys.readouterr().out)
     assert payload["mode"] == "stats_by"
     assert payload["items"] == [{"count": 1, "group": "codex-session"}]
+
+
+def test_daemon_session_fetch_has_wall_clock_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.cli import archive_query
+
+    def slow_fetch(*_args: object, **_kwargs: object) -> dict[str, object]:
+        time.sleep(0.2)
+        return {"items": [], "total": 0}
+
+    monkeypatch.setattr(archive_query, "_DAEMON_FAST_PATH_TIMEOUT_S", 0.01)
+    monkeypatch.setattr(archive_query, "_fetch_daemon_sessions_payload_once", slow_fetch)
+
+    started = time.monotonic()
+    payload = archive_query._fetch_daemon_sessions_payload_with_deadline(
+        "http://127.0.0.1:9876",
+        None,
+        {"limit": 1},
+    )
+    elapsed = time.monotonic() - started
+
+    assert payload is None
+    assert elapsed < 0.1
 
 
 def test_async_execute_query_archive_sorts_lists(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import multiprocessing
 import webbrowser
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import redirect_stdout
@@ -72,7 +73,7 @@ _PageRow = TypeVar("_PageRow", ArchiveSessionSummary, ArchiveSessionSearchHit)
 
 _UNSUPPORTED_PARAM_MESSAGES: dict[str, str] = {}
 _QueryUnitTextLine = Callable[[dict[str, object]], str]
-_DAEMON_FAST_PATH_TIMEOUT_S = 0.35
+_DAEMON_FAST_PATH_TIMEOUT_S = 0.75
 
 
 class _ArchiveFilterKwargs(TypedDict):
@@ -972,13 +973,58 @@ def _fetch_daemon_sessions_payload(config: Config, query_params: Mapping[str, ob
     if not isinstance(daemon_url_value, str) or not daemon_url_value.startswith(("http://", "https://")):
         return None
     daemon_url = daemon_url_value.rstrip("/")
+    auth_token = getattr(config, "api_auth_token", None)
+    auth_header = auth_token if isinstance(auth_token, str) and auth_token else None
+    return _fetch_daemon_sessions_payload_with_deadline(daemon_url, auth_header, dict(query_params))
+
+
+def _fetch_daemon_sessions_payload_with_deadline(
+    daemon_url: str,
+    auth_token: str | None,
+    query_params: Mapping[str, object],
+) -> dict[str, object] | None:
+    ctx = multiprocessing.get_context("fork")
+    queue: multiprocessing.Queue[dict[str, object] | None] = ctx.Queue(maxsize=1)
+    worker = ctx.Process(
+        target=_fetch_daemon_sessions_payload_worker,
+        args=(daemon_url, auth_token, dict(query_params), queue),
+        daemon=True,
+    )
+    worker.start()
+    worker.join(_DAEMON_FAST_PATH_TIMEOUT_S)
+    if worker.is_alive():
+        worker.terminate()
+        worker.join(0.2)
+        return None
+    if worker.exitcode != 0:
+        return None
+    try:
+        payload = queue.get_nowait()
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _fetch_daemon_sessions_payload_worker(
+    daemon_url: str,
+    auth_token: str | None,
+    query_params: Mapping[str, object],
+    queue: multiprocessing.Queue[dict[str, object] | None],
+) -> None:
+    queue.put(_fetch_daemon_sessions_payload_once(daemon_url, auth_token, query_params))
+
+
+def _fetch_daemon_sessions_payload_once(
+    daemon_url: str,
+    auth_token: str | None,
+    query_params: Mapping[str, object],
+) -> dict[str, object] | None:
     query_string = urlencode(tuple(_daemon_query_pairs(query_params)), doseq=True)
     url = f"{daemon_url}/api/sessions"
     if query_string:
         url = f"{url}?{query_string}"
     headers = {"Accept": "application/json"}
-    auth_token = getattr(config, "api_auth_token", None)
-    if isinstance(auth_token, str) and auth_token:
+    if auth_token:
         headers["Authorization"] = f"Bearer {auth_token}"
     try:
         req = Request(url, headers=headers, method="GET")
