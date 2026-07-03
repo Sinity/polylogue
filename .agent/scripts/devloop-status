@@ -169,9 +169,9 @@ if [ "$format" = "--json" ]; then
       " 2>/dev/null || true
     )"
   fi
-  raw_debt_json="$(raw_materialization_debt_payload)"
   if [ "$quick" = false ]; then
     ops_status_json="$(polylogue ops status --format json 2>/dev/null || true)"
+    raw_debt_json="$(raw_materialization_debt_payload)"
   fi
   prod_state="$(systemctl --user show polylogued.service -p ActiveState --value 2>/dev/null || true)"
   prod_sub_state="$(systemctl --user show polylogued.service -p SubState --value 2>/dev/null || true)"
@@ -185,12 +185,12 @@ if [ "$format" = "--json" ]; then
   else
     worktree_gc_json='{}'
   fi
-  python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$observed_events" "$index_count_mode" "$source_version" "$raw_rows" "$raw_materialization_join_gaps" "$raw_materialization_replayable" "$ops_status_json" "$raw_debt_json" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$polylogued_devloop_rows" "$polylogued_non_devloop_rows" "$worktree_gc_json" "$pressure_rows" "$performance_blocked" "$packet_bytes" "$packet_files" "$packet_dirs" "$operating_log_bytes" "$events_bytes" "$quick_reason" "$archive_writer_rows" <<'PY'
+  python3 - "$repo" "$current" "$archive_root" "$git_branch" "$git_head" "$git_tracked_changes" "$git_untracked_changes" "$index_version" "$sessions" "$messages" "$observed_events" "$index_count_mode" "$source_version" "$raw_rows" "$raw_materialization_join_gaps" "$raw_materialization_replayable" "$ops_status_json" "$raw_debt_json" "$prod_state" "$prod_sub_state" "$devloop_state" "$devloop_sub_state" "$polylogued_rows" "$polylogued_devloop_rows" "$polylogued_non_devloop_rows" "$worktree_gc_json" "$pressure_rows" "$performance_blocked" "$packet_bytes" "$packet_files" "$packet_dirs" "$operating_log_bytes" "$events_bytes" "$quick_reason" "$archive_writer_rows" "$quick" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-repo, current, archive_root, git_branch, git_head, git_tracked_changes, git_untracked_changes, index_version, sessions, messages, observed_events, index_count_mode, source_version, raw_rows, raw_materialization_join_gap_count, raw_materialization_replayable, ops_status_json, raw_debt_json, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows, polylogued_devloop_rows, polylogued_non_devloop_rows, worktree_gc_json, pressure_rows, performance_blocked, packet_bytes, packet_files, packet_dirs, operating_log_bytes, events_bytes, quick_reason, archive_writer_rows = sys.argv[1:]
+repo, current, archive_root, git_branch, git_head, git_tracked_changes, git_untracked_changes, index_version, sessions, messages, observed_events, index_count_mode, source_version, raw_rows, raw_materialization_join_gap_count, raw_materialization_replayable, ops_status_json, raw_debt_json, prod_state, prod_sub_state, devloop_state, devloop_sub_state, polylogued_rows, polylogued_devloop_rows, polylogued_non_devloop_rows, worktree_gc_json, pressure_rows, performance_blocked, packet_bytes, packet_files, packet_dirs, operating_log_bytes, events_bytes, quick_reason, archive_writer_rows, quick_mode = sys.argv[1:]
 
 def int_or_none(value: str):
     try:
@@ -231,6 +231,7 @@ except json.JSONDecodeError:
 raw_readiness = ops_status.get("raw_materialization_readiness") or {}
 raw_component = (ops_status.get("component_readiness") or {}).get("raw_materialization") or {}
 raw_materialization_join_gaps = int_or_none(raw_materialization_join_gap_count)
+raw_materialization_replayable_count = int_or_none(raw_materialization_replayable)
 raw_materialization_debt_count = None
 try:
     raw_debt = json.loads(raw_debt_json) if raw_debt_json else {}
@@ -312,6 +313,48 @@ if raw_debt:
         "metadata": {
             "category_counts": dict(sorted(category_counts.items())),
             "source_family_counts": dict(sorted(source_family_counts.items())),
+        },
+        "repair_hint": None if raw_state == "ready" else "polylogue ops debt list --kind raw-materialization",
+    }
+elif quick_mode == "true" and raw_materialization_replayable_count is not None:
+    raw_materialization_debt_count = raw_materialization_replayable_count
+    raw_state = "ready" if raw_materialization_replayable_count == 0 else "stale"
+    raw_summary = (
+        "no replayable acquired-unparsed raw rows"
+        if raw_state == "ready"
+        else "replayable acquired-unparsed raw rows exist"
+    )
+    raw_readiness = {
+        "available": True,
+        "total": None,
+        "critical": None,
+        "warning": None,
+        "actionable": None,
+        "blocked": None,
+        "classified": None,
+        "affected_total": raw_materialization_join_gaps,
+        "affected_actionable": raw_materialization_replayable_count,
+        "affected_open": raw_materialization_replayable_count,
+        "affected_blocked": None,
+        "affected_classified": None,
+        "category_counts": {},
+        "source_family_counts": {},
+        "sampled_rows": [],
+        "summary_source": "quick_direct_counts",
+    }
+    raw_component = {
+        "component": "raw_materialization",
+        "scope": "archive",
+        "state": raw_state,
+        "summary": raw_summary,
+        "counts": {
+            "affected_total": raw_materialization_join_gaps,
+            "affected_actionable": raw_materialization_replayable_count,
+            "affected_open": raw_materialization_replayable_count,
+        },
+        "metadata": {
+            "summary_source": "quick_direct_counts",
+            "caveat": "category and classified counts require full devloop-status",
         },
         "repair_hint": None if raw_state == "ready" else "polylogue ops debt list --kind raw-materialization",
     }
