@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 #: pathological session with thousands of assertions cannot blow up one page.
 _MAX_ROWS_PER_SESSION = 200
 _MAX_ROWS_PER_PAGE = 5000
+_MAX_ATTACHED_TEXT_CHARS = 2000
 
 
 def _session_id_field_predicate(session_id: str) -> QueryFieldPredicate:
@@ -74,6 +75,16 @@ def _row_session_id(row: Any) -> str | None:
     return None
 
 
+def _compact_attached_payload(payload: JSONDocument) -> JSONDocument:
+    compacted = dict(payload)
+    for field in ("text", "output_text"):
+        value = compacted.get(field)
+        if isinstance(value, str) and len(value) > _MAX_ATTACHED_TEXT_CHARS:
+            compacted[field] = value[:_MAX_ATTACHED_TEXT_CHARS]
+            compacted[f"{field}_truncated_chars"] = len(value) - _MAX_ATTACHED_TEXT_CHARS
+    return cast(JSONDocument, compacted)
+
+
 def _fetch_unit_rows(
     archive: ArchiveStore,
     descriptor: QueryUnitDescriptor,
@@ -93,6 +104,32 @@ def _fetch_unit_rows(
             offset=0,
             session_filters=None,
             sort="time",
+            sort_direction="asc",
+        ),
+    )
+
+
+def _fetch_session_unit_rows(
+    archive: ArchiveStore,
+    descriptor: QueryUnitDescriptor,
+    session_ids: Sequence[str],
+    *,
+    limit: int,
+) -> Sequence[Any] | None:
+    method_name = {
+        "message": "query_session_messages",
+        "action": "query_session_actions",
+        "file": "query_session_files",
+    }.get(descriptor.unit)
+    if method_name is None or not hasattr(archive, method_name):
+        return None
+    query_method = cast(Any, getattr(archive, method_name))
+    return cast(
+        Sequence[Any],
+        query_method(
+            session_ids,
+            limit=limit,
+            offset=0,
             sort_direction="asc",
         ),
     )
@@ -126,14 +163,18 @@ def fetch_attached_units(
         payload_model = getattr(surface_payloads, descriptor.payload_model, None)
         if payload_model is None or not hasattr(payload_model, "from_row"):
             raise ValueError(f"query unit {descriptor.unit!r} has no row payload model")
-        rows = _fetch_unit_rows(archive, descriptor, predicate, limit=fetch_limit)
+        rows = _fetch_session_unit_rows(archive, descriptor, session_ids, limit=fetch_limit)
+        if rows is None:
+            rows = _fetch_unit_rows(archive, descriptor, predicate, limit=fetch_limit)
         buckets: dict[str, list[JSONDocument]] = {}
         for row in rows:
             session_id = _row_session_id(row)
             if session_id is None or session_id not in selected:
                 continue
             payload = cast(Any, payload_model).from_row(row)
-            buckets.setdefault(session_id, []).append(model_json_document(payload, exclude_none=True))
+            buckets.setdefault(session_id, []).append(
+                _compact_attached_payload(model_json_document(payload, exclude_none=True))
+            )
         result[descriptor.unit] = {session_id: tuple(rows) for session_id, rows in buckets.items()}
     return result
 

@@ -4570,6 +4570,75 @@ class ArchiveStore:
             for row in rows
         ]
 
+    def query_session_messages(
+        self,
+        session_ids: Sequence[str],
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        sort_direction: Literal["asc", "desc"] = "asc",
+    ) -> list[ArchiveMessageQueryRow]:
+        """Return message rows for known sessions using the session sort-key index."""
+
+        normalized_session_ids = tuple(
+            dict.fromkeys(session_id.strip() for session_id in session_ids if session_id.strip())
+        )
+        if not normalized_session_ids:
+            return []
+        normalized_limit = max(int(limit), 0)
+        normalized_offset = max(int(offset), 0)
+        order_direction = _query_unit_order_direction(sort_direction)
+        placeholders = ", ".join("?" for _ in normalized_session_ids)
+        rows = self._conn.execute(
+            f"""
+            SELECT
+                m.message_id,
+                m.session_id,
+                s.origin,
+                s.title,
+                m.role,
+                m.message_type,
+                m.material_origin,
+                m.occurred_at_ms,
+                m.position,
+                m.word_count,
+                COALESCE((
+                    SELECT group_concat(ordered.search_text, char(10))
+                    FROM (
+                        SELECT b.search_text
+                        FROM blocks b
+                        WHERE b.message_id = m.message_id
+                          AND b.search_text IS NOT NULL
+                        ORDER BY b.position, b.block_id
+                    ) AS ordered
+                ), '') AS text
+            FROM messages m INDEXED BY idx_messages_session_sortkey
+            JOIN sessions s ON s.session_id = m.session_id
+            WHERE m.session_id IN ({placeholders})
+            ORDER BY (m.occurred_at_ms IS NULL) {order_direction},
+                     m.occurred_at_ms {order_direction},
+                     m.message_id {order_direction}
+            LIMIT ? OFFSET ?
+            """,
+            [*normalized_session_ids, normalized_limit, normalized_offset],
+        ).fetchall()
+        return [
+            ArchiveMessageQueryRow(
+                message_id=str(row["message_id"]),
+                session_id=str(row["session_id"]),
+                origin=str(row["origin"]),
+                title=str(row["title"]) if row["title"] is not None else None,
+                role=str(row["role"]),
+                message_type=str(row["message_type"]),
+                material_origin=str(row["material_origin"]),
+                occurred_at_ms=int(row["occurred_at_ms"]) if row["occurred_at_ms"] is not None else None,
+                position=int(row["position"]),
+                word_count=int(row["word_count"]),
+                text=str(row["text"] or ""),
+            )
+            for row in rows
+        ]
+
     def query_unit_counts(
         self,
         unit: str,
@@ -4832,6 +4901,84 @@ class ArchiveStore:
             LIMIT ? OFFSET ?
             """,
             [*params, *session_params, normalized_limit, normalized_offset],
+        ).fetchall()
+        return [
+            ArchiveFileQueryRow(
+                session_id=str(row["session_id"]),
+                origin=str(row["origin"]),
+                title=str(row["title"]) if row["title"] is not None else None,
+                path=str(row["path"]),
+                action_count=int(row["action_count"]),
+                first_message_id=str(row["first_message_id"]) if row["first_message_id"] is not None else None,
+                first_tool_use_block_id=str(row["first_tool_use_block_id"])
+                if row["first_tool_use_block_id"] is not None
+                else None,
+                last_tool_use_block_id=str(row["last_tool_use_block_id"])
+                if row["last_tool_use_block_id"] is not None
+                else None,
+                first_seen_ms=int(row["first_seen_ms"]) if row["first_seen_ms"] is not None else None,
+                last_seen_ms=int(row["last_seen_ms"]) if row["last_seen_ms"] is not None else None,
+            )
+            for row in rows
+        ]
+
+    def query_session_files(
+        self,
+        session_ids: Sequence[str],
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        sort_direction: Literal["asc", "desc"] = "asc",
+    ) -> list[ArchiveFileQueryRow]:
+        """Return affected file-path rows for known sessions using indexed tool-use blocks."""
+
+        normalized_session_ids = tuple(
+            dict.fromkeys(session_id.strip() for session_id in session_ids if session_id.strip())
+        )
+        if not normalized_session_ids:
+            return []
+        normalized_limit = max(int(limit), 0)
+        normalized_offset = max(int(offset), 0)
+        order_direction = _query_unit_order_direction(sort_direction)
+        placeholders = ", ".join("?" for _ in normalized_session_ids)
+        rows = self._conn.execute(
+            f"""
+            SELECT
+                f.session_id,
+                s.origin,
+                s.title,
+                f.path,
+                f.action_count,
+                f.first_message_id,
+                f.first_tool_use_block_id,
+                f.last_tool_use_block_id,
+                f.first_seen_ms,
+                f.last_seen_ms
+            FROM (
+                SELECT
+                    u.session_id,
+                    REPLACE(u.tool_path, char(92), '/') AS path,
+                    COUNT(*) AS action_count,
+                    MIN(u.message_id) AS first_message_id,
+                    MIN(u.block_id) AS first_tool_use_block_id,
+                    MAX(u.block_id) AS last_tool_use_block_id,
+                    MIN(COALESCE(m.occurred_at_ms, s.sort_key_ms, 0)) AS first_seen_ms,
+                    MAX(COALESCE(m.occurred_at_ms, s.sort_key_ms, 0)) AS last_seen_ms
+                FROM blocks u INDEXED BY idx_blocks_session_position
+                JOIN sessions s ON s.session_id = u.session_id
+                JOIN messages m ON m.message_id = u.message_id
+                WHERE u.session_id IN ({placeholders})
+                  AND u.block_type = 'tool_use'
+                  AND u.tool_path IS NOT NULL
+                  AND u.tool_path != ''
+                GROUP BY u.session_id, path
+            ) f
+            JOIN sessions s ON s.session_id = f.session_id
+            ORDER BY COALESCE(f.first_seen_ms, 0) {order_direction},
+                     f.path {order_direction}
+            LIMIT ? OFFSET ?
+            """,
+            [*normalized_session_ids, normalized_limit, normalized_offset],
         ).fetchall()
         return [
             ArchiveFileQueryRow(

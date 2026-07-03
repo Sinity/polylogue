@@ -2948,6 +2948,52 @@ class TestBooleanQueryExpression:
         assert payload["unit"] == "file"
         assert payload["items"][0]["path"] == "polylogue/archive/query/expression.py"
 
+    def test_cli_json_attaches_evidence_units_to_session_results(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.cli import cli
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "attached-evidence")
+            .provider("claude-code")
+            .git_repository_url("polylogue")
+            .title("attached evidence")
+            .add_message("m-user", role="user", text="attach evidence units")
+            .add_message(
+                "m-assistant",
+                role="assistant",
+                text="using edit tool",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_id": "tool-attach",
+                        "input": {"file_path": "polylogue/archive/query/expression.py"},
+                        "semantic_type": "file_edit",
+                    }
+                ],
+            )
+            .save()
+        )
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--plain",
+                "--format",
+                "json",
+                "find",
+                "sessions where title:attached with messages, actions, files",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        attached = payload["items"][0]["attached_units"]
+        assert {row["role"] for row in attached["message"]} == {"user", "assistant"}
+        assert attached["action"][0]["semantic_type"] == "file_edit"
+        assert attached["file"][0]["path"] == "polylogue/archive/query/expression.py"
+
     def test_query_action_read_accepts_shell_quoted_terminal_action_source(
         self, workspace_env: dict[str, Path]
     ) -> None:

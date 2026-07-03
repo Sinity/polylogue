@@ -1481,7 +1481,7 @@ def _split_pipeline_stages(expression: str) -> tuple[str, ...]:
 #: the descriptor registry), but only units listed here are validated as
 #: executable projections. Adding a new unit is a one-line change once its
 #: session-scoping fetch is confirmed (see ``attached_units.py``).
-WITH_PROJECTION_SUPPORTED_UNITS: frozenset[str] = frozenset({"assertion"})
+WITH_PROJECTION_SUPPORTED_UNITS: frozenset[str] = frozenset({"action", "assertion", "file", "message"})
 
 
 def _iter_top_level_with_positions(expression: str) -> list[int]:

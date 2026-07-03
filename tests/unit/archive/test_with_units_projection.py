@@ -61,9 +61,9 @@ class TestWithClauseParsing:
         with pytest.raises(ExpressionCompileError, match="unknown query unit"):
             compile_expression("repo:polylogue with bogus")
 
-    def test_unsupported_unit_raises(self) -> None:
-        with pytest.raises(ExpressionCompileError, match="not yet supported"):
-            compile_expression("repo:polylogue with actions")
+    def test_evidence_units_are_supported(self) -> None:
+        spec = compile_expression("repo:polylogue with messages, actions, files")
+        assert spec.with_units == ("message", "action", "file")
 
     def test_duplicate_units_dedup(self) -> None:
         _head, units = split_with_clause("repo:polylogue with assertions, assertions")
@@ -158,6 +158,52 @@ class TestAttachBehaviour:
         # The session without assertions is simply absent from the bucket.
         assert "missing:session" not in attached["assertion"]
         assert session_id in attached["assertion"]
+
+    def test_fetch_attached_evidence_units(self, tmp_path: Path) -> None:
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = tmp_path / "index.db"
+        (
+            SessionBuilder(index_db, "evidence")
+            .provider("claude-code")
+            .title("Evidence attachment")
+            .add_message("m-user", role="user", text="please edit the query projection")
+            .add_message(
+                "m-assistant",
+                role="assistant",
+                text="editing query projection",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_name": "Edit",
+                        "tool_id": "tool-edit",
+                        "input": {"file_path": "polylogue/archive/query/expression.py"},
+                        "semantic_type": "file_edit",
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_id": "tool-edit",
+                        "text": "result " * 500,
+                    },
+                ],
+            )
+            .save()
+        )
+        session_id = "claude-code-session:ext-evidence"
+
+        with ArchiveStore.open_existing(tmp_path) as archive:
+            attached = fetch_attached_units(archive, [session_id], ["message", "action", "file"])
+
+        assert set(attached) == {"message", "action", "file"}
+        assert {row["message_id"] for row in attached["message"][session_id]} == {
+            "claude-code-session:ext-evidence:m-user",
+            "claude-code-session:ext-evidence:m-assistant",
+        }
+        assert attached["action"][session_id][0]["tool_name"] == "Edit"
+        assert attached["action"][session_id][0]["semantic_type"] == "file_edit"
+        assert len(attached["action"][session_id][0]["output_text"]) == 2000
+        assert attached["action"][session_id][0]["output_text_truncated_chars"] > 0
+        assert attached["file"][session_id][0]["path"] == "polylogue/archive/query/expression.py"
 
     async def test_spec_path_attaches_units_to_summaries(self, tmp_path: Path) -> None:
         session_id = _seed_session_with_assertion(tmp_path)
