@@ -548,6 +548,70 @@ def test_async_execute_query_archive_projects_fields(
     assert payload["items"] == [{"id": "codex-session:native-1", "title": "Projected"}]
 
 
+def test_async_execute_query_archive_routes_pure_structured_terms_to_list(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def search_summaries(self, *_args: object, **_kwargs: object) -> list[ArchiveSessionSearchHit]:
+            raise AssertionError("pure structured positional queries must not use FTS search")
+
+        def list_summaries(self, **kwargs: object) -> list[ArchiveSessionSummary]:
+            assert kwargs["limit"] == 2
+            assert kwargs["offset"] == 0
+            assert kwargs["origins"] == ("codex-session",)
+            assert kwargs["repo_names"] == ("polylogue",)
+            return [
+                ArchiveSessionSummary(
+                    session_id="codex-session:native-1",
+                    native_id="native-1",
+                    origin="codex-session",
+                    provider=Provider.CODEX,
+                    title="Structured",
+                    created_at="2026-01-02T03:04:05Z",
+                    updated_at="2026-01-02T03:04:06Z",
+                    message_count=3,
+                    word_count=9,
+                    tags=(),
+                )
+            ]
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "query": ("repo:polylogue", "origin:codex-session"),
+                "limit": 1,
+                "output_format": "json",
+            },
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mode"] == "list"
+    assert payload["items"][0]["id"] == "codex-session:native-1"
+
+
 def test_async_execute_query_archive_sorts_lists(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

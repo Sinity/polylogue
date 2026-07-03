@@ -13,7 +13,7 @@ from typing import NoReturn, TypeVar, cast
 from urllib.parse import quote
 
 import click
-from typing_extensions import TypedDict
+from typing_extensions import NotRequired, TypedDict
 
 from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.archive.query.attached_units import fetch_attached_units
@@ -25,6 +25,7 @@ from polylogue.archive.query.expression import (
 from polylogue.archive.query.metadata import query_unit_descriptor
 from polylogue.archive.query.spec import (
     QuerySpecError,
+    SessionQuerySpec,
     normalize_action_sequence,
     normalize_action_terms,
     parse_query_date,
@@ -101,6 +102,7 @@ class _ArchiveFilterKwargs(TypedDict):
     since_ms: int | None
     until_ms: int | None
     since_session_id: str | None
+    boolean_predicate: NotRequired[object]
 
 
 def execute_delete_by_session_ids(
@@ -154,16 +156,21 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     archive_root = archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
     index_db_path = archive_root / "index.db"
     typo_hint = maybe_subcommand_typo_hint(request.query_terms)
-    origins = _resolve_origins(params)
+    raw_query = _query_text(request.query_terms, params)
+    compiled_spec = _compiled_session_spec(request, params=params, raw_query=raw_query)
+    origins = compiled_spec.origins or _resolve_origins(params)
     origin = origins[0] if len(origins) == 1 else None
     output_format = str(params.get("output_format") or "markdown")
     fields = _optional_str(params.get("fields"))
-    query = _query_text(request.query_terms, params)
     # Split a trailing ``with <units>`` projection clause off the FTS text so it
     # is not searched literally; the units drive the attached-unit projection.
+    unit_source_query = raw_query
     with_units: tuple[str, ...] = ()
-    if query and not (query.startswith("{") or query.startswith("[")):
-        query, with_units = split_with_clause(query)
+    if unit_source_query and not (unit_source_query.startswith("{") or unit_source_query.startswith("[")):
+        unit_source_query, with_units = split_with_clause(unit_source_query)
+    query = _query_text(compiled_spec.query_terms, {"contains": compiled_spec.contains_terms})
+    if compiled_spec.with_units:
+        with_units = compiled_spec.with_units
     if not index_db_path.exists():
         if _emit_missing_archive_empty_read(
             params,
@@ -180,34 +187,34 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
 
     tags_to_add = _tuple_tokens(params.get("add_tag"))
     metadata_to_set = _metadata_pairs(params.get("set_meta"))
-    tags = _tags(params.get("tag"))
-    excluded_tags = _tags(params.get("exclude_tag"))
-    repo_names = _csv_tokens(params.get("repo"))
-    project_refs = _csv_tokens(params.get("project"))
-    has_types = _csv_tokens(params.get("has_type"))
-    has_tool_use = bool(params.get("filter_has_tool_use"))
-    has_thinking = bool(params.get("filter_has_thinking"))
-    has_paste = bool(params.get("filter_has_paste"))
-    tool_terms = _tool_tokens(params.get("tool"))
-    excluded_tool_terms = _tool_tokens(params.get("exclude_tool"))
-    action_terms = _action_tokens("action", params.get("action"))
-    excluded_action_terms = _action_tokens("exclude_action", params.get("exclude_action"))
-    action_sequence = _action_sequence_tokens(params.get("action_sequence"))
-    action_text_terms = _csv_tokens(params.get("action_text"))
-    referenced_paths = _tuple_tokens(params.get("referenced_path"))
-    cwd_prefix = _optional_str(params.get("cwd_prefix"))
-    typed_only = bool(params.get("typed_only"))
-    message_type = _message_type(params.get("message_type"))
-    title_filter = _optional_str(params.get("title"))
-    min_messages = _optional_int(params.get("min_messages"))
-    max_messages = _optional_int(params.get("max_messages"))
-    min_words = _optional_int(params.get("min_words"))
-    max_words = _optional_int(params.get("max_words"))
-    since_ms = _optional_date_ms("since", params.get("since"))
-    until_ms = _optional_date_ms("until", params.get("until"))
-    since_session_id = _optional_str(params.get("since_session_id"))
-    limit = _limit(params)
-    offset = _offset(params)
+    tags = compiled_spec.tags
+    excluded_tags = compiled_spec.excluded_tags
+    repo_names = compiled_spec.repo_names
+    project_refs = compiled_spec.project_refs
+    has_types = compiled_spec.has_types
+    has_tool_use = compiled_spec.filter_has_tool_use
+    has_thinking = compiled_spec.filter_has_thinking
+    has_paste = compiled_spec.filter_has_paste
+    tool_terms = compiled_spec.tool_terms
+    excluded_tool_terms = compiled_spec.excluded_tool_terms
+    action_terms = compiled_spec.action_terms
+    excluded_action_terms = compiled_spec.excluded_action_terms
+    action_sequence = compiled_spec.action_sequence
+    action_text_terms = compiled_spec.action_text_terms
+    referenced_paths = compiled_spec.referenced_path
+    cwd_prefix = compiled_spec.cwd_prefix
+    typed_only = compiled_spec.typed_only
+    message_type = compiled_spec.message_type
+    title_filter = compiled_spec.title
+    min_messages = compiled_spec.min_messages
+    max_messages = compiled_spec.max_messages
+    min_words = compiled_spec.min_words
+    max_words = compiled_spec.max_words
+    since_ms = _spec_date_ms("since", compiled_spec)
+    until_ms = _spec_date_ms("until", compiled_spec)
+    since_session_id = compiled_spec.since_session_id
+    limit = compiled_spec.limit if compiled_spec.limit is not None and compiled_spec.limit > 0 else _limit(params)
+    offset = compiled_spec.offset if compiled_spec.offset > 0 else _offset(params)
     cursor = _decode_cursor(_optional_str(params.get("cursor")))
     page_offset = cursor.r if cursor is not None else offset
     sample_count = _optional_int(params.get("sample"))
@@ -220,12 +227,12 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         page_offset = 0
     stream = bool(params.get("stream"))
     stream_output_format = QueryOutputSpec.from_params(params).stream_format()
-    sort = _sort(params.get("sort"))
-    reverse = bool(params.get("reverse"))
-    similar_text = _optional_str(params.get("similar_text"))
-    retrieval_lane = _optional_str(params.get("retrieval_lane")) or "auto"
+    sort = compiled_spec.sort
+    reverse = compiled_spec.reverse
+    similar_text = compiled_spec.similar_text
+    retrieval_lane = _optional_str(params.get("retrieval_lane")) or compiled_spec.retrieval_lane
     delete_matched = bool(params.get("delete_matched"))
-    excluded_origins = _resolve_excluded_origins(params)
+    excluded_origins = compiled_spec.excluded_origins or _resolve_excluded_origins(params)
     filter_kwargs: _ArchiveFilterKwargs = {
         "origin": origin,
         "origins": origins,
@@ -257,6 +264,8 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         "until_ms": until_ms,
         "since_session_id": since_session_id,
     }
+    if compiled_spec.boolean_predicate is not None:
+        filter_kwargs["boolean_predicate"] = compiled_spec.boolean_predicate
 
     if cursor is not None and any(
         params.get(key) for key in ("stats_only", "stats_by", "count_only", "conv_id", "latest")
@@ -274,7 +283,9 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         raise click.UsageError("Root query cannot combine delete with --set.")
 
     with ArchiveStore.open_existing(archive_root) as archive:
-        unit_source = parse_unit_source_expression(query) if query and not similar_text else None
+        unit_source = (
+            parse_unit_source_expression(unit_source_query) if unit_source_query and not similar_text else None
+        )
         if unit_source is not None:
             if any(
                 (
@@ -302,7 +313,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             _emit_unit_source_rows(
                 archive,
                 source=unit_source,
-                query=query,
+                query=unit_source_query,
                 limit=limit,
                 offset=page_offset,
                 session_filters=_unit_source_session_filters(filter_kwargs),
@@ -333,7 +344,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                     )
                     return
                 try:
-                    grouped = archive.stats_by(group_by, **filter_kwargs, session_ids=session_ids)
+                    grouped = archive.stats_by(group_by, **_stats_filter_kwargs(filter_kwargs), session_ids=session_ids)
                 except ValueError as exc:
                     raise click.UsageError(str(exc)) from exc
                 _emit_stats_by(
@@ -354,7 +365,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                     fields=fields,
                 )
                 return
-            stats = archive.stats(**filter_kwargs, session_ids=session_ids)
+            stats = archive.stats(**_stats_filter_kwargs(filter_kwargs), session_ids=session_ids)
             _emit_stats(stats, output_format=output_format, origin=origin, query=query, fields=fields)
             return
         if params.get("count_only"):
@@ -982,6 +993,19 @@ def _optional_date_ms(field: str, value: object) -> int | None:
     return int(parsed.timestamp() * 1000)
 
 
+def _spec_date_ms(field: str, spec: SessionQuerySpec) -> int | None:
+    value = spec.since if field == "since" else spec.until
+    if value is None:
+        return None
+    try:
+        parsed = parse_query_date(field, value)
+    except QuerySpecError as exc:
+        raise click.ClickException(f"Cannot parse date: {exc.value!r}") from exc
+    if parsed is None:
+        return None
+    return int(parsed.timestamp() * 1000)
+
+
 def _limit(params: dict[str, object]) -> int:
     value = params.get("limit")
     if isinstance(value, int) and value > 0:
@@ -1002,6 +1026,17 @@ def _query_text(query_terms: tuple[str, ...], params: dict[str, object]) -> str:
     if isinstance(contains, Iterable) and not isinstance(contains, str | bytes):
         terms.extend(str(term) for term in contains if term)
     return " ".join(terms).strip()
+
+
+def _compiled_session_spec(request: RootModeRequest, *, params: dict[str, object], raw_query: str) -> SessionQuerySpec:
+    """Compile CLI selection terms while preserving CLI-only semantic lane spelling."""
+    if params.get("retrieval_lane") != "semantic":
+        return request.query_spec()
+    spec_params = dict(params)
+    spec_params["retrieval_lane"] = "auto"
+    if raw_query and not spec_params.get("similar_text"):
+        spec_params["similar_text"] = raw_query
+    return RootModeRequest(params=spec_params, query_terms=()).query_spec()
 
 
 def _emit_missing_archive_empty_read(
@@ -1065,6 +1100,12 @@ def _matched_session_ids_for_stats(
     if not query:
         return ()
     return archive.search_session_ids(query, limit=limit, **filter_kwargs)
+
+
+def _stats_filter_kwargs(filter_kwargs: _ArchiveFilterKwargs) -> dict[str, object]:
+    stats_kwargs = dict(filter_kwargs)
+    stats_kwargs.pop("boolean_predicate", None)
+    return stats_kwargs
 
 
 def _emit_stats(

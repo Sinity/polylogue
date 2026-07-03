@@ -334,7 +334,7 @@ def build_query_spec_from_params(
         excluded_tags=split_csv(params.get("exclude_tag")),
         repo_names=split_csv(params.get("repo")),
         project_refs=split_csv(params.get("project")),
-        has_types=as_tuple(params.get("has_type")),
+        has_types=split_csv(params.get("has_type")),
         title=optional_text(params.get("title")),
         session_id=optional_text(params.get("conv_id")),
         since=optional_text(params.get("since")),
