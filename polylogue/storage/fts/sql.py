@@ -96,6 +96,23 @@ def insert_missing_message_rows_sql() -> str:
     """
 
 
+def insert_missing_message_rows_range_sql() -> str:
+    return """
+        WITH missing(rowid, block_id, message_id, session_id, block_type, search_text) AS (
+            SELECT b.rowid, b.block_id, b.message_id, b.session_id, b.block_type, b.search_text
+            FROM blocks AS b
+            LEFT JOIN messages_fts_docsize AS d ON d.id = b.rowid
+            WHERE d.id IS NULL
+              AND b.search_text != ''
+              AND b.rowid > ?
+              AND b.rowid <= ?
+        )
+        INSERT INTO messages_fts (rowid, block_id, message_id, session_id, block_type, text)
+        SELECT rowid, block_id, message_id, session_id, block_type, search_text
+        FROM missing
+    """
+
+
 __all__ = [
     "FTS_INDEXABLE_MESSAGE_COUNT_SQL",
     "FTS_INDEX_DOC_COUNT_SQL",
@@ -108,4 +125,5 @@ __all__ = [
     "insert_all_message_rows_sql",
     "insert_session_rows_sql",
     "insert_missing_message_rows_sql",
+    "insert_missing_message_rows_range_sql",
 ]

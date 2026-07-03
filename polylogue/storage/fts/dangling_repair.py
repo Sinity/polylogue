@@ -8,14 +8,13 @@ from dataclasses import dataclass
 from polylogue.storage.fts.freshness import READY, STALE, freshness_ready_record_trusted, record_fts_surface_state_sync
 from polylogue.storage.fts.fts_lifecycle import (
     _triggers_present_sync,
-    ensure_fts_index_sync,
+    insert_missing_message_rows_batched_sync,
     reset_message_fts_index_sync,
     restore_fts_triggers_sync,
 )
 from polylogue.storage.fts.sql import (
     FTS_INDEX_DOC_COUNT_SQL,
     FTS_INDEXABLE_MESSAGE_COUNT_SQL,
-    insert_missing_message_rows_sql,
 )
 
 BOUNDED_REPAIR_PRAGMAS = (
@@ -65,13 +64,15 @@ def dry_run_dangling_fts_repair(conn: sqlite3.Connection) -> DanglingFtsRepairOu
     )
 
 
-def insert_missing_message_fts_rows_sync(conn: sqlite3.Connection) -> int:
+def insert_missing_message_fts_rows_sync(
+    conn: sqlite3.Connection,
+    *,
+    batch_rows: int | None = None,
+) -> int:
     """Insert globally missing message FTS rows without rebuilding existing rows."""
-    ensure_fts_index_sync(conn)
-    before = int(conn.execute(FTS_INDEX_DOC_COUNT_SQL).fetchone()[0] or 0)
-    conn.execute(insert_missing_message_rows_sql())
-    after = int(conn.execute(FTS_INDEX_DOC_COUNT_SQL).fetchone()[0] or 0)
-    return max(0, after - before)
+    if batch_rows is None:
+        return insert_missing_message_rows_batched_sync(conn)
+    return insert_missing_message_rows_batched_sync(conn, batch_rows=batch_rows)
 
 
 def _count_table(conn: sqlite3.Connection, table_name: str) -> int:

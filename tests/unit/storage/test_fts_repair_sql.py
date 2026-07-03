@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from polylogue.storage.fts.dangling_repair import insert_missing_message_fts_rows_sync
 from polylogue.storage.fts.freshness import record_fts_surface_state_sync
 from polylogue.storage.fts.fts_lifecycle import (
     rebuild_fts_index_sync,
@@ -13,6 +14,7 @@ from polylogue.storage.fts.fts_lifecycle import (
 )
 from polylogue.storage.fts.sql import (
     delete_session_rows_sql,
+    insert_missing_message_rows_range_sql,
     insert_session_rows_sql,
 )
 
@@ -62,6 +64,38 @@ def test_incremental_fts_repair_deletes_via_block_rowid(test_conn: sqlite3.Conne
         )
     )
     assert "SEARCH blocks USING" in plan
+
+
+def test_global_missing_fts_sql_is_rowid_bounded() -> None:
+    sql = " ".join(insert_missing_message_rows_range_sql().split())
+
+    assert "AND b.rowid > ?" in sql
+    assert "AND b.rowid <= ?" in sql
+    assert "LEFT JOIN messages_fts_docsize" in sql
+
+
+def test_missing_fts_repair_commits_and_checkpoints_batches(test_conn: sqlite3.Connection) -> None:
+    restore_fts_triggers_sync(test_conn)
+    for index in range(3):
+        _seed_text_block(
+            test_conn,
+            native_session_id=f"conv-batched-missing-{index}",
+            native_message_id=f"msg-batched-missing-{index}",
+            text=f"batched missing needle {index}",
+        )
+    test_conn.execute("DELETE FROM messages_fts")
+
+    traced: list[str] = []
+    test_conn.set_trace_callback(traced.append)
+    try:
+        inserted = insert_missing_message_fts_rows_sync(test_conn, batch_rows=1)
+    finally:
+        test_conn.set_trace_callback(None)
+
+    assert inserted == 3
+    assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 3
+    checkpoints = [sql for sql in traced if "wal_checkpoint(PASSIVE)" in sql]
+    assert len(checkpoints) == 3
 
 
 def test_message_fts_repair_dedupes_duplicate_session_ids(test_conn: sqlite3.Connection) -> None:
