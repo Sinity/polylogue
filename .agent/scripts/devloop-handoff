@@ -6,7 +6,8 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 Usage: .agent/scripts/devloop-handoff
 
 Write HANDOFF-LATEST.md from current status plus the latest operating-log tail,
-then refresh generated conductor state. The handoff is local ignored state.
+ready Beads, and the latest operating-log tail, then refresh generated
+conductor state. The handoff is local ignored state.
 EOF
   exit 0
 fi
@@ -19,6 +20,25 @@ out="$root/HANDOFF-LATEST.md"
   printf 'Generated: %s\n\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')"
   printf '## Status\n\n'
   "$(dirname "$0")/devloop-status" || true
+  if command -v bd >/dev/null 2>&1; then
+    printf '\n## In-Progress Beads\n\n'
+    bead_snapshot="$(bd list --status in_progress --json 2>/dev/null || printf '[]')"
+    python3 - "$bead_snapshot" <<'PY' || true
+from __future__ import annotations
+
+import json
+import sys
+
+try:
+    issues = json.loads(sys.argv[1])
+except json.JSONDecodeError:
+    issues = []
+for issue in issues[:12]:
+    print(f"- {issue.get('id', '?')}: {issue.get('title', '')}")
+PY
+    printf '\n## Ready Beads\n\n'
+    bd ready --limit 10 2>/dev/null || true
+  fi
   printf '\n## Latest Operating Log\n\n'
   tail -80 "$root/OPERATING-LOG.md" 2>/dev/null || true
 } > "$out"

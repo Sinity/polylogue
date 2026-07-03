@@ -3,16 +3,65 @@ set -euo pipefail
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   cat <<'EOF'
-Usage: .agent/scripts/devloop-checkpoint [title]
+Usage: .agent/scripts/devloop-checkpoint [--bead ID] [--done] [title]
 
 Record a lightweight checkpoint after a material reassessment, proof, or pivot,
 then refresh generated conductor state. This does not start a new slice.
+
+With --bead, append the checkpoint to the Beads issue notes. With --done,
+close that Bead using the checkpoint title as the close reason. bd is optional;
+when it is unavailable the markdown checkpoint still records the state.
 EOF
   exit 0
 fi
 
+slice_bead=""
+done="no"
+while [ "$#" -gt 0 ]; do
+  case "${1:-}" in
+    --bead)
+      slice_bead="${2:?usage: devloop-checkpoint --bead ID [--done] [title]}"
+      shift 2
+      ;;
+    --done)
+      done="yes"
+      shift
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      printf 'unknown option: %s\n' "$1" >&2
+      exit 2
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
 title="${1:-checkpoint}"
-"$(dirname "$0")/devloop-log" "checkpoint: $title" "Focus: checkpoint
+bead_log="Bead: none"
+if [ -n "$slice_bead" ]; then
+  bead_log="Bead: $slice_bead"
+  if command -v bd >/dev/null 2>&1; then
+    if [ "$done" = "yes" ]; then
+      bd close "$slice_bead" --reason "$title" --json >/dev/null
+    else
+      bd update "$slice_bead" --append-notes "Checkpoint: $title" --json >/dev/null
+    fi
+    repo="${POLYLOGUE_REPO:-$(git rev-parse --show-toplevel 2>/dev/null || printf /realm/project/polylogue)}"
+    if [ -d "$repo/.beads" ]; then
+      bd export --output "$repo/.beads/issues.jsonl" >/dev/null
+    fi
+  else
+    printf 'WARN: bd is not available; recorded checkpoint but did not update %s\n' "$slice_bead" >&2
+  fi
+fi
+
+"$(dirname "$0")/devloop-log" "checkpoint: $title" "$bead_log
+Focus: checkpoint
 Trigger: $title
 Decision: record current state and sync the conductor packet
 Proof/artifact: see preceding focus entries and current devloop-review output

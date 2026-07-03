@@ -319,6 +319,69 @@ else
   ok "local devloop state files present"
 fi
 
+if command -v bd >/dev/null 2>&1; then
+  if bead_cycles="$(bd dep cycles --json 2>/dev/null)"; then
+    if python3 - "$bead_cycles" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+
+try:
+    cycles = json.loads(sys.argv[1])
+except json.JSONDecodeError:
+    cycles = []
+raise SystemExit(0 if not cycles else 1)
+PY
+    then
+      ok "Beads dependency graph has no cycles"
+    else
+      warn "Beads dependency graph contains cycles"
+      printf '%s\n' "$bead_cycles"
+    fi
+  else
+    warn "could not check Beads dependency cycles"
+  fi
+
+  if in_progress_beads="$(bd list --status in_progress --json 2>/dev/null)"; then
+    if [ -f "$current/ACTIVE-LOOP.md" ]; then
+      if bead_drift="$(python3 - "$current/ACTIVE-LOOP.md" "$in_progress_beads" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+active_text = Path(sys.argv[1]).read_text(encoding="utf-8")
+try:
+    issues = json.loads(sys.argv[2])
+except json.JSONDecodeError:
+    issues = []
+
+missing = []
+for issue in issues:
+    issue_id = str(issue.get("id", ""))
+    if issue_id and issue_id not in active_text:
+        missing.append(f"{issue_id}: {issue.get('title', '')}")
+
+if missing:
+    print("\n".join(missing))
+    raise SystemExit(1)
+PY
+      )"; then
+        ok "ACTIVE-LOOP.md names every in-progress Bead"
+      else
+        warn "in-progress Beads are not named in ACTIVE-LOOP.md"
+        printf '%s\n' "$bead_drift"
+      fi
+    fi
+  else
+    warn "could not list in-progress Beads"
+  fi
+else
+  ok "bd not installed; skipping Beads review checks"
+fi
+
 if [ -f "$current/OPERATING-LOG.md" ]; then
   latest="$(awk '/^## [0-9]{4}-[0-9]{2}-[0-9]{2} /{start=NR} {lines[NR]=$0} END{if(start){for(i=start;i<=NR;i++) print lines[i]}}' "$current/OPERATING-LOG.md")"
   if printf '%s\n' "$latest" | grep -Eiq '\\b(TODO:|TBD:|FIXME:|\\?\\?\\?)'; then

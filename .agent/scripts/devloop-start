@@ -3,23 +3,48 @@ set -euo pipefail
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   cat <<'EOF'
-Usage: .agent/scripts/devloop-start [--meta|--focus MODE] <slice-title>
+Usage: .agent/scripts/devloop-start [--bead ID] [--meta|--focus MODE] <slice-title>
 
 Start one devloop slice, append an operating-log entry, update ACTIVE-LOOP.md,
 and refresh generated conductor state. Use --meta, or --focus Meta, for process
 and scaffold work. Obvious process/convention titles infer Meta automatically.
+
+When --bead is supplied and bd is available, claim that issue and record its id
+in ACTIVE-LOOP.md so review/handoff can connect the current slice to the durable
+backlog.
 EOF
   exit 0
 fi
 
 start_focus="Direction"
-if [ "${1:-}" = "--meta" ]; then
-  start_focus="Meta"
-  shift
-elif [ "${1:-}" = "--focus" ]; then
-  start_focus="${2:?usage: devloop-start [--focus MODE] <slice-title>}"
-  shift 2
-fi
+slice_bead=""
+while [ "$#" -gt 0 ]; do
+  case "${1:-}" in
+    --bead)
+      slice_bead="${2:?usage: devloop-start --bead ID <slice-title>}"
+      shift 2
+      ;;
+    --meta)
+      start_focus="Meta"
+      shift
+      ;;
+    --focus)
+      start_focus="${2:?usage: devloop-start --focus MODE <slice-title>}"
+      shift 2
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      printf 'unknown option: %s\n' "$1" >&2
+      exit 2
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
 
 case "$start_focus" in
   Direction|Evidence|Construction|Proof|Artifact|Velocity|Meta) ;;
@@ -29,7 +54,7 @@ case "$start_focus" in
     ;;
 esac
 
-title="${1:?usage: devloop-start [--meta|--focus MODE] <slice-title>}"
+title="${1:?usage: devloop-start [--bead ID] [--meta|--focus MODE] <slice-title>}"
 # Meta inference covers process titles such as meta, process, scaffold,
 # devloop, conductor, and convention slices.
 case "$start_focus:$title" in
@@ -51,7 +76,21 @@ if [ "$start_focus" = "Meta" ]; then
   meta_origin="yes"
 fi
 
-"$(dirname "$0")/devloop-log" "$title" "Focus: $start_focus -> $next_focus
+bead_log="Bead: none"
+if [ -n "$slice_bead" ]; then
+  bead_log="Bead: $slice_bead"
+  if command -v bd >/dev/null 2>&1; then
+    bd update "$slice_bead" --claim --json >/dev/null
+    if [ -d "$repo/.beads" ]; then
+      bd export --output "$repo/.beads/issues.jsonl" >/dev/null
+    fi
+  else
+    printf 'WARN: bd is not available; recorded bead id but did not claim %s\n' "$slice_bead" >&2
+  fi
+fi
+
+"$(dirname "$0")/devloop-log" "$title" "$bead_log
+Focus: $start_focus -> $next_focus
 Trigger: $title
 Primary aim: define the slice against current evidence before editing.
 Evidence touched: initial devloop status, review, active loop, and slice trigger.
@@ -61,7 +100,7 @@ Velocity note: slice started through devloop-start so elapsed time is tracked.
 Next decision: $next_decision."
 
 if [ -f "$root/ACTIVE-LOOP.md" ]; then
-  python3 - "$root/ACTIVE-LOOP.md" "$title" "$start_focus" "$next_focus" "$next_decision" "$meta_origin" <<'PY'
+  python3 - "$root/ACTIVE-LOOP.md" "$title" "$start_focus" "$next_focus" "$next_decision" "$meta_origin" "$slice_bead" <<'PY'
 from pathlib import Path
 import sys
 
@@ -71,9 +110,11 @@ start_focus = sys.argv[3]
 next_focus = sys.argv[4]
 next_decision = sys.argv[5]
 meta_origin = sys.argv[6]
+slice_bead = sys.argv[7]
 text = path.read_text()
+slice_body = title if not slice_bead else f"{title}\n\nBead: {slice_bead}"
 replacements = {
-    "Current Slice": f"Current Slice\n\n{title}",
+    "Current Slice": f"Current Slice\n\n{slice_body}",
     "Meta Origin": f"Meta Origin\n\n{meta_origin}",
     "Current Focus": (
         f"Current Focus\n\nFocus: {start_focus} -> {next_focus}\n\n"
