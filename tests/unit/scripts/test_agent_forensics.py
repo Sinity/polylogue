@@ -72,6 +72,42 @@ def test_classify_failed_followup_uses_only_explicit_acknowledgment_markers() ->
         "matched_marker": "failed",
     }
     assert (
+        agent_forensics._classify_failed_followup("The argument parsing isn't working. Let me debug the input.")
+        == "acknowledged"
+    )
+    assert agent_forensics._classify_failed_followup("Docs are out of sync from the rename.") == "acknowledged"
+    assert agent_forensics._classify_failed_followup("GitHub still sees it as conflicting.") == "acknowledged"
+    assert agent_forensics._classify_failed_followup("xtask build doesn't support --features.") == "acknowledged"
+    assert agent_forensics._classify_failed_followup("The files are being modified by a formatter.") == "acknowledged"
+    assert (
+        agent_forensics._classify_failed_followup("The files appear to have been modified since I read them.")
+        == "acknowledged"
+    )
+    assert agent_forensics._classify_failed_followup("The files were modified since the read.") == "acknowledged"
+    assert agent_forensics._classify_failed_followup("Still the same Nix escaping issue.") == "acknowledged"
+    assert agent_forensics._classify_failed_followup("That's a pre-existing bug in the parser.") == "acknowledged"
+    assert agent_forensics._classify_failed_followup("The tables don't exist.") == "acknowledged"
+    assert agent_forensics._classify_failed_followup("I need to fix a couple of issues.") == "acknowledged"
+    assert agent_forensics._classify_failed_followup("Property tests found some issues.") == "acknowledged"
+    assert agent_forensics._classify_failed_followup("I need to fix some additional issues.") == "acknowledged"
+    assert agent_forensics._classify_failed_followup("Let me fix the unclosed function body.") == "acknowledged"
+    assert agent_forensics._classify_failed_followup("The tests need a clean database.") == "acknowledged"
+    assert agent_forensics._classify_failed_followup("cargo nextest still fails.") == "acknowledged"
+    assert agent_forensics._classify_failed_followup("The tests seem to be hanging.") == "acknowledged"
+    assert agent_forensics._classify_failed_followup("Let me remove the duplicate updates.") == "acknowledged"
+    assert agent_forensics._classify_failed_followup("The global hook blocks force pushes.") == "acknowledged"
+    assert (
+        agent_forensics._classify_failed_followup("Let me search for all instances and fix them properly.")
+        == "silent_proceed"
+    )
+    assert agent_forensics._classify_failed_followup("cargo clippy now runs without issues.") == "silent_proceed"
+    assert agent_forensics._classify_failed_followup("The shim now blocks Hyprland protocol announcements.") == (
+        "silent_proceed"
+    )
+    assert agent_forensics._classify_failed_followup("Scratch files are gitignored; staging can proceed.") == (
+        "silent_proceed"
+    )
+    assert (
         agent_forensics._classify_failed_followup("I will continue by inspecting the next module now.")
         == "silent_proceed"
     )

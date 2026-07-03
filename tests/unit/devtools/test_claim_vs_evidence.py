@@ -8,6 +8,28 @@ from pathlib import Path
 from devtools.claim_vs_evidence import build_report
 
 
+def _report_args(
+    *,
+    archive_root: Path,
+    out_dir: Path | None,
+    limit: int,
+    sample_limit: int,
+    calibration_size: int = 3,
+    calibration_seed: int = 7,
+    calibration_labels: Path | None = None,
+) -> argparse.Namespace:
+    return argparse.Namespace(
+        archive_root=archive_root,
+        out_dir=out_dir,
+        limit=limit,
+        sample_limit=sample_limit,
+        calibration_size=calibration_size,
+        calibration_seed=calibration_seed,
+        calibration_labels=calibration_labels,
+        json=False,
+    )
+
+
 def _seed_archive(root: Path) -> None:
     root.mkdir(parents=True)
     conn = sqlite3.connect(root / "index.db")
@@ -171,14 +193,31 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
     archive = tmp_path / "archive"
     out_dir = tmp_path / "out"
     _seed_archive(archive)
+    out_dir.mkdir()
+    (out_dir / "ack-marker-calibration.labels.csv").write_text(
+        "\n".join(
+            [
+                "sample_id,human_label,classification,classification_reason,matched_marker,origin,model_name,"
+                "tool_name,handler_class,session_ref,tool_result_message_ref,next_message_ref,next_text_preview,"
+                "next3_classification,next3_matched_marker,next3_text_preview",
+                "cal-001,acknowledged,acknowledged,explicit_acknowledgment_marker,failed,claude-code-session,"
+                "claude-sonnet,Bash,consequential,session:s1,message:tool-ack,message:next-ack,"
+                "The command failed,acknowledged,failed,The command failed",
+                "cal-002,acknowledged,silent_proceed,no_acknowledgment_marker,,claude-code-session,"
+                "claude-haiku,Bash,consequential,session:s1,message:tool-silent,message:next-silent,"
+                "I will continue,acknowledged,failed,The ls command failed",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
 
     report = build_report(
-        argparse.Namespace(
+        _report_args(
             archive_root=archive,
             out_dir=out_dir,
             limit=4,
             sample_limit=2,
-            json=False,
         )
     )
 
@@ -237,6 +276,11 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
     assert report["rates"]["silent_rate_lower_bound"] == 1 / 4
     assert report["rates"]["ack_later_within_3"] == 1
     assert report["rates"]["window3_silent_rate_lower_bound"] == 0
+    assert report["calibration"]["sample_size"] == 3
+    assert report["calibration"]["sample_seed"] == 7
+    assert report["calibration"]["metrics"]["labeled_rows"] == 2
+    assert report["calibration"]["metrics"]["ack_marker_precision"] == 1.0
+    assert report["calibration"]["metrics"]["ack_marker_recall"] == 0.5
     assert report["by_handler_class"] == [
         {
             "name": "benign_recovery",
@@ -298,6 +342,13 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
     assert summary["proof_report"]["silent_proceed_within_3"] == 0
     assert summary["proof_report"]["ack_later_within_3"] == 1
     assert summary["proof_report"]["window3_silent_rate_lower_bound"] == 0
+    assert summary["proof_report"]["calibration"] == {
+        "sample_size": 3,
+        "sample_seed": 7,
+        "labeled_rows": 2,
+        "ack_marker_precision": 1.0,
+        "ack_marker_recall": 0.5,
+    }
     assert summary["proof_report"]["by_handler_class"][0]["name"] == "benign_recovery"
     assert summary["proof_report"]["by_handler_class"][1]["silent_rate_lower_bound"] == 0.5
     assert summary["proof_report"]["time_window"] == "entire archive (no since/until filter)"
@@ -316,6 +367,9 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
         },
     ]
     assert (out_dir / "claim-vs-evidence.report.json").exists()
+    calibration_sample = (out_dir / "ack-marker-calibration.sample.csv").read_text()
+    assert "sample_id,human_label,classification" in calibration_sample
+    assert "acknowledged" in calibration_sample
     readme = (out_dir / "README.md").read_text()
     assert "Claim-vs-Evidence" in readme
     assert "- time window: entire archive (no since/until filter)" in readme
@@ -323,6 +377,10 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
     assert "- consequential: failed 2; silent 1; ambiguous 0; silent lower bound 50.0%" in readme
     assert "- acknowledgments appearing only after the next turn: 1" in readme
     assert "- silent lower bound after next-3 sensitivity: 0.0%" in readme
+    assert "### Marker Calibration" in readme
+    assert "- calibration sample size: 3" in readme
+    assert "- acknowledged-marker precision: 100.0%" in readme
+    assert "- acknowledged-marker recall: 50.0%" in readme
     assert "- claude-code-session: inspected 2 / 2 structured failures (requested 2)" in readme
     assert "- codex-session: inspected 2 / 2 structured failures (requested 2)" in readme
 
@@ -332,12 +390,11 @@ def test_claim_vs_evidence_bounded_sample_is_origin_stratified(tmp_path: Path) -
     _seed_archive(archive)
 
     report = build_report(
-        argparse.Namespace(
+        _report_args(
             archive_root=archive,
             out_dir=None,
             limit=2,
             sample_limit=2,
-            json=False,
         )
     )
 
@@ -379,12 +436,11 @@ def test_claim_vs_evidence_keeps_same_message_tool_result_identities(tmp_path: P
     conn.close()
 
     report = build_report(
-        argparse.Namespace(
+        _report_args(
             archive_root=archive,
             out_dir=None,
             limit=10,
             sample_limit=10,
-            json=False,
         )
     )
 

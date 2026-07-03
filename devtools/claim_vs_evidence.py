@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
+import random
 import sys
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
@@ -41,6 +43,27 @@ _CONSEQUENTIAL_TOOLS = frozenset(
         "write",
     }
 )
+_CALIBRATION_LABELS = ("acknowledged", "silent_proceed", "ambiguous")
+_CALIBRATION_SAMPLE_FILE = "ack-marker-calibration.sample.csv"
+_CALIBRATION_LABELS_FILE = "ack-marker-calibration.labels.csv"
+_CALIBRATION_FIELDS = (
+    "sample_id",
+    "human_label",
+    "classification",
+    "classification_reason",
+    "matched_marker",
+    "origin",
+    "model_name",
+    "tool_name",
+    "handler_class",
+    "session_ref",
+    "tool_result_message_ref",
+    "next_message_ref",
+    "next_text_preview",
+    "next3_classification",
+    "next3_matched_marker",
+    "next3_text_preview",
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -52,6 +75,24 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-dir", type=Path, default=None, help="Write report.json, summary.json, and README.md.")
     parser.add_argument("--limit", type=int, default=5000, help="Maximum structured failed outcomes to classify.")
     parser.add_argument("--sample-limit", type=int, default=30, help="Maximum evidence samples per class.")
+    parser.add_argument(
+        "--calibration-size",
+        type=int,
+        default=50,
+        help="Deterministic stratified marker-calibration sample size to write.",
+    )
+    parser.add_argument(
+        "--calibration-seed",
+        type=int,
+        default=20260703,
+        help="RNG seed for marker-calibration sample selection.",
+    )
+    parser.add_argument(
+        "--calibration-labels",
+        type=Path,
+        default=None,
+        help="Optional CSV of human labels. Defaults to ack-marker-calibration.labels.csv in --out-dir when present.",
+    )
     parser.add_argument("--json", action="store_true", help="Emit JSON report to stdout.")
     return parser
 
@@ -133,6 +174,12 @@ def _empty_window_counts() -> dict[str, int]:
         "silent_proceed": 0,
         "ambiguous": 0,
     }
+
+
+def _rate(numerator: int, denominator: int) -> float | None:
+    if denominator <= 0:
+        return None
+    return numerator / denominator
 
 
 def _refine_classification_reason(classification_evidence: Mapping[str, object], row: dict[str, object]) -> str:
@@ -606,11 +653,127 @@ def _origin_sample_limits(total_by_origin: list[dict[str, object]], limit: int) 
     ]
 
 
+def _calibration_sort_key(sample: Mapping[str, object]) -> tuple[str, str, str]:
+    return (
+        str(sample["classification"]),
+        str(sample["session_ref"]),
+        str(sample["tool_result_message_ref"]),
+    )
+
+
+def _calibration_sample(
+    samples: list[dict[str, object]],
+    *,
+    size: int,
+    seed: int,
+) -> list[dict[str, object]]:
+    if size <= 0:
+        return []
+    by_class: dict[str, list[dict[str, object]]] = {label: [] for label in _CALIBRATION_LABELS}
+    for sample in samples:
+        classification = str(sample["classification"])
+        if classification in by_class:
+            by_class[classification].append(sample)
+    rng = random.Random(seed)
+    selected: list[dict[str, object]] = []
+    target_per_class = max(1, size // len(_CALIBRATION_LABELS))
+    for label in _CALIBRATION_LABELS:
+        bucket = sorted(by_class[label], key=_calibration_sort_key)
+        take = min(target_per_class, len(bucket))
+        if take:
+            selected.extend(rng.sample(bucket, take))
+    if len(selected) < size:
+        selected_ids = {
+            (
+                str(sample["session_ref"]),
+                str(sample["tool_result_message_ref"]),
+            )
+            for sample in selected
+        }
+        remainder = [
+            sample
+            for sample in sorted(samples, key=_calibration_sort_key)
+            if (
+                str(sample["session_ref"]),
+                str(sample["tool_result_message_ref"]),
+            )
+            not in selected_ids
+        ]
+        selected.extend(rng.sample(remainder, min(size - len(selected), len(remainder))))
+    return sorted(selected[:size], key=_calibration_sort_key)
+
+
+def _calibration_row(sample: Mapping[str, object], index: int, *, human_label: str = "") -> dict[str, object]:
+    row = {field: sample.get(field, "") for field in _CALIBRATION_FIELDS}
+    row["sample_id"] = f"cal-{index:03d}"
+    row["human_label"] = human_label
+    return row
+
+
+def _write_csv(path: Path, rows: list[dict[str, object]]) -> None:
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(_CALIBRATION_FIELDS), extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _read_calibration_labels(path: Path) -> list[dict[str, str]]:
+    with path.open(encoding="utf-8", newline="") as handle:
+        return [
+            {str(key): str(value or "") for key, value in row.items()}
+            for row in csv.DictReader(handle)
+            if row.get("human_label")
+        ]
+
+
+def _calibration_metrics(label_rows: list[dict[str, str]], *, labels_path: Path | None) -> dict[str, object]:
+    confusion: dict[str, dict[str, int]] = {
+        human: dict.fromkeys(_CALIBRATION_LABELS, 0) for human in _CALIBRATION_LABELS
+    }
+    invalid_rows = 0
+    for row in label_rows:
+        human = row.get("human_label", "").strip()
+        predicted = row.get("classification", "").strip()
+        if human not in confusion or predicted not in _CALIBRATION_LABELS:
+            invalid_rows += 1
+            continue
+        confusion[human][predicted] += 1
+    acknowledged_tp = confusion["acknowledged"]["acknowledged"]
+    predicted_acknowledged = sum(confusion[human]["acknowledged"] for human in _CALIBRATION_LABELS)
+    human_acknowledged = sum(confusion["acknowledged"].values())
+    usable_rows = sum(sum(row.values()) for row in confusion.values())
+    return {
+        "labels_path": str(labels_path) if labels_path is not None else None,
+        "labeled_rows": usable_rows,
+        "invalid_rows": invalid_rows,
+        "labels": list(_CALIBRATION_LABELS),
+        "confusion_matrix": confusion,
+        "ack_marker_precision": _rate(acknowledged_tp, predicted_acknowledged),
+        "ack_marker_recall": _rate(acknowledged_tp, human_acknowledged),
+        "ack_marker_true_positive": acknowledged_tp,
+        "ack_marker_predicted_positive": predicted_acknowledged,
+        "ack_marker_actual_positive": human_acknowledged,
+    }
+
+
+def _calibration_labels_path(args: argparse.Namespace) -> Path | None:
+    calibration_labels = args.calibration_labels
+    if isinstance(calibration_labels, Path):
+        return calibration_labels
+    out_dir = args.out_dir
+    if not isinstance(out_dir, Path):
+        return None
+    candidate = out_dir / _CALIBRATION_LABELS_FILE
+    return candidate if candidate.exists() else None
+
+
 def build_report(args: argparse.Namespace) -> dict[str, Any]:
     if args.limit < 1:
         raise ValueError("--limit must be positive")
     if args.sample_limit < 1:
         raise ValueError("--sample-limit must be positive")
+    if args.calibration_size < 0:
+        raise ValueError("--calibration-size must be non-negative")
     config = _config_with_archive_root(get_config(), args.archive_root)
     index_db = config.db_path
     conn = open_readonly_connection(index_db)
@@ -648,6 +811,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "ambiguous": [],
     }
     samples_by_origin_classification: dict[str, dict[str, list[dict[str, object]]]] = {}
+    calibration_candidates: list[dict[str, object]] = []
     for row in rows:
         classification_evidence = _classify_failed_followup_evidence(
             str(row["next_text"]) if row["next_text"] is not None else None
@@ -729,6 +893,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         origin_bucket = origin_buckets[classification]
         if len(origin_bucket) < args.sample_limit:
             origin_bucket.append(sample)
+        calibration_candidates.append(sample)
     totals["classified_outcomes"] = totals["acknowledged"] + totals["silent_proceed"]
     window3_totals["classified_outcomes"] = window3_totals["acknowledged"] + window3_totals["silent_proceed"]
     silent = totals["silent_proceed"]
@@ -736,6 +901,25 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     classified = totals["classified_outcomes"]
     window3_silent = window3_totals["silent_proceed"]
     window3_classified = window3_totals["classified_outcomes"]
+    calibration_sample = _calibration_sample(
+        calibration_candidates,
+        size=args.calibration_size,
+        seed=args.calibration_seed,
+    )
+    calibration_labels_path = _calibration_labels_path(args)
+    calibration_label_rows = (
+        _read_calibration_labels(calibration_labels_path)
+        if calibration_labels_path is not None and calibration_labels_path.exists()
+        else []
+    )
+    calibration = {
+        "sample_size_requested": args.calibration_size,
+        "sample_size": len(calibration_sample),
+        "sample_seed": args.calibration_seed,
+        "sample_file": _CALIBRATION_SAMPLE_FILE if args.out_dir is not None else None,
+        "labels_file": _CALIBRATION_LABELS_FILE if args.out_dir is not None else None,
+        "metrics": _calibration_metrics(calibration_label_rows, labels_path=calibration_labels_path),
+    }
     report: dict[str, Any] = {
         "report_version": 1,
         "captured_at": datetime.now(UTC).isoformat(),
@@ -788,6 +972,10 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "consequential": sorted(_CONSEQUENTIAL_TOOLS),
             "other": "Any tool name outside the explicit benign/consequential methodology sets.",
         },
+        "calibration": calibration,
+        "calibration_sample": [
+            _calibration_row(sample, index) for index, sample in enumerate(calibration_sample, start=1)
+        ],
         "samples_by_classification": samples_by_classification,
         "samples_by_origin_classification": samples_by_origin_classification,
     }
@@ -803,9 +991,12 @@ def _write_json(path: Path, payload: object) -> None:
 def _write_artifacts(out_dir: Path, report: dict[str, Any]) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     _write_json(out_dir / "claim-vs-evidence.report.json", report)
+    _write_csv(out_dir / _CALIBRATION_SAMPLE_FILE, report["calibration_sample"])
     totals = report["totals"]
     window3_totals = report["window3_totals"]
     rates = report["rates"]
+    calibration = report["calibration"]
+    calibration_metrics = calibration["metrics"]
     summary = {
         "artifact": "claim-vs-evidence",
         "updated_at": report["captured_at"],
@@ -842,14 +1033,26 @@ def _write_artifacts(out_dir: Path, report: dict[str, Any]) -> None:
             "time_window": report["sample_frame"]["time_window"],
             "sensitivity_scope": report["sample_frame"]["sensitivity_scope"],
             "sampled_by_origin": report["sample_frame"]["sampled_by_origin"],
+            "calibration": {
+                "sample_size": calibration["sample_size"],
+                "sample_seed": calibration["sample_seed"],
+                "labeled_rows": calibration_metrics["labeled_rows"],
+                "ack_marker_precision": calibration_metrics["ack_marker_precision"],
+                "ack_marker_recall": calibration_metrics["ack_marker_recall"],
+            },
         },
         "caveats": [
             "The report is bounded by --limit for fast active-archive regeneration.",
             "The headline classification inspects only the next assistant message; the next-3 window is a sensitivity row.",
+            "Marker calibration is based on the committed label CSV when present; unlabeled sample rows do not count.",
             "Structured failure truth comes from normalized action result is_error/exit_code fields, not assistant prose.",
             "Failed tool results without a paired tool-use row are reported as unpaired coverage gaps, not classified rows.",
         ],
-        "source_files": ["claim-vs-evidence.report.json"],
+        "source_files": [
+            "claim-vs-evidence.report.json",
+            _CALIBRATION_SAMPLE_FILE,
+            _CALIBRATION_LABELS_FILE,
+        ],
     }
     _write_json(out_dir / "summary.json", summary)
     _write_readme(out_dir / "README.md", report)
@@ -860,6 +1063,10 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
     window3_totals = report["window3_totals"]
     rates = report["rates"]
     frame = report["sample_frame"]
+    calibration = report["calibration"]
+    calibration_metrics = calibration["metrics"]
+    precision = calibration_metrics["ack_marker_precision"]
+    recall = calibration_metrics["ack_marker_recall"]
     sampled_by_origin = [
         (
             f"- {row['origin']}: inspected {int(row['inspected_structured_failures']):,} / "
@@ -925,6 +1132,28 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
         "",
         *sampled_by_origin,
         "",
+        "### Marker Calibration",
+        "",
+        "The classifier is an explicit marker detector, not an LLM judgment. This",
+        "calibration sample is deterministic and stratified across acknowledged,",
+        "silent-proceed, and ambiguous predicted classes. Human labels, when present,",
+        "live in `ack-marker-calibration.labels.csv` so regeneration does not overwrite",
+        "manual judgment.",
+        "",
+        f"- calibration sample size: {int(calibration['sample_size']):,}",
+        f"- calibration seed: {int(calibration['sample_seed'])}",
+        f"- labeled rows: {int(calibration_metrics['labeled_rows']):,}",
+        (
+            f"- acknowledged-marker precision: {float(precision):.1%}"
+            if precision is not None
+            else "- acknowledged-marker precision: not enough labels"
+        ),
+        (
+            f"- acknowledged-marker recall: {float(recall):.1%}"
+            if recall is not None
+            else "- acknowledged-marker recall: not enough labels"
+        ),
+        "",
         "## Regenerate",
         "",
         "```bash",
@@ -938,6 +1167,8 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
         "## Files",
         "",
         "- `claim-vs-evidence.report.json` — full machine-readable report.",
+        f"- `{_CALIBRATION_SAMPLE_FILE}` — deterministic sample for marker calibration.",
+        f"- `{_CALIBRATION_LABELS_FILE}` — optional human labels consumed on regeneration.",
         "- `summary.json` — current demo-shelf claim/non-claim/proof/caveat summary.",
         "- `README.md` — this human-readable packet.",
         "",
