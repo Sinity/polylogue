@@ -161,7 +161,7 @@ class _AnalyzeInsightsGroup(click.Group):
     _SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ("Session-level", ("profiles", "work-events", "phases", "timeline")),
         ("Aggregate", ("threads", "tag-rollups", "coverage", "tags")),
-        ("Analytics", ("tool-usage", "costs", "cost-rollups", "debt", "latency")),
+        ("Analytics", ("tool-usage", "costs", "cost-rollups", "usage-timeline", "debt", "latency")),
     )
 
     def format_commands(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:

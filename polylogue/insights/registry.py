@@ -36,6 +36,7 @@ from polylogue.insights.archive import (
     SessionTagRollupQuery,
     SessionWorkEventInsightQuery,
     ThreadInsightQuery,
+    UsageTimelineInsightQuery,
 )
 from polylogue.insights.tool_usage import ToolUsageInsightQuery
 
@@ -632,6 +633,43 @@ register(
             InsightField("sub_usd", _nested("basis", "subscription_equivalent_usd", "0"), group=1),
             InsightField("catalog_usd", _nested("basis", "catalog_priced_usd", "0"), group=1),
             InsightField("confidence", _attr("confidence", "0"), group=1),
+        ),
+    )
+)
+
+register(
+    InsightType(
+        name="usage_timeline",
+        display_name="Usage Timeline",
+        json_key="usage_timeline",
+        empty_message="No usage timeline rows matched.",
+        query_model=UsageTimelineInsightQuery,
+        operations_method_name="list_usage_timeline_insights",
+        cli_command_name="usage-timeline",
+        cli_help="List token, reasoning, cost, and subscription-credit usage by time bucket.",
+        readiness_exempt=True,
+        cli_options=(
+            CliOption("model", ("--model",), help="Only this exact stored model name"),
+            CliOption(
+                "group_by",
+                ("--group-by",),
+                type=click.Choice(["month", "month-origin", "month-model", "month-origin-model"]),
+                default="month-origin-model",
+                show_default=True,
+                help="Timeline grouping grain.",
+            ),
+        ),
+        fields=(
+            InsightField("", _attr("bucket"), group=0),
+            InsightField("origin", lambda item: _source_name_origin(getattr(item, "source_name", None)), group=0),
+            InsightField("model", _attr("normalized_model"), group=0),
+            InsightField("sessions", _attr("session_count", "0"), group=1),
+            InsightField("events", _attr("event_count", "0"), group=1),
+            InsightField("tokens", _nested("usage", "total_tokens", "0"), group=1),
+            InsightField("cache_read", _nested("usage", "cache_read_tokens", "0"), group=1),
+            InsightField("reasoning", _attr("reasoning_output_tokens", "0"), group=1),
+            InsightField("stored_usd", _attr("stored_cost_usd", "0"), group=2),
+            InsightField("credits", _attr("subscription_credits", "0"), group=2),
         ),
     )
 )

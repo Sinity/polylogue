@@ -6,7 +6,7 @@ import json
 import sqlite3
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
@@ -31,6 +31,7 @@ from polylogue.archive.semantic.pricing import (
     CostEstimatePayload,
     CostEstimateStatus,
     CostUnavailableReason,
+    CostUsagePayload,
     _normalize_model,
 )
 from polylogue.archive.stats import ArchiveStats
@@ -76,6 +77,7 @@ from polylogue.insights.archive import (
     SessionTagRollupInsight,
     SessionWorkEventInsight,
     ThreadInsight,
+    UsageTimelineInsight,
     WorkEventEvidencePayload,
     WorkEventInferencePayload,
 )
@@ -173,6 +175,43 @@ from polylogue.storage.sqlite.queries.sessions_identity import session_id_prefix
 from polylogue.storage.sqlite.queries.tool_usage import ToolUsageProviderCoverageRow, ToolUsageRow
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 from polylogue.types import SessionId
+
+_SUBSCRIPTION_CREDIT_RATES: dict[str, tuple[float, float]] = {
+    "opus": (10 / 15, 50 / 15),
+    "sonnet": (6 / 15, 30 / 15),
+    "haiku": (2 / 15, 10 / 15),
+}
+
+
+def _subscription_credit_estimate(
+    model_name: str, input_tokens: int, output_tokens: int, cache_write_tokens: int
+) -> float:
+    """Estimate Claude subscription credits; cache reads are not metered on plans."""
+
+    lowered = model_name.lower()
+    for family, (input_rate, output_rate) in _SUBSCRIPTION_CREDIT_RATES.items():
+        if family in lowered:
+            return (input_tokens + cache_write_tokens) * input_rate + output_tokens * output_rate
+    return 0.0
+
+
+@dataclass(slots=True)
+class _UsageTimelineAccumulator:
+    bucket: str
+    source_name: str | None
+    model_name: str | None
+    event_count: int = 0
+    event_session_count: int = 0
+    usage: CostUsagePayload = field(default_factory=CostUsagePayload)
+    reasoning_output_tokens: int = 0
+    stored_cost_usd: float = 0.0
+    subscription_credits: float = 0.0
+    cost_provenance_counts: dict[str, int] = field(default_factory=dict)
+    source_sort_key: float | None = None
+
+    def note_sort_key(self, value: object) -> None:
+        if isinstance(value, int | float) and (self.source_sort_key is None or float(value) > self.source_sort_key):
+            self.source_sort_key = float(value)
 
 
 class IndexStatus(TypedDict):
@@ -1786,6 +1825,184 @@ class ArchiveStore:
         if limit is not None:
             rollups = rollups[: max(int(limit), 0)]
         return rollups
+
+    def list_usage_timeline_insights(
+        self,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+        group_by: str = "month-origin-model",
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[UsageTimelineInsight]:
+        """Aggregate provider usage and cost evidence by session-month buckets."""
+
+        origin = _origin_for_provider_value(provider)
+        include_origin = group_by in {"month-origin", "month-origin-model"}
+        include_model = group_by in {"month-model", "month-origin-model"}
+        buckets: dict[tuple[str, str | None, str | None], _UsageTimelineAccumulator] = {}
+
+        def key_for(bucket: str, source_name: str | None, model_name: str | None) -> tuple[str, str | None, str | None]:
+            return (bucket, source_name if include_origin else None, model_name if include_model else None)
+
+        where = ["COALESCE(e.occurred_at_ms, s.sort_key_ms, 0) > 0"]
+        params: list[object] = []
+        if origin is not None:
+            where.append("s.origin = ?")
+            params.append(origin)
+        if model is not None:
+            where.append("e.model_name = ?")
+            params.append(model)
+        if since_ms is not None:
+            where.append("s.sort_key_ms >= ?")
+            params.append(since_ms)
+        if until_ms is not None:
+            where.append("s.sort_key_ms <= ?")
+            params.append(until_ms)
+        event_rows = self._conn.execute(
+            f"""
+            SELECT strftime('%Y-%m', COALESCE(e.occurred_at_ms, s.sort_key_ms)/1000, 'unixepoch') AS bucket,
+                   s.origin AS source_name,
+                   COALESCE(e.model_name, '') AS model_name,
+                   COUNT(*) AS event_count,
+                   COUNT(DISTINCT e.session_id) AS session_count,
+                   COALESCE(SUM(e.last_input_tokens), 0) AS input_tokens,
+                   COALESCE(SUM(e.last_output_tokens), 0) AS output_tokens,
+                   COALESCE(SUM(e.last_cached_input_tokens), 0) AS cache_read_tokens,
+                   COALESCE(SUM(e.last_cache_write_tokens), 0) AS cache_write_tokens,
+                   COALESCE(SUM(e.last_total_tokens), 0) AS total_tokens,
+                   COALESCE(SUM(e.last_reasoning_output_tokens), 0) AS reasoning_output_tokens,
+                   MAX(COALESCE(e.occurred_at_ms, s.sort_key_ms)) AS source_sort_key
+            FROM session_provider_usage_events e
+            JOIN sessions s ON s.session_id = e.session_id
+            WHERE {" AND ".join(where)}
+            GROUP BY bucket, s.origin, model_name
+            """,
+            tuple(params),
+        ).fetchall()
+
+        for row in event_rows:
+            bucket = str(row["bucket"])
+            source_name = str(row["source_name"] or "unknown")
+            model_name = str(row["model_name"] or "unknown")
+            item = buckets.setdefault(
+                key_for(bucket, source_name, model_name),
+                _UsageTimelineAccumulator(
+                    bucket=bucket,
+                    source_name=source_name if include_origin else None,
+                    model_name=model_name if include_model else None,
+                ),
+            )
+            item.event_count += int(row["event_count"] or 0)
+            item.event_session_count += int(row["session_count"] or 0)
+            item.usage = item.usage.plus(
+                CostUsagePayload(
+                    input_tokens=int(row["input_tokens"] or 0),
+                    output_tokens=int(row["output_tokens"] or 0),
+                    cache_read_tokens=int(row["cache_read_tokens"] or 0),
+                    cache_write_tokens=int(row["cache_write_tokens"] or 0),
+                    total_tokens=int(row["total_tokens"] or 0),
+                )
+            )
+            item.reasoning_output_tokens += int(row["reasoning_output_tokens"] or 0)
+            item.note_sort_key(row["source_sort_key"])
+
+        cost_where = ["s.sort_key_ms > 0"]
+        cost_params: list[object] = []
+        if origin is not None:
+            cost_where.append("s.origin = ?")
+            cost_params.append(origin)
+        if model is not None:
+            cost_where.append("u.model_name = ?")
+            cost_params.append(model)
+        if since_ms is not None:
+            cost_where.append("s.sort_key_ms >= ?")
+            cost_params.append(since_ms)
+        if until_ms is not None:
+            cost_where.append("s.sort_key_ms <= ?")
+            cost_params.append(until_ms)
+        cost_rows = self._conn.execute(
+            f"""
+            SELECT strftime('%Y-%m', s.sort_key_ms/1000, 'unixepoch') AS bucket,
+                   s.origin AS source_name,
+                   COALESCE(u.model_name, '') AS model_name,
+                   COUNT(DISTINCT u.session_id) AS session_count,
+                   COALESCE(SUM(u.cost_usd), 0.0) AS stored_cost_usd,
+                   COALESCE(SUM(u.cost_credits), 0.0) AS stored_credits,
+                   COALESCE(SUM(u.input_tokens), 0) AS input_tokens,
+                   COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
+                   COALESCE(SUM(u.cache_write_tokens), 0) AS cache_write_tokens,
+                   COALESCE(u.cost_provenance, 'unknown') AS cost_provenance,
+                   MAX(s.sort_key_ms) AS source_sort_key
+            FROM session_model_usage u
+            JOIN sessions s ON s.session_id = u.session_id
+            WHERE {" AND ".join(cost_where)}
+            GROUP BY bucket, s.origin, model_name, cost_provenance
+            """,
+            tuple(cost_params),
+        ).fetchall()
+        for row in cost_rows:
+            bucket = str(row["bucket"])
+            source_name = str(row["source_name"] or "unknown")
+            model_name = str(row["model_name"] or "unknown")
+            item = buckets.setdefault(
+                key_for(bucket, source_name, model_name),
+                _UsageTimelineAccumulator(
+                    bucket=bucket,
+                    source_name=source_name if include_origin else None,
+                    model_name=model_name if include_model else None,
+                ),
+            )
+            item.stored_cost_usd += float(row["stored_cost_usd"] or 0.0)
+            item.subscription_credits += float(row["stored_credits"] or 0.0)
+            if not float(row["stored_credits"] or 0.0):
+                item.subscription_credits += _subscription_credit_estimate(
+                    str(row["model_name"] or ""),
+                    int(row["input_tokens"] or 0),
+                    int(row["output_tokens"] or 0),
+                    int(row["cache_write_tokens"] or 0),
+                )
+            provenance = str(row["cost_provenance"] or "unknown")
+            item.cost_provenance_counts[provenance] = item.cost_provenance_counts.get(provenance, 0) + int(
+                row["session_count"] or 0
+            )
+            item.note_sort_key(row["source_sort_key"])
+
+        materialized_at = datetime.now(UTC).isoformat()
+        rows: list[UsageTimelineInsight] = []
+        for item in buckets.values():
+            timeline_model_name: str | None = item.model_name
+            cost_session_count = sum(item.cost_provenance_counts.values())
+            rows.append(
+                UsageTimelineInsight(
+                    group_by=group_by,
+                    bucket=item.bucket,
+                    source_name=item.source_name,
+                    model_name=timeline_model_name,
+                    normalized_model=_normalize_model(timeline_model_name) if timeline_model_name else None,
+                    session_count=max(cost_session_count, item.event_session_count),
+                    event_count=item.event_count,
+                    usage=item.usage,
+                    reasoning_output_tokens=item.reasoning_output_tokens,
+                    stored_cost_usd=item.stored_cost_usd,
+                    subscription_credits=item.subscription_credits,
+                    cost_provenance_counts=dict(sorted(item.cost_provenance_counts.items())),
+                    provenance=ArchiveInsightProvenance(
+                        materializer_version=0,
+                        materialized_at=materialized_at,
+                        source_updated_at=None,
+                        source_sort_key=item.source_sort_key,
+                    ),
+                )
+            )
+        rows.sort(key=lambda insight: (insight.bucket, insight.source_name or "", insight.normalized_model or ""))
+        if offset:
+            rows = rows[offset:]
+        if limit is not None:
+            rows = rows[: max(int(limit), 0)]
+        return rows
 
     def list_archive_debt_insights(
         self,

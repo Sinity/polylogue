@@ -214,8 +214,26 @@ def _seed_cost_products(cli_workspace: CliWorkspace) -> None:
             """
             INSERT OR REPLACE INTO session_model_usage (
                 session_id, model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-                cost_provenance
-            ) VALUES (?, 'openai/gpt-4o-2024-08-06', 1000, 500, 0, 0, 'origin_reported')
+                cost_credits, cost_provenance
+            ) VALUES (?, 'openai/gpt-4o-2024-08-06', 1000, 500, 0, 0, 0, 'origin_reported')
+            """,
+            (NID_PRICED_COST,),
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO session_provider_usage_events (
+                session_id, source_message_id, position, provider_event_type, model_name,
+                last_input_tokens, last_output_tokens, last_cached_input_tokens,
+                last_cache_write_tokens, last_reasoning_output_tokens, last_total_tokens,
+                total_input_tokens, total_output_tokens, total_cached_input_tokens,
+                total_cache_write_tokens, total_reasoning_output_tokens, total_tokens,
+                occurred_at_ms
+            ) VALUES (
+                ?, NULL, 0, 'message_usage', 'openai/gpt-4o-2024-08-06',
+                1000, 500, 200, 50, 75, 1750,
+                1000, 500, 200, 50, 75, 1750,
+                1772389200000
+            )
             """,
             (NID_PRICED_COST,),
         )
@@ -293,6 +311,31 @@ def test_insights_cost_rollups_json(cli_workspace: CliWorkspace) -> None:
     assert json_int(claude["priced_session_count"]) == 1
     assert json_number(gpt["total_usd"]) == pytest.approx(0.0075)
     assert json_int(unknown["unavailable_session_count"]) == 1
+
+
+def test_insights_usage_timeline_json(cli_workspace: CliWorkspace) -> None:
+    _seed_cost_products(cli_workspace)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["--origin", "chatgpt-export", "analyze", "insights", "usage-timeline", "--format", "json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = extract_json_result(result.output)
+    rows = json_object_list(payload["usage_timeline"])
+    row = next(item for item in rows if item["origin"] == "chatgpt-export")
+    usage = json_object(row["usage"])
+    assert row["insight_kind"] == "usage_timeline"
+    assert row["bucket"] == "2026-03"
+    assert row["normalized_model"] == "gpt-4o"
+    assert json_int(row["event_count"]) == 1
+    assert json_int(row["session_count"]) >= 1
+    assert json_int(usage["input_tokens"]) == 1000
+    assert json_int(usage["cache_read_tokens"]) == 200
+    assert json_int(row["reasoning_output_tokens"]) == 75
 
 
 def test_insights_profiles_support_wallclock_filters_and_sort(cli_workspace: CliWorkspace) -> None:

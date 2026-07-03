@@ -24,6 +24,8 @@ from polylogue.insights.archive import (
     SessionWorkEventInsightQuery,
     ThreadInsight,
     ThreadInsightQuery,
+    UsageTimelineInsight,
+    UsageTimelineInsightQuery,
 )
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
@@ -111,6 +113,12 @@ class SyncInsightQueriesMixin:
         query: CostRollupInsightQuery | None = None,
     ) -> list[CostRollupInsight]:
         return run_coroutine_sync(self._facade.list_cost_rollup_insights(query))
+
+    def list_usage_timeline_insights(
+        self,
+        query: UsageTimelineInsightQuery | None = None,
+    ) -> list[UsageTimelineInsight]:
+        return run_coroutine_sync(self._facade.list_usage_timeline_insights(query))
 
     def list_archive_debt_insights(
         self,

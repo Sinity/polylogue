@@ -146,6 +146,19 @@ class CostRollupInsightQuery(ProviderTimeWindowInsightQuery):
     limit: int | None = None
 
 
+class UsageTimelineInsightQuery(ProviderTimeWindowInsightQuery):
+    model: str | None = None
+    group_by: str = "month-origin-model"
+    limit: int | None = None
+
+    @model_validator(mode="after")
+    def validate_group_by(self) -> UsageTimelineInsightQuery:
+        valid = {"month", "month-origin", "month-model", "month-origin-model"}
+        if self.group_by not in valid:
+            raise ValueError(f"group_by must be one of {', '.join(sorted(valid))}")
+        return self
+
+
 class ArchiveDebtInsightQuery(PaginatedInsightQuery):
     category: str | None = None
     only_actionable: bool = False
@@ -495,6 +508,25 @@ class CostRollupInsight(ArchiveInsightModel):
     provenance: ArchiveInsightProvenance
 
 
+class UsageTimelineInsight(ArchiveInsightModel):
+    contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
+    insight_kind: str = "usage_timeline"
+    semantic_tier: str = "evidence"
+    group_by: str = "month-origin-model"
+    bucket: str
+    source_name: str | None = None
+    model_name: str | None = None
+    normalized_model: str | None = None
+    session_count: int = 0
+    event_count: int = 0
+    usage: CostUsagePayload = Field(default_factory=CostUsagePayload)
+    reasoning_output_tokens: int = 0
+    stored_cost_usd: float = 0.0
+    subscription_credits: float = 0.0
+    cost_provenance_counts: dict[str, int] = Field(default_factory=dict)
+    provenance: ArchiveInsightProvenance
+
+
 class ArchiveDebtInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
     insight_kind: str = "archive_debt"
@@ -613,6 +645,8 @@ __all__ = [
     "CostModelBreakdown",
     "CostRollupInsight",
     "CostRollupInsightQuery",
+    "UsageTimelineInsight",
+    "UsageTimelineInsightQuery",
     "ArchiveInsightUnavailableError",
     "DaySessionSummaryInsight",
     "SessionCostInsight",

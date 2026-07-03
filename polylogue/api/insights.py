@@ -30,6 +30,8 @@ from polylogue.insights.archive import (
     SessionWorkEventInsightQuery,
     ThreadInsight,
     ThreadInsightQuery,
+    UsageTimelineInsight,
+    UsageTimelineInsightQuery,
 )
 from polylogue.insights.archive_rollups import aggregate_cost_rollup_insights
 from polylogue.insights.cost_enrichment import enrich_session_cost_insights
@@ -116,6 +118,11 @@ if TYPE_CHECKING:
             self,
             query: CostRollupInsightQuery | None = None,
         ) -> list[CostRollupInsight]: ...
+
+        async def list_usage_timeline_insights(
+            self,
+            query: UsageTimelineInsightQuery | None = None,
+        ) -> list[UsageTimelineInsight]: ...
 
         async def list_archive_debt_insights(
             self,
@@ -527,6 +534,22 @@ class PolylogueInsightsMixin:
         if request.limit is not None:
             rollups = rollups[: max(int(request.limit), 0)]
         return rollups
+
+    async def list_usage_timeline_insights(
+        self,
+        query: UsageTimelineInsightQuery | None = None,
+    ) -> list[UsageTimelineInsight]:
+        request = query or UsageTimelineInsightQuery()
+        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
+            return archive.list_usage_timeline_insights(
+                provider=request.provider,
+                model=request.model,
+                group_by=request.group_by,
+                since_ms=_archive_query_date_ms("since", request.since),
+                until_ms=_archive_query_date_ms("until", request.until),
+                limit=request.limit,
+                offset=request.offset,
+            )
 
     async def list_archive_debt_insights(
         self,

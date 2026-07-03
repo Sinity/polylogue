@@ -83,6 +83,7 @@ EXPECTED_TOOL_NAMES = {
     "tool_usage",
     "session_costs",
     "cost_rollups",
+    "usage_timeline",
     "session_profiles",
     "session_work_events",
     "session_phases",
@@ -246,6 +247,7 @@ def make_polylogue_mock(*, resolved_id: str | None = None) -> MagicMock:
     poly.list_tool_usage_insights = AsyncMock(return_value=[])
     poly.list_session_cost_insights = AsyncMock(return_value=[])
     poly.list_cost_rollup_insights = AsyncMock(return_value=[])
+    poly.list_usage_timeline_insights = AsyncMock(return_value=[])
     poly.list_archive_debt_insights = AsyncMock(return_value=[])
     from polylogue.surfaces.payloads import ArchiveDebtListPayload, ArchiveDebtTotalsPayload
 

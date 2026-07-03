@@ -151,6 +151,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "session_work_events": ("envelope", frozenset({"items", "total"})),
     "session_costs": ("envelope", frozenset({"items", "total"})),
     "cost_rollups": ("envelope", frozenset({"items", "total"})),
+    "usage_timeline": ("envelope", frozenset({"items", "total"})),
     "archive_coverage": ("envelope", frozenset({"items", "total"})),
     "threads": ("envelope", frozenset({"items", "total"})),
     "tool_usage": ("envelope", frozenset({"items", "total"})),
