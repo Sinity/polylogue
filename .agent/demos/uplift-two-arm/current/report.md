@@ -13,7 +13,7 @@ The pack arm found useful prior-slice context, but it misidentified the current 
 
 ## Interpretation
 
-This is a negative diagnostic pilot, not a general result. The bounded handoff packet was honest but stale: it summarized the subject session before the follow-on `jxe.2` protocol started. The raw-ref arm used broader archive and Beads evidence, which was better for current-state reconstruction but more expensive and hit a product hang in `polylogue continue --format json`.
+This is a negative diagnostic pilot, not a general result. The primary construct exposed by this run is freshness failure: the bounded handoff packet was honest but stale because it summarized the subject session before the follow-on `jxe.2` protocol started. The raw-ref arm used broader archive and Beads evidence, which was better for current-state reconstruction but more expensive and hit a product hang in `polylogue continue --format json`.
 
 ## Product Feedback
 

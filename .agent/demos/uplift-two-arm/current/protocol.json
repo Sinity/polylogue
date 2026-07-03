@@ -17,6 +17,7 @@
       "allowed_context": [
         "session ref 019f12b5-fc19-7110-b069-4f49a78da82d",
         "normal product/archive/query commands",
+        "Beads task state as normal repo-local task evidence",
         "repo source"
       ],
       "forbidden_context": [
@@ -35,6 +36,7 @@
         "bounded handoff packet temporal.json, chronicle.json, spec.json",
         "read-package-summary.json",
         "normal product/archive/query commands",
+        "Beads task state as normal repo-local task evidence",
         "repo source"
       ],
       "forbidden_context": [
@@ -66,4 +68,3 @@
     "Ground truth is the active conductor state after the handoff-pack slice was committed and the jxe.2 protocol slice started."
   ]
 }
-

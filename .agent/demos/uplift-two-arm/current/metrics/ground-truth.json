@@ -7,6 +7,7 @@
     "bd show polylogue-jxe.2 --json",
     "bd show polylogue-qt3 --json"
   ],
+  "provenance_note": "The conductor files are the local devloop state machine; Beads is the durable task tracker. They are outside the arm context because they are scoring ground truth, not input evidence.",
   "current_slice": "Run handoff-pack uplift n=1 protocol",
   "current_focus": "Direction -> Evidence",
   "next_action": "Continue in Evidence mode: collect arm outputs, score them against this ground truth, refresh the current demo shelf, and then close or update polylogue-jxe.2.",
@@ -43,4 +44,3 @@
     "polylogued is intentionally inactive for the current branch-local proof; this is not a convergence proof."
   ]
 }
-
