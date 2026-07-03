@@ -1093,6 +1093,15 @@ def _rebuild_index_selection_plan(
                 "only_missing": only_missing,
                 "raw_id_count": explicit_raw_id_count,
                 "max_blob_mb": max_blob_mb,
+                "replay_order": "acquired_at_ms_asc_raw_id_asc",
+                "risk_order": "blob_size_desc",
+                "cost_basis": {
+                    "primary": "source.db raw_sessions.blob_size",
+                    "secondary": [
+                        "index.db sessions.message_count when already materialized",
+                        "index.db session_events count when already materialized",
+                    ],
+                },
                 "totals": {
                     "blob_bytes": 0,
                     "materialized_sessions": 0,
@@ -1100,6 +1109,7 @@ def _rebuild_index_selection_plan(
                     "materialized_session_events": 0,
                 },
                 "top_rows": [],
+                "top_groups": [],
             }
         placeholders = ",".join("?" for _ in selected_raw_ids)
         selected_clause = f"WHERE r.raw_id IN ({placeholders})"
@@ -1139,11 +1149,53 @@ def _rebuild_index_selection_plan(
                 {index_metrics}
             FROM raw_sessions r
             {selected_clause}
-            ORDER BY r.blob_size DESC, r.acquired_at_ms DESC, r.raw_id
+            ORDER BY r.acquired_at_ms, r.raw_id
             """,
             params,
         ).fetchall()
 
+    top_rows = sorted(
+        rows,
+        key=lambda row: (-(int(row[5] or 0)), -(int(row[6] or 0)), str(row[0])),
+    )
+    top_groups_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        origin = str(row[1] or "")
+        source_or_native = str(row[3] or row[2] or row[0])
+        key = (origin, source_or_native)
+        group = top_groups_by_key.setdefault(
+            key,
+            {
+                "origin": origin,
+                "native_id": row[2],
+                "source_path": row[3],
+                "row_count": 0,
+                "blob_bytes": 0,
+                "first_acquired_at_ms": row[6],
+                "last_acquired_at_ms": row[6],
+                "materialized_sessions": 0,
+                "materialized_messages": 0,
+                "materialized_session_events": 0,
+            },
+        )
+        group["row_count"] = int(group["row_count"]) + 1
+        group["blob_bytes"] = int(group["blob_bytes"]) + int(row[5] or 0)
+        acquired_at_ms = row[6]
+        if group["first_acquired_at_ms"] is None or (
+            acquired_at_ms is not None and int(acquired_at_ms) < int(group["first_acquired_at_ms"])
+        ):
+            group["first_acquired_at_ms"] = acquired_at_ms
+        if group["last_acquired_at_ms"] is None or (
+            acquired_at_ms is not None and int(acquired_at_ms) > int(group["last_acquired_at_ms"])
+        ):
+            group["last_acquired_at_ms"] = acquired_at_ms
+        group["materialized_sessions"] = int(group["materialized_sessions"]) + int(row[7] or 0)
+        group["materialized_messages"] = int(group["materialized_messages"]) + int(row[8] or 0)
+        group["materialized_session_events"] = int(group["materialized_session_events"]) + int(row[9] or 0)
+    top_groups = sorted(
+        top_groups_by_key.values(),
+        key=lambda group: (-int(group["blob_bytes"]), -int(group["row_count"]), str(group["origin"])),
+    )
     totals = {
         "blob_bytes": sum(int(row[5] or 0) for row in rows),
         "materialized_sessions": sum(int(row[7] or 0) for row in rows),
@@ -1159,7 +1211,15 @@ def _rebuild_index_selection_plan(
         "only_missing": only_missing,
         "raw_id_count": explicit_raw_id_count,
         "max_blob_mb": max_blob_mb,
-        "plan_order": "blob_size_desc",
+        "replay_order": "acquired_at_ms_asc_raw_id_asc",
+        "risk_order": "blob_size_desc",
+        "cost_basis": {
+            "primary": "source.db raw_sessions.blob_size",
+            "secondary": [
+                "index.db sessions.message_count when already materialized",
+                "index.db session_events count when already materialized",
+            ],
+        },
         "totals": totals,
         "top_rows": [
             {
@@ -1174,8 +1234,9 @@ def _rebuild_index_selection_plan(
                 "materialized_messages": int(row[8] or 0),
                 "materialized_session_events": int(row[9] or 0),
             }
-            for row in rows[:limit]
+            for row in top_rows[:limit]
         ],
+        "top_groups": top_groups[:limit],
     }
 
 
@@ -1413,6 +1474,16 @@ def rebuild_index_command(
                     click.echo(
                         f"  {row['raw_id']} {row['origin']} blob={int(row['blob_bytes']):,} "
                         f"messages={int(row['materialized_messages']):,} events={int(row['materialized_session_events']):,}"
+                    )
+        raw_top_groups: object = payload.get("top_groups")
+        top_groups = raw_top_groups if isinstance(raw_top_groups, list) else []
+        if top_groups:
+            click.echo("Top groups by blob size:")
+            for group in top_groups:
+                if isinstance(group, dict):
+                    click.echo(
+                        f"  {group['origin']} rows={int(group['row_count']):,} "
+                        f"blob={int(group['blob_bytes']):,} source={group['source_path']}"
                     )
         return
     if only_missing and selected_raw_count == 0 and no_materialize:
