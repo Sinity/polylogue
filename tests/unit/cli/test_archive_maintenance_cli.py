@@ -1355,9 +1355,10 @@ def test_rebuild_index_plan_reports_weighted_top_rows(
     index_db = archive_root / "index.db"
     with sqlite3.connect(source_db) as conn:
         initialize_archive_tier(conn, ArchiveTier.SOURCE)
-        for raw_id, native_id, blob_size, acquired_at_ms in (
-            ("raw-small", "small", 1_000, 1),
-            ("raw-large", "large", 5_000, 2),
+        for raw_id, native_id, source_path, source_index, blob_size, acquired_at_ms in (
+            ("raw-small", "small", "/tmp/raw-small.jsonl", 0, 1_000, 1),
+            ("raw-large", "large", "/tmp/raw-large.jsonl", 0, 5_000, 2),
+            ("raw-large-2", "large-2", "/tmp/raw-large.jsonl", 1, 3_000, 3),
         ):
             conn.execute(
                 """
@@ -1365,9 +1366,9 @@ def test_rebuild_index_plan_reports_weighted_top_rows(
                     raw_id, origin, native_id, source_path, source_index, blob_hash,
                     blob_size, acquired_at_ms, validation_status
                 )
-                VALUES (?, 'codex-session', ?, ?, 0, randomblob(32), ?, ?, 'passed')
+                VALUES (?, 'codex-session', ?, ?, ?, randomblob(32), ?, ?, 'passed')
                 """,
-                (raw_id, native_id, f"/tmp/{raw_id}.jsonl", blob_size, acquired_at_ms),
+                (raw_id, native_id, source_path, source_index, blob_size, acquired_at_ms),
             )
     with sqlite3.connect(index_db) as conn:
         initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -1405,10 +1406,27 @@ def test_rebuild_index_plan_reports_weighted_top_rows(
     assert result.exit_code == 0
     payload = json.loads(result.output)
     assert payload["status"] == "ok"
-    assert payload["raw_session_count"] == 2
-    assert payload["selected_raw_count"] == 2
-    assert payload["totals"]["blob_bytes"] == 6_000
+    assert payload["raw_session_count"] == 3
+    assert payload["selected_raw_count"] == 3
+    assert payload["replay_order"] == "acquired_at_ms_asc_raw_id_asc"
+    assert payload["risk_order"] == "blob_size_desc"
+    assert payload["cost_basis"]["primary"] == "source.db raw_sessions.blob_size"
+    assert payload["totals"]["blob_bytes"] == 9_000
     assert payload["totals"]["materialized_messages"] == 42
     assert payload["totals"]["materialized_session_events"] == 1
     assert [row["raw_id"] for row in payload["top_rows"]] == ["raw-large"]
     assert payload["top_rows"][0]["materialized_messages"] == 42
+    assert payload["top_groups"] == [
+        {
+            "origin": "codex-session",
+            "native_id": "large",
+            "source_path": "/tmp/raw-large.jsonl",
+            "row_count": 2,
+            "blob_bytes": 8_000,
+            "first_acquired_at_ms": 2,
+            "last_acquired_at_ms": 3,
+            "materialized_sessions": 1,
+            "materialized_messages": 42,
+            "materialized_session_events": 1,
+        }
+    ]
