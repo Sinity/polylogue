@@ -246,6 +246,23 @@ class TestRawSessionStorage:
 
         assert blob_sizes == [("raw-c", 30), ("raw-a", 10), ("raw-b", 20)]
 
+    async def test_get_raw_sessions_batch_preserves_requested_order(self, backend: SQLiteBackend) -> None:
+        """Hydrated raw batch reads should preserve caller order for replay planning."""
+        for raw_id in ("raw-a", "raw-b", "raw-c"):
+            await backend.save_raw_session(
+                make_raw_session(
+                    raw_id=raw_id,
+                    source_name="chatgpt",
+                    source_path=f"/path/{raw_id}.json",
+                    blob_size=len(b"{}"),
+                    acquired_at="2026-02-02T12:00:00+00:00",
+                )
+            )
+
+        records = await backend.get_raw_sessions_batch(["raw-c", "raw-a", "missing", "raw-b"])
+
+        assert [record.raw_id for record in records] == ["raw-c", "raw-a", "raw-b"]
+
     async def test_raw_provider_filters_prefer_payload_provider_when_present(self, backend: SQLiteBackend) -> None:
         """Raw provider filtering should use payload_provider when validation/parsing has classified the payload."""
         await backend.save_raw_session(

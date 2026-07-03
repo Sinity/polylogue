@@ -1003,6 +1003,10 @@ def test_rebuild_index_replays_source_rows_with_materialization_controls(
         }
 
     monkeypatch.setattr("polylogue.cli.commands.maintenance._count_source_raw_sessions", lambda _root: 4)
+    monkeypatch.setattr(
+        "polylogue.cli.commands.maintenance._all_index_rebuild_raw_ids",
+        lambda _root: ["raw-parent", "raw-child"],
+    )
     monkeypatch.setattr("polylogue.cli.commands.maintenance._rebuild_index_from_source", fake_rebuild)
 
     result = cli_runner.invoke(
@@ -1041,16 +1045,47 @@ def test_rebuild_index_replays_source_rows_with_materialization_controls(
             LIMIT 1
             """
         ).fetchone()
-    assert row == ("completed", "rebuild-index", "maintenance", 4, 0)
+    assert row == ("completed", "rebuild-index", "maintenance", 2, 0)
     assert captured == {
         "archive_root": cli_workspace["archive_root"],
-        "raw_ids": None,
+        "raw_ids": ["raw-parent", "raw-child"],
         "raw_batch_size": 7,
         "ingest_workers": 2,
         "force_write": True,
         "materialize": False,
         "progress_callback": None,
     }
+
+
+def test_all_index_rebuild_raw_ids_uses_source_acquisition_order(
+    cli_workspace: dict[str, Path],
+) -> None:
+    source_db = cli_workspace["archive_root"] / "source.db"
+    with sqlite3.connect(source_db) as conn:
+        initialize_archive_tier(conn, ArchiveTier.SOURCE)
+        for raw_id, acquired_at_ms in (
+            ("raw-child", 30),
+            ("raw-parent", 10),
+            ("raw-sibling-b", 20),
+            ("raw-sibling-a", 20),
+        ):
+            conn.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, source_index, blob_hash,
+                    blob_size, acquired_at_ms, validation_status
+                )
+                VALUES (?, 'codex-session', ?, ?, 0, randomblob(32), 1, ?, 'passed')
+                """,
+                (raw_id, raw_id, f"/tmp/{raw_id}.jsonl", acquired_at_ms),
+            )
+
+    assert maintenance._all_index_rebuild_raw_ids(cli_workspace["archive_root"]) == [
+        "raw-parent",
+        "raw-sibling-a",
+        "raw-sibling-b",
+        "raw-child",
+    ]
 
 
 def test_rebuild_index_can_replay_only_missing_source_rows(
