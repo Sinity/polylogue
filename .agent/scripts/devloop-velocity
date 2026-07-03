@@ -3,11 +3,15 @@ set -euo pipefail
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   cat <<'EOF'
-Usage: .agent/scripts/devloop-velocity [--record] [--top N]
+Usage: .agent/scripts/devloop-velocity [--record] [--top N] [--full]
 
 Summarize devloop speed from existing scaffold evidence: archive state, active
 focus, recent elapsed log gaps, longest logged gaps, and currently active
 heavy-ish processes. This is a velocity diagnostic, not a product proof.
+
+By default, archive status is read through devloop-status --quick so process
+audits do not block behind full SQLite/archive probes during host pressure. Use
+--full only when an explicit deep archive status probe is worth the cost.
 
 Use --record during Meta/process slices to write the latest report under
 .agent/task-history/velocity-latest.txt and append a concise operating-log
@@ -18,10 +22,17 @@ fi
 
 top=8
 record=0
+full_arg=()
+status_mode=(--quick --json)
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --record)
       record=1
+      shift
+      ;;
+    --full)
+      full_arg=(--full)
+      status_mode=(--json)
       shift
       ;;
     --top)
@@ -47,7 +58,7 @@ cd "$repo"
 if [ "$record" -eq 1 ]; then
   report="$repo/.agent/task-history/velocity-latest.txt"
   mkdir -p "$(dirname "$report")"
-  "$0" --top "$top" > "$report"
+  "$0" --top "$top" "${full_arg[@]}" > "$report"
   cat "$report"
   summary="$(
     python3 - "$report" <<'PY'
@@ -91,7 +102,7 @@ Next decision: use the audit to choose a small executable process improvement or
 fi
 
 printf '== archive ==\n'
-status_json="$(".agent/scripts/devloop-status" --json 2>/dev/null)"
+status_json="$(".agent/scripts/devloop-status" "${status_mode[@]}" 2>/dev/null)"
 STATUS_JSON="$status_json" python3 - <<'PY'
 import json, sys
 import os

@@ -55,6 +55,10 @@ pressure_rows="$(
   ps -eo pid=,stat=,pcpu=,pmem=,comm=,args= \
     | awk '
       $5 == "awk" {next}
+      $5 == "rg" {next}
+      $5 == "sed" {next}
+      /devloop-status/ {next}
+      /ps -eo pid=,stat=,pcpu=,pmem=,comm=,args=/ {next}
       /borg create/ {print; next}
       /lynchpin.analysis materialize/ {print; next}
       /devtools verify|devtools test|pytest|polylogue import|nix build|nix develop --command/ {print; next}
@@ -65,6 +69,10 @@ archive_writer_rows="$(
   ps -eo pid=,stat=,pcpu=,pmem=,comm=,args= \
     | awk '
       $5 == "awk" {next}
+      $5 == "rg" {next}
+      $5 == "sed" {next}
+      /devloop-status/ {next}
+      /ps -eo pid=,stat=,pcpu=,pmem=,comm=,args=/ {next}
       /polylogue ops maintenance rebuild-index/ {print; next}
       /polylogue import/ {print; next}
       /polylogued run/ {print; next}
