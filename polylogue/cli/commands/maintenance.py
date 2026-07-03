@@ -1017,6 +1017,21 @@ def _missing_index_raw_ids(root: Path) -> list[str]:
     return [str(row[0]) for row in rows]
 
 
+def _all_index_rebuild_raw_ids(root: Path) -> list[str]:
+    source_db = root / "source.db"
+    if not source_db.exists():
+        return []
+    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0) as conn:
+        rows = conn.execute(
+            """
+            SELECT raw_id
+            FROM raw_sessions
+            ORDER BY acquired_at_ms, raw_id
+            """
+        ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
 def _filter_raw_ids_by_max_blob_size(root: Path, raw_ids: list[str], max_blob_mb: float | None) -> list[str]:
     if max_blob_mb is None or not raw_ids:
         return raw_ids
@@ -1356,13 +1371,15 @@ def rebuild_index_command(
             click.echo("No source.db raw_sessions rows found.")
         return
     selected_raw_ids = (
-        list(dict.fromkeys(raw_ids)) if raw_ids else _missing_index_raw_ids(root) if only_missing else None
+        list(dict.fromkeys(raw_ids))
+        if raw_ids
+        else _missing_index_raw_ids(root)
+        if only_missing
+        else _all_index_rebuild_raw_ids(root)
     )
-    unfiltered_selected_raw_count = len(selected_raw_ids) if selected_raw_ids is not None else raw_count
-    selected_raw_ids = (
-        _filter_raw_ids_by_max_blob_size(root, selected_raw_ids, max_blob_mb) if selected_raw_ids is not None else None
-    )
-    selected_raw_count = len(selected_raw_ids) if selected_raw_ids is not None else raw_count
+    unfiltered_selected_raw_count = len(selected_raw_ids)
+    selected_raw_ids = _filter_raw_ids_by_max_blob_size(root, selected_raw_ids, max_blob_mb)
+    selected_raw_count = len(selected_raw_ids)
     skipped_by_blob_limit_count = unfiltered_selected_raw_count - selected_raw_count
     if plan_only:
         payload = _rebuild_index_selection_plan(

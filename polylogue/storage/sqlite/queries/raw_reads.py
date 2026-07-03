@@ -187,7 +187,8 @@ async def get_raw_sessions_batch(conn: aiosqlite.Connection, raw_ids: list[str])
         if not rows:
             break
         records.extend(_row_to_raw_session(row) for row in rows)
-    return records
+    by_id = {record.raw_id: record for record in records}
+    return [by_id[raw_id] for raw_id in raw_ids if raw_id in by_id]
 
 
 async def get_raw_blob_sizes(
