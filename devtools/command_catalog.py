@@ -15,6 +15,7 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab policy schema-versioning",
     "lab provider completeness",
     "lab probe capture-regression",
+    "lab probe cost-reconciliation",
     "lab probe pipeline",
     "lab probe turso",
     "lab projections",
@@ -678,6 +679,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "and smoke installed runtime console scripts."
         ),
         examples=("devtools release verify-distribution",),
+    ),
+    CommandSpec(
+        "lab probe cost-reconciliation",
+        "verification lab",
+        "Reconcile Polylogue token accounting against private provider stores.",
+        "devtools.cost_reconciliation_probe",
+        use_when=(
+            "Validate archive token accounting against optional local Codex state_5.sqlite and "
+            "Claude stats-cache.json before publishing cost or usage-analysis claims."
+        ),
+        examples=(
+            "devtools lab probe cost-reconciliation --json",
+            "devtools lab probe cost-reconciliation --codex-state ~/.codex/state_5.sqlite --json",
+            "devtools lab probe cost-reconciliation --claude-stats-cache ~/.config/claude/stats-cache.json --check",
+        ),
     ),
     CommandSpec(
         "lab probe pipeline",

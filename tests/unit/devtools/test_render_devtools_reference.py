@@ -21,6 +21,10 @@ def test_build_command_catalog_includes_discovery_and_commands() -> None:
         "| `devtools lab probe capture-regression` | Capture pipeline-probe summaries as durable local regression cases. |"
         in rendered
     )
+    assert (
+        "| `devtools lab probe cost-reconciliation` | Reconcile Polylogue token accounting against private provider stores. |"
+        in rendered
+    )
     assert "### Lab Checks" in rendered
     assert "| `devtools render all` |" in rendered
     assert "Common forms: `devtools status`" in rendered
