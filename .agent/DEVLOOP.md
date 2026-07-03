@@ -185,6 +185,27 @@ Execution-grade beads (the specification contract):
   update the bead's design/notes in the same session so the graph never
   carries a refuted plan.
 
+Throughput discipline (operator directive 2026-07-03):
+
+- **Batch verification.** One testmon pass per coherent change-set, not per
+  edit; the broad gate (`devtools verify`) runs once when the batch is ready
+  to publish and after failure fixes — never as inner-loop ritual.
+- **Claim adjacent beads.** When two ready beads share a subsystem, claim and
+  land them in one session — context-load dominates short slices; amortize it.
+- **Wave dispatch for parallel agents.** Partition ready beads by write-scope
+  (the files named in design fields + area labels), not by epic. Keystone
+  beads (o21, exb, 4bu, 9l5.7, 37t.11) never share a wave with their
+  dependents. Two lanes touching the same hot file (command_inventory,
+  archive_tiers DDL, expression.py) serialize: first lands and merges, second
+  rebases. Worktree rules from the global orchestration doctrine apply —
+  commit every logical chunk, never cd out of the worktree.
+- **State the lane in the claim.** When claiming for a wave, note the files
+  you own vs avoid in the bead (one `--append-notes` line) so a conductor or
+  sibling agent can route around you without asking.
+- **Enrich-on-claim is budgeted.** If enriching an under-specified bead takes
+  longer than ~10 minutes of reading, the bead was mis-sliced: split it and
+  enrich only the slice you will execute now.
+
 ## Current Goal
 
 Conduct the Polylogue dogfood/demo devloop indefinitely: continuously choose the
