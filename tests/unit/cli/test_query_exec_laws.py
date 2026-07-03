@@ -612,6 +612,179 @@ def test_async_execute_query_archive_routes_pure_structured_terms_to_list(
     assert payload["items"][0]["id"] == "codex-session:native-1"
 
 
+def test_async_execute_query_archive_uses_daemon_for_supported_session_pages(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    config = MagicMock()
+    config.archive_root = archive_root
+    config.db_path = archive_root / "index.db"
+    config.daemon_url = "http://127.0.0.1:9876"
+    config.api_auth_token = None
+    env = _make_env(repo=MagicMock(), config=config)
+    seen: dict[str, object] = {}
+
+    def fake_fetch(config_arg: object, query_params: dict[str, object]) -> dict[str, object]:
+        assert config_arg is config
+        seen.update(query_params)
+        return {
+            "items": [
+                {
+                    "id": "codex-session:native-1",
+                    "origin": "codex-session",
+                    "title": "Daemon page",
+                    "message_count": 3,
+                }
+            ],
+            "total": 1,
+            "limit": 2,
+            "offset": 0,
+        }
+
+    monkeypatch.setattr("polylogue.cli.archive_query._fetch_daemon_sessions_payload", fake_fetch)
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        MagicMock(side_effect=AssertionError("supported daemon page must not open SQLite")),
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "query": ("repo:polylogue", "origin:codex-session"),
+                "limit": 2,
+                "output_format": "json",
+            },
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert seen == {"limit": 2, "offset": 0, "query": "repo:polylogue origin:codex-session"}
+    assert payload["source"] == "daemon"
+    assert payload["mode"] == "list"
+    assert payload["items"][0]["id"] == "codex-session:native-1"
+
+
+def test_async_execute_query_archive_falls_back_when_daemon_unavailable(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    config.db_path = archive_root / "index.db"
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def list_summaries(self, **kwargs: object) -> list[ArchiveSessionSummary]:
+            assert kwargs["repo_names"] == ("polylogue",)
+            return [
+                ArchiveSessionSummary(
+                    session_id="codex-session:native-1",
+                    native_id="native-1",
+                    origin="codex-session",
+                    provider=Provider.CODEX,
+                    title="Fallback",
+                    created_at="2026-01-02T03:04:05Z",
+                    updated_at="2026-01-02T03:04:06Z",
+                    message_count=3,
+                    word_count=9,
+                    tags=(),
+                )
+            ]
+
+    monkeypatch.setattr("polylogue.cli.archive_query._fetch_daemon_sessions_payload", lambda *_args: None)
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "query": ("repo:polylogue",),
+                "limit": 1,
+                "output_format": "json",
+            },
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert "source" not in payload
+    assert payload["items"][0]["title"] == "Fallback"
+
+
+def test_async_execute_query_archive_keeps_stats_local(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    config.db_path = archive_root / "index.db"
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def search_session_ids(self, query: str, **kwargs: object) -> tuple[str, ...]:
+            assert query == "needle"
+            return ("codex-session:native-1",)
+
+        def stats_by(self, group_by: str, **kwargs: object) -> dict[str, int]:
+            assert group_by == "origin"
+            assert kwargs["session_ids"] == ("codex-session:native-1",)
+            return {"codex-session": 1}
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query._fetch_daemon_sessions_payload",
+        MagicMock(side_effect=AssertionError("stats paths must remain local")),
+    )
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(
+        async_execute_query(
+            env,
+            {
+                "archive": True,
+                "query": ("needle",),
+                "stats_by": "origin",
+                "limit": 10,
+                "output_format": "json",
+            },
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mode"] == "stats_by"
+    assert payload["items"] == [{"count": 1, "group": "codex-session"}]
+
+
 def test_async_execute_query_archive_sorts_lists(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

@@ -10,7 +10,9 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import redirect_stdout
 from dataclasses import replace
 from typing import NoReturn, TypeVar, cast
-from urllib.parse import quote
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlencode
+from urllib.request import Request, urlopen
 
 import click
 from typing_extensions import NotRequired, TypedDict
@@ -70,6 +72,7 @@ _PageRow = TypeVar("_PageRow", ArchiveSessionSummary, ArchiveSessionSearchHit)
 
 _UNSUPPORTED_PARAM_MESSAGES: dict[str, str] = {}
 _QueryUnitTextLine = Callable[[dict[str, object]], str]
+_DAEMON_FAST_PATH_TIMEOUT_S = 0.35
 
 
 class _ArchiveFilterKwargs(TypedDict):
@@ -171,19 +174,6 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     query = _query_text(compiled_spec.query_terms, {"contains": compiled_spec.contains_terms})
     if compiled_spec.with_units:
         with_units = compiled_spec.with_units
-    if not index_db_path.exists():
-        if _emit_missing_archive_empty_read(
-            params,
-            output_format=output_format,
-            origin=origin,
-            query=query,
-            fields=fields,
-        ):
-            return
-        message = f"archive index database not found at {index_db_path}"
-        if typo_hint is not None:
-            message = f"{message}\n{typo_hint}"
-        _fail(message)
 
     tags_to_add = _tuple_tokens(params.get("add_tag"))
     metadata_to_set = _metadata_pairs(params.get("set_meta"))
@@ -266,6 +256,47 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     }
     if compiled_spec.boolean_predicate is not None:
         filter_kwargs["boolean_predicate"] = compiled_spec.boolean_predicate
+    unit_source = parse_unit_source_expression(unit_source_query) if unit_source_query and not similar_text else None
+    if _try_emit_daemon_session_page(
+        env,
+        config=config,
+        request=request,
+        params=params,
+        compiled_spec=compiled_spec,
+        unit_source=unit_source,
+        with_units=with_units,
+        query=query,
+        limit=limit,
+        offset=page_offset,
+        output_format=output_format,
+        origin=origin,
+        fields=fields,
+        typo_hint=typo_hint,
+        tags_to_add=tags_to_add,
+        metadata_to_set=metadata_to_set,
+        delete_matched=delete_matched,
+        stream=stream,
+        sample_count=sample_count,
+        cursor=cursor,
+        sort=sort,
+        reverse=reverse,
+        similar_text=similar_text,
+        retrieval_lane=retrieval_lane,
+    ):
+        return
+    if not index_db_path.exists():
+        if _emit_missing_archive_empty_read(
+            params,
+            output_format=output_format,
+            origin=origin,
+            query=query,
+            fields=fields,
+        ):
+            return
+        message = f"archive index database not found at {index_db_path}"
+        if typo_hint is not None:
+            message = f"{message}\n{typo_hint}"
+        _fail(message)
 
     if cursor is not None and any(
         params.get(key) for key in ("stats_only", "stats_by", "count_only", "conv_id", "latest")
@@ -283,9 +314,6 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         raise click.UsageError("Root query cannot combine delete with --set.")
 
     with ArchiveStore.open_existing(archive_root) as archive:
-        unit_source = (
-            parse_unit_source_expression(unit_source_query) if unit_source_query and not similar_text else None
-        )
         if unit_source is not None:
             if any(
                 (
@@ -777,6 +805,257 @@ def _query_hits(
         for index, (session_id, _score) in enumerate(page, start=1)
         if session_id in hit_by_session
     ], "hybrid"
+
+
+def _try_emit_daemon_session_page(
+    env: AppEnv,
+    *,
+    config: Config,
+    request: RootModeRequest,
+    params: dict[str, object],
+    compiled_spec: SessionQuerySpec,
+    unit_source: QueryUnitSource | None,
+    with_units: tuple[str, ...],
+    query: str,
+    limit: int,
+    offset: int,
+    output_format: str,
+    origin: str | None,
+    fields: str | None,
+    typo_hint: str | None,
+    tags_to_add: tuple[str, ...],
+    metadata_to_set: tuple[tuple[str, str], ...],
+    delete_matched: bool,
+    stream: bool,
+    sample_count: int | None,
+    cursor: SearchCursor | None,
+    sort: str | None,
+    reverse: bool,
+    similar_text: str | None,
+    retrieval_lane: str,
+) -> bool:
+    """Use the running daemon for ordinary session pages when it is safe.
+
+    The daemon already owns the web-reader `/api/sessions` contract.  This
+    adapter lets the CLI reuse that route for the common list/search case while
+    retaining local ArchiveStore execution for mutations, streaming, unit rows,
+    stats, vector search, and features the HTTP route does not yet represent.
+    """
+    if not _daemon_session_page_supported(
+        params,
+        compiled_spec=compiled_spec,
+        unit_source=unit_source,
+        with_units=with_units,
+        tags_to_add=tags_to_add,
+        metadata_to_set=metadata_to_set,
+        delete_matched=delete_matched,
+        stream=stream,
+        sample_count=sample_count,
+        cursor=cursor,
+        sort=sort,
+        reverse=reverse,
+        similar_text=similar_text,
+        retrieval_lane=retrieval_lane,
+    ):
+        return False
+    daemon_params = _daemon_session_query_params(request, params, limit=limit, offset=offset)
+    payload = _fetch_daemon_sessions_payload(config, daemon_params)
+    if payload is None:
+        return False
+    if isinstance(payload.get("hits"), list):
+        _emit_daemon_search_payload(
+            payload,
+            query=query or str(daemon_params.get("query") or ""),
+            limit=limit,
+            offset=offset,
+            output_format=output_format,
+            origin=origin,
+            fields=fields,
+            typo_hint=typo_hint,
+        )
+        return True
+    if isinstance(payload.get("items"), list):
+        _emit_daemon_list_payload(
+            payload,
+            limit=limit,
+            offset=offset,
+            output_format=output_format,
+            origin=origin,
+            fields=fields,
+        )
+        return True
+    return False
+
+
+def _daemon_session_page_supported(
+    params: dict[str, object],
+    *,
+    compiled_spec: SessionQuerySpec,
+    unit_source: QueryUnitSource | None,
+    with_units: tuple[str, ...],
+    tags_to_add: tuple[str, ...],
+    metadata_to_set: tuple[tuple[str, str], ...],
+    delete_matched: bool,
+    stream: bool,
+    sample_count: int | None,
+    cursor: SearchCursor | None,
+    sort: str | None,
+    reverse: bool,
+    similar_text: str | None,
+    retrieval_lane: str,
+) -> bool:
+    if unit_source is not None or with_units:
+        return False
+    if any(params.get(key) for key in ("stats_only", "stats_by", "count_only", "conv_id", "latest", "open_result")):
+        return False
+    if stream or tags_to_add or metadata_to_set or delete_matched:
+        return False
+    if sample_count is not None or cursor is not None or sort is not None or reverse:
+        return False
+    if similar_text is not None or retrieval_lane not in {"auto", "dialogue"}:
+        return False
+    if compiled_spec.boolean_predicate is not None or compiled_spec.since_session_id is not None:
+        return False
+    return not (compiled_spec.project_refs or compiled_spec.typed_only or compiled_spec.message_type is not None)
+
+
+def _daemon_session_query_params(
+    request: RootModeRequest,
+    params: dict[str, object],
+    *,
+    limit: int,
+    offset: int,
+) -> dict[str, object]:
+    query_params: dict[str, object] = {"limit": limit, "offset": offset}
+    raw_query = " ".join(term for term in request.query_terms if term).strip()
+    if raw_query:
+        query_params["query"] = raw_query
+    for source_key, dest_key in (
+        ("contains", "contains"),
+        ("origin", "origin"),
+        ("exclude_origin", "exclude_origin"),
+        ("tag", "tag"),
+        ("exclude_tag", "exclude_tag"),
+        ("repo", "repo"),
+        ("has_type", "has_type"),
+        ("tool", "tool"),
+        ("exclude_tool", "exclude_tool"),
+        ("action", "action"),
+        ("exclude_action", "exclude_action"),
+        ("action_sequence", "action_sequence"),
+        ("action_text", "action_text"),
+        ("referenced_path", "referenced_path"),
+        ("cwd_prefix", "cwd_prefix"),
+        ("title", "title"),
+        ("min_messages", "min_messages"),
+        ("max_messages", "max_messages"),
+        ("min_words", "min_words"),
+        ("max_words", "max_words"),
+        ("since", "since"),
+        ("until", "until"),
+    ):
+        value = params.get(source_key)
+        if _has_value(value):
+            query_params[dest_key] = value
+    for source_key, dest_key in (
+        ("has_paste", "has_paste_evidence"),
+        ("has_tool_use", "has_tool_use"),
+        ("has_thinking", "has_thinking"),
+    ):
+        if bool(params.get(source_key)):
+            query_params[dest_key] = "1"
+    return query_params
+
+
+def _fetch_daemon_sessions_payload(config: Config, query_params: Mapping[str, object]) -> dict[str, object] | None:
+    daemon_url_value = getattr(config, "daemon_url", "http://127.0.0.1:8766")
+    if not isinstance(daemon_url_value, str) or not daemon_url_value.startswith(("http://", "https://")):
+        return None
+    daemon_url = daemon_url_value.rstrip("/")
+    query_string = urlencode(tuple(_daemon_query_pairs(query_params)), doseq=True)
+    url = f"{daemon_url}/api/sessions"
+    if query_string:
+        url = f"{url}?{query_string}"
+    headers = {"Accept": "application/json"}
+    auth_token = getattr(config, "api_auth_token", None)
+    if isinstance(auth_token, str) and auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
+    try:
+        req = Request(url, headers=headers, method="GET")
+        with urlopen(req, timeout=_DAEMON_FAST_PATH_TIMEOUT_S) as resp:
+            if int(resp.status) != 200:
+                return None
+            data = json.loads(resp.read().decode("utf-8"))
+    except (HTTPError, URLError, OSError, TimeoutError, ValueError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _daemon_query_pairs(query_params: Mapping[str, object]) -> Iterable[tuple[str, str]]:
+    for key, value in query_params.items():
+        if isinstance(value, Iterable) and not isinstance(value, str | bytes | Mapping):
+            for item in value:
+                if _has_value(item):
+                    yield key, str(item)
+        elif _has_value(value):
+            yield key, str(value)
+
+
+def _emit_daemon_list_payload(
+    payload: Mapping[str, object],
+    *,
+    limit: int,
+    offset: int,
+    output_format: str,
+    origin: str | None,
+    fields: str | None,
+) -> None:
+    items = [dict(item) for item in cast(list[object], payload.get("items") or []) if isinstance(item, Mapping)]
+    total = int(payload.get("total") or len(items))
+    next_offset = offset + limit if total > offset + limit else None
+    envelope: dict[str, object] = {
+        "mode": "list",
+        "origin": origin,
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "next_offset": next_offset,
+        "next_cursor": None,
+        "source": "daemon",
+    }
+    _emit_rows(envelope, items, output_format=output_format, text_line=_summary_line, fields=fields)
+
+
+def _emit_daemon_search_payload(
+    payload: Mapping[str, object],
+    *,
+    query: str,
+    limit: int,
+    offset: int,
+    output_format: str,
+    origin: str | None,
+    fields: str | None,
+    typo_hint: str | None,
+) -> None:
+    hits = [dict(item) for item in cast(list[object], payload.get("hits") or []) if isinstance(item, Mapping)]
+    total = int(payload.get("total") or len(hits))
+    envelope: dict[str, object] = {
+        "mode": "search",
+        "origin": origin,
+        "query": query,
+        "retrieval_lane": str(payload.get("retrieval_lane") or "dialogue"),
+        "items": hits,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "next_offset": None,
+        "next_cursor": None,
+        "source": "daemon",
+    }
+    if not hits:
+        _emit_no_results(envelope, output_format=output_format, typo_hint=typo_hint)
+    _emit_rows(envelope, hits, output_format=output_format, text_line=_hit_line, fields=fields)
 
 
 def _decode_cursor(token: str | None) -> SearchCursor | None:
