@@ -150,6 +150,18 @@ def test_provider_usage_report_keeps_events_cumulative_and_rollups_separate(tmp_
     assert row.sample_missing_model_sessions == ("codex-session:provider-usage-report",)
     assert row.sample_zero_token_sessions == ("codex-session:provider-usage-report",)
 
+    headline = provider_usage_report_from_connection(conn, archive_root=tmp_path, detail="headline", limit=0)
+
+    assert headline.detail_level == "headline"
+    assert "headline detail computes session/source/model-rollup totals only" in " ".join(headline.caveats)
+    headline_row = headline.origins[0]
+    assert headline_row.detail_level == "headline"
+    assert headline_row.coverage_state == "headline_not_audited"
+    assert headline_row.provider_event_count == 0
+    assert headline_row.provider_cumulative_usage.is_zero()
+    assert headline_row.model_rollup_usage == row.model_rollup_usage
+    assert headline_row.logical_model_rollup_usage == row.logical_model_rollup_usage
+
 
 def test_provider_usage_report_labels_physical_and_logical_model_rollups(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")

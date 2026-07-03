@@ -688,13 +688,14 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     mcp.tool()(_facets)
 
     @mcp.tool()
-    async def provider_usage(origin: str | None = None, limit: int = 25) -> str:
+    async def provider_usage(origin: str | None = None, limit: int = 25, detail: str = "full") -> str:
         """Return provider usage accounting diagnostics without estimating billing cost."""
 
         async def run() -> str:
             report = await hooks.get_polylogue().provider_usage_report(
                 origin=origin,
                 limit=hooks.clamp_limit(limit),
+                detail=detail,
             )
             return hooks.json_payload(
                 MCPRootPayload(root=cast(dict[str, object], {"provider_usage": report.to_dict()}))

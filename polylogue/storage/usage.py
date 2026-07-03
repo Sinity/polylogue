@@ -13,8 +13,11 @@ from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from polylogue.core.enums import Origin, Provider
+
+UsageReportDetail = Literal["headline", "full"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,6 +212,7 @@ class OriginUsageReport:
     """Usage evidence summary for one archive origin."""
 
     origin: str
+    detail_level: str = "full"
     provider: str = "unknown"
     declared_coverage: str = "unsupported"
     coverage_state: str = "unsupported"
@@ -250,6 +254,7 @@ class OriginUsageReport:
     def to_dict(self) -> dict[str, object]:
         return {
             "origin": self.origin,
+            "detail_level": self.detail_level,
             "provider": self.provider,
             "declared_coverage": self.declared_coverage,
             "coverage_state": self.coverage_state,
@@ -296,6 +301,7 @@ class ProviderUsageReport:
 
     archive_root: str
     origins: tuple[OriginUsageReport, ...]
+    detail_level: str = "full"
     model_rollup_grain: str = "physical_session"
     model_rollup_usage: UsageCounters = field(default_factory=UsageCounters)
     logical_model_rollup_grain: str = "logical_session_model_high_water"
@@ -306,6 +312,7 @@ class ProviderUsageReport:
     def to_dict(self) -> dict[str, object]:
         return {
             "archive_root": self.archive_root,
+            "detail_level": self.detail_level,
             "coverage_matrix": [item.to_dict() for item in self.coverage_matrix],
             "model_rollup_grain": self.model_rollup_grain,
             "model_rollup_usage": self.model_rollup_usage.to_dict(),
@@ -321,6 +328,7 @@ def provider_usage_report_for_archive_root(
     *,
     origin: str | None = None,
     limit: int | None = 25,
+    detail: UsageReportDetail = "full",
 ) -> ProviderUsageReport:
     """Read ``archive_root/index.db`` and return a provider usage audit report."""
 
@@ -335,7 +343,9 @@ def provider_usage_report_for_archive_root(
     conn = sqlite3.connect(uri, uri=True)
     conn.row_factory = sqlite3.Row
     try:
-        return provider_usage_report_from_connection(conn, archive_root=archive_root, origin=origin, limit=limit)
+        return provider_usage_report_from_connection(
+            conn, archive_root=archive_root, origin=origin, limit=limit, detail=detail
+        )
     finally:
         conn.close()
 
@@ -346,6 +356,7 @@ def provider_usage_report_from_connection(
     archive_root: Path | str = "",
     origin: str | None = None,
     limit: int | None = 25,
+    detail: UsageReportDetail = "full",
 ) -> ProviderUsageReport:
     """Return a provider usage report for an already-open index connection."""
 
@@ -354,10 +365,15 @@ def provider_usage_report_from_connection(
         "provider usage events, transcript text volume, and model rollups are separate evidence streams",
         "this report does not query provider billing and is not a precise cost report",
     ]
+    if detail == "headline":
+        caveats.append(
+            "headline detail computes session/source/model-rollup totals only; run with detail='full' for provider-event, cumulative, sample, and stale-rollup diagnostics"
+        )
     if not _table_exists(conn, "sessions"):
         return ProviderUsageReport(
             archive_root=str(archive_root),
             origins=(),
+            detail_level=detail,
             caveats=tuple(caveats + ["sessions table is missing"]),
         )
 
@@ -374,7 +390,20 @@ def provider_usage_report_from_connection(
     if raw_caveat:
         caveats.append(raw_caveat)
 
-    if usage_event_table_present:
+    event_by_origin: dict[str, dict[str, object]]
+    cumulative_by_origin: dict[str, UsageCounters]
+    missing_samples: dict[str, tuple[str, ...]]
+    zero_samples: dict[str, tuple[str, ...]]
+    stale_by_origin: dict[str, int]
+    stale_samples: dict[str, tuple[str, ...]]
+    if detail == "headline":
+        event_by_origin = {}
+        cumulative_by_origin = {}
+        missing_samples = {}
+        zero_samples = {}
+        stale_by_origin = {}
+        stale_samples = {}
+    elif usage_event_table_present:
         event_by_origin = _provider_event_stats(conn, origin)
         cumulative_by_origin = _provider_cumulative_usage(conn, origin)
         missing_samples = _sample_event_sessions(conn, origin, limit, missing_model=True)
@@ -415,6 +444,12 @@ def provider_usage_report_from_connection(
             acquired_not_materialized_count=acquired_not_materialized_count,
             stale_rollup_session_count=stale_rollup_session_count,
         )
+        if detail == "headline":
+            coverage_state = "headline_not_audited"
+            coverage_basis = (
+                "headline detail does not scan provider usage events or stale rollup diagnostics; "
+                "model rollup totals are still computed from session_model_usage"
+            )
         origin_caveats = _origin_caveats(
             coverage=coverage,
             coverage_state=coverage_state,
@@ -432,6 +467,7 @@ def provider_usage_report_from_connection(
         reports.append(
             OriginUsageReport(
                 origin=origin_name,
+                detail_level=detail,
                 provider=coverage.provider,
                 declared_coverage=coverage.status,
                 coverage_state=coverage_state,
@@ -478,6 +514,7 @@ def provider_usage_report_from_connection(
     return ProviderUsageReport(
         archive_root=str(archive_root),
         origins=tuple(reports),
+        detail_level=detail,
         model_rollup_usage=_sum_usage_counters(row.model_rollup_usage for row in reports),
         logical_model_rollup_usage=_sum_usage_counters(row.logical_model_rollup_usage for row in reports),
         caveats=tuple(caveats),

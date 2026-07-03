@@ -3598,11 +3598,20 @@ class PolylogueArchiveMixin:
         *,
         origin: str | None = None,
         limit: int | None = 25,
+        detail: str = "full",
     ) -> ProviderUsageReport:
         """Return provider usage accounting diagnostics for the active archive."""
         from polylogue.storage.usage import provider_usage_report_for_archive_root
 
-        return provider_usage_report_for_archive_root(_active_archive_root(self.config), origin=origin, limit=limit)
+        if detail not in {"headline", "full"}:
+            raise ValueError("detail must be 'headline' or 'full'")
+        usage_detail = cast(Literal["headline", "full"], detail)
+        return provider_usage_report_for_archive_root(
+            _active_archive_root(self.config),
+            origin=origin,
+            limit=limit,
+            detail=usage_detail,
+        )
 
     async def stats(self) -> ArchiveStats:
         from polylogue.operations import ArchiveStats as PublicArchiveStats

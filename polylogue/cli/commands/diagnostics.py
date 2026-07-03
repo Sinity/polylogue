@@ -233,6 +233,13 @@ async def _turns(env: AppEnv, session_id: str, limit: int) -> None:
     help="Max diagnostic session IDs to include per sample family.",
 )
 @click.option(
+    "--detail",
+    type=click.Choice(["headline", "full"]),
+    default="full",
+    show_default=True,
+    help="Report detail: headline skips expensive provider-event and stale-rollup diagnostics.",
+)
+@click.option(
     "--json",
     "output_format",
     flag_value="json",
@@ -248,7 +255,13 @@ async def _turns(env: AppEnv, session_id: str, limit: int) -> None:
     help="Output format.",
 )
 @click.pass_context
-def usage_command(ctx: click.Context, origin: str | None, sample_limit: int, output_format: str) -> None:
+def usage_command(
+    ctx: click.Context,
+    origin: str | None,
+    sample_limit: int,
+    detail: str,
+    output_format: str,
+) -> None:
     """Audit provider usage accounting without turning it into a cost report.
 
     Provider event rows, provider cumulative counters, transcript words, and
@@ -259,7 +272,7 @@ def usage_command(ctx: click.Context, origin: str | None, sample_limit: int, out
     import json
 
     env: AppEnv = ctx.obj
-    report = run_coroutine_sync(env.polylogue.provider_usage_report(origin=origin, limit=sample_limit))
+    report = run_coroutine_sync(env.polylogue.provider_usage_report(origin=origin, limit=sample_limit, detail=detail))
     if output_format == "json":
         click.echo(json.dumps(report.to_dict(), indent=2))
         return
@@ -269,6 +282,7 @@ def usage_command(ctx: click.Context, origin: str | None, sample_limit: int, out
 def _render_usage_report(env: AppEnv, report: object) -> None:
     origins = tuple(getattr(report, "origins", ()))
     env.ui.console.print(f"[bold]Provider usage accounting[/bold] ({getattr(report, 'archive_root', '')})")
+    env.ui.console.print(f"  detail: {getattr(report, 'detail_level', 'full')}")
     for caveat in getattr(report, "caveats", ()):
         env.ui.console.print(f"  [yellow]note[/yellow] {caveat}")
     env.ui.console.print(

@@ -53,6 +53,36 @@ def _message(
     )
 
 
+def test_usage_command_passes_headline_detail(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeReport:
+        def to_dict(self) -> dict[str, object]:
+            return {"detail_level": "headline"}
+
+    class FakePolylogue:
+        async def provider_usage_report(
+            self,
+            *,
+            origin: str | None = None,
+            limit: int | None = None,
+            detail: str = "full",
+        ) -> FakeReport:
+            captured.update({"origin": origin, "limit": limit, "detail": detail})
+            return FakeReport()
+
+    monkeypatch.setattr(AppEnv, "polylogue", property(lambda self: FakePolylogue()))
+    result = CliRunner().invoke(
+        diagnostics.usage_command,
+        ["--origin", "codex-session", "--limit", "0", "--detail", "headline", "--format", "json"],
+        obj=_env(),
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == {"detail_level": "headline"}
+    assert captured == {"origin": "codex-session", "limit": 0, "detail": "headline"}
+
+
 @pytest.mark.asyncio
 async def test_pace_reports_active_model_and_idle_gaps(monkeypatch: pytest.MonkeyPatch) -> None:
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
