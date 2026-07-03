@@ -169,9 +169,9 @@ if [ "$format" = "--json" ]; then
       " 2>/dev/null || true
     )"
   fi
+  raw_debt_json="$(raw_materialization_debt_payload)"
   if [ "$quick" = false ]; then
     ops_status_json="$(polylogue ops status --format json 2>/dev/null || true)"
-    raw_debt_json="$(raw_materialization_debt_payload)"
   fi
   prod_state="$(systemctl --user show polylogued.service -p ActiveState --value 2>/dev/null || true)"
   prod_sub_state="$(systemctl --user show polylogued.service -p SubState --value 2>/dev/null || true)"
