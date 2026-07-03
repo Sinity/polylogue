@@ -1378,6 +1378,10 @@ class TestInsightTools:
                 model="claude-sonnet-4-5",
                 limit=5,
             )
+            tool_usage_raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["tool_usage"].fn,
+                origin="claude-code-session",
+            )
 
         profiles_payload = json.loads(profiles_raw)
         events_payload = json.loads(events_raw)
@@ -1387,6 +1391,7 @@ class TestInsightTools:
         coverage_payload = json.loads(coverage_raw)
         costs_payload = json.loads(costs_raw)
         cost_rollups_payload = json.loads(cost_rollups_raw)
+        tool_usage_payload = json.loads(tool_usage_raw)
 
         assert profiles_payload["total"] == 1
         assert profiles_payload["items"][0]["insight_kind"] == "session_profile"
@@ -1407,10 +1412,67 @@ class TestInsightTools:
         assert cost_rollups_payload["items"][0]["insight_kind"] == "cost_rollup"
         assert cost_rollups_payload["items"][0]["origin"] == "claude-code-session"
         assert cost_rollups_payload["items"][0]["total_usd"] == 1.25
+        assert costs_payload["truncated"] is False
+        assert costs_payload["returned"] == 1
+        assert costs_payload["limit"] == 5
+        assert cost_rollups_payload["truncated"] is False
+        assert cost_rollups_payload["returned"] == 1
+        assert cost_rollups_payload["limit"] == 5
+        assert tool_usage_payload["truncated"] is False
+        assert tool_usage_payload["limit"] is None
         assert mock_poly.list_session_profile_insights.await_args.args[0].provider == "claude-code"
         assert mock_poly.list_session_tag_rollup_insights.await_args.args[0].provider == "claude-code"
         assert mock_poly.list_archive_coverage_insights.await_args.args[0].group_by == "provider"
         assert mock_poly.list_archive_coverage_insights.await_args.args[0].provider == "claude-code"
+        assert mock_poly.list_tool_usage_insights.await_args.args[0].provider == "claude-code"
+        assert mock_poly.list_tool_usage_insights.await_args.args[0].limit is None
+
+    @pytest.mark.asyncio
+    async def test_registry_rollup_tool_pages_after_complete_fetch(
+        self,
+        mcp_server: MCPServerUnderTest,
+    ) -> None:
+        def cost(session_id: str) -> SessionCostInsight:
+            return SessionCostInsight(
+                session_id=session_id,
+                source_name="claude-code",
+                title=f"Session {session_id}",
+                estimate=CostEstimatePayload(
+                    source_name="claude-code",
+                    session_id=session_id,
+                    model_name="claude-sonnet-4-5",
+                    normalized_model="claude-sonnet-4-5",
+                    status="exact",
+                    confidence=1.0,
+                    total_usd=1.0,
+                    provenance=("archive_provider_reported_cost",),
+                ),
+                provenance=_provenance(),
+            )
+
+        rows = [cost(f"conv-{i}") for i in range(3)]
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.list_session_cost_insights = AsyncMock(return_value=rows)
+            mock_get_polylogue.return_value = mock_poly
+
+            raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["session_costs"].fn,
+                origin="claude-code-session",
+                limit=2,
+            )
+
+        payload = json.loads(raw)
+        assert payload["total"] == 3
+        assert payload["returned"] == 2
+        assert payload["limit"] == 2
+        assert payload["offset"] == 0
+        assert payload["truncated"] is True
+        assert [item["session_id"] for item in payload["items"]] == ["conv-0", "conv-1"]
+        query = mock_poly.list_session_cost_insights.await_args.args[0]
+        assert query.provider == "claude-code"
+        assert query.limit is None
+        assert query.offset == 0
 
 
 class TestStatsTool:

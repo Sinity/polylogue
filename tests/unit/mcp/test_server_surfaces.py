@@ -208,6 +208,9 @@ class TestServerSurfaceRegistration:
         actual = actual_getter(mcp_server)
         missing = expected - actual
         assert not missing, f"Missing {surface_attr}: {sorted(missing)}"
+        if surface_attr == "tools":
+            extra = actual - expected
+            assert not extra, f"Unexpected {surface_attr}: {sorted(extra)}"
 
     def test_read_role_omits_mutation_and_maintenance_tools(self: object) -> None:
         from polylogue.mcp.server import build_server

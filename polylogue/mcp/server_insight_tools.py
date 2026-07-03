@@ -37,6 +37,15 @@ if TYPE_CHECKING:
     from polylogue.mcp.server_support import ServerCallbacks
 
 
+_COMPLETE_BY_DEFAULT_INSIGHT_TOOLS = frozenset(
+    {
+        "cost_rollups",
+        "session_costs",
+        "tool_usage",
+    }
+)
+
+
 def _origin_to_provider_token(value: str | None) -> str | None:
     if value is None or value == "":
         return None
@@ -58,9 +67,28 @@ def _register_list_tool(
     async def tool_fn(**kwargs: object) -> str:
         async def run() -> str:
             poly = hooks.get_polylogue()
+            explicit_limit = "limit" in kwargs and kwargs["limit"] is not None
             normalized_kwargs = spec.normalize_kwargs(hooks.clamp_limit, kwargs)
+            requested_limit = normalized_kwargs.get("limit") if explicit_limit else None
+            requested_offset = int(normalized_kwargs.get("offset") or 0)
+            if pt.name in _COMPLETE_BY_DEFAULT_INSIGHT_TOOLS:
+                normalized_kwargs["limit"] = None
+                normalized_kwargs["offset"] = 0
             insights = await fetch_insights_async(pt, poly, **normalized_kwargs)
-            payload = insight_items_payload(insights, pt, item_key="items")
+            total = len(insights)
+            page = insights
+            if pt.name in _COMPLETE_BY_DEFAULT_INSIGHT_TOOLS:
+                if requested_offset:
+                    page = page[requested_offset:]
+                if requested_limit is not None:
+                    page = page[: int(requested_limit)]
+            payload = insight_items_payload(page, pt, item_key="items")
+            if pt.name in _COMPLETE_BY_DEFAULT_INSIGHT_TOOLS:
+                payload["total"] = total
+                payload["returned"] = len(page)
+                payload["limit"] = requested_limit
+                payload["offset"] = requested_offset
+                payload["truncated"] = requested_offset + len(page) < total
             return hooks.json_payload(MCPRootPayload(root=cast(dict[str, object], _project_origin_payload(payload))))
 
         return await hooks.async_safe_call(pt.name, run)
@@ -492,7 +520,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     provider=_origin_to_provider_token(origin),
                     since=since,
                     until=until,
-                    limit=hooks.clamp_limit(10000),
+                    limit=None,
                 )
             )
             buckets: dict[str, int] = {}
@@ -847,7 +875,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     provider=_origin_to_provider_token(origin),
                     since=since,
                     until=until,
-                    limit=hooks.clamp_limit(10000),
+                    limit=None,
                 )
             )
 

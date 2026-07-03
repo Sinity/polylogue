@@ -64,6 +64,28 @@ async def test_aggregate_by_workflow_shape(mcp_server: MCPServerUnderTest) -> No
     assert payload["group_by"] == "workflow_shape"
     assert payload["total_sessions"] == 3
     assert payload["buckets"] == {"chat": 2, "agentic_loop": 1}
+    assert mock_poly.list_session_profile_insights.await_args.args[0].limit is None
+
+
+@pytest.mark.asyncio
+async def test_aggregate_sessions_does_not_cap_scope_at_mcp_limit(
+    mcp_server: MCPServerUnderTest,
+) -> None:
+    profiles = [_make_profile(f"c{i}", workflow_shape="chat") for i in range(1005)]
+    with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+        mock_poly = make_polylogue_mock()
+        mock_poly.list_session_profile_insights = AsyncMock(return_value=profiles)
+        mock_get_polylogue.return_value = mock_poly
+
+        raw = await invoke_surface_async(
+            mcp_server._tool_manager._tools["aggregate_sessions"].fn,
+            group_by="workflow_shape",
+        )
+
+    payload = json.loads(raw)
+    assert payload["total_sessions"] == 1005
+    assert payload["buckets"] == {"chat": 1005}
+    assert mock_poly.list_session_profile_insights.await_args.args[0].limit is None
 
 
 @pytest.mark.asyncio

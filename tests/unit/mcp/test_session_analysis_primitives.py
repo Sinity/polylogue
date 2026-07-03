@@ -351,6 +351,29 @@ async def test_correlate_sessions_perfect_positive(
     assert payload["sample_count"] == 3
     assert payload["pearson_r"] == pytest.approx(1.0, abs=0.01)
     assert "strong positive" in payload["interpretation"]
+    assert mock_poly.list_session_profile_insights.await_args.args[0].limit is None
+
+
+@pytest.mark.asyncio
+async def test_correlate_sessions_does_not_cap_scope_at_mcp_limit(
+    mcp_server: MCPServerUnderTest,
+) -> None:
+    profiles = [_make_profile(f"c{i}", message_count=i, word_count=i * 2) for i in range(1, 1006)]
+    with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+        mock_poly = make_polylogue_mock()
+        mock_poly.list_session_profile_insights = AsyncMock(return_value=profiles)
+        mock_get_polylogue.return_value = mock_poly
+
+        raw = await invoke_surface_async(
+            mcp_server._tool_manager._tools["correlate_sessions"].fn,
+            metric_x="message_count",
+            metric_y="word_count",
+        )
+
+    payload = json.loads(raw)
+    assert payload["sample_count"] == 1005
+    assert payload["pearson_r"] == pytest.approx(1.0, abs=0.01)
+    assert mock_poly.list_session_profile_insights.await_args.args[0].limit is None
 
 
 @pytest.mark.asyncio

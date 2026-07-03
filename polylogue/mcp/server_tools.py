@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from polylogue.core.enums import AssertionKind, AssertionStatus, Origin
@@ -669,7 +669,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
         async def run() -> str:
             built = request.build_spec(hooks.clamp_limit)
-            spec = built if built.has_filters() else None
+            spec = replace(built, limit=None) if built.has_filters() else None
             poly = hooks.get_polylogue()
             response = await poly.facets(spec)
             return hooks.json_payload(response)

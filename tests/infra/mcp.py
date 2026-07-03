@@ -80,12 +80,33 @@ EXPECTED_TOOL_NAMES = {
     "session_tool_timing",
     "cost_outlook",
     "archive_debt",
+    "tool_usage",
+    "session_costs",
+    "cost_rollups",
     "session_profiles",
     "session_work_events",
     "session_phases",
     "session_tag_rollups",
     "threads",
     "archive_coverage",
+    "action_affordances",
+    "archive_get_session",
+    "archive_list_sessions",
+    "archive_search_sessions",
+    "clear_corrections",
+    "compose_context_preamble",
+    "delete_recall_pack",
+    "delete_workspace",
+    "get_messages",
+    "insight_rigor_audit",
+    "list_corrections",
+    "list_recall_packs",
+    "list_workspaces",
+    "provider_usage",
+    "raw_artifacts",
+    "record_correction",
+    "save_recall_pack",
+    "save_workspace",
 }
 
 EXPECTED_RESOURCE_URIS = {
@@ -222,6 +243,7 @@ def make_polylogue_mock(*, resolved_id: str | None = None) -> MagicMock:
     poly.list_session_tag_rollup_insights = AsyncMock(return_value=[])
     poly.list_thread_insights = AsyncMock(return_value=[])
     poly.list_archive_coverage_insights = AsyncMock(return_value=[])
+    poly.list_tool_usage_insights = AsyncMock(return_value=[])
     poly.list_session_cost_insights = AsyncMock(return_value=[])
     poly.list_cost_rollup_insights = AsyncMock(return_value=[])
     poly.list_archive_debt_insights = AsyncMock(return_value=[])
