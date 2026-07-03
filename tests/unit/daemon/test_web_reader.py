@@ -2766,6 +2766,9 @@ class TestReaderInformability:
         assert 'id="status-semantic"' in body
         assert 'id="status-ingest"' in body
         assert "function renderMaterializationChip(" in body
+        assert "counts.raw_artifact_count" in body
+        assert "counts.materialized_raw_artifact_count" in body
+        assert "counts.join_gap_count" in body
         assert "function renderSemanticChip(" in body
         assert "function renderIngestChip(" in body
         assert "'materialization'" in body

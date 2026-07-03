@@ -37,6 +37,10 @@ def test_raw_materialization_snapshot_ignores_skipped_raw_rows(tmp_path: Path) -
     snapshot = raw_materialization_readiness_snapshot(tmp_path)
 
     assert snapshot["available"] is True
+    assert snapshot["raw_artifact_count"] == 1
+    assert snapshot["materialized_raw_artifact_count"] == 0
+    assert snapshot["archive_session_count"] == 0
+    assert snapshot["join_gap_count"] == 1
     assert snapshot["total"] == 1
     assert snapshot["unchecked"] == 1
     assert snapshot["affected_unchecked"] == 1

@@ -178,6 +178,10 @@ def test_raw_materialization_readiness_maps_unchecked_join_gaps_to_degraded() ->
             "available": True,
             "classification": "not_run",
             "total": 3,
+            "raw_artifact_count": 10,
+            "materialized_raw_artifact_count": 7,
+            "archive_session_count": 8,
+            "join_gap_count": 3,
             "unchecked": 3,
             "affected_total": 3,
             "affected_unchecked": 3,
@@ -188,6 +192,10 @@ def test_raw_materialization_readiness_maps_unchecked_join_gaps_to_degraded() ->
     assert component.state is CapabilityReadinessState.DEGRADED
     assert component.summary == "raw/index join gaps need classification"
     assert component.counts["affected_unchecked"] == 3
+    assert component.counts["raw_artifact_count"] == 10
+    assert component.counts["materialized_raw_artifact_count"] == 7
+    assert component.counts["archive_session_count"] == 8
+    assert component.counts["join_gap_count"] == 3
     assert component.caveats == ("raw_index_join_gaps_unclassified_by_fast_readiness",)
     assert component.repair_hint == "polylogue ops debt list --kind raw-materialization"
 

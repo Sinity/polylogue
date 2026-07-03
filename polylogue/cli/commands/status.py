@@ -1744,8 +1744,12 @@ def _show_direct_status(
             materialization_total = _safe_int(materialization.get("total"))
             if materialization_total:
                 if _safe_int(materialization.get("affected_unchecked")) or _safe_int(materialization.get("unchecked")):
+                    raw_count = _safe_int(materialization.get("raw_artifact_count"))
+                    materialized_count = _safe_int(materialization.get("materialized_raw_artifact_count"))
+                    progress = f"{materialized_count:,}/{raw_count:,} materialized; " if raw_count else ""
                     env.ui.console.print(
-                        f"  Raw materialization: {materialization_total} raw/index join gap(s) need classification"
+                        "  Raw materialization: "
+                        f"{progress}{materialization_total} raw/index join gap(s) need classification"
                     )
                 else:
                     env.ui.console.print(

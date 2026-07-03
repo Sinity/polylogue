@@ -106,20 +106,50 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
             conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
             row = conn.execute(
                 """
-                WITH gaps AS (
-                    SELECT r.raw_id, r.origin, r.validation_status, r.parse_error, r.parsed_at_ms
+                WITH raw_rows AS (
+                    SELECT
+                        r.raw_id,
+                        r.origin,
+                        r.validation_status,
+                        r.parse_error,
+                        r.parsed_at_ms,
+                        EXISTS (
+                            SELECT 1
+                            FROM main.sessions s
+                            WHERE s.raw_id = r.raw_id
+                        ) AS is_materialized
                     FROM source.raw_sessions r
-                    LEFT JOIN main.sessions s ON s.raw_id = r.raw_id
-                    WHERE s.raw_id IS NULL
-                      AND COALESCE(r.validation_status, '') != 'skipped'
+                    WHERE COALESCE(r.validation_status, '') != 'skipped'
+                ),
+                materialization AS (
+                    SELECT
+                        COUNT(*) AS raw_artifact_count,
+                        COALESCE(SUM(CASE WHEN is_materialized THEN 1 ELSE 0 END), 0)
+                            AS materialized_raw_artifact_count
+                    FROM raw_rows
+                ),
+                session_count AS (
+                    SELECT COUNT(*) AS archive_session_count FROM main.sessions
+                ),
+                gaps AS (
+                    SELECT raw_id, origin, validation_status, parse_error, parsed_at_ms
+                    FROM raw_rows
+                    WHERE NOT is_materialized
                 )
                 SELECT
-                    COUNT(*) AS total,
+                    materialization.raw_artifact_count,
+                    materialization.materialized_raw_artifact_count,
+                    session_count.archive_session_count,
+                    (materialization.raw_artifact_count - materialization.materialized_raw_artifact_count)
+                        AS join_gap_count,
+                    COUNT(gaps.raw_id) AS total,
                     COALESCE(SUM(CASE WHEN validation_status = 'skipped' THEN 1 ELSE 0 END), 0) AS skipped,
                     COALESCE(SUM(CASE WHEN parse_error IS NOT NULL THEN 1 ELSE 0 END), 0) AS parse_failed,
                     COALESCE(SUM(CASE WHEN parsed_at_ms IS NOT NULL AND parse_error IS NULL THEN 1 ELSE 0 END), 0)
                         AS parsed_without_index_session
                 FROM gaps
+                CROSS JOIN materialization
+                CROSS JOIN session_count
                 """
             ).fetchone()
             family_rows = conn.execute(
@@ -140,6 +170,10 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
             "error": str(exc),
         }
     total = int(row["total"] or 0)
+    raw_artifact_count = int(row["raw_artifact_count"] or 0)
+    materialized_raw_artifact_count = int(row["materialized_raw_artifact_count"] or 0)
+    archive_session_count = int(row["archive_session_count"] or 0)
+    join_gap_count = int(row["join_gap_count"] or total)
     skipped = int(row["skipped"] or 0)
     parse_failed = int(row["parse_failed"] or 0)
     parsed_without_index_session = int(row["parsed_without_index_session"] or 0)
@@ -147,6 +181,10 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
         "available": True,
         "classification": "not_run",
         "precision": "raw_id_join_gap",
+        "raw_artifact_count": raw_artifact_count,
+        "materialized_raw_artifact_count": materialized_raw_artifact_count,
+        "archive_session_count": archive_session_count,
+        "join_gap_count": join_gap_count,
         "total": total,
         "critical": 0,
         "warning": 0,

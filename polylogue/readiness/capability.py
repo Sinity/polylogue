@@ -167,6 +167,10 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
     affected_classified = int(payload.get("affected_classified") or 0)
     unchecked = int(payload.get("unchecked") or 0)
     affected_unchecked = int(payload.get("affected_unchecked") or 0)
+    raw_artifact_count = int(payload.get("raw_artifact_count") or 0)
+    materialized_raw_artifact_count = int(payload.get("materialized_raw_artifact_count") or 0)
+    archive_session_count = int(payload.get("archive_session_count") or 0)
+    join_gap_count = int(payload.get("join_gap_count") or total)
     if not available:
         state = CapabilityReadinessState.UNKNOWN
         summary = "unknown"
@@ -222,6 +226,10 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
             "affected_classified": affected_classified,
             "unchecked": unchecked,
             "affected_unchecked": affected_unchecked,
+            "raw_artifact_count": raw_artifact_count,
+            "materialized_raw_artifact_count": materialized_raw_artifact_count,
+            "archive_session_count": archive_session_count,
+            "join_gap_count": join_gap_count,
         },
         caveats=caveats,
         metadata={

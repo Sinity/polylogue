@@ -54,8 +54,13 @@ def _raw_materialization_warning(readiness: dict[str, object]) -> str | None:
     if count <= 0:
         unchecked = _safe_int(readiness.get("affected_unchecked")) or _safe_int(readiness.get("unchecked"))
         if unchecked > 0:
+            raw_count = _safe_int(readiness.get("raw_artifact_count"))
+            materialized_count = _safe_int(readiness.get("materialized_raw_artifact_count"))
+            prefix = ""
+            if raw_count > 0:
+                prefix = f"{materialized_count:,}/{raw_count:,} raw artifact(s) materialized; "
             return (
-                f"Archive materialization needs classification: {unchecked:,} raw/index join gap(s) found; "
+                f"Archive materialization needs classification: {prefix}{unchecked:,} raw/index join gap(s) found; "
                 "results may be partial until `polylogue ops debt list --kind raw-materialization` explains them."
             )
         return None

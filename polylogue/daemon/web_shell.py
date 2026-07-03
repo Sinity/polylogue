@@ -923,6 +923,15 @@ function renderMaterializationChip(component, materialization) {
   if (!el) return;
   if (component) {
     renderComponentReadinessChip(el, 'materialization', component);
+    var counts = component.counts || {};
+    var rawCount = Number(counts.raw_artifact_count || 0);
+    var materializedCount = Number(counts.materialized_raw_artifact_count || 0);
+    var gapCount = Number(counts.join_gap_count || counts.affected_unchecked || counts.unchecked || 0);
+    if (rawCount > 0) {
+      el.title += '; ' + materializedCount.toLocaleString() + '/' + rawCount.toLocaleString()
+        + ' raw artifacts materialized'
+        + (gapCount > 0 ? '; ' + gapCount.toLocaleString() + ' join gap(s)' : '');
+    }
     return;
   }
   var total = Number((materialization && materialization.total) || 0);

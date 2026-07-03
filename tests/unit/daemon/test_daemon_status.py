@@ -374,6 +374,10 @@ def test_daemon_status_marks_raw_materialization_debt_not_ready(
             "available": True,
             "classification": "not_run",
             "precision": "raw_id_join_gap",
+            "raw_artifact_count": 300,
+            "materialized_raw_artifact_count": 62,
+            "archive_session_count": 80,
+            "join_gap_count": 238,
             "total": 238,
             "critical": 0,
             "warning": 0,
@@ -402,6 +406,8 @@ def test_daemon_status_marks_raw_materialization_debt_not_ready(
 
     materialization = cast(dict[str, object], status_payload["raw_materialization_readiness"])
     assert materialization["total"] == 238
+    assert materialization["raw_artifact_count"] == 300
+    assert materialization["materialized_raw_artifact_count"] == 62
     assert materialization["warning"] == 0
     assert materialization["affected_total"] == 238
     assert materialization["affected_actionable"] == 0
@@ -423,7 +429,7 @@ def test_daemon_status_marks_raw_materialization_debt_not_ready(
     assert metadata["category_counts"] == {"raw_id_join_gap": 238}
 
     lines = format_daemon_status_lines(status_payload)
-    assert "Raw materialization: 238 raw/index join gap(s) need classification" in lines
+    assert "Raw materialization: 62/300 materialized; 238 raw/index join gap(s) need classification" in lines
 
 
 def test_daemon_status_payload_maps_component_readiness(tmp_path: Path) -> None:

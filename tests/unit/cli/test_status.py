@@ -635,6 +635,10 @@ class TestNoArchiveStatus:
                 "available": True,
                 "classification": "not_run",
                 "precision": "raw_id_join_gap",
+                "raw_artifact_count": 10,
+                "materialized_raw_artifact_count": 6,
+                "archive_session_count": 7,
+                "join_gap_count": 4,
                 "total": 4,
                 "critical": 0,
                 "warning": 0,
@@ -672,6 +676,8 @@ class TestNoArchiveStatus:
         transforms = components["transforms"]
         assert payload["archive_readiness"] == archive_readiness
         assert payload["raw_materialization_readiness"]["total"] == 4
+        assert payload["raw_materialization_readiness"]["raw_artifact_count"] == 10
+        assert payload["raw_materialization_readiness"]["materialized_raw_artifact_count"] == 6
         assert payload["raw_materialization_readiness"]["affected_total"] == 4
         assert payload["raw_materialization_readiness"]["affected_unchecked"] == 4
         assert payload["raw_materialization_readiness"]["category_counts"] == {"raw_id_join_gap": 4}
@@ -697,6 +703,8 @@ class TestNoArchiveStatus:
         assert raw_materialization["counts"]["affected_total"] == 4
         assert raw_materialization["counts"]["affected_actionable"] == 0
         assert raw_materialization["counts"]["affected_unchecked"] == 4
+        assert raw_materialization["counts"]["raw_artifact_count"] == 10
+        assert raw_materialization["counts"]["materialized_raw_artifact_count"] == 6
         assert raw_materialization["metadata"]["category_counts"] == {"raw_id_join_gap": 4}
         assert raw_materialization["metadata"]["source_family_counts"] == {"chatgpt-export": 4}
         assert raw_materialization["repair_hint"] == "polylogue ops debt list --kind raw-materialization"

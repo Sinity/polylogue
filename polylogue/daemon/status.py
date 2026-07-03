@@ -128,6 +128,10 @@ class RawMaterializationReadiness(BaseModel):
     available: bool = True
     classification: str | None = None
     precision: str | None = None
+    raw_artifact_count: int = 0
+    materialized_raw_artifact_count: int = 0
+    archive_session_count: int = 0
+    join_gap_count: int = 0
     total: int = 0
     critical: int = 0
     warning: int = 0
@@ -2295,7 +2299,12 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
         materialization_total = _safe_int(materialization.get("total"))
         if materialization_total > 0:
             if _safe_int(materialization.get("affected_unchecked")) or _safe_int(materialization.get("unchecked")):
-                lines.append(f"Raw materialization: {materialization_total} raw/index join gap(s) need classification")
+                raw_count = _safe_int(materialization.get("raw_artifact_count"))
+                materialized_count = _safe_int(materialization.get("materialized_raw_artifact_count"))
+                progress = f"{materialized_count:,}/{raw_count:,} materialized; " if raw_count else ""
+                lines.append(
+                    f"Raw materialization: {progress}{materialization_total} raw/index join gap(s) need classification"
+                )
             else:
                 lines.append(
                     "Raw materialization: "
