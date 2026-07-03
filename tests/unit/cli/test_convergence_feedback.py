@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from polylogue.cli.convergence_feedback import convergence_warning_line
 
 
-def test_convergence_warning_line_prefers_active_rebuild(monkeypatch) -> None:
+def test_convergence_warning_line_prefers_active_rebuild(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: Path("/archive"))
     monkeypatch.setattr(
         "polylogue.storage.archive_readiness.active_rebuild_index_attempts",
@@ -20,7 +22,7 @@ def test_convergence_warning_line_prefers_active_rebuild(monkeypatch) -> None:
     )
 
 
-def test_convergence_warning_line_reports_actionable_raw_debt(monkeypatch) -> None:
+def test_convergence_warning_line_reports_actionable_raw_debt(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: Path("/archive"))
     monkeypatch.setattr("polylogue.storage.archive_readiness.active_rebuild_index_attempts", lambda _ops_db: [])
     monkeypatch.setattr(
@@ -40,7 +42,7 @@ def test_convergence_warning_line_reports_actionable_raw_debt(monkeypatch) -> No
     assert warning == "Archive is converging: 4 raw artifact(s) are not materialized; results may be partial."
 
 
-def test_convergence_warning_line_omits_classified_raw_gaps(monkeypatch) -> None:
+def test_convergence_warning_line_omits_classified_raw_gaps(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: Path("/archive"))
     monkeypatch.setattr("polylogue.storage.archive_readiness.active_rebuild_index_attempts", lambda _ops_db: [])
     monkeypatch.setattr(

@@ -7,12 +7,14 @@ import os
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
 from polylogue.cli.commands import maintenance
+from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_gc import read_gc_history
@@ -1125,7 +1127,7 @@ def test_rebuild_index_selected_raw_ids_materialize_processed_sessions_only(
             *,
             repository: FakeRepository,
             archive_root: Path,
-            config: SimpleNamespace,
+            config: object,
             raw_batch_size: int,
             ingest_workers: int | None,
         ) -> None:
@@ -1158,7 +1160,7 @@ def test_rebuild_index_selected_raw_ids_materialize_processed_sessions_only(
 
     result = asyncio.run(
         maintenance._rebuild_index_from_source(
-            SimpleNamespace(archive_root=tmp_path),
+            Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[], db_path=tmp_path / "index.db"),
             raw_ids=["raw-a", "raw-b"],
             raw_batch_size=7,
             ingest_workers=1,
@@ -1176,8 +1178,9 @@ def test_rebuild_index_selected_raw_ids_materialize_processed_sessions_only(
         "force_write": False,
         "repair_message_fts": True,
     }
-    assert captured["materialize_kwargs"]["stage"] == "reprocess"
-    assert captured["materialize_kwargs"]["processed_ids"] == {"session-a", "session-b"}
+    materialize_kwargs = cast(dict[str, Any], captured["materialize_kwargs"])
+    assert materialize_kwargs["stage"] == "reprocess"
+    assert materialize_kwargs["processed_ids"] == {"session-a", "session-b"}
     assert captured["closed"] is True
 
 

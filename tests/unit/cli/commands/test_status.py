@@ -477,9 +477,10 @@ class TestArchiveTableCounts:
             conn.execute("INSERT INTO sessions VALUES (1), (2)")
             conn.execute("INSERT INTO messages VALUES (1), (2), (3)")
             conn.commit()
-            result = _archive_table_counts(conn, ["sessions", "messages"])
+            result, precision = _archive_table_counts(conn, ["sessions", "messages"], db_size_bytes=0)
             assert result["sessions"] == 2
             assert result["messages"] == 3
+            assert precision == {"sessions": "exact", "messages": "exact"}
         finally:
             conn.close()
 
@@ -491,10 +492,15 @@ class TestArchiveTableCounts:
             conn.execute("CREATE TABLE sessions (id INTEGER PRIMARY KEY)")
             conn.execute("INSERT INTO sessions VALUES (1)")
             conn.commit()
-            result = _archive_table_counts(conn, ["sessions", "nonexistent", "missing"])
+            result, precision = _archive_table_counts(
+                conn,
+                ["sessions", "nonexistent", "missing"],
+                db_size_bytes=0,
+            )
             assert "sessions" in result
             assert "nonexistent" not in result
             assert "missing" not in result
+            assert precision == {"sessions": "exact"}
         finally:
             conn.close()
 
@@ -503,8 +509,9 @@ class TestArchiveTableCounts:
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(db_path)
         try:
-            result = _archive_table_counts(conn, [])
+            result, precision = _archive_table_counts(conn, [], db_size_bytes=0)
             assert result == {}
+            assert precision == {}
         finally:
             conn.close()
 

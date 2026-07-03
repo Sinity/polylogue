@@ -66,7 +66,10 @@ def raw_materialization_ready(readiness: Mapping[str, Any] | object | None) -> b
     if not isinstance(readiness, Mapping):
         model_dump = getattr(readiness, "model_dump", None)
         if callable(model_dump):
-            readiness = model_dump()
+            dumped = model_dump()
+            if not isinstance(dumped, Mapping):
+                return False
+            readiness = dumped
         else:
             return False
     if not bool(readiness.get("available", False)):

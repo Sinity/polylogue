@@ -27,6 +27,8 @@ files:
     reason: "Path-sanitization timing guards assert no quadratic blow-up on real input lengths."
   - path: tests/unit/cli/test_diagnose_and_error_discipline.py
     reason: "Measures real subprocess startup latency for the diagnose CLI surface."
+  - path: tests/unit/cli/test_paths.py
+    reason: "Rebuild-readiness path test records a live ingest heartbeat timestamp; production readiness compares that heartbeat against the host clock by design."
 
   # --- Legitimate one-shot timestamp construction (no production read of now) ---
   - path: tests/unit/cli/test_check.py
@@ -65,6 +67,8 @@ files:
     reason: "#1746 lease/GC tests backdate blob mtime and pending_blob_refs.acquired_at with time.time(); production GC reads file mtime and integer acquired_at, not datetime.now()."
   - path: tests/unit/storage/test_raw_ingest_artifacts.py
     reason: "Raw-ingest test uses now() as opaque acquired_at metadata."
+  - path: tests/unit/daemon/test_metrics_endpoint.py
+    reason: "Metrics endpoint test records a live rebuild-ingest heartbeat timestamp; production readiness and metrics intentionally compare it against the host clock."
   - path: tests/integration/test_daemon_resilience.py
     reason: "Daemon resilience integration tests (#1735) measure real elapsed wall-clock for process lifecycle events (SIGKILL delivery, subprocess startup, concurrency timing). frozen_clock cannot substitute for real time when waiting on OS process state."
   - path: tests/integration/test_ingest_pipeline_correctness.py
