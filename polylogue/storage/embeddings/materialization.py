@@ -253,6 +253,7 @@ def select_pending_archive_session_window(
     max_sessions: int | None = None,
     max_messages: int | None = None,
     min_messages: int | None = None,
+    include_stale_checks: bool = True,
 ) -> list[PendingSession]:
     """Return one bounded pending-session window from a archive index.
 
@@ -274,18 +275,24 @@ def select_pending_archive_session_window(
 
     if status_table is None:
         status_table = "embedding_status" if _table_exists(conn, "embedding_status") else ""
-    stale_message_table = _archive_embedding_meta_table_for_status(conn, status_table)
-    stale_message_clause = _archive_stale_message_clause(conn, stale_message_table, session_alias="s")
+    stale_message_table = _archive_embedding_meta_table_for_status(conn, status_table) if include_stale_checks else ""
+    stale_message_clause = (
+        _archive_stale_message_clause(conn, stale_message_table, session_alias="s") if include_stale_checks else ""
+    )
     exact_counts_available = _archive_session_embeddable_counts_available(conn)
     aggregate_expr = _archive_session_embeddable_count_expression(conn)
     clean_status_is_authoritative = _archive_session_embeddable_count_uses_prose_rollups(conn)
     clean_status_needs_exact_refinement = bool(
-        exact_counts_available and clean_status_is_authoritative and status_table and not rebuild
+        include_stale_checks
+        and exact_counts_available
+        and clean_status_is_authoritative
+        and status_table
+        and not rebuild
     )
     status_select = (
-        "e.session_id AS status_session_id, e.needs_reindex, e.message_count_embedded"
+        "e.session_id AS status_session_id, e.needs_reindex, e.message_count_embedded, e.error_message"
         if status_table
-        else "NULL AS status_session_id, NULL AS needs_reindex, NULL AS message_count_embedded"
+        else "NULL AS status_session_id, NULL AS needs_reindex, NULL AS message_count_embedded, NULL AS error_message"
     )
     join_clause = f"LEFT JOIN {status_table} e ON e.session_id = s.session_id" if status_table else ""
     max_message_filter = ""
@@ -299,10 +306,10 @@ def select_pending_archive_session_window(
         max_message_filter = f"AND {aggregate_expr} <= ?" if aggregate_expr and max_messages is not None else ""
         if max_message_filter:
             params.append(max_messages)
-        pending_filter = (
-            ""
-            if rebuild or not status_table or aggregate_expr is None
-            else f"""
+        if rebuild or not status_table or aggregate_expr is None:
+            pending_filter = ""
+        elif include_stale_checks:
+            pending_filter = f"""
               AND (
                     e.session_id IS NULL
                  OR e.needs_reindex = 1
@@ -310,7 +317,14 @@ def select_pending_archive_session_window(
                  {stale_message_clause}
               )
             """
-        )
+        else:
+            pending_filter = """
+              AND (
+                    e.session_id IS NULL
+                 OR e.needs_reindex = 1
+                 OR e.error_message IS NOT NULL
+              )
+            """
     elif aggregate_expr is None:
         count_select = "NULL AS estimated_message_count"
         floor_filter = ""
@@ -322,10 +336,10 @@ def select_pending_archive_session_window(
         max_message_filter = f"AND {aggregate_expr} <= ?" if max_messages is not None else ""
         if max_message_filter:
             params.append(max_messages)
-        pending_filter = (
-            ""
-            if rebuild or not status_table
-            else f"""
+        if rebuild or not status_table:
+            pending_filter = ""
+        elif include_stale_checks:
+            pending_filter = f"""
               AND (
                     e.session_id IS NULL
                  OR e.needs_reindex = 1
@@ -333,7 +347,14 @@ def select_pending_archive_session_window(
                  {stale_message_clause}
               )
             """
-        )
+        else:
+            pending_filter = """
+              AND (
+                    e.session_id IS NULL
+                 OR e.needs_reindex = 1
+                 OR e.error_message IS NOT NULL
+              )
+            """
     limit_clause = ""
     if aggregate_expr is not None and max_sessions is not None and not clean_status_needs_exact_refinement:
         limit_clause = "LIMIT ?"
@@ -364,9 +385,11 @@ def select_pending_archive_session_window(
             status_session_id = _row_value(row, 2, "status_session_id")
             needs_reindex = _row_int(row, 3, "needs_reindex") if status_session_id is not None else 0
             message_count_embedded = _row_int(row, 4, "message_count_embedded") if status_session_id is not None else 0
-            estimated_count = _row_int(row, 5, "estimated_message_count")
+            error_message = _row_value(row, 5, "error_message") if status_session_id is not None else None
+            estimated_count = _row_int(row, 6, "estimated_message_count")
             needs_exact_count = (
-                exact_counts_available
+                include_stale_checks
+                and exact_counts_available
                 and status_session_id is not None
                 and needs_reindex == 0
                 and message_count_embedded > 0
@@ -383,8 +406,11 @@ def select_pending_archive_session_window(
                 or not status_table
                 or status_session_id is None
                 or needs_reindex == 1
-                or message_count_embedded < estimated_count
-                or archive_session_has_stale_embeddings(conn, session_id, stale_message_table)
+                or error_message is not None
+                or (include_stale_checks and message_count_embedded < estimated_count)
+                or (
+                    include_stale_checks and archive_session_has_stale_embeddings(conn, session_id, stale_message_table)
+                )
             ):
                 continue
             if max_sessions is not None and len(pending) >= max_sessions:

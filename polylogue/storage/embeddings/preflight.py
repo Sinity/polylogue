@@ -221,6 +221,7 @@ def _select_archive_pending_window(
         max_sessions=max_sessions,
         max_messages=max_messages,
         min_messages=min_messages,
+        include_stale_checks=False,
     )
     return [(item.session_id, item.message_count) for item in pending]
 

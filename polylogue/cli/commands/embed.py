@@ -616,6 +616,7 @@ def _run_archive_backfill(
             max_sessions=max_sessions,
             max_messages=report.max_messages,
             min_messages=min_messages,
+            include_stale_checks=False,
         )
     finally:
         conn.close()

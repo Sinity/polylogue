@@ -893,6 +893,126 @@ def test_pending_archive_window_reselects_stale_message_hash() -> None:
         conn.close()
 
 
+def test_pending_archive_window_can_skip_stale_hash_refinement_for_bounded_backfill() -> None:
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                origin TEXT NOT NULL DEFAULT 'unknown-export',
+                title TEXT,
+                sort_key_ms INTEGER,
+                authored_user_message_count INTEGER NOT NULL DEFAULT 0,
+                assistant_message_count INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE messages (
+                message_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                text TEXT,
+                role TEXT NOT NULL DEFAULT 'user',
+                message_type TEXT NOT NULL DEFAULT 'message',
+                material_origin TEXT NOT NULL DEFAULT 'human_authored',
+                word_count INTEGER NOT NULL DEFAULT 8,
+                content_hash BLOB
+            );
+            CREATE TABLE embedding_status (
+                session_id TEXT PRIMARY KEY,
+                message_count_embedded INTEGER NOT NULL DEFAULT 0,
+                needs_reindex INTEGER NOT NULL DEFAULT 0,
+                error_message TEXT
+            );
+            CREATE TABLE message_embeddings_meta (
+                message_id TEXT PRIMARY KEY,
+                model TEXT NOT NULL,
+                dimension INTEGER NOT NULL,
+                content_hash BLOB,
+                embedded_at_ms INTEGER NOT NULL,
+                needs_reindex INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO sessions VALUES ('changed', 'codex-session', 'changed', 1, 1, 0);
+            INSERT INTO messages (
+                message_id, session_id, text, role, message_type, material_origin, word_count, content_hash
+            ) VALUES (
+                'm1', 'changed', 'edited authored prose long enough', 'user', 'message',
+                'human_authored', 5, x'02'
+            );
+            INSERT INTO embedding_status VALUES ('changed', 1, 0, NULL);
+            INSERT INTO message_embeddings_meta VALUES ('m1', 'voyage-4', 1024, x'01', 1000, 0);
+            """
+        )
+
+        pending = select_pending_archive_session_window(
+            conn,
+            status_table="embedding_status",
+            max_sessions=10,
+            max_messages=10,
+            include_stale_checks=False,
+        )
+
+        assert pending == []
+        assert [
+            item.session_id for item in select_pending_archive_session_window(conn, status_table="embedding_status")
+        ] == ["changed"]
+    finally:
+        conn.close()
+
+
+def test_pending_archive_window_bounded_mode_trusts_clean_status_over_rollup_estimate() -> None:
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                origin TEXT NOT NULL DEFAULT 'unknown-export',
+                title TEXT,
+                sort_key_ms INTEGER,
+                authored_user_message_count INTEGER NOT NULL DEFAULT 0,
+                assistant_message_count INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE messages (
+                message_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                text TEXT,
+                role TEXT NOT NULL DEFAULT 'user',
+                message_type TEXT NOT NULL DEFAULT 'message',
+                material_origin TEXT NOT NULL DEFAULT 'human_authored',
+                word_count INTEGER NOT NULL DEFAULT 8,
+                content_hash BLOB
+            );
+            CREATE TABLE embedding_status (
+                session_id TEXT PRIMARY KEY,
+                message_count_embedded INTEGER NOT NULL DEFAULT 0,
+                needs_reindex INTEGER NOT NULL DEFAULT 0,
+                error_message TEXT
+            );
+            INSERT INTO sessions VALUES ('clean', 'codex-session', 'clean', 1, 10, 0);
+            INSERT INTO messages (
+                message_id, session_id, text, role, message_type, material_origin, word_count, content_hash
+            ) VALUES (
+                'm1', 'clean', 'one authored prose message long enough', 'user', 'message',
+                'human_authored', 5, x'01'
+            );
+            INSERT INTO embedding_status VALUES ('clean', 1, 0, NULL);
+            """
+        )
+
+        bounded = select_pending_archive_session_window(
+            conn,
+            status_table="embedding_status",
+            max_sessions=10,
+            max_messages=20,
+            include_stale_checks=False,
+        )
+        exact = select_pending_archive_session_window(conn, status_table="embedding_status")
+
+        assert bounded == []
+        assert exact == []
+    finally:
+        conn.close()
+
+
 def test_no_message_session_records_clean_status(tmp_path: Path) -> None:
     db_path = tmp_path / "archive.sqlite"
     _setup_minimal_embedding_file(db_path)
