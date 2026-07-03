@@ -502,6 +502,38 @@ class TestNoArchiveStatus:
             "ops.db",
         ]
 
+    def test_archive_tier_status_labels_large_table_estimates(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from polylogue.cli.commands import status as status_module
+
+        db = tmp_path / "index.db"
+        initialize_archive_database(db, ArchiveTier.INDEX)
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                """
+                INSERT INTO sessions (
+                    native_id, origin, raw_id, content_hash, message_count
+                ) VALUES ('native-1', 'codex-session', 'raw-1', ?, 12)
+                """,
+                (b"z" * 32,),
+            )
+            conn.execute("ANALYZE")
+            conn.execute("DELETE FROM sqlite_stat1")
+            conn.execute("INSERT INTO sqlite_stat1(tbl, idx, stat) VALUES ('blocks', 'idx_blocks_type', '123 4')")
+        monkeypatch.setattr(status_module, "_LARGE_TIER_EXACT_COUNT_LIMIT_BYTES", -1)
+
+        status = status_module._archive_one_tier_status("index", db)
+
+        assert status["table_counts"]["sessions"] == 1
+        assert status["table_count_precision"]["sessions"] == "exact"
+        assert status["table_counts"]["messages"] == 12
+        assert status["table_count_precision"]["messages"] == "exact"
+        assert status["table_counts"]["blocks"] == 123
+        assert status["table_count_precision"]["blocks"] == "estimate"
+
     def test_direct_status_json_maps_embeddings_component_readiness(self, tmp_path: Path) -> None:
         env = _make_app_env()
         db_anchor = tmp_path / "index.db"
@@ -986,6 +1018,52 @@ class TestNoArchiveStatus:
 
         assert result.exit_code == 0
         show_direct.assert_called_once_with(env, include_archive_readiness=False)
+
+    def test_status_command_full_json_direct_fallback_skips_exact_readiness(self) -> None:
+        """--full preserves payload shape without opting into expensive exact probes."""
+        env = _make_app_env()
+
+        def raise_timeout(_request: object, *, timeout: float) -> None:
+            assert timeout in {_FULL_TIMEOUT_S, 1.0}
+            raise TimeoutError
+
+        with patch("polylogue.cli.commands.status.urlopen", side_effect=raise_timeout):
+            with patch("polylogue.cli.commands.status._daemon_live", return_value=False):
+                with patch("polylogue.cli.commands.status._show_direct_json") as show_direct_json:
+                    result = CliRunner().invoke(
+                        status_command,
+                        ["--daemon-url", "http://127.0.0.1:8766", "--json", "--full"],
+                        obj=env,
+                    )
+
+        assert result.exit_code == 0
+        show_direct_json.assert_called_once_with(env, full=True, include_archive_readiness=False)
+
+    def test_status_command_exact_archive_readiness_direct_fallback_opts_in(self) -> None:
+        """Exact readiness is a separate explicit diagnostic flag."""
+        env = _make_app_env()
+
+        def raise_timeout(_request: object, *, timeout: float) -> None:
+            assert timeout in {_FULL_TIMEOUT_S, 1.0}
+            raise TimeoutError
+
+        with patch("polylogue.cli.commands.status.urlopen", side_effect=raise_timeout):
+            with patch("polylogue.cli.commands.status._daemon_live", return_value=False):
+                with patch("polylogue.cli.commands.status._show_direct_json") as show_direct_json:
+                    result = CliRunner().invoke(
+                        status_command,
+                        [
+                            "--daemon-url",
+                            "http://127.0.0.1:8766",
+                            "--json",
+                            "--full",
+                            "--exact-archive-readiness",
+                        ],
+                        obj=env,
+                    )
+
+        assert result.exit_code == 0
+        show_direct_json.assert_called_once_with(env, full=True, include_archive_readiness=True)
 
     def test_daemon_status_uses_reported_fts_coverage_pct(self) -> None:
         env = _make_app_env()

@@ -170,6 +170,7 @@ _ARCHIVE_TIER_TABLES: dict[str, tuple[str, ...]] = {
 
 
 _ARCHIVE_TIER_ENUM: dict[str, ArchiveTier] = {tier.value: tier for tier in ArchiveTier}
+_LARGE_TIER_EXACT_COUNT_LIMIT_BYTES = 256 * 1024 * 1024
 
 
 _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
@@ -451,7 +452,11 @@ def _archive_one_tier_status(tier: str, path: Path) -> dict[str, Any]:
             user_version = int(row[0] or 0) if row is not None else 0
             status["user_version"] = user_version
             status["version_status"] = "ok" if user_version == expected_version else "mismatch"
-            status["table_counts"] = _archive_table_counts(conn, _ARCHIVE_TIER_TABLES[tier])
+            counts, precision = _archive_table_counts(
+                conn, _ARCHIVE_TIER_TABLES[tier], db_size_bytes=path.stat().st_size
+            )
+            status["table_counts"] = counts
+            status["table_count_precision"] = precision
         finally:
             conn.close()
     except sqlite3.Error as exc:
@@ -460,10 +465,72 @@ def _archive_one_tier_status(tier: str, path: Path) -> dict[str, Any]:
     return status
 
 
-def _archive_table_counts(conn: sqlite3.Connection, table_names: Sequence[str]) -> dict[str, int]:
-    return {
-        table: _fast_count(conn, f"SELECT COUNT(*) FROM {table}") for table in table_names if _table_exists(conn, table)
-    }
+def _archive_table_counts(
+    conn: sqlite3.Connection,
+    table_names: Sequence[str],
+    *,
+    db_size_bytes: int,
+) -> tuple[dict[str, int], dict[str, str]]:
+    counts: dict[str, int] = {}
+    precision: dict[str, str] = {}
+    large_tier = db_size_bytes > _LARGE_TIER_EXACT_COUNT_LIMIT_BYTES
+    for table in table_names:
+        if not _table_exists(conn, table):
+            continue
+        cheap = _cheap_archive_table_count(conn, table)
+        if cheap is not None:
+            counts[table] = cheap
+            precision[table] = "exact"
+            continue
+        if not large_tier:
+            counts[table] = _fast_count(conn, f"SELECT COUNT(*) FROM {table}")
+            precision[table] = "exact"
+            continue
+        estimate = _sqlite_stat1_table_estimate(conn, table)
+        if estimate is not None:
+            counts[table] = estimate
+            precision[table] = "estimate"
+        else:
+            counts[table] = -2
+            precision[table] = "unavailable"
+    return counts, precision
+
+
+def _cheap_archive_table_count(conn: sqlite3.Connection, table: str) -> int | None:
+    if table == "messages" and _table_exists(conn, "sessions") and _column_exists(conn, "sessions", "message_count"):
+        row = conn.execute("SELECT COALESCE(SUM(message_count), 0) FROM sessions").fetchone()
+        return int(row[0] or 0) if row is not None else 0
+    if table in {
+        "sessions",
+        "raw_sessions",
+        "embedding_status",
+        "ingest_cursor",
+        "ingest_attempts",
+        "convergence_debt",
+    }:
+        return _fast_count(conn, f"SELECT COUNT(*) FROM {table}")
+    return None
+
+
+def _sqlite_stat1_table_estimate(conn: sqlite3.Connection, table: str) -> int | None:
+    if not _table_exists(conn, "sqlite_stat1"):
+        return None
+    rows = conn.execute(
+        """
+        SELECT stat
+        FROM sqlite_stat1
+        WHERE tbl = ?
+        ORDER BY idx IS NOT NULL, idx
+        LIMIT 1
+        """,
+        (table,),
+    ).fetchall()
+    if not rows:
+        return None
+    try:
+        return int(str(rows[0][0]).split()[0])
+    except (IndexError, TypeError, ValueError):
+        return None
 
 
 def _sqlite_sidecar_wal_bytes(path: Path) -> int:
@@ -942,10 +1009,16 @@ def _ops_workload_status(active_root: Path, *, now_ms: int) -> dict[str, Any]:
 )
 @click.option(
     "--full",
-    "include_archive_readiness",
+    "full_payload",
     is_flag=True,
     default=False,
-    help="Emit full daemon/direct JSON details and run exact archive-readiness probes in direct SQLite fallback.",
+    help="Emit full daemon/direct JSON details. Does not run exact archive-readiness probes.",
+)
+@click.option(
+    "--exact-archive-readiness",
+    is_flag=True,
+    default=False,
+    help="Run expensive exact archive-readiness probes in direct SQLite fallback.",
 )
 @click.pass_obj
 def status_command(
@@ -953,7 +1026,8 @@ def status_command(
     daemon_url: str,
     output_format: str | None,
     json_alias: bool,
-    include_archive_readiness: bool,
+    full_payload: bool,
+    exact_archive_readiness: bool,
 ) -> None:
     """Show daemon and archive health.
 
@@ -979,16 +1053,16 @@ def status_command(
             if _daemon_live(daemon_url, timeout=_FAST_TIMEOUT_S):
                 _show_daemon_status_unavailable_json(env)
             else:
-                _show_direct_json(env, include_archive_readiness=include_archive_readiness)
+                _show_direct_json(env, full=full_payload, include_archive_readiness=exact_archive_readiness)
         else:
             if _daemon_live(daemon_url, timeout=_FAST_TIMEOUT_S):
                 _show_daemon_status_unavailable(env)
             else:
-                _show_direct_status(env, include_archive_readiness=include_archive_readiness)
+                _show_direct_status(env, include_archive_readiness=exact_archive_readiness)
         return
 
     if output_format == "json":
-        _show_status_json(env, result, full=include_archive_readiness)
+        _show_status_json(env, result, full=full_payload)
     else:
         _show_daemon_status(env, result)
 
@@ -1292,7 +1366,12 @@ def _direct_archive_readiness_status(root: Path, *, include_archive_readiness: b
     }
 
 
-def _show_direct_json(env: AppEnv, *, include_archive_readiness: bool = False) -> None:
+def _show_direct_json(
+    env: AppEnv,
+    *,
+    full: bool = False,
+    include_archive_readiness: bool = False,
+) -> None:
     """Machine-readable JSON fallback when daemon is not running."""
     from polylogue.cli.commands.init import starter_config_path
     from polylogue.cli.commands.status_diagnostics import (
@@ -1351,7 +1430,7 @@ def _show_direct_json(env: AppEnv, *, include_archive_readiness: bool = False) -
                 conn.close()
         except Exception as exc:
             payload["error"] = str(exc)
-    output = payload if include_archive_readiness else _compact_status_payload(payload, source="direct")
+    output = payload if full or include_archive_readiness else _compact_status_payload(payload, source="direct")
     env.ui.console.print(json.dumps(output, indent=2, default=str))
 
 
