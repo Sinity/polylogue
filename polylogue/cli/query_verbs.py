@@ -2402,7 +2402,7 @@ def _resolve_query_action_session_ids(
     return [single] if single else []
 
 
-def _render_context_image_markdown(image: object) -> str:
+def _render_context_image_markdown(image: object, *, compact: bool = False) -> str:
     """Render a compiled ContextImage to markdown for terminal/file delivery."""
     spec = getattr(image, "spec", None)
     segments = tuple(getattr(image, "segments", ()))
@@ -2412,6 +2412,40 @@ def _render_context_image_markdown(image: object) -> str:
     read_views = tuple(getattr(spec, "read_views", ()) or ())
     projection_spec = getattr(image, "projection_spec", None)
     token_estimate = getattr(image, "token_estimate", None)
+    if compact:
+        budget = None
+        selection_query = None
+        selection_limit = None
+        if projection_spec is not None:
+            selection = getattr(projection_spec, "selection", None)
+            projection = getattr(projection_spec, "projection", None)
+            selection_query = getattr(selection, "query", None)
+            selection_limit = getattr(selection, "limit", None)
+            budget = getattr(projection, "max_tokens", None)
+        summary = (
+            f"context: {len(segments)} segment(s), {len(omitted)} omission(s)"
+            + (f", ~{token_estimate} tokens" if token_estimate is not None else "")
+            + (f", budget {budget}" if budget is not None else "")
+            + (f", query={selection_query}" if selection_query else "")
+            + (f", limit {selection_limit}" if selection_limit is not None else "")
+            + f", views={', '.join(str(view) for view in read_views) or 'none'}"
+        )
+        compact_lines: list[str] = [summary]
+        if caveats:
+            compact_lines.append(f"caveats: {', '.join(str(caveat) for caveat in caveats)}")
+        compact_parts: list[str] = ["\n".join(compact_lines)]
+        for index, segment in enumerate(segments, start=1):
+            markdown = getattr(segment, "markdown", None)
+            if markdown:
+                title = getattr(segment, "title", None) or getattr(segment, "payload_kind", None) or f"Segment {index}"
+                segment_lines = [f"## {index}. {title}", "", markdown.rstrip()]
+                compact_parts.append("\n".join(segment_lines))
+        if omitted:
+            compact_parts.append("## Omitted")
+            for omission in omitted:
+                target = omission.ref or omission.query or omission.view or "?"
+                compact_parts.append(f"- {target} [{omission.reason}]: {omission.detail}")
+        return "\n\n".join(compact_parts).rstrip() + "\n"
     lines: list[str] = [
         "# Context Image",
         "",
@@ -2559,10 +2593,13 @@ def run_read_context_image(
     session_ids = _resolve_query_action_session_ids(env, request, limit=limit, first_only=first_only)
     projection_spec = _projection_spec_with_resolved_session_refs(projection_spec, tuple(session_ids))
 
-    # compile_context handles read views and query-unit context; the context-image
-    # token maps to the message transcript view. Other tokens become honest
-    # "unsupported" omissions inside compile_context rather than silent drops.
-    compile_views = tuple("messages" if token == "context-image" else token for token in views)
+    # compile_context handles bounded session evidence. Context-image, summary,
+    # and transcript collapse to the message transcript view when composition
+    # needs token budgeting; ordinary summary/transcript reads still use their
+    # standard handlers outside this path.
+    compile_views = tuple(
+        "messages" if token in {"context-image", "summary", "transcript"} else token for token in views
+    )
     uses_context_image_defaults = "context-image" in views
 
     if session_ids:
@@ -2609,7 +2646,7 @@ def run_read_context_image(
     if output_format == "json":
         content = serialize_surface_payload(image, exclude_none=True) + "\n"
     else:
-        content = _render_context_image_markdown(image)
+        content = _render_context_image_markdown(image, compact=destination == "terminal")
     _deliver_content(env, content, destination=destination, out_path=out_path)
 
 

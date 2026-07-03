@@ -1240,8 +1240,24 @@ async def test_compile_context_records_missing_and_budget_omissions(tmp_path: Pa
                 max_tokens=1,
             )
         )
-        assert budgeted.segments == ()
-        assert [(item.view, item.reason) for item in budgeted.omitted] == [("messages", "budget")]
+        assert len(budgeted.segments) == 1
+        assert budgeted.omitted == ()
+        markdown = budgeted.segments[0].markdown or ""
+        assert "alpha" in markdown
+        assert "omitted" in markdown
+        assert budgeted.segments[0].caveats
+
+        fallback = await archive.compile_context(
+            ContextSpec(
+                seed_refs=("session:claude-ai-export:conv-alpha",),
+                read_views=("raw",),
+                max_tokens=50,
+            )
+        )
+        assert len(fallback.segments) == 1
+        assert fallback.segments[0].payload_kind == "messages"
+        assert fallback.segments[0].markdown
+        assert [(item.view, item.reason) for item in fallback.omitted] == [("raw", "unsupported")]
     finally:
         await archive.close()
 

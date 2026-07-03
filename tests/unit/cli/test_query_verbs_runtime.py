@@ -402,6 +402,7 @@ def _read_verb_kwargs(**overrides: object) -> dict[str, object]:
         "timestamp_policy": None,
         "out_path": None,
         "all_matches": False,
+        "full": False,
         "limit": None,
         "offset": 0,
         "window_hours": 24,
@@ -593,12 +594,10 @@ def test_read_verb_context_image_invokes_pack_view() -> None:
     assert kwargs["max_sessions"] == 3
     deliver.assert_called_once()
     delivered = deliver.call_args.args[1]
-    assert "- Selection query: cost" in delivered
-    assert "- Selection limit: 3" in delivered
-    assert "- Projection redact paths: true" in delivered
-    assert "- Render: markdown to terminal" in delivered
-    assert "- Render layout: context-image" in delivered
-    assert "- Render timestamps: include-available" in delivered
+    assert delivered.startswith("context: 0 segment(s), 0 omission(s)")
+    assert "query=cost" in delivered
+    assert "limit 3" in delivered
+    assert "- Selection query: cost" not in delivered
 
 
 def test_read_verb_context_image_projection_spec_records_resolved_refs() -> None:
@@ -635,6 +634,32 @@ def test_read_verb_context_image_projection_spec_records_resolved_refs() -> None
         "chronicle",
         "messages",
     ]
+
+
+@pytest.mark.parametrize("view", ["summary", "transcript"])
+def test_read_verb_token_bounded_standard_views_compile_as_messages(view: str) -> None:
+    """Token-bounded summary/transcript reads use compileable message context."""
+    _, child = _context_pair(query_terms=("id:codex-session:abc123",))
+    child.obj.config = SimpleNamespace()
+    captured_specs: list[ContextSpec] = []
+
+    async def compile_context(spec: ContextSpec) -> ContextImage:
+        captured_specs.append(spec)
+        return ContextImage(spec=spec, segments=())
+
+    child.obj.polylogue = SimpleNamespace(compile_context=compile_context)
+    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+
+    with (
+        patch("polylogue.cli.query_verbs._resolve_query_action_session_ids", return_value=["codex-session:abc123"]),
+        patch("polylogue.cli.read_views.base.deliver_content"),
+    ):
+        wrapped(child, **_read_verb_kwargs(view=view, max_tokens=400))
+
+    assert captured_specs[0].read_views == ("messages",)
+    assert captured_specs[0].seed_refs == ("session:codex-session:abc123",)
+    assert captured_specs[0].max_tokens == 400
 
 
 def test_context_image_markdown_renderer_adds_document_structure() -> None:

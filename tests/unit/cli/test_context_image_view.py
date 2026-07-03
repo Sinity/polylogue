@@ -94,7 +94,7 @@ async def test_compile_context_accepts_filtered_seed_selection(tmp_path: Path) -
 
 @pytest.mark.asyncio
 async def test_max_tokens_bounds_output_with_omission_accounting(tmp_path: Path) -> None:
-    """A tiny --max-tokens budget drops over-budget segments as explicit omissions."""
+    """A tiny --max-tokens budget clips within resolved message segments."""
     archive_root = tmp_path / "archive"
     _seed(archive_root, provider_session_id="budget-a", text="alpha budget body that has several words")
     _seed(archive_root, provider_session_id="budget-b", text="beta budget body that also has several words")
@@ -115,13 +115,10 @@ async def test_max_tokens_bounds_output_with_omission_accounting(tmp_path: Path)
         )
 
     assert len(unbounded.segments) == 2
-    # The budget bounds accumulation: fewer segments survive, and every drop is
-    # reported as a budget omission rather than silently truncated.
-    assert len(bounded.segments) < len(unbounded.segments)
-    assert bounded.token_estimate <= unbounded.token_estimate
-    budget_omissions = [omission for omission in bounded.omitted if omission.reason == "budget"]
-    assert budget_omissions
-    assert len(bounded.segments) + len(budget_omissions) == len(unbounded.segments)
+    assert len(bounded.segments) == len(unbounded.segments)
+    assert bounded.omitted == ()
+    assert all(segment.caveats for segment in bounded.segments)
+    assert all("omitted from this message" in (segment.markdown or "") for segment in bounded.segments)
 
 
 @pytest.mark.asyncio

@@ -121,6 +121,7 @@ if TYPE_CHECKING:
         TagMutationResult,
     )
 
+_BOUNDED_MESSAGES_FALLBACK_READ_VIEWS = frozenset({"raw", "context", "neighbors", "correlation", "chronicle"})
 
 _FACET_CORE_FAMILIES = (
     "total_counts",
@@ -303,6 +304,7 @@ def _archive_context_message_window(
     anchor_message_id: str | None,
     max_messages: int | None,
     max_chars_per_message: int | None,
+    max_tokens: int | None = None,
 ) -> tuple[tuple[tuple[str, str], ...], int, int, int]:
     """Return normalized message rows plus omission/clipping counts for context."""
 
@@ -324,7 +326,19 @@ def _archive_context_message_window(
             )
         )
     if max_messages is None or len(rows) <= max_messages:
-        return tuple((role, text) for _message_id, role, text in rows), 0, 0, clipped_messages
+        window = rows
+        omitted_before = 0
+        omitted_after = 0
+        if max_tokens is not None:
+            window, budget_omitted_before, budget_clipped = _budget_context_message_window(window, max_tokens)
+            omitted_before += budget_omitted_before
+            clipped_messages += budget_clipped
+        return (
+            tuple((role, text) for _message_id, role, text in window),
+            omitted_before,
+            omitted_after,
+            clipped_messages,
+        )
 
     anchor_index = 0
     if anchor_message_id is not None:
@@ -337,12 +351,68 @@ def _archive_context_message_window(
     start = min(start, max(0, len(rows) - max_messages))
     end = start + max_messages
     window = rows[start:end]
+    omitted_before = start
+    omitted_after = max(0, len(rows) - end)
+    if max_tokens is not None:
+        window, budget_omitted_before, budget_clipped = _budget_context_message_window(window, max_tokens)
+        omitted_before += budget_omitted_before
+        clipped_messages += budget_clipped
     return (
         tuple((role, text) for _message_id, role, text in window),
-        start,
-        max(0, len(rows) - end),
+        omitted_before,
+        omitted_after,
         clipped_messages,
     )
+
+
+def _budget_context_message_window(
+    rows: Sequence[tuple[str, str, str]],
+    max_tokens: int,
+) -> tuple[list[tuple[str, str, str]], int, int]:
+    """Return a tail-biased message window that fits a small token budget."""
+
+    if not rows:
+        return [], 0, 0
+    remaining = max(1, max_tokens - 48)
+    selected: list[tuple[str, str, str]] = []
+    clipped_messages = 0
+    for message_id, role, text in reversed(rows):
+        message_tokens = _context_message_token_estimate(role, text)
+        if message_tokens <= remaining:
+            selected.append((message_id, role, text))
+            remaining -= message_tokens
+            if remaining <= 0:
+                break
+            continue
+        if not selected and remaining > 0:
+            clipped_text = _clip_text_to_token_budget(text, remaining)
+            if clipped_text:
+                selected.append((message_id, role, clipped_text))
+                clipped_messages += 1
+            break
+    if not selected:
+        message_id, role, text = rows[-1]
+        selected.append((message_id, role, _clip_text_to_token_budget(text, 1) or text[:1]))
+        clipped_messages += 1
+    selected.reverse()
+    first_selected_id = selected[0][0]
+    selected_start = next((index for index, row in enumerate(rows) if row[0] == first_selected_id), len(rows))
+    return selected, selected_start, clipped_messages
+
+
+def _context_message_token_estimate(role: str, text: str) -> int:
+    return max(1, len(role.split()) + len(text.split()) + 1)
+
+
+def _clip_text_to_token_budget(text: str, max_tokens: int) -> str:
+    words = text.split()
+    if not words:
+        return ""
+    if len(words) <= max_tokens:
+        return text
+    kept = max(1, max_tokens)
+    omitted = len(words) - kept
+    return " ".join(words[:kept]).rstrip() + f"\n\n... {omitted} words omitted from this message."
 
 
 def _dedupe_object_refs(refs: Iterable[ObjectRef]) -> tuple[ObjectRef, ...]:
@@ -2249,6 +2319,40 @@ class PolylogueArchiveMixin:
 
         token_budget = spec.max_tokens
         token_total = 0
+
+        def append_messages_segment(session_id: str, session: Session, view: str) -> bool:
+            nonlocal token_total
+            remaining_tokens = None if token_budget is None else max(1, token_budget - token_total)
+            messages, omitted_before, omitted_after, clipped_messages = _archive_context_message_window(
+                tuple(session.messages),
+                anchor_message_id=message_anchor_by_session.get(session_id),
+                max_messages=spec.max_messages_per_session,
+                max_chars_per_message=spec.max_chars_per_message,
+                max_tokens=remaining_tokens,
+            )
+            segment = compile_messages_context_segment(
+                session_id=session_id,
+                title=session.title,
+                messages=messages,
+                evidence_refs=(EvidenceRef(session_id=session_id),),
+                omitted_before=omitted_before,
+                omitted_after=omitted_after,
+                clipped_messages=clipped_messages,
+            )
+            if token_budget is not None and token_total + segment.token_estimate > token_budget and not messages:
+                omitted.append(
+                    ContextOmission(
+                        ref=f"session:{session_id}",
+                        view=view,
+                        reason="budget",
+                        detail="segment exceeded the requested context token budget",
+                    )
+                )
+                return False
+            token_total += segment.token_estimate
+            segments.append(segment)
+            return True
+
         for expression in spec.unit_queries:
             try:
                 envelope = await self.query_units(expression, limit=spec.unit_query_limit)
@@ -2277,6 +2381,7 @@ class PolylogueArchiveMixin:
         for session_id in session_ids:
             session = await self.get_session(session_id)
             summary = await self.get_session_summary(session_id)
+            session_segment_start = len(segments)
             for view in requested_views:
                 if view == "messages":
                     if session is None:
@@ -2289,33 +2394,7 @@ class PolylogueArchiveMixin:
                             )
                         )
                         continue
-                    messages, omitted_before, omitted_after, clipped_messages = _archive_context_message_window(
-                        tuple(session.messages),
-                        anchor_message_id=message_anchor_by_session.get(session_id),
-                        max_messages=spec.max_messages_per_session,
-                        max_chars_per_message=spec.max_chars_per_message,
-                    )
-                    segment = compile_messages_context_segment(
-                        session_id=session_id,
-                        title=session.title,
-                        messages=messages,
-                        evidence_refs=(EvidenceRef(session_id=session_id),),
-                        omitted_before=omitted_before,
-                        omitted_after=omitted_after,
-                        clipped_messages=clipped_messages,
-                    )
-                    if token_budget is not None and token_total + segment.token_estimate > token_budget:
-                        omitted.append(
-                            ContextOmission(
-                                ref=f"session:{session_id}",
-                                view=view,
-                                reason="budget",
-                                detail="segment exceeded the requested context token budget",
-                            )
-                        )
-                        continue
-                    token_total += segment.token_estimate
-                    segments.append(segment)
+                    append_messages_segment(session_id, session, view)
                     continue
                 if view == "temporal":
                     if summary is None:
@@ -2380,6 +2459,13 @@ class PolylogueArchiveMixin:
                         ),
                     )
                 )
+            if (
+                token_budget is not None
+                and session is not None
+                and len(segments) == session_segment_start
+                and any(view in _BOUNDED_MESSAGES_FALLBACK_READ_VIEWS for view in requested_views)
+            ):
+                append_messages_segment(session_id, session, "messages")
             if spec.include_assertions:
                 assertion_claims = await self.list_assertion_claim_payloads(
                     target_ref=f"session:{session_id}",
