@@ -466,6 +466,52 @@ def _archive_table_counts(conn: sqlite3.Connection, table_names: Sequence[str]) 
     }
 
 
+def _sqlite_sidecar_wal_bytes(path: Path) -> int:
+    wal_path = Path(f"{path}-wal")
+    return wal_path.stat().st_size if wal_path.exists() else 0
+
+
+def _sqlite_stat1_rows(conn: sqlite3.Connection) -> int:
+    if not _table_exists(conn, "sqlite_stat1"):
+        return 0
+    return _fast_count(conn, "SELECT COUNT(*) FROM sqlite_stat1")
+
+
+def _sqlite_maintenance_status(root: Path) -> dict[str, Any]:
+    tiers: dict[str, dict[str, Any]] = {}
+    total_wal_bytes = 0
+    tiers_with_planner_stats: list[str] = []
+    for tier, path in _archive_tier_files(root).items():
+        tier_status: dict[str, Any] = {
+            "path": str(path),
+            "exists": path.exists(),
+            "wal_bytes": _sqlite_sidecar_wal_bytes(path),
+            "sqlite_stat1_rows": 0,
+            "planner_stats_present": False,
+        }
+        total_wal_bytes += int(tier_status["wal_bytes"])
+        if path.exists():
+            try:
+                conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+                try:
+                    stat_rows = _sqlite_stat1_rows(conn)
+                finally:
+                    conn.close()
+                tier_status["sqlite_stat1_rows"] = stat_rows
+                tier_status["planner_stats_present"] = stat_rows > 0
+                if stat_rows > 0:
+                    tiers_with_planner_stats.append(tier)
+            except sqlite3.Error as exc:
+                tier_status["error"] = str(exc)
+        tiers[tier] = tier_status
+    return {
+        "archive_root": str(root),
+        "total_wal_bytes": total_wal_bytes,
+        "tiers_with_planner_stats": tiers_with_planner_stats,
+        "tiers": tiers,
+    }
+
+
 def _archive_readiness_status(root: Path) -> dict[str, Any]:
     index_db = root / "index.db"
     source_db = root / "source.db"
@@ -1088,6 +1134,10 @@ def _compact_status_payload(status: dict[str, Any], *, source: str) -> dict[str,
     if isinstance(archive_tiers, dict):
         payload["archive_tiers"] = archive_tiers
 
+    sqlite_maintenance = status.get("sqlite_maintenance")
+    if isinstance(sqlite_maintenance, dict):
+        payload["sqlite_maintenance"] = sqlite_maintenance
+
     storage = _compact_storage_status(status)
     if storage:
         payload["storage"] = storage
@@ -1272,6 +1322,7 @@ def _show_direct_json(env: AppEnv, *, include_archive_readiness: bool = False) -
         "config_exists": config_path.exists(),
         "config_path": str(config_path),
         "archive_tiers": _archive_tier_status(active_root),
+        "sqlite_maintenance": _sqlite_maintenance_status(active_root),
         "ingest_workload": _ops_workload_status(active_root, now_ms=int(time.time() * 1000)),
         "archive_readiness": archive_readiness,
         "archive_facade_routes": _archive_facade_route_status(),
@@ -1644,6 +1695,7 @@ def _show_direct_status(
             tier_detail = _archive_tier_detail_line(tiers)
             if tier_detail:
                 env.ui.console.print(f"  Archive tier detail: {tier_detail}")
+            _render_sqlite_maintenance(env, _sqlite_maintenance_status(active_root))
             _render_archive_readiness(
                 env,
                 _direct_archive_readiness_status(
@@ -1716,6 +1768,16 @@ def _render_archive_readiness(env: AppEnv, readiness: dict[str, Any]) -> None:
         env.ui.console.print(f"    {name}: {blockers}")
     if len(blocked_surfaces) > 5:
         env.ui.console.print(f"    +{len(blocked_surfaces) - 5} more blocked surfaces")
+
+
+def _render_sqlite_maintenance(env: AppEnv, status: dict[str, Any]) -> None:
+    wal_bytes = _safe_int(status.get("total_wal_bytes"))
+    planner_tiers = [str(tier) for tier in status.get("tiers_with_planner_stats") or []]
+    planner_text = ",".join(planner_tiers) if planner_tiers else "none"
+    color = "green" if wal_bytes == 0 and planner_tiers else "yellow"
+    env.ui.console.print(
+        f"  SQLite maintenance: [{color}]WAL {_fmt_bytes(wal_bytes)}, planner stats={planner_text}[/{color}]"
+    )
 
 
 def _render_archive_facade_routes(env: AppEnv, routing: dict[str, Any]) -> None:

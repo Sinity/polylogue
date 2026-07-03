@@ -194,6 +194,41 @@ class TestNoArchiveStatus:
         assert "Messages: 2" in combined
         assert "Raw records: 1" in combined
 
+    def test_direct_status_reports_sqlite_maintenance_state(self, tmp_path: Path) -> None:
+        env = _make_app_env()
+        db_anchor = tmp_path / "custom.sqlite"
+        index_db = tmp_path / "index.db"
+        conn = sqlite3.connect(index_db)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA wal_autocheckpoint=0")
+            conn.executescript(
+                """
+                CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    message_count INTEGER NOT NULL
+                );
+                INSERT INTO sessions VALUES ('codex-session:one', 2);
+                ANALYZE;
+                """
+            )
+            conn.commit()
+
+            with (
+                patch("polylogue.paths.db_path", return_value=db_anchor),
+                patch("polylogue.paths.archive_root", return_value=tmp_path),
+                patch("polylogue.cli.commands.status_diagnostics.diagnose_first_run") as diagnose,
+            ):
+                _show_direct_status(env)
+        finally:
+            conn.close()
+
+        diagnose.assert_not_called()
+        combined = _combined_calls(env)
+        assert "SQLite maintenance:" in combined
+        assert "planner stats=index" in combined
+        assert "WAL " in combined
+
     def test_direct_status_skips_exact_archive_readiness_by_default(self, tmp_path: Path) -> None:
         env = _make_app_env()
         db_anchor = tmp_path / "custom.sqlite"
@@ -273,9 +308,49 @@ class TestNoArchiveStatus:
         assert "archive_facade_routes" not in payload
         assert "archive_cli_routes" not in payload
         assert "archive_runtime_paths" not in payload
+        assert payload["sqlite_maintenance"]["tiers"]["index"]["exists"] is True
+        assert payload["sqlite_maintenance"]["tiers"]["index"]["planner_stats_present"] is False
+        assert payload["sqlite_maintenance"]["tiers"]["source"]["exists"] is True
         assert payload["sessions"] == 1
         assert payload["messages"] == 3
         assert payload["raw_records"] == 2
+
+    def test_direct_status_json_reports_sqlite_maintenance_state(self, tmp_path: Path) -> None:
+        env = _make_app_env()
+        db_anchor = tmp_path / "custom.sqlite"
+        index_db = tmp_path / "index.db"
+        conn = sqlite3.connect(index_db)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA wal_autocheckpoint=0")
+            conn.executescript(
+                """
+                CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    message_count INTEGER NOT NULL
+                );
+                INSERT INTO sessions VALUES ('codex-session:one', 3);
+                ANALYZE;
+                """
+            )
+            conn.commit()
+            wal_bytes = Path(f"{index_db}-wal").stat().st_size
+
+            with (
+                patch("polylogue.paths.db_path", return_value=db_anchor),
+                patch("polylogue.paths.archive_root", return_value=tmp_path),
+            ):
+                _show_direct_json(env)
+        finally:
+            conn.close()
+
+        payload = json.loads(_combined_calls(env))
+        maintenance = payload["sqlite_maintenance"]
+        assert maintenance["total_wal_bytes"] == wal_bytes
+        assert maintenance["tiers_with_planner_stats"] == ["index"]
+        assert maintenance["tiers"]["index"]["wal_bytes"] == wal_bytes
+        assert maintenance["tiers"]["index"]["sqlite_stat1_rows"] == 1
+        assert maintenance["tiers"]["index"]["planner_stats_present"] is True
 
     def test_direct_status_json_reports_active_archive_root_for_sibling_index(self, tmp_path: Path) -> None:
         env = _make_app_env()
