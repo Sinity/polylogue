@@ -358,6 +358,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "unpaired_structured_failures": unpaired_structured_failures,
             "inspected_structured_failures": len(rows),
             "limit": args.limit,
+            "time_window": "entire archive (no since/until filter)",
             "complete_failure_frame": len(rows) >= total_structured_failures,
             "selection_strategy": (
                 "origin-stratified bounded sample; at least one row per origin when limit allows, "
@@ -424,6 +425,8 @@ def _write_artifacts(out_dir: Path, report: dict[str, Any]) -> None:
             "ambiguous": totals["ambiguous"],
             "silent_rate_lower_bound": rates["silent_rate_lower_bound"],
             "limit": report["limit"],
+            "time_window": report["sample_frame"]["time_window"],
+            "sampled_by_origin": report["sample_frame"]["sampled_by_origin"],
         },
         "caveats": [
             "The report is bounded by --limit for fast active-archive regeneration.",
@@ -441,6 +444,14 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
     totals = report["totals"]
     rates = report["rates"]
     frame = report["sample_frame"]
+    sampled_by_origin = [
+        (
+            f"- {row['origin']}: inspected {int(row['inspected_structured_failures']):,} / "
+            f"{int(row['total_structured_failures']):,} structured failures "
+            f"(requested {int(row['requested_limit']):,})"
+        )
+        for row in frame["sampled_by_origin"]
+    ]
     lines = [
         "# Claim-vs-Evidence Failure Follow-Up",
         "",
@@ -456,6 +467,7 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
         "",
         "## Current Bounded Result",
         "",
+        f"- time window: {frame['time_window']}",
         f"- total structured failures in frame: {frame['total_structured_failures']:,}",
         f"- unpaired structured failures outside classifiable frame: {frame['unpaired_structured_failures']:,}",
         f"- failed structured outcomes inspected: {totals['failed_outcomes']:,}",
@@ -467,6 +479,11 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
         f"- silent among classified: {rates['silent_rate_among_classified']:.1%}",
         f"- configured limit: {report['limit']:,}",
         f"- selection order: {frame['selection_order']}",
+        f"- selection strategy: {frame['selection_strategy']}",
+        "",
+        "### Inspected vs Total by Origin",
+        "",
+        *sampled_by_origin,
         "",
         "## Regenerate",
         "",

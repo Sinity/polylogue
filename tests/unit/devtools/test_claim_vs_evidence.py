@@ -158,6 +158,7 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
         "failure_predicate": "tool_result_is_error = 1 OR tool_result_exit_code != 0",
         "inspected_structured_failures": 3,
         "limit": 3,
+        "time_window": "entire archive (no since/until filter)",
         "sampled_by_origin": [
             {
                 "inspected_structured_failures": 2,
@@ -211,8 +212,27 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
     assert summary["non_claim"]
     assert summary["proof_report"]["failed_outcomes"] == 3
     assert summary["proof_report"]["complete_failure_frame"] is True
+    assert summary["proof_report"]["time_window"] == "entire archive (no since/until filter)"
+    assert summary["proof_report"]["sampled_by_origin"] == [
+        {
+            "inspected_structured_failures": 2,
+            "origin": "claude-code-session",
+            "requested_limit": 2,
+            "total_structured_failures": 2,
+        },
+        {
+            "inspected_structured_failures": 1,
+            "origin": "codex-session",
+            "requested_limit": 1,
+            "total_structured_failures": 1,
+        },
+    ]
     assert (out_dir / "claim-vs-evidence.report.json").exists()
-    assert "Claim-vs-Evidence" in (out_dir / "README.md").read_text()
+    readme = (out_dir / "README.md").read_text()
+    assert "Claim-vs-Evidence" in readme
+    assert "- time window: entire archive (no since/until filter)" in readme
+    assert "- claude-code-session: inspected 2 / 2 structured failures (requested 2)" in readme
+    assert "- codex-session: inspected 1 / 1 structured failures (requested 1)" in readme
 
 
 def test_claim_vs_evidence_bounded_sample_is_origin_stratified(tmp_path: Path) -> None:
