@@ -2034,6 +2034,7 @@ def launch_branch_daemon(
         "from polylogue.daemon.cli import main; main()",
         "run",
         "--no-watch",
+        "--no-source-catchup",
         "--api-port",
         str(api_port),
         "--port",
@@ -2664,7 +2665,7 @@ def build_dev_loop_status(
         "run_daemon": (
             f"{shell_env_prefix} "
             f"{shlex.quote(sys.executable)} -c 'from polylogue.daemon.cli import main; main()' "
-            f"run --no-watch --api-port {api_port} --port {browser_capture_port} "
+            f"run --no-watch --no-source-catchup --api-port {api_port} --port {browser_capture_port} "
             f"--spool {daemon_spool} 2>&1 | tee {daemon_log}"
         ),
         "open_web_shell": web_url,
@@ -3018,7 +3019,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--launch-daemon",
         action="store_true",
-        help="Launch branch-local polylogued with --no-watch and write PID/log/summary artifacts.",
+        help="Launch branch-local polylogued with watch/source catch-up disabled and write PID/log/summary artifacts.",
     )
     parser.add_argument(
         "--extension-smoke",

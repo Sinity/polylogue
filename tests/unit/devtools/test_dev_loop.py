@@ -133,7 +133,7 @@ def test_build_dev_loop_status_uses_branch_local_paths_and_warnings(
     assert "from polylogue.daemon.cli import main; main()" in payload["commands"]["run_daemon"]
     assert "POLYLOGUE_DAEMON_URL=http://127.0.0.1:9999" in payload["commands"]["run_daemon"]
     assert "XDG_DATA_HOME=" in payload["commands"]["run_daemon"]
-    assert "run --no-watch --api-port 9999 --port 9998" in payload["commands"]["run_daemon"]
+    assert "run --no-watch --no-source-catchup --api-port 9999 --port 9998" in payload["commands"]["run_daemon"]
     assert "--spool" in payload["commands"]["run_daemon"]
     assert "polylogue ops status" in payload["commands"]["capture_cli_status"]
     assert "POLYLOGUE_DAEMON_URL=http://127.0.0.1:9999" in payload["commands"]["capture_cli_status"]
@@ -1264,6 +1264,7 @@ def test_daemon_launch_writes_branch_local_process_artifacts(
         "run",
     ]
     assert "--no-watch" in command
+    assert "--no-source-catchup" in command
     assert command[command.index("--api-port") : command.index("--api-port") + 2] == ["--api-port", "9876"]
     assert command[command.index("--port") : command.index("--port") + 2] == ["--port", "9875"]
     assert launch["pid"] == 4242
