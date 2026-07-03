@@ -11,6 +11,7 @@ from polylogue.core.enums import Provider, SessionKind
 from polylogue.sources.parsers.base_models import ParsedAttachment, ParsedMessage, ParsedSession
 
 TEMPORARY_CHAT_INGEST_FLAG = "capture:temporary-chat"
+DOM_FALLBACK_INGEST_FLAG = "capture:dom-fallback"
 
 
 def _legacy_native_id(provider: Provider, provider_session_id: str | None) -> str | None:
@@ -151,8 +152,15 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
         messages=messages,
         active_leaf_message_provider_id=active_leaf_message_provider_id,
         attachments=attachments,
-        ingest_flags=_ingest_flags_for_browser_capture(envelope, provider_session_id),
+        ingest_flags=[
+            *dict.fromkeys(
+                [
+                    *_ingest_flags_for_browser_capture(envelope, provider_session_id),
+                    DOM_FALLBACK_INGEST_FLAG,
+                ]
+            )
+        ],
     )
 
 
-__all__ = ["TEMPORARY_CHAT_INGEST_FLAG", "looks_like", "parse"]
+__all__ = ["DOM_FALLBACK_INGEST_FLAG", "TEMPORARY_CHAT_INGEST_FLAG", "looks_like", "parse"]

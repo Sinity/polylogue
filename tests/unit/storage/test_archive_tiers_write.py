@@ -904,10 +904,15 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
                 timestamp="2026-01-01T00:00:01+00:00",
                 payload={"summary": "compressed context"},
             ),
+            ParsedSessionEvent(
+                event_type="capture_gap",
+                timestamp="2026-01-01T00:00:02+00:00",
+                payload={"summary": "DOM fallback skipped; richer capture already exists"},
+            ),
             ParsedSessionEvent(event_type="turn_context", payload={"cwd": "/tmp"}),
             ParsedSessionEvent(
                 event_type="agent_policy",
-                timestamp="2026-01-01T00:00:02+00:00",
+                timestamp="2026-01-01T00:00:03+00:00",
                 payload={"approval": "on-request"},
             ),
         ],
@@ -933,6 +938,14 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
             "summary": "compressed context",
             "occurred_at_ms": 1_767_225_601_000,
         },
+        {
+            "event_id": f"{session_id}:1",
+            "source_message_id": None,
+            "position": 1,
+            "event_type": "capture_gap",
+            "summary": "DOM fallback skipped; richer capture already exists",
+            "occurred_at_ms": 1_767_225_602_000,
+        },
     ]
     policies = conn.execute(
         """
@@ -945,13 +958,13 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
     ).fetchall()
     assert [dict(row) for row in policies] == [
         {
-            "policy_id": f"{session_id}:1",
+            "policy_id": f"{session_id}:2",
             "source_message_id": None,
-            "position": 1,
+            "position": 2,
             "approval_policy": "on-request",
             "sandbox_policy": None,
             "network_policy": None,
-            "observed_at_ms": 1_767_225_602_000,
+            "observed_at_ms": 1_767_225_603_000,
         },
     ]
 

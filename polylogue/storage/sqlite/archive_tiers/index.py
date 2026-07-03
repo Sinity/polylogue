@@ -33,7 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 23
+INDEX_SCHEMA_VERSION = 24
 
 INDEX_DDL = f"""
 CREATE TABLE IF NOT EXISTS sessions (
@@ -347,7 +347,7 @@ CREATE TABLE IF NOT EXISTS session_events (
     session_id        TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     source_message_id TEXT REFERENCES messages(message_id) ON DELETE SET NULL,
     position          INTEGER NOT NULL CHECK(position >= 0),
-    event_type        TEXT NOT NULL CHECK(event_type IN ('compaction')),
+    event_type        TEXT NOT NULL CHECK(event_type IN ('compaction', 'capture_gap')),
     summary           TEXT NOT NULL,
     occurred_at_ms    INTEGER,
     PRIMARY KEY(session_id, position)

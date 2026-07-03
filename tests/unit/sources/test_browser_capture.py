@@ -11,7 +11,7 @@ from polylogue.browser_capture.receiver import write_capture_envelope
 from polylogue.config import Source, get_config
 from polylogue.core.enums import Provider
 from polylogue.sources.dispatch import detect_provider, parse_payload
-from polylogue.sources.parsers.browser_capture import TEMPORARY_CHAT_INGEST_FLAG
+from polylogue.sources.parsers.browser_capture import DOM_FALLBACK_INGEST_FLAG, TEMPORARY_CHAT_INGEST_FLAG
 from tests.infra.archive_scenarios import open_index_db
 
 
@@ -75,6 +75,7 @@ def test_browser_capture_parses_session_metadata_and_deduplicates_turns() -> Non
     assert len(session.attachments) == 1
     assert session.attachments[0].message_provider_id == "a1"
     assert session.attachments[0].source_url == "https://chatgpt.com/attachment/1"
+    assert DOM_FALLBACK_INGEST_FLAG in session.ingest_flags
 
 
 def test_browser_capture_prefers_raw_chatgpt_payload_when_present() -> None:
@@ -124,6 +125,7 @@ def test_browser_capture_prefers_raw_chatgpt_payload_when_present() -> None:
     assert [message.text for message in session.messages] == ["Native user text", "print('native')"]
     assert session.messages[1].model_name == "gpt-native"
     assert session.messages[1].blocks[0].type.value == "code"
+    assert DOM_FALLBACK_INGEST_FLAG not in session.ingest_flags
 
 
 def test_browser_capture_raw_chatgpt_payload_matches_direct_import_identity() -> None:

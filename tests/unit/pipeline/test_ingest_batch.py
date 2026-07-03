@@ -715,6 +715,7 @@ def test_write_session_skips_shorter_duplicate_raw_source(tmp_path: Path) -> Non
 
 
 def test_write_session_skips_equal_count_duplicate_raw_source(tmp_path: Path) -> None:
+    """Equal-count changed content is still fresher evidence and must update."""
     with open_connection(tmp_path / "index.db") as conn:
         existing = _session_data(
             "codex-session:duplicate-equal",
@@ -783,11 +784,166 @@ def test_write_session_skips_equal_count_duplicate_raw_source(tmp_path: Path) ->
         ).fetchone()["raw_id"]
 
         assert changed_existing is True
-        assert changed_duplicate is False
-        assert counts_duplicate["skipped_sessions"] == 1
-        assert counts_duplicate["skipped_messages"] == 2
-        assert [row["text"] for row in messages] == ["first", "second"]
-        assert raw_id == "raw-existing"
+        assert changed_duplicate is True
+        assert counts_duplicate["sessions"] == 1
+        assert [row["text"] for row in messages] == ["first duplicate", "second duplicate"]
+        assert raw_id == "raw-duplicate"
+
+
+def test_write_session_dom_fallback_does_not_replace_native_source(tmp_path: Path) -> None:
+    with open_connection(tmp_path / "index.db") as conn:
+        native = _session_data(
+            "codex-session:dom-precedence",
+            content_hash="hash-native",
+            raw_id="raw-native",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex-session:dom-precedence",
+                    role="user",
+                    text="native first",
+                    content_hash="msg-1",
+                    sort_key=1.0,
+                ),
+                _message_tuple(
+                    "msg-2",
+                    "codex-session:dom-precedence",
+                    role="assistant",
+                    text="native second",
+                    content_hash="msg-2",
+                    sort_key=2.0,
+                ),
+            ],
+        )
+        dom_fallback = _session_data(
+            "codex-session:dom-precedence",
+            content_hash="hash-dom-fallback",
+            raw_id="raw-dom-fallback",
+            ingest_flags=["capture:dom-fallback"],
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex-session:dom-precedence",
+                    role="user",
+                    text="fallback first",
+                    content_hash="msg-1-fallback",
+                    sort_key=1.0,
+                ),
+                _message_tuple(
+                    "msg-2",
+                    "codex-session:dom-precedence",
+                    role="assistant",
+                    text="fallback second",
+                    content_hash="msg-2-fallback",
+                    sort_key=2.0,
+                ),
+            ],
+        )
+
+        changed_native, _counts_native = _write_session(conn, native)
+        changed_fallback, counts_fallback = _write_session(conn, dom_fallback)
+        conn.commit()
+
+        messages = conn.execute(
+            """
+            SELECT b.text
+            FROM messages m
+            JOIN blocks b ON b.message_id = m.message_id
+            WHERE m.session_id = ? AND b.block_type = 'text'
+            ORDER BY m.position, b.position
+            """,
+            ("codex-session:dom-precedence",),
+        ).fetchall()
+        raw_id = conn.execute(
+            "SELECT raw_id FROM sessions WHERE session_id = ?",
+            ("codex-session:dom-precedence",),
+        ).fetchone()["raw_id"]
+
+        assert changed_native is True
+        assert changed_fallback is False
+        assert counts_fallback["skipped_sessions"] == 1
+        assert counts_fallback["session_events"] == 1
+        assert [row["text"] for row in messages] == ["native first", "native second"]
+        assert raw_id == "raw-native"
+        event = conn.execute(
+            """
+            SELECT event_type, summary
+            FROM session_events
+            WHERE session_id = ?
+            """,
+            ("codex-session:dom-precedence",),
+        ).fetchone()
+        assert event["event_type"] == "capture_gap"
+        assert "DOM browser-capture fallback" in event["summary"]
+        assert "raw-dom-fallback" in event["summary"]
+
+
+def test_write_session_native_source_replaces_dom_fallback_even_when_shorter(tmp_path: Path) -> None:
+    with open_connection(tmp_path / "index.db") as conn:
+        dom_fallback = _session_data(
+            "codex-session:native-over-dom",
+            content_hash="hash-dom-fallback",
+            raw_id="raw-dom-fallback",
+            ingest_flags=["capture:dom-fallback"],
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "codex-session:native-over-dom",
+                    role="user",
+                    text="fallback first",
+                    content_hash="msg-1-fallback",
+                    sort_key=1.0,
+                ),
+                _message_tuple(
+                    "msg-2",
+                    "codex-session:native-over-dom",
+                    role="assistant",
+                    text="fallback second",
+                    content_hash="msg-2-fallback",
+                    sort_key=2.0,
+                ),
+            ],
+        )
+        native = _session_data(
+            "codex-session:native-over-dom",
+            content_hash="hash-native",
+            raw_id="raw-native",
+            message_tuples=[
+                _message_tuple(
+                    "msg-native",
+                    "codex-session:native-over-dom",
+                    role="assistant",
+                    text="native body",
+                    content_hash="msg-native",
+                    sort_key=3.0,
+                )
+            ],
+        )
+
+        changed_fallback, _counts_fallback = _write_session(conn, dom_fallback)
+        changed_native, counts_native = _write_session(conn, native)
+        conn.commit()
+
+        messages = conn.execute(
+            """
+            SELECT b.text
+            FROM messages m
+            JOIN blocks b ON b.message_id = m.message_id
+            WHERE m.session_id = ? AND b.block_type = 'text'
+            ORDER BY m.position, b.position
+            """,
+            ("codex-session:native-over-dom",),
+        ).fetchall()
+        raw_id = conn.execute(
+            "SELECT raw_id FROM sessions WHERE session_id = ?",
+            ("codex-session:native-over-dom",),
+        ).fetchone()["raw_id"]
+
+        assert changed_fallback is True
+        assert changed_native is True
+        assert counts_native["sessions"] == 1
+        assert [row["text"] for row in messages] == ["native body"]
+        assert raw_id == "raw-native"
 
 
 def test_write_session_skips_new_with_zero_messages(tmp_path: Path) -> None:

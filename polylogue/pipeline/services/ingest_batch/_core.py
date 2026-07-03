@@ -41,6 +41,7 @@ from polylogue.pipeline.services.ingest_worker import (
 )
 from polylogue.pipeline.services.process_pool import process_pool_executor
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.sources.parsers.browser_capture import DOM_FALLBACK_INGEST_FLAG
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.write import (
@@ -284,6 +285,64 @@ def _stored_message_count(conn: sqlite3.Connection, session_id: str) -> int:
     return int(row[0] or 0) if row is not None else 0
 
 
+def _session_has_parser_ingest_flag(conn: sqlite3.Connection, session_id: str, flag: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM session_tags
+        WHERE session_id = ?
+          AND tag = ?
+          AND tag_source = 'auto'
+          AND method = 'parser'
+        LIMIT 1
+        """,
+        (session_id, flag),
+    ).fetchone()
+    return row is not None
+
+
+def _incoming_has_ingest_flag(payload: SessionWritePayload, flag: str) -> bool:
+    return flag in payload.parsed_session.ingest_flags
+
+
+def _record_capture_gap_event(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str,
+    existing_raw_id: str,
+    incoming_raw_id: str,
+    stored_message_count: int,
+    incoming_message_count: int,
+) -> None:
+    row = conn.execute(
+        """
+        SELECT MAX(position) + 1
+        FROM (
+            SELECT position FROM session_events WHERE session_id = ?
+            UNION ALL
+            SELECT position FROM session_agent_policies WHERE session_id = ?
+            UNION ALL
+            SELECT position FROM session_provider_usage_events WHERE session_id = ?
+        )
+        """,
+        (session_id, session_id, session_id),
+    ).fetchone()
+    position = int(row[0] or 0) if row is not None else 0
+    summary = (
+        "Skipped lower-precedence DOM browser-capture fallback "
+        f"{incoming_raw_id!r}; existing raw {existing_raw_id!r} has "
+        f"{stored_message_count} message(s), incoming fallback has {incoming_message_count}."
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO session_events (
+            session_id, source_message_id, position, event_type, summary, occurred_at_ms
+        ) VALUES (?, NULL, ?, 'capture_gap', ?, NULL)
+        """,
+        (session_id, position, summary),
+    )
+
+
 def _session_parent_id(payload: SessionWritePayload) -> str | None:
     parent_native_id = payload.parsed_session.parent_session_provider_id
     if not parent_native_id:
@@ -424,18 +483,30 @@ def _write_session(
         return False, counts
 
     existing_raw_id = str(existing_row["raw_id"] or "") if existing_row is not None else ""
-    if (
-        not force_write
-        and existing_raw_id
-        and payload.raw_id
-        and existing_raw_id != payload.raw_id
-        and payload.message_count <= _stored_message_count(conn, payload.session_id)
-    ):
-        counts["skipped_sessions"] = 1
-        counts["skipped_messages"] = payload.message_count
-        counts["skipped_attachments"] = payload.attachment_count
-        counts["skipped_session_events"] = len(payload.parsed_session.session_events)
-        return False, counts
+    if not force_write and existing_raw_id and payload.raw_id and existing_raw_id != payload.raw_id:
+        existing_is_dom_fallback = _session_has_parser_ingest_flag(conn, payload.session_id, DOM_FALLBACK_INGEST_FLAG)
+        incoming_is_dom_fallback = _incoming_has_ingest_flag(payload, DOM_FALLBACK_INGEST_FLAG)
+        stored_message_count = _stored_message_count(conn, payload.session_id)
+        lower_precedence_fallback = incoming_is_dom_fallback and not existing_is_dom_fallback
+        strictly_less_complete = payload.message_count < stored_message_count and not (
+            existing_is_dom_fallback and not incoming_is_dom_fallback
+        )
+        if lower_precedence_fallback or strictly_less_complete:
+            if lower_precedence_fallback:
+                _record_capture_gap_event(
+                    conn,
+                    session_id=payload.session_id,
+                    existing_raw_id=existing_raw_id,
+                    incoming_raw_id=payload.raw_id,
+                    stored_message_count=stored_message_count,
+                    incoming_message_count=payload.message_count,
+                )
+                counts["session_events"] = 1
+            counts["skipped_sessions"] = 1
+            counts["skipped_messages"] = payload.message_count
+            counts["skipped_attachments"] = payload.attachment_count
+            counts["skipped_session_events"] = len(payload.parsed_session.session_events)
+            return False, counts
 
     if existing_row is None and not payload.parsed_session.messages and not force_write:
         counts["skipped_sessions"] = 1

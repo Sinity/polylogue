@@ -2388,7 +2388,7 @@ def _write_session_events(
     provider_usage_rows: list[tuple[object, ...]] = []
     for event in events:
         source_message_id = by_native_id.get(event.source_message_provider_id or "")
-        if event.event_type == "compaction":
+        if event.event_type in {"compaction", "capture_gap"}:
             session_event_rows.append(
                 (
                     session_id,
