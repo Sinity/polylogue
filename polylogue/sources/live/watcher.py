@@ -250,6 +250,11 @@ class LiveWatcher:
                 )
                 if metrics is not None:
                     _log_ingest_metrics(f"live.watcher: catch-up chunk {index}/{len(chunks)}", metrics)
+                    if (
+                        getattr(metrics, "succeeded_file_count", 0) == 0
+                        and getattr(metrics, "failed_file_count", 0) == 0
+                    ):
+                        self._defer_unaccounted_failed_retries(list(chunk))
             self._schedule_failed_retry_scan()
 
     def _scan_catch_up_candidates(self, roots: list[Path]) -> tuple[CandidateSourceFile, ...]:
