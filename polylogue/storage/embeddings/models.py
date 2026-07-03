@@ -11,6 +11,8 @@ class EmbeddingStatsSnapshot:
     embedded_messages: int = 0
     pending_sessions: int = 0
     pending_messages: int = 0
+    candidate_prose_messages: int | None = None
+    candidate_prose_messages_exact: bool = False
     stale_messages: int = 0
     messages_missing_provenance: int = 0
     oldest_embedded_at: str | None = None

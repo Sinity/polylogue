@@ -111,7 +111,14 @@ def render_embedding_stats(payload: EmbeddingStatusPayload, *, json_output: bool
     _render_field("Total sessions", payload["total_sessions"])
     _render_field("Embedded sessions", payload["embedded_sessions"])
     _render_field("Embedded messages", payload["embedded_messages"])
-    _render_field("Coverage", f"{payload['embedding_coverage_percent']:.1f}%")
+    _render_field("Session coverage", f"{payload['embedding_coverage_percent']:.1f}%")
+    if payload["candidate_prose_messages"] is not None and payload["message_coverage_percent"] is not None:
+        prefix = "" if payload["candidate_prose_messages_exact"] else "~"
+        _render_field(
+            "Message coverage",
+            f"{prefix}{payload['message_coverage_percent']:.1f}% of "
+            f"{payload['candidate_prose_messages']:,} candidate prose msgs",
+        )
     pending_messages = (
         f"{payload['pending_messages']} msgs" if payload["pending_messages_exact"] else "msgs not calculated"
     )

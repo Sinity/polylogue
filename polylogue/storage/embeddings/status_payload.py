@@ -16,7 +16,9 @@ from typing import TYPE_CHECKING, Protocol
 from typing_extensions import TypedDict
 
 from polylogue.storage.embeddings.materialization import (
+    archive_embeddable_message_where,
     archive_embeddable_messages_relation,
+    archive_embedding_messages_table_ref,
     count_archive_embedding_session_state,
 )
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
@@ -31,6 +33,7 @@ if TYPE_CHECKING:
     from polylogue.config import Config
 
 DETAIL_QUERY_TIMEOUT_MS = 2_000
+DETAIL_CANDIDATE_PROSE_TIMEOUT_MS = 10_000
 METADATA_SUMMARY_TIMEOUT_MS = 5_000
 STATUS_READ_BUSY_TIMEOUT_MS = 1_000
 
@@ -104,7 +107,11 @@ class EmbeddingStatusPayload(TypedDict):
     pending_sessions: int
     pending_messages: int | None
     pending_messages_exact: bool
+    candidate_prose_messages: int | None
+    candidate_prose_messages_exact: bool
     embedding_coverage_percent: float
+    embedding_coverage_basis: str
+    message_coverage_percent: float | None
     retrieval_ready: bool
     freshness_status: str
     stale_messages: int
@@ -285,6 +292,49 @@ def _uniform_embedding_metadata_counts(
     return {model: embedded_messages}, {dimension: embedded_messages}
 
 
+def _sqlite_stat1_index_rows(conn: sqlite3.Connection, index_name: str) -> int | None:
+    if not _table_exists(conn, "sqlite_stat1"):
+        return None
+    try:
+        row = conn.execute("SELECT stat FROM sqlite_stat1 WHERE idx = ? LIMIT 1", (index_name,)).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None or row[0] is None:
+        return None
+    first_field = str(row[0]).split(maxsplit=1)[0]
+    try:
+        return int(first_field)
+    except ValueError:
+        return None
+
+
+def _candidate_prose_message_count(conn: sqlite3.Connection) -> tuple[int | None, bool]:
+    """Return a bounded count of authored prose candidate rows.
+
+    This deliberately does not join ``blocks`` to enforce the final
+    20-character provider-call floor. It answers the cheaper question:
+    how many message rows match the paid-embedding prose predicate. The
+    payload names this as candidate prose so consumers do not treat it as
+    the exact pending-message count.
+    """
+
+    stat_rows = _sqlite_stat1_index_rows(conn, "idx_messages_embedding_prose")
+    if stat_rows is not None:
+        return stat_rows, False
+
+    messages_ref = archive_embedding_messages_table_ref(conn, alias="m")
+    exact_count = _scalar_int_with_timeout(
+        conn,
+        f"""
+        SELECT COUNT(*)
+        FROM {messages_ref}
+        WHERE {archive_embeddable_message_where("m")}
+        """,
+        timeout_ms=DETAIL_CANDIDATE_PROSE_TIMEOUT_MS,
+    )
+    return exact_count, exact_count is not None
+
+
 def _iso_from_epoch_ms(value: object) -> str | None:
     if value is None or isinstance(value, bool):
         return None
@@ -313,6 +363,14 @@ def _coverage_percent(*, embedded_sessions: int, eligible_sessions: int, total_s
     if eligible_sessions <= 0:
         return 100.0 if total_sessions > 0 else 0.0
     return embedded_sessions / eligible_sessions * 100
+
+
+def _message_coverage_percent(*, embedded_messages: int, candidate_prose_messages: int | None) -> float | None:
+    if candidate_prose_messages is None:
+        return None
+    if candidate_prose_messages <= 0:
+        return 100.0 if embedded_messages > 0 else 0.0
+    return embedded_messages / candidate_prose_messages * 100
 
 
 def _archive_embedding_session_state_summary(
@@ -497,6 +555,10 @@ def _payload_from_stats(
         pending_sessions=pending_sessions,
     )
     retrieval_ready = _retrieval_ready(stats)
+    message_coverage = _message_coverage_percent(
+        embedded_messages=stats.embedded_messages,
+        candidate_prose_messages=stats.candidate_prose_messages,
+    )
     return {
         "config_enabled": config_enabled,
         "has_voyage_api_key": has_voyage_api_key,
@@ -511,6 +573,8 @@ def _payload_from_stats(
         "pending_sessions": pending_sessions,
         "pending_messages": stats.pending_messages if pending_messages_exact else None,
         "pending_messages_exact": pending_messages_exact,
+        "candidate_prose_messages": stats.candidate_prose_messages,
+        "candidate_prose_messages_exact": stats.candidate_prose_messages_exact,
         "embedding_coverage_percent": round(
             _coverage_percent(
                 embedded_sessions=embedded_sessions,
@@ -519,6 +583,8 @@ def _payload_from_stats(
             ),
             1,
         ),
+        "embedding_coverage_basis": "sessions",
+        "message_coverage_percent": round(message_coverage, 1) if message_coverage is not None else None,
         "retrieval_ready": retrieval_ready,
         "freshness_status": _freshness_status(status, stats),
         "stale_messages": stats.stale_messages,
@@ -612,6 +678,8 @@ def _archive_embedding_status_payload(
             else 0
         )
         pending_messages = 0
+        candidate_prose_messages: int | None = None
+        candidate_prose_messages_exact = False
         stale_messages = 0
         missing_provenance = 0
         oldest_embedded_at: str | None = None
@@ -664,6 +732,7 @@ def _archive_embedding_status_payload(
                 oldest_embedded_at = _iso_from_epoch_ms(bounds_rows[0][0])
                 newest_embedded_at = _iso_from_epoch_ms(bounds_rows[0][1])
         if include_detail and has_messages:
+            candidate_prose_messages, candidate_prose_messages_exact = _candidate_prose_message_count(conn)
             messages_ref = archive_embeddable_messages_relation(conn, alias="m")
             total_messages = _scalar_int_with_timeout(
                 conn,
@@ -749,6 +818,8 @@ def _archive_embedding_status_payload(
             embedded_messages=embedded_messages,
             pending_sessions=pending_sessions,
             pending_messages=pending_messages,
+            candidate_prose_messages=candidate_prose_messages,
+            candidate_prose_messages_exact=candidate_prose_messages_exact,
             stale_messages=stale_messages,
             messages_missing_provenance=missing_provenance,
             oldest_embedded_at=oldest_embedded_at,

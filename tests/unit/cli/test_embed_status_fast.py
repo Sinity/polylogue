@@ -188,10 +188,14 @@ def test_status_json_reads_archive_file_set_from_archive_index(tmp_path: Path) -
     assert payload["embedded_messages"] == 1
     assert payload["pending_messages"] == 2
     assert payload["pending_messages_exact"] is True
+    assert payload["candidate_prose_messages"] == 3
+    assert payload["candidate_prose_messages_exact"] is True
     assert payload["stale_messages"] == 0
     assert payload["retrieval_ready"] is True
     assert payload["freshness_status"] == "partial"
     assert payload["embedding_coverage_percent"] == 50.0
+    assert payload["embedding_coverage_basis"] == "sessions"
+    assert payload["message_coverage_percent"] == 33.3
     assert payload["embedding_models"] == {"voyage-4": 1}
     assert payload["embedding_dimensions"] == {"1024": 1} or payload["embedding_dimensions"] == {1024: 1}
 
@@ -208,6 +212,30 @@ def test_status_json_reports_archive_embedding_metadata_without_detail(tmp_path:
     assert payload["embedding_dimensions"] == {"1024": 1} or payload["embedding_dimensions"] == {1024: 1}
     assert payload["oldest_embedded_at"] == "2026-01-01T00:01:40+00:00"
     assert payload["newest_embedded_at"] == "2026-01-01T00:01:40+00:00"
+
+
+def test_status_json_detail_uses_analyzed_prose_index_for_candidate_count(tmp_path: Path) -> None:
+    db_anchor = tmp_path / "custom.sqlite"
+    index_db = tmp_path / "index.db"
+    _seed_archive_file_set_from_archive_tiers(index_db)
+    with sqlite3.connect(index_db) as conn:
+        conn.executescript(
+            """
+            CREATE INDEX idx_messages_embedding_prose
+            ON messages(session_id, message_id)
+            WHERE message_type = 'message'
+              AND role IN ('user', 'assistant')
+              AND material_origin IN ('human_authored', 'assistant_authored')
+              AND word_count > 0;
+            ANALYZE idx_messages_embedding_prose;
+            """
+        )
+
+    payload = _run_status(db_anchor, "--detail", cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+
+    assert payload["candidate_prose_messages"] == 3
+    assert payload["candidate_prose_messages_exact"] is False
+    assert payload["message_coverage_percent"] == 33.3
 
 
 def test_status_json_default_does_not_exact_count_archive_session_state(
@@ -334,6 +362,9 @@ def test_status_json_detail_falls_back_when_exact_pending_count_times_out(
     assert payload["pending_sessions"] == 1
     assert payload["pending_messages"] is None
     assert payload["pending_messages_exact"] is False
+    assert payload["candidate_prose_messages"] == 3
+    assert payload["candidate_prose_messages_exact"] is True
+    assert payload["message_coverage_percent"] == 33.3
     assert payload["total_estimated_cost_usd"] is None
     assert payload["retrieval_ready"] is True
 
@@ -357,6 +388,9 @@ def test_status_json_detail_falls_back_when_exact_session_state_times_out(
     assert payload["pending_sessions"] == 1
     assert payload["pending_messages"] is None
     assert payload["pending_messages_exact"] is False
+    assert payload["candidate_prose_messages"] == 3
+    assert payload["candidate_prose_messages_exact"] is True
+    assert payload["message_coverage_percent"] == 33.3
     assert payload["total_estimated_cost_usd"] is None
 
 
@@ -389,6 +423,8 @@ def test_status_text_detail_does_not_claim_zero_cost_when_exact_pending_count_ti
 
     assert result.exit_code == 0
     assert "Pending:              1 convs, msgs not calculated" in result.output
+    assert "Session coverage:     50.0%" in result.output
+    assert "Message coverage:     33.3% of 3 candidate prose msgs" in result.output
     assert "Estimated total cost: unknown" in result.output
     assert "use --detail" not in result.output
 
@@ -649,6 +685,9 @@ def test_status_json_detail_matches_archive_embedding_text_floor(tmp_path: Path)
 
     assert payload["pending_messages"] == 1
     assert payload["pending_messages_exact"] is True
+    assert payload["candidate_prose_messages"] == 2
+    assert payload["candidate_prose_messages_exact"] is True
+    assert payload["message_coverage_percent"] == 0.0
 
 
 def test_status_json_includes_latest_catchup_run(tmp_path: Path) -> None:
