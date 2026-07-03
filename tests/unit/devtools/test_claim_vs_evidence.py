@@ -158,12 +158,31 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
         "failure_predicate": "tool_result_is_error = 1 OR tool_result_exit_code != 0",
         "inspected_structured_failures": 3,
         "limit": 3,
-        "selection_order": "session_id, tool_result_message_position, tool_result_message_id, tool_id",
+        "sampled_by_origin": [
+            {
+                "inspected_structured_failures": 2,
+                "origin": "claude-code-session",
+                "requested_limit": 2,
+                "total_structured_failures": 2,
+            },
+            {
+                "inspected_structured_failures": 1,
+                "origin": "codex-session",
+                "requested_limit": 1,
+                "total_structured_failures": 1,
+            },
+        ],
+        "selection_order": "origin, session_id, tool_result_message_position, tool_result_message_id, tool_id",
+        "selection_strategy": (
+            "origin-stratified bounded sample; at least one row per origin when limit allows, "
+            "then proportional fill by origin failure count"
+        ),
         "total_by_origin": [
             {"failed_outcomes": 2, "origin": "claude-code-session"},
             {"failed_outcomes": 1, "origin": "codex-session"},
         ],
         "total_structured_failures": 3,
+        "unpaired_structured_failures": 0,
     }
     assert report["totals"] == {
         "failed_outcomes": 3,
@@ -180,3 +199,35 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
     assert summary["proof_report"]["complete_failure_frame"] is True
     assert (out_dir / "claim-vs-evidence.report.json").exists()
     assert "Claim-vs-Evidence" in (out_dir / "README.md").read_text()
+
+
+def test_claim_vs_evidence_bounded_sample_is_origin_stratified(tmp_path: Path) -> None:
+    archive = tmp_path / "archive"
+    _seed_archive(archive)
+
+    report = build_report(
+        argparse.Namespace(
+            archive_root=archive,
+            out_dir=None,
+            limit=2,
+            sample_limit=2,
+            json=False,
+        )
+    )
+
+    assert report["sample_frame"]["complete_failure_frame"] is False
+    assert report["sample_frame"]["sampled_by_origin"] == [
+        {
+            "inspected_structured_failures": 1,
+            "origin": "claude-code-session",
+            "requested_limit": 1,
+            "total_structured_failures": 2,
+        },
+        {
+            "inspected_structured_failures": 1,
+            "origin": "codex-session",
+            "requested_limit": 1,
+            "total_structured_failures": 1,
+        },
+    ]
+    assert {row["name"] for row in report["by_origin"]} == {"claude-code-session", "codex-session"}

@@ -83,14 +83,17 @@ def _ranked(mapping: dict[str, dict[str, int]]) -> list[dict[str, object]]:
     return sorted(rows, key=sort_key)
 
 
-def _structured_failure_rows(conn: Connection, *, limit: int) -> list[dict[str, object]]:
+def _structured_failure_rows(conn: Connection, *, limit: int, origin: str | None = None) -> list[dict[str, object]]:
+    origin_predicate = "AND s.origin = ?" if origin is not None else ""
+    params: tuple[object, ...] = (origin, limit) if origin is not None else (limit,)
     return _rows(
         conn,
-        """
+        f"""
         WITH failed AS (
-            SELECT
+            SELECT DISTINCT
                 r.session_id,
                 u.message_id,
+                r.message_id AS tool_result_message_id,
                 u.tool_name,
                 u.tool_command,
                 s.origin,
@@ -107,6 +110,7 @@ def _structured_failure_rows(conn: Connection, *, limit: int) -> list[dict[str, 
             JOIN messages AS m ON m.message_id = u.message_id
             JOIN messages AS rm ON rm.message_id = r.message_id
             WHERE r.block_type = 'tool_result'
+              {origin_predicate}
               AND (
                   COALESCE(r.tool_result_is_error, 0) = 1
                   OR (r.tool_result_exit_code IS NOT NULL AND r.tool_result_exit_code != 0)
@@ -131,6 +135,7 @@ def _structured_failure_rows(conn: Connection, *, limit: int) -> list[dict[str, 
         SELECT
             n.session_id,
             n.message_id,
+            n.tool_result_message_id,
             n.tool_name,
             n.tool_command,
             n.origin,
@@ -145,6 +150,7 @@ def _structured_failure_rows(conn: Connection, *, limit: int) -> list[dict[str, 
         GROUP BY
             n.session_id,
             n.message_id,
+            n.tool_result_message_id,
             n.tool_name,
             n.tool_command,
             n.origin,
@@ -153,11 +159,34 @@ def _structured_failure_rows(conn: Connection, *, limit: int) -> list[dict[str, 
             model_name,
             n.next_message_id
         """,
-        (limit,),
+        params,
     )
 
 
 def _structured_failure_count(conn: Connection) -> int:
+    return _scalar_int(
+        conn,
+        """
+        SELECT COUNT(*)
+        FROM (
+            SELECT r.session_id, r.message_id, r.tool_id
+            FROM blocks AS r INDEXED BY idx_blocks_tool_result_outcome
+            JOIN blocks AS u INDEXED BY idx_blocks_tool_id
+              ON u.tool_id = r.tool_id
+             AND u.session_id = r.session_id
+             AND u.block_type = 'tool_use'
+            WHERE r.block_type = 'tool_result'
+              AND (
+                  COALESCE(r.tool_result_is_error, 0) = 1
+                  OR (r.tool_result_exit_code IS NOT NULL AND r.tool_result_exit_code != 0)
+              )
+            GROUP BY r.session_id, r.message_id, r.tool_id
+        )
+        """,
+    )
+
+
+def _unpaired_structured_failure_count(conn: Connection) -> int:
     return _scalar_int(
         conn,
         """
@@ -168,6 +197,13 @@ def _structured_failure_count(conn: Connection) -> int:
               COALESCE(r.tool_result_is_error, 0) = 1
               OR (r.tool_result_exit_code IS NOT NULL AND r.tool_result_exit_code != 0)
           )
+          AND NOT EXISTS (
+              SELECT 1
+              FROM blocks AS u INDEXED BY idx_blocks_tool_id
+              WHERE u.tool_id = r.tool_id
+                AND u.session_id = r.session_id
+                AND u.block_type = 'tool_use'
+          )
         """,
     )
 
@@ -176,18 +212,69 @@ def _structured_failure_origin_counts(conn: Connection) -> list[dict[str, object
     return _rows(
         conn,
         """
-        SELECT s.origin, COUNT(*) AS failed_outcomes
-        FROM blocks AS r INDEXED BY idx_blocks_tool_result_outcome
-        JOIN sessions AS s ON s.session_id = r.session_id
-        WHERE r.block_type = 'tool_result'
-          AND (
-              COALESCE(r.tool_result_is_error, 0) = 1
-              OR (r.tool_result_exit_code IS NOT NULL AND r.tool_result_exit_code != 0)
-          )
-        GROUP BY s.origin
-        ORDER BY failed_outcomes DESC, s.origin
+        SELECT origin, COUNT(*) AS failed_outcomes
+        FROM (
+            SELECT s.origin, r.session_id, r.message_id, r.tool_id
+            FROM blocks AS r INDEXED BY idx_blocks_tool_result_outcome
+            JOIN blocks AS u INDEXED BY idx_blocks_tool_id
+              ON u.tool_id = r.tool_id
+             AND u.session_id = r.session_id
+             AND u.block_type = 'tool_use'
+            JOIN sessions AS s ON s.session_id = r.session_id
+            WHERE r.block_type = 'tool_result'
+              AND (
+                  COALESCE(r.tool_result_is_error, 0) = 1
+                  OR (r.tool_result_exit_code IS NOT NULL AND r.tool_result_exit_code != 0)
+              )
+            GROUP BY s.origin, r.session_id, r.message_id, r.tool_id
+        )
+        GROUP BY origin
+        ORDER BY failed_outcomes DESC, origin
         """,
     )
+
+
+def _origin_sample_limits(total_by_origin: list[dict[str, object]], limit: int) -> list[dict[str, object]]:
+    origins = [(str(row["origin"]), int(row["failed_outcomes"])) for row in total_by_origin]
+    origins = [(origin, count) for origin, count in origins if count > 0]
+    total = sum(count for _, count in origins)
+    if total <= limit:
+        return [
+            {"origin": origin, "total_structured_failures": count, "requested_limit": count}
+            for origin, count in origins
+        ]
+    if not origins:
+        return []
+    if limit < len(origins):
+        return [
+            {"origin": origin, "total_structured_failures": count, "requested_limit": 1}
+            for origin, count in origins[:limit]
+        ]
+
+    allocation = {origin: 1 for origin, _ in origins}
+    remaining = limit - len(origins)
+    capacities = {origin: count - 1 for origin, count in origins}
+    capacity_total = sum(capacities.values())
+    remainders: list[tuple[float, int, str]] = []
+    if capacity_total:
+        for index, (origin, _count) in enumerate(origins):
+            exact = remaining * (capacities[origin] / capacity_total)
+            extra = min(capacities[origin], int(exact))
+            allocation[origin] += extra
+            remainders.append((exact - extra, -index, origin))
+        assigned = sum(allocation.values())
+        for _remainder, _negative_index, origin in sorted(remainders, reverse=True):
+            if assigned >= limit:
+                break
+            if allocation[origin] < dict(origins)[origin]:
+                allocation[origin] += 1
+                assigned += 1
+
+    return [
+        {"origin": origin, "total_structured_failures": count, "requested_limit": allocation[origin]}
+        for origin, count in origins
+        if allocation[origin] > 0
+    ]
 
 
 def build_report(args: argparse.Namespace) -> dict[str, Any]:
@@ -200,8 +287,22 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     conn = open_readonly_connection(index_db)
     try:
         total_structured_failures = _structured_failure_count(conn)
+        unpaired_structured_failures = _unpaired_structured_failure_count(conn)
         total_by_origin = _structured_failure_origin_counts(conn)
-        rows = _structured_failure_rows(conn, limit=args.limit)
+        origin_limits = _origin_sample_limits(total_by_origin, args.limit)
+        rows = []
+        sampled_by_origin: list[dict[str, object]] = []
+        for origin_limit in origin_limits:
+            origin = str(origin_limit["origin"])
+            requested_limit = int(origin_limit["requested_limit"])
+            origin_rows = _structured_failure_rows(conn, limit=requested_limit, origin=origin)
+            rows.extend(origin_rows)
+            sampled_by_origin.append(
+                {
+                    **origin_limit,
+                    "inspected_structured_failures": len(origin_rows),
+                }
+            )
         schema_version = _user_version(conn)
     finally:
         conn.close()
@@ -224,6 +325,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "classification": classification,
             "session_ref": f"session:{row['session_id']}",
             "tool_message_ref": f"message:{row['message_id']}",
+            "tool_result_message_ref": f"message:{row['tool_result_message_id']}",
             "next_message_ref": f"message:{row['next_message_id']}" if row["next_message_id"] else None,
             "tool_name": tool,
             "model_name": model,
@@ -260,13 +362,19 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "limit": args.limit,
         "sample_frame": {
             "total_structured_failures": total_structured_failures,
+            "unpaired_structured_failures": unpaired_structured_failures,
             "inspected_structured_failures": len(rows),
             "limit": args.limit,
             "complete_failure_frame": len(rows) >= total_structured_failures,
-            "selection_order": "session_id, tool_result_message_position, tool_result_message_id, tool_id",
+            "selection_strategy": (
+                "origin-stratified bounded sample; at least one row per origin when limit allows, "
+                "then proportional fill by origin failure count"
+            ),
+            "selection_order": "origin, session_id, tool_result_message_position, tool_result_message_id, tool_id",
             "failure_predicate": "tool_result_is_error = 1 OR tool_result_exit_code != 0",
             "classification_scope": "immediately following assistant message only",
             "total_by_origin": total_by_origin,
+            "sampled_by_origin": sampled_by_origin,
         },
         "definition": (
             "Structured failures are normalized tool-result outcomes with is_error=1 or non-zero exit_code. "
@@ -314,6 +422,7 @@ def _write_artifacts(out_dir: Path, report: dict[str, Any]) -> None:
         "proof_report": {
             "failed_outcomes": totals["failed_outcomes"],
             "total_structured_failures": report["sample_frame"]["total_structured_failures"],
+            "unpaired_structured_failures": report["sample_frame"]["unpaired_structured_failures"],
             "complete_failure_frame": report["sample_frame"]["complete_failure_frame"],
             "acknowledged": totals["acknowledged"],
             "silent_proceed": totals["silent_proceed"],
@@ -325,6 +434,7 @@ def _write_artifacts(out_dir: Path, report: dict[str, Any]) -> None:
             "The report is bounded by --limit for fast active-archive regeneration.",
             "Classification inspects only the next assistant message for explicit acknowledgment markers.",
             "Structured failure truth comes from normalized action result is_error/exit_code fields, not assistant prose.",
+            "Failed tool results without a paired tool-use row are reported as unpaired coverage gaps, not classified rows.",
         ],
         "source_files": ["claim-vs-evidence.report.json"],
     }
@@ -352,6 +462,7 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
         "## Current Bounded Result",
         "",
         f"- total structured failures in frame: {frame['total_structured_failures']:,}",
+        f"- unpaired structured failures outside classifiable frame: {frame['unpaired_structured_failures']:,}",
         f"- failed structured outcomes inspected: {totals['failed_outcomes']:,}",
         f"- complete failure frame: {frame['complete_failure_frame']}",
         f"- acknowledged: {totals['acknowledged']:,}",
