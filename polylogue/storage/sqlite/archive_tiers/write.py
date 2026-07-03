@@ -2034,6 +2034,10 @@ def _resolve_session_graph(
         (session_id,),
     )
     _resolve_outbound_session_links(conn, session_id, origin)
+    has_outbound_link = (
+        conn.execute("SELECT 1 FROM session_links WHERE src_session_id = ? LIMIT 1", (session_id,)).fetchone()
+        is not None
+    )
     inbound_rows = conn.execute(
         """
         SELECT links.src_session_id
@@ -2044,6 +2048,8 @@ def _resolve_session_graph(
         """,
         (native_id, origin),
     ).fetchall()
+    if not has_outbound_link and not inbound_rows and _root_projection_current(conn, session_id):
+        return
     for row in inbound_rows:
         conn.execute(
             """
@@ -2069,6 +2075,44 @@ def _resolve_session_graph(
     root_ids_to_refresh = old_root_ids | _root_ids(conn, impacted_session_ids)
     for root_session_id in root_ids_to_refresh:
         _refresh_thread(conn, root_session_id)
+
+
+def _root_projection_current(conn: sqlite3.Connection, session_id: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT root_session_id, parent_session_id, created_at_ms, updated_at_ms
+        FROM sessions
+        WHERE session_id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+    if row is None or row[0] != session_id or row[1] is not None:
+        return False
+    thread_row = conn.execute(
+        """
+        SELECT created_at_ms, session_count, depth
+        FROM threads
+        WHERE thread_id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+    if thread_row is None:
+        return False
+    thread_sessions = conn.execute(
+        """
+        SELECT session_id
+        FROM thread_sessions
+        WHERE thread_id = ?
+        ORDER BY position
+        """,
+        (session_id,),
+    ).fetchall()
+    return (
+        int(thread_row[0] or 0) == int(row[2] or row[3] or 0)
+        and int(thread_row[1] or 0) == 1
+        and int(thread_row[2] or 0) == 0
+        and [str(thread_session[0]) for thread_session in thread_sessions] == [session_id]
+    )
 
 
 def _resolve_outbound_session_links(conn: sqlite3.Connection, session_id: str, origin: str) -> None:
