@@ -1770,7 +1770,13 @@ def _emit_no_results(envelope: dict[str, object], *, output_format: str, typo_hi
     branch on an empty result set. Machine formats still receive a parseable
     empty envelope; text surfaces get the human-readable message.
     """
+    from polylogue.cli.convergence_feedback import convergence_warning_line
+
+    convergence_warning = convergence_warning_line()
     empty = {**envelope, "items": [], "total": 0}
+    if convergence_warning is not None:
+        empty["archive_converging"] = True
+        empty["convergence_warning"] = convergence_warning
     if output_format == "json":
         click.echo(json.dumps(empty, indent=2, sort_keys=True))
     elif output_format == "yaml":
@@ -1780,6 +1786,8 @@ def _emit_no_results(envelope: dict[str, object], *, output_format: str, typo_hi
     elif output_format in {"ndjson", "csv"}:
         pass  # no rows to emit
     else:
+        if convergence_warning is not None:
+            click.echo(convergence_warning)
         click.echo("No sessions matched.")
         if typo_hint is not None:
             click.echo(typo_hint)

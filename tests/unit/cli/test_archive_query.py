@@ -7,7 +7,7 @@ import io
 import json
 import types
 from typing import cast
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import click
 import pytest
@@ -19,6 +19,7 @@ from polylogue.cli.archive_query import (
     _decode_cursor,
     _ellipsize,
     _emit_delete,
+    _emit_no_results,
     _has_value,
     _hit_line,
     _limit,
@@ -41,6 +42,32 @@ from polylogue.cli.archive_query import (
 )
 from polylogue.operations import OperationSpec, build_runtime_operation_catalog
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
+
+
+def test_emit_no_results_includes_convergence_warning(capsys: pytest.CaptureFixture[str]) -> None:
+    warning = "Archive is converging: 3 index rebuild attempt(s) active; results may be partial."
+
+    with patch("polylogue.cli.convergence_feedback.convergence_warning_line", return_value=warning):
+        with pytest.raises(SystemExit) as exc_info:
+            _emit_no_results({"mode": "find"}, output_format="text")
+
+    assert exc_info.value.code == 2
+    assert capsys.readouterr().out.splitlines()[:2] == [warning, "No sessions matched."]
+
+
+def test_emit_no_results_json_includes_convergence_warning(capsys: pytest.CaptureFixture[str]) -> None:
+    warning = "Archive is converging: 3 index rebuild attempt(s) active; results may be partial."
+
+    with patch("polylogue.cli.convergence_feedback.convergence_warning_line", return_value=warning):
+        with pytest.raises(SystemExit) as exc_info:
+            _emit_no_results({"mode": "find"}, output_format="json")
+
+    assert exc_info.value.code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["archive_converging"] is True
+    assert payload["convergence_warning"] == warning
+    assert payload["items"] == []
+    assert payload["total"] == 0
 
 
 # Tests for _resolve_origins

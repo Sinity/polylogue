@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from polylogue.archive.query.fields import describe_spec_selection_fields
+from polylogue.cli.convergence_feedback import convergence_warning_line
 from polylogue.cli.shared.machine_errors import error_no_results
 
 if TYPE_CHECKING:
@@ -73,12 +74,17 @@ def emit_no_results(
             diagnostics=diagnostics.to_dict() if diagnostics is not None else None,
         ).emit(exit_code=exit_code or 2)
 
+    warning = convergence_warning_line()
     if filters and message is None:
+        if warning is not None:
+            env.ui.console.print(warning)
         env.ui.console.print("No sessions matched filters:")
         for item in filters:
             env.ui.console.print(f"  {item}")
         env.ui.console.print(hint or "Hint: try broadening your filters or use `read --all` to browse")
     else:
+        if warning is not None:
+            env.ui.console.print(warning)
         env.ui.console.print(resolved_message)
 
     typo_hint = _maybe_subcommand_typo_hint(selection)

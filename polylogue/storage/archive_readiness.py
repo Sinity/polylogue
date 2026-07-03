@@ -76,4 +76,57 @@ def raw_materialization_ready(readiness: Mapping[str, Any] | object | None) -> b
     return all(_read_int(readiness, key) == 0 for key in blocking_keys)
 
 
-__all__ = ["active_rebuild_index_attempts", "raw_materialization_ready"]
+def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, object]:
+    """Return compact raw→index materialization readiness for an archive root."""
+    try:
+        from polylogue.operations.archive_debt import archive_debt_list
+
+        payload = archive_debt_list(
+            archive_root=active_archive,
+            kinds=("raw-materialization",),
+            limit=None,
+            exact_fts=False,
+        )
+    except Exception as exc:
+        return {
+            "available": False,
+            "error": str(exc),
+        }
+
+    rows = [row for row in payload.rows if row.kind == "raw-materialization"]
+    affected_actionable = 0
+    affected_blocked = 0
+    affected_open = 0
+    affected_classified = 0
+    for row in rows:
+        affected = max(1, int(row.affected_count or 1))
+        if row.status == "actionable":
+            affected_actionable += affected
+        elif row.status == "blocked":
+            affected_blocked += affected
+        elif row.status == "open":
+            affected_open += affected
+        elif row.status == "classified":
+            affected_classified += affected
+
+    return {
+        "available": True,
+        "total": len(rows),
+        "critical": sum(1 for row in rows if row.severity == "critical"),
+        "warning": sum(1 for row in rows if row.severity == "warning"),
+        "actionable": sum(1 for row in rows if row.status == "actionable"),
+        "blocked": sum(1 for row in rows if row.status == "blocked"),
+        "classified": sum(1 for row in rows if row.status == "classified"),
+        "affected_total": int(payload.totals.affected_total),
+        "affected_actionable": affected_actionable,
+        "affected_blocked": affected_blocked,
+        "affected_open": affected_open,
+        "affected_classified": affected_classified,
+    }
+
+
+__all__ = [
+    "active_rebuild_index_attempts",
+    "raw_materialization_readiness_snapshot",
+    "raw_materialization_ready",
+]

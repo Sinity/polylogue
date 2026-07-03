@@ -18,6 +18,7 @@ from polylogue.archive.viewport.enums import ToolCategory
 from polylogue.cli import query_output, query_semantic, query_stats
 from polylogue.cli.query_actions import apply_modifiers, delete_sessions, resolve_stream_target
 from polylogue.cli.query_contracts import QueryDeliveryTarget, QueryMutationSpec, QueryOutputSpec
+from polylogue.cli.query_feedback import emit_no_results
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
@@ -51,6 +52,36 @@ def _mutation(*, dry_run: bool = False, force: bool = False, add_tags: tuple[str
         dry_run=dry_run,
         force=force,
     )
+
+
+def test_emit_no_results_warns_when_archive_is_converging() -> None:
+    env = _env()
+
+    with patch(
+        "polylogue.cli.query_feedback.convergence_warning_line",
+        return_value="Archive is converging: 4 raw artifact(s) are not materialized; results may be partial.",
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            emit_no_results(env, output_format="text")
+
+    assert exc_info.value.code == 2
+    console_print = cast(MagicMock, env.ui.console.print)
+    assert [call.args[0] for call in console_print.call_args_list[:2]] == [
+        "Archive is converging: 4 raw artifact(s) are not materialized; results may be partial.",
+        "No sessions matched.",
+    ]
+
+
+def test_emit_no_results_omits_convergence_warning_when_archive_is_ready() -> None:
+    env = _env()
+
+    with patch("polylogue.cli.query_feedback.convergence_warning_line", return_value=None):
+        with pytest.raises(SystemExit) as exc_info:
+            emit_no_results(env, output_format="text")
+
+    assert exc_info.value.code == 2
+    console_print = cast(MagicMock, env.ui.console.print)
+    console_print.assert_called_once_with("No sessions matched.")
 
 
 def _summary(
