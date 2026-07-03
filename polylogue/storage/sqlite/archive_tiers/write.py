@@ -2274,17 +2274,16 @@ def _write_session_events(
     }
     wrote_provider_usage_events = False
     position = event_position_offset
+    session_event_rows: list[tuple[object, ...]] = []
+    agent_policy_rows: list[tuple[object, ...]] = []
+    provider_usage_rows: list[tuple[object, ...]] = []
     for event in events:
+        source_message_id = by_native_id.get(event.source_message_provider_id or "")
         if event.event_type == "compaction":
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO session_events (
-                    session_id, source_message_id, position, event_type, summary, occurred_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                """,
+            session_event_rows.append(
                 (
                     session_id,
-                    by_native_id.get(event.source_message_provider_id or ""),
+                    source_message_id,
                     position,
                     _sqlite_text(event.event_type),
                     _sqlite_text(_event_summary(event) or ""),
@@ -2293,16 +2292,10 @@ def _write_session_events(
             )
             position += 1
         elif event.event_type == "agent_policy":
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO session_agent_policies (
-                    session_id, source_message_id, position, approval_policy,
-                    sandbox_policy, network_policy, observed_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
+            agent_policy_rows.append(
                 (
                     session_id,
-                    by_native_id.get(event.source_message_provider_id or ""),
+                    source_message_id,
                     position,
                     _sqlite_text(_payload_string(event.payload, "approval", "approval_policy")),
                     _sqlite_text(_payload_string(event.payload, "sandbox", "sandbox_policy")),
@@ -2312,60 +2305,77 @@ def _write_session_events(
             )
             position += 1
         elif event.event_type in {"token_count", "message_usage"}:
-            _write_provider_usage_event(
-                conn,
-                session_id,
-                by_native_id.get(event.source_message_provider_id or ""),
-                position,
-                event,
-            )
+            provider_usage_rows.append(_provider_usage_event_row(session_id, source_message_id, position, event))
             wrote_provider_usage_events = True
             position += 1
+    if session_event_rows:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO session_events (
+                session_id, source_message_id, position, event_type, summary, occurred_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            session_event_rows,
+        )
+    if agent_policy_rows:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO session_agent_policies (
+                session_id, source_message_id, position, approval_policy,
+                sandbox_policy, network_policy, observed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            agent_policy_rows,
+        )
+    if provider_usage_rows:
+        conn.executemany(
+            _PROVIDER_USAGE_EVENT_INSERT_SQL,
+            provider_usage_rows,
+        )
     return SessionEventWriteResult(wrote_provider_usage_events=wrote_provider_usage_events)
 
 
-def _write_provider_usage_event(
-    conn: sqlite3.Connection,
+_PROVIDER_USAGE_EVENT_INSERT_SQL = """
+    INSERT OR REPLACE INTO session_provider_usage_events (
+        session_id, source_message_id, position, provider_event_type, model_name,
+        last_input_tokens, last_output_tokens, last_cached_input_tokens,
+        last_cache_write_tokens, last_reasoning_output_tokens, last_total_tokens,
+        total_input_tokens, total_output_tokens, total_cached_input_tokens,
+        total_cache_write_tokens, total_reasoning_output_tokens, total_tokens, model_context_window,
+        payload_json, occurred_at_ms
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+
+def _provider_usage_event_row(
     session_id: str,
     source_message_id: str | None,
     position: int,
     event: ParsedSessionEvent,
-) -> None:
+) -> tuple[object, ...]:
     last_usage = _payload_mapping(event.payload, "last_token_usage")
     total_usage = _payload_mapping(event.payload, "total_token_usage")
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO session_provider_usage_events (
-            session_id, source_message_id, position, provider_event_type, model_name,
-            last_input_tokens, last_output_tokens, last_cached_input_tokens,
-            last_cache_write_tokens, last_reasoning_output_tokens, last_total_tokens,
-            total_input_tokens, total_output_tokens, total_cached_input_tokens,
-            total_cache_write_tokens, total_reasoning_output_tokens, total_tokens, model_context_window,
-            payload_json, occurred_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            session_id,
-            source_message_id,
-            position,
-            _sqlite_text(event.event_type),
-            _sqlite_text(_payload_string(event.payload, "model", "model_name")),
-            _payload_int(last_usage, "input_tokens"),
-            _payload_int(last_usage, "output_tokens"),
-            _payload_int(last_usage, "cached_input_tokens"),
-            _payload_int(last_usage, "cache_write_tokens"),
-            _payload_int(last_usage, "reasoning_output_tokens"),
-            _payload_int(last_usage, "total_tokens"),
-            _payload_int(total_usage, "input_tokens"),
-            _payload_int(total_usage, "output_tokens"),
-            _payload_int(total_usage, "cached_input_tokens"),
-            _payload_int(total_usage, "cache_write_tokens"),
-            _payload_int(total_usage, "reasoning_output_tokens"),
-            _payload_int(total_usage, "total_tokens"),
-            _payload_optional_int(event.payload, "model_context_window"),
-            _json_dumps(event.payload),
-            _timestamp_ms(event.timestamp),
-        ),
+    return (
+        session_id,
+        source_message_id,
+        position,
+        _sqlite_text(event.event_type),
+        _sqlite_text(_payload_string(event.payload, "model", "model_name")),
+        _payload_int(last_usage, "input_tokens"),
+        _payload_int(last_usage, "output_tokens"),
+        _payload_int(last_usage, "cached_input_tokens"),
+        _payload_int(last_usage, "cache_write_tokens"),
+        _payload_int(last_usage, "reasoning_output_tokens"),
+        _payload_int(last_usage, "total_tokens"),
+        _payload_int(total_usage, "input_tokens"),
+        _payload_int(total_usage, "output_tokens"),
+        _payload_int(total_usage, "cached_input_tokens"),
+        _payload_int(total_usage, "cache_write_tokens"),
+        _payload_int(total_usage, "reasoning_output_tokens"),
+        _payload_int(total_usage, "total_tokens"),
+        _payload_optional_int(event.payload, "model_context_window"),
+        _json_dumps(event.payload),
+        _timestamp_ms(event.timestamp),
     )
 
 
