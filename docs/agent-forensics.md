@@ -20,6 +20,10 @@ polylogue analyze insights coverage --group-by month --format json
 polylogue analyze insights cost-rollups --format json
 polylogue analyze insights cost-rollups --model gpt-5-codex --format json
 
+# Provider usage audit with physical/logical token-grain labels.
+polylogue analyze usage --origin claude-code-session --format json --limit 0
+polylogue analyze usage --origin codex-session --format json --limit 0
+
 # Monthly usage movement by origin and model.
 polylogue analyze insights usage-timeline --group-by month-origin-model --format json
 
@@ -44,6 +48,9 @@ POLYLOGUE_ARCHIVE_ROOT=/tmp/demo-archive \
   `coverage`.
 - **Token economy:** input, output, cache-read, cache-write, total, and
   reasoning token lanes through `usage-timeline`.
+- **Token grain:** physical-session and logical-session-model-high-water
+  rollups through `analyze usage`; physical archive totals and logical work
+  totals are distinct claims.
 - **Cost evidence:** stored/provider-priced cost, catalog API-equivalent
   estimates, catalog coverage gaps, and subscription-credit estimates through
   `cost-rollups` and `usage-timeline`.
@@ -71,14 +78,18 @@ distinct:
 3. **Subscription reality.** API-list-equivalent cost is not the same thing as
    a Claude Max/Pro subscription. Subscription-credit estimates use the shared
    dated pricing catalog and do not charge cache-read tokens.
-4. **Failure claims.** Claim-vs-evidence does not infer tool success or failure
+4. **Token grain.** `session_model_usage` is a physical-session evidence stream.
+   `polylogue analyze usage` also exposes `logical_session_model_high_water`,
+   which collapses fork/resume/replay chains by logical session and model. Use
+   the physical view for archive-materialization claims and the logical view for
+   logical-work claims; do not silently substitute one for the other.
+5. **Failure claims.** Claim-vs-evidence does not infer tool success or failure
    from assistant prose. Structured tool-result fields are the evidence anchor;
    prose is only a follow-up acknowledgment signal.
 
-Current caveat: logical-session token attribution is still being repaired, so
-fork/resume inherited-prefix usage can inflate all-provider headline totals
-until that bead lands. Treat usage totals as current archive measurements, not
-final billing reconciliation.
+Current caveat: all-provider logical-session repricing is still being repaired.
+Treat physical usage totals as current archive measurements, not final billing
+reconciliation or logical-work totals.
 
 ## Privacy
 

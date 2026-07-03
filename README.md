@@ -349,6 +349,7 @@ curves as separate evidence streams:
 ```bash
 polylogue analyze insights coverage --group-by month --format json
 polylogue analyze insights cost-rollups --format json
+polylogue analyze usage --origin claude-code-session --format json --limit 0
 polylogue analyze insights usage-timeline --group-by month-origin-model --format json
 
 devtools workspace claim-vs-evidence --limit 5000 \
@@ -357,8 +358,8 @@ devtools workspace claim-vs-evidence --limit 5000 \
 
 See [docs/agent-forensics.md](docs/agent-forensics.md) for the supported
 queries and the token-accounting traps they handle: per-event deltas vs
-cumulative totals, stored-vs-catalog cost provenance, and subscription
-cache-read economics.
+cumulative totals, physical-vs-logical token grain, stored-vs-catalog cost
+provenance, and subscription cache-read economics.
 
 `scripts/cost_accounting_demo.py` proves the cross-provider cost accounting end
 to end with no mocks: it ingests a crafted Codex session through Polylogue's
