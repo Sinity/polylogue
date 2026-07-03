@@ -2539,6 +2539,130 @@ def test_archive_tiers_writer_resolves_existing_child_link_when_parent_arrives_l
     ]
 
 
+def test_graph_resolve_records_late_parent_substage_timings(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    child = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="child-timing",
+        parent_session_provider_id="parent-timing",
+        branch_type=BranchType.CONTINUATION,
+        updated_at="2026-01-01T00:00:02+00:00",
+        messages=[
+            ParsedMessage(
+                provider_message_id="shared",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="shared prefix")],
+            ),
+            ParsedMessage(
+                provider_message_id="tail",
+                role=Role.ASSISTANT,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="child tail")],
+            ),
+        ],
+    )
+    parent = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="parent-timing",
+        updated_at="2026-01-01T00:00:01+00:00",
+        messages=[
+            ParsedMessage(
+                provider_message_id="shared",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="shared prefix")],
+            )
+        ],
+    )
+
+    write_parsed_session_to_archive(conn, child)
+    timings: dict[str, float] = {}
+
+    write_parsed_session_to_archive(
+        conn,
+        parent,
+        stage_timings_s=timings,
+        stage_timing_prefix="append",
+    )
+
+    expected_substages = {
+        "append.index.graph_resolve.root_init",
+        "append.index.graph_resolve.outbound_links",
+        "append.index.graph_resolve.inbound_lookup",
+        "append.index.graph_resolve.root_current_check",
+        "append.index.graph_resolve.reextract_prefix_tails",
+        "append.index.graph_resolve.projection_refresh",
+        "append.index.graph_resolve.thread_refresh",
+    }
+    assert expected_substages <= timings.keys()
+    assert "append.index.graph_resolve" in timings
+
+
+def test_graph_resolve_shares_projection_refresh_seen_set_for_late_children(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = _connect(tmp_path / "index.db")
+    grandparent = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="grandparent-seen",
+        updated_at="2026-01-01T00:00:00+00:00",
+        messages=[
+            ParsedMessage(
+                provider_message_id="gp",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="grandparent")],
+            )
+        ],
+    )
+    parent = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="parent-seen",
+        parent_session_provider_id="grandparent-seen",
+        branch_type=BranchType.CONTINUATION,
+        updated_at="2026-01-01T00:00:01+00:00",
+        messages=[
+            ParsedMessage(
+                provider_message_id="p",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="parent")],
+            )
+        ],
+    )
+    children = [
+        ParsedSession(
+            source_name=Provider.CLAUDE_CODE,
+            provider_session_id=f"child-seen-{position}",
+            parent_session_provider_id="parent-seen",
+            branch_type=BranchType.SIDECHAIN,
+            updated_at=f"2026-01-01T00:00:0{position + 2}+00:00",
+            messages=[
+                ParsedMessage(
+                    provider_message_id=f"c{position}",
+                    role=Role.ASSISTANT,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text=f"child {position}")],
+                )
+            ],
+        )
+        for position in range(3)
+    ]
+
+    write_parsed_session_to_archive(conn, grandparent)
+    for child in children:
+        write_parsed_session_to_archive(conn, child)
+
+    original_refresh = archive_tier_write._refresh_session_projection
+    seen_ids: list[int] = []
+
+    def wrapped_refresh(session_conn: sqlite3.Connection, session_id: str, *, seen: set[str]) -> None:
+        seen_ids.append(id(seen))
+        original_refresh(session_conn, session_id, seen=seen)
+
+    monkeypatch.setattr(archive_tier_write, "_refresh_session_projection", wrapped_refresh)
+
+    write_parsed_session_to_archive(conn, parent)
+
+    assert len(set(seen_ids)) == 1
+
+
 def test_archive_tiers_writer_materializes_repo_and_commit_edges(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     session = ParsedSession(
