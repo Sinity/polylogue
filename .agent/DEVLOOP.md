@@ -163,6 +163,28 @@ Conventions:
   triggers/decisions/proofs; beads record what work exists, what blocks it,
   and what it produced.
 
+Execution-grade beads (the specification contract):
+
+- A bead is execution-grade when it carries all four: **description** = why it
+  exists + the evidence that motivated it; **design** = how, concretely —
+  files/functions, algorithm, sequencing, known pitfalls, what NOT to do;
+  **acceptance** = a checkable done-state including the verification commands
+  or test that proves it; **size** = one PR-shaped slice (if the design lists
+  more than ~3 independently shippable steps, split children).
+- Before implementing a claimed bead that lacks any of these, spend the first
+  minutes enriching it (`bd update <id> --design/--acceptance`) — design-first,
+  then execute against your own spec. The enrichment IS work product; it
+  survives even if the implementation stalls.
+- Discovered beads inherit the same contract: a `--deps discovered-from:` bead
+  with only a title is a note, not a work item — give it the evidence and the
+  first design judgment while the context is hot.
+- Line-number references in design fields decay: re-locate anchors before
+  editing; when a design cites `file:line`, treat it as "near here", not
+  gospel.
+- When implementation contradicts the design field, the code evidence wins —
+  update the bead's design/notes in the same session so the graph never
+  carries a refuted plan.
+
 ## Current Goal
 
 Conduct the Polylogue dogfood/demo devloop indefinitely: continuously choose the
