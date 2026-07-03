@@ -21,13 +21,9 @@ current="${POLYLOGUE_AGENT_CURRENT:-$repo/.agent/conductor-devloop}"
 cd "$repo"
 
 log_path="$current/OPERATING-LOG.md"
-timestamp="$(date --iso-8601=seconds)"
 mkdir -p "$current"
 
-cat >>"$log_path" <<EOF
-
-## $timestamp — wait state: $waiting_on
-
+"$(dirname "$0")/devloop-log" "wait state: $waiting_on" "\
 Loop phase: verify | velocity
 Focus: Proof -> Velocity
 Waiting on: $waiting_on
@@ -38,8 +34,7 @@ Escalation trigger: if the command exceeds the expected poll window without a
 new signal, inspect job status/output and host pressure before starting any
 duplicate heavy work.
 Velocity note: waiting is active loop time; rotate focus deliberately, do the
-mode task, then poll.
-EOF
+mode task, then poll."
 
 .agent/scripts/devloop-sync >/dev/null
 printf '%s\n' "$log_path"

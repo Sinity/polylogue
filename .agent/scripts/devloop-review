@@ -694,7 +694,13 @@ log_path = Path(sys.argv[2])
 active = active_path.read_text(encoding="utf-8")
 
 slice_match = re.search(r"^## Current Slice\n\n(?P<slice>.+?)\n\n## ", active, re.M | re.S)
-current_slice = slice_match.group("slice").strip() if slice_match is not None else ""
+current_slice = ""
+if slice_match is not None:
+    for line in slice_match.group("slice").splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("Bead:"):
+            current_slice = stripped
+            break
 if not current_slice:
     raise SystemExit("missing current slice in ACTIVE-LOOP.md")
 
@@ -1077,8 +1083,15 @@ PY
   raw_affected_open="${raw_materialization_fields[5]:-unknown}"
   raw_state="${raw_materialization_fields[6]:-unknown}"
   raw_category_text="${raw_materialization_fields[7]:-}"
-  if [ "$raw_materialization_debt" = "0" ] && [ "$raw_materialization_replayable" = "0" ]; then
-    ok "raw materialization debt is zero according to devloop-status; join_gaps=$raw_materialization_join_gaps"
+  if [ "$raw_materialization_join_gaps" = "0" ] && [ "$raw_materialization_debt" = "0" ] && [ "$raw_materialization_replayable" = "0" ]; then
+    ok "raw materialization has no join gaps, debt, or replayable acquired-unparsed rows according to devloop-status"
+  elif [ "$raw_materialization_debt" = "0" ] && [ "$raw_materialization_replayable" = "0" ]; then
+    printf 'INFO: raw materialization has no replayable acquired-unparsed rows, but join_gaps=%s affected=%s actionable=%s open=%s state=%s; do not claim full archive convergence until gaps are repaired or classified\n' \
+      "$raw_materialization_join_gaps" "$raw_affected_total" "$raw_affected_actionable" \
+      "$raw_affected_open" "$raw_state"
+    if [ -n "${raw_category_text:-}" ]; then
+      printf 'INFO: raw materialization categories=%s\n' "$raw_category_text"
+    fi
   else
     printf 'INFO: raw materialization join_gaps=%s debt=%s replayable_acquired_unparsed=%s affected=%s actionable=%s open=%s state=%s from devloop-status; do not claim full archive convergence without repair/classification\n' \
       "$raw_materialization_join_gaps" "$raw_materialization_debt" "$raw_materialization_replayable" \
