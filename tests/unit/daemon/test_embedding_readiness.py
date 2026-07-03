@@ -316,7 +316,7 @@ def test_readiness_reads_archive_file_set_detail_counts_pending_messages(tmp_pat
     assert info["embedding_pending_count"] == 2
     assert info["embedding_pending_message_count"] == 3
     assert info["embedding_pending_message_count_exact"] is True
-    assert info["embedding_stale_count"] == 3
+    assert info["embedding_stale_count"] == 0
     assert info["embedding_estimated_cost_usd"] == 0.0
 
 

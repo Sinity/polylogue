@@ -8,7 +8,7 @@ import pytest
 
 from polylogue.daemon import convergence_stages, embedding_backlog
 from polylogue.daemon.status import format_daemon_status_lines
-from polylogue.storage.embeddings.materialization import EmbedSessionOutcome
+from polylogue.storage.embeddings.materialization import EmbedSessionOutcome, PendingSession
 
 
 class _EmbeddingConfig:
@@ -108,6 +108,46 @@ def test_daemon_embedding_backlog_drain_processes_archive(
     assert runs[0].skipped_sessions == 0
     assert runs[0].error_count == 0
     assert runs[0].embedded_messages == 4
+
+
+def test_daemon_embedding_backlog_uses_bounded_pending_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "index.db"
+    db_path.touch()
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                title TEXT,
+                message_count INTEGER NOT NULL,
+                sort_key_ms INTEGER
+            );
+            INSERT INTO sessions VALUES ('codex-session:v1-a', 'Archive A', 2, 1);
+            """
+        )
+
+    observed_kwargs: dict[str, object] = {}
+
+    def fake_select(*args: object, **kwargs: object) -> list[PendingSession]:
+        observed_kwargs.update(kwargs)
+        return [PendingSession(session_id="codex-session:v1-a", title="Archive A", message_count=2)]
+
+    def fake_embed(_db_path: Path, _provider: object, session_id: str) -> EmbedSessionOutcome:
+        return EmbedSessionOutcome(status="embedded", session_id=session_id, embedded_message_count=2)
+
+    monkeypatch.setattr(convergence_stages, "load_polylogue_config", lambda: _EmbeddingConfig())
+    monkeypatch.setattr(embedding_backlog, "load_polylogue_config", lambda: _EmbeddingConfig())
+    monkeypatch.setattr("polylogue.storage.search_providers.create_vector_provider", lambda **_: MagicMock())
+    monkeypatch.setattr(
+        "polylogue.storage.embeddings.materialization.select_pending_archive_session_window", fake_select
+    )
+    monkeypatch.setattr("polylogue.storage.embeddings.materialization.embed_archive_session_sync", fake_embed)
+
+    assert embedding_backlog.drain_embedding_backlog_once(db_path) == 1
+    assert observed_kwargs["include_stale_checks"] is False
 
 
 def test_daemon_embedding_backlog_records_skipped_sessions(

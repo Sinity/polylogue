@@ -119,6 +119,7 @@ def _drain_archive_embedding_backlog_once(index_db: Path) -> int:
                 status_table="embeddings.embedding_status",
                 max_sessions=_DAEMON_EMBED_MAX_SESSIONS,
                 max_messages=_DAEMON_EMBED_MAX_MESSAGES,
+                include_stale_checks=False,
             )
     except Exception:
         logger.warning("embed: failed to inspect archive pending backlog", exc_info=True)
