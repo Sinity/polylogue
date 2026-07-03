@@ -6,6 +6,8 @@ from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.archive.query.search_hits import (
+    DEFAULT_SEARCH_SNIPPET_MAX_CHARS,
+    bound_search_snippet,
     build_search_snippet,
     search_hit_surface,
     search_query_text,
@@ -48,6 +50,17 @@ def test_build_search_snippet_anchors_earliest_match_and_adds_ellipses() -> None
     assert snippet.endswith("...")
 
 
+def test_bound_search_snippet_never_returns_full_payload() -> None:
+    snippet = "alpha\n" + ("payload " * 200) + "omega"
+
+    bounded = bound_search_snippet(snippet)
+
+    assert bounded is not None
+    assert len(bounded) <= DEFAULT_SEARCH_SNIPPET_MAX_CHARS
+    assert bounded.endswith("...")
+    assert "\n" not in bounded
+
+
 def test_search_hit_from_session_preserves_match_evidence() -> None:
     hit = session_search_hit_from_session(
         _session(),
@@ -87,3 +100,24 @@ def test_search_hit_from_summary_and_lane_surface_are_explicit() -> None:
     assert search_hit_surface("hybrid") == "hybrid"
     assert search_hit_surface("semantic") == "semantic"
     assert search_hit_surface("dialogue") == "message"
+
+
+def test_search_hit_from_summary_bounds_provider_snippet() -> None:
+    summary = SessionSummary(
+        id=SessionId("claude-ai:summary"),
+        origin=Origin.CLAUDE_AI_EXPORT,
+        title="Summary",
+    )
+
+    hit = session_search_hit_from_summary(
+        summary,
+        rank=1,
+        retrieval_lane="dialogue",
+        match_surface="message",
+        message_id="msg",
+        snippet="needle " + ("full transcript payload " * 100),
+    )
+
+    assert hit.snippet is not None
+    assert len(hit.snippet) <= DEFAULT_SEARCH_SNIPPET_MAX_CHARS
+    assert hit.snippet.endswith("...")

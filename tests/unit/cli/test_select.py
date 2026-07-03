@@ -57,6 +57,22 @@ def test_select_row_from_summary_uses_query_result_display_contract() -> None:
     )
 
 
+def test_select_row_bounds_multiline_titles() -> None:
+    summary = SessionSummary(
+        id=SessionId("conv-select"),
+        origin=Origin.CODEX_SESSION,
+        title="needle\n" + "\n".join(f"/tmp/hermes-agent/path-{index}.py" for index in range(50)),
+        updated_at=datetime(2026, 5, 2, tzinfo=timezone.utc),
+    )
+
+    row = select_row_from_result(summary)
+
+    assert "\n" not in row.title
+    assert len(row.title) <= 96
+    assert row.title.endswith("...")
+    assert "/tmp/hermes-agent/path-20.py" not in row.title
+
+
 def test_render_select_row_outputs_requested_field() -> None:
     row = _row()
 

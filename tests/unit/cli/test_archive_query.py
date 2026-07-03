@@ -591,6 +591,20 @@ class TestSummaryLine:
         result = _summary_line(item)
         assert "abc123" in result
 
+    def test_summary_line_bounds_multiline_title(self) -> None:
+        item: dict[str, object] = {
+            "id": "abc123",
+            "title": "needle\n" + "\n".join(f"/tmp/hermes-agent/path-{index}.py" for index in range(50)),
+            "origin": "claude-code-session",
+            "created_at": "2026-01-15T10:00:00Z",
+        }
+
+        result = _summary_line(item)
+
+        assert "\n" not in result
+        assert "/tmp/hermes-agent/path-20.py" not in result
+        assert "..." in result
+
 
 # Tests for _hit_line
 class TestHitLine:
@@ -599,11 +613,15 @@ class TestHitLine:
     def test_hit_line_format(self) -> None:
         """Hit line contains expected fields."""
         item: dict[str, object] = {
-            "rank": 1,
-            "origin": "claude-code-session",
-            "title": "Hit Title",
-            "session_id": "abc123",
-            "snippet": "...relevant text...",
+            "session": {
+                "id": "abc123",
+                "origin": "claude-code-session",
+                "title": "Hit Title",
+            },
+            "match": {
+                "rank": 1,
+                "snippet": "...relevant text...",
+            },
         }
         result = _hit_line(item)
         assert "1" in result
@@ -614,13 +632,37 @@ class TestHitLine:
     def test_hit_line_missing_title_uses_session_id(self) -> None:
         """Missing title falls back to session_id."""
         item: dict[str, object] = {
-            "rank": 2,
-            "origin": "chatgpt-export",
-            "session_id": "xyz789",
-            "snippet": "...snippet...",
+            "session": {
+                "id": "xyz789",
+                "origin": "chatgpt-export",
+            },
+            "match": {
+                "rank": 2,
+                "snippet": "...snippet...",
+            },
         }
         result = _hit_line(item)
         assert "xyz789" in result
+
+    def test_hit_line_bounds_multiline_title_and_giant_snippet(self) -> None:
+        item: dict[str, object] = {
+            "session": {
+                "id": "abc123",
+                "origin": "claude-code-session",
+                "title": "needle\n" + "\n".join(f"/tmp/hermes-agent/path-{index}.py" for index in range(50)),
+            },
+            "match": {
+                "rank": 1,
+                "snippet": "hermes " + ("full transcript payload " * 100),
+            },
+        }
+
+        result = _hit_line(item)
+
+        assert "\n" not in result
+        assert "/tmp/hermes-agent/path-20.py" not in result
+        assert "full transcript payload " * 20 not in result
+        assert "..." in result
 
 
 # Tests for _stats_by_line

@@ -29,6 +29,17 @@ if TYPE_CHECKING:
 
 
 SelectPrintField = Literal["id", "title", "origin", "json"]
+_SELECT_TITLE_MAX_CHARS = 96
+
+
+def _single_line(value: str) -> str:
+    return " ".join(value.split())
+
+
+def _ellipsize(value: str, max_chars: int) -> str:
+    if max_chars <= 3:
+        return value[:max_chars]
+    return value if len(value) <= max_chars else f"{value[: max_chars - 3].rstrip()}..."
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,10 +72,11 @@ class SelectSessionRow:
 
 def select_row_from_result(result: Session | SessionSummary) -> SelectSessionRow:
     date = result_date(result)
+    title = _ellipsize(_single_line(result_title(result)), _SELECT_TITLE_MAX_CHARS)
     return SelectSessionRow(
         session_id=result_id(result),
         origin=result_origin(result),
-        title=result_title(result),
+        title=title,
         date=date.strftime("%Y-%m-%d") if isinstance(date, datetime) else None,
     )
 

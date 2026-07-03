@@ -8,6 +8,7 @@ import sys
 import tempfile
 import webbrowser
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import datetime
 from html import escape as html_escape
 from typing import TYPE_CHECKING, TypeAlias
@@ -15,6 +16,7 @@ from urllib.parse import quote
 
 import click
 
+from polylogue.archive.query.search_hits import bound_search_snippet
 from polylogue.cli.query_contracts import QueryDeliveryTarget, QueryOutputSpec
 from polylogue.cli.query_feedback import emit_no_results
 from polylogue.cli.query_output_contracts import QueryOutputDocument, StructuredRowsDocument
@@ -70,6 +72,15 @@ def _ellipsize(value: str, max_width: int) -> str:
     if max_width <= 3:
         return value[:max_width]
     return (value[: max_width - 3] + "...") if len(value) > max_width else value
+
+
+def _single_line(value: str) -> str:
+    return " ".join(value.split())
+
+
+def _display_title(value: str | None, fallback: str, *, max_width: int) -> str:
+    title = _single_line(value or fallback)
+    return _ellipsize(title, max_width)
 
 
 class _LayoutBreakpoints:
@@ -141,13 +152,13 @@ def _title_budget(width: int) -> int:
 
 def _session_list_line(conv: Session) -> str:
     date = _display_date(conv.display_date) or "unknown"
-    title = _ellipsize(conv.display_title or conv.id[:20], 50)
+    title = _display_title(conv.display_title, conv.id[:20], max_width=50)
     return f"{conv.id[:24]:24s}  {date:10s}  {str(conv.origin):20s}  {title} ({len(conv.messages)} msgs)"
 
 
 def _summary_list_line(summary: SessionSummary, message_count: int) -> str:
     date = _display_date(summary.display_date)
-    title = _ellipsize(summary.display_title or str(summary.id)[:20], 50)
+    title = _display_title(summary.display_title, str(summary.id)[:20], max_width=50)
     return f"{str(summary.id)[:24]:24s}  {date:10s}  {str(summary.origin):20s}  {title} ({message_count} msgs)"
 
 
@@ -395,7 +406,7 @@ def format_summary_list(
                 str(summary.id),
                 _display_date(summary.display_date),
                 str(summary.origin),
-                summary.display_title or "",
+                _single_line(summary.display_title or ""),
                 message_counts.get(str(summary.id), 0),
                 ",".join(summary.tags) if summary.tags else "",
                 summary.summary or "",
@@ -412,10 +423,18 @@ def _search_hit_to_payload(
     *,
     message_count: int,
 ) -> JSONDocument:
+    hit = _bounded_search_hit(hit)
     return model_json_document(
         SessionSearchHitPayload.from_search_hit(hit, message_count=message_count),
         exclude_none=True,
     )
+
+
+def _bounded_search_hit(hit: SessionSearchHit) -> SessionSearchHit:
+    bounded = bound_search_snippet(hit.snippet)
+    if bounded == hit.snippet:
+        return hit
+    return replace(hit, snippet=bounded)
 
 
 def format_search_hit_list(
@@ -427,12 +446,13 @@ def format_search_hit_list(
 ) -> str:
     """Format evidence-bearing search hits for deterministic surfaces."""
     message_counts = message_counts or {}
+    bounded_hits = [_bounded_search_hit(hit) for hit in hits]
     document = StructuredRowsDocument(
         rows=tuple(
             _search_hit_to_payload(
                 hit, message_count=message_counts.get(hit.session_id, hit.summary.message_count or 0)
             )
-            for hit in hits
+            for hit in bounded_hits
         ),
         csv_headers=(
             "id",
@@ -451,7 +471,7 @@ def format_search_hit_list(
                 str(hit.summary.id),
                 _display_date(hit.summary.display_date),
                 str(hit.summary.origin),
-                hit.summary.display_title or "",
+                _single_line(hit.summary.display_title or ""),
                 message_counts.get(hit.session_id, hit.summary.message_count or 0),
                 hit.rank,
                 hit.retrieval_lane,
@@ -459,11 +479,11 @@ def format_search_hit_list(
                 hit.message_id or "",
                 hit.snippet or "",
             )
-            for hit in hits
+            for hit in bounded_hits
         ),
         text_lines=tuple(
             _search_hit_list_line(hit, message_counts.get(hit.session_id, hit.summary.message_count or 0))
-            for hit in hits
+            for hit in bounded_hits
         ),
     )
     return document.with_selected_fields(fields).render(output_format)
@@ -491,14 +511,15 @@ def format_search_envelope(
     the genuine no-spec case where no count is available.
     """
     counts = message_counts or {}
+    bounded_hits = [_bounded_search_hit(hit) for hit in hits]
     hit_payloads = [
         SessionSearchHitPayload.from_search_hit(
             hit,
             message_count=counts.get(hit.session_id, hit.summary.message_count or 0),
         )
-        for hit in hits
+        for hit in bounded_hits
     ]
-    resolved_lane = hits[0].retrieval_lane if hits else (retrieval_lane or "auto")
+    resolved_lane = bounded_hits[0].retrieval_lane if bounded_hits else (retrieval_lane or "auto")
     envelope = build_search_envelope(
         hit_payloads,
         total=total,
@@ -594,10 +615,10 @@ async def output_search_hits(
         elif column == "match":
             table.add_column("Match", ratio=1)
 
-    for hit in hits:
+    for hit in (_bounded_search_hit(hit) for hit in hits):
         summary = hit.summary
         date = _display_date(summary.display_date)
-        title = _ellipsize(summary.display_title or str(summary.id)[:20], title_budget)
+        title = _display_title(summary.display_title, str(summary.id)[:20], max_width=title_budget)
         count = msg_counts.get(hit.session_id, summary.message_count or 0)
         origin_text = Text(
             str(summary.origin),
@@ -675,7 +696,7 @@ async def output_summary_list(
 
     for summary in summaries:
         date = _display_date(summary.display_date)
-        title = _ellipsize(summary.display_title or str(summary.id)[:20], title_budget)
+        title = _display_title(summary.display_title, str(summary.id)[:20], max_width=title_budget)
         count = msg_counts.get(str(summary.id), 0)
         origin_text = Text(
             str(summary.origin),
@@ -714,7 +735,7 @@ def sessions_to_csv(results: list[Session]) -> str:
                 str(conv.id),
                 _display_date(conv.display_date),
                 str(conv.origin),
-                conv.display_title or "",
+                _single_line(conv.display_title or ""),
                 len(conv.messages),
                 sum(message.word_count for message in conv.messages),
                 tags_str,

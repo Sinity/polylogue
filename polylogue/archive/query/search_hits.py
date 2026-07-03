@@ -14,6 +14,8 @@ if TYPE_CHECKING:
     from polylogue.archive.session.domain_models import Session, SessionSummary
     from polylogue.config import Config
 
+DEFAULT_SEARCH_SNIPPET_MAX_CHARS = 320
+
 
 @dataclass(frozen=True, slots=True)
 class SessionSearchHit:
@@ -81,6 +83,22 @@ def build_search_snippet(text: str, query_terms: tuple[str, ...]) -> str:
     return snippet
 
 
+def bound_search_snippet(
+    snippet: str | None,
+    *,
+    max_chars: int = DEFAULT_SEARCH_SNIPPET_MAX_CHARS,
+) -> str | None:
+    """Return a display-safe snippet, never a full transcript payload."""
+    if snippet is None:
+        return None
+    normalized = " ".join(snippet.split())
+    if max_chars <= 3:
+        return normalized[:max_chars]
+    if len(normalized) <= max_chars:
+        return normalized
+    return f"{normalized[: max_chars - 3].rstrip()}..."
+
+
 def search_hit_surface(retrieval_lane: str) -> str:
     if retrieval_lane == "actions":
         return "action"
@@ -122,7 +140,7 @@ def session_search_hit_from_session(
         retrieval_lane=retrieval_lane,
         match_surface=match_surface or search_hit_surface(retrieval_lane),
         message_id=str(matching_message.id) if matching_message else None,
-        snippet=snippet,
+        snippet=bound_search_snippet(snippet),
         score=score,
         matched_terms=matched_terms,
         score_components=score_components or {},
@@ -155,7 +173,7 @@ def session_search_hit_from_summary(
         retrieval_lane=retrieval_lane,
         match_surface=match_surface,
         message_id=message_id,
-        snippet=snippet,
+        snippet=bound_search_snippet(snippet),
         score=score,
         matched_terms=matched_terms,
         score_components=score_components or {},
@@ -296,7 +314,9 @@ def _archive_summary_to_domain(summary: object) -> SessionSummary:
 
 
 __all__ = [
+    "DEFAULT_SEARCH_SNIPPET_MAX_CHARS",
     "SessionSearchHit",
+    "bound_search_snippet",
     "build_search_snippet",
     "session_search_hit_from_session",
     "session_search_hit_from_summary",

@@ -1979,7 +1979,7 @@ def _summary_payload(summary: ArchiveSessionSummary) -> dict[str, object]:
             SessionListRowPayload(
                 id=summary.session_id,
                 origin=summary.origin,
-                title=summary.title or summary.session_id,
+                title=_snippet(summary.title or summary.session_id, max_chars=96),
                 target_ref=TargetRefPayload.session(summary.session_id),
                 anchor=reader_anchor("session", summary.session_id),
                 created_at=summary.created_at,
@@ -2008,7 +2008,7 @@ def _hit_payload(
                 session=SessionSummaryPayload(
                     id=summary.session_id,
                     origin=summary.origin,
-                    title=summary.title or summary.session_id,
+                    title=_snippet(summary.title or summary.session_id, max_chars=96),
                     message_count=summary.message_count,
                     target_ref=TargetRefPayload.session(summary.session_id),
                     anchor=reader_anchor("session", summary.session_id),
@@ -2021,7 +2021,7 @@ def _hit_payload(
                     anchor=reader_anchor("message", hit.message_id),
                     actions=reader_message_actions(),
                     message_id=hit.message_id,
-                    snippet=hit.snippet,
+                    snippet=_snippet(hit.snippet, max_chars=320),
                     score=None,
                     score_kind=None,
                 ),
@@ -2085,7 +2085,7 @@ def _ellipsize(value: str, max_width: int) -> str:
 
 def _summary_line(item: dict[str, object]) -> str:
     session_id = str(item["id"])
-    title = _ellipsize(str(item.get("title") or session_id), 50)
+    title = _snippet(item.get("title") or session_id, max_chars=50)
     date = str(item.get("updated_at") or item.get("created_at") or "unknown")[:10]
     origin = str(item["origin"])
     message_count = item.get("message_count") or 0
@@ -2108,8 +2108,9 @@ def _hit_line(item: dict[str, object]) -> str:
     match = item.get("match")
     if not isinstance(session, dict) or not isinstance(match, dict):
         return str(item)
-    title = session.get("title") or session.get("id")
-    line = f"{match['rank']}. {session['origin']}  {title}  {match.get('snippet') or ''}"
+    title = _snippet(session.get("title") or session.get("id"), max_chars=96)
+    snippet = _snippet(match.get("snippet"), max_chars=320)
+    line = f"{match['rank']}. {session['origin']}  {title}  {snippet}"
     return line + _attached_units_suffix(item)
 
 

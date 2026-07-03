@@ -29,7 +29,7 @@ from polylogue.archive.attachment.models import Attachment
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
 from polylogue.archive.models import Message, Session, SessionSummary
-from polylogue.archive.query.search_hits import SessionSearchHit
+from polylogue.archive.query.search_hits import DEFAULT_SEARCH_SNIPPET_MAX_CHARS, SessionSearchHit
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.cli.query_contracts import describe_query_filters
 from polylogue.cli.query_output import (
@@ -605,6 +605,39 @@ class TestListFormatting:
         assert payload["items"][0]["match"]["retrieval_lane"] == "attachment"
         assert payload["items"][0]["match"]["message_id"] == "msg-doc"
         assert "attachment.provider_file_id=drive-file-1" in payload["items"][0]["match"]["snippet"]
+
+    @pytest.mark.parametrize("output_format", ["json", "yaml", "csv", "text"])
+    def test_format_search_hit_list_bounds_giant_snippets(self, output_format: str) -> None:
+        summary = SessionSummary(
+            id=SessionId("conv-giant-hit"),
+            origin=Origin.CLAUDE_AI_EXPORT,
+            title="Giant Hit",
+            created_at=datetime(2025, 6, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2025, 6, 2, tzinfo=timezone.utc),
+        )
+        giant_snippet = "needle " + ("full transcript payload " * 300)
+        hit = SessionSearchHit(
+            summary=summary,
+            rank=1,
+            retrieval_lane="dialogue",
+            match_surface="message",
+            message_id="msg-giant",
+            snippet=giant_snippet,
+        )
+
+        rendered = format_search_hit_list([hit], output_format, None, message_counts={"conv-giant-hit": 1})
+
+        assert "full transcript payload " * 20 not in rendered
+        if output_format == "json":
+            snippet = json.loads(rendered)["items"][0]["match"]["snippet"]
+        elif output_format == "yaml":
+            snippet = yaml.safe_load(rendered)["items"][0]["match"]["snippet"]
+        elif output_format == "csv":
+            snippet = rendered.rsplit(",", maxsplit=1)[-1].strip()
+        else:
+            snippet = rendered.split("needle", maxsplit=1)[1]
+        assert len(snippet) <= DEFAULT_SEARCH_SNIPPET_MAX_CHARS + 64
+        assert "..." in snippet
 
     def test_cli_list_json_envelope_matches_mcp_list_sessions_shape(self) -> None:
         """#1618: CLI ``--format json`` list output emits the same
