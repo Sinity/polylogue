@@ -8,11 +8,14 @@ Before a capability slice:
 2. Run `.agent/scripts/devloop-review`.
 3. Read `README.md` and this `RUNBOOK.md`.
 4. If ignored local `ACTIVE-LOOP.md` exists, read it.
-5. If review warns, fix it or record the accepted warning in `ACTIVE-LOOP.md`
+5. Run `bd prime` if not already done this session, then `bd ready` — beads
+   is the durable backlog; the status output includes a beads summary.
+6. If review warns, fix it or record the accepted warning in `ACTIVE-LOOP.md`
    when local state exists; otherwise initialize local state first.
-6. Start the slice with `.agent/scripts/devloop-start "<slice>"`, or
+7. Start the slice with `.agent/scripts/devloop-start "<slice>"`, or
    `.agent/scripts/devloop-start --meta "<slice>"` when the slice itself
-   begins as process/self-improvement work.
+   begins as process/self-improvement work. Claim the matching bead with
+   `bd update <id> --claim`; create one first if the slice is untracked.
 
 Use `.agent/scripts/devloop-status --json` when another script or report needs
 structured state instead of human-readable text.
@@ -83,9 +86,12 @@ explains why it should not be routed through the normal state machine.
 1. **Direction**
    - Select one capability slice.
    - Brainstorm candidate demos or demo improvements before narrowing.
-   - Check the workload radar: `ACTIVE-LOOP.md`, `DEMO-RADAR.md`, recent
-     `OPERATING-LOG.md` next decisions, and any relevant audit note in
-     `INDEX.md`.
+   - Check the workload radar: `bd ready --json` (priorities encode the
+     operator tier frame — P0 campaign epics outrank everything),
+     `ACTIVE-LOOP.md`, `DEMO-RADAR.md`, recent `OPERATING-LOG.md` next
+     decisions, and any relevant audit note in `INDEX.md`.
+   - Read `bd show <id>` for the chosen item — description, design notes,
+     and acceptance criteria carry pre-made judgment; do not re-derive it.
    - Rank candidates by evidence urgency, user-visible truthfulness, substrate
      leverage, demo value, and velocity impact. Prefer the slice that improves
      the most categories without broadening into vague cleanup.
@@ -165,13 +171,18 @@ explains why it should not be routed through the normal state machine.
 The devloop backlog is evidence-shaped, not a static ticket queue. Maintain it
 as a radar during Direction and at substantial checkpoints:
 
-1. `ACTIVE-LOOP.md` says what is live now.
-2. `DEMO-RADAR.md` says which demos are current, missing, stale, or next.
-3. `OPERATING-LOG.md` carries recent "next decision" lines and proof caveats.
-4. `.agent/includes/` carries durable conventions and architecture direction.
-5. `.agent/archive/conductor-history/` carries older audit/debt notes for
+1. Beads (`bd ready`, `bd blocked`, `bd stats`) is the durable backlog,
+   dependency graph, and operator directive channel. Keep it truthful:
+   claim on start, close with reason + proof on completion, create linked
+   beads (`discovered-from:<id>`) for discovered work, and re-priority
+   items when evidence changes their tier.
+2. `ACTIVE-LOOP.md` says what is live now.
+3. `DEMO-RADAR.md` says which demos are current, missing, stale, or next.
+4. `OPERATING-LOG.md` carries recent "next decision" lines and proof caveats.
+5. `.agent/includes/` carries durable conventions and architecture direction.
+6. `.agent/archive/conductor-history/` carries older audit/debt notes for
    archaeology only.
-6. `.agent/scripts/devloop-integration` shows how far the long-running branch is
+7. `.agent/scripts/devloop-integration` shows how far the long-running branch is
    ahead of master and emits the read-heavy subagent prompt for PR clustering.
 
 Use this scoring order when choosing between candidates:
@@ -344,12 +355,16 @@ Before ending:
 
 1. The latest operating-log entry is filled.
 2. `ACTIVE-LOOP.md` names focus, accepted warnings, and next action.
-3. `.agent/conductor-devloop` ignored generated state has been refreshed with
+3. Beads reflect reality: the slice bead is closed with reason + proof (or
+   updated with `--notes` on partial progress), discovered work exists as
+   linked beads, and nothing is left `in_progress` that this session is not
+   actually progressing.
+4. `.agent/conductor-devloop` ignored generated state has been refreshed with
    `devloop-sync`.
-4. `devloop-review` warnings are fixed or explicitly accepted.
-5. `DEMO-RADAR.md` is current for substantial demo-facing work, or the log says
+5. `devloop-review` warnings are fixed or explicitly accepted.
+6. `DEMO-RADAR.md` is current for substantial demo-facing work, or the log says
    why no demo artifact was implicated.
-6. Any needed background process is complete, stopped, or named with a poll path.
+7. Any needed background process is complete, stopped, or named with a poll path.
 
 ## Durability
 

@@ -688,6 +688,17 @@ if unmerged:
 PY
 fi
 
+printf '\n== beads ==\n'
+if command -v bd >/dev/null 2>&1 && [ -d "$repo/.beads" ]; then
+  bd ready --limit 5 2>/dev/null || printf 'bd ready unavailable\n'
+  bd_in_progress="$(bd list --status=in_progress 2>/dev/null | grep -v 'No issues found' | sed -n '1,6p')"
+  if [ -n "$bd_in_progress" ]; then
+    printf -- '-- in progress --\n%s\n' "$bd_in_progress"
+  fi
+else
+  printf 'beads unavailable (bd not on PATH or no .beads workspace)\n'
+fi
+
 printf '\n== active loop ==\n'
 if [ -f "$current/ACTIVE-LOOP.md" ]; then
   sed -n '1,90p' "$current/ACTIVE-LOOP.md"

@@ -17,8 +17,9 @@ You are conducting the Polylogue dogfood/demo devloop. Your objective is rapid
 Polylogue capability growth proven by inspectable artifacts on real archive
 data, not cleanup for its own sake. Start every loop by running
 `.agent/scripts/devloop-status --json` and `.agent/scripts/devloop-review`,
-reading `ACTIVE-LOOP.md`, and naming the current focus transition with trigger
-and decision. Keep one canonical active archive at
+reading `ACTIVE-LOOP.md`, running `bd prime` and `bd ready` (beads is the
+durable backlog/directive channel; claim the bead you work, close it with
+proof), and naming the current focus transition with trigger and decision. Keep one canonical active archive at
 `/home/sinity/.local/share/polylogue`; prod `polylogued.service` is the
 canonical live daemon when enabled, and the branch-local devloop daemon must use
 isolated ports plus the branch-local dev archive; quote counts only with archive
@@ -92,5 +93,6 @@ packet is refreshed; `devloop-review` is clean or warnings are accepted in
 recorded; and the next focus/action is named.
 
 Choose the next slice from current evidence, not from this tracked scaffold.
-Concrete next-slice decisions belong in ignored local state:
-`ACTIVE-LOOP.md`, `OPERATING-LOG.md`, and `DEMO-RADAR.md`.
+Concrete next-slice decisions belong in beads (`bd ready`, dependency graph,
+operator-priority tiers) plus ignored local state: `ACTIVE-LOOP.md`,
+`OPERATING-LOG.md`, and `DEMO-RADAR.md`.

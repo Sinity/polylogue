@@ -17,7 +17,11 @@ whether convergence is running.
 
 ## Loop Shape
 
-1. Pick the highest-value live archive capability slice.
+1. Pick the highest-value live archive capability slice. Start from
+   `bd ready --json` — beads is the durable backlog and dependency graph;
+   priorities encode the operator tier frame (P0 campaigns first). Claim the
+   chosen bead (`bd update <id> --claim`); if the slice is not tracked yet,
+   create it first.
 2. Record a timestamped operating-log entry with `.agent/scripts/devloop-log`.
 3. Gather evidence from source, archive, daemon logs, and existing notes.
 4. Make the smallest shared-substrate change that advances the slice.
@@ -114,3 +118,9 @@ Campaign rules:
   direction (priority frames, queued campaign directives, operator-sourced
   backlog items) are superseded with a recorded rationale in the operating
   log, never deleted as duplicates during sync/cleanup.
+- **Beads is the durable directive channel.** Campaigns are P0 epic beads
+  with dependency-encoded sequencing; operator directives arrive as P0/P1
+  beads or `bd human` flags, and survive any amount of packet cleanup.
+  Closing a slice bead never closes its campaign epic; the epic closes only
+  on recorded terminal state. Discovered work becomes a linked bead
+  (`--deps discovered-from:<id>`).

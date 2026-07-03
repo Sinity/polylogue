@@ -448,7 +448,6 @@ fi
 allowed_packet_files=(
   ACTIVE-LOOP.md
   ADVERSARIAL-REVIEW.md
-  BACKLOG.md
   DEMO-RADAR.md
   EVENTS.jsonl
   HANDOFF-LATEST.md

@@ -13,7 +13,7 @@ only. Historical audits and old backlog notes belong under `.agent/archive/` or
 4. `ACTIVE-LOOP.md`
 5. `OPERATING-LOG.md` tail
 6. `DEMO-RADAR.md` tail
-7. `BACKLOG.md`
+7. `bd prime` + `bd ready` (beads — the durable backlog and directive channel)
 8. `VELOCITY.md`
 9. `PROCESS.md`
 10. `TACTICS.md`
@@ -38,8 +38,7 @@ Then run:
 - `OPERATING-LOG.md` — timestamped operating history.
 - `EVENTS.jsonl` — generated structured sidecar from the operating log.
 - `DEMO-RADAR.md` — current demo candidates, selected artifact, proof/caveat.
-- `BACKLOG.md` — current prioritized sidecar/research synthesis. Ignored local
-  state; refresh or rewrite it instead of treating it as append-only history.
+- Backlog — lives in beads (`bd ready` / `bd show`), not in a packet file.
 - `HANDOFF-LATEST.md` — latest resumable handoff.
 - `PROCESS.md`, `TACTICS.md`, `VELOCITY.md`, `ADVERSARIAL-REVIEW.md` — stable
   process guardrails.

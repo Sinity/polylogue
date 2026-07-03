@@ -113,6 +113,33 @@ consume `devloop_focus_modes`, `devloop_focus_edges`, or
 `devloop_focus_edge_allowed`; do not duplicate the edge set in Python or shell
 snippets inside individual scripts.
 
+## Task State: Beads
+
+Beads (`bd`) is the durable task/backlog/dependency substrate for repos that
+carry a `.beads/` workspace (Polylogue since 2026-07-03). Contract:
+
+- Work items, blockers, dependencies, priorities, and operator directives
+  live in beads. A deferred directive is a P0/P1 bead, or a `bd human` flag
+  when it needs an operator decision.
+- The narrative plane stays in the conductor packet: `ACTIVE-LOOP.md`,
+  `OPERATING-LOG.md`, and `DEMO-RADAR.md` record the current slice, focus
+  transitions, proofs, and demo state. Beads records what work exists and
+  what blocks it; the packet records how the work went.
+- Loop integration: `bd ready` during Direction, `bd update <id> --claim` at
+  slice start, `bd close <id> --reason` with proof at slice end,
+  `bd create --deps discovered-from:<id>` for discovered work,
+  `bd remember` for durable repo-operational lore.
+- Priorities encode the operator tier frame (P0 proof campaigns, P1
+  enablers/trust-correctness, P2 correctness/features, P3 hygiene,
+  P4 parked). Campaign epics close only on recorded terminal state, never
+  by slice completion.
+- Scripts treat `bd` as optional (`command -v bd` guard) so the loop
+  degrades gracefully where beads is absent.
+- Sinex parity is pending: Sinex still uses `devloop-checkpoint --queue` as
+  its directive channel. Until Sinex adopts beads, the shared contract
+  differs deliberately; do not remove the Sinex queue primitive from this
+  spec without changing both repos (tracked as a Polylogue bead).
+
 ## Boundaries
 
 - Tracked scaffold explains how to resume.

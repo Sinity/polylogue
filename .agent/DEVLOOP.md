@@ -18,7 +18,7 @@ when only the active slice, focus, next action, git state, and packet size are
 needed. Use `--quick` when host pressure is high and slower detailed
 ops/worktree probes would add friction.
 
-Then read, in order:
+Then run `bd prime` (Beads workflow context) and read, in order:
 
 1. `.agent/conductor-devloop/README.md`
 2. `.agent/conductor-devloop/RUNBOOK.md`
@@ -119,6 +119,44 @@ Every `.agent/scripts/devloop-*` primitive must support a side-effect-free
 `--help` path. Use that for discovery instead of trying scripts with placeholder
 arguments; `devloop-review` checks that help probing does not mutate active
 state files.
+
+## Task State: Beads
+
+Beads (`bd`) is the durable backlog, dependency graph, and directive channel
+for this devloop. `ACTIVE-LOOP.md`, `OPERATING-LOG.md`, and `DEMO-RADAR.md`
+are the narrative/current-slice state; the work items themselves live in
+beads.
+
+Core moves:
+
+- `bd prime` — recover workflow context after compaction/resume.
+- `bd ready --json` — candidate slices, blockers already filtered out.
+- `bd show <id>` — full item: description, design notes, acceptance,
+  dependencies. Design fields carry pre-made implementation judgment; read
+  them before re-deriving.
+- `bd update <id> --claim` when a slice starts; `bd close <id>
+  --reason "..."` with the proof when it lands.
+- Discovered follow-up work: `bd create` with
+  `--deps discovered-from:<current-id>`.
+- `bd remember "<insight>"` / `bd memories <kw>` — durable repo-operational
+  lore that must survive context loss.
+- `bd human <id>` — flag a decision only the operator can make.
+
+Conventions:
+
+- Priorities encode the operator tier frame: P0 = proof campaigns,
+  P1 = campaign enablers + live-trust correctness, P2 = correctness/features,
+  P3 = surface hygiene, P4 = parked/blocked.
+- Campaign epics are protected: closing a slice bead never closes the
+  campaign epic; the epic closes only when its terminal state
+  (cold-reader-gated external artifact) is recorded.
+- GitHub-mirrored beads carry `external-ref gh-NNNN`. Closing the bead does
+  not close the GitHub issue — that is a separate explicit act under the
+  resolver-keyword discipline. When a mirrored bead closes, leave a note on
+  whether the GH issue is also satisfied.
+- The bead graph is state, not narrative. Operating-log entries still record
+  triggers/decisions/proofs; beads record what work exists, what blocks it,
+  and what it produced.
 
 ## Current Goal
 
