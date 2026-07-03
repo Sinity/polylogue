@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import time
 from email.message import Message
 from http import HTTPStatus
 from io import BytesIO
@@ -175,13 +176,15 @@ class TestFormatMetricsExpositionShape:
         assert 'polylogue_fts_trigger_present{trigger="messages_fts_au"} 1' in body
 
         with sqlite3.connect(tmp_path / "ops.db") as conn:
+            now_ms = int(time.time() * 1000)
             record_ingest_attempt(
                 conn,
                 attempt_id="rebuild-active",
                 source_path=str(tmp_path / "source.db"),
                 status="running",
                 phase="rebuild-index",
-                started_at_ms=1_700_000_000_000,
+                started_at_ms=now_ms - 1_000,
+                heartbeat_at_ms=now_ms,
                 storage_route="maintenance",
             )
 

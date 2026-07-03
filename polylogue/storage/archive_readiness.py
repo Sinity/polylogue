@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+
+ACTIVE_REBUILD_STALE_AFTER_S = 180.0
+"""Maximum heartbeat/start age for a rebuild-index row to count as active."""
 
 
 def active_rebuild_index_attempts(ops_db: Path) -> list[dict[str, object]]:
     """Return active index-rebuild attempts recorded in the ops tier."""
     if not ops_db.exists():
         return []
+    cutoff_ms = int((time.time() - ACTIVE_REBUILD_STALE_AFTER_S) * 1000)
     try:
         with sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True) as conn:
             conn.row_factory = sqlite3.Row
@@ -21,9 +26,11 @@ def active_rebuild_index_attempts(ops_db: Path) -> list[dict[str, object]]:
                 FROM ingest_attempts
                 WHERE status = 'running'
                   AND phase = 'rebuild-index'
+                  AND COALESCE(heartbeat_at_ms, started_at_ms) >= ?
                 ORDER BY started_at_ms DESC
                 LIMIT 8
-                """
+                """,
+                (cutoff_ms,),
             ).fetchall()
     except sqlite3.Error:
         return []
@@ -126,6 +133,7 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
 
 
 __all__ = [
+    "ACTIVE_REBUILD_STALE_AFTER_S",
     "active_rebuild_index_attempts",
     "raw_materialization_readiness_snapshot",
     "raw_materialization_ready",
