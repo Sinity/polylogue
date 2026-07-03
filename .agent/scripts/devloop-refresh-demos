@@ -18,6 +18,14 @@ fi
 args=(--root "$demo_root")
 if [ "${1:-}" = "--check" ]; then
   args+=(--check)
+  args+=(--require-summary-coverage claim,non_claim,proof_fields,caveat_fields)
+  archive_root="${POLYLOGUE_ARCHIVE_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/polylogue}"
+  if [ -f "$archive_root/index.db" ] && command -v sqlite3 >/dev/null 2>&1; then
+    index_schema="$(sqlite3 "$archive_root/index.db" 'PRAGMA user_version;' 2>/dev/null || true)"
+    if [ -n "$index_schema" ]; then
+      args+=(--require-index-schema-version "$index_schema")
+    fi
+  fi
 fi
 
 cd "$repo"

@@ -53,6 +53,7 @@ def test_demo_shelf_writes_manifest_and_summary_index(tmp_path: Path, capsys: py
     assert summary_index["summary_count"] == 1
     assert summary_index["coverage"]["without_claim"] == []
     assert summary_index["coverage"]["without_non_claim"] == []
+    assert summary_index["coverage"]["unsummarized_demos"] == []
     assert summary_index["records"][0]["proof_fields"] == ["proofs"]
     assert summary_index["records"][0]["caveat_fields"] == ["caveats"]
 
@@ -99,6 +100,35 @@ def test_demo_shelf_summary_index_reports_coverage_gaps(tmp_path: Path) -> None:
     assert summary_index["coverage"]["without_non_claim"] == ["01-demo/summary.json"]
     assert summary_index["coverage"]["without_proof_fields"] == ["01-demo/summary.json"]
     assert summary_index["coverage"]["without_caveat_fields"] == ["01-demo/summary.json"]
+    assert summary_index["coverage"]["unsummarized_demos"] == []
+
+
+def test_demo_shelf_reports_unsummarized_current_entries(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root = tmp_path / "demos"
+    (root / "summarized").mkdir(parents=True)
+    (root / "summarized" / "summary.json").write_text(
+        json.dumps(
+            {
+                "artifact": "summarized",
+                "claim": "Claim.",
+                "non_claim": "Non-claim.",
+                "proofs": ["proof"],
+                "caveats": ["caveat"],
+            }
+        )
+    )
+    (root / "unsummarized").mkdir()
+    (root / "unsummarized" / "README.md").write_text("# Unsummarized\n")
+    assert demo_shelf.main(["--root", str(root)]) == 0
+    capsys.readouterr()
+
+    exit_code = demo_shelf.main(["--root", str(root), "--check", "--json"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["unsummarized_demos"] == ["unsummarized"]
+    summary_index = json.loads((root / "SUMMARY_INDEX.json").read_text())
+    assert summary_index["coverage"]["unsummarized_demos"] == ["unsummarized"]
 
 
 def test_demo_shelf_require_summary_coverage_fails_check(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -162,3 +192,48 @@ def test_demo_shelf_require_summary_coverage_passes_check(tmp_path: Path, capsys
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is True
     assert payload["summary_coverage_failures"] == {}
+
+
+def test_demo_shelf_require_index_schema_version_fails_stale_claim(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = tmp_path / "demos"
+    (root / "01-demo").mkdir(parents=True)
+    (root / "01-demo" / "summary.json").write_text(
+        json.dumps(
+            {
+                "artifact": "01-demo",
+                "claim": "Claim.",
+                "non_claim": "Non-claim.",
+                "proofs": ["proof"],
+                "caveats": ["caveat"],
+                "index_schema_version": 21,
+            }
+        )
+    )
+    assert demo_shelf.main(["--root", str(root)]) == 0
+    capsys.readouterr()
+
+    exit_code = demo_shelf.main(
+        [
+            "--root",
+            str(root),
+            "--check",
+            "--json",
+            "--require-index-schema-version",
+            "23",
+        ]
+    )
+
+    assert exit_code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["required_index_schema_version"] == 23
+    assert payload["summary_schema_mismatches"] == [
+        {
+            "summary_path": "01-demo/summary.json",
+            "observed": 21,
+            "required": 23,
+        }
+    ]

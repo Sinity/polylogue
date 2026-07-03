@@ -34,6 +34,7 @@ class ShelfRender:
     readable_count: int
     summary_count: int
     summary_coverage: dict[str, list[str]]
+    unsummarized_demos: list[str]
 
 
 def _is_readable_artifact(path: Path) -> bool:
@@ -118,13 +119,17 @@ def _summary_record(root: Path, path: Path) -> dict[str, Any]:
     return record
 
 
-def _build_summary_index(root: Path, generated: set[Path]) -> tuple[str, int, dict[str, list[str]]]:
-    records = []
+def _summary_records(root: Path, generated: set[Path]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
     for path in sorted(root.rglob("*summary.json")):
         if not path.is_file() or path.resolve() in generated:
             continue
         records.append(_summary_record(root, path))
-    coverage = {
+    return records
+
+
+def _summary_coverage(records: list[dict[str, Any]]) -> dict[str, list[str]]:
+    return {
         "without_claim": [record["summary_path"] for record in records if not record["coverage"]["claim"]],
         "without_non_claim": [record["summary_path"] for record in records if not record["coverage"]["non_claim"]],
         "without_proof_fields": [
@@ -134,13 +139,53 @@ def _build_summary_index(root: Path, generated: set[Path]) -> tuple[str, int, di
             record["summary_path"] for record in records if not record["coverage"]["caveat_fields"]
         ],
     }
+
+
+def _schema_version_mismatches(records: list[dict[str, Any]], required: int | None) -> list[dict[str, Any]]:
+    if required is None:
+        return []
+    mismatches: list[dict[str, Any]] = []
+    for record in records:
+        observed = record.get("index_schema_version")
+        if observed is None:
+            continue
+        try:
+            observed_int = int(observed)
+        except (TypeError, ValueError):
+            observed_int = None
+        if observed_int != required:
+            mismatches.append(
+                {
+                    "summary_path": record["summary_path"],
+                    "observed": observed,
+                    "required": required,
+                }
+            )
+    return mismatches
+
+
+def _unsummarized_demos(demo_records: list[dict[str, object]], summary_records: list[dict[str, Any]]) -> list[str]:
+    summarized_top_level = {str(record["demo"]).split("/", maxsplit=1)[0] for record in summary_records}
+    return [str(record["id"]) for record in demo_records if str(record["id"]) not in summarized_top_level]
+
+
+def _build_summary_index(
+    root: Path,
+    summary_records: list[dict[str, Any]],
+    unsummarized_demos: list[str],
+) -> tuple[str, int, dict[str, list[str]]]:
+    coverage = _summary_coverage(summary_records)
+    coverage = {
+        **coverage,
+        "unsummarized_demos": unsummarized_demos,
+    }
     summary_index = {
         "root": str(root),
-        "summary_count": len(records),
+        "summary_count": len(summary_records),
         "coverage": coverage,
-        "records": records,
+        "records": summary_records,
     }
-    return json.dumps(summary_index, indent=2) + "\n", len(records), coverage
+    return json.dumps(summary_index, indent=2) + "\n", len(summary_records), coverage
 
 
 def _demo_records(root: Path, files: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -293,8 +338,14 @@ def render_demo_shelf(
         "files": files,
     }
     manifest_text = json.dumps(manifest, indent=2) + "\n"
-    summary_index_text, summary_count, summary_coverage = _build_summary_index(root, generated)
+    summary_records = _summary_records(root, generated)
     records = _demo_records(root, files)
+    unsummarized_demos = _unsummarized_demos(records, summary_records)
+    summary_index_text, summary_count, summary_coverage = _build_summary_index(
+        root,
+        summary_records,
+        unsummarized_demos,
+    )
     readme_text = _build_readme(records)
     catalog_text = _build_catalog(records)
     return ShelfRender(
@@ -310,6 +361,7 @@ def render_demo_shelf(
         readable_count=sum(1 for item in files if item["readable"]),
         summary_count=summary_count,
         summary_coverage=summary_coverage,
+        unsummarized_demos=unsummarized_demos,
     )
 
 
@@ -347,6 +399,13 @@ def main(argv: list[str] | None = None) -> int:
         metavar="FIELDS",
         help="In check mode, fail when summaries lack comma-separated fields: claim, non_claim, proof_fields, caveat_fields.",
     )
+    parser.add_argument(
+        "--require-index-schema-version",
+        type=int,
+        default=None,
+        metavar="VERSION",
+        help="In check mode, fail when a summary declares a different index_schema_version.",
+    )
     parser.add_argument("--check", action="store_true", help="Verify files are current without writing.")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     args = parser.parse_args(argv)
@@ -364,7 +423,12 @@ def main(argv: list[str] | None = None) -> int:
         "catalog": _changed(rendered.catalog_path, rendered.catalog_text),
     }
     coverage_failures = _coverage_failures(rendered.summary_coverage, args.require_summary_coverage)
-    ok = not any(changed.values()) and not coverage_failures
+    summary_index_payload = json.loads(rendered.summary_index_text)
+    schema_mismatches = _schema_version_mismatches(
+        summary_index_payload["records"],
+        args.require_index_schema_version,
+    )
+    ok = not any(changed.values()) and not coverage_failures and not schema_mismatches
     if not args.check:
         rendered.manifest_path.parent.mkdir(parents=True, exist_ok=True)
         rendered.manifest_path.write_text(rendered.manifest_text)
@@ -374,6 +438,7 @@ def main(argv: list[str] | None = None) -> int:
         ok = True
         changed = {"manifest": False, "summary_index": False, "readme": False, "catalog": False}
         coverage_failures = {}
+        schema_mismatches = []
 
     payload = {
         "ok": ok,
@@ -383,8 +448,11 @@ def main(argv: list[str] | None = None) -> int:
         "file_count": rendered.file_count,
         "readable_count": rendered.readable_count,
         "summary_count": rendered.summary_count,
+        "unsummarized_demos": rendered.unsummarized_demos,
         "required_summary_coverage": sorted(args.require_summary_coverage),
         "summary_coverage_failures": coverage_failures,
+        "required_index_schema_version": args.require_index_schema_version,
+        "summary_schema_mismatches": schema_mismatches,
         "changed": changed,
         "mode": "check" if args.check else "write",
     }
@@ -395,11 +463,14 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"demo shelf {'current' if args.check else 'refreshed'}: "
             f"{rendered.file_count} files, {rendered.readable_count} readable, "
-            f"{rendered.summary_count} summaries; portable bundles: read-package"
+            f"{rendered.summary_count} summaries, "
+            f"{len(rendered.unsummarized_demos)} unsummarized; portable bundles: read-package"
         )
     else:
         reasons = [name for name, value in changed.items() if value]
         reasons.extend(f"summary coverage {field}" for field in coverage_failures)
+        if schema_mismatches:
+            reasons.append("summary schema version")
         print("demo shelf drift:", ", ".join(reasons), file=sys.stderr)
     return 0 if ok else 1
 
