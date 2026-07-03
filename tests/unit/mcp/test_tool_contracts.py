@@ -1991,9 +1991,19 @@ class TestMutationTools:
         mock_report.archive_convergence = {
             "converging": True,
             "materialization_ready": False,
+            "materialization_progress": {
+                "raw_artifact_count": 10,
+                "materialized_raw_artifact_count": 6,
+                "archive_session_count": 7,
+                "join_gap_count": 4,
+            },
             "active_rebuild_index_attempts": [],
             "raw_materialization_readiness": {
                 "available": True,
+                "raw_artifact_count": 10,
+                "materialized_raw_artifact_count": 6,
+                "archive_session_count": 7,
+                "join_gap_count": 4,
                 "total": 1,
                 "critical": 0,
                 "warning": 1,
@@ -2017,7 +2027,17 @@ class TestMutationTools:
         assert parsed["summary"] == "Healthy"
         assert parsed["checks"][0]["name"] == "database"
         assert parsed["archive_convergence"]["converging"] is True
+        assert parsed["archive_convergence"]["materialization_progress"] == {
+            "raw_artifact_count": 10,
+            "materialized_raw_artifact_count": 6,
+            "archive_session_count": 7,
+            "join_gap_count": 4,
+        }
         assert parsed["component_readiness"]["raw_materialization"]["state"] == "stale"
+        assert parsed["component_readiness"]["raw_materialization"]["counts"]["raw_artifact_count"] == 10
+        assert parsed["component_readiness"]["raw_materialization"]["counts"]["materialized_raw_artifact_count"] == 6
+        assert parsed["component_readiness"]["raw_materialization"]["counts"]["archive_session_count"] == 7
+        assert parsed["component_readiness"]["raw_materialization"]["counts"]["join_gap_count"] == 4
         assert parsed["component_readiness"]["raw_materialization"]["counts"]["affected_actionable"] == 4
 
     def test_rebuild_index_success(self, mcp_server: MCPServerUnderTest) -> None:

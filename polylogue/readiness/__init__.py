@@ -60,6 +60,21 @@ _DERIVED_MODEL_READINESS_CHECKS: tuple[tuple[str, str], ...] = (
 )
 
 
+def _payload_int(value: object) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0
+
+
 @dataclass
 class ReadinessReport(OutcomeReport):
     """Comprehensive readiness and verification report."""
@@ -81,9 +96,18 @@ class ReadinessReport(OutcomeReport):
     @property
     def archive_convergence(self) -> dict[str, object]:
         materialization_ready = raw_materialization_ready(self.raw_materialization_readiness)
+        materialization_progress = {
+            "raw_artifact_count": _payload_int(self.raw_materialization_readiness.get("raw_artifact_count")),
+            "materialized_raw_artifact_count": _payload_int(
+                self.raw_materialization_readiness.get("materialized_raw_artifact_count")
+            ),
+            "archive_session_count": _payload_int(self.raw_materialization_readiness.get("archive_session_count")),
+            "join_gap_count": _payload_int(self.raw_materialization_readiness.get("join_gap_count")),
+        }
         return {
             "converging": bool(self.active_rebuild_index_attempts) or not materialization_ready,
             "materialization_ready": materialization_ready,
+            "materialization_progress": materialization_progress,
             "active_rebuild_index_attempts": self.active_rebuild_index_attempts,
             "raw_materialization_readiness": self.raw_materialization_readiness,
         }

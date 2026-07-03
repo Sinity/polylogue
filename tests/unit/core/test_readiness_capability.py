@@ -9,6 +9,7 @@ from polylogue.readiness import (
     LEGACY_READINESS_SOURCE_TYPES,
     CapabilityReadinessState,
     ComponentReadiness,
+    ReadinessReport,
     component_from_archive_debt,
     component_from_archive_surface,
     component_from_assertion_substrate,
@@ -75,6 +76,33 @@ def test_known_legacy_readiness_sources_are_tracked() -> None:
         "EmbeddingStatusPayload",
         "DerivedModelStatus",
         "CatchupStatus",
+    }
+
+
+def test_archive_convergence_hoists_materialization_progress_counts() -> None:
+    report = ReadinessReport(
+        raw_materialization_readiness={
+            "available": True,
+            "classification": "not_run",
+            "raw_artifact_count": 10,
+            "materialized_raw_artifact_count": 7,
+            "archive_session_count": 8,
+            "join_gap_count": 3,
+            "total": 3,
+            "unchecked": 3,
+            "affected_unchecked": 3,
+        }
+    )
+
+    convergence = report.archive_convergence
+
+    assert convergence["converging"] is True
+    assert convergence["materialization_ready"] is False
+    assert convergence["materialization_progress"] == {
+        "raw_artifact_count": 10,
+        "materialized_raw_artifact_count": 7,
+        "archive_session_count": 8,
+        "join_gap_count": 3,
     }
 
 
