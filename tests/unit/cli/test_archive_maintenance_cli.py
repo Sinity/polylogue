@@ -1341,6 +1341,7 @@ def test_rebuild_index_filters_selected_rows_by_blob_size(
     assert result.exit_code == 0
     payload = json.loads(result.output)
     assert payload["selected_raw_count"] == 1
+    assert payload["selected_blob_bytes"] == 1 * 1024 * 1024
     assert payload["skipped_by_blob_limit_count"] == 1
     assert payload["max_blob_mb"] == 2.0
     assert captured["raw_ids"] == ["raw-small"]
