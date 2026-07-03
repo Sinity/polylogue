@@ -24,6 +24,7 @@ from polylogue.sources.parsers.base import (
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
+    _provider_usage_cumulative_baseline,
     read_archive_session_envelope,
     write_parsed_session_to_archive,
 )
@@ -214,6 +215,17 @@ def test_prefix_sharing_child_provider_usage_rollup_counts_only_tail(tmp_path: P
                     },
                 },
             ),
+            ParsedSessionEvent(
+                event_type="token_count",
+                source_message_provider_id="cy",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-5-codex",
+                    "total_token_usage": {
+                        "total_tokens": 272_000,
+                    },
+                },
+            ),
         ],
     )
     child_id = write_parsed_session_to_archive(conn, child)
@@ -236,16 +248,75 @@ def test_prefix_sharing_child_provider_usage_rollup_counts_only_tail(tmp_path: P
         "cost_provenance": "origin_reported",
     }
     events = conn.execute(
-        "SELECT source_message_id, total_input_tokens, total_tokens FROM session_provider_usage_events WHERE session_id = ?",
+        """
+        SELECT source_message_id, total_input_tokens, total_cached_input_tokens, total_output_tokens, total_tokens
+        FROM session_provider_usage_events
+        WHERE session_id = ?
+        ORDER BY position
+        """,
         (child_id,),
     ).fetchall()
     assert [dict(row) for row in events] == [
         {
             "source_message_id": f"{child_id}:cy",
             "total_input_tokens": 60,
+            "total_cached_input_tokens": 10,
+            "total_output_tokens": 15,
             "total_tokens": 75,
-        }
+        },
+        {
+            "source_message_id": f"{child_id}:cy",
+            "total_input_tokens": 0,
+            "total_cached_input_tokens": 0,
+            "total_output_tokens": 0,
+            "total_tokens": 271_890,
+        },
     ]
+
+
+def test_provider_usage_baseline_follows_ancestor_branch_point(tmp_path: Path) -> None:
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+
+    ancestor = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="ancestor",
+        title="ancestor",
+        messages=[
+            _msg("a0", Role.USER, "root prompt", 0),
+            _msg("a1", Role.ASSISTANT, "root answer", 1),
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                source_message_provider_id="a1",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-5-codex",
+                    "total_token_usage": {
+                        "input_tokens": 200,
+                        "cached_input_tokens": 40,
+                        "output_tokens": 20,
+                        "total_tokens": 220,
+                    },
+                },
+            )
+        ],
+    )
+    ancestor_id = write_parsed_session_to_archive(conn, ancestor)
+    parent_id = "codex-session:parent"
+    branch_point = f"{ancestor_id}:a1"
+
+    baseline = _provider_usage_cumulative_baseline(conn, parent_id, branch_point)
+
+    assert baseline == {
+        "total_input_tokens": 200,
+        "total_output_tokens": 20,
+        "total_cached_input_tokens": 40,
+        "total_cache_write_tokens": 0,
+        "total_reasoning_output_tokens": 0,
+        "total_tokens": 220,
+    }
 
 
 def test_child_before_parent_is_reextracted_on_resolution(tmp_path: Path) -> None:

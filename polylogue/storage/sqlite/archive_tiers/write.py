@@ -2523,12 +2523,13 @@ def _provider_usage_cumulative_baseline(
     branch_point_message_id: str,
 ) -> dict[str, int]:
     branch_row = conn.execute(
-        "SELECT position FROM messages WHERE message_id = ?",
+        "SELECT session_id, position FROM messages WHERE message_id = ?",
         (branch_point_message_id,),
     ).fetchone()
     if branch_row is None:
         return {}
-    branch_position = int(branch_row[0] or 0)
+    baseline_session_id = str(branch_row[0] or parent_session_id)
+    branch_position = int(branch_row[1] or 0)
     row = conn.execute(
         """
         SELECT
@@ -2557,7 +2558,7 @@ def _provider_usage_cumulative_baseline(
         ORDER BY e.position DESC
         LIMIT 1
         """,
-        (parent_session_id, branch_position, branch_position),
+        (baseline_session_id, branch_position, branch_position),
     ).fetchone()
     if row is None:
         return {}
@@ -2600,6 +2601,18 @@ def _provider_usage_disjoint_lanes(
     """
     fresh_input = max(input_with_cached - cache_read, 0)
     return fresh_input, output_with_reasoning, cache_read, cache_write
+
+
+def _provider_usage_row_has_lane_totals(
+    total_input: int,
+    total_output: int,
+    total_cache_read: int,
+    total_cache_write: int,
+    total_reasoning: int,
+) -> bool:
+    """Return true when a cumulative row can be mapped to billing lanes."""
+
+    return bool(total_input or total_output or total_cache_read or total_cache_write or total_reasoning)
 
 
 def _aggregate_provider_usage_into_model_usage(conn: sqlite3.Connection, session_id: str) -> None:
@@ -2676,7 +2689,9 @@ def _aggregate_provider_usage_into_model_usage(conn: sqlite3.Connection, session
         total_reasoning = int(row[13] or 0)
         total_tokens = int(row[14] or 0)
 
-        if total_input or total_output or total_cache_read or total_cache_write or total_reasoning or total_tokens:
+        if _provider_usage_row_has_lane_totals(
+            total_input, total_output, total_cache_read, total_cache_write, total_reasoning
+        ):
             latest_total = (
                 total_input,
                 total_output,
@@ -2783,7 +2798,9 @@ def _aggregate_appended_provider_usage_into_model_usage(
         total_reasoning = int(row[12] or 0)
         total_tokens = int(row[13] or 0)
 
-        if total_input or total_output or total_cache_read or total_cache_write or total_reasoning or total_tokens:
+        if _provider_usage_row_has_lane_totals(
+            total_input, total_output, total_cache_read, total_cache_write, total_reasoning
+        ):
             latest_total = (
                 total_input,
                 total_output,

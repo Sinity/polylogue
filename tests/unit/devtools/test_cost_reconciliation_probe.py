@@ -18,7 +18,17 @@ def _archive_root(tmp_path: Path) -> Path:
     return root
 
 
-def _insert_session(conn: sqlite3.Connection, *, origin: str, native_id: str, model: str = "model") -> str:
+def _insert_session(
+    conn: sqlite3.Connection,
+    *,
+    origin: str,
+    native_id: str,
+    model: str = "model",
+    input_tokens: int = 10,
+    output_tokens: int = 5,
+    cache_read_tokens: int = 3,
+    cache_write_tokens: int = 2,
+) -> str:
     conn.execute(
         "INSERT INTO sessions (origin, native_id, content_hash) VALUES (?, ?, ?)",
         (origin, native_id, b"s" * 32),
@@ -29,9 +39,9 @@ def _insert_session(conn: sqlite3.Connection, *, origin: str, native_id: str, mo
         INSERT INTO session_model_usage (
             session_id, model_name, input_tokens, output_tokens,
             cache_read_tokens, cache_write_tokens, cost_provenance
-        ) VALUES (?, ?, 10, 5, 3, 2, 'priced')
+        ) VALUES (?, ?, ?, ?, ?, ?, 'priced')
         """,
-        (session_id, model),
+        (session_id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens),
     )
     return session_id
 
@@ -45,14 +55,23 @@ def _write_codex_state(path: Path, *, tokens: int = 100) -> None:
 def test_codex_probe_compares_copied_state_to_archive(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     archive = _archive_root(tmp_path)
     with sqlite3.connect(archive / "index.db") as conn:
-        session_id = _insert_session(conn, origin="codex-session", native_id="thread-1", model="gpt-5-codex")
+        session_id = _insert_session(
+            conn,
+            origin="codex-session",
+            native_id="thread-1",
+            model="gpt-5-codex",
+            input_tokens=20,
+            output_tokens=10,
+            cache_read_tokens=60,
+            cache_write_tokens=10,
+        )
         conn.execute(
             """
             INSERT INTO session_provider_usage_events (
               session_id, position, provider_event_type, model_name,
               total_input_tokens, total_output_tokens, total_cached_input_tokens,
               total_cache_write_tokens, total_tokens
-            ) VALUES (?, 0, 'token_count', 'gpt-5-codex', 80, 20, 70, 10, 100)
+            ) VALUES (?, 0, 'token_count', 'gpt-5-codex', 800, 200, 700, 100, 1800)
             """,
             (session_id,),
         )
@@ -82,6 +101,7 @@ def test_codex_probe_compares_copied_state_to_archive(tmp_path: Path, capsys: py
     assert codex["status"] == "pass"
     assert codex["comparison"]["compared"] == 1
     assert codex["comparison"]["median_ratio"] == 1.0
+    assert "session_model_usage disjoint lanes" in codex["details"]["lane_contract"]
     assert Path(codex["details"]["copied_path"]).exists()
 
 

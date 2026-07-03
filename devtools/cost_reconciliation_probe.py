@@ -131,15 +131,13 @@ def _codex_archive_totals(conn: sqlite3.Connection) -> dict[str, dict[str, objec
         SELECT
           s.session_id,
           s.native_id,
-          MAX(e.total_tokens) AS total_tokens,
-          MAX(e.total_input_tokens) AS input_tokens,
-          MAX(e.total_output_tokens) AS output_tokens,
-          MAX(e.total_cached_input_tokens) AS cached_input_tokens,
-          MAX(e.total_cache_write_tokens) AS cache_write_tokens
-        FROM session_provider_usage_events AS e
-        JOIN sessions AS s ON s.session_id = e.session_id
+          SUM(COALESCE(u.input_tokens, 0)) AS input_tokens,
+          SUM(COALESCE(u.output_tokens, 0)) AS output_tokens,
+          SUM(COALESCE(u.cache_read_tokens, 0)) AS cached_input_tokens,
+          SUM(COALESCE(u.cache_write_tokens, 0)) AS cache_write_tokens
+        FROM session_model_usage AS u
+        JOIN sessions AS s ON s.session_id = u.session_id
         WHERE s.origin = 'codex-session'
-          AND e.provider_event_type = 'token_count'
         GROUP BY s.session_id, s.native_id
         """
     ).fetchall()
@@ -148,13 +146,17 @@ def _codex_archive_totals(conn: sqlite3.Connection) -> dict[str, dict[str, objec
         native_id = str(row["native_id"])
         session_id = str(row["session_id"])
         key = native_id or session_id.removeprefix("codex-session:")
+        input_tokens = int(row["input_tokens"] or 0)
+        output_tokens = int(row["output_tokens"] or 0)
+        cached_input_tokens = int(row["cached_input_tokens"] or 0)
+        cache_write_tokens = int(row["cache_write_tokens"] or 0)
         totals[key] = {
             "session_id": session_id,
-            "total_tokens": int(row["total_tokens"] or 0),
-            "input_tokens": int(row["input_tokens"] or 0),
-            "output_tokens": int(row["output_tokens"] or 0),
-            "cached_input_tokens": int(row["cached_input_tokens"] or 0),
-            "cache_write_tokens": int(row["cache_write_tokens"] or 0),
+            "total_tokens": input_tokens + output_tokens + cached_input_tokens + cache_write_tokens,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cached_input_tokens": cached_input_tokens,
+            "cache_write_tokens": cache_write_tokens,
         }
     return totals
 
@@ -259,7 +261,10 @@ def _probe_codex(
             "archive_threads": len(archive),
             "external_threads": len(external),
             "tolerance": tolerance,
-            "lane_contract": "archive total_tokens and Codex threads.tokens_used both include cached input",
+            "lane_contract": (
+                "archive session_model_usage disjoint lanes and Codex threads.tokens_used both include cached input; "
+                "raw token_count events remain provider-cumulative evidence and are not the reconciliation grain"
+            ),
         },
     )
 
