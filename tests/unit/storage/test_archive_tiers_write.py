@@ -2389,6 +2389,77 @@ def test_refresh_thread_fast_path_keeps_current_thread_membership(tmp_path: Path
     assert mutating_thread_statements == []
 
 
+def test_refresh_thread_appends_suffix_without_rebuilding_membership(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    parent = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="parent-suffix",
+        updated_at="2026-01-01T00:00:01+00:00",
+        messages=[
+            ParsedMessage(
+                provider_message_id="p1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="parent")],
+            )
+        ],
+    )
+    first_child = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="child-suffix-1",
+        parent_session_provider_id="parent-suffix",
+        branch_type=BranchType.SIDECHAIN,
+        updated_at="2026-01-01T00:00:02+00:00",
+        messages=[
+            ParsedMessage(
+                provider_message_id="c1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="child one")],
+            )
+        ],
+    )
+    second_child = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="child-suffix-2",
+        parent_session_provider_id="parent-suffix",
+        branch_type=BranchType.SIDECHAIN,
+        updated_at="2026-01-01T00:00:03+00:00",
+        messages=[
+            ParsedMessage(
+                provider_message_id="c2",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="child two")],
+            )
+        ],
+    )
+
+    parent_id = write_parsed_session_to_archive(conn, parent)
+    first_child_id = write_parsed_session_to_archive(conn, first_child)
+    statements: list[str] = []
+    conn.set_trace_callback(statements.append)
+
+    second_child_id = write_parsed_session_to_archive(conn, second_child)
+
+    conn.set_trace_callback(None)
+    thread_rows = conn.execute(
+        """
+        SELECT session_id, position
+        FROM thread_sessions
+        WHERE thread_id = ?
+        ORDER BY position
+        """,
+        (parent_id,),
+    ).fetchall()
+    parent_thread_deletes = [
+        stmt for stmt in statements if "DELETE FROM thread_sessions" in stmt and f"'{parent_id}'" in stmt
+    ]
+    assert [(row[0], row[1]) for row in thread_rows] == [
+        (parent_id, 0),
+        (first_child_id, 1),
+        (second_child_id, 2),
+    ]
+    assert parent_thread_deletes == []
+
+
 def test_archive_tiers_writer_resolves_existing_child_link_when_parent_arrives_later(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     child = ParsedSession(

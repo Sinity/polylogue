@@ -2287,6 +2287,25 @@ def _refresh_thread(conn: sqlite3.Connection, root_session_id: str) -> None:
             and existing_session_ids == desired_session_ids
         ):
             return
+        if existing_session_ids == desired_session_ids[: len(existing_session_ids)]:
+            for position, row in enumerate(session_rows[len(existing_session_ids) :], start=len(existing_session_ids)):
+                conn.execute(
+                    """
+                    INSERT INTO thread_sessions (thread_id, session_id, position)
+                    VALUES (?, ?, ?)
+                    """,
+                    (root_session_id, row[0], position),
+                )
+            conn.execute(
+                """
+                UPDATE threads
+                SET session_count = ?,
+                    depth = ?
+                WHERE thread_id = ?
+                """,
+                (len(session_rows), max(len(session_rows) - 1, 0), root_session_id),
+            )
+            return
     conn.execute("DELETE FROM thread_sessions WHERE thread_id = ?", (root_session_id,))
     for position, row in enumerate(session_rows):
         conn.execute(
