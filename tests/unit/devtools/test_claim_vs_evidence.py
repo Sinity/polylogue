@@ -90,6 +90,9 @@ def _seed_archive(root: Path) -> None:
             ("s1", "tool-silent", "tool", 3, "claude-opus"),
             ("s1", "next-silent", "assistant", 4, "claude-haiku"),
             ("s2", "tool-missing-next", "tool", 1, "codex"),
+            ("s2", "next-prose", "assistant", 2, "codex"),
+            ("s2", "tool-wordless", "tool", 3, "codex"),
+            ("s2", "next-wordless", "assistant", 4, "codex"),
         ],
     )
     conn.executemany(
@@ -130,6 +133,21 @@ def _seed_archive(root: Path) -> None:
             ),
             ("tool-missing-next", "s2", 0, "tool_use", None, "Read", "t3", '{"path":"x"}', None, None),
             ("tool-missing-next", "s2", 1, "tool_result", "nope", None, "t3", None, 0, 1),
+            (
+                "next-prose",
+                "s2",
+                0,
+                "text",
+                "Ok.",
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+            ("tool-wordless", "s2", 0, "tool_use", None, "Read", "t4", '{"path":"y"}', None, None),
+            ("tool-wordless", "s2", 1, "tool_result", "nope again", None, "t4", None, 0, 1),
+            ("next-wordless", "s2", 0, "tool_use", None, "Read", "t5", '{"path":"z"}', None, None),
         ],
     )
     conn.commit()
@@ -145,7 +163,7 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
         argparse.Namespace(
             archive_root=archive,
             out_dir=out_dir,
-            limit=3,
+            limit=4,
             sample_limit=2,
             json=False,
         )
@@ -156,8 +174,8 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
         "classification_scope": "immediately following assistant message only",
         "complete_failure_frame": True,
         "failure_predicate": "tool_result_is_error = 1 OR tool_result_exit_code != 0",
-        "inspected_structured_failures": 3,
-        "limit": 3,
+        "inspected_structured_failures": 4,
+        "limit": 4,
         "time_window": "entire archive (no since/until filter)",
         "sampled_by_origin": [
             {
@@ -167,10 +185,10 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
                 "total_structured_failures": 2,
             },
             {
-                "inspected_structured_failures": 1,
+                "inspected_structured_failures": 2,
                 "origin": "codex-session",
-                "requested_limit": 1,
-                "total_structured_failures": 1,
+                "requested_limit": 2,
+                "total_structured_failures": 2,
             },
         ],
         "selection_order": "origin, session_id, tool_id, tool_result_message_id",
@@ -181,21 +199,29 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
         ),
         "total_by_origin": [
             {"failed_outcomes": 2, "origin": "claude-code-session"},
-            {"failed_outcomes": 1, "origin": "codex-session"},
+            {"failed_outcomes": 2, "origin": "codex-session"},
         ],
-        "total_structured_failures": 3,
+        "total_structured_failures": 4,
         "unpaired_structured_failures": 0,
     }
     assert report["totals"] == {
-        "failed_outcomes": 3,
+        "failed_outcomes": 4,
         "acknowledged": 1,
         "silent_proceed": 1,
-        "ambiguous": 1,
+        "ambiguous": 2,
+        "ambiguous_wordless_continuation": 1,
+        "ambiguous_prose_no_marker": 1,
         "classified_outcomes": 2,
     }
-    assert report["rates"]["silent_rate_lower_bound"] == 1 / 3
+    assert report["rates"]["silent_rate_lower_bound"] == 1 / 4
     assert set(report["samples_by_origin_classification"]) == {"claude-code-session", "codex-session"}
     assert report["samples_by_origin_classification"]["codex-session"]["ambiguous"][0]["origin"] == "codex-session"
+    codex_ambiguous = report["samples_by_origin_classification"]["codex-session"]["ambiguous"]
+    assert {sample["classification_reason"] for sample in codex_ambiguous} == {
+        "prose_no_marker",
+        "wordless_tool_continuation",
+    }
+    assert any(sample["next_has_tool_use"] for sample in codex_ambiguous)
     assert (
         report["samples_by_origin_classification"]["claude-code-session"]["acknowledged"][0]["next_text_preview"]
         == "The command failed with exit code 2, so I will fix it."
@@ -210,8 +236,10 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
     summary = json.loads((out_dir / "summary.json").read_text())
     assert summary["claim"]
     assert summary["non_claim"]
-    assert summary["proof_report"]["failed_outcomes"] == 3
+    assert summary["proof_report"]["failed_outcomes"] == 4
     assert summary["proof_report"]["complete_failure_frame"] is True
+    assert summary["proof_report"]["ambiguous_wordless_continuation"] == 1
+    assert summary["proof_report"]["ambiguous_prose_no_marker"] == 1
     assert summary["proof_report"]["time_window"] == "entire archive (no since/until filter)"
     assert summary["proof_report"]["sampled_by_origin"] == [
         {
@@ -221,10 +249,10 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
             "total_structured_failures": 2,
         },
         {
-            "inspected_structured_failures": 1,
+            "inspected_structured_failures": 2,
             "origin": "codex-session",
-            "requested_limit": 1,
-            "total_structured_failures": 1,
+            "requested_limit": 2,
+            "total_structured_failures": 2,
         },
     ]
     assert (out_dir / "claim-vs-evidence.report.json").exists()
@@ -232,7 +260,7 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
     assert "Claim-vs-Evidence" in readme
     assert "- time window: entire archive (no since/until filter)" in readme
     assert "- claude-code-session: inspected 2 / 2 structured failures (requested 2)" in readme
-    assert "- codex-session: inspected 1 / 1 structured failures (requested 1)" in readme
+    assert "- codex-session: inspected 2 / 2 structured failures (requested 2)" in readme
 
 
 def test_claim_vs_evidence_bounded_sample_is_origin_stratified(tmp_path: Path) -> None:
@@ -261,7 +289,7 @@ def test_claim_vs_evidence_bounded_sample_is_origin_stratified(tmp_path: Path) -
             "inspected_structured_failures": 1,
             "origin": "codex-session",
             "requested_limit": 1,
-            "total_structured_failures": 1,
+            "total_structured_failures": 2,
         },
     ]
     assert {row["name"] for row in report["by_origin"]} == {"claude-code-session", "codex-session"}
@@ -279,8 +307,8 @@ def test_claim_vs_evidence_keeps_same_message_tool_result_identities(tmp_path: P
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
-            ("tool-missing-next", "s2", 2, "tool_use", None, "Read", "t4", '{"path":"y"}', None, None),
-            ("tool-missing-next", "s2", 3, "tool_result", "also nope", None, "t4", None, 0, 1),
+            ("tool-missing-next", "s2", 2, "tool_use", None, "Read", "t6", '{"path":"y"}', None, None),
+            ("tool-missing-next", "s2", 3, "tool_result", "also nope", None, "t6", None, 0, 1),
         ],
     )
     conn.commit()
@@ -296,12 +324,15 @@ def test_claim_vs_evidence_keeps_same_message_tool_result_identities(tmp_path: P
         )
     )
 
-    assert report["sample_frame"]["total_structured_failures"] == 4
-    assert report["sample_frame"]["total_by_origin"] == [
-        {"failed_outcomes": 2, "origin": "claude-code-session"},
-        {"failed_outcomes": 2, "origin": "codex-session"},
-    ]
+    assert report["sample_frame"]["total_structured_failures"] == 5
+    assert {row["origin"]: row["failed_outcomes"] for row in report["sample_frame"]["total_by_origin"]} == {
+        "claude-code-session": 2,
+        "codex-session": 3,
+    }
     codex_samples = report["samples_by_origin_classification"]["codex-session"]["ambiguous"]
-    assert len(codex_samples) == 2
-    assert {sample["tool_result_tool_id"] for sample in codex_samples} == {"t3", "t4"}
-    assert {sample["tool_result_message_ref"] for sample in codex_samples} == {"message:tool-missing-next"}
+    assert len(codex_samples) == 3
+    assert {sample["tool_result_tool_id"] for sample in codex_samples} == {"t3", "t4", "t6"}
+    assert {sample["tool_result_message_ref"] for sample in codex_samples} == {
+        "message:tool-missing-next",
+        "message:tool-wordless",
+    }

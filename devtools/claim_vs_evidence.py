@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from sqlite3 import Connection
@@ -14,6 +14,16 @@ from typing import Any
 from polylogue.config import Config, get_config
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from scripts.agent_forensics import _classify_failed_followup_evidence
+
+_WORDLESS_CONTINUATION_TEXT_CHAR_LIMIT = 40
+_COUNT_KEYS = (
+    "failed_outcomes",
+    "acknowledged",
+    "silent_proceed",
+    "ambiguous",
+    "ambiguous_wordless_continuation",
+    "ambiguous_prose_no_marker",
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -59,6 +69,12 @@ def _scalar_int(conn: Connection, sql: str, params: Iterable[object] = ()) -> in
     return int(row[0]) if row is not None and row[0] is not None else 0
 
 
+def _object_int(value: object) -> int:
+    if value is None:
+        return 0
+    return int(str(value))
+
+
 def _ranked(mapping: dict[str, dict[str, int]]) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for name, counts in mapping.items():
@@ -83,10 +99,95 @@ def _ranked(mapping: dict[str, dict[str, int]]) -> list[dict[str, object]]:
     return sorted(rows, key=sort_key)
 
 
-def _structured_failure_rows(conn: Connection, *, limit: int, origin: str | None = None) -> list[dict[str, object]]:
+def _empty_counts() -> dict[str, int]:
+    return dict.fromkeys(_COUNT_KEYS, 0)
+
+
+def _refine_classification_reason(classification_evidence: Mapping[str, object], row: dict[str, object]) -> str:
+    reason = str(classification_evidence["reason"])
+    if classification_evidence["classification"] != "ambiguous":
+        return reason
+    if reason == "missing_next_assistant_message":
+        return reason
+    has_tool_use = bool(_object_int(row["next_has_tool_use"]))
+    pre_tool_text_chars = _object_int(row["next_pre_tool_text_chars"])
+    if has_tool_use and pre_tool_text_chars <= _WORDLESS_CONTINUATION_TEXT_CHAR_LIMIT:
+        return "wordless_tool_continuation"
+    return "prose_no_marker"
+
+
+def _ambiguous_counter_key(classification_reason: str) -> str | None:
+    if classification_reason == "wordless_tool_continuation":
+        return "ambiguous_wordless_continuation"
+    if classification_reason == "prose_no_marker":
+        return "ambiguous_prose_no_marker"
+    return None
+
+
+def _next_message_details(
+    conn: Connection, message_ids: Iterable[object], *, chunk_size: int = 500
+) -> dict[str, dict[str, object]]:
+    ids = [str(message_id) for message_id in message_ids if message_id]
+    details: dict[str, dict[str, Any]] = {}
+    for start in range(0, len(ids), chunk_size):
+        chunk = ids[start : start + chunk_size]
+        placeholders = ",".join("?" for _ in chunk)
+        rows = _rows(
+            conn,
+            f"""
+            SELECT
+                message_id,
+                position,
+                block_type,
+                COALESCE(text, '') AS text
+            FROM blocks
+            WHERE message_id IN ({placeholders})
+            ORDER BY message_id, position
+            """,
+            chunk,
+        )
+        for row in rows:
+            message_id = str(row["message_id"])
+            detail = details.setdefault(
+                message_id,
+                {
+                    "next_has_tool_use": 0,
+                    "first_tool_use_position": None,
+                    "next_pre_tool_text_chars": 0,
+                    "text_parts": [],
+                },
+            )
+            block_type = str(row["block_type"])
+            position = _object_int(row["position"])
+            if block_type == "tool_use":
+                detail["next_has_tool_use"] = 1
+                first_tool_use_position = detail["first_tool_use_position"]
+                if first_tool_use_position is None or position < _object_int(first_tool_use_position):
+                    detail["first_tool_use_position"] = position
+            elif block_type == "text":
+                text = str(row["text"] or "")
+                text_parts = detail["text_parts"]
+                assert isinstance(text_parts, list)
+                text_parts.append(text)
+                first_tool_use_position = detail["first_tool_use_position"]
+                if first_tool_use_position is None or position < _object_int(first_tool_use_position):
+                    detail["next_pre_tool_text_chars"] = max(
+                        _object_int(detail["next_pre_tool_text_chars"]),
+                        len(text.strip()),
+                    )
+    return {
+        message_id: {
+            "next_text": "\n".join(str(part) for part in detail["text_parts"])[:1200],
+            "next_has_tool_use": _object_int(detail["next_has_tool_use"]),
+            "next_pre_tool_text_chars": _object_int(detail["next_pre_tool_text_chars"]),
+        }
+        for message_id, detail in details.items()
+    }
+
+
+def _failure_outcome_rows(conn: Connection, *, limit: int, origin: str | None) -> list[dict[str, object]]:
     origin_predicate = "AND s.origin = ?" if origin is not None else ""
-    candidate_limit = max(limit * 2, limit + 100)
-    params: tuple[object, ...] = (origin, candidate_limit, limit) if origin is not None else (candidate_limit, limit)
+    params: tuple[object, ...] = (origin, origin, origin, limit) if origin is not None else (limit,)
     return _rows(
         conn,
         f"""
@@ -103,68 +204,151 @@ def _structured_failure_rows(conn: Connection, *, limit: int, origin: str | None
             JOIN sessions AS s ON s.session_id = r.session_id
             WHERE r.block_type = 'tool_result'
               {origin_predicate}
-              AND (
-                  COALESCE(r.tool_result_is_error, 0) = 1
-                  OR (r.tool_result_exit_code IS NOT NULL AND r.tool_result_exit_code != 0)
-              )
-            ORDER BY r.session_id, r.tool_id, r.message_id
-            LIMIT ?
-        ),
-        next_message AS (
+              AND r.tool_result_is_error = 1
+            UNION ALL
             SELECT
-                f.*,
-                u.message_id,
-                u.tool_name,
-                u.tool_command,
-                m.model_name AS tool_message_model,
-                rm.position AS position,
-                (
-                    SELECT nm.message_id
-                    FROM messages AS nm
-                    WHERE nm.session_id = f.session_id
-                      AND nm.role = 'assistant'
-                      AND nm.position > rm.position
-                    ORDER BY nm.position
-                    LIMIT 1
-                ) AS next_message_id
-            FROM failed AS f
-            JOIN blocks AS u INDEXED BY idx_blocks_tool_id
-              ON u.tool_id = f.tool_result_tool_id
-             AND u.session_id = f.session_id
-             AND u.block_type = 'tool_use'
-            JOIN messages AS m ON m.message_id = u.message_id
-            JOIN messages AS rm ON rm.message_id = f.tool_result_message_id
-            ORDER BY f.session_id, f.tool_result_tool_id, f.order_message_id
-            LIMIT ?
+                r.session_id,
+                r.message_id AS tool_result_message_id,
+                r.tool_id AS tool_result_tool_id,
+                s.origin,
+                r.tool_result_is_error AS is_error,
+                r.tool_result_exit_code AS exit_code,
+                r.message_id AS order_message_id
+            FROM blocks AS r INDEXED BY idx_blocks_tool_result_outcome
+            JOIN sessions AS s ON s.session_id = r.session_id
+            WHERE r.block_type = 'tool_result'
+              {origin_predicate}
+              AND r.tool_result_exit_code IS NOT NULL
+              AND r.tool_result_exit_code != 0
+              AND r.tool_result_is_error = 0
+            UNION ALL
+            SELECT
+                r.session_id,
+                r.message_id AS tool_result_message_id,
+                r.tool_id AS tool_result_tool_id,
+                s.origin,
+                r.tool_result_is_error AS is_error,
+                r.tool_result_exit_code AS exit_code,
+                r.message_id AS order_message_id
+            FROM blocks AS r INDEXED BY idx_blocks_tool_result_outcome
+            JOIN sessions AS s ON s.session_id = r.session_id
+            WHERE r.block_type = 'tool_result'
+              {origin_predicate}
+              AND r.tool_result_exit_code IS NOT NULL
+              AND r.tool_result_exit_code != 0
+              AND r.tool_result_is_error IS NULL
         )
-        SELECT
-            n.session_id,
-            n.message_id,
-            n.tool_result_message_id,
-            n.tool_result_tool_id,
-            n.tool_name,
-            n.tool_command,
-            n.origin,
-            n.is_error,
-            n.exit_code,
-            COALESCE(nm.model_name, n.tool_message_model, '') AS model_name,
-            n.next_message_id,
-            substr(group_concat(COALESCE(b.text, ''), '\n'), 1, 1200) AS next_text
-        FROM next_message AS n
-        LEFT JOIN messages AS nm ON nm.message_id = n.next_message_id
-        LEFT JOIN blocks AS b ON b.message_id = n.next_message_id
-        GROUP BY
-            n.session_id,
-            n.tool_result_message_id,
-            n.tool_result_tool_id,
-            n.origin,
-            n.is_error,
-            n.exit_code,
-            model_name,
-            n.next_message_id
+        SELECT *
+        FROM failed
+        ORDER BY session_id, tool_result_tool_id, order_message_id
+        LIMIT ?
         """,
         params,
     )
+
+
+def _paired_failure_rows(
+    conn: Connection,
+    failure_rows: list[dict[str, object]],
+    *,
+    chunk_size: int = 250,
+) -> list[dict[str, object]]:
+    paired_rows: list[dict[str, object]] = []
+    for start in range(0, len(failure_rows), chunk_size):
+        chunk = failure_rows[start : start + chunk_size]
+        placeholders = ",".join("(?, ?, ?, ?, ?, ?, ?, ?)" for _ in chunk)
+        params: list[object] = []
+        for offset, row in enumerate(chunk, start=start):
+            params.extend(
+                [
+                    offset,
+                    row["session_id"],
+                    row["tool_result_message_id"],
+                    row["tool_result_tool_id"],
+                    row["origin"],
+                    row["is_error"],
+                    row["exit_code"],
+                    row["order_message_id"],
+                ]
+            )
+        paired_rows.extend(
+            _rows(
+                conn,
+                f"""
+                WITH wanted(
+                    sort_index,
+                    session_id,
+                    tool_result_message_id,
+                    tool_result_tool_id,
+                    origin,
+                    is_error,
+                    exit_code,
+                    order_message_id
+                ) AS (
+                    VALUES {placeholders}
+                ),
+                paired AS (
+                    SELECT
+                        w.sort_index,
+                        w.session_id,
+                        u.message_id,
+                        w.tool_result_message_id,
+                        w.tool_result_tool_id,
+                        u.tool_name,
+                        u.tool_command,
+                        w.origin,
+                        w.is_error,
+                        w.exit_code,
+                        m.model_name AS tool_message_model,
+                        (
+                            SELECT nm.message_id
+                            FROM messages AS nm
+                            JOIN messages AS rm ON rm.message_id = w.tool_result_message_id
+                            WHERE nm.session_id = w.session_id
+                              AND nm.role = 'assistant'
+                              AND nm.position > rm.position
+                            ORDER BY nm.position
+                            LIMIT 1
+                        ) AS next_message_id
+                    FROM wanted AS w
+                    JOIN blocks AS u INDEXED BY idx_blocks_tool_id
+                      ON u.tool_id = w.tool_result_tool_id
+                     AND u.session_id = w.session_id
+                     AND u.block_type = 'tool_use'
+                    JOIN messages AS m ON m.message_id = u.message_id
+                )
+                SELECT
+                    p.session_id,
+                    p.message_id,
+                    p.tool_result_message_id,
+                    p.tool_result_tool_id,
+                    p.tool_name,
+                    p.tool_command,
+                    p.origin,
+                    p.is_error,
+                    p.exit_code,
+                    COALESCE(nm.model_name, p.tool_message_model, '') AS model_name,
+                    p.next_message_id
+                FROM paired AS p
+                LEFT JOIN messages AS nm ON nm.message_id = p.next_message_id
+                ORDER BY p.sort_index
+                """,
+                params,
+            )
+        )
+    return paired_rows
+
+
+def _structured_failure_rows(conn: Connection, *, limit: int, origin: str | None = None) -> list[dict[str, object]]:
+    candidate_limit = max(limit * 2, limit + 100)
+    rows = _paired_failure_rows(conn, _failure_outcome_rows(conn, limit=candidate_limit, origin=origin))[:limit]
+    details = _next_message_details(conn, (row.get("next_message_id") for row in rows))
+    for row in rows:
+        detail = details.get(str(row.get("next_message_id") or ""), {})
+        row["next_text"] = detail.get("next_text", "")
+        row["next_has_tool_use"] = detail.get("next_has_tool_use", 0)
+        row["next_pre_tool_text_chars"] = detail.get("next_pre_tool_text_chars", 0)
+    return rows
 
 
 def _unpaired_structured_failure_count(conn: Connection) -> int:
@@ -172,13 +356,27 @@ def _unpaired_structured_failure_count(conn: Connection) -> int:
         conn,
         """
         SELECT COUNT(*)
-        FROM blocks AS r INDEXED BY idx_blocks_tool_result_outcome
-        WHERE r.block_type = 'tool_result'
-          AND (
-              COALESCE(r.tool_result_is_error, 0) = 1
-              OR (r.tool_result_exit_code IS NOT NULL AND r.tool_result_exit_code != 0)
-          )
-          AND NOT EXISTS (
+        FROM (
+            SELECT r.session_id, r.tool_id
+            FROM blocks AS r INDEXED BY idx_blocks_tool_result_outcome
+            WHERE r.block_type = 'tool_result'
+              AND r.tool_result_is_error = 1
+            UNION ALL
+            SELECT r.session_id, r.tool_id
+            FROM blocks AS r INDEXED BY idx_blocks_tool_result_outcome
+            WHERE r.block_type = 'tool_result'
+              AND r.tool_result_exit_code IS NOT NULL
+              AND r.tool_result_exit_code != 0
+              AND r.tool_result_is_error = 0
+            UNION ALL
+            SELECT r.session_id, r.tool_id
+            FROM blocks AS r INDEXED BY idx_blocks_tool_result_outcome
+            WHERE r.block_type = 'tool_result'
+              AND r.tool_result_exit_code IS NOT NULL
+              AND r.tool_result_exit_code != 0
+              AND r.tool_result_is_error IS NULL
+        ) AS r
+        WHERE NOT EXISTS (
               SELECT 1
               FROM blocks AS u INDEXED BY idx_blocks_tool_id
               WHERE u.tool_id = r.tool_id
@@ -193,14 +391,29 @@ def _structured_failure_origin_counts(conn: Connection) -> list[dict[str, object
     return _rows(
         conn,
         """
+        WITH failed AS (
+            SELECT r.session_id
+            FROM blocks AS r INDEXED BY idx_blocks_tool_result_outcome
+            WHERE r.block_type = 'tool_result'
+              AND r.tool_result_is_error = 1
+            UNION ALL
+            SELECT r.session_id
+            FROM blocks AS r INDEXED BY idx_blocks_tool_result_outcome
+            WHERE r.block_type = 'tool_result'
+              AND r.tool_result_exit_code IS NOT NULL
+              AND r.tool_result_exit_code != 0
+              AND r.tool_result_is_error = 0
+            UNION ALL
+            SELECT r.session_id
+            FROM blocks AS r INDEXED BY idx_blocks_tool_result_outcome
+            WHERE r.block_type = 'tool_result'
+              AND r.tool_result_exit_code IS NOT NULL
+              AND r.tool_result_exit_code != 0
+              AND r.tool_result_is_error IS NULL
+        )
         SELECT s.origin, COUNT(*) AS failed_outcomes
-        FROM blocks AS r INDEXED BY idx_blocks_tool_result_outcome
+        FROM failed AS r
         JOIN sessions AS s ON s.session_id = r.session_id
-        WHERE r.block_type = 'tool_result'
-          AND (
-              COALESCE(r.tool_result_is_error, 0) = 1
-              OR (r.tool_result_exit_code IS NOT NULL AND r.tool_result_exit_code != 0)
-          )
         GROUP BY s.origin
         ORDER BY failed_outcomes DESC, s.origin
         """,
@@ -208,7 +421,7 @@ def _structured_failure_origin_counts(conn: Connection) -> list[dict[str, object
 
 
 def _origin_sample_limits(total_by_origin: list[dict[str, object]], limit: int) -> list[dict[str, object]]:
-    origins = [(str(row["origin"]), int(row["failed_outcomes"])) for row in total_by_origin]
+    origins = [(str(row["origin"]), _object_int(row["failed_outcomes"])) for row in total_by_origin]
     origins = [(origin, count) for origin, count in origins if count > 0]
     total = sum(count for _, count in origins)
     if total <= limit:
@@ -260,14 +473,14 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     conn = open_readonly_connection(index_db)
     try:
         total_by_origin = _structured_failure_origin_counts(conn)
-        total_structured_failures = sum(int(row["failed_outcomes"]) for row in total_by_origin)
+        total_structured_failures = sum(_object_int(row["failed_outcomes"]) for row in total_by_origin)
         unpaired_structured_failures = _unpaired_structured_failure_count(conn)
         origin_limits = _origin_sample_limits(total_by_origin, args.limit)
         rows = []
         sampled_by_origin: list[dict[str, object]] = []
         for origin_limit in origin_limits:
             origin = str(origin_limit["origin"])
-            requested_limit = int(origin_limit["requested_limit"])
+            requested_limit = _object_int(origin_limit["requested_limit"])
             origin_rows = _structured_failure_rows(conn, limit=requested_limit, origin=origin)
             rows.extend(origin_rows)
             sampled_by_origin.append(
@@ -280,7 +493,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     finally:
         conn.close()
 
-    totals = {"failed_outcomes": 0, "acknowledged": 0, "silent_proceed": 0, "ambiguous": 0}
+    totals = _empty_counts()
     by_tool: dict[str, dict[str, int]] = {}
     by_model: dict[str, dict[str, int]] = {}
     by_origin: dict[str, dict[str, int]] = {}
@@ -295,13 +508,14 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             str(row["next_text"]) if row["next_text"] is not None else None
         )
         classification = str(classification_evidence["classification"])
+        classification_reason = _refine_classification_reason(classification_evidence, row)
         tool = str(row["tool_name"] or "unknown")
         model = str(row["model_name"] or "unknown")
         origin = str(row["origin"] or "unknown")
         next_text = str(row["next_text"] or "")
         sample = {
             "classification": classification,
-            "classification_reason": classification_evidence["reason"],
+            "classification_reason": classification_reason,
             "matched_marker": classification_evidence["matched_marker"],
             "session_ref": f"session:{row['session_id']}",
             "tool_message_ref": f"message:{row['message_id']}",
@@ -315,18 +529,29 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "is_error": row["is_error"],
             "tool_command_preview": str(row["tool_command"] or "")[:160],
             "next_text_preview": next_text[:500],
+            "next_has_tool_use": bool(_object_int(row["next_has_tool_use"])),
+            "next_pre_tool_text_chars": _object_int(row["next_pre_tool_text_chars"]),
         }
         totals["failed_outcomes"] += 1
         totals[classification] += 1
-        by_tool.setdefault(tool, {"failed_outcomes": 0, "acknowledged": 0, "silent_proceed": 0, "ambiguous": 0})
-        by_model.setdefault(model, {"failed_outcomes": 0, "acknowledged": 0, "silent_proceed": 0, "ambiguous": 0})
-        by_origin.setdefault(origin, {"failed_outcomes": 0, "acknowledged": 0, "silent_proceed": 0, "ambiguous": 0})
+        ambiguous_counter_key = _ambiguous_counter_key(classification_reason)
+        if ambiguous_counter_key is not None:
+            totals[ambiguous_counter_key] += 1
+        by_tool.setdefault(tool, _empty_counts())
+        by_model.setdefault(model, _empty_counts())
+        by_origin.setdefault(origin, _empty_counts())
         by_tool[tool]["failed_outcomes"] += 1
         by_tool[tool][classification] += 1
+        if ambiguous_counter_key is not None:
+            by_tool[tool][ambiguous_counter_key] += 1
         by_model[model]["failed_outcomes"] += 1
         by_model[model][classification] += 1
+        if ambiguous_counter_key is not None:
+            by_model[model][ambiguous_counter_key] += 1
         by_origin[origin]["failed_outcomes"] += 1
         by_origin[origin][classification] += 1
+        if ambiguous_counter_key is not None:
+            by_origin[origin][ambiguous_counter_key] += 1
         bucket = samples_by_classification[classification]
         if len(bucket) < args.sample_limit:
             bucket.append(sample)
@@ -423,6 +648,8 @@ def _write_artifacts(out_dir: Path, report: dict[str, Any]) -> None:
             "acknowledged": totals["acknowledged"],
             "silent_proceed": totals["silent_proceed"],
             "ambiguous": totals["ambiguous"],
+            "ambiguous_wordless_continuation": totals["ambiguous_wordless_continuation"],
+            "ambiguous_prose_no_marker": totals["ambiguous_prose_no_marker"],
             "silent_rate_lower_bound": rates["silent_rate_lower_bound"],
             "limit": report["limit"],
             "time_window": report["sample_frame"]["time_window"],
@@ -475,6 +702,8 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
         f"- acknowledged: {totals['acknowledged']:,}",
         f"- silent-proceed: {totals['silent_proceed']:,}",
         f"- ambiguous: {totals['ambiguous']:,}",
+        f"- ambiguous wordless tool continuations: {totals['ambiguous_wordless_continuation']:,}",
+        f"- ambiguous prose without markers: {totals['ambiguous_prose_no_marker']:,}",
         f"- silent lower bound: {rates['silent_rate_lower_bound']:.1%}",
         f"- silent among classified: {rates['silent_rate_among_classified']:.1%}",
         f"- configured limit: {report['limit']:,}",
