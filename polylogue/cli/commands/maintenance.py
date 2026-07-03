@@ -1037,6 +1037,133 @@ def _filter_raw_ids_by_max_blob_size(root: Path, raw_ids: list[str], max_blob_mb
     return [str(row[0]) for row in rows]
 
 
+def _rebuild_index_selection_plan(
+    root: Path,
+    *,
+    selected_raw_ids: list[str] | None,
+    raw_session_count: int,
+    selected_raw_count: int,
+    skipped_by_blob_limit_count: int,
+    only_missing: bool,
+    explicit_raw_id_count: int,
+    max_blob_mb: float | None,
+    limit: int,
+) -> dict[str, object]:
+    source_db = root / "source.db"
+    index_db = root / "index.db"
+    if not source_db.exists():
+        return {
+            "archive_root": str(root),
+            "status": "empty-source",
+            "raw_session_count": raw_session_count,
+            "selected_raw_count": 0,
+            "skipped_by_blob_limit_count": skipped_by_blob_limit_count,
+            "only_missing": only_missing,
+            "raw_id_count": explicit_raw_id_count,
+            "max_blob_mb": max_blob_mb,
+            "totals": {},
+            "top_rows": [],
+        }
+
+    selected_clause = ""
+    params: list[object] = []
+    if selected_raw_ids is not None:
+        if not selected_raw_ids:
+            return {
+                "archive_root": str(root),
+                "status": "ok",
+                "raw_session_count": raw_session_count,
+                "selected_raw_count": 0,
+                "skipped_by_blob_limit_count": skipped_by_blob_limit_count,
+                "only_missing": only_missing,
+                "raw_id_count": explicit_raw_id_count,
+                "max_blob_mb": max_blob_mb,
+                "totals": {
+                    "blob_bytes": 0,
+                    "materialized_sessions": 0,
+                    "materialized_messages": 0,
+                    "materialized_session_events": 0,
+                },
+                "top_rows": [],
+            }
+        placeholders = ",".join("?" for _ in selected_raw_ids)
+        selected_clause = f"WHERE r.raw_id IN ({placeholders})"
+        params.extend(selected_raw_ids)
+
+    index_metrics = (
+        """
+        COALESCE((SELECT COUNT(*) FROM idx.sessions s WHERE s.raw_id = r.raw_id), 0) AS materialized_sessions,
+        COALESCE((SELECT SUM(s.message_count) FROM idx.sessions s WHERE s.raw_id = r.raw_id), 0) AS materialized_messages,
+        COALESCE((
+            SELECT COUNT(*)
+            FROM idx.sessions s
+            JOIN idx.session_events e ON e.session_id = s.session_id
+            WHERE s.raw_id = r.raw_id
+        ), 0) AS materialized_session_events
+        """
+        if index_db.exists()
+        else """
+        0 AS materialized_sessions,
+        0 AS materialized_messages,
+        0 AS materialized_session_events
+        """
+    )
+    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0) as conn:
+        if index_db.exists():
+            conn.execute("ATTACH DATABASE ? AS idx", (str(index_db),))
+        rows = conn.execute(
+            f"""
+            SELECT
+                r.raw_id,
+                r.origin,
+                r.native_id,
+                r.source_path,
+                r.source_index,
+                r.blob_size,
+                r.acquired_at_ms,
+                {index_metrics}
+            FROM raw_sessions r
+            {selected_clause}
+            ORDER BY r.blob_size DESC, r.acquired_at_ms DESC, r.raw_id
+            """,
+            params,
+        ).fetchall()
+
+    totals = {
+        "blob_bytes": sum(int(row[5] or 0) for row in rows),
+        "materialized_sessions": sum(int(row[7] or 0) for row in rows),
+        "materialized_messages": sum(int(row[8] or 0) for row in rows),
+        "materialized_session_events": sum(int(row[9] or 0) for row in rows),
+    }
+    return {
+        "archive_root": str(root),
+        "status": "ok",
+        "raw_session_count": raw_session_count,
+        "selected_raw_count": selected_raw_count,
+        "skipped_by_blob_limit_count": skipped_by_blob_limit_count,
+        "only_missing": only_missing,
+        "raw_id_count": explicit_raw_id_count,
+        "max_blob_mb": max_blob_mb,
+        "plan_order": "blob_size_desc",
+        "totals": totals,
+        "top_rows": [
+            {
+                "raw_id": str(row[0]),
+                "origin": row[1],
+                "native_id": row[2],
+                "source_path": row[3],
+                "source_index": row[4],
+                "blob_bytes": int(row[5] or 0),
+                "acquired_at_ms": row[6],
+                "materialized_sessions": int(row[7] or 0),
+                "materialized_messages": int(row[8] or 0),
+                "materialized_session_events": int(row[9] or 0),
+            }
+            for row in rows[:limit]
+        ],
+    }
+
+
 def _now_ms() -> int:
     return int(datetime.now(UTC).timestamp() * 1000)
 
@@ -1164,6 +1291,13 @@ async def _rebuild_index_from_source(
     help="Skip the final full session-insight materialization pass.",
 )
 @click.option(
+    "--plan",
+    "plan_only",
+    is_flag=True,
+    help="Print selected raw-row weight totals and top rows without replaying.",
+)
+@click.option("--plan-limit", type=int, default=10, show_default=True, help="Rows to include in --plan top_rows.")
+@click.option(
     "--output-format",
     "output_format",
     type=click.Choice(["plain", "json"]),
@@ -1179,6 +1313,8 @@ def rebuild_index_command(
     max_blob_mb: float | None,
     force_write: bool,
     no_materialize: bool,
+    plan_only: bool,
+    plan_limit: int,
     output_format: str,
 ) -> None:
     """Replay durable source rows into index.db, then rebuild read models.
@@ -1199,6 +1335,8 @@ def rebuild_index_command(
         raise click.BadParameter("max blob size must be positive", param_hint="--max-blob-mb")
     if max_blob_mb is not None and not raw_ids and not only_missing:
         raise click.UsageError("--max-blob-mb requires --only-missing or --raw-id")
+    if plan_limit <= 0:
+        raise click.BadParameter("plan limit must be positive", param_hint="--plan-limit")
 
     root = archive_root()
     raw_count = _count_source_raw_sessions(root)
@@ -1226,6 +1364,40 @@ def rebuild_index_command(
     )
     selected_raw_count = len(selected_raw_ids) if selected_raw_ids is not None else raw_count
     skipped_by_blob_limit_count = unfiltered_selected_raw_count - selected_raw_count
+    if plan_only:
+        payload = _rebuild_index_selection_plan(
+            root,
+            selected_raw_ids=selected_raw_ids,
+            raw_session_count=raw_count,
+            selected_raw_count=selected_raw_count,
+            skipped_by_blob_limit_count=skipped_by_blob_limit_count,
+            only_missing=only_missing,
+            explicit_raw_id_count=len(raw_ids),
+            max_blob_mb=max_blob_mb,
+            limit=plan_limit,
+        )
+        if output_format == "json":
+            click.echo(json.dumps(payload, indent=2, sort_keys=True))
+            return
+        click.echo(f"Archive root: {root}")
+        click.echo(f"Raw rows:     {raw_count:,}")
+        click.echo(f"Selected:     {selected_raw_count:,} raw row(s)")
+        if skipped_by_blob_limit_count:
+            click.echo(f"Blob limit:   skipped {skipped_by_blob_limit_count:,} raw row(s)")
+        totals = payload["totals"] if isinstance(payload["totals"], dict) else {}
+        click.echo(f"Blob bytes:   {int(totals.get('blob_bytes', 0)):,}")
+        click.echo(f"Messages:     {int(totals.get('materialized_messages', 0)):,} already materialized")
+        click.echo(f"Events:       {int(totals.get('materialized_session_events', 0)):,} already materialized")
+        top_rows = payload["top_rows"] if isinstance(payload["top_rows"], list) else []
+        if top_rows:
+            click.echo("Top rows by blob size:")
+            for row in top_rows:
+                if isinstance(row, dict):
+                    click.echo(
+                        f"  {row['raw_id']} {row['origin']} blob={int(row['blob_bytes']):,} "
+                        f"messages={int(row['materialized_messages']):,} events={int(row['materialized_session_events']):,}"
+                    )
+        return
     if only_missing and selected_raw_count == 0 and no_materialize:
         payload = {
             "archive_root": str(root),
