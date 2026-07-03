@@ -1,0 +1,69 @@
+{
+  "artifact": "uplift-two-arm",
+  "run_id": "2026-07-03-polylogue-devloop-n1",
+  "archive_root": "/home/sinity/.local/share/polylogue",
+  "index_schema_version": 23,
+  "subject": {
+    "label": "Polylogue devloop session",
+    "native_id": "019f12b5-fc19-7110-b069-4f49a78da82d",
+    "handoff_packet": ".agent/demos/handoff-pack/current/polylogue-devloop-019f12b5-fc19-7110-b069-4f49a78da82d/handoff"
+  },
+  "task": "Reconstruct the current continuation state for the Polylogue devloop: current slice, open threads, likely next action, and main risks/caveats.",
+  "arms": [
+    {
+      "arm": "raw_ref",
+      "agent_id": "019f278e-d974-7402-882d-ad9840b07eea",
+      "nickname": "Beauvoir",
+      "allowed_context": [
+        "session ref 019f12b5-fc19-7110-b069-4f49a78da82d",
+        "normal product/archive/query commands",
+        "repo source"
+      ],
+      "forbidden_context": [
+        ".agent/demos/handoff-pack",
+        ".agent/conductor-devloop/ACTIVE-LOOP.md",
+        ".agent/conductor-devloop/HANDOFF-LATEST.md",
+        ".agent/conductor-devloop/OPERATING-LOG.md",
+        ".agent/conductor-devloop/DEMO-RADAR.md"
+      ]
+    },
+    {
+      "arm": "handoff_pack",
+      "agent_id": "019f278e-fc99-7e41-87cb-7879efa3c3e3",
+      "nickname": "Heisenberg",
+      "allowed_context": [
+        "bounded handoff packet temporal.json, chronicle.json, spec.json",
+        "read-package-summary.json",
+        "normal product/archive/query commands",
+        "repo source"
+      ],
+      "forbidden_context": [
+        ".agent/conductor-devloop/ACTIVE-LOOP.md",
+        ".agent/conductor-devloop/HANDOFF-LATEST.md",
+        ".agent/conductor-devloop/OPERATING-LOG.md",
+        ".agent/conductor-devloop/DEMO-RADAR.md"
+      ]
+    }
+  ],
+  "metrics": {
+    "primary": [
+      "answer_correctness_against_current_active_loop",
+      "open_thread_coverage",
+      "next_action_specificity",
+      "caveat_honesty"
+    ],
+    "secondary": [
+      "self_reported_first_useful_evidence",
+      "self_reported_repo_or_archive_reads",
+      "tool_errors",
+      "rediscovery_steps"
+    ]
+  },
+  "construct_validity_limits": [
+    "n=1 is a pilot and cannot estimate general uplift.",
+    "Both arms are AI agents in the same repository environment, so hidden prior knowledge and tool availability are not fully controlled.",
+    "The raw-ref arm can still reconstruct by querying the archive; the comparison is bounded pack versus raw reference, not pack versus no tooling.",
+    "Ground truth is the active conductor state after the handoff-pack slice was committed and the jxe.2 protocol slice started."
+  ]
+}
+

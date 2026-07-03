@@ -1,0 +1,46 @@
+{
+  "run_id": "2026-07-03-polylogue-devloop-n1",
+  "captured_at": "2026-07-03T12:39:00+02:00",
+  "source_of_truth": [
+    ".agent/conductor-devloop/ACTIVE-LOOP.md",
+    ".agent/conductor-devloop/OPERATING-LOG.md",
+    "bd show polylogue-jxe.2 --json",
+    "bd show polylogue-qt3 --json"
+  ],
+  "current_slice": "Run handoff-pack uplift n=1 protocol",
+  "current_focus": "Direction -> Evidence",
+  "next_action": "Continue in Evidence mode: collect arm outputs, score them against this ground truth, refresh the current demo shelf, and then close or update polylogue-jxe.2.",
+  "open_threads": [
+    {
+      "id": "polylogue-jxe.2",
+      "state": "in_progress",
+      "role": "current task",
+      "summary": "Run the two-arm pack-vs-raw protocol and preserve the paired outputs and metrics."
+    },
+    {
+      "id": "polylogue-jxe.3",
+      "state": "blocked_by_jxe.2",
+      "role": "next campaign analysis",
+      "summary": "Turn paired outputs into a comparison artifact with honest n caveats and a cold-reader gate."
+    },
+    {
+      "id": "polylogue-qt3",
+      "state": "open",
+      "role": "devloop/product deficiency found during jxe.1",
+      "summary": "Make declarative read-package regeneration single-process and progress-visible."
+    },
+    {
+      "id": "polylogue-20d.9",
+      "state": "stale_in_progress_from_prior_slice",
+      "role": "perf/storage residual",
+      "summary": "Self-healing degraded SQLite state remains tracked but is not the current campaign slice."
+    }
+  ],
+  "risks": [
+    "n=1 pilot cannot support a general uplift claim.",
+    "The raw-ref arm may reconstruct by running its own archive queries, so this tests bounded handoff packet versus raw reference with normal tools.",
+    "Both agents share repository/tooling environment and may have unobserved priors.",
+    "polylogued is intentionally inactive for the current branch-local proof; this is not a convergence proof."
+  ]
+}
+
