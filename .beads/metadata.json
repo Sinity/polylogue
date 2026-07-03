@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "polylogue",
+  "project_id": "de38f6a7-308f-4587-ad21-b5eb140a8979"
+}

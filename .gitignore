@@ -96,3 +96,8 @@ AGENTS.md
 # Build metadata embedded into release artifacts
 polylogue/_build_info.py
 _site/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
