@@ -255,7 +255,7 @@ def test_claude_probe_samples_include_lineage_diagnostics(tmp_path: Path, capsys
             {
                 "modelUsage": {
                     "claude-sonnet": {
-                        "inputTokens": 10,
+                        "inputTokens": 20,
                         "outputTokens": 5,
                         "cacheReadInputTokens": 3,
                         "cacheCreationInputTokens": 2,
@@ -277,7 +277,10 @@ def test_claude_probe_samples_include_lineage_diagnostics(tmp_path: Path, capsys
     assert payload["sections"][1]["details"]["archive_grains"] == {
         "comparison_grain": "physical_session",
         "logical_available_grain": "logical_session_model_high_water",
+        "fewest_outside_tolerance_grain": "logical_session_model_high_water",
+        "closest_p90_ratio_grain": "logical_session_model_high_water",
     }
+    assert payload["sections"][1]["details"]["logical_comparison"]["outside_tolerance"] == 0
 
 
 def test_missing_optional_and_required_external_store(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

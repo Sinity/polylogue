@@ -486,6 +486,7 @@ def _probe_claude(
         )
 
     pairs: list[tuple[str, int, int, dict[str, object]]] = []
+    logical_pairs: list[tuple[str, int, int, dict[str, object]]] = []
     for model, ext in external.items():
         arch = archive.get(model)
         if arch is None:
@@ -510,7 +511,25 @@ def _probe_claude(
                     },
                 )
             )
+            logical_tokens = int(arch[f"logical_{lane}"])
+            logical_pairs.append(
+                (
+                    f"{model}:{lane}",
+                    logical_tokens,
+                    ext_tokens,
+                    {
+                        "model": model,
+                        "lane": lane,
+                        "archive_session_count": arch["session_count"],
+                        "archive_logical_session_count": arch["logical_session_count"],
+                        "archive_nonroot_usage_rows": arch["nonroot_usage_rows"],
+                        "archive_physical_tokens": arch[lane],
+                        "archive_logical_high_water_tokens": logical_tokens,
+                    },
+                )
+            )
     comparison = _ratio_summary(pairs, tolerance=tolerance, max_samples=max_samples)
+    logical_comparison = _ratio_summary(logical_pairs, tolerance=tolerance, max_samples=max_samples)
     comparison = ComparisonSummary(
         compared=comparison.compared,
         missing_archive=sum(1 for model in external if model not in archive),
@@ -521,6 +540,27 @@ def _probe_claude(
         within_tolerance=comparison.within_tolerance,
         outside_tolerance=comparison.outside_tolerance,
         samples=comparison.samples,
+    )
+    logical_comparison = ComparisonSummary(
+        compared=logical_comparison.compared,
+        missing_archive=comparison.missing_archive,
+        missing_external=comparison.missing_external,
+        median_ratio=logical_comparison.median_ratio,
+        p90_ratio=logical_comparison.p90_ratio,
+        p99_ratio=logical_comparison.p99_ratio,
+        within_tolerance=logical_comparison.within_tolerance,
+        outside_tolerance=logical_comparison.outside_tolerance,
+        samples=logical_comparison.samples,
+    )
+    fewest_outside_grain = (
+        "logical_session_model_high_water"
+        if logical_comparison.outside_tolerance < comparison.outside_tolerance
+        else "physical_session"
+    )
+    physical_p90_error = abs((comparison.p90_ratio or 1.0) - 1.0)
+    logical_p90_error = abs((logical_comparison.p90_ratio or 1.0) - 1.0)
+    closest_p90_grain = (
+        "logical_session_model_high_water" if logical_p90_error < physical_p90_error else "physical_session"
     )
     status: ProbeStatus = "pass" if comparison.outside_tolerance == 0 else "fail"
     return ProbeSection(
@@ -539,7 +579,10 @@ def _probe_claude(
             "archive_grains": {
                 "comparison_grain": "physical_session",
                 "logical_available_grain": "logical_session_model_high_water",
+                "fewest_outside_tolerance_grain": fewest_outside_grain,
+                "closest_p90_ratio_grain": closest_p90_grain,
             },
+            "logical_comparison": logical_comparison.to_dict(),
             "cost_reconciliation": "skipped: stats-cache costUSD is not treated as authoritative",
         },
     )
