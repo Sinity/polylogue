@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,19 @@ from typing import Any
 import pytest
 
 from devtools.read_package import build_read_package_plan, load_read_package_spec, main
+
+
+def _write_read_package_spec(path: Path) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "artifacts": [
+                    {"name": "dialogue", "view": "dialogue", "format": "json", "path": "dialogue.json"},
+                ],
+            }
+        )
+    )
 
 
 def test_load_read_package_spec_validates_and_builds_plan(tmp_path: Path) -> None:
@@ -70,7 +84,9 @@ def test_load_read_package_spec_validates_and_builds_plan(tmp_path: Path) -> Non
 def test_read_package_dry_run_emits_summary_without_writing(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive"))
     spec_path = tmp_path / "package.json"
     spec_path.write_text(
         json.dumps(
@@ -100,6 +116,9 @@ def test_read_package_dry_run_emits_summary_without_writing(
     assert result == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["dry_run"] is True
+    assert payload["generated_at"].endswith("Z")
+    assert payload["freshness"]["state"] == "archive_unavailable"
+    assert payload["freshness"]["archive_cursor"]["index_schema_version"] is None
     assert payload["prune"] == ["stale.md"]
     assert payload["pruned"] == []
     assert payload["artifacts"][0]["view"] == "dialogue"
@@ -354,17 +373,9 @@ def test_read_package_json_keeps_child_output_off_stdout(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive"))
     spec_path = tmp_path / "package.json"
-    spec_path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "artifacts": [
-                    {"name": "dialogue", "view": "dialogue", "format": "json", "path": "dialogue.json"},
-                ],
-            }
-        )
-    )
+    _write_read_package_spec(spec_path)
 
     def fake_run(argv: tuple[str, ...], **kwargs: Any) -> subprocess.CompletedProcess[tuple[str, ...]]:
         stdout = kwargs.get("stdout")
@@ -401,6 +412,7 @@ def test_read_package_json_reports_pruned_files(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive"))
     spec_path = tmp_path / "package.json"
     spec_path.write_text(
         json.dumps(
@@ -441,3 +453,153 @@ def test_read_package_json_reports_pruned_files(
     assert payload["prune"] == ["stale.md", "missing.md"]
     assert payload["pruned"] == [str(out_dir / "stale.md")]
     assert not (out_dir / "stale.md").exists()
+
+
+def test_read_package_json_reports_successor_freshness(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    index_db = archive_root / "index.db"
+    with sqlite3.connect(index_db) as conn:
+        conn.execute("PRAGMA user_version = 23")
+        conn.executescript(
+            """
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                native_id TEXT NOT NULL,
+                origin TEXT NOT NULL,
+                parent_session_id TEXT,
+                root_session_id TEXT,
+                branch_type TEXT,
+                title TEXT,
+                session_kind TEXT,
+                created_at_ms INTEGER,
+                updated_at_ms INTEGER
+            );
+            CREATE TABLE session_links (
+                src_session_id TEXT NOT NULL,
+                resolved_dst_session_id TEXT,
+                link_type TEXT,
+                inheritance TEXT,
+                observed_at_ms INTEGER,
+                resolved_at_ms INTEGER
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO sessions VALUES
+            ('codex-session:parent-native', 'parent-native', 'codex-session', NULL, NULL, NULL,
+             'Parent', 'standard', 1000, 2000),
+            ('codex-session:child-native', 'child-native', 'codex-session',
+             'codex-session:parent-native', 'codex-session:parent-native', 'resume',
+             'Child', 'standard', 3000, 4000)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO session_links VALUES
+            ('codex-session:child-native', 'codex-session:parent-native', 'resume',
+             'prefix-sharing', 3500, 3600)
+            """
+        )
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    spec_path = tmp_path / "package.json"
+    _write_read_package_spec(spec_path)
+
+    def fake_run(argv: tuple[str, ...], **_: Any) -> subprocess.CompletedProcess[tuple[str, ...]]:
+        out_index = argv.index("--out") + 1
+        Path(argv[out_index]).write_text("{}", encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = main(
+        [
+            "--spec",
+            str(spec_path),
+            "--session-id",
+            "parent-native",
+            "--out-dir",
+            str(tmp_path / "out"),
+            "--json",
+        ]
+    )
+
+    assert result == 0
+    payload = json.loads(capsys.readouterr().out)
+    freshness = payload["freshness"]
+    assert freshness["archive_root"] == str(archive_root)
+    assert freshness["archive_cursor"]["index_schema_version"] == 23
+    assert freshness["source_session"]["session_id"] == "codex-session:parent-native"
+    assert freshness["state"] == "successors_present"
+    assert freshness["successor_count"] == 1
+    assert freshness["has_later_successors"] is True
+    assert freshness["warnings"] == ["successors_present"]
+    assert freshness["successors"][0]["session_id"] == "codex-session:child-native"
+    assert set(freshness["successors"][0]["relations"]) == {"parent_session_id", "session_links"}
+    assert freshness["successors"][0]["link_types"] == ["resume"]
+
+
+def test_read_package_terminal_output_warns_when_successors_exist(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        conn.execute("PRAGMA user_version = 23")
+        conn.executescript(
+            """
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                native_id TEXT NOT NULL,
+                origin TEXT NOT NULL,
+                parent_session_id TEXT,
+                root_session_id TEXT,
+                branch_type TEXT,
+                title TEXT,
+                session_kind TEXT,
+                created_at_ms INTEGER,
+                updated_at_ms INTEGER
+            );
+            CREATE TABLE session_links (
+                src_session_id TEXT NOT NULL,
+                resolved_dst_session_id TEXT,
+                link_type TEXT,
+                inheritance TEXT,
+                observed_at_ms INTEGER,
+                resolved_at_ms INTEGER
+            );
+            INSERT INTO sessions VALUES
+            ('codex-session:parent-native', 'parent-native', 'codex-session', NULL, NULL, NULL,
+             'Parent', 'standard', 1000, 2000),
+            ('codex-session:child-native', 'child-native', 'codex-session',
+             'codex-session:parent-native', 'codex-session:parent-native', 'resume',
+             'Child', 'standard', 3000, 4000);
+            """
+        )
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    spec_path = tmp_path / "package.json"
+    _write_read_package_spec(spec_path)
+
+    result = main(
+        [
+            "--spec",
+            str(spec_path),
+            "--session-id",
+            "parent-native",
+            "--out-dir",
+            str(tmp_path / "out"),
+            "--dry-run",
+        ]
+    )
+
+    assert result == 0
+    output = capsys.readouterr().out
+    assert "planned 1 read artifact(s)" in output
+    assert "! freshness: successors_present (1 successor(s)); see --json for details" in output
