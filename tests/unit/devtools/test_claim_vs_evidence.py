@@ -383,6 +383,8 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
     assert "next_text_preview" not in json.dumps(public_summary)
     public_reproduction = (out_dir / "PUBLIC_REPRODUCTION.md").read_text()
     assert "polylogue demo seed" in public_reproduction
+    assert "actions where is_error:true | group by followup_class | count" in public_reproduction
+    assert "polylogue --plain --format json actions where is_error:true" in public_reproduction
     assert "devtools workspace claim-vs-evidence" in public_reproduction
     assert "reproduces the method and artifact shape" in public_reproduction
     cold_reader_gate = (out_dir / "COLD_READER_GATE.md").read_text()

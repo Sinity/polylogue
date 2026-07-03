@@ -2771,6 +2771,67 @@ class TestSearchQueryContracts:
         assert result.exit_code == 0, result.output
         assert "assertion-cli-decision [decision/active] Python terminal assertion" in result.output
 
+    def test_action_unit_aggregate_routes_to_query_units(self, search_workspace: SearchWorkspace) -> None:
+        """Action aggregate pipelines execute as terminal units, not session selectors."""
+        from polylogue.cli import cli
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = search_workspace["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "action-followup-cli")
+            .provider("codex")
+            .title("action followup cli")
+            .add_message(
+                "m-tool",
+                role="assistant",
+                text="Ran a failing command.",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "id": "bash-1",
+                        "name": "Bash",
+                        "tool_input": {"command": "pytest cli"},
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_id": "bash-1",
+                        "text": "failed",
+                        "tool_result_is_error": 1,
+                        "tool_result_exit_code": 1,
+                    },
+                ],
+            )
+            .add_message("m-followup", role="assistant", text="I will inspect the generated fixture rows.")
+            .save()
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "--plain",
+                "--format",
+                "json",
+                "actions",
+                "where",
+                "is_error:true",
+                "|",
+                "group",
+                "by",
+                "followup_class",
+                "|",
+                "count",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["mode"] == "query-unit-aggregate"
+        assert payload["unit"] == "action"
+        assert {"group_key": "silent_proceed", "count": 1} in [
+            {"group_key": item["group_key"], "count": item["count"]} for item in payload["items"]
+        ]
+
     def test_run_unit_source_renders_plain_rows(self, search_workspace: SearchWorkspace) -> None:
         """Run terminal rows render through the CLI instead of failing after query execution."""
         from polylogue.cli import cli

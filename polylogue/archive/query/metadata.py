@@ -305,6 +305,7 @@ _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS = {
     "time",
     "is_error",
     "exit_code",
+    "followup_class",
 }
 _MESSAGE_STRUCTURAL_FIELDS = {
     "role",
@@ -334,6 +335,7 @@ _ACTION_STRUCTURAL_FIELDS = {
     "time",
     "is_error",
     "exit_code",
+    "followup_class",
 }
 _BLOCK_STRUCTURAL_FIELDS = {"type", "text", "tool", "action", "command", "path", "time"}
 _FILE_STRUCTURAL_FIELDS = {"tool", "action", "type", "command", "path", "text", "time"}
@@ -473,6 +475,11 @@ _COMMON_STRUCTURAL_FIELD_INFO: dict[str, StructuralQueryFieldInfo] = {
     "action": _field_info("action", "Semantic action category on tool/action evidence.", "action:file_edit"),
     "command": _field_info("command", "Tool command or invocation text substring.", 'command:"pytest"'),
     "exit_code": _field_info("exit_code", "Tool/action exit-code predicate.", "exit_code > 0"),
+    "followup_class": _field_info(
+        "followup_class",
+        "Failed-action next-assistant follow-up class.",
+        "followup_class:silent_proceed",
+    ),
     "is_error": _field_info("is_error", "Tool/action structured error flag.", "is_error:true"),
     "output": _field_info("output", "Tool output substring.", "output:FAILED"),
     "path": _field_info("path", "Referenced file or artifact path substring.", "path:polylogue/archive"),
@@ -753,7 +760,16 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         payload_model="ActionQueryRowPayload",
         sql_query_method="query_actions",
         cli_plain_renderer="action",
-        aggregate_group_fields=("tool", "action", "type", "is_error", "exit_code", "session.origin", "session.repo"),
+        aggregate_group_fields=(
+            "tool",
+            "action",
+            "type",
+            "is_error",
+            "exit_code",
+            "followup_class",
+            "session.origin",
+            "session.repo",
+        ),
         fields=_unit_info("action").fields,
         description=_unit_info("action").description,
         example=_unit_info("action").example,

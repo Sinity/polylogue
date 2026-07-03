@@ -13,9 +13,9 @@ from pathlib import Path
 from sqlite3 import Connection
 from typing import Any
 
+from polylogue.archive.actions.followup import classify_failed_followup_evidence
 from polylogue.config import Config, get_config
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-from scripts.agent_forensics import _classify_failed_followup_evidence
 
 _WORDLESS_CONTINUATION_TEXT_CHAR_LIMIT = 40
 _COUNT_KEYS = (
@@ -816,14 +816,14 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     samples_by_origin_classification: dict[str, dict[str, list[dict[str, object]]]] = {}
     calibration_candidates: list[dict[str, object]] = []
     for row in rows:
-        classification_evidence = _classify_failed_followup_evidence(
+        classification_evidence = classify_failed_followup_evidence(
             str(row["next_text"]) if row["next_text"] is not None else None
         )
         classification = str(classification_evidence["classification"])
         classification_reason = _refine_classification_reason(classification_evidence, row)
         next3_message_ids = _object_str_list(row["next3_message_ids"])
         next3_text = str(row["next3_text"] or "")
-        window3_evidence = _classify_failed_followup_evidence(next3_text if next3_message_ids else None)
+        window3_evidence = classify_failed_followup_evidence(next3_text if next3_message_ids else None)
         window3_classification = str(window3_evidence["classification"])
         tool = str(row["tool_name"] or "unknown")
         handler_class = _handler_class(tool)
@@ -1053,11 +1053,17 @@ def _public_summary(report: dict[str, Any]) -> dict[str, Any]:
                 "export POLYLOGUE_ARCHIVE_ROOT=/realm/tmp/polylogue-claim-vs-evidence-demo",
                 'polylogue demo seed --root "$POLYLOGUE_ARCHIVE_ROOT" --force --with-overlays --format json',
                 'polylogue demo verify --root "$POLYLOGUE_ARCHIVE_ROOT" --require-overlays --format json',
+                ("polylogue --plain --format json actions where is_error:true \\| group by followup_class \\| count"),
+                "polylogue --plain --format json actions where followup_class:silent_proceed",
                 (
                     "devtools workspace claim-vs-evidence "
                     '--archive-root "$POLYLOGUE_ARCHIVE_ROOT" '
                     "--limit 5000 --out-dir /realm/tmp/polylogue-claim-vs-evidence-repro --json"
                 ),
+            ],
+            "shared_queries": [
+                "actions where is_error:true | group by followup_class | count",
+                "actions where followup_class:silent_proceed",
             ],
         },
     }
@@ -1102,6 +1108,14 @@ def _write_public_reproduction(path: Path, report: dict[str, Any]) -> None:
                 f"- calibration labeled rows: {int(sensitivity['calibration_labeled_rows']):,}",
                 f"- acknowledged-marker precision: {_format_rate_percent(sensitivity['ack_marker_precision'])}",
                 f"- acknowledged-marker recall: {_format_rate_percent(sensitivity['ack_marker_recall'])}",
+                "",
+                "## Shared Query Form",
+                "",
+                "The core next-turn counts are ordinary action-unit queries, not report-private SQL:",
+                "",
+                "```text",
+                *[str(query) for query in summary["reproduction"]["shared_queries"]],
+                "```",
                 "",
                 "## Reproduce The Method Without Private Data",
                 "",

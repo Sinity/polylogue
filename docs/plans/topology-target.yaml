@@ -125,6 +125,11 @@ files:
     target: polylogue/archive/actions/fields.py
     owner: archive-action
     reason: archive-domain semantics
+  - path: polylogue/archive/actions/followup.py
+    loc: 102
+    target: polylogue/archive/actions/followup.py
+    owner: archive-action
+    reason: archive-domain semantics
   - path: polylogue/archive/actions/parsing.py
     loc: 121
     target: polylogue/archive/actions/parsing.py
@@ -314,7 +319,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/metadata.py
-    loc: 1350
+    loc: 1366
     target: polylogue/archive/query/metadata.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -384,7 +389,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/search_hits.py
-    loc: 310
+    loc: 330
     target: polylogue/archive/query/search_hits.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -690,7 +695,7 @@ files:
     target: polylogue/cli/__main__.py
     owner: stable
   - path: polylogue/cli/archive_query.py
-    loc: 2125
+    loc: 2140
     target: polylogue/cli/archive_query.py
     owner: stable
   - path: polylogue/cli/click_app.py
@@ -786,7 +791,7 @@ files:
     target: polylogue/cli/commands/reset.py
     owner: stable
   - path: polylogue/cli/commands/status.py
-    loc: 1830
+    loc: 1892
     target: polylogue/cli/commands/status.py
     owner: stable
   - path: polylogue/cli/commands/status_diagnostics.py
@@ -838,7 +843,7 @@ files:
     target: polylogue/cli/query_group.py
     owner: stable
   - path: polylogue/cli/query_output.py
-    loc: 962
+    loc: 983
     target: polylogue/cli/query_output.py
     owner: stable
   - path: polylogue/cli/query_output_contracts.py
@@ -914,7 +919,7 @@ files:
     target: polylogue/cli/root_request.py
     owner: stable
   - path: polylogue/cli/select.py
-    loc: 262
+    loc: 274
     target: polylogue/cli/select.py
     owner: stable
   - path: polylogue/cli/shared/check_maintenance.py
@@ -1658,7 +1663,7 @@ files:
     target: polylogue/mcp/server_context_tools.py
     owner: stable
   - path: polylogue/mcp/server_insight_tools.py
-    loc: 1147
+    loc: 1181
     target: polylogue/mcp/server_insight_tools.py
     owner: stable
   - path: polylogue/mcp/server_maintenance_tools.py
@@ -2288,7 +2293,7 @@ files:
     target: polylogue/schemas/synthetic/__init__.py
     owner: stable
   - path: polylogue/schemas/synthetic/build_batch.py
-    loc: 222
+    loc: 274
     target: polylogue/schemas/synthetic/build_batch.py
     owner: stable
   - path: polylogue/schemas/synthetic/build_records.py
@@ -2811,15 +2816,15 @@ files:
     target: polylogue/storage/fts/__init__.py
     owner: stable
   - path: polylogue/storage/fts/dangling_repair.py
-    loc: 336
+    loc: 337
     target: polylogue/storage/fts/dangling_repair.py
     owner: stable
   - path: polylogue/storage/fts/freshness.py
-    loc: 420
+    loc: 511
     target: polylogue/storage/fts/freshness.py
     owner: stable
   - path: polylogue/storage/fts/fts_lifecycle.py
-    loc: 1044
+    loc: 1032
     target: polylogue/storage/fts/fts_lifecycle.py
     owner: stable
   - path: polylogue/storage/fts/session_repair.py
@@ -2827,7 +2832,7 @@ files:
     target: polylogue/storage/fts/session_repair.py
     owner: stable
   - path: polylogue/storage/fts/sql.py
-    loc: 111
+    loc: 129
     target: polylogue/storage/fts/sql.py
     owner: stable
   - path: polylogue/storage/hydrators.py
@@ -3182,7 +3187,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 8329
+    loc: 8488
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py
@@ -3531,7 +3536,7 @@ files:
     target: polylogue/surfaces/chronicle.py
     owner: stable
   - path: polylogue/surfaces/payloads.py
-    loc: 2915
+    loc: 2919
     target: polylogue/surfaces/payloads.py
     owner: stable
   - path: polylogue/surfaces/projection_spec.py

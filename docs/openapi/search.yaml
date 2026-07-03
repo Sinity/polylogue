@@ -1237,6 +1237,18 @@ components:
           - type: 'null'
           default: null
           title: Exit Code
+        followup_class:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Followup Class
+        followup_message_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Followup Message Ref
       required:
       - session_id
       - message_id

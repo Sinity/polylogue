@@ -3292,6 +3292,133 @@ class TestBooleanQueryExpression:
 
         assert [(row.session_id, row.block_type) for row in rows] == [("chatgpt-export:ext-hit", "code")]
 
+    def test_terminal_action_source_exposes_followup_class_rows_and_aggregates(
+        self, workspace_env: dict[str, Path]
+    ) -> None:
+        from polylogue.archive.query.unit_results import query_unit_rows
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.surfaces.payloads import ActionQueryRowPayload, QueryUnitAggregateEnvelope
+        from tests.infra.storage_records import SessionBuilder
+
+        archive_root = workspace_env["archive_root"]
+        index_db = archive_root / "index.db"
+        (
+            SessionBuilder(index_db, "followups")
+            .provider("codex")
+            .git_repository_url("polylogue")
+            .title("failed action followups")
+            .add_message(
+                "m-ack-tool",
+                role="assistant",
+                text="Ran the focused check.",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "id": "ack-tool",
+                        "name": "Bash",
+                        "tool_input": {"command": "pytest ack"},
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_id": "ack-tool",
+                        "text": "1 failed",
+                        "tool_result_is_error": 1,
+                        "tool_result_exit_code": 1,
+                    },
+                ],
+            )
+            .add_message(
+                "m-ack-followup", role="assistant", text="The command failed with exit code 1; I will inspect it."
+            )
+            .add_message(
+                "m-silent-tool",
+                role="assistant",
+                text="Ran another check.",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "id": "silent-tool",
+                        "name": "Bash",
+                        "tool_input": {"command": "pytest silent"},
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_id": "silent-tool",
+                        "text": "1 failed",
+                        "tool_result_is_error": 1,
+                        "tool_result_exit_code": 1,
+                    },
+                ],
+            )
+            .add_message(
+                "m-silent-followup",
+                role="assistant",
+                text="I will inspect the generated fixture rows and continue with the next patch.",
+            )
+            .add_message(
+                "m-wordless-tool",
+                role="assistant",
+                text="Ran a third check.",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "id": "wordless-tool",
+                        "name": "Bash",
+                        "tool_input": {"command": "pytest wordless"},
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_id": "wordless-tool",
+                        "text": "1 failed",
+                        "tool_result_is_error": 1,
+                        "tool_result_exit_code": 1,
+                    },
+                ],
+            )
+            .add_message(
+                "m-wordless-followup",
+                role="assistant",
+                text="",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "id": "read-after-failure",
+                        "name": "Read",
+                        "tool_input": {"file_path": "polylogue/archive/query/unit_results.py"},
+                    }
+                ],
+            )
+            .save()
+        )
+
+        query = "actions where followup_class:silent_proceed"
+        source = parse_unit_source_expression(query)
+        assert source is not None
+        with ArchiveStore.open_existing(archive_root) as archive:
+            envelope = query_unit_rows(archive, source, query=query, limit=10)
+
+        assert len(envelope.items) == 1
+        row = envelope.items[0]
+        assert isinstance(row, ActionQueryRowPayload)
+        assert row.tool_command == "pytest silent"
+        assert row.is_error == 1
+        assert row.exit_code == 1
+        assert row.followup_class == "silent_proceed"
+        assert row.followup_message_ref == "message:codex-session:ext-followups:m-silent-followup"
+
+        aggregate_query = "actions where is_error:true | group by followup_class | count"
+        aggregate_source = parse_unit_source_expression(aggregate_query)
+        assert aggregate_source is not None
+        with ArchiveStore.open_existing(archive_root) as archive:
+            aggregate = query_unit_rows(archive, aggregate_source, query=aggregate_query, limit=10)
+
+        assert isinstance(aggregate, QueryUnitAggregateEnvelope)
+        assert sorted((item.group_key, item.count) for item in aggregate.items) == [
+            ("acknowledged", 1),
+            ("silent_proceed", 1),
+            ("wordless_continuation", 1),
+        ]
+
     def test_exists_assertion_predicate_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
         import sqlite3
 

@@ -12,6 +12,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any, Literal, TypedDict, cast
 
+from polylogue.archive.actions.followup import ACKNOWLEDGMENT_MARKERS
 from polylogue.archive.query.metadata import COUNT_QUERY_FIELD_REGISTRY, NUMERIC_QUERY_FIELD_REGISTRY
 from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
 from polylogue.archive.query.predicate import (
@@ -263,6 +264,8 @@ class ArchiveActionQueryRow:
     output_text: str | None
     is_error: int | None
     exit_code: int | None
+    followup_class: str | None
+    followup_message_ref: str | None
 
 
 def _archive_action_query_row(row: sqlite3.Row) -> ArchiveActionQueryRow:
@@ -281,6 +284,8 @@ def _archive_action_query_row(row: sqlite3.Row) -> ArchiveActionQueryRow:
         output_text=str(row["output_text"]) if row["output_text"] is not None else None,
         is_error=int(row["is_error"]) if row["is_error"] is not None else None,
         exit_code=int(row["exit_code"]) if row["exit_code"] is not None else None,
+        followup_class=str(row["followup_class"]) if row["followup_class"] is not None else None,
+        followup_message_ref=str(row["followup_message_ref"]) if row["followup_message_ref"] is not None else None,
     )
 
 
@@ -378,6 +383,112 @@ class ArchiveQueryUnitAggregateRow:
     group_by: str | None
     group_key: str | None
     count: int
+
+
+def _sql_string_literal(value: str) -> str:
+    """Return a SQL single-quoted literal for a static in-repo token."""
+
+    return "'" + value.replace("'", "''") + "'"
+
+
+_ACTION_FOLLOWUP_ACK_CONDITION = " OR ".join(
+    f"followup_text_lower LIKE '%' || {_sql_string_literal(marker)} || '%'" for marker in ACKNOWLEDGMENT_MARKERS
+)
+
+_ACTION_FOLLOWUP_RELATION_SQL = f"""
+WITH action_followup_base AS (
+    SELECT
+        a.*,
+        CASE
+            WHEN COALESCE(a.is_error, 0) = 1 OR COALESCE(a.exit_code, 0) != 0
+                THEN (
+                    SELECT nm.message_id
+                    FROM messages nm
+                    WHERE nm.session_id = a.session_id
+                      AND nm.role = 'assistant'
+                      AND nm.position > COALESCE(
+                          (
+                              SELECT rm.position
+                              FROM blocks rb
+                              JOIN messages rm ON rm.message_id = rb.message_id
+                              WHERE rb.block_id = a.tool_result_block_id
+                              LIMIT 1
+                          ),
+                          (
+                              SELECT um.position
+                              FROM messages um
+                              WHERE um.message_id = a.message_id
+                              LIMIT 1
+                          ),
+                          -1
+                      )
+                    ORDER BY nm.position, nm.message_id
+                    LIMIT 1
+                )
+            ELSE NULL
+        END AS followup_message_id
+    FROM actions a
+),
+action_followup_text AS (
+    SELECT
+        afb.*,
+        COALESCE((
+            SELECT group_concat(ordered.search_text, char(10))
+            FROM (
+                SELECT b.search_text
+                FROM blocks b
+                WHERE b.message_id = afb.followup_message_id
+                  AND b.search_text IS NOT NULL
+                ORDER BY b.position, b.block_id
+            ) ordered
+        ), '') AS followup_text,
+        EXISTS (
+            SELECT 1
+            FROM blocks tool_block
+            WHERE tool_block.message_id = afb.followup_message_id
+              AND tool_block.block_type = 'tool_use'
+        ) AS followup_has_tool_use,
+        COALESCE((
+            SELECT SUM(LENGTH(COALESCE(text_block.search_text, '')))
+            FROM blocks text_block
+            WHERE text_block.message_id = afb.followup_message_id
+              AND text_block.block_type = 'text'
+              AND text_block.position < COALESCE(
+                  (
+                      SELECT MIN(first_tool.position)
+                      FROM blocks first_tool
+                      WHERE first_tool.message_id = afb.followup_message_id
+                        AND first_tool.block_type = 'tool_use'
+                  ),
+                  9223372036854775807
+              )
+        ), 0) AS followup_pre_tool_text_chars
+    FROM action_followup_base afb
+),
+action_rows AS (
+    SELECT
+        aft.*,
+        CASE
+            WHEN NOT (COALESCE(aft.is_error, 0) = 1 OR COALESCE(aft.exit_code, 0) != 0) THEN NULL
+            WHEN aft.followup_message_id IS NULL THEN 'ambiguous'
+            WHEN {_ACTION_FOLLOWUP_ACK_CONDITION} THEN 'acknowledged'
+            WHEN aft.followup_has_tool_use = 1
+             AND aft.followup_pre_tool_text_chars <= 40 THEN 'wordless_continuation'
+            WHEN LENGTH(TRIM(aft.followup_text)) < 20 THEN 'ambiguous'
+            ELSE 'silent_proceed'
+        END AS followup_class,
+        CASE
+            WHEN aft.followup_message_id IS NOT NULL THEN 'message:' || aft.followup_message_id
+            ELSE NULL
+        END AS followup_message_ref
+    FROM (
+        SELECT
+            action_followup_text.*,
+            LOWER(' ' || action_followup_text.followup_text || ' ') AS followup_text_lower
+        FROM action_followup_text
+    ) aft
+)
+"""
 
 
 _OBSERVED_EVENT_RELATION_SQL = """
@@ -885,6 +996,7 @@ def _query_unit_group_expression(unit: str, row_alias: str, group_by: str | None
             "type": f"COALESCE(NULLIF({row_alias}.semantic_type, ''), 'unknown')",
             "is_error": f"COALESCE(CAST({row_alias}.is_error AS TEXT), 'unknown')",
             "exit_code": f"COALESCE(CAST({row_alias}.exit_code AS TEXT), 'unknown')",
+            "followup_class": f"COALESCE(NULLIF({row_alias}.followup_class, ''), 'unknown')",
         },
         "file": {
             "path": f"COALESCE(NULLIF({row_alias}.path, ''), 'unknown')",
@@ -912,6 +1024,32 @@ def _query_unit_group_expression(unit: str, row_alias: str, group_by: str | None
         return unit_fields[unit][group_by]
     except KeyError as exc:
         raise ValueError(f"unsupported {unit} aggregate group field: {group_by}") from exc
+
+
+def _predicate_uses_unit_field(predicate: QueryPredicate, field_name: str, *, unit: str | None = None) -> bool:
+    """Return whether a predicate subtree targets a unit-scoped field."""
+
+    if isinstance(predicate, QueryFieldPredicate):
+        if predicate.field_ref is not None:
+            if predicate.field_ref.name != field_name:
+                return False
+            return predicate.field_ref.scope == "unit" and (unit is None or predicate.field_ref.unit == unit)
+        return predicate.field.removeprefix("session.") == field_name
+    if isinstance(predicate, QueryNotPredicate):
+        return _predicate_uses_unit_field(predicate.child, field_name, unit=unit)
+    if isinstance(predicate, QueryBoolPredicate):
+        return any(_predicate_uses_unit_field(child, field_name, unit=unit) for child in predicate.children)
+    if isinstance(predicate, QueryExistsPredicate):
+        return _predicate_uses_unit_field(predicate.child, field_name, unit=predicate.unit)
+    if isinstance(predicate, QuerySequencePredicate):
+        return any(_predicate_uses_unit_field(step, field_name, unit="action") for step in predicate.steps)
+    return False
+
+
+def _action_query_needs_followup_relation(predicate: QueryPredicate, *, group_by: str | None = None) -> bool:
+    """Return whether an action query needs the derived follow-up relation."""
+
+    return group_by == "followup_class" or _predicate_uses_unit_field(predicate, "followup_class", unit="action")
 
 
 def _query_unit_group_uses_session(group_by: str | None) -> bool:
@@ -4695,9 +4833,14 @@ class ArchiveStore:
         session_params: list[object] = []
         if needs_session and active_session_filters and session_filters is not None:
             session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
+        action_needs_followup = unit == "action" and _action_query_needs_followup_relation(predicate, group_by=group_by)
         from_sql_by_unit = {
             "message": "messages m JOIN sessions s ON s.session_id = m.session_id",
-            "action": "actions a JOIN sessions s ON s.session_id = a.session_id",
+            "action": (
+                "action_rows a JOIN sessions s ON s.session_id = a.session_id"
+                if action_needs_followup
+                else "actions a JOIN sessions s ON s.session_id = a.session_id"
+            ),
             "block": "blocks b JOIN sessions s ON s.session_id = b.session_id",
             "assertion": "user_tier.assertions a LEFT JOIN sessions s ON a.target_ref = 'session:' || s.session_id",
             "observed-event": "observed_events e JOIN sessions s ON s.session_id = e.session_id",
@@ -4708,7 +4851,12 @@ class ArchiveStore:
         source_params: list[object] = []
         if unit == "observed-event":
             source_where, source_params = _observed_event_source_pushdown(predicate)
-        prefix_sql = _OBSERVED_EVENT_RELATION_SQL.format(source_where=source_where) if unit == "observed-event" else ""
+        if unit == "observed-event":
+            prefix_sql = _OBSERVED_EVENT_RELATION_SQL.format(source_where=source_where)
+        elif action_needs_followup:
+            prefix_sql = _ACTION_FOLLOWUP_RELATION_SQL
+        else:
+            prefix_sql = ""
         rows = self._conn.execute(
             f"""
             {prefix_sql}
@@ -4760,6 +4908,7 @@ class ArchiveStore:
             session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
         rows = self._conn.execute(
             f"""
+            {_ACTION_FOLLOWUP_RELATION_SQL}
             SELECT
                 a.session_id,
                 a.message_id,
@@ -4774,8 +4923,10 @@ class ArchiveStore:
                 m.occurred_at_ms,
                 a.output_text,
                 a.is_error,
-                a.exit_code
-            FROM actions a
+                a.exit_code,
+                a.followup_class,
+                a.followup_message_ref
+            FROM action_rows a
             JOIN sessions s ON s.session_id = a.session_id
             JOIN messages m ON m.message_id = a.message_id
             WHERE {clause}
@@ -4808,32 +4959,30 @@ class ArchiveStore:
         placeholders = ", ".join("?" for _ in normalized_session_ids)
         rows = self._conn.execute(
             f"""
+            {_ACTION_FOLLOWUP_RELATION_SQL}
             SELECT
-                u.session_id,
-                u.message_id,
+                a.session_id,
+                a.message_id,
                 s.origin,
                 s.title,
-                u.block_id AS tool_use_block_id,
-                r.block_id AS tool_result_block_id,
-                u.tool_name,
-                u.semantic_type,
-                u.tool_command,
-                u.tool_path,
+                a.tool_use_block_id,
+                a.tool_result_block_id,
+                a.tool_name,
+                a.semantic_type,
+                a.tool_command,
+                a.tool_path,
                 m.occurred_at_ms,
-                r.text AS output_text,
-                r.tool_result_is_error AS is_error,
-                r.tool_result_exit_code AS exit_code
-            FROM blocks u INDEXED BY idx_blocks_session_position
-            JOIN sessions s ON s.session_id = u.session_id
-            JOIN messages m ON m.message_id = u.message_id
-            LEFT JOIN blocks r
-                ON r.tool_id = u.tool_id
-               AND r.session_id = u.session_id
-               AND r.block_type = 'tool_result'
-            WHERE u.session_id IN ({placeholders})
-              AND u.block_type = 'tool_use'
+                a.output_text,
+                a.is_error,
+                a.exit_code,
+                a.followup_class,
+                a.followup_message_ref
+            FROM action_rows a
+            JOIN sessions s ON s.session_id = a.session_id
+            JOIN messages m ON m.message_id = a.message_id
+            WHERE a.session_id IN ({placeholders})
             ORDER BY COALESCE(m.occurred_at_ms, s.sort_key_ms, 0) {order_direction},
-                     u.block_id {order_direction}
+                     a.tool_use_block_id {order_direction}
             LIMIT ? OFFSET ?
             """,
             [*normalized_session_ids, normalized_limit, normalized_offset],
@@ -6787,6 +6936,8 @@ def _action_field_predicate_clause(action_alias: str, predicate: QueryFieldPredi
         return "0=1", []
     if field == "exit_code":
         return _numeric_predicate_clause(f"COALESCE({action_alias}.exit_code, 0)", predicate)
+    if field == "followup_class":
+        return _in_or_equals_clause(f"{action_alias}.followup_class", predicate.values, lower=True)
     if field == "text":
         return _like_clause(
             f"""
@@ -7052,17 +7203,21 @@ def _exists_predicate_clause(table_alias: str, predicate: QueryExistsPredicate) 
         )
     if predicate.unit == "action":
         row_alias = "exists_actions"
+        needs_followup = _action_query_needs_followup_relation(predicate.child)
         child_clause, params = _structural_predicate_clause(
             predicate.unit,
             row_alias,
             predicate.child,
             session_alias=table_alias,
         )
+        relation_sql = _ACTION_FOLLOWUP_RELATION_SQL if needs_followup else ""
+        relation_name = "action_rows" if needs_followup else "actions"
         return (
             f"""
             EXISTS (
+                {relation_sql}
                 SELECT 1
-                FROM actions {row_alias}
+                FROM {relation_name} {row_alias}
                 WHERE {row_alias}.session_id = {table_alias}.session_id
                   AND {child_clause}
             )
@@ -7551,6 +7706,9 @@ def _action_sequence_clause(table_alias: str, action_sequence: tuple[str, ...]) 
 
 
 def _action_sequence_steps_clause(table_alias: str, steps: tuple[QueryPredicate, ...]) -> tuple[str, list[object]]:
+    needs_followup = any(_predicate_uses_unit_field(step, "followup_class", unit="action") for step in steps)
+    relation_sql = _ACTION_FOLLOWUP_RELATION_SQL if needs_followup else ""
+    action_relation = "action_rows" if needs_followup else "actions"
     joins: list[str] = []
     predicates: list[str] = []
     params: list[object] = []
@@ -7560,7 +7718,7 @@ def _action_sequence_steps_clause(table_alias: str, steps: tuple[QueryPredicate,
         block_alias = f"seq_b{index}"
         joins.append(
             f"""
-            JOIN actions {action_alias}
+            JOIN {action_relation} {action_alias}
               ON {action_alias}.session_id = {table_alias}.session_id
             JOIN messages {message_alias}
               ON {message_alias}.message_id = {action_alias}.message_id
@@ -7576,6 +7734,7 @@ def _action_sequence_steps_clause(table_alias: str, steps: tuple[QueryPredicate,
             predicates.append(_action_after_predicate(index - 1, index))
     sql = (
         "EXISTS ("
+        f"{relation_sql} "
         "SELECT 1 FROM sessions sequence_root "
         f"{' '.join(joins)} "
         f"WHERE sequence_root.session_id = {table_alias}.session_id "

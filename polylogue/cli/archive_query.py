@@ -168,9 +168,6 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     index_db_path = archive_root / "index.db"
     typo_hint = maybe_subcommand_typo_hint(request.query_terms)
     raw_query = _query_text(request.query_terms, params)
-    compiled_spec = _compiled_session_spec(request, params=params, raw_query=raw_query)
-    origins = compiled_spec.origins or _resolve_origins(params)
-    origin = origins[0] if len(origins) == 1 else None
     output_format = str(params.get("output_format") or "markdown")
     fields = _optional_str(params.get("fields"))
     # Split a trailing ``with <units>`` projection clause off the FTS text so it
@@ -180,6 +177,18 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     with_unit_fields: dict[str, tuple[str, ...]] = {}
     if unit_source_query and not (unit_source_query.startswith("{") or unit_source_query.startswith("[")):
         unit_source_query, with_units, with_unit_fields = split_with_projection_clause(unit_source_query)
+    unit_source = (
+        parse_unit_source_expression(unit_source_query)
+        if unit_source_query and not _optional_str(params.get("similar_text"))
+        else None
+    )
+    compiled_spec = (
+        SessionQuerySpec.from_params(params)
+        if unit_source is not None
+        else _compiled_session_spec(request, params=params, raw_query=raw_query)
+    )
+    origins = compiled_spec.origins or _resolve_origins(params)
+    origin = origins[0] if len(origins) == 1 else None
     query = _query_text(compiled_spec.query_terms, {"contains": compiled_spec.contains_terms})
     if compiled_spec.with_units:
         with_units = compiled_spec.with_units
@@ -266,7 +275,6 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     }
     if compiled_spec.boolean_predicate is not None:
         filter_kwargs["boolean_predicate"] = compiled_spec.boolean_predicate
-    unit_source = parse_unit_source_expression(unit_source_query) if unit_source_query and not similar_text else None
     if _try_emit_daemon_session_page(
         env,
         config=config,

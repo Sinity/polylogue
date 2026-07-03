@@ -1313,6 +1313,8 @@ class ActionQueryRowPayload(SurfacePayloadModel):
     output_text: str | None = None
     is_error: int | None = None
     exit_code: int | None = None
+    followup_class: str | None = None
+    followup_message_ref: str | None = None
 
     @classmethod
     def from_row(cls, row: ArchiveActionQueryRow) -> ActionQueryRowPayload:
@@ -1331,6 +1333,8 @@ class ActionQueryRowPayload(SurfacePayloadModel):
             output_text=row.output_text,
             is_error=row.is_error,
             exit_code=row.exit_code,
+            followup_class=row.followup_class,
+            followup_message_ref=row.followup_message_ref,
         )
 
 

@@ -24,6 +24,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from polylogue.archive.actions.followup import (
+    classify_failed_followup,
+    classify_failed_followup_evidence,
+)
+
 # --------------------------------------------------------------------------- #
 # SVG charting (dependency-free)
 # --------------------------------------------------------------------------- #
@@ -387,57 +392,6 @@ def analyze(conn: sqlite3.Connection, *, failure_followup_limit: int | None = No
     return f
 
 
-_ACKNOWLEDGMENT_MARKERS = (
-    "failed",
-    "failure",
-    "error",
-    "errored",
-    "exit code",
-    "non-zero",
-    "nonzero",
-    "exception",
-    "traceback",
-    "bug",
-    "fails",
-    "permission denied",
-    "not found",
-    "don't exist",
-    "timed out",
-    "timeout",
-    "isn't working",
-    "doesn't work",
-    "out of sync",
-    "locked",
-    "blocked",
-    "hook blocks",
-    "hanging",
-    "modified during processing",
-    "have been modified",
-    "were modified",
-    "conflict",
-    "conflicting",
-    "doesn't support",
-    "being modified",
-    "duplicate",
-    "what went wrong",
-    "the issue is",
-    "formatting issue",
-    "offline issue",
-    "staging issue",
-    "escaping issue",
-    "couple of issues",
-    "found some issues",
-    "remaining three issues",
-    "remaining issues",
-    "additional issues",
-    "many issues",
-    "more issues",
-    "unclosed function body",
-    "need a clean database",
-    "failing",
-)
-
-
 def _classify_failed_followup_evidence(text: str | None) -> dict[str, str | None]:
     """Classify the next assistant turn and report the exact heuristic used.
 
@@ -447,23 +401,11 @@ def _classify_failed_followup_evidence(text: str | None) -> dict[str, str | None
     ambiguous rather than being counted as silent proceed.
     """
 
-    if text is None:
-        return {"classification": "ambiguous", "reason": "missing_next_assistant_message", "matched_marker": None}
-    normalized = " ".join(text.lower().split())
-    if len(normalized) < 20:
-        return {"classification": "ambiguous", "reason": "short_next_assistant_message", "matched_marker": None}
-    matched_marker = next((marker for marker in _ACKNOWLEDGMENT_MARKERS if marker in normalized), None)
-    if matched_marker is not None:
-        return {
-            "classification": "acknowledged",
-            "reason": "explicit_acknowledgment_marker",
-            "matched_marker": matched_marker,
-        }
-    return {"classification": "silent_proceed", "reason": "no_explicit_acknowledgment_marker", "matched_marker": None}
+    return dict(classify_failed_followup_evidence(text))
 
 
 def _classify_failed_followup(text: str | None) -> str:
-    return str(_classify_failed_followup_evidence(text)["classification"])
+    return classify_failed_followup(text)
 
 
 def _structured_failure_followups(
