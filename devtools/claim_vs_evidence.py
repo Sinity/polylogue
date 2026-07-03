@@ -85,7 +85,8 @@ def _ranked(mapping: dict[str, dict[str, int]]) -> list[dict[str, object]]:
 
 def _structured_failure_rows(conn: Connection, *, limit: int, origin: str | None = None) -> list[dict[str, object]]:
     origin_predicate = "AND s.origin = ?" if origin is not None else ""
-    params: tuple[object, ...] = (origin, limit) if origin is not None else (limit,)
+    candidate_limit = max(limit * 2, limit + 100)
+    params: tuple[object, ...] = (origin, candidate_limit, limit) if origin is not None else (candidate_limit, limit)
     return _rows(
         conn,
         f"""
@@ -97,24 +98,16 @@ def _structured_failure_rows(conn: Connection, *, limit: int, origin: str | None
                 s.origin,
                 r.tool_result_is_error AS is_error,
                 r.tool_result_exit_code AS exit_code,
-                rm.position AS position
+                r.message_id AS order_message_id
             FROM blocks AS r INDEXED BY idx_blocks_tool_result_outcome
             JOIN sessions AS s ON s.session_id = r.session_id
-            JOIN messages AS rm ON rm.message_id = r.message_id
             WHERE r.block_type = 'tool_result'
               {origin_predicate}
               AND (
                   COALESCE(r.tool_result_is_error, 0) = 1
                   OR (r.tool_result_exit_code IS NOT NULL AND r.tool_result_exit_code != 0)
               )
-              AND EXISTS (
-                  SELECT 1
-                  FROM blocks AS u INDEXED BY idx_blocks_tool_id
-                  WHERE u.tool_id = r.tool_id
-                    AND u.session_id = r.session_id
-                    AND u.block_type = 'tool_use'
-              )
-            ORDER BY r.session_id, rm.position, r.message_id, r.tool_id
+            ORDER BY r.session_id, r.tool_id, r.message_id
             LIMIT ?
         ),
         next_message AS (
@@ -124,12 +117,13 @@ def _structured_failure_rows(conn: Connection, *, limit: int, origin: str | None
                 u.tool_name,
                 u.tool_command,
                 m.model_name AS tool_message_model,
+                rm.position AS position,
                 (
                     SELECT nm.message_id
                     FROM messages AS nm
                     WHERE nm.session_id = f.session_id
                       AND nm.role = 'assistant'
-                      AND nm.position > f.position
+                      AND nm.position > rm.position
                     ORDER BY nm.position
                     LIMIT 1
                 ) AS next_message_id
@@ -139,6 +133,9 @@ def _structured_failure_rows(conn: Connection, *, limit: int, origin: str | None
              AND u.session_id = f.session_id
              AND u.block_type = 'tool_use'
             JOIN messages AS m ON m.message_id = u.message_id
+            JOIN messages AS rm ON rm.message_id = f.tool_result_message_id
+            ORDER BY f.session_id, f.tool_result_tool_id, f.order_message_id
+            LIMIT ?
         )
         SELECT
             n.session_id,
@@ -203,13 +200,6 @@ def _structured_failure_origin_counts(conn: Connection) -> list[dict[str, object
           AND (
               COALESCE(r.tool_result_is_error, 0) = 1
               OR (r.tool_result_exit_code IS NOT NULL AND r.tool_result_exit_code != 0)
-          )
-          AND EXISTS (
-              SELECT 1
-              FROM blocks AS u INDEXED BY idx_blocks_tool_id
-              WHERE u.tool_id = r.tool_id
-                AND u.session_id = r.session_id
-                AND u.block_type = 'tool_use'
           )
         GROUP BY s.origin
         ORDER BY failed_outcomes DESC, s.origin
@@ -371,9 +361,10 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "complete_failure_frame": len(rows) >= total_structured_failures,
             "selection_strategy": (
                 "origin-stratified bounded sample; at least one row per origin when limit allows, "
-                "then proportional fill by origin failure count"
+                "then proportional fill by origin failure count; each origin candidate frame is bounded "
+                "before pairing to tool-use rows"
             ),
-            "selection_order": "origin, session_id, tool_result_message_position, tool_result_message_id, tool_id",
+            "selection_order": "origin, session_id, tool_id, tool_result_message_id",
             "failure_predicate": "tool_result_is_error = 1 OR tool_result_exit_code != 0",
             "classification_scope": "immediately following assistant message only",
             "total_by_origin": total_by_origin,

@@ -172,10 +172,11 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
                 "total_structured_failures": 1,
             },
         ],
-        "selection_order": "origin, session_id, tool_result_message_position, tool_result_message_id, tool_id",
+        "selection_order": "origin, session_id, tool_id, tool_result_message_id",
         "selection_strategy": (
             "origin-stratified bounded sample; at least one row per origin when limit allows, "
-            "then proportional fill by origin failure count"
+            "then proportional fill by origin failure count; each origin candidate frame is bounded "
+            "before pairing to tool-use rows"
         ),
         "total_by_origin": [
             {"failed_outcomes": 2, "origin": "claude-code-session"},
