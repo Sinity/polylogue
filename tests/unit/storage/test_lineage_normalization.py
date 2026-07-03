@@ -375,6 +375,78 @@ def test_child_before_parent_is_reextracted_on_resolution(tmp_path: Path) -> Non
     assert composed == ["hello", "hi there", "child diverges here", "child reply"]
 
 
+def test_child_before_parent_reextracts_cleanly_when_foreign_keys_suspended(tmp_path: Path) -> None:
+    """Bulk ingest suspends FKs while FTS triggers are dropped; re-extract must
+    still remove rows that would normally be deleted by message cascades."""
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="child",
+        title="child",
+        parent_session_provider_id="parent",
+        branch_type=BranchType.SUBAGENT,
+        messages=[
+            _msg("c0", Role.USER, "hello", 0),
+            _msg("c1", Role.ASSISTANT, "hi there", 1),
+            _msg("cx", Role.USER, "child diverges here", 2),
+            _msg("cy", Role.ASSISTANT, "child reply", 3),
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="capture_gap",
+                source_message_provider_id="c1",
+                payload={"summary": "prefix event"},
+            ),
+        ],
+    )
+    child_id = write_parsed_session_to_archive(conn, child)
+    assert conn.execute("SELECT COUNT(*) FROM blocks WHERE session_id = ?", (child_id,)).fetchone()[0] == 4
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("BEGIN IMMEDIATE")
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="parent",
+        title="parent",
+        messages=[
+            _msg("p0", Role.USER, "hello", 0),
+            _msg("p1", Role.ASSISTANT, "hi there", 1),
+            _msg("p2", Role.USER, "parent continues alone", 2),
+        ],
+    )
+    write_parsed_session_to_archive(conn, parent, manage_transaction=False)
+
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    dangling_blocks = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM blocks b
+        WHERE b.session_id = ?
+          AND NOT EXISTS (
+                SELECT 1 FROM messages m WHERE m.message_id = b.message_id
+          )
+        """,
+        (child_id,),
+    ).fetchone()[0]
+    assert dangling_blocks == 0
+    stored_positions = conn.execute(
+        "SELECT position FROM messages WHERE session_id = ? ORDER BY position",
+        (child_id,),
+    ).fetchall()
+    assert [row[0] for row in stored_positions] == [2, 3]
+    assert (
+        conn.execute(
+            "SELECT source_message_id FROM session_events WHERE session_id = ?",
+            (child_id,),
+        ).fetchone()[0]
+        is None
+    )
+    conn.rollback()
+    conn.close()
+
+
 def test_child_before_parent_reextracts_provider_usage_tail(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     conn = _connect(db)

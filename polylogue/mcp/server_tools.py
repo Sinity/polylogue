@@ -87,8 +87,8 @@ def _stats_embedding_overrides(config: Config) -> dict[str, object]:
         "stale_embedding_messages": int(payload.get("stale_messages") or 0),
         "messages_missing_embedding_provenance": int(payload.get("messages_missing_provenance") or 0),
         "embedding_readiness_status": str(payload.get("freshness_status") or status),
-        "embedding_models": dict(cast(dict[str, int], payload.get("embedding_models") or {})),
-        "embedding_dimensions": dict(cast(dict[int, int], payload.get("embedding_dimensions") or {})),
+        "embedding_models": dict(payload.get("embedding_models") or {}),
+        "embedding_dimensions": dict(payload.get("embedding_dimensions") or {}),
         "embedding_oldest_at": payload.get("oldest_embedded_at"),
         "embedding_newest_at": payload.get("newest_embedded_at"),
     }

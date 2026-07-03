@@ -3486,16 +3486,17 @@ def _reextract_prefix_tail_db(
         return
     prefix_message_ids = [child_composed[i][0] for i in range(k)]
     placeholders = ",".join("?" for _ in prefix_message_ids)
-    conn.execute(
-        f"DELETE FROM messages WHERE message_id IN ({placeholders})",
-        tuple(prefix_message_ids),
-    )
     _reextract_provider_usage_tail_db(
         conn,
         child_session_id,
         parent_session_id,
         parent_composed[k - 1][0],
         prefix_message_ids=prefix_message_ids,
+    )
+    _delete_prefix_message_dependents(conn, prefix_message_ids)
+    conn.execute(
+        f"DELETE FROM messages WHERE message_id IN ({placeholders})",
+        tuple(prefix_message_ids),
     )
     # The child's own rows just changed (inherited prefix deleted); drop its
     # memoized own-signatures so any later compose in this batch recomputes them.
@@ -3505,6 +3506,43 @@ def _reextract_prefix_tail_db(
         composed_cache.pop(child_session_id, None)
     _set_edge(parent_composed[k - 1][0], "prefix-sharing")
     _refresh_session_counts(conn, child_session_id)
+
+
+def _delete_prefix_message_dependents(conn: sqlite3.Connection, prefix_message_ids: Sequence[str]) -> None:
+    """Mirror message FK side effects when bulk ingest has foreign keys off."""
+    if not prefix_message_ids:
+        return
+    placeholders = ",".join("?" for _ in prefix_message_ids)
+    params = tuple(prefix_message_ids)
+    conn.execute(
+        f"""
+        UPDATE messages
+        SET parent_message_id = NULL
+        WHERE parent_message_id IN ({placeholders})
+        """,
+        params,
+    )
+    conn.execute(
+        f"""
+        UPDATE session_events
+        SET source_message_id = NULL
+        WHERE source_message_id IN ({placeholders})
+        """,
+        params,
+    )
+    conn.execute(
+        f"""
+        UPDATE session_agent_policies
+        SET source_message_id = NULL
+        WHERE source_message_id IN ({placeholders})
+        """,
+        params,
+    )
+    for table in ("web_content_constructs", "attachment_refs", "paste_spans", "blocks"):
+        conn.execute(
+            f"DELETE FROM {table} WHERE message_id IN ({placeholders})",
+            params,
+        )
 
 
 def _reextract_provider_usage_tail_db(
