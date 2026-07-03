@@ -1394,9 +1394,7 @@ def _write_messages(
                 message.cache_read_tokens,
                 message.cache_write_tokens,
                 message.duration_ms,
-                _hash_bytes(
-                    "message", session_id, message.provider_message_id or "", str(position), str(variant_index)
-                ),
+                _message_content_hash(session_id, message, position=position, variant_index=variant_index),
                 message.occurred_at_ms if message.occurred_at_ms is not None else _timestamp_ms(message.timestamp),
             )
 
@@ -1412,6 +1410,52 @@ def _write_messages(
         ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows(),
+    )
+
+
+def _message_content_hash(
+    session_id: str,
+    message: ParsedMessage,
+    *,
+    position: int,
+    variant_index: int,
+) -> bytes:
+    """Digest the stored message content, not just its identity.
+
+    Embedding freshness compares ``message_embeddings_meta.content_hash`` with
+    ``messages.content_hash``. The digest must therefore change when the text
+    sent to the embedder changes, even if the provider-native message id and
+    message count stay stable across a re-ingest.
+    """
+
+    block_parts: list[str] = []
+    for block in _message_blocks(message):
+        block_parts.extend(
+            (
+                _block_type(block).value,
+                _sqlite_text(block.text) or "",
+                _sqlite_text(block.tool_name) or "",
+                _sqlite_text(block.tool_id) or "",
+                _json_dumps(block.tool_input) if block.tool_input is not None else "",
+                _sqlite_text(_semantic_type(block)) or "",
+                _sqlite_text(block.media_type) or "",
+                _sqlite_text(_block_language(block)) or "",
+                "" if block.is_error is None else str(int(block.is_error)),
+                "" if block.exit_code is None else str(block.exit_code),
+            )
+        )
+    return _hash_bytes(
+        "message",
+        session_id,
+        message.provider_message_id or "",
+        str(position),
+        str(variant_index),
+        _enum_value(message.role) or "",
+        _enum_value(message.message_type) or "",
+        _enum_value(message.material_origin) or "",
+        _sqlite_text(message.text) or "",
+        _sqlite_text(message.user_context_text) or "",
+        *block_parts,
     )
 
 

@@ -274,6 +274,8 @@ def select_pending_archive_session_window(
 
     if status_table is None:
         status_table = "embedding_status" if _table_exists(conn, "embedding_status") else ""
+    stale_message_table = _archive_embedding_meta_table_for_status(conn, status_table)
+    stale_message_clause = _archive_stale_message_clause(conn, stale_message_table, session_alias="s")
     exact_counts_available = _archive_session_embeddable_counts_available(conn)
     aggregate_expr = _archive_session_embeddable_count_expression(conn)
     clean_status_is_authoritative = _archive_session_embeddable_count_uses_prose_rollups(conn)
@@ -300,14 +302,15 @@ def select_pending_archive_session_window(
         pending_filter = (
             ""
             if rebuild or not status_table or aggregate_expr is None
-            else """
+            else f"""
               AND (
                     e.session_id IS NULL
                  OR e.needs_reindex = 1
                  OR e.message_count_embedded < {aggregate_expr}
+                 {stale_message_clause}
               )
             """
-        ).format(aggregate_expr=aggregate_expr or "0")
+        )
     elif aggregate_expr is None:
         count_select = "NULL AS estimated_message_count"
         floor_filter = ""
@@ -322,14 +325,15 @@ def select_pending_archive_session_window(
         pending_filter = (
             ""
             if rebuild or not status_table
-            else """
+            else f"""
               AND (
                     e.session_id IS NULL
                  OR e.needs_reindex = 1
                  OR e.message_count_embedded < {aggregate_expr}
+                 {stale_message_clause}
               )
             """
-        ).format(aggregate_expr=aggregate_expr)
+        )
     limit_clause = ""
     if aggregate_expr is not None and max_sessions is not None and not clean_status_needs_exact_refinement:
         limit_clause = "LIMIT ?"
@@ -380,6 +384,7 @@ def select_pending_archive_session_window(
                 or status_session_id is None
                 or needs_reindex == 1
                 or message_count_embedded < estimated_count
+                or archive_session_has_stale_embeddings(conn, session_id, stale_message_table)
             ):
                 continue
             if max_sessions is not None and len(pending) >= max_sessions:
@@ -393,6 +398,72 @@ def select_pending_archive_session_window(
             if max_messages is not None and message_total >= max_messages:
                 return pending
     return pending
+
+
+def _archive_embedding_meta_table_for_status(conn: sqlite3.Connection, status_table: str | None) -> str:
+    if not status_table:
+        return ""
+    if "." in status_table:
+        schema, _, _ = status_table.rpartition(".")
+        candidate = f"{schema}.message_embeddings_meta"
+    else:
+        candidate = "message_embeddings_meta"
+    return candidate if _qualified_table_exists(conn, candidate) else ""
+
+
+def _qualified_table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    if "." not in table:
+        return _table_exists(conn, table)
+    schema, _, name = table.rpartition(".")
+    if not schema.replace("_", "").isalnum() or not name.replace("_", "").isalnum():
+        return False
+    try:
+        row = conn.execute(
+            f"SELECT 1 FROM {schema}.sqlite_master WHERE type = 'table' AND name = ?",
+            (name,),
+        ).fetchone()
+    except sqlite3.Error:
+        return False
+    return row is not None
+
+
+def _archive_stale_message_clause(conn: sqlite3.Connection, meta_table: str, *, session_alias: str) -> str:
+    if not meta_table:
+        return ""
+    relation = archive_embeddable_messages_relation(conn, alias="stale_m")
+    return f"""
+                 OR EXISTS (
+                    SELECT 1
+                    FROM {relation}
+                    JOIN {meta_table} em
+                      ON em.message_id = stale_m.message_id
+                    WHERE stale_m.session_id = {session_alias}.session_id
+                      AND stale_m.content_hash IS NOT NULL
+                      AND em.content_hash IS NOT NULL
+                      AND em.content_hash != stale_m.content_hash
+                 )
+    """
+
+
+def archive_session_has_stale_embeddings(conn: sqlite3.Connection, session_id: str, meta_table: str) -> bool:
+    if not meta_table:
+        return False
+    relation = archive_embeddable_messages_relation(conn, alias="stale_m")
+    row = conn.execute(
+        f"""
+        SELECT 1
+        FROM {relation}
+        JOIN {meta_table} em
+          ON em.message_id = stale_m.message_id
+        WHERE stale_m.session_id = ?
+          AND stale_m.content_hash IS NOT NULL
+          AND em.content_hash IS NOT NULL
+          AND em.content_hash != stale_m.content_hash
+        LIMIT 1
+        """,
+        (session_id,),
+    ).fetchone()
+    return row is not None
 
 
 def count_archive_session_embeddable_messages(conn: sqlite3.Connection, session_id: str) -> int:
@@ -454,6 +525,9 @@ def count_archive_embedding_session_state(
     if not _table_exists(conn, "messages"):
         return ArchiveEmbeddingSessionState(eligible_sessions=0, embedded_sessions=0, pending_sessions=0)
 
+    stale_message_table = _archive_embedding_meta_table_for_status(conn, status_table)
+    stale_session_clause = _archive_stale_message_clause(conn, stale_message_table, session_alias="s")
+    stale_eligible_clause = _archive_stale_message_clause(conn, stale_message_table, session_alias="ec")
     aggregate_expr = _archive_session_embeddable_count_expression(conn)
     if aggregate_expr is not None:
         if rebuild or not status_table:
@@ -479,6 +553,10 @@ def count_archive_embedding_session_state(
                     CASE
                         WHEN e.session_id IS NOT NULL
                          AND e.needs_reindex = 0
+                         AND NOT (
+                            0
+                            {stale_session_clause}
+                         )
                         THEN 1 ELSE 0
                     END
                 ) AS embedded_sessions,
@@ -486,6 +564,7 @@ def count_archive_embedding_session_state(
                     CASE
                         WHEN e.session_id IS NULL
                           OR e.needs_reindex = 1
+                          {stale_session_clause}
                         THEN 1 ELSE 0
                     END
                 ) AS pending_sessions
@@ -536,6 +615,10 @@ def count_archive_embedding_session_state(
                     WHEN e.session_id IS NOT NULL
                      AND e.needs_reindex = 0
                      AND e.message_count_embedded >= ec.message_count
+                     AND NOT (
+                        0
+                        {stale_eligible_clause}
+                     )
                     THEN 1 ELSE 0
                 END
             ) AS embedded_sessions,
@@ -544,6 +627,7 @@ def count_archive_embedding_session_state(
                     WHEN e.session_id IS NULL
                       OR e.needs_reindex = 1
                       OR e.message_count_embedded < ec.message_count
+                      {stale_eligible_clause}
                     THEN 1 ELSE 0
                 END
             ) AS pending_sessions

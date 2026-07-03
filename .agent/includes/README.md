@@ -10,3 +10,5 @@ Current includes:
   Polylogue-specific migration target.
 - `projection-render-direction.md` — durable query/projection/render direction
   moved out of the active conductor README.
+- `fables-poly-findings.md` — source-reviewed findings and backlog items from
+  the Fables Poly chatlog import.

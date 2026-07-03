@@ -23,6 +23,7 @@ from polylogue.storage.embeddings.embedding_stats import (
     read_embedding_stats_sync,
 )
 from polylogue.storage.embeddings.materialization import (
+    count_archive_embedding_session_state,
     embed_archive_session_sync,
     embed_session_sync,
     select_pending_archive_session_window,
@@ -829,6 +830,65 @@ def test_pending_archive_window_matches_materialization_text_floor() -> None:
         conn.commit()
 
         assert select_pending_archive_session_window(conn, status_table="embedding_status") == []
+    finally:
+        conn.close()
+
+
+def test_pending_archive_window_reselects_stale_message_hash() -> None:
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                origin TEXT NOT NULL DEFAULT 'unknown-export',
+                title TEXT,
+                sort_key_ms INTEGER,
+                authored_user_message_count INTEGER NOT NULL DEFAULT 0,
+                assistant_message_count INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE messages (
+                message_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                text TEXT,
+                role TEXT NOT NULL DEFAULT 'user',
+                message_type TEXT NOT NULL DEFAULT 'message',
+                material_origin TEXT NOT NULL DEFAULT 'human_authored',
+                word_count INTEGER NOT NULL DEFAULT 8,
+                content_hash BLOB
+            );
+            CREATE TABLE embedding_status (
+                session_id TEXT PRIMARY KEY,
+                message_count_embedded INTEGER NOT NULL DEFAULT 0,
+                needs_reindex INTEGER NOT NULL DEFAULT 0,
+                error_message TEXT
+            );
+            CREATE TABLE message_embeddings_meta (
+                message_id TEXT PRIMARY KEY,
+                model TEXT NOT NULL,
+                dimension INTEGER NOT NULL,
+                content_hash BLOB,
+                embedded_at_ms INTEGER NOT NULL,
+                needs_reindex INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO sessions VALUES ('changed', 'codex-session', 'changed', 1, 1, 0);
+            INSERT INTO messages (
+                message_id, session_id, text, role, message_type, material_origin, word_count, content_hash
+            ) VALUES (
+                'm1', 'changed', 'edited authored prose long enough', 'user', 'message',
+                'human_authored', 5, x'02'
+            );
+            INSERT INTO embedding_status VALUES ('changed', 1, 0, NULL);
+            INSERT INTO message_embeddings_meta VALUES ('m1', 'voyage-4', 1024, x'01', 1000, 0);
+            """
+        )
+
+        pending = select_pending_archive_session_window(conn, status_table="embedding_status")
+        state = count_archive_embedding_session_state(conn, status_table="embedding_status")
+
+        assert [item.session_id for item in pending] == ["changed"]
+        assert state.pending_sessions == 1
+        assert state.embedded_sessions == 0
     finally:
         conn.close()
 

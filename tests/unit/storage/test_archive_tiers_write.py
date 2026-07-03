@@ -59,6 +59,51 @@ def _connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def test_message_content_hash_tracks_same_identity_body_edits(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    try:
+        first = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="same-id-edit",
+            title="Same id edit",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.USER,
+                    text="first body long enough for embeddings",
+                    material_origin=MaterialOrigin.HUMAN_AUTHORED,
+                )
+            ],
+        )
+        session_id = write_parsed_session_to_archive(conn, first)
+        first_hash = conn.execute(
+            "SELECT content_hash FROM messages WHERE session_id = ? AND native_id = 'm1'",
+            (session_id,),
+        ).fetchone()[0]
+
+        second = first.model_copy(
+            update={
+                "messages": [
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text="edited body long enough for embeddings",
+                        material_origin=MaterialOrigin.HUMAN_AUTHORED,
+                    )
+                ]
+            }
+        )
+        write_parsed_session_to_archive(conn, second)
+        second_hash = conn.execute(
+            "SELECT content_hash FROM messages WHERE session_id = ? AND native_id = 'm1'",
+            (session_id,),
+        ).fetchone()[0]
+
+        assert first_hash != second_hash
+    finally:
+        conn.close()
+
+
 def test_archive_tiers_writer_materializes_typed_web_constructs(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     session = ParsedSession(
