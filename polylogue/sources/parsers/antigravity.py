@@ -445,7 +445,7 @@ def _title_for_artifact(artifact_path: Path, payload: JSONDocument, fallback_id:
 def _read_text(path: Path) -> str | None:
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
     return text if text else None
 

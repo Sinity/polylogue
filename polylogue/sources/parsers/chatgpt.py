@@ -294,8 +294,6 @@ def extract_messages_from_mapping(
             continue
         parts = content.get("parts") or []
         text = _extract_content_text(content)
-        if not text:
-            continue
         # Role is required - skip messages without one
         author = msg.get("author")
         raw_role = author.get("role") if isinstance(author, dict) else None
@@ -437,6 +435,8 @@ def extract_messages_from_mapping(
                 content_blocks.append(ParsedContentBlock(type=BlockType.TEXT))
             first_block = content_blocks[0]
             first_block.web_constructs.extend(web_constructs)
+        if not text and not content_blocks:
+            continue
 
         recipient_val = msg.get("recipient")
         status_val = msg.get("status")

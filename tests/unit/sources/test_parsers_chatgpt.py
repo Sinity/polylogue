@@ -9,7 +9,7 @@ from typing import Any, TypeAlias
 import pytest
 
 from polylogue.archive.message.types import MessageType
-from polylogue.core.enums import MaterialOrigin
+from polylogue.core.enums import BlockType, MaterialOrigin
 from polylogue.scenarios import CorpusSpec
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.chatgpt import (
@@ -112,6 +112,36 @@ def test_chatgpt_rich_web_metadata_is_promoted_to_typed_constructs() -> None:
     assert constructs[5].task_type == "deep_research"
     assert constructs[5].task_id == "task-1"
     assert messages[0].blocks[0].metadata is None
+
+
+def test_chatgpt_keeps_image_asset_only_nodes() -> None:
+    messages, _attachments = extract_messages_from_mapping(
+        {
+            "node-1": {
+                "id": "node-1",
+                "message": {
+                    "id": "image-msg",
+                    "author": {"role": "assistant"},
+                    "create_time": 1,
+                    "content": {
+                        "content_type": "multimodal_text",
+                        "parts": [
+                            {
+                                "content_type": "image_asset_pointer",
+                                "asset_pointer": "file-service://image-asset-1",
+                            }
+                        ],
+                    },
+                    "metadata": {"model_slug": "gpt-image"},
+                },
+            }
+        }
+    )
+
+    assert len(messages) == 1
+    assert messages[0].provider_message_id == "image-msg"
+    assert messages[0].blocks[0].type is BlockType.IMAGE
+    assert messages[0].blocks[0].metadata == {"asset_pointer": "file-service://image-asset-1"}
 
 
 def test_chatgpt_shared_conversation_index_shell_is_tagged() -> None:

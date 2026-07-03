@@ -103,6 +103,25 @@ def test_parse_brain_metadata_reads_adjacent_artifact(tmp_path: Path) -> None:
     assert session.messages[0].blocks[0].type == BlockType.TEXT
 
 
+def test_parse_brain_metadata_falls_back_to_summary_on_non_utf8_artifact(tmp_path: Path) -> None:
+    session_dir = tmp_path / "brain" / "session-non-utf8"
+    session_dir.mkdir(parents=True)
+    artifact_path = session_dir / "output.md"
+    artifact_path.write_bytes(b"\xff\xfe\x00not utf-8")
+    metadata_path = session_dir / "output.md.metadata.json"
+    payload: JSONDocument = {
+        "artifactType": "ARTIFACT_TYPE_OTHER",
+        "summary": "Recovered summary",
+        "updatedAt": "2026-01-07T19:08:15.216541610Z",
+    }
+
+    session = parse_brain_metadata(payload, metadata_path, "fallback")
+
+    assert session.provider_session_id == "session-non-utf8:output.md"
+    assert session.messages[0].text == "Recovered summary"
+    assert session.messages[0].blocks[0].text == "Recovered summary"
+
+
 def test_parse_brain_metadata_marks_missing_artifact(tmp_path: Path) -> None:
     metadata_path = tmp_path / "brain" / "session-2" / "missing.md.metadata.json"
     metadata_path.parent.mkdir(parents=True)
