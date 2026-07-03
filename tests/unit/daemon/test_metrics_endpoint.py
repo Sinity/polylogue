@@ -137,6 +137,7 @@ class TestFormatMetricsExpositionShape:
 
     def test_archive_storage_metrics_report_archive_file_sets(self, tmp_path: Path) -> None:
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+        from polylogue.storage.sqlite.archive_tiers.ops_write import record_ingest_attempt
         from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
         for filename, tier in (
@@ -172,6 +173,23 @@ class TestFormatMetricsExpositionShape:
         assert 'polylogue_fts_trigger_present{trigger="messages_fts_ai"} 1' in body
         assert 'polylogue_fts_trigger_present{trigger="messages_fts_ad"} 1' in body
         assert 'polylogue_fts_trigger_present{trigger="messages_fts_au"} 1' in body
+
+        with sqlite3.connect(tmp_path / "ops.db") as conn:
+            record_ingest_attempt(
+                conn,
+                attempt_id="rebuild-active",
+                source_path=str(tmp_path / "source.db"),
+                status="running",
+                phase="rebuild-index",
+                started_at_ms=1_700_000_000_000,
+                storage_route="maintenance",
+            )
+
+        rebuilding_body = format_metrics(tmp_path / "index.db")
+
+        assert 'polylogue_archive_storage_ready{state="materialized"} 0' in rebuilding_body
+        assert "polylogue_archive_rebuild_index_attempts 1" in rebuilding_body
+        assert "polylogue_archive_ready 0" in rebuilding_body
 
     def test_db_space_metrics_report_wal_and_planner_stats(self, tmp_path: Path) -> None:
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database

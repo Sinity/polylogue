@@ -39,6 +39,7 @@ from polylogue.paths import archive_root, db_path, index_db_path, resolve_active
 from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.watcher import default_sources
+from polylogue.storage.archive_readiness import active_rebuild_index_attempts
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -140,6 +141,8 @@ class ArchiveStorageStatus(BaseModel):
     configured_archive_root: str = ""
     archive_root_matches_configured: bool = True
     archive_ready: bool = False
+    archive_materialization_ready: bool = False
+    active_rebuild_index_attempts: list[dict[str, object]] = Field(default_factory=list)
     final_shape_ready: bool = False
     archive_schema_ready: bool = False
     schema_mismatches: list[str] = Field(default_factory=list)
@@ -370,9 +373,11 @@ def _archive_storage_info() -> ArchiveStorageStatus:
     missing_tiers = [str(tier.name) for tier in tiers if not tier.exists]
     index_exists = "index" in present_tiers
     source_exists = "source" in present_tiers
+    active_rebuild_attempts = active_rebuild_index_attempts(tier_paths["ops"])
     final_shape_ready = not missing_tiers
     schema_mismatches = [str(tier.name) for tier in tiers if tier.exists and tier.version_status != "ok"]
     archive_schema_ready = final_shape_ready and not schema_mismatches
+    archive_ready = index_exists and source_exists and archive_schema_ready and not active_rebuild_attempts
     if index_exists and source_exists:
         active_store: Literal["archive_file_set", "empty"] = "archive_file_set"
     else:
@@ -383,7 +388,9 @@ def _archive_storage_info() -> ArchiveStorageStatus:
         archive_root=str(root),
         configured_archive_root=str(configured_root),
         archive_root_matches_configured=root == configured_root,
-        archive_ready=index_exists and source_exists and archive_schema_ready,
+        archive_ready=archive_ready,
+        archive_materialization_ready=archive_ready,
+        active_rebuild_index_attempts=active_rebuild_attempts,
         final_shape_ready=final_shape_ready,
         archive_schema_ready=archive_schema_ready,
         schema_mismatches=schema_mismatches,

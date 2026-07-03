@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.commands.paths import paths_command
+from polylogue.storage.sqlite.archive_tiers.ops_write import record_ingest_attempt
 
 _ARCHIVE_TIERS = ("source.db", "index.db", "embeddings.db", "ops.db", "user.db")
 
@@ -78,6 +80,48 @@ def test_paths_command_json_output(cli_workspace: dict[str, Path], cli_runner: C
 
     # All path values should be strings.
     assert isinstance(payload["archive_root"], str)
+
+
+def test_paths_json_reports_running_rebuild_as_not_ready(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    """A current-schema index file is not usable while rebuild-index is running."""
+    ops_db = cli_workspace["archive_root"] / "ops.db"
+    with sqlite3.connect(ops_db) as conn:
+        record_ingest_attempt(
+            conn,
+            attempt_id="rebuild-active",
+            source_path=str(cli_workspace["archive_root"] / "source.db"),
+            status="running",
+            phase="rebuild-index",
+            started_at_ms=1_700_000_000_000,
+            heartbeat_at_ms=1_700_000_001_000,
+            storage_route="maintenance",
+        )
+
+    result = cli_runner.invoke(
+        paths_command,
+        ["--format", "json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["archive_schema_ready"] is True
+    assert payload["archive_layout_ready"] is True
+    assert payload["archive_ready"] is False
+    assert payload["archive_materialization_ready"] is False
+    assert payload["active_rebuild_index_attempts"] == [
+        {
+            "attempt_id": "rebuild-active",
+            "phase": "rebuild-index",
+            "started_at_ms": 1_700_000_000_000,
+            "heartbeat_at_ms": 1_700_000_001_000,
+            "parsed_raw_count": 0,
+            "materialized_count": 0,
+        }
+    ]
     assert isinstance(payload["active_archive_root"], str)
     assert isinstance(payload["database_path"], str)
     assert isinstance(payload["config_file_path"], str)

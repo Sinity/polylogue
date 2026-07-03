@@ -1028,6 +1028,17 @@ def test_rebuild_index_replays_source_rows_with_materialization_controls(
     assert payload["processed_session_count"] == 3
     assert payload["materialized"] is False
     assert payload["status"] == "ok"
+    with sqlite3.connect(cli_workspace["archive_root"] / "ops.db") as conn:
+        row = conn.execute(
+            """
+            SELECT status, phase, storage_route, parsed_raw_count, materialized_count
+            FROM ingest_attempts
+            WHERE phase = 'rebuild-index'
+            ORDER BY started_at_ms DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    assert row == ("completed", "rebuild-index", "maintenance", 4, 0)
     assert captured == {
         "archive_root": cli_workspace["archive_root"],
         "raw_ids": None,

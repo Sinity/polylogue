@@ -19,6 +19,7 @@ from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+from polylogue.storage.sqlite.archive_tiers.ops_write import record_ingest_attempt
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 from tests.infra.frozen_clock import FrozenClock
@@ -141,6 +142,54 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
         "user": "ok",
         "ops": "ok",
     }
+
+
+def test_polylogued_status_json_reports_rebuild_index_not_ready(tmp_path: Path) -> None:
+    for filename, tier in (
+        ("source.db", ArchiveTier.SOURCE),
+        ("index.db", ArchiveTier.INDEX),
+        ("embeddings.db", ArchiveTier.EMBEDDINGS),
+        ("user.db", ArchiveTier.USER),
+        ("ops.db", ArchiveTier.OPS),
+    ):
+        initialize_archive_database(tmp_path / filename, tier)
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        record_ingest_attempt(
+            conn,
+            attempt_id="rebuild-active",
+            source_path=str(tmp_path / "source.db"),
+            status="running",
+            phase="rebuild-index",
+            started_at_ms=1_700_000_000_000,
+            heartbeat_at_ms=1_700_000_001_000,
+            storage_route="maintenance",
+        )
+
+    with (
+        patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+        patch("polylogue.daemon.status.db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status.index_db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status.default_sources", return_value=()),
+    ):
+        result = CliRunner().invoke(main, ["status", "--format", "json"])
+
+    assert result.exit_code == 0
+    payload = loads(result.output)
+    assert isinstance(payload, dict)
+    storage = cast(dict[str, object], payload["archive_storage"])
+    assert storage["archive_schema_ready"] is True
+    assert storage["archive_ready"] is False
+    assert storage["archive_materialization_ready"] is False
+    assert storage["active_rebuild_index_attempts"] == [
+        {
+            "attempt_id": "rebuild-active",
+            "phase": "rebuild-index",
+            "started_at_ms": 1_700_000_000_000,
+            "heartbeat_at_ms": 1_700_000_001_000,
+            "parsed_raw_count": 0,
+            "materialized_count": 0,
+        }
+    ]
 
 
 def test_polylogued_status_json_reports_schema_mismatch_not_ready(tmp_path: Path) -> None:

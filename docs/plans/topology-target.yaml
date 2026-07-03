@@ -72,7 +72,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/insights.py
-    loc: 665
+    loc: 688
     target: polylogue/api/insights.py
     owner: stable
     cross_cut: { api: async }
@@ -92,7 +92,7 @@ files:
     owner: stable
     cross_cut: { api: sync }
   - path: polylogue/api/sync/insights.py
-    loc: 128
+    loc: 136
     target: polylogue/api/sync/insights.py
     owner: stable
     cross_cut: { api: sync }
@@ -695,7 +695,7 @@ files:
     target: polylogue/cli/__main__.py
     owner: stable
   - path: polylogue/cli/archive_query.py
-    loc: 2140
+    loc: 2148
     target: polylogue/cli/archive_query.py
     owner: stable
   - path: polylogue/cli/click_app.py
@@ -775,7 +775,7 @@ files:
     target: polylogue/cli/commands/insights.py
     owner: stable
   - path: polylogue/cli/commands/maintenance.py
-    loc: 2129
+    loc: 2198
     target: polylogue/cli/commands/maintenance.py
     owner: stable
   - path: polylogue/cli/commands/ops.py
@@ -783,7 +783,7 @@ files:
     target: polylogue/cli/commands/ops.py
     owner: stable
   - path: polylogue/cli/commands/paths.py
-    loc: 354
+    loc: 362
     target: polylogue/cli/commands/paths.py
     owner: stable
   - path: polylogue/cli/commands/reset.py
@@ -883,7 +883,7 @@ files:
     target: polylogue/cli/read_views/base.py
     owner: stable
   - path: polylogue/cli/read_views/chronicle.py
-    loc: 125
+    loc: 130
     target: polylogue/cli/read_views/chronicle.py
     owner: stable
   - path: polylogue/cli/read_views/context.py
@@ -907,7 +907,7 @@ files:
     target: polylogue/cli/read_views/query_set.py
     owner: stable
   - path: polylogue/cli/read_views/standard.py
-    loc: 457
+    loc: 501
     target: polylogue/cli/read_views/standard.py
     owner: stable
   - path: polylogue/cli/read_views/streaming_markdown.py
@@ -1308,7 +1308,7 @@ files:
     target: polylogue/daemon/maintenance_registry_http.py
     owner: stable
   - path: polylogue/daemon/metrics.py
-    loc: 1795
+    loc: 1806
     target: polylogue/daemon/metrics.py
     owner: stable
   - path: polylogue/daemon/notification_backends/__init__.py
@@ -1356,7 +1356,7 @@ files:
     target: polylogue/daemon/similarity.py
     owner: stable
   - path: polylogue/daemon/status.py
-    loc: 2411
+    loc: 2418
     target: polylogue/daemon/status.py
     owner: stable
   - path: polylogue/daemon/status_snapshot.py
@@ -1457,7 +1457,7 @@ files:
     target: polylogue/insights/affordance_usage.py
     owner: stable
   - path: polylogue/insights/archive.py
-    loc: 646
+    loc: 680
     target: polylogue/insights/archive.py
     owner: stable
   - path: polylogue/insights/archive_models.py
@@ -1530,7 +1530,7 @@ files:
     target: polylogue/insights/readiness.py
     owner: stable
   - path: polylogue/insights/registry.py
-    loc: 739
+    loc: 777
     target: polylogue/insights/registry.py
     owner: stable
   - path: polylogue/insights/resume.py
@@ -2713,6 +2713,10 @@ files:
     loc: 99
     target: TBD
     owner: storage-domain
+  - path: polylogue/storage/archive_readiness.py
+    loc: 41
+    target: TBD
+    owner: storage-domain
   - path: polylogue/storage/archive_views.py
     loc: 26
     target: polylogue/storage/archive_views.py
@@ -3187,7 +3191,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 8488
+    loc: 8867
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py
@@ -3263,7 +3267,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/user_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/write.py
-    loc: 3751
+    loc: 3924
     target: polylogue/storage/sqlite/archive_tiers/write.py
     owner: stable
   - path: polylogue/storage/sqlite/async_sqlite.py
@@ -3499,7 +3503,7 @@ files:
     target: polylogue/storage/sqlite/query_store_maintenance.py
     owner: stable
   - path: polylogue/storage/sqlite/runtime_indexes.py
-    loc: 54
+    loc: 59
     target: polylogue/storage/sqlite/runtime_indexes.py
     owner: stable
   - path: polylogue/storage/sqlite/schema.py

@@ -48,6 +48,7 @@ from polylogue.storage.sqlite.archive_tiers.archive_init import (
 )
 from polylogue.storage.sqlite.archive_tiers.archive_plan import ArchiveInitPlan, build_archive_init_plan
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
+from polylogue.storage.sqlite.archive_tiers.ops_write import record_ingest_attempt
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     ArchiveAssertionEnvelope,
@@ -1036,6 +1037,45 @@ def _filter_raw_ids_by_max_blob_size(root: Path, raw_ids: list[str], max_blob_mb
     return [str(row[0]) for row in rows]
 
 
+def _now_ms() -> int:
+    return int(datetime.now(UTC).timestamp() * 1000)
+
+
+def _record_rebuild_index_attempt(
+    root: Path,
+    *,
+    attempt_id: str | None = None,
+    status: str,
+    started_at_ms: int,
+    finished_at_ms: int | None = None,
+    parsed_raw_count: int = 0,
+    materialized_count: int = 0,
+    error_message: str | None = None,
+) -> str | None:
+    ops_db = root / "ops.db"
+    if not ops_db.exists():
+        return None
+    try:
+        with sqlite3.connect(ops_db, timeout=10.0) as conn:
+            return record_ingest_attempt(
+                conn,
+                attempt_id=attempt_id,
+                source_path=str(root / "source.db"),
+                status=status,
+                phase="rebuild-index",
+                storage_route="maintenance",
+                started_at_ms=started_at_ms,
+                heartbeat_at_ms=_now_ms() if status == "running" else None,
+                finished_at_ms=finished_at_ms,
+                parsed_raw_count=parsed_raw_count,
+                materialized_count=materialized_count,
+                error_message=error_message,
+                source_paths_json=json.dumps([str(root / "source.db")]),
+            )
+    except sqlite3.Error:
+        return None
+
+
 async def _rebuild_index_from_source(
     config: Config,
     *,
@@ -1213,25 +1253,58 @@ def rebuild_index_command(
         return
 
     started = datetime.now(UTC)
+    started_ms = int(started.timestamp() * 1000)
     config = Config(archive_root=root, render_root=render_root(), sources=[])
+    rebuild_attempt_id = _record_rebuild_index_attempt(
+        root,
+        status="running",
+        started_at_ms=started_ms,
+        parsed_raw_count=0,
+        materialized_count=0,
+    )
 
     def _emit_progress(amount: int, desc: str | None = None) -> None:
         del amount
         if desc:
             click.echo(f"  {desc}", err=True)
 
-    result = asyncio.run(
-        _rebuild_index_from_source(
-            config,
-            raw_ids=selected_raw_ids,
-            raw_batch_size=batch_size,
-            ingest_workers=workers,
-            force_write=force_write,
-            materialize=not no_materialize,
-            progress_callback=_emit_progress if output_format == "plain" else None,
+    try:
+        result = asyncio.run(
+            _rebuild_index_from_source(
+                config,
+                raw_ids=selected_raw_ids,
+                raw_batch_size=batch_size,
+                ingest_workers=workers,
+                force_write=force_write,
+                materialize=not no_materialize,
+                progress_callback=_emit_progress if output_format == "plain" else None,
+            )
         )
-    )
+    except BaseException as exc:
+        _record_rebuild_index_attempt(
+            root,
+            attempt_id=rebuild_attempt_id,
+            status="interrupted" if isinstance(exc, KeyboardInterrupt) else "failed",
+            started_at_ms=started_ms,
+            finished_at_ms=_now_ms(),
+            error_message=str(exc),
+        )
+        raise
     completed = datetime.now(UTC)
+    _record_rebuild_index_attempt(
+        root,
+        attempt_id=rebuild_attempt_id,
+        status="completed" if result["parse_failure_count"] == 0 else "failed",
+        started_at_ms=started_ms,
+        finished_at_ms=int(completed.timestamp() * 1000),
+        parsed_raw_count=selected_raw_count,
+        materialized_count=result["materialized_session_count"]
+        if isinstance(result["materialized_session_count"], int)
+        else 0,
+        error_message=None
+        if result["parse_failure_count"] == 0
+        else f"{result['parse_failure_count']} parse failure(s)",
+    )
     payload = {
         "archive_root": str(root),
         "raw_session_count": raw_count,

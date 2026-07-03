@@ -10,6 +10,7 @@ from pathlib import Path
 import click
 
 from polylogue.storage import archive_layout
+from polylogue.storage.archive_readiness import active_rebuild_index_attempts
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -58,7 +59,8 @@ def paths_command(output_format: str) -> None:
     archive_schema_ready = all(
         tier_versions[name]["version_status"] == "ok" for name in ("source", "index", "embeddings", "ops", "user")
     )
-    archive_ready = source_db.exists() and db.exists() and archive_schema_ready
+    active_rebuild_attempts = active_rebuild_index_attempts(ops_db)
+    archive_ready = source_db.exists() and db.exists() and archive_schema_ready and not active_rebuild_attempts
     final_shape_ready = not missing_tiers
     missing_backup_required = [tier for tier in archive_layout.BACKUP_REQUIRED_TIERS if tier in missing_tiers]
     layout_blockers = archive_layout.archive_layout_blockers(
@@ -97,6 +99,8 @@ def paths_command(output_format: str) -> None:
             "active_database_size_bytes": active_db.stat().st_size if active_db.exists() else None,
             "storage_layout": storage_layout,
             "archive_ready": archive_ready,
+            "archive_materialization_ready": archive_ready,
+            "active_rebuild_index_attempts": active_rebuild_attempts,
             "final_shape_ready": final_shape_ready,
             "archive_schema_ready": archive_schema_ready,
             "archive_layout_ready": archive_layout_ready,
@@ -141,6 +145,10 @@ def paths_command(output_format: str) -> None:
     _print_line("Archive layout", "ready" if archive_layout_ready else "not ready", extra=layout_status_extra)
     schema_extra = "ready" if archive_schema_ready else _schema_blocker_text(tier_versions)
     _print_line("Archive schema", "ready" if archive_schema_ready else "not ready", extra=schema_extra)
+    if active_rebuild_attempts:
+        _print_line("Archive materialization", "rebuilding", extra=f"attempts={len(active_rebuild_attempts)}")
+    else:
+        _print_line("Archive materialization", "ready" if archive_ready else "not ready")
     _print_line("Source DB", str(source_db), extra=_tier_extra("source", source_db, tier_versions))
     _print_line("Index DB", str(db), extra=_tier_extra("index", db, tier_versions))
     _print_line(
