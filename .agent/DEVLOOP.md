@@ -202,6 +202,10 @@ Throughput discipline (operator directive 2026-07-03):
 - **State the lane in the claim.** When claiming for a wave, note the files
   you own vs avoid in the bead (one `--append-notes` line) so a conductor or
   sibling agent can route around you without asking.
+- **Size labels.** `size:S` (one focused session), `size:M` (day-scale slice),
+  `size:L` (multi-session; consider splitting). Label on create/claim;
+  `devloop-status` renders velocity as size-weighted points (S=1, M=3, L=8) so
+  the operator reads pace at a glance.
 - **Enrich-on-claim is budgeted.** If enriching an under-specified bead takes
   longer than ~10 minutes of reading, the bead was mis-sliced: split it and
   enrich only the slice you will execute now.

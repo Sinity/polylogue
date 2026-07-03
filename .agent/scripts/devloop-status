@@ -688,6 +688,39 @@ if unmerged:
 PY
 fi
 
+printf '\n== velocity ==\n'
+if command -v bd >/dev/null 2>&1 && [ -d "$repo/.beads" ]; then
+  python3 - "$repo" <<'PYEOF'
+import json, sys, subprocess, datetime
+repo = sys.argv[1]
+try:
+    out = subprocess.run(["bd","export"], capture_output=True, text=True, cwd=repo, timeout=30).stdout
+    rows = [json.loads(l) for l in out.splitlines() if l.strip()]
+except Exception as e:
+    print(f"velocity unavailable: {e}"); raise SystemExit
+now = datetime.datetime.now(datetime.timezone.utc)
+def parse(ts):
+    try: return datetime.datetime.fromisoformat(ts.replace("Z","+00:00"))
+    except Exception: return None
+W = {"size:S":1,"size:M":3,"size:L":8}
+def wt(r): return next((W[l] for l in (r.get("labels") or []) if l in W), 2)
+closed = [(r, parse(r.get("closed_at") or r.get("updated_at") or "")) for r in rows if r.get("status")=="closed"]
+for days in (1, 7, 30):
+    sel = [r for r,t in closed if t and (now-t).days < days]
+    pts = sum(wt(r) for r in sel)
+    print(f"closed last {days:>2}d: {len(sel):>3} beads  ~{pts} pts")
+inprog = [r for r in rows if r.get("status")=="in_progress"]
+for r in inprog[:6]:
+    t = parse(r.get("updated_at") or "")
+    age = f"{(now-t).days}d" if t else "?"
+    print(f"in-progress: {r['id']} ({age} since update) {r['title'][:50]}")
+created7 = sum(1 for r in rows if (t:=parse(r.get("created_at") or "")) and (now-t).days < 7)
+print(f"created last 7d: {created7}  |  net burn 7d: {sum(1 for r,t in closed if t and (now-t).days<7) - created7:+d}")
+PYEOF
+else
+  printf 'velocity unavailable\n'
+fi
+
 printf '\n== beads ==\n'
 if command -v bd >/dev/null 2>&1 && [ -d "$repo/.beads" ]; then
   bd ready --limit 5 2>/dev/null || printf 'bd ready unavailable\n'
