@@ -19,6 +19,7 @@ from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec
+from polylogue.core.enums import Provider
 from polylogue.surfaces.payloads import PublicRefResolutionPayload
 from polylogue.surfaces.projection_spec import projection_from_views
 from tests.infra.builders import make_conv, make_msg
@@ -1075,15 +1076,104 @@ def test_read_view_temporal_includes_bounded_message_events(
     ]
 
 
-def test_read_view_temporal_batches_session_scope_expression() -> None:
-    from polylogue.cli.read_views.standard import _session_scope_for_summaries
+def test_exact_read_summaries_resolves_id_without_query_enumeration(tmp_path: Path) -> None:
+    from polylogue.cli.read_views.standard import exact_read_summaries
 
+    archive_summary = SimpleNamespace(
+        session_id="codex-session:abc",
+        provider=Provider.CODEX,
+        title="Exact",
+        created_at="2026-07-03T09:00:00+00:00",
+        updated_at=None,
+        working_directories=(),
+        git_branch=None,
+        git_repository_url=None,
+        provider_project_ref=None,
+        message_count=42,
+        tags=(),
+    )
+    archive = MagicMock()
+    archive.resolve_session_id.return_value = "codex-session:abc"
+    archive.read_summary.return_value = archive_summary
+    archive.__enter__.return_value = archive
+    archive.__exit__.return_value = None
+    config = Config(
+        archive_root=tmp_path,
+        db_path=tmp_path / "index.db",
+        render_root=tmp_path / "render",
+        sources=[],
+    )
+
+    with patch("polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing", return_value=archive):
+        summaries = exact_read_summaries(config, RootModeRequest.from_params({"conv_id": "abc"}))
+
+    assert summaries is not None
+    assert [str(summary.id) for summary in summaries] == ["codex-session:abc"]
+    assert summaries[0].message_count == 42
+    archive.resolve_session_id.assert_called_once_with("abc")
+    archive.read_summary.assert_called_once_with("codex-session:abc")
+
+
+def test_temporal_message_events_use_indexed_session_message_query(tmp_path: Path) -> None:
+    from polylogue.cli.read_views.standard import _message_temporal_events_for_summaries
+
+    archive = MagicMock()
+    archive.query_session_messages.return_value = []
+    archive.__enter__.return_value = archive
+    archive.__exit__.return_value = None
+    config = Config(
+        archive_root=tmp_path,
+        db_path=tmp_path / "index.db",
+        render_root=tmp_path / "render",
+        sources=[],
+    )
+    summaries = [
+        SessionSummary.model_validate({"id": "codex-session:a", "origin": "codex-session", "message_count": 100}),
+        SessionSummary.model_validate(
+            {"id": "claude-code-session:b", "origin": "claude-code-session", "message_count": 100}
+        ),
+    ]
+
+    with patch("polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing", return_value=archive):
+        rows, caveats = _message_temporal_events_for_summaries(config, summaries)
+
+    assert rows == []
+    assert caveats == ()
+    archive.query_session_messages.assert_called_once_with(
+        ["codex-session:a", "claude-code-session:b"],
+        limit=16,
+        sort_direction="asc",
+    )
+
+
+def test_temporal_action_events_use_lightweight_occurrence_query(tmp_path: Path) -> None:
+    from polylogue.cli.read_views.standard import _action_temporal_events_for_summaries
+
+    archive = MagicMock()
+    archive.query_session_action_occurrences.return_value = []
+    archive.__enter__.return_value = archive
+    archive.__exit__.return_value = None
+    config = Config(
+        archive_root=tmp_path,
+        db_path=tmp_path / "index.db",
+        render_root=tmp_path / "render",
+        sources=[],
+    )
     summaries = [
         SessionSummary.model_validate({"id": "codex-session:a", "origin": "codex-session"}),
         SessionSummary.model_validate({"id": "claude-code-session:b", "origin": "claude-code-session"}),
     ]
 
-    assert _session_scope_for_summaries(summaries) == "session:codex-session:a OR session:claude-code-session:b"
+    with patch("polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing", return_value=archive):
+        rows, caveats = _action_temporal_events_for_summaries(config, summaries)
+
+    assert rows == []
+    assert caveats == ()
+    archive.query_session_action_occurrences.assert_called_once_with(
+        ["codex-session:a", "claude-code-session:b"],
+        limit=8,
+        sort_direction="asc",
+    )
 
 
 def test_read_view_temporal_builder_records_phase_timings(tmp_path: Path) -> None:

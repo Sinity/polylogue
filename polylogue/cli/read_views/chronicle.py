@@ -15,6 +15,7 @@ from polylogue.cli.read_views.base import (
     ReadViewOptionValues,
     deliver_content,
 )
+from polylogue.cli.read_views.standard import exact_read_summaries
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
@@ -43,6 +44,10 @@ def build_chronicle_options(values: ReadViewOptionValues) -> ReadViewChronicleOp
 
 async def _selected_summaries(config: Config, request: RootModeRequest) -> list[SessionSummary]:
     from dataclasses import replace
+
+    exact = exact_read_summaries(config, request)
+    if exact is not None:
+        return exact
 
     spec = request.query_spec()
     if spec.limit is None:

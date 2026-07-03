@@ -4989,6 +4989,66 @@ class ArchiveStore:
         ).fetchall()
         return [_archive_action_query_row(row) for row in rows]
 
+    def query_session_action_occurrences(
+        self,
+        session_ids: Sequence[str],
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        sort_direction: Literal["asc", "desc"] = "asc",
+    ) -> list[ArchiveActionQueryRow]:
+        """Return lightweight action occurrence rows for known sessions.
+
+        This intentionally skips follow-up classification. Temporal read views
+        only need occurrence evidence, and the full follow-up relation can be
+        expensive on very large sessions.
+        """
+
+        normalized_session_ids = tuple(
+            dict.fromkeys(session_id.strip() for session_id in session_ids if session_id.strip())
+        )
+        if not normalized_session_ids:
+            return []
+        normalized_limit = max(int(limit), 0)
+        normalized_offset = max(int(offset), 0)
+        order_direction = _query_unit_order_direction(sort_direction)
+        placeholders = ", ".join("?" for _ in normalized_session_ids)
+        rows = self._conn.execute(
+            f"""
+            SELECT
+                u.session_id,
+                u.message_id,
+                s.origin,
+                s.title,
+                u.block_id AS tool_use_block_id,
+                r.block_id AS tool_result_block_id,
+                u.tool_name,
+                u.semantic_type,
+                u.tool_command,
+                u.tool_path,
+                m.occurred_at_ms,
+                r.search_text AS output_text,
+                r.tool_result_is_error AS is_error,
+                r.tool_result_exit_code AS exit_code,
+                NULL AS followup_class,
+                NULL AS followup_message_ref
+            FROM blocks u INDEXED BY idx_blocks_session_position
+            JOIN sessions s ON s.session_id = u.session_id
+            JOIN messages m ON m.message_id = u.message_id
+            LEFT JOIN blocks r INDEXED BY idx_blocks_tool_id
+              ON r.tool_id = u.tool_id
+             AND r.session_id = u.session_id
+             AND r.block_type = 'tool_result'
+            WHERE u.session_id IN ({placeholders})
+              AND u.block_type = 'tool_use'
+            ORDER BY COALESCE(m.occurred_at_ms, s.sort_key_ms, 0) {order_direction},
+                     u.block_id {order_direction}
+            LIMIT ? OFFSET ?
+            """,
+            [*normalized_session_ids, normalized_limit, normalized_offset],
+        ).fetchall()
+        return [_archive_action_query_row(row) for row in rows]
+
     def query_files(
         self,
         predicate: QueryPredicate,
