@@ -1109,10 +1109,12 @@ async def _rebuild_index_from_source(
         )
         materialize_result = None
         if materialize:
+            materialize_stage = "reprocess" if raw_ids is not None else "materialize"
+            materialize_processed_ids = set(parse_result.processed_ids) if raw_ids is not None else set()
             materialize_result = await execute_materialize_stage(
-                stage="materialize",
+                stage=materialize_stage,
                 source_names=None,
-                processed_ids=set(),
+                processed_ids=materialize_processed_ids,
                 backend=backend,
                 progress_callback=progress_callback,
             )

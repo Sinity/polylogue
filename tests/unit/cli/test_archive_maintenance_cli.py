@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -1096,6 +1097,88 @@ def test_rebuild_index_can_replay_only_missing_source_rows(
     assert payload["selected_raw_count"] == 2
     assert payload["only_missing"] is True
     assert captured["raw_ids"] == ["raw-a", "raw-b"]
+
+
+def test_rebuild_index_selected_raw_ids_materialize_processed_sessions_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.cli.commands import maintenance
+
+    captured: dict[str, object] = {}
+
+    class FakeBackend:
+        def __init__(self, *, db_path: Path) -> None:
+            self.db_path = db_path
+
+    class FakeRepository:
+        def __init__(self, *, backend: FakeBackend, archive_root: Path) -> None:
+            self.backend = backend
+            self.archive_root = archive_root
+
+        async def close(self) -> None:
+            captured["closed"] = True
+
+    class FakeParser:
+        def __init__(
+            self,
+            *,
+            repository: FakeRepository,
+            archive_root: Path,
+            config: SimpleNamespace,
+            raw_batch_size: int,
+            ingest_workers: int | None,
+        ) -> None:
+            captured["parser_args"] = {
+                "repository": repository,
+                "archive_root": archive_root,
+                "config": config,
+                "raw_batch_size": raw_batch_size,
+                "ingest_workers": ingest_workers,
+            }
+
+        async def parse_from_raw(self, **kwargs: object) -> SimpleNamespace:
+            captured["parse_kwargs"] = kwargs
+            return SimpleNamespace(
+                counts={"sessions": 2},
+                changed_counts={"sessions": 2},
+                processed_ids={"session-a", "session-b"},
+                parse_failures=0,
+                batch_observations=[object()],
+            )
+
+    async def fake_materialize(**kwargs: object) -> SimpleNamespace:
+        captured["materialize_kwargs"] = kwargs
+        return SimpleNamespace(item_count=2, rebuilt=False, observation={"mode": "incremental"})
+
+    monkeypatch.setattr("polylogue.storage.sqlite.async_sqlite.SQLiteBackend", FakeBackend)
+    monkeypatch.setattr("polylogue.storage.repository.SessionRepository", FakeRepository)
+    monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", FakeParser)
+    monkeypatch.setattr("polylogue.pipeline.run_stages.execute_materialize_stage", fake_materialize)
+
+    result = asyncio.run(
+        maintenance._rebuild_index_from_source(
+            SimpleNamespace(archive_root=tmp_path),
+            raw_ids=["raw-a", "raw-b"],
+            raw_batch_size=7,
+            ingest_workers=1,
+            force_write=False,
+            materialize=True,
+            progress_callback=None,
+        )
+    )
+
+    assert result["materialized"] is True
+    assert result["materialized_session_count"] == 2
+    assert captured["parse_kwargs"] == {
+        "raw_ids": ["raw-a", "raw-b"],
+        "progress_callback": None,
+        "force_write": False,
+        "repair_message_fts": True,
+    }
+    assert captured["materialize_kwargs"]["stage"] == "reprocess"
+    assert captured["materialize_kwargs"]["processed_ids"] == {"session-a", "session-b"}
+    assert captured["closed"] is True
 
 
 def test_rebuild_index_can_replay_explicit_raw_ids(
