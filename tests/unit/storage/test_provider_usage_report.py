@@ -92,6 +92,14 @@ def test_provider_usage_report_keeps_events_cumulative_and_rollups_separate(tmp_
     )
 
     write_parsed_session_to_archive(conn, session)
+    conn.execute(
+        """
+        INSERT INTO session_provider_usage_events (
+            session_id, position, provider_event_type, payload_json
+        ) VALUES (?, ?, 'token_count', '{}')
+        """,
+        ("codex-session:provider-usage-report", 99),
+    )
     report = provider_usage_report_from_connection(conn, archive_root=tmp_path)
 
     assert "not a precise cost report" in " ".join(report.caveats)
@@ -135,9 +143,79 @@ def test_provider_usage_report_keeps_events_cumulative_and_rollups_separate(tmp_
         "reasoning_output_tokens": 0,
         "total_tokens": 80,
     }
+    assert row.model_rollup_grain == "physical_session"
+    assert row.logical_model_rollup_grain == "logical_session_model_high_water"
+    assert row.logical_model_rollup_usage == row.model_rollup_usage
     assert "zero-token provider events" in " ".join(row.caveats)
     assert row.sample_missing_model_sessions == ("codex-session:provider-usage-report",)
     assert row.sample_zero_token_sessions == ("codex-session:provider-usage-report",)
+
+
+def test_provider_usage_report_labels_physical_and_logical_model_rollups(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    conn.execute(
+        """
+        INSERT INTO sessions (
+            origin, native_id, title, session_kind,
+            created_at_ms, updated_at_ms, message_count, word_count, content_hash
+        ) VALUES
+            ('claude-code-session', 'root', 'root', 'standard',
+             1, 1, 1, 1, zeroblob(32)),
+            ('claude-code-session', 'child-a', 'child a', 'standard',
+             2, 2, 1, 1, zeroblob(32)),
+            ('claude-code-session', 'child-b', 'child b', 'standard',
+             3, 3, 1, 1, zeroblob(32))
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO session_profiles (session_id, logical_session_id, materialized_at, source_name)
+        VALUES (?, ?, 'now', 'claude-code-session')
+        """,
+        [
+            ("claude-code-session:root", "claude-code-session:root"),
+            ("claude-code-session:child-a", "claude-code-session:root"),
+            ("claude-code-session:child-b", "claude-code-session:root"),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO session_model_usage (
+            session_id, model_name, input_tokens, output_tokens,
+            cache_read_tokens, cache_write_tokens, message_count
+        ) VALUES (?, 'claude-sonnet', ?, ?, ?, ?, 1)
+        """,
+        [
+            ("claude-code-session:root", 100, 10, 1000, 50),
+            ("claude-code-session:child-a", 140, 12, 1300, 60),
+            ("claude-code-session:child-b", 90, 50, 800, 20),
+        ],
+    )
+
+    report = provider_usage_report_from_connection(conn, archive_root=tmp_path)
+
+    row = report.origins[0]
+    assert row.model_rollup_grain == "physical_session"
+    assert row.model_rollup_usage.to_dict() == {
+        "input_tokens": 330,
+        "output_tokens": 72,
+        "cached_input_tokens": 3100,
+        "cache_write_tokens": 130,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 3632,
+    }
+    assert row.logical_model_rollup_grain == "logical_session_model_high_water"
+    assert row.logical_model_rollup_usage.to_dict() == {
+        "input_tokens": 140,
+        "output_tokens": 50,
+        "cached_input_tokens": 1300,
+        "cache_write_tokens": 60,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 1550,
+    }
+    payload = row.to_dict()
+    assert payload["model_rollup_grain"] == "physical_session"
+    assert payload["logical_model_rollup_grain"] == "logical_session_model_high_water"
 
 
 def test_provider_usage_report_handles_empty_origin_filter(tmp_path: Path) -> None:

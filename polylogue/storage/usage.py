@@ -236,7 +236,10 @@ class OriginUsageReport:
     stale_rollup_session_count: int = 0
     provider_request_usage: UsageCounters = field(default_factory=UsageCounters)
     provider_cumulative_usage: UsageCounters = field(default_factory=UsageCounters)
+    model_rollup_grain: str = "physical_session"
     model_rollup_usage: UsageCounters = field(default_factory=UsageCounters)
+    logical_model_rollup_grain: str = "logical_session_model_high_water"
+    logical_model_rollup_usage: UsageCounters = field(default_factory=UsageCounters)
     sample_missing_model_sessions: tuple[str, ...] = ()
     sample_zero_token_sessions: tuple[str, ...] = ()
     sample_acquired_not_materialized_raw_ids: tuple[str, ...] = ()
@@ -274,7 +277,10 @@ class OriginUsageReport:
             "stale_rollup_session_count": self.stale_rollup_session_count,
             "provider_request_usage": self.provider_request_usage.to_dict(),
             "provider_cumulative_usage": self.provider_cumulative_usage.to_dict(),
+            "model_rollup_grain": self.model_rollup_grain,
             "model_rollup_usage": self.model_rollup_usage.to_dict(),
+            "logical_model_rollup_grain": self.logical_model_rollup_grain,
+            "logical_model_rollup_usage": self.logical_model_rollup_usage.to_dict(),
             "sample_missing_model_sessions": list(self.sample_missing_model_sessions),
             "sample_zero_token_sessions": list(self.sample_zero_token_sessions),
             "sample_acquired_not_materialized_raw_ids": list(self.sample_acquired_not_materialized_raw_ids),
@@ -350,6 +356,7 @@ def provider_usage_report_from_connection(
     model_table_present = _table_exists(conn, "session_model_usage")
     usage_event_table_present = _table_exists(conn, "session_provider_usage_events")
     model_by_origin = _model_rollup_stats(conn, origin) if model_table_present else {}
+    logical_model_by_origin = _logical_model_rollup_stats(conn, origin) if model_table_present else {}
     model_counts_by_origin = _model_row_counts(conn, origin) if model_table_present else {}
     multi_model_by_origin = _multi_model_session_counts(conn, origin) if model_table_present else {}
     raw_by_origin, raw_samples, raw_caveat = _source_raw_stats(
@@ -444,7 +451,10 @@ def provider_usage_report_from_connection(
                 stale_rollup_session_count=stale_rollup_session_count,
                 provider_request_usage=provider_request_usage,
                 provider_cumulative_usage=cumulative_by_origin.get(origin_name, UsageCounters()),
+                model_rollup_grain="physical_session",
                 model_rollup_usage=model_rollup_usage,
+                logical_model_rollup_grain="logical_session_model_high_water",
+                logical_model_rollup_usage=logical_model_by_origin.get(origin_name, UsageCounters()),
                 sample_missing_model_sessions=tuple(missing_samples.get(origin_name, ())),
                 sample_zero_token_sessions=tuple(zero_samples.get(origin_name, ())),
                 sample_acquired_not_materialized_raw_ids=tuple(raw_samples.get(origin_name, ())),
@@ -922,6 +932,59 @@ def _model_rollup_stats(conn: sqlite3.Connection, origin: str | None) -> dict[st
     }
 
 
+def _logical_model_rollup_stats(conn: sqlite3.Connection, origin: str | None) -> dict[str, UsageCounters]:
+    """Return logical-session/model high-water usage by origin.
+
+    ``session_model_usage`` is the physical-session evidence stream.  Logical
+    accounting collapses continuation/fork/replay chains by grouping rows under
+    ``session_profiles.logical_session_id`` and taking the highest observed lane
+    value for each logical-session/model pair.  Summing those high-water rows
+    gives consumers a labeled logical view without erasing the physical rows.
+    """
+
+    rows = conn.execute(
+        f"""
+        WITH logical_model AS (
+            SELECT s.origin AS origin,
+                   COALESCE(p.logical_session_id, u.session_id) AS logical_session_id,
+                   u.model_name AS model_name,
+                   MAX(u.input_tokens) AS input_tokens,
+                   MAX(u.output_tokens) AS output_tokens,
+                   MAX(u.cache_read_tokens) AS cached_input_tokens,
+                   MAX(u.cache_write_tokens) AS cache_write_tokens
+            FROM session_model_usage u
+            JOIN sessions s ON s.session_id = u.session_id
+            LEFT JOIN session_profiles p ON p.session_id = u.session_id
+            {_where_origin(origin, table_alias="s")}
+            GROUP BY s.origin, logical_session_id, u.model_name
+        )
+        SELECT origin,
+               COALESCE(SUM(input_tokens), 0) AS input_tokens,
+               COALESCE(SUM(output_tokens), 0) AS output_tokens,
+               COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens,
+               COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+               0 AS reasoning_output_tokens,
+               COALESCE(SUM(input_tokens + output_tokens + cached_input_tokens + cache_write_tokens), 0) AS total_tokens
+        FROM logical_model
+        GROUP BY origin
+        ORDER BY origin
+        """,
+        _origin_args(origin),
+    ).fetchall()
+    return {
+        str(row["origin"]): UsageCounters.from_row(
+            row,
+            input_key="input_tokens",
+            output_key="output_tokens",
+            cached_input_key="cached_input_tokens",
+            cache_write_key="cache_write_tokens",
+            reasoning_output_key="reasoning_output_tokens",
+            total_key="total_tokens",
+        )
+        for row in rows
+    }
+
+
 def _model_row_counts(conn: sqlite3.Connection, origin: str | None) -> dict[str, dict[str, int]]:
     rows = conn.execute(
         f"""
@@ -968,8 +1031,12 @@ def _multi_model_session_counts(conn: sqlite3.Connection, origin: str | None) ->
 
 def _provider_event_stats(conn: sqlite3.Connection, origin: str | None) -> dict[str, dict[str, object]]:
     columns = _table_columns(conn, "session_provider_usage_events")
+    origin_select = "? AS origin" if origin is not None else "s.origin AS origin"
+    join_sessions = "" if origin is not None else "JOIN sessions s ON s.session_id = e.session_id"
+    where_clause = _event_origin_where(origin)
+    args = _event_origin_args(origin)
     select_parts = [
-        "s.origin AS origin",
+        origin_select,
         "COUNT(*) AS provider_event_count",
         "COUNT(DISTINCT e.session_id) AS provider_event_session_count",
         "COALESCE(SUM(CASE WHEN e.provider_event_type = 'token_count' THEN 1 ELSE 0 END), 0) AS token_count_event_count",
@@ -986,12 +1053,12 @@ def _provider_event_stats(conn: sqlite3.Connection, origin: str | None) -> dict[
         f"""
         SELECT {", ".join(select_parts)}
         FROM session_provider_usage_events e
-        JOIN sessions s ON s.session_id = e.session_id
-        {_where_origin(origin, table_alias="s")}
-        GROUP BY s.origin
-        ORDER BY s.origin
+        {join_sessions}
+        {where_clause}
+        GROUP BY origin
+        ORDER BY origin
         """,
-        _origin_args(origin),
+        args,
     ).fetchall()
     result: dict[str, dict[str, object]] = {}
     for row in rows:
@@ -1019,9 +1086,14 @@ def _provider_cumulative_usage(conn: sqlite3.Connection, origin: str | None) -> 
     columns = _table_columns(conn, "session_provider_usage_events")
     total_cols = _counter_columns(columns, prefix="total")
     total_predicate = " OR ".join([f"COALESCE({expr}, 0) > 0" for expr in total_cols.values()])
+    origin_select = "? AS origin" if origin is not None else "s.origin AS origin"
+    join_sessions = "" if origin is not None else "JOIN sessions s ON s.session_id = e.session_id"
+    origin_filter = _event_origin_predicate(origin)
+    where_parts = [part for part in (origin_filter, f"({total_predicate})") if part]
+    where_clause = "WHERE " + " AND ".join(where_parts)
     rows = conn.execute(
         f"""
-        SELECT s.origin AS origin,
+        SELECT {origin_select},
                e.session_id AS session_id,
                COALESCE(NULLIF(TRIM(e.model_name), ''), '__unknown_model__') AS model_key,
                e.position AS position,
@@ -1032,12 +1104,11 @@ def _provider_cumulative_usage(conn: sqlite3.Connection, origin: str | None) -> 
                {total_cols["reasoning_output_tokens"]} AS reasoning_output_tokens,
                {total_cols["total_tokens"]} AS total_tokens
         FROM session_provider_usage_events e
-        JOIN sessions s ON s.session_id = e.session_id
-        {_where_origin(origin, table_alias="s")}
-          {"AND" if origin is not None else "WHERE"} ({total_predicate})
-        ORDER BY s.origin, e.session_id, e.position
+        {join_sessions}
+        {where_clause}
+        ORDER BY origin, e.session_id, e.position
         """,
-        _origin_args(origin),
+        (*_event_origin_args(origin),),
     ).fetchall()
     # The cumulative total_* is session-global, so dedupe to one latest
     # cumulative per (origin, session) — the highest-position event — rather
@@ -1087,15 +1158,14 @@ def _sample_event_sessions(
         return {}
     rows = conn.execute(
         f"""
-        SELECT DISTINCT s.origin AS origin, e.session_id AS session_id
+        SELECT DISTINCT {"? AS origin" if origin is not None else "s.origin AS origin"}, e.session_id AS session_id
         FROM session_provider_usage_events e
-        JOIN sessions s ON s.session_id = e.session_id
-        {_where_origin(origin, table_alias="s")}
-          {"AND" if origin is not None else "WHERE"} {" AND ".join(predicates)}
-        ORDER BY s.origin, e.session_id
+        {"" if origin is not None else "JOIN sessions s ON s.session_id = e.session_id"}
+        WHERE {" AND ".join([part for part in (_event_origin_predicate(origin), *predicates) if part])}
+        ORDER BY origin, e.session_id
         {"LIMIT ?" if limit is not None else ""}
         """,
-        (*_origin_args(origin), *(() if limit is None else (limit,))),
+        (*_event_origin_args(origin), *(() if limit is None else (limit,))),
     ).fetchall()
     by_origin: dict[str, list[str]] = defaultdict(list)
     for row in rows:
@@ -1179,6 +1249,24 @@ def _where_origin(origin: str | None, *, table_alias: str | None = None) -> str:
 
 def _origin_args(origin: str | None) -> tuple[str, ...]:
     return () if origin is None else (origin,)
+
+
+def _event_origin_where(origin: str | None) -> str:
+    predicate = _event_origin_predicate(origin)
+    return "" if not predicate else f"WHERE {predicate}"
+
+
+def _event_origin_predicate(origin: str | None) -> str:
+    if origin is None:
+        return ""
+    return "e.session_id >= ? AND e.session_id < ?"
+
+
+def _event_origin_args(origin: str | None) -> tuple[str, ...]:
+    if origin is None:
+        return ()
+    prefix = f"{origin}:"
+    return (origin, prefix, f"{origin};")
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:

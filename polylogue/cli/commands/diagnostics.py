@@ -308,7 +308,13 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
         )
         env.ui.console.print(f"  provider request usage:    {_usage_counter_line(row.provider_request_usage)}")
         env.ui.console.print(f"  provider cumulative usage: {_usage_counter_line(row.provider_cumulative_usage)}")
-        env.ui.console.print(f"  model rollup usage:        {_usage_counter_line(row.model_rollup_usage)}")
+        env.ui.console.print(
+            f"  model rollup usage ({row.model_rollup_grain}): {_usage_counter_line(row.model_rollup_usage)}"
+        )
+        env.ui.console.print(
+            f"  model rollup usage ({row.logical_model_rollup_grain}): "
+            f"{_usage_counter_line(row.logical_model_rollup_usage)}"
+        )
         if row.rebuild_guidance:
             env.ui.console.print(f"  rebuild: {row.rebuild_guidance}")
         for caveat in row.caveats:
