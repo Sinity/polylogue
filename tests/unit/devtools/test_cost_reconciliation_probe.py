@@ -48,8 +48,30 @@ def _insert_session(
 
 def _write_codex_state(path: Path, *, tokens: int = 100) -> None:
     with sqlite3.connect(path) as conn:
-        conn.execute("CREATE TABLE threads(id TEXT PRIMARY KEY, tokens_used INTEGER, model TEXT)")
-        conn.execute("INSERT INTO threads(id, tokens_used, model) VALUES ('thread-1', ?, 'gpt-5-codex')", (tokens,))
+        conn.execute(
+            """
+            CREATE TABLE threads(
+                id TEXT PRIMARY KEY,
+                tokens_used INTEGER,
+                model TEXT,
+                source TEXT,
+                cli_version TEXT,
+                archived INTEGER,
+                has_user_event INTEGER,
+                updated_at_ms INTEGER,
+                rollout_path TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO threads(
+                id, tokens_used, model, source, cli_version, archived,
+                has_user_event, updated_at_ms, rollout_path
+            ) VALUES ('thread-1', ?, 'gpt-5-codex', 'cli', '0.test', 0, 0, 1234, '/x/rollout.jsonl')
+            """,
+            (tokens,),
+        )
 
 
 def test_codex_probe_compares_copied_state_to_archive(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -124,6 +146,8 @@ def test_codex_probe_check_fails_outside_tolerance(tmp_path: Path, capsys: pytes
     payload = json.loads(capsys.readouterr().out)
     assert payload["failed_sections"] == ["codex"]
     assert payload["sections"][0]["comparison"]["outside_tolerance"] == 1
+    assert payload["sections"][0]["comparison"]["samples"][0]["external_cli_version"] == "0.test"
+    assert payload["sections"][0]["details"]["outside_external_token_values"] == [{"tokens_used": 100, "count": 1}]
 
 
 def test_claude_probe_compares_model_usage_lanes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

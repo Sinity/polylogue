@@ -9,6 +9,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -167,14 +168,33 @@ def _codex_state_totals(conn: sqlite3.Connection) -> dict[str, dict[str, object]
     missing = required - columns
     if missing:
         raise ValueError(f"Codex state threads table missing columns: {', '.join(sorted(missing))}")
-    optional_model = ", model" if "model" in columns else ""
-    rows = conn.execute(f"SELECT id, tokens_used{optional_model} FROM threads").fetchall()
+    optional_columns = [
+        name
+        for name in (
+            "model",
+            "source",
+            "cli_version",
+            "archived",
+            "has_user_event",
+            "updated_at_ms",
+            "rollout_path",
+        )
+        if name in columns
+    ]
+    select_columns = ", ".join(("id", "tokens_used", *optional_columns))
+    rows = conn.execute(f"SELECT {select_columns} FROM threads").fetchall()
     totals: dict[str, dict[str, object]] = {}
     for row in rows:
         thread_id = str(row["id"])
         totals[thread_id] = {
             "tokens_used": int(row["tokens_used"] or 0),
             "model": row["model"] if "model" in columns else None,
+            "source": row["source"] if "source" in columns else None,
+            "cli_version": row["cli_version"] if "cli_version" in columns else None,
+            "archived": row["archived"] if "archived" in columns else None,
+            "has_user_event": row["has_user_event"] if "has_user_event" in columns else None,
+            "updated_at_ms": row["updated_at_ms"] if "updated_at_ms" in columns else None,
+            "rollout_path": row["rollout_path"] if "rollout_path" in columns else None,
         }
     return totals
 
@@ -232,6 +252,11 @@ def _probe_codex(
                     {
                         "session_id": arch["session_id"],
                         "model": ext.get("model"),
+                        "external_source": ext.get("source"),
+                        "external_cli_version": ext.get("cli_version"),
+                        "external_archived": ext.get("archived"),
+                        "external_has_user_event": ext.get("has_user_event"),
+                        "external_updated_at_ms": ext.get("updated_at_ms"),
                         "input_tokens": arch["input_tokens"],
                         "cached_input_tokens": arch["cached_input_tokens"],
                     },
@@ -249,6 +274,13 @@ def _probe_codex(
         outside_tolerance=comparison.outside_tolerance,
         samples=comparison.samples,
     )
+    low = 1.0 - tolerance
+    high = 1.0 + tolerance
+    outside_external_tokens = Counter(
+        external_tokens
+        for _, archive_tokens, external_tokens, _ in pairs
+        if external_tokens <= 0 or not (low <= archive_tokens / external_tokens <= high)
+    )
     status: ProbeStatus = "pass" if comparison.outside_tolerance == 0 else "fail"
     return ProbeSection(
         "codex",
@@ -261,6 +293,14 @@ def _probe_codex(
             "archive_threads": len(archive),
             "external_threads": len(external),
             "tolerance": tolerance,
+            "outside_external_token_values": [
+                {"tokens_used": tokens, "count": count} for tokens, count in outside_external_tokens.most_common(10)
+            ],
+            "repeated_outside_external_token_values": [
+                {"tokens_used": tokens, "count": count}
+                for tokens, count in outside_external_tokens.most_common(10)
+                if count > 1
+            ],
             "lane_contract": (
                 "archive session_model_usage disjoint lanes and Codex threads.tokens_used both include cached input; "
                 "raw token_count events remain provider-cumulative evidence and are not the reconciliation grain"
