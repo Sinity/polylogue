@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 import pytest
 from pydantic import ValidationError
 
@@ -24,6 +26,27 @@ from polylogue.insights.transforms import (
     render_session_report,
 )
 from polylogue.types import SessionId
+
+
+class _ProjectedDigestEvent:
+    kind: Literal["tool_finished"]
+    summary: str
+    tool_name: str | None
+    tool_id: str | None
+    command: str | None
+    handler_kind: str | None
+    status: str | None
+    raw_refs: tuple[TransformRawRef, ...]
+
+    def __init__(self, *, raw_refs: tuple[TransformRawRef, ...]) -> None:
+        self.kind = "tool_finished"
+        self.summary = "synthetic digest tool completion"
+        self.tool_name = "Bash"
+        self.tool_id = "digest-tool"
+        self.command = "pytest"
+        self.handler_kind = "test"
+        self.status = "ok"
+        self.raw_refs = raw_refs
 
 
 def _session() -> Session:
@@ -171,6 +194,121 @@ def test_run_projection_harness_uses_origin_predicate(origin: str, expected_harn
     [run] = projection.runs
     assert run.provider_origin == origin
     assert run.harness == expected_harness
+
+
+def test_run_projection_scopes_local_ref_builders() -> None:
+    """List-local ids must not become global row refs without a scope."""
+
+    parent_ref = TransformRawRef(session_id="codex-session:parent")
+    report_0_ref = TransformRawRef(session_id="codex-session:parent", message_id="m1", block_index=0, ref_kind="block")
+    report_1_ref = TransformRawRef(session_id="codex-session:parent", message_id="m2", block_index=0, ref_kind="block")
+    tool_ref = TransformRawRef(session_id="codex-session:parent", message_id="m3", block_index=0, ref_kind="block")
+    digest_event_ref = TransformRawRef(
+        session_id="codex-session:parent", message_id="m4", block_index=0, ref_kind="block"
+    )
+
+    projection = build_run_projection(
+        session_id="codex-session:parent",
+        source_origin="codex-session",
+        title="parent",
+        git_branch=None,
+        working_directories=(),
+        session_raw_refs=(parent_ref,),
+        tool_summaries=(
+            ToolSummary(
+                tool_name="Bash",
+                tool_id="tool-summary",
+                command="pytest",
+                handler_kind="test",
+                status="ok",
+                raw_refs=(tool_ref,),
+            ),
+        ),
+        subagent_reports=(
+            SubagentReport(
+                subagent_type="Explore",
+                tool_id="shared-tool",
+                task_id="task-a",
+                child_session_id="codex-session:child-a",
+                prompt="first",
+                final_report_preview="first done",
+                raw_refs=(report_0_ref,),
+            ),
+            SubagentReport(
+                subagent_type="Explore",
+                tool_id="shared-tool",
+                task_id="task-b",
+                child_session_id="codex-session:child-b",
+                prompt="second",
+                final_report_preview="second done",
+                raw_refs=(report_1_ref,),
+            ),
+        ),
+        session_digest_events=(_ProjectedDigestEvent(raw_refs=(digest_event_ref,)),),
+    )
+    projection_again = build_run_projection(
+        session_id="codex-session:parent",
+        source_origin="codex-session",
+        title="parent",
+        git_branch=None,
+        working_directories=(),
+        session_raw_refs=(parent_ref,),
+        tool_summaries=(
+            ToolSummary(
+                tool_name="Bash",
+                tool_id="tool-summary",
+                command="pytest",
+                handler_kind="test",
+                status="ok",
+                raw_refs=(tool_ref,),
+            ),
+        ),
+        subagent_reports=(
+            SubagentReport(
+                subagent_type="Explore",
+                tool_id="shared-tool",
+                task_id="task-a",
+                child_session_id="codex-session:child-a",
+                prompt="first",
+                final_report_preview="first done",
+                raw_refs=(report_0_ref,),
+            ),
+            SubagentReport(
+                subagent_type="Explore",
+                tool_id="shared-tool",
+                task_id="task-b",
+                child_session_id="codex-session:child-b",
+                prompt="second",
+                final_report_preview="second done",
+                raw_refs=(report_1_ref,),
+            ),
+        ),
+        session_digest_events=(_ProjectedDigestEvent(raw_refs=(digest_event_ref,)),),
+    )
+
+    run_refs = [run.run_ref.format() for run in projection.runs]
+    assert run_refs == [
+        "run:codex-session:parent",
+        "run:codex-session:parent:subagent:0:shared-tool",
+        "run:codex-session:parent:subagent:1:shared-tool",
+    ]
+    assert run_refs == [run.run_ref.format() for run in projection_again.runs]
+
+    report_refs = {
+        ref.format()
+        for snapshot in projection.context_snapshots
+        for ref in snapshot.segment_refs
+        if ref.kind == "subagent-report"
+    }
+    assert report_refs == {
+        "subagent-report:codex-session:parent:0:shared-tool",
+        "subagent-report:codex-session:parent:1:shared-tool",
+    }
+
+    event_refs = [event.event_ref.format() for event in projection.events]
+    assert len(event_refs) == len(set(event_refs))
+    assert "observed-event:codex-session:parent:tool_summary:tool_finished:0" in event_refs
+    assert "observed-event:codex-session:parent:session_digest:tool_finished:0" in event_refs
 
 
 def _sparse_session() -> Session:
@@ -524,7 +662,7 @@ def test_successor_context_exposes_storage_free_continuation_bundle() -> None:
         entry for entry in bundle.entries if entry.section == "subagents" and entry.label == "Explore"
     )
     assert subagent_entry.object_refs == (
-        ObjectRef(kind="subagent-report", object_id="codex-session:demo:tool-2"),
+        ObjectRef(kind="subagent-report", object_id="codex-session:demo:0:tool-2"),
         ObjectRef(kind="agent", object_id="codex/Explore"),
     )
     for entry in bundle.entries:
@@ -538,14 +676,14 @@ def test_successor_context_exposes_storage_free_continuation_bundle() -> None:
         "refs: run:codex-session:demo, agent:codex/main, context-snapshot:codex-session:demo:session_start" in rendered
     )
     assert "details: role=main; status=completed; harness=codex; provider_origin=codex-session" in rendered
-    assert "refs: run:codex-session:child-42, run:codex-session:demo, agent:codex/Explore" in rendered
+    assert "refs: run:codex-session:demo:subagent:0:tool-2, run:codex-session:demo, agent:codex/Explore" in rendered
     assert "native_parent_session_id=codex-session:demo" in rendered
     assert "- [raw-evidence] context_snapshot: subagent_start" in rendered
     assert "details: boundary=subagent_start; inheritance_mode=summary" in rendered
     assert "- [raw-evidence] test_passed: devtools verify --quick passed (exit 0)" in rendered
     assert "details: delivery_state=observed" in rendered
     assert "- [caveat] blocker: none" in rendered
-    assert "refs: subagent-report:codex-session:demo:tool-2, agent:codex/Explore" in rendered
+    assert "refs: subagent-report:codex-session:demo:0:tool-2, agent:codex/Explore" in rendered
     assert "refs: tool_id=tool-2, task_id=task-42, child_session_id=codex-session:child-42" in rendered
     assert "- [raw-evidence] Bash [test] (ok) — devtools verify --quick" in rendered
     assert "refs: tool-call:codex-session:demo:tool-read, file:polylogue/insights/transforms.py" in rendered

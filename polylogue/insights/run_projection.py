@@ -256,7 +256,7 @@ def build_run_projection(
     runs: list[ProjectedRun] = [main_run]
     observed: list[ObservedEvent] = [
         ObservedEvent(
-            event_ref=_event_ref(session_id, "session_started", 0),
+            event_ref=_event_ref(session_id, "session", "session_started", 0),
             kind="session_started",
             run_ref=main_run_ref,
             summary=f"Session {session_id} started",
@@ -269,7 +269,7 @@ def build_run_projection(
         evidence_refs = _to_evidence_refs(tool.raw_refs)
         observed.append(
             ObservedEvent(
-                event_ref=_event_ref(session_id, "tool_finished", index),
+                event_ref=_event_ref(session_id, "tool_summary", "tool_finished", index),
                 kind="tool_finished",
                 run_ref=main_run_ref,
                 summary=_tool_event_summary(tool),
@@ -290,7 +290,7 @@ def build_run_projection(
         evidence_refs = _to_evidence_refs(event.raw_refs)
         observed.append(
             ObservedEvent(
-                event_ref=_event_ref(session_id, event.kind, index),
+                event_ref=_event_ref(session_id, "session_digest", event.kind, index),
                 kind=event.kind,
                 run_ref=main_run_ref,
                 summary=event.summary,
@@ -345,7 +345,7 @@ def build_run_projection(
         )
         observed.append(
             ObservedEvent(
-                event_ref=_event_ref(session_id, "subagent_started", index),
+                event_ref=_event_ref(session_id, "subagent", "subagent_started", index),
                 kind="subagent_started",
                 run_ref=main_run_ref,
                 summary=f"{report.subagent_type} subagent started",
@@ -357,7 +357,7 @@ def build_run_projection(
         if report.final_report_preview:
             observed.append(
                 ObservedEvent(
-                    event_ref=_event_ref(session_id, "subagent_finished", index),
+                    event_ref=_event_ref(session_id, "subagent", "subagent_finished", index),
                     kind="subagent_finished",
                     run_ref=child_run_ref,
                     summary=report.final_report_preview,
@@ -384,7 +384,7 @@ def _run_ref(run_id: str) -> ObjectRef:
 
 
 def _subagent_run_ref(session_id: str, child_id: str, report: _SubagentReportLike, index: int) -> ObjectRef:
-    stable_id = report.tool_id or report.task_id or child_id or str(index)
+    stable_id = _subagent_identity_segment(report, child_id, index)
     return ObjectRef(kind="run", object_id=f"{session_id}:subagent:{stable_id}")
 
 
@@ -393,7 +393,7 @@ def _agent_ref(harness: RunHarness, role_or_type: str) -> ObjectRef:
 
 
 def _subagent_report_ref(session_id: str, report: _SubagentReportLike, index: int) -> ObjectRef:
-    stable_id = report.tool_id or report.task_id or str(index)
+    stable_id = _subagent_identity_segment(report, report.child_session_id or report.resolved_child_session_id, index)
     return ObjectRef(kind="subagent-report", object_id=f"{session_id}:{stable_id}")
 
 
@@ -401,8 +401,13 @@ def _context_snapshot_ref(run_id: str, boundary: str) -> ObjectRef:
     return ObjectRef(kind="context-snapshot", object_id=f"{run_id}:{boundary}")
 
 
-def _event_ref(session_id: str, kind: str, index: int) -> ObjectRef:
-    return ObjectRef(kind="observed-event", object_id=f"{session_id}:{kind}:{index}")
+def _event_ref(session_id: str, source: str, kind: str, index: int) -> ObjectRef:
+    return ObjectRef(kind="observed-event", object_id=f"{session_id}:{source}:{kind}:{index}")
+
+
+def _subagent_identity_segment(report: _SubagentReportLike, child_id: str | None, index: int) -> str:
+    stable_id = report.tool_id or report.task_id or child_id or "unknown"
+    return f"{index}:{stable_id}"
 
 
 def _harness_for_origin(source_origin: str) -> RunHarness:

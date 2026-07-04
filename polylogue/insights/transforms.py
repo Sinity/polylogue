@@ -1119,7 +1119,7 @@ def _successor_context_entries(
             text=event.summary,
             evidence_refs=_to_evidence_refs(event.raw_refs),
         )
-    for report in subagent_reports:
+    for index, report in enumerate(subagent_reports):
         metadata = _subagent_report_metadata(report)
         if report.final_report_preview:
             metadata["report"] = report.final_report_preview
@@ -1129,7 +1129,7 @@ def _successor_context_entries(
             text=report.prompt,
             metadata=metadata,
             object_refs=(
-                _subagent_report_object_ref(bundle_raw_refs[0].session_id, report),
+                _subagent_report_object_ref(bundle_raw_refs[0].session_id, report, index),
                 ObjectRef(kind="agent", object_id=f"{bundle_harness}/{report.subagent_type or 'unknown'}"),
             ),
             evidence_refs=_to_evidence_refs(report.raw_refs),
@@ -1254,8 +1254,9 @@ def _unique_object_refs(refs: Iterable[ObjectRef | None]) -> tuple[ObjectRef, ..
     return tuple(unique)
 
 
-def _subagent_report_object_ref(session_id: str, report: SubagentReport) -> ObjectRef:
+def _subagent_report_object_ref(session_id: str, report: SubagentReport, index: int) -> ObjectRef:
     stable_id = report.tool_id or report.task_id or report.child_session_id or "unknown"
+    stable_id = f"{index}:{stable_id}"
     return ObjectRef(kind="subagent-report", object_id=f"{session_id}:{stable_id}")
 
 
