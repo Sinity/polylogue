@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from pathlib import Path
 
+import aiosqlite
 import pytest
 
 import polylogue.storage.insights.session.rebuild as rebuild_mod
@@ -792,15 +794,25 @@ def test_large_session_rebuild_uses_bounded_degraded_profile(
         conn.commit()
 
         monkeypatch.setattr(rebuild_mod, "_SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD", 10)
+
+        def fail_full_load(_conn: sqlite3.Connection, _session_ids: object) -> object:
+            raise AssertionError("large-session degraded sync path must not hydrate the full session")
+
+        monkeypatch.setattr(rebuild_mod, "load_sync_batch", fail_full_load)
+        started_at = time.perf_counter()
         counts = rebuild_session_insights_sync(conn, session_ids=[session_id])
+        elapsed_s = time.perf_counter() - started_at
         profile = conn.execute(
             "SELECT * FROM session_profiles WHERE session_id = ?",
             (session_id,),
         ).fetchone()
-        work_events = conn.execute(
+        assert profile is not None
+        work_events_row = conn.execute(
             "SELECT COUNT(*) FROM session_work_events WHERE session_id = ?",
             (session_id,),
-        ).fetchone()[0]
+        ).fetchone()
+        assert work_events_row is not None
+        work_events = work_events_row[0]
         markers = {
             str(row["insight_type"]): int(row["materializer_version"])
             for row in conn.execute(
@@ -810,6 +822,7 @@ def test_large_session_rebuild_uses_bounded_degraded_profile(
         }
 
     assert counts.profiles == 1
+    assert elapsed_s < 2.0
     assert counts.work_events == 0
     assert counts.phases == 0
     assert profile["workflow_shape"] == "bounded_large_session"
@@ -824,6 +837,74 @@ def test_large_session_rebuild_uses_bounded_degraded_profile(
     assert markers["work_events"] == SESSION_INSIGHT_MATERIALIZER_VERSION
     assert markers["phases"] == SESSION_INSIGHT_MATERIALIZER_VERSION
     assert markers["thread"] == SESSION_INSIGHT_MATERIALIZER_VERSION
+
+
+@pytest.mark.asyncio
+async def test_async_large_session_rebuild_uses_bounded_degraded_profile(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "large-session-degraded-async.db"
+    native = "conv-large-bounded-async"
+    session_id = _sid(native, "codex-session")
+    with open_connection(db_path) as conn:
+        store_records(
+            session=make_session(native, source_name="codex", title="Large async bounded profile"),
+            messages=[
+                make_message(f"{native}:msg-1", native, text="first prompt"),
+                make_message(f"{native}:msg-2", native, role="assistant", text="answer"),
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        conn.execute(
+            """
+            UPDATE sessions
+            SET message_count = ?, word_count = ?, tool_use_count = ?, thinking_count = ?
+            WHERE session_id = ?
+            """,
+            (50, 1234, 7, 3, session_id),
+        )
+        conn.commit()
+
+    monkeypatch.setattr(rebuild_mod, "_SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD", 10)
+
+    async def fail_full_load(_conn: object, _session_ids: object) -> object:
+        raise AssertionError("large-session degraded async path must not hydrate the full session")
+
+    monkeypatch.setattr(rebuild_mod, "load_async_batch", fail_full_load)
+    async with aiosqlite.connect(db_path) as async_conn:
+        async_conn.row_factory = sqlite3.Row
+        started_at = time.perf_counter()
+        counts = await rebuild_mod.rebuild_session_insights_async(async_conn, session_ids=[session_id])
+        elapsed_s = time.perf_counter() - started_at
+        profile = await (
+            await async_conn.execute(
+                "SELECT * FROM session_profiles WHERE session_id = ?",
+                (session_id,),
+            )
+        ).fetchone()
+        assert profile is not None
+        work_events_row = await (
+            await async_conn.execute(
+                "SELECT COUNT(*) FROM session_work_events WHERE session_id = ?",
+                (session_id,),
+            )
+        ).fetchone()
+        assert work_events_row is not None
+        work_events = work_events_row[0]
+
+    assert counts.profiles == 1
+    assert elapsed_s < 2.0
+    assert counts.work_events == 0
+    assert counts.phases == 0
+    assert profile["workflow_shape"] == "bounded_large_session"
+    assert profile["message_count"] == 50
+    assert profile["word_count"] == 1234
+    assert profile["tool_use_count"] == 7
+    assert "large_session_bounded" in profile["inference_payload_json"]
+    assert "large_session_bounded" in profile["enrichment_payload_json"]
+    assert work_events == 0
 
 
 def test_full_rebuild_commits_incrementally_and_prunes_orphans(tmp_path: Path) -> None:

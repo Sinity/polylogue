@@ -15,9 +15,6 @@ import aiosqlite
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_models import Session
 from polylogue.archive.session.session_profile import SessionProfile, build_session_analysis, build_session_profile
-
-# Re-export canonical chunked from polylogue.core.common.
-from polylogue.core.common import chunked
 from polylogue.core.enums import SessionKind
 from polylogue.core.memory import release_process_memory
 from polylogue.insights.archive_models import (
@@ -209,6 +206,34 @@ WHERE session_id IN ({placeholders})
   AND block_type != 'text'
 ORDER BY session_id, message_id, position
 """
+_SESSION_INSIGHT_COUNT_SQL = """
+SELECT
+    session_id,
+    origin,
+    title,
+    parent_session_id,
+    message_count,
+    word_count,
+    tool_use_count,
+    thinking_count,
+    paste_count,
+    user_message_count,
+    assistant_message_count,
+    system_message_count,
+    tool_message_count,
+    user_word_count,
+    assistant_word_count,
+    reported_duration_ms,
+    created_at_ms,
+    updated_at_ms,
+    CAST(sort_key_ms AS REAL) / 1000.0 AS sort_key,
+    CASE WHEN created_at_ms IS NULL THEN NULL ELSE strftime('%Y-%m-%dT%H:%M:%f+00:00', created_at_ms / 1000.0, 'unixepoch') END AS created_at,
+    CASE WHEN updated_at_ms IS NULL THEN NULL ELSE strftime('%Y-%m-%dT%H:%M:%f+00:00', updated_at_ms / 1000.0, 'unixepoch') END AS updated_at,
+    git_branch,
+    git_repository_url
+FROM sessions
+WHERE session_id = ?
+"""
 
 
 @dataclass(slots=True)
@@ -389,6 +414,36 @@ def _heavy_session_ids_sync(
             _SESSION_INSIGHT_DEGRADED_WORD_THRESHOLD,
             _SESSION_INSIGHT_DEGRADED_TOOL_THRESHOLD,
         ),
+    ).fetchall()
+    return {str(row["session_id"]) for row in rows}
+
+
+async def _heavy_session_ids_async(
+    conn: aiosqlite.Connection,
+    session_ids: Sequence[str],
+) -> set[str]:
+    if not session_ids:
+        return set()
+    placeholders = ", ".join("?" for _ in session_ids)
+    rows = await (
+        await conn.execute(
+            f"""
+            SELECT session_id
+            FROM sessions
+            WHERE session_id IN ({placeholders})
+              AND (
+                message_count >= ?
+                OR word_count >= ?
+                OR tool_use_count >= ?
+              )
+            """,
+            (
+                *session_ids,
+                _SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD,
+                _SESSION_INSIGHT_DEGRADED_WORD_THRESHOLD,
+                _SESSION_INSIGHT_DEGRADED_TOOL_THRESHOLD,
+            ),
+        )
     ).fetchall()
     return {str(row["session_id"]) for row in rows}
 
@@ -714,37 +769,7 @@ def _parse_archive_datetime(value: str | None) -> datetime | None:
 
 
 def _session_count_row(conn: sqlite3.Connection, session_id: str) -> sqlite3.Row:
-    row = conn.execute(
-        """
-        SELECT
-            session_id,
-            origin,
-            title,
-            parent_session_id,
-            message_count,
-            word_count,
-            tool_use_count,
-            thinking_count,
-            paste_count,
-            user_message_count,
-            assistant_message_count,
-            system_message_count,
-            tool_message_count,
-            user_word_count,
-            assistant_word_count,
-            reported_duration_ms,
-            created_at_ms,
-            updated_at_ms,
-            CAST(sort_key_ms AS REAL) / 1000.0 AS sort_key,
-            CASE WHEN created_at_ms IS NULL THEN NULL ELSE strftime('%Y-%m-%dT%H:%M:%f+00:00', created_at_ms / 1000.0, 'unixepoch') END AS created_at,
-            CASE WHEN updated_at_ms IS NULL THEN NULL ELSE strftime('%Y-%m-%dT%H:%M:%f+00:00', updated_at_ms / 1000.0, 'unixepoch') END AS updated_at,
-            git_branch,
-            git_repository_url
-        FROM sessions
-        WHERE session_id = ?
-        """,
-        (session_id,),
-    ).fetchone()
+    row = conn.execute(_SESSION_INSIGHT_COUNT_SQL, (session_id,)).fetchone()
     if row is None:
         raise KeyError(f"session not found: {session_id}")
     if not isinstance(row, sqlite3.Row):
@@ -752,14 +777,22 @@ def _session_count_row(conn: sqlite3.Connection, session_id: str) -> sqlite3.Row
     return row
 
 
-def _large_session_profile_record(
-    conn: sqlite3.Connection,
+async def _session_count_row_async(conn: aiosqlite.Connection, session_id: str) -> sqlite3.Row:
+    row = await (await conn.execute(_SESSION_INSIGHT_COUNT_SQL, (session_id,))).fetchone()
+    if row is None:
+        raise KeyError(f"session not found: {session_id}")
+    if not isinstance(row, sqlite3.Row):
+        raise TypeError("large-session materialization requires sqlite3.Row rows")
+    return row
+
+
+def _large_session_profile_record_from_row(
+    row: sqlite3.Row,
     session_id: str,
     *,
     logical_session_id: str | None,
     materialized_at: str,
 ) -> SessionProfileRecord:
-    row = _session_count_row(conn, session_id)
     created_at = _parse_archive_datetime(row["created_at"])
     updated_at = _parse_archive_datetime(row["updated_at"])
     canonical_at = created_at or updated_at
@@ -812,6 +845,7 @@ def _large_session_profile_record(
         timing_provenance="bounded_session_counters",
         cost_provenance="unknown",
     )
+
     inference = SessionInferencePayload(
         inferred_topic=title or None,
         inferred_topic_source="title_bounded_fallback" if title else "absent",
@@ -890,6 +924,22 @@ def _large_session_profile_record(
     )
 
 
+def _large_session_profile_record(
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    logical_session_id: str | None,
+    materialized_at: str,
+) -> SessionProfileRecord:
+    row = _session_count_row(conn, session_id)
+    return _large_session_profile_record_from_row(
+        row,
+        session_id,
+        logical_session_id=logical_session_id,
+        materialized_at=materialized_at,
+    )
+
+
 def _large_session_latency_profile_record(
     profile: SessionProfileRecord,
     *,
@@ -924,6 +974,32 @@ def build_large_session_insight_record_bundle_sync(
     built_at = materialized_at or now_iso()
     profile = _large_session_profile_record(
         conn,
+        session_id,
+        logical_session_id=logical_session_id,
+        materialized_at=built_at,
+    )
+    return SessionInsightRecordBundle(
+        profile_record=profile,
+        latency_profile_record=_large_session_latency_profile_record(profile, materialized_at=built_at),
+        work_event_records=[],
+        phase_records=[],
+        run_records=[],
+        observed_event_records=[],
+        context_snapshot_records=[],
+    )
+
+
+async def build_large_session_insight_record_bundle_async(
+    conn: aiosqlite.Connection,
+    session_id: str,
+    *,
+    logical_session_id: str | None = None,
+    materialized_at: str | None = None,
+) -> SessionInsightRecordBundle:
+    built_at = materialized_at or now_iso()
+    row = await _session_count_row_async(conn, session_id)
+    profile = _large_session_profile_record_from_row(
+        row,
         session_id,
         logical_session_id=logical_session_id,
         materialized_at=built_at,
@@ -1557,137 +1633,107 @@ async def rebuild_session_insights_async(
     profile_count = 0
     work_event_count = 0
     phase_count = 0
+
+    async def write_record_bundles(record_bundles: Sequence[SessionInsightRecordBundle]) -> None:
+        for bundle in record_bundles:
+            await replace_session_profile(conn, bundle.profile_record, transaction_depth)
+            await replace_session_latency_profile(conn, bundle.latency_profile_record, transaction_depth)
+            await replace_session_work_events(
+                conn,
+                bundle.session_id,
+                bundle.work_event_records,
+                transaction_depth,
+            )
+            await replace_session_phases(
+                conn,
+                bundle.session_id,
+                bundle.phase_records,
+                transaction_depth,
+            )
+            await replace_session_runs(
+                conn,
+                bundle.session_id,
+                bundle.run_records,
+                transaction_depth,
+            )
+            await replace_session_observed_events(
+                conn,
+                bundle.session_id,
+                bundle.observed_event_records,
+                transaction_depth,
+            )
+            await replace_session_context_snapshots(
+                conn,
+                bundle.session_id,
+                bundle.context_snapshot_records,
+                transaction_depth,
+            )
+
     if session_ids is None:
         all_session_ids = [
             str(row["session_id"]) for row in await (await conn.execute(_ALL_SESSION_IDS_SQL)).fetchall()
         ]
-        message_counts = await _load_message_counts_async(conn, all_session_ids)
-        full_chunks = [
-            full_chunk.session_ids
-            for full_chunk in _chunk_session_ids_by_message_budget_sync(
-                all_session_ids,
-                message_counts=message_counts,
-                page_size=page_size,
-                message_budget=_SESSION_INSIGHT_REBUILD_MESSAGE_BUDGET,
-            )
-        ]
-        for chunk in full_chunks:
-            batch = await load_async_batch(conn, chunk)
-            root_ids_by_session = await thread_root_ids_async(conn, chunk)
-            record_bundles = build_session_insight_record_bundles(
-                hydrate_sessions(batch),
-                compaction_counts_by_session=batch.compaction_counts_by_session,
-                logical_session_ids_by_session=root_ids_by_session,
-            )
-            chunk_profiles, chunk_work_events, chunk_phases = _count_record_bundles(record_bundles)
-            for bundle in record_bundles:
-                await replace_session_profile(conn, bundle.profile_record, transaction_depth)
-                await replace_session_latency_profile(conn, bundle.latency_profile_record, transaction_depth)
-                await replace_session_work_events(
-                    conn,
-                    bundle.session_id,
-                    bundle.work_event_records,
-                    transaction_depth,
-                )
-                await replace_session_phases(
-                    conn,
-                    bundle.session_id,
-                    bundle.phase_records,
-                    transaction_depth,
-                )
-                await replace_session_runs(
-                    conn,
-                    bundle.session_id,
-                    bundle.run_records,
-                    transaction_depth,
-                )
-                await replace_session_observed_events(
-                    conn,
-                    bundle.session_id,
-                    bundle.observed_event_records,
-                    transaction_depth,
-                )
-                await replace_session_context_snapshots(
-                    conn,
-                    bundle.session_id,
-                    bundle.context_snapshot_records,
-                    transaction_depth,
-                )
-            profile_count += chunk_profiles
-            work_event_count += chunk_work_events
-            phase_count += chunk_phases
-            if progress_callback is not None and chunk_profiles:
-                progress_callback(
-                    chunk_profiles,
-                    desc=_materialize_progress_desc(
-                        profile_count=profile_count,
-                        progress_total=progress_total,
-                    ),
-                )
-            if len(batch.messages) >= _SESSION_INSIGHT_RELEASE_MESSAGE_THRESHOLD:
-                del batch, record_bundles
-                release_process_memory()
-            if commit_per_chunk:
-                await conn.commit()
+        target_session_ids = tuple(all_session_ids)
     else:
-        for chunk_ids in chunked(list(session_ids), size=page_size):
-            batch = await load_async_batch(conn, chunk_ids)
-            root_ids_by_session = await thread_root_ids_async(conn, chunk_ids)
-            record_bundles = build_session_insight_record_bundles(
-                hydrate_sessions(batch),
-                compaction_counts_by_session=batch.compaction_counts_by_session,
-                logical_session_ids_by_session=root_ids_by_session,
+        target_session_ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids))
+
+    message_counts = await _load_message_counts_async(conn, target_session_ids)
+    session_chunks = _chunk_session_ids_by_message_budget_sync(
+        target_session_ids,
+        message_counts=message_counts,
+        page_size=page_size,
+        message_budget=_SESSION_INSIGHT_REBUILD_MESSAGE_BUDGET,
+    )
+    heavy_session_ids = await _heavy_session_ids_async(conn, target_session_ids)
+
+    for chunk_info in session_chunks:
+        chunk = chunk_info.session_ids
+        chunk_degraded_ids = tuple(session_id for session_id in chunk if session_id in heavy_session_ids)
+        chunk_full_ids = tuple(session_id for session_id in chunk if session_id not in heavy_session_ids)
+        if chunk_info.max_estimated_session_messages >= _SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD:
+            chunk_degraded_ids = chunk
+            chunk_full_ids = ()
+
+        record_bundles: list[SessionInsightRecordBundle] = []
+        batch: SessionInsightArchiveBatch | None = None
+        if chunk_degraded_ids:
+            for session_id in chunk_degraded_ids:
+                record_bundles.append(
+                    await build_large_session_insight_record_bundle_async(
+                        conn,
+                        session_id,
+                        logical_session_id=session_id,
+                    )
+                )
+        if chunk_full_ids:
+            batch = await load_async_batch(conn, chunk_full_ids)
+            root_ids_by_session = await thread_root_ids_async(conn, chunk_full_ids)
+            record_bundles.extend(
+                build_session_insight_record_bundles(
+                    hydrate_sessions(batch),
+                    compaction_counts_by_session=batch.compaction_counts_by_session,
+                    logical_session_ids_by_session=root_ids_by_session,
+                )
             )
-            chunk_profiles, chunk_work_events, chunk_phases = _count_record_bundles(record_bundles)
-            for bundle in record_bundles:
-                await replace_session_profile(conn, bundle.profile_record, transaction_depth)
-                await replace_session_latency_profile(conn, bundle.latency_profile_record, transaction_depth)
-                await replace_session_work_events(
-                    conn,
-                    bundle.session_id,
-                    bundle.work_event_records,
-                    transaction_depth,
-                )
-                await replace_session_phases(
-                    conn,
-                    bundle.session_id,
-                    bundle.phase_records,
-                    transaction_depth,
-                )
-                await replace_session_runs(
-                    conn,
-                    bundle.session_id,
-                    bundle.run_records,
-                    transaction_depth,
-                )
-                await replace_session_observed_events(
-                    conn,
-                    bundle.session_id,
-                    bundle.observed_event_records,
-                    transaction_depth,
-                )
-                await replace_session_context_snapshots(
-                    conn,
-                    bundle.session_id,
-                    bundle.context_snapshot_records,
-                    transaction_depth,
-                )
-            profile_count += chunk_profiles
-            work_event_count += chunk_work_events
-            phase_count += chunk_phases
-            if progress_callback is not None and chunk_profiles:
-                progress_callback(
-                    chunk_profiles,
-                    desc=_materialize_progress_desc(
-                        profile_count=profile_count,
-                        progress_total=progress_total,
-                    ),
-                )
-            if len(batch.messages) >= _SESSION_INSIGHT_RELEASE_MESSAGE_THRESHOLD:
-                del batch, record_bundles
-                release_process_memory()
-            if commit_per_chunk:
-                await conn.commit()
+
+        chunk_profiles, chunk_work_events, chunk_phases = _count_record_bundles(record_bundles)
+        await write_record_bundles(record_bundles)
+        profile_count += chunk_profiles
+        work_event_count += chunk_work_events
+        phase_count += chunk_phases
+        if progress_callback is not None and chunk_profiles:
+            progress_callback(
+                chunk_profiles,
+                desc=_materialize_progress_desc(
+                    profile_count=profile_count,
+                    progress_total=progress_total,
+                ),
+            )
+        if batch is not None and len(batch.messages) >= _SESSION_INSIGHT_RELEASE_MESSAGE_THRESHOLD:
+            del batch, record_bundles
+            release_process_memory()
+        if commit_per_chunk:
+            await conn.commit()
 
     if session_ids is None:
         # Full rebuild upserted per-session insight rows without an upfront
@@ -1731,7 +1777,6 @@ __all__ = [
     "SessionInsightRecordBundle",
     "build_session_insight_record_bundles",
     "build_session_insight_records",
-    "chunked",
     "hydrate_sessions",
     "iter_session_id_pages_async",
     "iter_session_id_pages_sync",
