@@ -54,6 +54,14 @@ def test_session_storage_dedupes_records_by_session_id() -> None:
     ]
 
 
+def test_default_convergence_stages_retry_bounded_false_results(tmp_path: Path) -> None:
+    stages_by_name = {stage.name: stage for stage in make_default_convergence_stages(tmp_path / "index.db")}
+
+    assert stages_by_name["fts"].false_means_pending is True
+    assert stages_by_name["embed"].false_means_pending is True
+    assert stages_by_name["insights"].false_means_pending is True
+
+
 def _main_db_path(conn: sqlite3.Connection) -> Path:
     row = conn.execute("PRAGMA database_list").fetchone()
     return Path(str(row[2]))
