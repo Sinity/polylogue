@@ -604,20 +604,26 @@ The report has a stable top-level shape carrying its `report_version`,
   parse/convergence timings, and source-path bundles.
 - `convergence_stage_timings` — min/max/sum/mean parse/convergence/read-
   amplification stats over completed attempts.
-- `boundary_table_counts` — cheap planner-estimated counts for the
-  daemon-relevant tables by default
+- `boundary_table_counts` — mixed cheap evidence for the
+  daemon-relevant tables by default: exact counts for small/core archive
+  cardinality tables and maintained rollups such as `sessions`, `raw_sessions`,
+  `messages`, and `session_profiles`; planner-estimated counts only where exact
+  counting would scan large derived tables
   (`raw_sessions`, `sessions`, `messages`, `blocks`,
   `artifact_observations`, `messages_fts_docsize`, `actions`,
   `message_embeddings`, `session_profile`,
   `live_ingest_attempt`, `live_convergence_debt`, `pending_blob_refs`).
-  Missing tables surface as `-1` and tables without SQLite planner
+  Missing tables surface as `-1` and expensive tables without SQLite planner
   statistics surface as `-2` rather than crashing the probe. Pass
   `--exact-table-counts` when a before/after evidence run needs exact
-  arithmetic and the archive can afford the scans.
+  arithmetic and the archive can afford the scans. The companion
+  `boundary_table_count_precision` map labels each value as `exact`,
+  `estimate`, `unavailable`, or `missing`.
 - `archive_tiers` — archive inventory for `source.db`,
   `index.db`, `embeddings.db`, `user.db`, and `ops.db`: file presence,
   durability/backup policy, `PRAGMA user_version`, missing backup-required
-  tiers, and cheap planner-estimated table counts per tier. It does not run SQLite
+  tiers, and the same mixed cheap/exact table counts per tier with a
+  `table_count_precision` map for each tier. It does not run SQLite
   `PRAGMA quick_check` by default because that is a full-file integrity scan
   on large archives; pass `--integrity-check` when the workload snapshot should
   include that expensive evidence. It also avoids exact generated-text

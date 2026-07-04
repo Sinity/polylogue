@@ -59,8 +59,8 @@ def _seed_minimal_archive(db: Path, source: Path) -> str:
         conn.execute(
             """
             INSERT INTO sessions (
-                native_id, origin, raw_id, content_hash, created_at_ms, updated_at_ms
-            ) VALUES ('provider-1', 'codex-session', 'raw-1', ?, 1770000000000, 1770000000000)
+                native_id, origin, raw_id, content_hash, created_at_ms, updated_at_ms, message_count
+            ) VALUES ('provider-1', 'codex-session', 'raw-1', ?, 1770000000000, 1770000000000, 1)
             """,
             (b"s" * 32,),
         )
@@ -173,23 +173,32 @@ def test_daemon_workload_probe_reports_blob_reference_debt(
     }
 
 
-def test_daemon_workload_probe_defaults_to_estimated_table_counts(tmp_path: Path) -> None:
+def test_daemon_workload_probe_defaults_to_mixed_table_counts(tmp_path: Path) -> None:
     db = tmp_path / "archive.sqlite"
     _seed_minimal_archive(db, tmp_path / "session.jsonl")
 
     default_payload = probe(db)
     exact_payload = probe(db, exact_table_counts=True)
 
-    assert default_payload["boundary_table_count_mode"] == "estimated"
-    assert default_payload["archive_tiers"]["table_count_mode"] == "estimated"
-    assert default_payload["boundary_table_counts"]["sessions"] == UNKNOWN_TABLE_COUNT
+    assert default_payload["boundary_table_count_mode"] == "mixed"
+    assert default_payload["archive_tiers"]["table_count_mode"] == "mixed"
+    assert default_payload["boundary_table_counts"]["raw_sessions"] == 1
+    assert default_payload["boundary_table_counts"]["sessions"] == 1
+    assert default_payload["boundary_table_counts"]["messages"] == 1
+    assert default_payload["boundary_table_counts"]["blocks"] == UNKNOWN_TABLE_COUNT
+    assert default_payload["boundary_table_count_precision"]["raw_sessions"] == "exact"
+    assert default_payload["boundary_table_count_precision"]["sessions"] == "exact"
+    assert default_payload["boundary_table_count_precision"]["messages"] == "exact"
+    assert default_payload["boundary_table_count_precision"]["blocks"] == "unavailable"
+    assert default_payload["archive_tiers"]["tiers"]["index"]["table_count_precision"]["sessions"] == "exact"
     assert exact_payload["boundary_table_count_mode"] == "exact"
     assert exact_payload["archive_tiers"]["table_count_mode"] == "exact"
     assert exact_payload["boundary_table_counts"]["raw_sessions"] == 1
     assert exact_payload["boundary_table_counts"]["sessions"] == 1
+    assert exact_payload["boundary_table_count_precision"]["blocks"] == "exact"
 
 
-def test_daemon_workload_probe_table_count_uses_sqlite_stats_for_estimates(
+def test_daemon_workload_probe_table_count_uses_sqlite_stats_after_cheap_counts(
     tmp_path: Path,
 ) -> None:
     db = tmp_path / "stats.sqlite"
@@ -199,6 +208,16 @@ def test_daemon_workload_probe_table_count_uses_sqlite_stats_for_estimates(
 
         assert _table_count(conn, "sample", exact=False) == UNKNOWN_TABLE_COUNT
         assert _table_count(conn, "sample", exact=True) == 3
+
+        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, message_count INTEGER NOT NULL DEFAULT 0)")
+        conn.execute("CREATE TABLE messages (message_id TEXT PRIMARY KEY)")
+        conn.executemany(
+            "INSERT INTO sessions(session_id, message_count) VALUES (?, ?)",
+            [("s1", 2), ("s2", 1)],
+        )
+        conn.executemany("INSERT INTO messages(message_id) VALUES (?)", [("m1",), ("m2",), ("m3",)])
+        assert _table_count(conn, "sessions", exact=False) == 2
+        assert _table_count(conn, "messages", exact=False) == 3
 
         conn.execute("ANALYZE")
 
@@ -345,8 +364,8 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
         conn.execute(
             """
             INSERT INTO sessions (
-                native_id, origin, raw_id, content_hash
-            ) VALUES ('native-1', 'codex-session', 'raw-1', ?)
+                native_id, origin, raw_id, content_hash, message_count
+            ) VALUES ('native-1', 'codex-session', 'raw-1', ?, 1)
             """,
             (b"y" * 32,),
         )
@@ -450,14 +469,15 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
     readiness = tiers["derived_readiness"]
     assert readiness["checked"] is True
     assert readiness["source_check_available"] is True
-    assert readiness["counts"]["session_count"] == UNKNOWN_TABLE_COUNT
+    assert readiness["counts"]["session_count"] == 2
     assert readiness["counts"]["raw_link_count"] == 2
     assert readiness["counts"]["missing_raw_session_count"] == 1
     assert readiness["counts"]["raw_materialization_debt_count"] == 0
+    assert readiness["counts"]["message_count"] == 1
     assert readiness["counts"]["text_block_count"] == UNKNOWN_TABLE_COUNT
     assert readiness["counts"]["messages_fts_count"] == UNKNOWN_TABLE_COUNT
     assert readiness["counts"]["messages_fts_exact_counts"] is False
-    assert readiness["counts"]["profile_row_count"] == UNKNOWN_TABLE_COUNT
+    assert readiness["counts"]["profile_row_count"] == 1
     assert readiness["counts"]["missing_profile_row_count"] == 1
     assert readiness["counts"]["work_event_row_count"] == UNKNOWN_TABLE_COUNT
     assert readiness["counts"]["session_tag_count"] == UNKNOWN_TABLE_COUNT
@@ -471,7 +491,8 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
     assert readiness["ready"]["profile_rows_ready"] is False
     surfaces = readiness["surface_readiness"]
     assert surfaces["archive_sessions"]["ready"] is True
-    assert surfaces["archive_sessions"]["evidence"]["session_count"] == UNKNOWN_TABLE_COUNT
+    assert surfaces["archive_sessions"]["evidence"]["session_count"] == 2
+    assert surfaces["archive_sessions"]["evidence"]["message_count"] == 1
     assert surfaces["raw_artifacts"]["ready"] is False
     assert surfaces["raw_artifacts"]["blockers"] == ["missing_source_raw_sessions"]
     assert surfaces["raw_artifacts"]["evidence"]["raw_materialization_debt_count"] == 0
@@ -717,6 +738,7 @@ def test_probe_payload_carries_stable_top_level_shape(tmp_path: Path) -> None:
         "convergence_stage_timings",
         "boundary_table_count_mode",
         "boundary_table_counts",
+        "boundary_table_count_precision",
         "archive_tiers",
         "blob_lease_state",
         "gc_state",

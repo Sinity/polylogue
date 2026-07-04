@@ -161,13 +161,45 @@ def _scalar_int(conn: sqlite3.Connection, sql: str, params: tuple[object, ...] =
     return int(row[0] or 0) if row is not None else 0
 
 
-def _table_count(conn: sqlite3.Connection, table: str, *, exact: bool) -> int:
-    """Return an exact or cheap estimated table count."""
+def _cheap_archive_table_count(conn: sqlite3.Connection, table: str) -> int | None:
+    """Return an exact count when the archive can answer it cheaply.
+
+    The workload probe is an evidence artifact, not a query planner report.  It
+    should not present stale ``sqlite_stat1`` estimates for the archive's core
+    cardinality surfaces when exact answers are available from small tables or
+    maintained rollup columns.
+    """
+
+    if table == "messages" and _table_exists(conn, "sessions") and "message_count" in _columns(conn, "sessions"):
+        return _scalar_int(conn, "SELECT COALESCE(SUM(message_count), 0) FROM sessions")
+    if table in {
+        "sessions",
+        "raw_sessions",
+        "session_profiles",
+        "insight_materialization",
+        "ingest_attempts",
+        "convergence_debt",
+        "cursor_lag_samples",
+        "daemon_stage_events",
+        "daemon_events",
+        "embedding_status",
+        "pending_blob_refs",
+        "gc_generations",
+    }:
+        return _scalar_int(conn, f"SELECT COUNT(*) FROM {table}")
+    return None
+
+
+def _table_count_with_precision(conn: sqlite3.Connection, table: str, *, exact: bool) -> tuple[int, str]:
+    """Return an exact, cheap exact, or planner-estimated table count."""
 
     if not _table_exists(conn, table):
-        return -1
+        return -1, "missing"
     if exact:
-        return _scalar_int(conn, f"SELECT COUNT(*) FROM {table}")
+        return _scalar_int(conn, f"SELECT COUNT(*) FROM {table}"), "exact"
+    cheap_count = _cheap_archive_table_count(conn, table)
+    if cheap_count is not None:
+        return cheap_count, "exact"
     with suppress(sqlite3.Error, ValueError, IndexError):
         row = conn.execute(
             """
@@ -180,8 +212,12 @@ def _table_count(conn: sqlite3.Connection, table: str, *, exact: bool) -> int:
             (table,),
         ).fetchone()
         if row is not None and row[0] is not None:
-            return max(0, int(str(row[0]).split()[0]))
-    return UNKNOWN_TABLE_COUNT
+            return max(0, int(str(row[0]).split()[0])), "estimate"
+    return UNKNOWN_TABLE_COUNT, "unavailable"
+
+
+def _table_count(conn: sqlite3.Connection, table: str, *, exact: bool) -> int:
+    return _table_count_with_precision(conn, table, exact=exact)[0]
 
 
 def _presence_count(conn: sqlite3.Connection, table: str) -> int:
@@ -246,6 +282,10 @@ def _readiness_count(conn: sqlite3.Connection, table: str, *, exact: bool) -> in
     """Return a readiness display count without scanning large tables by default."""
 
     return _scalar_int(conn, f"SELECT COUNT(*) FROM {table}") if exact else _table_count(conn, table, exact=False)
+
+
+def _count_mode(exact: bool) -> str:
+    return "exact" if exact else "mixed"
 
 
 def _recent_attempts(conn: sqlite3.Connection, *, limit: int, ops_db: Path | None = None) -> list[dict[str, Any]]:
@@ -938,31 +978,44 @@ def _boundary_table_counts(
     source_db: Path | None = None,
     exact: bool = False,
 ) -> dict[str, int]:
+    return _boundary_table_counts_and_precision(conn, ops_db=ops_db, source_db=source_db, exact=exact)[0]
+
+
+def _boundary_table_counts_and_precision(
+    conn: sqlite3.Connection,
+    *,
+    ops_db: Path | None = None,
+    source_db: Path | None = None,
+    exact: bool = False,
+) -> tuple[dict[str, int], dict[str, str]]:
     counts: dict[str, int] = {}
+    precision: dict[str, str] = {}
     for table in _BOUNDARY_TABLES:
-        counts[table] = _table_count(conn, table, exact=exact)
+        counts[table], precision[table] = _table_count_with_precision(conn, table, exact=exact)
     if source_db is not None and source_db.exists():
         try:
             source_conn = open_readonly_connection(source_db)
             try:
                 for table in ("raw_sessions",):
-                    counts[table] = _table_count(source_conn, table, exact=exact)
+                    counts[table], precision[table] = _table_count_with_precision(source_conn, table, exact=exact)
             finally:
                 source_conn.close()
         except sqlite3.Error:
             counts.setdefault("raw_sessions", -1)
+            precision.setdefault("raw_sessions", "missing")
     if ops_db is not None and ops_db.exists():
         try:
             ops_conn = open_readonly_connection(ops_db)
             try:
                 for table in _OPS_BOUNDARY_TABLES:
-                    counts[table] = _table_count(ops_conn, table, exact=exact)
+                    counts[table], precision[table] = _table_count_with_precision(ops_conn, table, exact=exact)
             finally:
                 ops_conn.close()
         except sqlite3.Error:
             for table in _OPS_BOUNDARY_TABLES:
                 counts.setdefault(table, -1)
-    return counts
+                precision.setdefault(table, "missing")
+    return counts, precision
 
 
 def _location_entry(
@@ -1117,7 +1170,7 @@ def _archive_tier_state(
         "present_count": present_count,
         "expected_count": len(ARCHIVE_TIER_SPECS),
         "observed_tier": observed_tier,
-        "table_count_mode": "exact" if exact_table_counts else "estimated",
+        "table_count_mode": _count_mode(exact_table_counts),
         "schema_mismatches": schema_mismatches,
         "missing_backup_required": missing_backup_required,
         "layout_readiness": layout_readiness,
@@ -1202,6 +1255,7 @@ def _archive_single_tier_state(
             "user_version": None,
             "integrity": "missing",
             "table_counts": {},
+            "table_count_precision": {},
             "error": None,
         }
     payload: dict[str, Any] = {
@@ -1211,6 +1265,7 @@ def _archive_single_tier_state(
         "user_version": None,
         "integrity": "not_checked",
         "table_counts": {},
+        "table_count_precision": {},
         "error": None,
     }
     try:
@@ -1221,10 +1276,16 @@ def _archive_single_tier_state(
             if integrity_check:
                 integrity_row = conn.execute("PRAGMA quick_check").fetchone()
                 payload["integrity"] = str(integrity_row[0]) if integrity_row is not None else "unknown"
-            payload["table_counts"] = {
-                table: _table_count(conn, table, exact=exact_table_counts)
-                for table in _ARCHIVE_OBSERVABILITY_TABLES[tier]
-            }
+            table_counts: dict[str, int] = {}
+            table_count_precision: dict[str, str] = {}
+            for table in _ARCHIVE_OBSERVABILITY_TABLES[tier]:
+                table_counts[table], table_count_precision[table] = _table_count_with_precision(
+                    conn,
+                    table,
+                    exact=exact_table_counts,
+                )
+            payload["table_counts"] = table_counts
+            payload["table_count_precision"] = table_count_precision
         finally:
             conn.close()
     except sqlite3.Error as exc:
@@ -2228,6 +2289,12 @@ def probe(
         conn = sqlite3.connect(":memory:")
     try:
         recent_attempts = _recent_attempts(conn, limit=limit, ops_db=ops_db)
+        boundary_table_counts, boundary_table_count_precision = _boundary_table_counts_and_precision(
+            conn,
+            ops_db=ops_db,
+            source_db=db.with_name("source.db"),
+            exact=exact_table_counts,
+        )
         return {
             "ok": True,
             "report_version": REPORT_VERSION,
@@ -2238,13 +2305,9 @@ def probe(
             "recent_attempts": recent_attempts,
             "storage_route_counts": _storage_route_counts(conn, ops_db=ops_db),
             "convergence_stage_timings": _convergence_stage_timings(recent_attempts, conn),
-            "boundary_table_count_mode": "exact" if exact_table_counts else "estimated",
-            "boundary_table_counts": _boundary_table_counts(
-                conn,
-                ops_db=ops_db,
-                source_db=db.with_name("source.db"),
-                exact=exact_table_counts,
-            ),
+            "boundary_table_count_mode": _count_mode(exact_table_counts),
+            "boundary_table_counts": boundary_table_counts,
+            "boundary_table_count_precision": boundary_table_count_precision,
             "archive_tiers": _archive_tier_state(
                 db,
                 observed_db=observed_db,
