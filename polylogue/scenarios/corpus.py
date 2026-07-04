@@ -171,11 +171,21 @@ DEMO_CORPUS_FAMILIES: tuple[DemoCorpusFamily, ...] = (
     ),
     DemoCorpusFamily(
         family_id="browser-capture-gap",
-        label="Browser-capture gap",
+        label="Browser-capture convergence",
         provider="browser-capture",
-        construct_ids=("capture_gap_events",),
-        description="Lower-precedence DOM fallback for an existing native ChatGPT session.",
-        source_paths=("browser-capture/chatgpt-dom-fallback.json",),
+        construct_ids=(
+            "capture_gap_events",
+            "browser_capture_raw_variants",
+            "browser_capture_coalesced_session",
+        ),
+        description=(
+            "Native-payload and lower-precedence DOM browser captures for an existing ChatGPT session, "
+            "proving source evidence remains durable while the indexed session stays canonical."
+        ),
+        source_paths=(
+            "browser-capture/chatgpt-raw-provider.json",
+            "browser-capture/chatgpt-dom-fallback.json",
+        ),
         synthetic=False,
     ),
     DemoCorpusFamily(

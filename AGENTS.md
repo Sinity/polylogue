@@ -1443,6 +1443,12 @@ polylogue ops maintenance archive-read --limit 20
 ingest paths populate `source.db` and `index.db` directly from source
 artifacts. Root query commands use the active `index.db`.
 
+Source schema version 2 removes the old unique `(origin, native_id)` raw-row
+constraint. A native session can have multiple durable source observations
+(direct export, browser native capture, DOM fallback, historical ZIPs) while
+still coalescing to one canonical indexed session; source evidence must not be
+replaced merely because two captures describe the same provider-native id.
+
 ## Topology Edges (#1258)
 
 `topology_edges` persists every parent reference asserted by a parser as a

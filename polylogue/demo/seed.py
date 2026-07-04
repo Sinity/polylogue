@@ -130,9 +130,79 @@ def _write_demo_temporary_sources(source_root: Path) -> None:
 
 
 def _write_demo_browser_capture_gap_sources(source_root: Path) -> None:
-    """Write a lower-precedence DOM fallback for capture-gap demos."""
+    """Write browser-capture convergence fixtures for an existing ChatGPT session."""
 
     native_id = DEMO_CHATGPT_SESSION_ID.split(":", maxsplit=1)[1]
+    _write_json(
+        source_root / "browser-capture" / "chatgpt-raw-provider.json",
+        {
+            "polylogue_capture_kind": "browser_llm_session",
+            "schema_version": 1,
+            "capture_id": f"chatgpt:{native_id}:raw-provider",
+            "provenance": {
+                "source_url": f"https://chatgpt.com/c/{native_id}",
+                "page_title": "ChatGPT - Debugging flaky async pipeline tests",
+                "captured_at": "2026-07-04T09:54:00Z",
+                "adapter_name": "chatgpt-browser-native-v1",
+                "capture_mode": "snapshot",
+            },
+            "session": {
+                "provider": "chatgpt",
+                "provider_session_id": native_id,
+                "title": "Debugging flaky async pipeline tests",
+                "updated_at": "2026-07-04T09:54:00Z",
+                "model": "gpt-5-demo",
+                "turns": [
+                    {
+                        "provider_turn_id": "browser-native-placeholder-u0",
+                        "role": "user",
+                        "text": "Native payload is present; this DOM turn should not define the parsed transcript.",
+                        "ordinal": 0,
+                    }
+                ],
+            },
+            "raw_provider_payload": {
+                "conversation_id": native_id,
+                "title": "Debugging flaky async pipeline tests",
+                "create_time": 1783158840.0,
+                "update_time": 1783158844.0,
+                "current_node": "assistant-node",
+                "mapping": {
+                    "root": {"id": "root", "message": None, "parent": None, "children": ["user-node"]},
+                    "user-node": {
+                        "id": "user-node",
+                        "parent": "root",
+                        "children": ["assistant-node"],
+                        "message": {
+                            "id": "browser-native-u0",
+                            "author": {"role": "user"},
+                            "create_time": 1783158841.0,
+                            "content": {
+                                "content_type": "text",
+                                "parts": ["Browser capture preserved the native ChatGPT payload."],
+                            },
+                            "metadata": {},
+                        },
+                    },
+                    "assistant-node": {
+                        "id": "assistant-node",
+                        "parent": "user-node",
+                        "children": [],
+                        "message": {
+                            "id": "browser-native-a1",
+                            "author": {"role": "assistant"},
+                            "create_time": 1783158842.0,
+                            "content": {
+                                "content_type": "text",
+                                "parts": ["The canonical session coalesces with the direct ChatGPT export."],
+                            },
+                            "metadata": {"model_slug": "gpt-5-demo"},
+                        },
+                    },
+                },
+            },
+        },
+    )
     _write_json(
         source_root / "browser-capture" / "chatgpt-dom-fallback.json",
         {

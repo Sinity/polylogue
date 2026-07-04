@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 from polylogue.storage.sqlite.migration_runner import MigrationError, migrate_archive_tier
@@ -66,6 +67,42 @@ def _create_user_v3(path: Path) -> None:
         conn.close()
 
 
+def _create_source_v1(path: Path) -> None:
+    conn = sqlite3.connect(path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE raw_sessions (
+                raw_id                  TEXT PRIMARY KEY,
+                origin                  TEXT NOT NULL,
+                native_id               TEXT,
+                source_path             TEXT NOT NULL,
+                source_index            INTEGER NOT NULL DEFAULT 0,
+                blob_hash               BLOB NOT NULL CHECK(length(blob_hash) = 32),
+                blob_size               INTEGER NOT NULL CHECK(blob_size >= 0),
+                acquired_at_ms          INTEGER NOT NULL,
+                file_mtime_ms           INTEGER,
+                parsed_at_ms            INTEGER,
+                parse_error             TEXT,
+                validated_at_ms         INTEGER,
+                validation_status       TEXT,
+                validation_error        TEXT,
+                validation_drift_count  INTEGER NOT NULL DEFAULT 0 CHECK(validation_drift_count >= 0),
+                validation_mode         TEXT,
+                detection_warnings_json TEXT NOT NULL DEFAULT '[]'
+            ) STRICT;
+            CREATE INDEX idx_raw_sessions_origin ON raw_sessions(origin);
+            CREATE UNIQUE INDEX idx_raw_sessions_origin_native
+            ON raw_sessions(origin, native_id)
+            WHERE native_id IS NOT NULL;
+            PRAGMA user_version = 1;
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def test_user_tier_v3_migrates_to_v4_with_backup_manifest(tmp_path: Path) -> None:
     db_path = tmp_path / "user.db"
     _create_user_v3(db_path)
@@ -86,6 +123,50 @@ def test_user_tier_v3_migrates_to_v4_with_backup_manifest(tmp_path: Path) -> Non
         assert (
             conn.execute("SELECT value_json FROM user_settings WHERE setting_key = ?", ("reader.theme",)).fetchone()[0]
             == '"system"'
+        )
+    finally:
+        conn.close()
+
+
+def test_source_tier_v1_migrates_to_v2_without_native_uniqueness(tmp_path: Path) -> None:
+    db_path = tmp_path / "source.db"
+    _create_source_v1(db_path)
+    manifest = _write_backup_manifest(tmp_path / "backup", included_tiers=["source.db"])
+
+    conn = sqlite3.connect(db_path)
+    try:
+        result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
+        assert result.from_version == 1
+        assert result.to_version == SOURCE_SCHEMA_VERSION
+        assert result.applied_versions == (2,)
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
+
+        index_rows = conn.execute("PRAGMA index_list('raw_sessions')").fetchall()
+        origin_native_index = next(row for row in index_rows if row[1] == "idx_raw_sessions_origin_native")
+        assert int(origin_native_index[2]) == 0
+
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("raw:direct", "chatgpt-export", "conversation-1", "/direct.json", 0, b"0" * 32, 2, 1),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("raw:browser", "chatgpt-export", "conversation-1", "/browser.json", 0, b"1" * 32, 2, 2),
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM raw_sessions WHERE origin = ? AND native_id = ?",
+                ("chatgpt-export", "conversation-1"),
+            ).fetchone()[0]
+            == 2
         )
     finally:
         conn.close()

@@ -31,7 +31,7 @@ This datasheet is generated from the deterministic demo family registry, the dec
 | `chatgpt-dialogue` | `chatgpt` | `chatgpt/demo-00.json` | `multi_origin_sessions`<br>`session_profiles` | `true` |
 | `claude-code-tools` | `claude-code` | `claude-code/demo-00.jsonl` | `tool_use_blocks`<br>`tool_result_blocks`<br>`failed_tool_results`<br>`provider_usage_messages`<br>`run_projection_rows`<br>`observed_event_rows`<br>`context_snapshot_rows` | `true` |
 | `claude-ai-temporary` | `claude-ai` | `claude-ai/temporary-demo.json` | `temporary_session_rows`<br>`token_budget_web_constructs` | `false` |
-| `browser-capture-gap` | `browser-capture` | `browser-capture/chatgpt-dom-fallback.json` | `capture_gap_events` | `false` |
+| `browser-capture-gap` | `browser-capture` | `browser-capture/chatgpt-raw-provider.json`<br>`browser-capture/chatgpt-dom-fallback.json` | `capture_gap_events`<br>`browser_capture_raw_variants`<br>`browser_capture_coalesced_session` | `false` |
 | `codex-tools` | `codex` | `codex/demo-00.jsonl` | `tool_use_blocks`<br>`tool_result_blocks`<br>`failed_tool_results` | `true` |
 | `gemini-attachments` | `gemini` | `gemini/demo-00.json` | `attachment_rows`<br>`acquired_attachment_rows` | `true` |
 | `agent-lineage-matrix` | `mixed-agent` | `codex/lineage-parent.jsonl`<br>`codex/lineage-fork.jsonl`<br>`codex/lineage-subagent.jsonl`<br>`claude-code/agent-acompact-demo.jsonl`<br>`claude-code/lineage-sidechain.jsonl` | `session_link_rows`<br>`generic_branch_links`<br>`prefix_sharing_links`<br>`continuation_links`<br>`subagent_links`<br>`sidechain_sessions`<br>`compaction_events`<br>`subagent_context_snapshots` | `false` |
@@ -52,6 +52,8 @@ This datasheet is generated from the deterministic demo family registry, the dec
 | Temporary session rows (`temporary_session_rows`) | 1 | 1 | `ok` |
 | Token-budget web constructs (`token_budget_web_constructs`) | 1 | 1 | `ok` |
 | Capture-gap events (`capture_gap_events`) | 1 | 1 | `ok` |
+| Browser-capture raw variants (`browser_capture_raw_variants`) | 3 | 3 | `ok` |
+| Browser-capture coalesced session (`browser_capture_coalesced_session`) | 1 | 1 | `ok` |
 | Session-link rows (`session_link_rows`) | 3 | 1 | `ok` |
 | Generic branch links (`generic_branch_links`) | 1 | 1 | `ok` |
 | Prefix-sharing lineage links (`prefix_sharing_links`) | 1 | 1 | `ok` |
@@ -72,6 +74,7 @@ This datasheet is generated from the deterministic demo family registry, the dec
 - Families go through normal parser/storage paths; the demo does not patch rows directly into the index tier.
 - Codex `forked_from_id` is measured as a generic `branch` link with `prefix-sharing` inheritance because source evidence proves parentage and shared prefix, not fork-vs-resume.
 - Claude Code `agent-acompact-*` measures a continuation link and compaction event; the sidechain source measures typed sidechain session state.
+- Browser-capture convergence is measured across `source.db` and `index.db`: three raw observations for the same ChatGPT native id remain durable while the canonical indexed session stays singular and raw-linked.
 - Embedding coverage uses deterministic synthetic vectors over authored demo prose; it proves non-empty embedding-tier/status surfaces without contacting an external provider.
 
 ## Residual Gaps
@@ -79,5 +82,4 @@ This datasheet is generated from the deterministic demo family registry, the dec
 | Gap | Current evidence | Driver beads |
 | --- | --- | --- |
 | Abandoned / censored sessions | temporary-session coverage exists; no abandoned/censored variants yet | `polylogue-cfk`, temporal-analysis beads |
-| Browser-capture convergence cases | capture-gap event coverage exists; no multi-capture convergence/debt scenario yet | `polylogue-b5l`, capture-completeness work |
 | Subagent run projection collision | parent subagent run currently collides with the child main `run_ref`; tracked as `polylogue-85z0` | `polylogue-37t.11`, `polylogue-4ts.1` |

@@ -217,8 +217,15 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
     assert temporary_family.construct_ids == ("temporary_session_rows", "token_budget_web_constructs")
     capture_gap_family = DEMO_CORPUS_FAMILIES[3]
     assert capture_gap_family.synthetic is False
-    assert capture_gap_family.source_paths == ("browser-capture/chatgpt-dom-fallback.json",)
-    assert capture_gap_family.construct_ids == ("capture_gap_events",)
+    assert capture_gap_family.source_paths == (
+        "browser-capture/chatgpt-raw-provider.json",
+        "browser-capture/chatgpt-dom-fallback.json",
+    )
+    assert capture_gap_family.construct_ids == (
+        "capture_gap_events",
+        "browser_capture_raw_variants",
+        "browser_capture_coalesced_session",
+    )
     assert DEMO_CORPUS_FAMILIES[-1].synthetic is False
     assert set(DEMO_CORPUS_FAMILIES[-1].construct_ids) == {
         "embedding_candidate_prose_messages",

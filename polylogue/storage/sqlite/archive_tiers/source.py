@@ -9,7 +9,7 @@ from __future__ import annotations
 from polylogue.core.enums import ArtifactSupportStatus, Origin, ValidationMode, ValidationStatus
 from polylogue.storage.sqlite.archive_tiers.common import check, nullable_check
 
-SOURCE_SCHEMA_VERSION = 1
+SOURCE_SCHEMA_VERSION = 2
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS raw_sessions (
 CREATE INDEX IF NOT EXISTS idx_raw_sessions_origin
 ON raw_sessions(origin);
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_sessions_origin_native
+CREATE INDEX IF NOT EXISTS idx_raw_sessions_origin_native
 ON raw_sessions(origin, native_id)
 WHERE native_id IS NOT NULL;
 

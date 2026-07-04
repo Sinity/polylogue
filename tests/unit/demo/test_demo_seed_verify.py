@@ -7,6 +7,7 @@ import pytest
 
 from polylogue.demo import seed_demo_archive, verify_demo_archive
 from polylogue.scenarios import (
+    DEMO_CHATGPT_SESSION_ID,
     DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID,
     DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID,
     DEMO_CLAUDE_CODE_SESSION_ID,
@@ -42,11 +43,31 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
     assert verify.problems == ()
 
     with sqlite3.connect(archive_root / "index.db") as conn:
+        conn.execute("ATTACH DATABASE ? AS source", (str(archive_root / "source.db"),))
         links = conn.execute("SELECT link_type, inheritance FROM session_links ORDER BY src_session_id").fetchall()
         temporary_sessions = conn.execute("SELECT session_id FROM sessions WHERE session_kind = 'temporary'").fetchall()
         capture_gap_events = conn.execute(
             "SELECT session_id, summary FROM session_events WHERE event_type = 'capture_gap'"
         ).fetchall()
+        chatgpt_raw_rows = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM source.raw_sessions
+            WHERE origin = 'chatgpt-export'
+              AND native_id = ?
+            """,
+            (DEMO_CHATGPT_SESSION_ID.split(":", maxsplit=1)[1],),
+        ).fetchone()[0]
+        chatgpt_session_rows = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM sessions AS s
+            JOIN source.raw_sessions AS r
+              ON r.raw_id = s.raw_id
+            WHERE s.session_id = ?
+            """,
+            (DEMO_CHATGPT_SESSION_ID,),
+        ).fetchone()[0]
         compaction_events = conn.execute(
             "SELECT session_id, summary FROM session_events WHERE event_type = 'compaction'"
         ).fetchall()
@@ -65,6 +86,8 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
     assert temporary_sessions == [(DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID,)]
     assert len(capture_gap_events) == 1
     assert "DOM browser-capture fallback" in capture_gap_events[0][1]
+    assert chatgpt_raw_rows == 3
+    assert chatgpt_session_rows == 1
     assert ("branch", "prefix-sharing") in links
     assert ("continuation", "spawned-fresh") in links
     assert ("subagent", "spawned-fresh") in links

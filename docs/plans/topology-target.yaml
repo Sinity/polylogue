@@ -1432,7 +1432,7 @@ files:
     target: polylogue/demo/__init__.py
     owner: stable
   - path: polylogue/demo/constructs.py
-    loc: 197
+    loc: 306
     target: polylogue/demo/constructs.py
     owner: stable
   - path: polylogue/demo/models.py
@@ -1444,7 +1444,7 @@ files:
     target: polylogue/demo/script.py
     owner: stable
   - path: polylogue/demo/seed.py
-    loc: 421
+    loc: 665
     target: polylogue/demo/seed.py
     owner: stable
   - path: polylogue/demo/verify.py
@@ -1971,7 +1971,7 @@ files:
     target: polylogue/rendering/renderers/html_template.py
     owner: stable
   - path: polylogue/scenarios/__init__.py
-    loc: 163
+    loc: 169
     target: polylogue/scenarios/__init__.py
     owner: stable
   - path: polylogue/scenarios/assertions.py
@@ -1983,7 +1983,7 @@ files:
     target: polylogue/scenarios/cli_surfaces.py
     owner: stable
   - path: polylogue/scenarios/corpus.py
-    loc: 1086
+    loc: 1125
     target: polylogue/scenarios/corpus.py
     owner: stable
   - path: polylogue/scenarios/executable.py
@@ -3313,6 +3313,10 @@ files:
   - path: polylogue/storage/sqlite/migrations/__init__.py
     loc: 1
     target: polylogue/storage/sqlite/migrations/__init__.py
+    owner: stable
+  - path: polylogue/storage/sqlite/migrations/source/__init__.py
+    loc: 1
+    target: polylogue/storage/sqlite/migrations/source/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/migrations/user/__init__.py
     loc: 1

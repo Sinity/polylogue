@@ -114,6 +114,39 @@ DEMO_CONSTRUCTS: tuple[DemoConstruct, ...] = (
         sql="SELECT COUNT(*) FROM session_events WHERE event_type = 'capture_gap'",
     ),
     DemoConstruct(
+        construct_id="browser_capture_raw_variants",
+        label="Browser-capture raw variants",
+        description="Multiple raw source captures for the same ChatGPT session remain durable source evidence.",
+        sql="""
+            SELECT COUNT(*)
+            FROM source.raw_sessions
+            WHERE origin = 'chatgpt-export'
+              AND native_id = 'dc13ca54-0bba-4298-a38f-09068c2ef2c5'
+        """,
+        minimum=3,
+    ),
+    DemoConstruct(
+        construct_id="browser_capture_coalesced_session",
+        label="Browser-capture coalesced session",
+        description="Direct export and browser captures coalesce into one canonical indexed ChatGPT session.",
+        sql="""
+            SELECT COUNT(*)
+            FROM sessions AS s
+            WHERE s.session_id = 'chatgpt-export:dc13ca54-0bba-4298-a38f-09068c2ef2c5'
+              AND EXISTS (
+                  SELECT 1
+                  FROM source.raw_sessions AS r
+                  WHERE r.raw_id = s.raw_id
+              )
+              AND (
+                  SELECT COUNT(*)
+                  FROM sessions AS duplicates
+                  WHERE duplicates.origin = 'chatgpt-export'
+                    AND duplicates.native_id = 'dc13ca54-0bba-4298-a38f-09068c2ef2c5'
+              ) = 1
+        """,
+    ),
+    DemoConstruct(
         construct_id="session_link_rows",
         label="Session-link rows",
         description="At least one parser-declared parent relationship is persisted.",
@@ -233,6 +266,9 @@ def evaluate_demo_constructs(archive_root: Path) -> tuple[DemoConstructCoverage,
         embeddings_db = archive_root / "embeddings.db"
         if embeddings_db.exists():
             conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
+        source_db = archive_root / "source.db"
+        if source_db.exists():
+            conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
         rows: list[DemoConstructCoverage] = []
         for construct in DEMO_CONSTRUCTS:
             result_rows = conn.execute(construct.sql).fetchall()

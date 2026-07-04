@@ -40,11 +40,6 @@ RESIDUAL_GAPS: tuple[tuple[str, str, str], ...] = (
         "`polylogue-cfk`, temporal-analysis beads",
     ),
     (
-        "Browser-capture convergence cases",
-        "capture-gap event coverage exists; no multi-capture convergence/debt scenario yet",
-        "`polylogue-b5l`, capture-completeness work",
-    ),
-    (
         "Subagent run projection collision",
         "parent subagent run currently collides with the child main `run_ref`; tracked as `polylogue-85z0`",
         "`polylogue-37t.11`, `polylogue-4ts.1`",
@@ -174,6 +169,9 @@ def build_document(
         "- Claude Code `agent-acompact-*` measures a continuation link and "
         "compaction event; the sidechain source measures typed sidechain session "
         "state.",
+        "- Browser-capture convergence is measured across `source.db` and "
+        "`index.db`: three raw observations for the same ChatGPT native id remain "
+        "durable while the canonical indexed session stays singular and raw-linked.",
         "- Embedding coverage uses deterministic synthetic vectors over authored "
         "demo prose; it proves non-empty embedding-tier/status surfaces without "
         "contacting an external provider.",
