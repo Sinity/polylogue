@@ -250,7 +250,13 @@ def devloop_process_info(rows_text: str) -> list[dict[str, object]]:
         for index, token in enumerate(tokens):
             if token == "--spool" and index + 1 < len(tokens):
                 spool = tokens[index + 1]
-                run_dir = str(Path(spool).parent)
+                spool_path = Path(spool)
+                run_dir_path = spool_path.parent
+                for candidate in (spool_path.parent, *spool_path.parents):
+                    if git_head and git_head in candidate.name:
+                        run_dir_path = candidate
+                        break
+                run_dir = str(run_dir_path)
                 break
         records.append({"pid": pid, "run_dir": run_dir, "spool": spool, "args": args})
     return records

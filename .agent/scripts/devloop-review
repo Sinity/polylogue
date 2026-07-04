@@ -989,6 +989,10 @@ for line in rows.splitlines():
         bad.append(f"missing --spool :: {line}")
         continue
     run_dir = spool.parent
+    for candidate in (spool.parent, *spool.parents):
+        if current_head in candidate.name:
+            run_dir = candidate
+            break
     if current_head not in run_dir.name:
         bad.append(f"stale run_dir={run_dir} current_head={current_head}")
 if bad:
