@@ -51,6 +51,36 @@ def _count(conn: Connection, table: str) -> int:
     return int(row[0]) if row else 0
 
 
+def _has_column(conn: Connection, table: str, column: str) -> bool:
+    return any(str(row[1]) == column for row in conn.execute(f"PRAGMA table_info({table})"))
+
+
+def _has_table(conn: Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name = ?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def _logical_root_session_count(conn: Connection, physical_sessions: int) -> int:
+    if not _has_column(conn, "sessions", "root_session_id"):
+        return physical_sessions
+    row = conn.execute(
+        """
+        SELECT COUNT(DISTINCT COALESCE(root_session_id, session_id))
+        FROM sessions
+        """
+    ).fetchone()
+    return int(row[0]) if row else physical_sessions
+
+
+def _session_profile_count(conn: Connection) -> int | None:
+    if not _has_table(conn, "session_profiles"):
+        return None
+    return _count(conn, "session_profiles")
+
+
 def _rows(conn: Connection, sql: str) -> list[dict[str, object]]:
     cursor = conn.execute(sql)
     columns = [str(description[0]) for description in cursor.description or ()]
@@ -75,8 +105,14 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     index_db = config.db_path
     conn = open_readonly_connection(index_db)
     try:
+        physical_sessions = _count(conn, "sessions")
+        session_profiles = _session_profile_count(conn)
         cardinality = {
-            "sessions": _count(conn, "sessions"),
+            "sessions": physical_sessions,
+            "physical_sessions": physical_sessions,
+            "logical_root_sessions": _logical_root_session_count(conn, physical_sessions),
+            "session_profiles": session_profiles,
+            "session_profile_coverage_exact": session_profiles is not None,
             "runs": _count(conn, "session_runs"),
             "observed_events": _count(conn, "session_observed_events"),
             "context_snapshots": _count(conn, "session_context_snapshots"),
