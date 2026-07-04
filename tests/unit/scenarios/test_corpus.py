@@ -209,6 +209,7 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
         "codex-tools",
         "gemini-attachments",
         "agent-lineage-matrix",
+        "embedding-lane-prose",
     )
     temporary_family = DEMO_CORPUS_FAMILIES[2]
     assert temporary_family.synthetic is False
@@ -220,6 +221,13 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
     assert capture_gap_family.construct_ids == ("capture_gap_events",)
     assert DEMO_CORPUS_FAMILIES[-1].synthetic is False
     assert set(DEMO_CORPUS_FAMILIES[-1].construct_ids) == {
+        "embedding_candidate_prose_messages",
+        "synthetic_message_embedding_rows",
+        "embedding_status_rows",
+    }
+    lineage_family = DEMO_CORPUS_FAMILIES[-2]
+    assert lineage_family.synthetic is False
+    assert set(lineage_family.construct_ids) == {
         "session_link_rows",
         "generic_branch_links",
         "prefix_sharing_links",

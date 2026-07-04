@@ -45,11 +45,6 @@ RESIDUAL_GAPS: tuple[tuple[str, str, str], ...] = (
         "`polylogue-b5l`, capture-completeness work",
     ),
     (
-        "Embedding-lane prose",
-        "no synthetic embedding coverage in the demo seed",
-        "embedding/status beads",
-    ),
-    (
         "Subagent run projection collision",
         "parent subagent run currently collides with the child main `run_ref`; tracked as `polylogue-85z0`",
         "`polylogue-37t.11`, `polylogue-4ts.1`",
@@ -179,6 +174,9 @@ def build_document(
         "- Claude Code `agent-acompact-*` measures a continuation link and "
         "compaction event; the sidechain source measures typed sidechain session "
         "state.",
+        "- Embedding coverage uses deterministic synthetic vectors over authored "
+        "demo prose; it proves non-empty embedding-tier/status surfaces without "
+        "contacting an external provider.",
         "",
         "## Residual Gaps",
         "",

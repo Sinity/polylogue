@@ -6,6 +6,8 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from polylogue.storage.embeddings.materialization import archive_embeddable_message_where
+
 
 @dataclass(frozen=True, slots=True)
 class DemoConstruct:
@@ -177,6 +179,49 @@ DEMO_CONSTRUCTS: tuple[DemoConstruct, ...] = (
         description="Context snapshots expose the subagent-start boundary.",
         sql="SELECT COUNT(*) FROM session_context_snapshots WHERE boundary = 'subagent_start'",
     ),
+    DemoConstruct(
+        construct_id="embedding_candidate_prose_messages",
+        label="Embedding candidate prose messages",
+        description="Authored prose rows exist for the paid embedding selector without counting tool/protocol rows.",
+        sql=f"""
+            SELECT COUNT(*)
+            FROM (
+                SELECT m.message_id, GROUP_CONCAT(b.text, char(10) || char(10)) AS text
+                FROM messages AS m
+                JOIN blocks AS b
+                  ON b.session_id = m.session_id
+                 AND b.message_id = m.message_id
+                 AND b.block_type = 'text'
+                 AND b.text IS NOT NULL
+                WHERE {archive_embeddable_message_where("m")}
+                GROUP BY m.message_id, m.position, m.variant_index
+                HAVING LENGTH(TRIM(COALESCE(text, ''))) >= 20
+            ) embeddable_messages
+        """,
+    ),
+    DemoConstruct(
+        construct_id="synthetic_message_embedding_rows",
+        label="Synthetic message embedding rows",
+        description="Deterministic synthetic embedding vectors are present in embeddings.db for demo surfaces.",
+        sql="""
+            SELECT COUNT(*)
+            FROM embeddings.message_embeddings_meta
+            WHERE model = 'demo-synthetic-embedding'
+              AND needs_reindex = 0
+        """,
+    ),
+    DemoConstruct(
+        construct_id="embedding_status_rows",
+        label="Embedding status rows",
+        description="The embeddings tier records at least one completed session-level status row.",
+        sql="""
+            SELECT COUNT(*)
+            FROM embeddings.embedding_status
+            WHERE message_count_embedded > 0
+              AND needs_reindex = 0
+              AND error_message IS NULL
+        """,
+    ),
 )
 
 
@@ -185,9 +230,13 @@ def evaluate_demo_constructs(archive_root: Path) -> tuple[DemoConstructCoverage,
 
     conn = sqlite3.connect(archive_root / "index.db")
     try:
+        embeddings_db = archive_root / "embeddings.db"
+        if embeddings_db.exists():
+            conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
         rows: list[DemoConstructCoverage] = []
         for construct in DEMO_CONSTRUCTS:
-            observed = int(conn.execute(construct.sql).fetchone()[0])
+            result_rows = conn.execute(construct.sql).fetchall()
+            observed = sum(int(row[0] or 0) for row in result_rows)
             rows.append(
                 DemoConstructCoverage(
                     construct_id=construct.construct_id,

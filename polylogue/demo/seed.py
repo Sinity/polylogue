@@ -8,6 +8,7 @@ import shutil
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from hashlib import sha256
 from pathlib import Path
 
 from polylogue.config import Source
@@ -16,11 +17,18 @@ from polylogue.scenarios import (
     DEMO_CHATGPT_SESSION_ID,
     DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID,
     DEMO_CLAUDE_CODE_SESSION_ID,
+    DEMO_EMBEDDING_PROSE_SESSION_ID,
     build_demo_corpus_specs,
     seed_demo_user_overlays,
 )
 from polylogue.schemas.synthetic import SyntheticCorpus
+from polylogue.storage.embeddings.materialization import archive_embeddable_message_where
 from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.embedding_write import ArchiveEmbeddingWrite, upsert_message_embeddings
+from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
 from .constructs import evaluate_demo_constructs
 from .models import DemoSeedResult
@@ -443,6 +451,102 @@ def _inject_demo_session_repos(archive_root: Path) -> None:
         conn.close()
 
 
+_DEMO_EMBEDDING_MODEL = "demo-synthetic-embedding"
+_DEMO_EMBEDDING_AT_MS = 1_767_225_700_000
+
+
+def _demo_embedding_vector(message_id: str) -> list[float]:
+    """Return a deterministic non-provider vector for demo-only embeddings."""
+
+    digest = sha256(message_id.encode("utf-8")).digest()
+    return [((digest[index % len(digest)] / 255.0) * 2.0) - 1.0 for index in range(EMBEDDING_DIMENSION)]
+
+
+def _demo_embedding_content_hash(value: object) -> bytes:
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, str):
+        return bytes.fromhex(value)
+    raise TypeError(f"unsupported content_hash value: {type(value).__name__}")
+
+
+def _seed_demo_embeddings(archive_root: Path) -> None:
+    """Seed deterministic embeddings for one authored-prose demo session.
+
+    This deliberately does not call an embedding provider. It proves the
+    embedding tier and status surfaces against non-empty rows while keeping the
+    demo archive private-data-free and cost-free.
+    """
+
+    embeddings_db = archive_root / "embeddings.db"
+    initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
+    index_conn = sqlite3.connect(archive_root / "index.db")
+    embeddings_conn = sqlite3.connect(embeddings_db)
+    try:
+        loaded, error = try_load_sqlite_vec(embeddings_conn)
+        if not loaded:
+            raise RuntimeError("demo embedding seeding requires sqlite-vec") from error
+        index_conn.row_factory = sqlite3.Row
+        rows = index_conn.execute(
+            f"""
+            SELECT m.message_id, m.session_id, s.origin, m.content_hash,
+                   GROUP_CONCAT(b.text, char(10) || char(10)) AS text
+            FROM messages AS m
+            JOIN sessions AS s
+              ON s.session_id = m.session_id
+            JOIN blocks AS b
+              ON b.session_id = m.session_id
+             AND b.message_id = m.message_id
+             AND b.block_type = 'text'
+             AND b.text IS NOT NULL
+            WHERE m.session_id = ?
+              AND {archive_embeddable_message_where("m")}
+            GROUP BY m.message_id, m.position, m.variant_index
+            HAVING LENGTH(TRIM(COALESCE(text, ''))) >= 20
+            ORDER BY m.position, m.variant_index
+            LIMIT 3
+            """,
+            (DEMO_EMBEDDING_PROSE_SESSION_ID,),
+        ).fetchall()
+        writes = [
+            ArchiveEmbeddingWrite(
+                message_id=str(row["message_id"]),
+                session_id=str(row["session_id"]),
+                origin=str(row["origin"]),
+                embedding=_demo_embedding_vector(str(row["message_id"])),
+                model=_DEMO_EMBEDDING_MODEL,
+                embedded_at_ms=_DEMO_EMBEDDING_AT_MS,
+                content_hash=_demo_embedding_content_hash(row["content_hash"]),
+            )
+            for row in rows
+            if row["content_hash"] is not None
+        ]
+        upsert_message_embeddings(embeddings_conn, writes)
+        embeddings_conn.execute(
+            """
+            INSERT INTO embedding_status (
+                session_id, origin, message_count_embedded, last_embedded_at_ms, needs_reindex, error_message
+            ) VALUES (?, ?, ?, ?, 0, NULL)
+            ON CONFLICT(session_id) DO UPDATE SET
+                origin = excluded.origin,
+                message_count_embedded = excluded.message_count_embedded,
+                last_embedded_at_ms = excluded.last_embedded_at_ms,
+                needs_reindex = 0,
+                error_message = NULL
+            """,
+            (
+                DEMO_EMBEDDING_PROSE_SESSION_ID,
+                DEMO_EMBEDDING_PROSE_SESSION_ID.split(":", maxsplit=1)[0],
+                len(writes),
+                _DEMO_EMBEDDING_AT_MS,
+            ),
+        )
+        embeddings_conn.commit()
+    finally:
+        index_conn.close()
+        embeddings_conn.close()
+
+
 def demo_source_specs(source_root: Path) -> list[Source]:
     """Return relative source specs for the materialized demo world."""
 
@@ -472,6 +576,7 @@ async def seed_demo_archive(
     _inject_demo_session_usage(archive_root)
     _materialize_session_insights(archive_root, session_ids)
     _inject_demo_session_repos(archive_root)
+    _seed_demo_embeddings(archive_root)
 
     overlay = seed_demo_user_overlays(archive_root) if with_overlays else None
     construct_coverage = evaluate_demo_constructs(archive_root)

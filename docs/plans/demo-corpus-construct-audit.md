@@ -35,6 +35,7 @@ This datasheet is generated from the deterministic demo family registry, the dec
 | `codex-tools` | `codex` | `codex/demo-00.jsonl` | `tool_use_blocks`<br>`tool_result_blocks`<br>`failed_tool_results` | `true` |
 | `gemini-attachments` | `gemini` | `gemini/demo-00.json` | `attachment_rows`<br>`acquired_attachment_rows` | `true` |
 | `agent-lineage-matrix` | `mixed-agent` | `codex/lineage-parent.jsonl`<br>`codex/lineage-fork.jsonl`<br>`codex/lineage-subagent.jsonl`<br>`claude-code/agent-acompact-demo.jsonl`<br>`claude-code/lineage-sidechain.jsonl` | `session_link_rows`<br>`generic_branch_links`<br>`prefix_sharing_links`<br>`continuation_links`<br>`subagent_links`<br>`sidechain_sessions`<br>`compaction_events`<br>`subagent_context_snapshots` | `false` |
+| `embedding-lane-prose` | `derived-embedding` | `claude-code/demo-00.jsonl`<br>`embeddings.db` | `embedding_candidate_prose_messages`<br>`synthetic_message_embedding_rows`<br>`embedding_status_rows` | `false` |
 
 ## Declared Construct Coverage
 
@@ -62,12 +63,16 @@ This datasheet is generated from the deterministic demo family registry, the dec
 | Observed-event rows (`observed_event_rows`) | 34 | 1 | `ok` |
 | Context snapshot rows (`context_snapshot_rows`) | 11 | 1 | `ok` |
 | Subagent context snapshots (`subagent_context_snapshots`) | 1 | 1 | `ok` |
+| Embedding candidate prose messages (`embedding_candidate_prose_messages`) | 23 | 1 | `ok` |
+| Synthetic message embedding rows (`synthetic_message_embedding_rows`) | 2 | 1 | `ok` |
+| Embedding status rows (`embedding_status_rows`) | 1 | 1 | `ok` |
 
 ## Interpretation Notes
 
 - Families go through normal parser/storage paths; the demo does not patch rows directly into the index tier.
 - Codex `forked_from_id` is measured as a generic `branch` link with `prefix-sharing` inheritance because source evidence proves parentage and shared prefix, not fork-vs-resume.
 - Claude Code `agent-acompact-*` measures a continuation link and compaction event; the sidechain source measures typed sidechain session state.
+- Embedding coverage uses deterministic synthetic vectors over authored demo prose; it proves non-empty embedding-tier/status surfaces without contacting an external provider.
 
 ## Residual Gaps
 
@@ -75,5 +80,4 @@ This datasheet is generated from the deterministic demo family registry, the dec
 | --- | --- | --- |
 | Abandoned / censored sessions | temporary-session coverage exists; no abandoned/censored variants yet | `polylogue-cfk`, temporal-analysis beads |
 | Browser-capture convergence cases | capture-gap event coverage exists; no multi-capture convergence/debt scenario yet | `polylogue-b5l`, capture-completeness work |
-| Embedding-lane prose | no synthetic embedding coverage in the demo seed | embedding/status beads |
 | Subagent run projection collision | parent subagent run currently collides with the child main `run_ref`; tracked as `polylogue-85z0` | `polylogue-37t.11`, `polylogue-4ts.1` |

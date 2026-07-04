@@ -60,6 +60,7 @@ DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_SESSION_ID = (
     "claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6:agent-acompact-demo"
 )
 DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID = "claude-code-session:demo-lineage-sidechain"
+DEMO_EMBEDDING_PROSE_SESSION_ID = DEMO_CLAUDE_CODE_SESSION_ID
 DEMO_SESSION_IDS = (
     DEMO_CHATGPT_SESSION_ID,
     DEMO_CLAUDE_CODE_SESSION_ID,
@@ -225,6 +226,22 @@ DEMO_CORPUS_FAMILIES: tuple[DemoCorpusFamily, ...] = (
             "claude-code/agent-acompact-demo.jsonl",
             "claude-code/lineage-sidechain.jsonl",
         ),
+        synthetic=False,
+    ),
+    DemoCorpusFamily(
+        family_id="embedding-lane-prose",
+        label="Embedding lane prose",
+        provider="derived-embedding",
+        construct_ids=(
+            "embedding_candidate_prose_messages",
+            "synthetic_message_embedding_rows",
+            "embedding_status_rows",
+        ),
+        description=(
+            "Derived embedding-tier coverage over authored prose. The demo seeds deterministic synthetic vectors "
+            "so embedding status/search surfaces are non-empty without contacting a provider."
+        ),
+        source_paths=("claude-code/demo-00.jsonl", "embeddings.db"),
         synthetic=False,
     ),
 )

@@ -10,6 +10,7 @@ from polylogue.scenarios import (
     DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID,
     DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID,
     DEMO_CLAUDE_CODE_SESSION_ID,
+    DEMO_EMBEDDING_PROSE_SESSION_ID,
     DEMO_SESSION_IDS,
 )
 
@@ -53,6 +54,13 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
         subagent_snapshots = conn.execute(
             "SELECT COUNT(*) FROM session_context_snapshots WHERE boundary = 'subagent_start'"
         ).fetchone()[0]
+    with sqlite3.connect(archive_root / "embeddings.db") as conn:
+        embedding_rows = conn.execute(
+            "SELECT COUNT(*) FROM message_embeddings_meta WHERE model = 'demo-synthetic-embedding'"
+        ).fetchone()[0]
+        embedding_status = conn.execute(
+            "SELECT session_id, message_count_embedded, needs_reindex, error_message FROM embedding_status"
+        ).fetchall()
 
     assert temporary_sessions == [(DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID,)]
     assert len(capture_gap_events) == 1
@@ -63,6 +71,8 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
     assert len(compaction_events) >= 1
     assert sidechain_sessions == [(DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID,)]
     assert subagent_snapshots >= 1
+    assert embedding_rows >= 1
+    assert embedding_status == [(DEMO_EMBEDDING_PROSE_SESSION_ID, embedding_rows, 0, None)]
 
 
 @pytest.mark.asyncio
