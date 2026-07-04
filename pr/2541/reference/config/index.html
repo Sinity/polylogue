@@ -1,0 +1,946 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Configuration — Polylogue</title>
+    <style>
+
+        :root {
+            --bg-primary: #0B0E14;
+            --bg-secondary: #13171F;
+            --bg-tertiary: #1A1F2A;
+            --text-primary: #E6E8EC;
+            --text-secondary: #8B919A;
+            --text-tertiary: #555B63;
+            --accent: #3B82F6;
+            --accent-hover: #2563EB;
+            --border: #1E2430;
+            --shadow: rgba(0, 0, 0, 0.4);
+            --green: #22C55E;
+            --yellow: #EAB308;
+            --red: #EF4444;
+            --provider-claude-code: #D97706;
+            --provider-codex: #3B82F6;
+            --provider-chatgpt: #10B981;
+            --provider-gemini: #8B5CF6;
+            --provider-claude-ai: #F59E0B;
+            --header-height: 56px;
+            --nav-width: 240px;
+            --content-max-width: 720px;
+            --footer-height: 40px;
+            --font-body: &#39;Inter&#39;, system-ui, -apple-system, sans-serif;
+            --font-code: &#39;JetBrains Mono&#39;, &#39;Fira Code&#39;, monospace;
+        }
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg-primary: #FAFAFA;
+                --bg-secondary: #FFFFFF;
+                --bg-tertiary: #F3F4F6;
+                --text-primary: #111827;
+                --text-secondary: #6B7280;
+                --text-tertiary: #9CA3AF;
+                --border: #E5E7EB;
+                --shadow: rgba(0, 0, 0, 0.08);
+            }
+        }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html { font-size: 15px; }
+        body {
+            font-family: var(--font-body);
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
+        }
+        .site-header {
+            position: sticky; top: 0; z-index: 10;
+            height: var(--header-height);
+            background-color: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; padding: 0 1.5rem; gap: 1rem;
+        }
+        .site-header .logo { font-weight: 700; font-size: 1.1rem; color: var(--text-primary); text-decoration: none; white-space: nowrap; }
+        .site-header .logo span { color: var(--accent); }
+        .site-header .search-bar { flex: 1; max-width: 400px; margin: 0 auto; }
+        .site-header .search-bar input {
+            width: 100%; padding: 0.4rem 0.75rem; border-radius: 6px;
+            border: 1px solid var(--border); background-color: var(--bg-tertiary);
+            color: var(--text-primary); font-family: var(--font-body); font-size: 0.9rem;
+        }
+        .site-header .theme-toggle {
+            background: none; border: 1px solid var(--border); border-radius: 6px;
+            padding: 0.3rem 0.6rem; cursor: pointer; color: var(--text-secondary); font-size: 0.9rem;
+        }
+        .page-layout { display: flex; min-height: calc(100vh - var(--header-height)); }
+        .site-nav {
+            width: var(--nav-width); flex-shrink: 0; padding: 2rem 1.5rem;
+            background-color: var(--bg-primary); border-right: 1px solid var(--border);
+            overflow-y: auto; position: sticky; top: var(--header-height);
+            height: calc(100vh - var(--header-height));
+        }
+        .site-nav .nav-section { margin-bottom: 1.5rem; }
+        .site-nav .nav-section-title { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-tertiary); margin-bottom: 0.5rem; }
+        .site-nav a { display: block; padding: 0.3rem 0; color: var(--text-secondary); text-decoration: none; font-size: 0.9rem; }
+        .site-nav a:hover { color: var(--text-primary); }
+        .site-nav a.active { color: var(--accent); font-weight: 500; }
+        .content { flex: 1; max-width: var(--content-max-width); margin: 0 auto; padding: 2rem 2rem 4rem; width: 100%; }
+        h1 { font-size: 1.87rem; font-weight: 600; line-height: 1.3; margin: 2rem 0 1rem; }
+        h1:first-child { margin-top: 0; }
+        h2 { font-size: 1.47rem; font-weight: 600; line-height: 1.3; margin: 2rem 0 0.75rem; }
+        h3 { font-size: 1.2rem; font-weight: 600; line-height: 1.4; margin: 1.5rem 0 0.5rem; }
+        p { margin-bottom: 1rem; }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { color: var(--accent-hover); }
+        code { font-family: var(--font-code); font-size: 0.87rem; background-color: var(--bg-tertiary); padding: 0.15em 0.4em; border-radius: 3px; }
+        pre { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 1rem 1.25rem; overflow-x: auto; margin-bottom: 1.25rem; font-size: 0.87rem; line-height: 1.5; }
+        pre code { background: none; padding: 0; font-size: inherit; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 1.25rem; font-size: 0.9rem; }
+        th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+        th { font-weight: 600; color: var(--text-secondary); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+        .card { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; }
+        .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+        .stat-card { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; text-align: center; }
+        .stat-card .stat-value { font-size: 2rem; font-weight: 700; color: var(--accent); }
+        .stat-card .stat-label { font-size: 0.8rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.25rem; }
+        .badge { display: inline-block; padding: 0.15em 0.5em; border-radius: 4px; font-size: 0.8rem; font-weight: 500; }
+        .badge-green { background-color: rgba(34, 197, 94, 0.15); color: var(--green); }
+        .badge-yellow { background-color: rgba(234, 179, 8, 0.15); color: var(--yellow); }
+        .badge-red { background-color: rgba(239, 68, 68, 0.15); color: var(--red); }
+        .site-footer { height: var(--footer-height); display: flex; align-items: center; justify-content: space-between; padding: 0 1.5rem; border-top: 1px solid var(--border); font-size: 0.8rem; color: var(--text-tertiary); }
+        .site-footer a { color: var(--text-secondary); }
+        .home-hero { text-align: center; padding: 4rem 0 3rem; }
+        .home-hero h1 { font-size: 3rem; margin-bottom: 0.5rem; }
+        .home-hero .tagline { font-size: 1.2rem; color: var(--text-secondary); margin-bottom: 2rem; }
+        .home-hero .hero-search { max-width: 500px; margin: 0 auto 3rem; }
+        .home-hero .hero-search input { width: 100%; padding: 0.75rem 1rem; border-radius: 8px; border: 1px solid var(--border); background-color: var(--bg-secondary); color: var(--text-primary); font-family: var(--font-body); font-size: 1rem; }
+        .home-links { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; margin-top: 2rem; }
+        .home-links a { display: inline-block; padding: 0.6rem 1.5rem; border-radius: 6px; background-color: var(--bg-secondary); border: 1px solid var(--border); font-weight: 500; }
+        .home-links a:hover { background-color: var(--bg-tertiary); border-color: var(--accent); }
+        @media (max-width: 768px) {
+            .site-nav { display: none; }
+            .content { padding: 1.5rem 1rem; }
+            .home-hero h1 { font-size: 2rem; }
+        }
+        @media print {
+            .site-header, .site-nav, .site-footer { display: none; }
+            .content { max-width: none; padding: 0; }
+            body { background: white; color: black; }
+        }
+
+pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.highlight .hll { background-color: #49483e }
+.highlight { background: #272822; color: #F8F8F2 }
+.highlight .c { color: #959077 } /* Comment */
+.highlight .err { color: #ED007E; background-color: #1E0010 } /* Error */
+.highlight .esc { color: #F8F8F2 } /* Escape */
+.highlight .g { color: #F8F8F2 } /* Generic */
+.highlight .k { color: #66D9EF } /* Keyword */
+.highlight .l { color: #AE81FF } /* Literal */
+.highlight .n { color: #F8F8F2 } /* Name */
+.highlight .o { color: #FF4689 } /* Operator */
+.highlight .x { color: #F8F8F2 } /* Other */
+.highlight .p { color: #F8F8F2 } /* Punctuation */
+.highlight .ch { color: #959077 } /* Comment.Hashbang */
+.highlight .cm { color: #959077 } /* Comment.Multiline */
+.highlight .cp { color: #959077 } /* Comment.Preproc */
+.highlight .cpf { color: #959077 } /* Comment.PreprocFile */
+.highlight .c1 { color: #959077 } /* Comment.Single */
+.highlight .cs { color: #959077 } /* Comment.Special */
+.highlight .gd { color: #FF4689 } /* Generic.Deleted */
+.highlight .ge { color: #F8F8F2; font-style: italic } /* Generic.Emph */
+.highlight .ges { color: #F8F8F2; font-weight: bold; font-style: italic } /* Generic.EmphStrong */
+.highlight .gr { color: #F8F8F2 } /* Generic.Error */
+.highlight .gh { color: #F8F8F2 } /* Generic.Heading */
+.highlight .gi { color: #A6E22E } /* Generic.Inserted */
+.highlight .go { color: #66D9EF } /* Generic.Output */
+.highlight .gp { color: #FF4689; font-weight: bold } /* Generic.Prompt */
+.highlight .gs { color: #F8F8F2; font-weight: bold } /* Generic.Strong */
+.highlight .gu { color: #959077 } /* Generic.Subheading */
+.highlight .gt { color: #F8F8F2 } /* Generic.Traceback */
+.highlight .kc { color: #66D9EF } /* Keyword.Constant */
+.highlight .kd { color: #66D9EF } /* Keyword.Declaration */
+.highlight .kn { color: #FF4689 } /* Keyword.Namespace */
+.highlight .kp { color: #66D9EF } /* Keyword.Pseudo */
+.highlight .kr { color: #66D9EF } /* Keyword.Reserved */
+.highlight .kt { color: #66D9EF } /* Keyword.Type */
+.highlight .ld { color: #E6DB74 } /* Literal.Date */
+.highlight .m { color: #AE81FF } /* Literal.Number */
+.highlight .s { color: #E6DB74 } /* Literal.String */
+.highlight .na { color: #A6E22E } /* Name.Attribute */
+.highlight .nb { color: #F8F8F2 } /* Name.Builtin */
+.highlight .nc { color: #A6E22E } /* Name.Class */
+.highlight .no { color: #66D9EF } /* Name.Constant */
+.highlight .nd { color: #A6E22E } /* Name.Decorator */
+.highlight .ni { color: #F8F8F2 } /* Name.Entity */
+.highlight .ne { color: #A6E22E } /* Name.Exception */
+.highlight .nf { color: #A6E22E } /* Name.Function */
+.highlight .nl { color: #F8F8F2 } /* Name.Label */
+.highlight .nn { color: #F8F8F2 } /* Name.Namespace */
+.highlight .nx { color: #A6E22E } /* Name.Other */
+.highlight .py { color: #F8F8F2 } /* Name.Property */
+.highlight .nt { color: #FF4689 } /* Name.Tag */
+.highlight .nv { color: #F8F8F2 } /* Name.Variable */
+.highlight .ow { color: #FF4689 } /* Operator.Word */
+.highlight .pm { color: #F8F8F2 } /* Punctuation.Marker */
+.highlight .w { color: #F8F8F2 } /* Text.Whitespace */
+.highlight .mb { color: #AE81FF } /* Literal.Number.Bin */
+.highlight .mf { color: #AE81FF } /* Literal.Number.Float */
+.highlight .mh { color: #AE81FF } /* Literal.Number.Hex */
+.highlight .mi { color: #AE81FF } /* Literal.Number.Integer */
+.highlight .mo { color: #AE81FF } /* Literal.Number.Oct */
+.highlight .sa { color: #E6DB74 } /* Literal.String.Affix */
+.highlight .sb { color: #E6DB74 } /* Literal.String.Backtick */
+.highlight .sc { color: #E6DB74 } /* Literal.String.Char */
+.highlight .dl { color: #E6DB74 } /* Literal.String.Delimiter */
+.highlight .sd { color: #E6DB74 } /* Literal.String.Doc */
+.highlight .s2 { color: #E6DB74 } /* Literal.String.Double */
+.highlight .se { color: #AE81FF } /* Literal.String.Escape */
+.highlight .sh { color: #E6DB74 } /* Literal.String.Heredoc */
+.highlight .si { color: #E6DB74 } /* Literal.String.Interpol */
+.highlight .sx { color: #E6DB74 } /* Literal.String.Other */
+.highlight .sr { color: #E6DB74 } /* Literal.String.Regex */
+.highlight .s1 { color: #E6DB74 } /* Literal.String.Single */
+.highlight .ss { color: #E6DB74 } /* Literal.String.Symbol */
+.highlight .bp { color: #F8F8F2 } /* Name.Builtin.Pseudo */
+.highlight .fm { color: #A6E22E } /* Name.Function.Magic */
+.highlight .vc { color: #F8F8F2 } /* Name.Variable.Class */
+.highlight .vg { color: #F8F8F2 } /* Name.Variable.Global */
+.highlight .vi { color: #F8F8F2 } /* Name.Variable.Instance */
+.highlight .vm { color: #F8F8F2 } /* Name.Variable.Magic */
+.highlight .il { color: #AE81FF } /* Literal.Number.Integer.Long */
+    </style>
+    
+</head>
+<body>
+    <header class="site-header">
+        <a href="../../" class="logo">poly<span>logue</span></a>
+        <div class="search-bar">
+            <input type="search" placeholder="Search docs..." id="search-input">
+        </div>
+        <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+            <span class="light-icon">☀</span>
+            <span class="dark-icon">☾</span>
+        </button>
+    </header>
+    <div class="page-layout">
+        <nav class="site-nav" id="site-nav">
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Documentation</div>
+                
+                <a href="../../docs/getting-started/" >
+                    Getting Started
+                </a>
+                
+                <a href="../../docs/search/" >
+                    Search
+                </a>
+                
+                <a href="../../docs/providers/" >
+                    Providers
+                </a>
+                
+                <a href="../../docs/insights/" >
+                    Insights
+                </a>
+                
+                <a href="../../docs/export/" >
+                    Export
+                </a>
+                
+                <a href="../../docs/daemon/" >
+                    Daemon
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Reference</div>
+                
+                <a href="../cli/" >
+                    CLI
+                </a>
+                
+                <a href="../mcp/" >
+                    MCP
+                </a>
+                
+                <a href="../api/" >
+                    API
+                </a>
+                
+                <a href="./" class="active">
+                    Config
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Architecture</div>
+                
+                <a href="../../architecture/rings/" >
+                    Rings
+                </a>
+                
+                <a href="../../architecture/internals/" >
+                    Internals
+                </a>
+                
+                <a href="../../architecture/schema/" >
+                    Schema
+                </a>
+                
+                <a href="../../architecture/contributing/" >
+                    Contributing
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Verifiability</div>
+                
+                <a href="../../verifiability/coverage/" >
+                    Coverage
+                </a>
+                
+                <a href="../../verifiability/mutation/" >
+                    Mutation
+                </a>
+                
+                <a href="../../verifiability/freshness/" >
+                    Freshness
+                </a>
+                
+                <a href="../../verifiability/drift/" >
+                    Drift
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Design</div>
+                
+                <a href="../../design/second-brain/" >
+                    Second Brain
+                </a>
+                
+                <a href="../../design/time-machine/" >
+                    Time Machine
+                </a>
+                
+                <a href="../../design/project-memory/" >
+                    Project Memory
+                </a>
+                
+                <a href="../../design/agent-first-mcp/" >
+                    Agent-First MCP
+                </a>
+                
+                <a href="../../design/archive-storytelling/" >
+                    Archive Storytelling
+                </a>
+                
+                <a href="../../design/whole-product/" >
+                    Whole Product
+                </a>
+                
+            </div>
+            
+        </nav>
+        <main class="content">
+            
+<p><a href="https://github.com/Sinity/polylogue/blob/master/README.md">← Back to README</a></p>
+<h1>Configuration</h1>
+<h2>File Layout</h2>
+<p>Polylogue follows XDG Base Directory specification:</p>
+<pre><code>~/.local/share/polylogue/           # XDG_DATA_HOME/polylogue
+├── source.db                       # raw acquisition log
+├── index.db                        # Parsed/searchable/read-model index
+├── embeddings.db                   # Vector index and embedding status
+├── user.db                         # User marks, corrections, and annotations
+├── ops.db                          # Daemon/cursor/telemetry state
+├── blob/                           # Stored attachment/blob payloads
+└── browser-capture/                # Browser-capture artifact spool
+
+~/.claude/projects/                  # Auto-discovered: Claude Code sessions
+~/.codex/sessions/                   # Auto-discovered: Codex sessions
+
+~/.config/polylogue/                # XDG_CONFIG_HOME/polylogue
+└── polylogue-credentials.json      # Google OAuth credentials (if using Drive)
+
+~/.local/state/polylogue/           # XDG_STATE_HOME/polylogue
+└── token.json                      # OAuth token cache
+</code></pre>
+<h2>Canonical Paths</h2>
+<p>Polylogue resolves all filesystem locations through <code>polylogue.paths</code> using
+XDG environment variables. The defaults (when no override is set) are:</p>
+<table>
+<thead>
+<tr>
+<th>Location</th>
+<th>Default path</th>
+<th>Override</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Archive root</td>
+<td><code>~/.local/share/polylogue/</code></td>
+<td><code>POLYLOGUE_ARCHIVE_ROOT</code></td>
+</tr>
+<tr>
+<td>Source DB</td>
+<td><code>~/.local/share/polylogue/source.db</code></td>
+<td>(follows archive root)</td>
+</tr>
+<tr>
+<td>Index DB</td>
+<td><code>~/.local/share/polylogue/index.db</code></td>
+<td>(follows archive root)</td>
+</tr>
+<tr>
+<td>Embeddings DB</td>
+<td><code>~/.local/share/polylogue/embeddings.db</code></td>
+<td>(follows archive root)</td>
+</tr>
+<tr>
+<td>User DB</td>
+<td><code>~/.local/share/polylogue/user.db</code></td>
+<td>(follows archive root)</td>
+</tr>
+<tr>
+<td>Ops DB</td>
+<td><code>~/.local/share/polylogue/ops.db</code></td>
+<td>(follows archive root)</td>
+</tr>
+<tr>
+<td>Blob store</td>
+<td><code>~/.local/share/polylogue/blob/</code></td>
+<td>(follows data home)</td>
+</tr>
+<tr>
+<td>Config file</td>
+<td><code>~/.config/polylogue/polylogue.toml</code></td>
+<td><code>POLYLOGUE_CONFIG</code></td>
+</tr>
+<tr>
+<td>Config dir</td>
+<td><code>~/.config/polylogue/</code></td>
+<td><code>XDG_CONFIG_HOME</code></td>
+</tr>
+</tbody>
+</table>
+<p>Use <code>polylogue config paths</code> to print the resolved paths for the current
+environment, or <code>polylogue config paths --format json</code> for machine-readable
+output. The command also reports any detected bind mounts.</p>
+<h3>Bind Mounts and <code>/realm/data/captures/</code></h3>
+<p>Some deployments (such as the <a href="https://github.com/Sinity/sinnix">sinnix</a>
+NixOS configuration) expose the archive at two path strings through a
+btrfs subvolume bind mount:</p>
+<pre><code>~/.local/share/polylogue/       → same files as below
+/realm/data/captures/polylogue/ → same files as above
+</code></pre>
+<p>Both paths refer to the <strong>same physical directory</strong> — they share device
+and inode numbers. The bind mount is transparent to Polylogue; the
+daemon, CLI, and MCP server all operate on whichever path they resolve.</p>
+<p><strong>Which path to use in <code>polylogue.toml</code>:</strong></p>
+<ul>
+<li>Use <code>~/.local/share/polylogue</code> (the XDG default) as the canonical
+path in configuration and MCP server settings. It is portable across
+hosts and does not depend on the sinnix data-lake layout.</li>
+<li><code>/realm/data/captures/polylogue</code> is the same directory via bind mount
+and is equally correct at runtime. It only exists on hosts that run
+the sinnix configuration; referencing it from config files makes them
+host-specific.</li>
+</ul>
+<p>If both path strings appear in logs or tool output, they do <strong>not</strong>
+indicate two separate archives or a misconfiguration — they are the
+same directory tree.</p>
+<h2>Input Conventions</h2>
+<ul>
+<li><code>polylogued run</code> watches configured source roots and owns ingestion.</li>
+<li>Use <code>polylogue import PATH</code> to ask the running daemon to import an explicit
+file or directory.</li>
+<li>Directory names are for organization only; providers are detected from content.</li>
+<li>Supported source formats include <code>.json</code>, <code>.jsonl</code>, and <code>.zip</code>.</li>
+</ul>
+<h2>Configuration Model</h2>
+<p>Polylogue has a small layered configuration surface and a larger archive state
+surface. Keep those apart: startup config tells processes how to bind, where to
+read/write, which provider work is allowed, and how to present output. User
+annotations, saved views, daemon cursors, telemetry, and one-shot smoke results
+live in SQLite/log state instead.</p>
+<p>Layer precedence is highest first:</p>
+<ol>
+<li>CLI flag overrides for that invocation.</li>
+<li><code>POLYLOGUE_*</code>, provider-specific, and presentation environment variables.</li>
+<li>User <code>polylogue.toml</code>, resolved from <code>$POLYLOGUE_CONFIG</code>, then
+<code>$XDG_CONFIG_HOME/polylogue/polylogue.toml</code>, then <code>./polylogue.toml</code>.</li>
+<li>Site <code>polylogue.toml</code>, resolved from <code>$POLYLOGUE_SITE_CONFIG</code> or
+<code>/etc/polylogue/polylogue.toml</code>.</li>
+<li>Built-in defaults: local loopback binds, embeddings off, browser capture
+restricted to extension origins, and no remote auth-free write surface.</li>
+</ol>
+<p>Use <code>polylogue config</code> to print the effective configuration as redacted TOML.
+Use <code>polylogue config --show-layers</code> for a human provenance view. Use
+<code>polylogue config --format json</code> for the machine contract; it returns the
+redacted effective value, source layer, owner class, reload behavior, TOML path,
+environment variable, CLI override, default, and inventory row for each public
+key.</p>
+<p>The JSON shape is intentionally stable for automation:</p>
+<pre><code class="language-json">{
+  &quot;layers&quot;: {
+    &quot;default&quot;: &quot;built-in defaults&quot;,
+    &quot;site&quot;: {&quot;path&quot;: &quot;/etc/polylogue/polylogue.toml&quot;, &quot;exists&quot;: false},
+    &quot;user&quot;: {&quot;path&quot;: &quot;/home/user/.config/polylogue/polylogue.toml&quot;, &quot;exists&quot;: true},
+    &quot;env&quot;: &quot;POLYLOGUE_*, provider credential, and presentation environment variables&quot;,
+    &quot;cli&quot;: &quot;CLI overrides (per-invocation)&quot;
+  },
+  &quot;values&quot;: {
+    &quot;api_auth_token&quot;: {
+      &quot;value&quot;: &quot;&lt;set&gt;&quot;,
+      &quot;source_layer&quot;: &quot;env&quot;,
+      &quot;secret&quot;: true,
+      &quot;secret_present&quot;: true,
+      &quot;toml_path&quot;: &quot;daemon.api.auth_token&quot;,
+      &quot;env_var&quot;: &quot;POLYLOGUE_API_AUTH_TOKEN&quot;,
+      &quot;owner_class&quot;: &quot;network-security&quot;,
+      &quot;reload_behavior&quot;: &quot;startup-bound&quot;
+    }
+  },
+  &quot;inventory&quot;: [
+    {
+      &quot;key&quot;: &quot;api_auth_token&quot;,
+      &quot;toml_path&quot;: &quot;daemon.api.auth_token&quot;,
+      &quot;env_var&quot;: &quot;POLYLOGUE_API_AUTH_TOKEN&quot;,
+      &quot;redaction&quot;: &quot;presence&quot;
+    }
+  ]
+}
+</code></pre>
+<p>Secrets are never printed in cleartext. Set secrets show as <code>&lt;set&gt;</code> and unset or
+empty secrets show as <code>&lt;unset&gt;</code>, while <code>secret_present</code> preserves the useful bit
+for diagnostics.</p>
+<p>The JSON form also includes a <code>diagnostics</code> array. Each item has stable
+<code>code</code>, <code>severity</code>, <code>key</code>, <code>toml_path</code>, <code>env_var</code>, <code>message</code>, and
+<code>next_action</code> fields so deployment smoke, agents, and shell scripts can tell
+configuration debt from daemon/runtime failures. Diagnostics also include the
+redacted effective <code>value</code>, <code>source_layer</code>, <code>secret</code>, and <code>secret_present</code> when
+the source can be determined, plus <code>related_keys</code> for multi-key contradictions.
+Current diagnostics cover operator-supplied path-layout problems, unsafe
+network/auth combinations, API/browser-capture port conflicts, web-origin
+browser capture without bearer auth, and <code>embedding.enabled = true</code> without a
+configured Voyage key.</p>
+<h3>State classes</h3>
+<table>
+<thead>
+<tr>
+<th>Class</th>
+<th>Where it lives</th>
+<th>Examples</th>
+<th>Reload behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Static startup config</td>
+<td>TOML/env/CLI</td>
+<td>archive root, API host/port/token, browser-capture host/port/spool/origins, source roots</td>
+<td>Restart <code>polylogued</code> after changing.</td>
+</tr>
+<tr>
+<td>Deployment policy</td>
+<td>TOML/env/Nix/HM/systemd</td>
+<td>remote-bind opt-in, auth requirements, systemd memory/IO limits, schema validation mode</td>
+<td>Restart the managed service; policy is outside archive content hashes.</td>
+</tr>
+<tr>
+<td>Runtime mutable user state</td>
+<td><code>user.db</code></td>
+<td>tags, marks, saved views, workspaces, assertions, authored overlays</td>
+<td>Mutated through CLI/API; not TOML and not source content.</td>
+</tr>
+<tr>
+<td>Provider/cost controls</td>
+<td>TOML/env</td>
+<td><code>embedding.enabled</code>, <code>embedding.max_cost_usd</code>, <code>VOYAGE_API_KEY</code></td>
+<td>Embedding loops read the gate/cost controls; no provider call happens unless explicitly enabled and credentials are present.</td>
+</tr>
+<tr>
+<td>Presentation preferences</td>
+<td>TOML/env/CLI</td>
+<td><code>logging.force_plain</code>, <code>no_color</code>, <code>ui.theme</code>, <code>NO_COLOR</code>, slow-query notices</td>
+<td>Per CLI process or web render; does not change archive meaning.</td>
+</tr>
+<tr>
+<td>Disposable ops state</td>
+<td><code>ops.db</code>, logs, smoke JSON</td>
+<td>health cursors, convergence debt, deployment-smoke evidence, cgroup signals</td>
+<td>Rebuildable/diagnostic; do not place in source archives.</td>
+</tr>
+</tbody>
+</table>
+<h3>TOML schema</h3>
+<pre><code class="language-toml">[archive]
+root = &quot;/home/user/.local/share/polylogue&quot;
+
+[daemon]
+host = &quot;127.0.0.1&quot; # legacy alias used by Nix/HM when api/browser host is omitted
+port = 8766         # legacy API port alias
+
+[daemon.api]
+host = &quot;127.0.0.1&quot;
+port = 8766
+# auth_token = &quot;...&quot;   # required for non-loopback API binding
+
+[daemon.browser_capture]
+host = &quot;127.0.0.1&quot;
+port = 8765
+allowed_origins = &quot;chrome-extension://*&quot;
+allow_remote = false
+# auth_token = &quot;...&quot;   # required for remote binding or web origins
+# spool_path = &quot;/home/user/.local/share/polylogue/browser-capture&quot;
+
+[daemon.watch]
+debounce_s = 2.0
+
+[sources]
+roots = [&quot;/home/user/.claude/projects&quot;, &quot;/home/user/.codex/sessions&quot;]
+
+[embedding]
+enabled = false
+model = &quot;voyage-4&quot;
+dimension = 1024
+max_cost_usd = 5.0   # soft monthly cap; 0 = unlimited
+# voyage_api_key = &quot;...&quot; # prefer VOYAGE_API_KEY from a secret manager
+
+[observability]
+enabled = false
+otlp_max_body_bytes = 8388608
+
+[logging]
+level = &quot;INFO&quot;
+force_plain = false
+
+[ui]
+theme = &quot;auto&quot; # auto, dark, or light
+# slow_query_notice_seconds = 2.5
+
+[schema]
+validation = &quot;advisory&quot; # off, advisory, or strict
+
+[notifications]
+backend = &quot;log&quot;
+# webhook_url = &quot;https://...&quot;
+# webhook_secret = &quot;...&quot;
+
+[notifications.email]
+port = 587
+use_tls = true
+use_starttls = true
+max_per_hour = 12
+
+[health]
+check_interval_s = 300
+check_tiers = &quot;fast&quot;
+blob_integrity_sample_size = 100
+
+# Convergence-debt alert thresholds. The daemon raises a typed HealthAlert
+# when the per-family count of live_convergence_debt rows crosses these levels.
+[health.convergence_debt]
+default_warning = 1
+default_error = 10
+dedup_window_s = 3600
+
+[health.convergence_debt.families.claude-code-session]
+warning = 1
+error = 5
+
+[health.cursor_lag]
+default_warning_s = 300
+default_error_s = 900
+
+[[cost.subscription.plans]]
+name = &quot;team-monthly&quot;
+period = &quot;monthly&quot;
+included_usd = 0
+</code></pre>
+<p>The TOML key map is executable: <code>polylogue.config</code> owns the inventory consumed
+by the loader, redacted TOML renderer, and JSON effective-state payload. When a
+new public key is added, inventory coverage tests require a TOML/env/default
+classification instead of letting a second ledger drift away from the code.</p>
+<h3>Safety gates</h3>
+<p>Remote API binding fails closed. <code>polylogued run --api-host 0.0.0.0</code> requires
+both <code>--insecure-allow-remote</code> and an API auth token, or the equivalent TOML/env
+settings:</p>
+<pre><code class="language-toml">[daemon.api]
+host = &quot;0.0.0.0&quot;
+auth_token = &quot;...&quot;
+
+[daemon.browser_capture]
+allow_remote = true
+auth_token = &quot;...&quot;
+</code></pre>
+<p>Browser-capture remote opt-in and web origins fail closed without a
+browser-capture auth token. Extension origins such as <code>chrome-extension://*</code> are
+allowed by default for the local receiver; ordinary web origins such as
+<code>https://workbench.example</code> require <code>daemon.browser_capture.auth_token</code> or
+<code>POLYLOGUE_BROWSER_CAPTURE_AUTH_TOKEN</code>. The config diagnostics payload reports
+these failures before daemon startup, including whether the missing token would
+come from the default, TOML, env, or CLI layer.</p>
+<p>Embeddings are provider-cost work. <code>VOYAGE_API_KEY</code> alone supplies a credential
+but does not enable daemon embedding convergence. Set <code>embedding.enabled = true</code>
+or <code>POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS=true</code> to opt in; without a provider key,
+readiness reports disabled/error state instead of attempting provider calls.</p>
+<h3>Presentation and theme policy</h3>
+<p><code>logging.force_plain</code> and <code>POLYLOGUE_FORCE_PLAIN</code> force plain CLI output and
+avoid Rich layout primitives. <code>NO_COLOR</code> appears in the config inventory as the
+env-only <code>no_color</code> presentation key and is honored by CLI formatting as a
+no-color/plain-output signal for terminal compatibility. <code>ui.theme</code> and
+<code>POLYLOGUE_THEME</code> select semantic token mode: <code>auto</code>, <code>dark</code>, or <code>light</code>. The
+semantic token names are stable; individual palettes are UI implementation, not
+a deployment policy knob.</p>
+<p>Presentation preferences never enter the source/archive content hash and should
+not be stored as user assertions. They are per process, per terminal, or per web
+render.</p>
+<h3>Nix and Home Manager semantics</h3>
+<p>The bundled NixOS module (<code>services.polylogue</code>) and Home Manager module
+(<code>programs.polylogued</code>) render the same <code>polylogue.toml</code> schema that non-Nix
+users write by hand. <code>polylogued run</code> reads that TOML/env effective state, so
+module settings do not need to be duplicated as <code>ExecStart</code> flags; secret-bearing
+values should come from environment/secret-manager wiring whenever possible
+instead of being rendered into the Nix store.</p>
+<p>Nix/HM service settings such as <code>service.memoryHigh</code>, <code>service.memoryMax</code>,
+<code>service.nice</code>, and <code>service.ioWeight</code> are deployment policy. They affect the
+systemd unit and show up in deployment-smoke resource evidence when the platform
+exposes cgroup files, but they are not Polylogue archive config keys.</p>
+<p>Filesystem layout is owned by <code>polylogue.paths</code>, which reads directory
+environment variables lazily when its path functions are called. Path-safety
+helpers are separate from both surfaces. Code that sanitizes provider or session
+names imports from <code>polylogue.paths.sanitize</code>.</p>
+<h2>Environment Policy</h2>
+<p>Environment variable precedence is:</p>
+<ol>
+<li>XDG roots define the base config, data, cache, and state directories.</li>
+<li><code>POLYLOGUE_ARCHIVE_ROOT</code> overrides the archive root and the archive
+databases under it (<code>source.db</code>, <code>index.db</code>, <code>embeddings.db</code>, <code>user.db</code>,
+and <code>ops.db</code>).</li>
+<li><code>POLYLOGUE_CONFIG</code> and <code>POLYLOGUE_SITE_CONFIG</code> select config files.</li>
+<li><code>POLYLOGUE_*</code> runtime variables override matching TOML values.</li>
+<li>Provider credentials such as <code>VOYAGE_API_KEY</code> supply secrets; they do not
+enable provider spend by themselves.</li>
+</ol>
+<p>Common runtime overrides:</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Config key</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>XDG_CONFIG_HOME</code></td>
+<td>path base</td>
+<td>Base directory for <code>polylogue.toml</code> and Drive credentials.</td>
+</tr>
+<tr>
+<td><code>XDG_DATA_HOME</code></td>
+<td>path base</td>
+<td>Base directory for the archive, blob store, Drive cache, and browser-capture spool.</td>
+</tr>
+<tr>
+<td><code>XDG_CACHE_HOME</code></td>
+<td>path base</td>
+<td>Base directory for cache/index output.</td>
+</tr>
+<tr>
+<td><code>XDG_STATE_HOME</code></td>
+<td>path base</td>
+<td>Base directory for OAuth token and runtime state.</td>
+</tr>
+<tr>
+<td><code>POLYLOGUE_CONFIG</code></td>
+<td>config layer</td>
+<td>Explicit user config path.</td>
+</tr>
+<tr>
+<td><code>POLYLOGUE_SITE_CONFIG</code></td>
+<td>config layer</td>
+<td>Explicit site config path; empty disables site config.</td>
+</tr>
+<tr>
+<td><code>POLYLOGUE_ARCHIVE_ROOT</code></td>
+<td><code>archive_root</code></td>
+<td>Override the archive root.</td>
+</tr>
+<tr>
+<td><code>POLYLOGUE_DAEMON_URL</code></td>
+<td><code>daemon_url</code></td>
+<td>CLI/MCP client daemon base URL.</td>
+</tr>
+<tr>
+<td><code>POLYLOGUE_API_HOST</code> / <code>POLYLOGUE_API_PORT</code></td>
+<td><code>api_host</code> / <code>api_port</code></td>
+<td>Daemon HTTP API bind.</td>
+</tr>
+<tr>
+<td><code>POLYLOGUE_API_AUTH_TOKEN</code></td>
+<td><code>api_auth_token</code></td>
+<td>API bearer token; redacted in config output.</td>
+</tr>
+<tr>
+<td><code>POLYLOGUE_BROWSER_CAPTURE_HOST</code> / <code>POLYLOGUE_BROWSER_CAPTURE_PORT</code></td>
+<td>browser-capture bind</td>
+<td>Receiver bind host/port.</td>
+</tr>
+<tr>
+<td><code>POLYLOGUE_BROWSER_CAPTURE_ALLOWED_ORIGINS</code></td>
+<td><code>browser_capture_allowed_origins</code></td>
+<td>Comma-separated receiver CORS origins.</td>
+</tr>
+<tr>
+<td><code>POLYLOGUE_BROWSER_CAPTURE_ALLOW_REMOTE</code></td>
+<td><code>browser_capture_allow_remote</code></td>
+<td>Explicit remote-bind opt-in.</td>
+</tr>
+<tr>
+<td><code>POLYLOGUE_BROWSER_CAPTURE_AUTH_TOKEN</code></td>
+<td><code>browser_capture_auth_token</code></td>
+<td>Receiver bearer token; redacted.</td>
+</tr>
+<tr>
+<td><code>POLYLOGUE_BROWSER_CAPTURE_SPOOL_PATH</code></td>
+<td><code>browser_capture_spool_path</code></td>
+<td>Receiver spool override.</td>
+</tr>
+<tr>
+<td><code>POLYLOGUE_FORCE_PLAIN</code></td>
+<td><code>force_plain</code></td>
+<td>Force plain output.</td>
+</tr>
+<tr>
+<td><code>POLYLOGUE_THEME</code></td>
+<td><code>theme</code></td>
+<td><code>auto</code>, <code>dark</code>, or <code>light</code>.</td>
+</tr>
+<tr>
+<td><code>NO_COLOR</code></td>
+<td><code>no_color</code></td>
+<td>Standard no-color request; any non-empty value makes CLI output ANSI-free/plain.</td>
+</tr>
+<tr>
+<td><code>VOYAGE_API_KEY</code></td>
+<td><code>voyage_api_key</code></td>
+<td>Voyage credential; redacted and spend-gated.</td>
+</tr>
+<tr>
+<td><code>POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS</code></td>
+<td><code>embedding_enabled</code></td>
+<td>Enable daemon embedding convergence.</td>
+</tr>
+<tr>
+<td><code>POLYLOGUE_OBSERVABILITY_ENABLED</code></td>
+<td><code>observability_enabled</code></td>
+<td>Enable OTLP/observability HTTP ingestion.</td>
+</tr>
+<tr>
+<td><code>POLYLOGUE_CREDENTIAL_PATH</code></td>
+<td>Drive auth</td>
+<td>OAuth client JSON path.</td>
+</tr>
+<tr>
+<td><code>POLYLOGUE_TOKEN_PATH</code></td>
+<td>Drive auth</td>
+<td>OAuth token path.</td>
+</tr>
+</tbody>
+</table>
+<h3>Theme and no-color policy</h3>
+<p>Human-facing terminal output becomes plain when <code>--plain</code>,
+<code>POLYLOGUE_FORCE_PLAIN</code>, <code>NO_COLOR</code>, or a non-interactive terminal path requests
+it. Plain mode removes Rich layout and ANSI escapes before any color theme is
+applied. When rich rendering is allowed, <code>POLYLOGUE_THEME</code> or <code>[ui] theme</code>
+selects semantic tokens for terminal panels, code/diff highlighting, and HTML
+exports. Future palette sources such as pywal should feed those semantic tokens
+rather than adding one-off colors at call sites.</p>
+<h2>Backup and Export</h2>
+<p>The archive uses SQLite files with different durability classes:</p>
+<ul>
+<li><code>source.db</code>, <code>user.db</code>, <code>embeddings.db</code>, and <code>blob/</code> are the expensive or
+irreplaceable state to prioritize in backups.</li>
+<li><code>index.db</code> is rebuildable from <code>source.db</code>, but a backup avoids a full
+reindex after restore.</li>
+<li><code>ops.db</code> is disposable daemon state; back it up only when preserving
+operational history matters.</li>
+</ul>
+<p>For an offline file-level backup, stop the daemon and copy the archive root or
+the specific tier files you need. Include matching <code>-wal</code> and <code>-shm</code> companions
+when copying a live WAL-mode SQLite database.</p>
+<p>To export all sessions as JSON:</p>
+<pre><code class="language-bash">polylogue --format json &gt; sessions.json
+
+# Or with filters
+polylogue -p claude-ai --format json &gt; claude-sessions.json
+</code></pre>
+<p>Polylogue does not copy one-shot input exports into a managed import directory.
+Keep the original provider export files if you need a reproducible rebuild from
+the exact downloaded payloads.</p>
+<h2>Google Drive Integration</h2>
+<p>For Gemini sessions via Google Drive:</p>
+<ol>
+<li>Create OAuth credentials at <a href="https://console.cloud.google.com/">Google Cloud Console</a></li>
+<li>Download to <code>~/.config/polylogue/polylogue-credentials.json</code></li>
+<li>Run <code>polylogue ops auth</code> to complete OAuth flow</li>
+</ol>
+<p>Polylogue syncs the fixed <code>Google AI Studio</code> folder name used by Gemini exports.</p>
+<h2>Observability</h2>
+<p>Polylogue exposes daemon health through <code>polylogued status</code> and
+<code>polylogue ops status</code>. The archive database stores ingestion state, live cursors,
+and derived read-model freshness so automation does not need to scrape terminal
+output.</p>
+<h3>Health Checks</h3>
+<ul>
+<li><code>polylogue ops doctor</code> validates config, archive root, DB reachability, index status, and Drive credential/token presence.</li>
+<li><code>polylogue ops doctor --repair</code> runs safe derived-data maintenance.</li>
+<li><code>polylogue ops doctor --cleanup</code> runs destructive archive cleanup; preview it first.</li>
+<li><code>polylogue ops doctor --repair --vacuum</code> compacts the database after maintenance.</li>
+<li>Workstation-specific policy such as cgroup slice placement and hard caps belongs in the host environment, not in the product CLI.</li>
+</ul>
+<hr />
+<p><strong>See also:</strong> <a href="../cli/">CLI Reference</a> · <a href="https://github.com/Sinity/polylogue/blob/master/docs/mcp-integration.md">MCP Integration</a> · <a href="https://github.com/Sinity/polylogue/blob/master/docs/data-model.md">Data Model</a></p>
+
+<hr style="margin: 3rem 0 1rem; border-color: var(--border);">
+<nav style="display: flex; justify-content: space-between; font-size: 0.9rem;">
+    <a href="../api/">← Library API</a>
+    <a href="../../architecture/rings/">Architecture →</a>
+</nav>
+
+        </main>
+    </div>
+    <footer class="site-footer">
+        <span>Polylogue — your AI memory</span>
+        <a href="https://github.com/Sinity/polylogue">GitHub</a>
+    </footer>
+    <script>
+        function toggleTheme() {
+            var html = document.documentElement;
+            var current = html.getAttribute('data-theme');
+            html.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+            localStorage.setItem('theme', current === 'dark' ? 'light' : 'dark');
+        }
+        (function() {
+            var saved = localStorage.getItem('theme');
+            if (saved) document.documentElement.setAttribute('data-theme', saved);
+        })();
+    </script>
+    
+</body>
+</html>
