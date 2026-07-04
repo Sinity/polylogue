@@ -94,6 +94,12 @@ DEMO_CONSTRUCTS: tuple[DemoConstruct, ...] = (
         sql="SELECT COUNT(*) FROM attachments WHERE acquisition_status = 'acquired' AND blob_hash IS NOT NULL",
     ),
     DemoConstruct(
+        construct_id="temporary_session_rows",
+        label="Temporary session rows",
+        description="At least one source-declared temporary session exists.",
+        sql="SELECT COUNT(*) FROM sessions WHERE session_kind = 'temporary'",
+    ),
+    DemoConstruct(
         construct_id="session_link_rows",
         label="Session-link rows",
         description="At least one parser-declared parent relationship is persisted.",

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.demo import seed_demo_archive, verify_demo_archive
-from polylogue.scenarios import DEMO_CLAUDE_CODE_SESSION_ID, DEMO_SESSION_IDS
+from polylogue.scenarios import DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID, DEMO_CLAUDE_CODE_SESSION_ID, DEMO_SESSION_IDS
 
 
 @pytest.mark.asyncio
@@ -18,7 +18,7 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
 
     assert seed.archive_root == archive_root
     assert seed.session_count == len(DEMO_SESSION_IDS)
-    assert seed.message_count >= 31
+    assert seed.message_count >= 35
     assert seed.session_ids == tuple(sorted(DEMO_SESSION_IDS))
     assert seed.overlays_seeded is True
     assert seed.assertion_count >= 4
@@ -27,7 +27,7 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
 
     assert verify.ok is True
     assert verify.session_count == len(DEMO_SESSION_IDS)
-    assert verify.message_count >= 31
+    assert verify.message_count >= 35
     assert DEMO_CLAUDE_CODE_SESSION_ID in verify.query_hits
     assert verify.overlays_present is True
     assert verify.absolute_path_leaks == ()
@@ -37,10 +37,12 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
 
     with sqlite3.connect(archive_root / "index.db") as conn:
         links = conn.execute("SELECT link_type, inheritance FROM session_links ORDER BY src_session_id").fetchall()
+        temporary_sessions = conn.execute("SELECT session_id FROM sessions WHERE session_kind = 'temporary'").fetchall()
         subagent_snapshots = conn.execute(
             "SELECT COUNT(*) FROM session_context_snapshots WHERE boundary = 'subagent_start'"
         ).fetchone()[0]
 
+    assert temporary_sessions == [(DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID,)]
     assert ("branch", "prefix-sharing") in links
     assert ("subagent", "spawned-fresh") in links
     assert subagent_snapshots >= 1

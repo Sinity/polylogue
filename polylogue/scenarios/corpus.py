@@ -50,6 +50,7 @@ class CorpusSourceKind(str, Enum):
 DEMO_CORPUS_SEED = 1843
 DEMO_CHATGPT_SESSION_ID = "chatgpt-export:dc13ca54-0bba-4298-a38f-09068c2ef2c5"
 DEMO_CLAUDE_CODE_SESSION_ID = "claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6"
+DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID = "claude-ai-export:demo-temporary-claude-ai"
 DEMO_CODEX_SESSION_ID = "codex-session:demo-00"
 DEMO_GEMINI_SESSION_ID = "aistudio-drive:demo-00"
 DEMO_CODEX_LINEAGE_PARENT_SESSION_ID = "codex-session:demo-lineage-parent"
@@ -58,6 +59,7 @@ DEMO_CODEX_LINEAGE_SUBAGENT_SESSION_ID = "codex-session:demo-lineage-subagent"
 DEMO_SESSION_IDS = (
     DEMO_CHATGPT_SESSION_ID,
     DEMO_CLAUDE_CODE_SESSION_ID,
+    DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID,
     DEMO_CODEX_SESSION_ID,
     DEMO_GEMINI_SESSION_ID,
     DEMO_CODEX_LINEAGE_PARENT_SESSION_ID,
@@ -150,6 +152,15 @@ DEMO_CORPUS_FAMILIES: tuple[DemoCorpusFamily, ...] = (
         messages_max=10,
         seed_offset=1,
         style="demo-tool-heavy",
+    ),
+    DemoCorpusFamily(
+        family_id="claude-ai-temporary",
+        label="Claude.ai temporary chat",
+        provider="claude-ai",
+        construct_ids=("temporary_session_rows",),
+        description="Claude.ai export payload marked temporary by source evidence.",
+        source_paths=("claude-ai/temporary-demo.json",),
+        synthetic=False,
     ),
     DemoCorpusFamily(
         family_id="codex-tools",

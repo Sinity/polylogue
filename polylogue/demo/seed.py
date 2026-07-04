@@ -47,6 +47,7 @@ def materialize_demo_source(root: Path, *, force: bool = False) -> Path:
         prefix="demo",
         index_width=2,
     )
+    _write_demo_temporary_sources(source_root)
     _write_demo_lineage_sources(source_root)
     return source_root
 
@@ -54,6 +55,58 @@ def materialize_demo_source(root: Path, *, force: bool = False) -> Path:
 def _write_jsonl(path: Path, records: tuple[dict[str, object], ...]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(json.dumps(record, sort_keys=True) for record in records) + "\n", encoding="utf-8")
+
+
+def _write_json(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _write_demo_temporary_sources(source_root: Path) -> None:
+    """Write a Claude.ai temporary-chat fixture through the parser path."""
+
+    _write_json(
+        source_root / "claude-ai" / "temporary-demo.json",
+        {
+            "uuid": "demo-temporary-claude-ai",
+            "name": "Temporary demo context check",
+            "is_temporary": True,
+            "created_at": "2026-07-04T09:50:00Z",
+            "updated_at": "2026-07-04T09:50:03Z",
+            "chat_messages": [
+                {
+                    "uuid": "temporary-u0",
+                    "sender": "human",
+                    "text": "Please answer without retaining this temporary context.",
+                    "created_at": "2026-07-04T09:50:01Z",
+                    "updated_at": "2026-07-04T09:50:01Z",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Please answer without retaining this temporary context.",
+                        }
+                    ],
+                },
+                {
+                    "uuid": "temporary-a1",
+                    "sender": "assistant",
+                    "text": "The archive keeps the evidence but marks this session temporary.",
+                    "created_at": "2026-07-04T09:50:02Z",
+                    "updated_at": "2026-07-04T09:50:03Z",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "The archive keeps the evidence but marks this session temporary.",
+                        },
+                        {
+                            "type": "token_budget",
+                            "remaining": 2048,
+                        },
+                    ],
+                },
+            ],
+        },
+    )
 
 
 def _codex_session_meta(
@@ -279,6 +332,7 @@ def demo_source_specs(source_root: Path) -> list[Source]:
 
     return [
         Source(name="chatgpt", path=Path("chatgpt")),
+        Source(name="claude-ai", path=Path("claude-ai")),
         Source(name="claude-code", path=Path("claude-code")),
         Source(name="codex", path=Path("codex")),
         Source(name="gemini", path=Path("gemini")),
