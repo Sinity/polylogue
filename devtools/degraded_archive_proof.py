@@ -27,6 +27,10 @@ class DegradedArchiveProofResult:
     """Summary of one degraded-copy proof run."""
 
     ok: bool
+    healing_driver: str
+    degraded_inputs: tuple[str, ...]
+    daemon_owned_primitives: tuple[str, ...]
+    always_running_paths: tuple[str, ...]
     out_dir: str
     archive_root: str
     archive_preserved: bool
@@ -125,6 +129,10 @@ def _write_markdown(path: Path, result: DegradedArchiveProofResult) -> None:
         "# Degraded Archive Proof",
         "",
         f"- ok: `{result.ok}`",
+        f"- healing driver: `{result.healing_driver}`",
+        f"- degraded inputs: `{', '.join(result.degraded_inputs)}`",
+        f"- daemon-owned primitives: `{', '.join(result.daemon_owned_primitives)}`",
+        f"- always-running paths: `{', '.join(result.always_running_paths)}`",
         f"- work archive: `{result.archive_root}`",
         f"- work archive preserved: `{result.archive_preserved}`",
         f"- seeded sessions/messages: `{result.seeded_sessions}` / `{result.seeded_messages}`",
@@ -136,7 +144,7 @@ def _write_markdown(path: Path, result: DegradedArchiveProofResult) -> None:
         f"- optimize errors: `{', '.join(result.optimize_errors) or 'none'}`",
         f"- FTS repair: `{result.fts_repair_success}` — {result.fts_repair_detail}",
         "",
-        "This proof uses a deterministic demo archive copy, deliberately corrupts only rebuildable derived state, then runs the same bounded repair/checkpoint/optimize primitives used by the daemon.",
+        "This proof uses a deterministic demo archive copy, deliberately corrupts only rebuildable derived state, then runs the same bounded FTS repair, WAL checkpoint, and PRAGMA optimize primitives owned by daemon startup/convergence/periodic upkeep and direct ingest commit upkeep.",
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -207,6 +215,20 @@ def run_degraded_archive_proof(
     artifact_markdown = out_dir / "degraded-archive-proof.md"
     result = DegradedArchiveProofResult(
         ok=ok,
+        healing_driver="daemon_owned_upkeep_primitives",
+        degraded_inputs=("messages_fts_freshness", "split_tier_wal", "split_tier_sqlite_stat1"),
+        daemon_owned_primitives=(
+            "repair_stale_fts_rows",
+            "maybe_checkpoint_archive_wals",
+            "maybe_optimize_archive_tiers",
+        ),
+        always_running_paths=(
+            "daemon_startup_fts_readiness",
+            "daemon_convergence_fts_surface_debt",
+            "daemon_periodic_wal_checkpoint",
+            "daemon_periodic_db_optimize",
+            "direct_archive_ingest_post_commit_upkeep",
+        ),
         out_dir=str(out_dir),
         archive_root=str(archive_root),
         archive_preserved=keep_archive,
