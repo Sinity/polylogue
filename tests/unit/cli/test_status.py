@@ -571,6 +571,42 @@ class TestNoArchiveStatus:
             "ops.db",
         ]
 
+    def test_direct_status_json_compacts_raw_replay_backlog(self, tmp_path: Path) -> None:
+        env = _make_app_env()
+        db_anchor = tmp_path / "index.db"
+        initialize_archive_database(db_anchor, ArchiveTier.INDEX)
+        backlog = {
+            "available": True,
+            "candidate_count": 2,
+            "missing_blob_count": 0,
+            "already_parsed_count": 0,
+            "total_blob_bytes": 12_000_000,
+            "max_blob_bytes": 10_000_000,
+            "execute_blob_limit_bytes": 1_000_000_000,
+            "oversized_count": 0,
+            "oversized_stream_safe_count": 0,
+            "top_raw_rows": [{"raw_id": "raw-a", "blob_size": 10_000_000}],
+            "origin_summary": [{"origin": "codex-session", "raw_count": 2, "total_blob_bytes": 12_000_000}],
+            "source_path_summary": [{"source_path": "/large/local/path", "raw_count": 2}],
+        }
+
+        with (
+            patch("polylogue.paths.db_path", return_value=db_anchor),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch("polylogue.cli.commands.status._direct_raw_materialization_readiness", return_value={}),
+            patch("polylogue.cli.commands.status._raw_replay_backlog_status", return_value=backlog),
+            patch("polylogue.cli.commands.status._ops_workload_status", return_value={"available": False}),
+            patch("polylogue.storage.embeddings.status_payload.embedding_status_payload", side_effect=RuntimeError),
+        ):
+            _show_direct_json(env)
+
+        payload = json.loads(_combined_calls(env))
+        raw_replay = payload["raw_replay_backlog"]
+        assert raw_replay["candidate_count"] == 2
+        assert raw_replay["total_blob_bytes"] == 12_000_000
+        assert raw_replay["origin_summary"][0]["origin"] == "codex-session"
+        assert "source_path_summary" not in raw_replay
+
     def test_archive_tier_status_labels_large_table_estimates(
         self,
         monkeypatch: pytest.MonkeyPatch,

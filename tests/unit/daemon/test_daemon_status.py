@@ -395,6 +395,23 @@ def test_daemon_status_marks_raw_materialization_debt_not_ready(
             "source_family_counts": {"aistudio-drive": 238},
         },
     )
+    monkeypatch.setattr(
+        "polylogue.daemon.status._raw_replay_backlog_info",
+        lambda: {
+            "available": True,
+            "candidate_count": 3,
+            "missing_blob_count": 0,
+            "already_parsed_count": 0,
+            "total_blob_bytes": 15_000_000,
+            "max_blob_bytes": 10_000_000,
+            "execute_blob_limit_bytes": 1_000_000_000,
+            "oversized_count": 0,
+            "oversized_stream_safe_count": 0,
+            "top_raw_rows": [{"raw_id": "raw-a", "blob_size": 10_000_000}],
+            "origin_summary": [{"origin": "aistudio-drive", "raw_count": 3, "total_blob_bytes": 15_000_000}],
+            "source_path_summary": [],
+        },
+    )
 
     with (
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
@@ -405,6 +422,7 @@ def test_daemon_status_marks_raw_materialization_debt_not_ready(
         status_payload = daemon_status_payload(sources=())
 
     materialization = cast(dict[str, object], status_payload["raw_materialization_readiness"])
+    raw_replay = cast(dict[str, object], status_payload["raw_replay_backlog"])
     assert materialization["total"] == 238
     assert materialization["raw_artifact_count"] == 300
     assert materialization["materialized_raw_artifact_count"] == 62
@@ -430,6 +448,9 @@ def test_daemon_status_marks_raw_materialization_debt_not_ready(
 
     lines = format_daemon_status_lines(status_payload)
     assert "Raw materialization: 62/300 materialized; 238 raw/index join gap(s) need classification" in lines
+    assert raw_replay["candidate_count"] == 3
+    assert "Raw replay backlog: 3 raw row(s), 15.0 MB pending; largest 10.0 MB" in lines
+    assert "  weighted by origin: aistudio-drive=3/15.0 MB" in lines
 
 
 def test_daemon_status_preserves_lost_source_evidence(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

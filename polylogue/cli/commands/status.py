@@ -1086,6 +1086,29 @@ def _ops_workload_status(active_root: Path, *, now_ms: int) -> dict[str, Any]:
     }
 
 
+def _raw_replay_backlog_status(active_root: Path, *, limit: int = 5) -> dict[str, Any]:
+    """Return the weighted raw source-to-index replay backlog for status."""
+    try:
+        from polylogue.config import Config
+        from polylogue.paths import render_root
+        from polylogue.storage.repair import raw_materialization_replay_backlog
+
+        return raw_materialization_replay_backlog(
+            Config(archive_root=active_root, render_root=render_root(), sources=[]),
+            limit=limit,
+        )
+    except Exception as exc:
+        return {
+            "available": False,
+            "reason": str(exc),
+            "candidate_count": 0,
+            "total_blob_bytes": 0,
+            "top_raw_rows": [],
+            "origin_summary": [],
+            "source_path_summary": [],
+        }
+
+
 @click.command("status")
 @click.option(
     "--daemon-url",
@@ -1257,6 +1280,10 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
     if db_bytes:
         env.ui.console.print(f"  DB: {_fmt_bytes(db_bytes)}  Free: {_fmt_bytes(disk_free)}")
 
+    raw_replay_backlog = status.get("raw_replay_backlog")
+    if isinstance(raw_replay_backlog, dict):
+        _render_raw_replay_backlog(env, raw_replay_backlog)
+
     # Raw failures
     raw_parse = status.get("raw_parse_failures", 0)
     raw_val = status.get("raw_validation_failures", 0)
@@ -1340,6 +1367,13 @@ def _compact_status_payload(status: dict[str, Any], *, source: str) -> dict[str,
     )
     if raw_materialization:
         payload["raw_materialization_readiness"] = raw_materialization
+
+    raw_replay_backlog = _compact_mapping_without(
+        status.get("raw_replay_backlog"),
+        {"source_path_summary"},
+    )
+    if raw_replay_backlog:
+        payload["raw_replay_backlog"] = raw_replay_backlog
 
     embedding_readiness = _compact_mapping_without(
         status.get("embedding_readiness"),
@@ -1520,6 +1554,7 @@ def _show_direct_json(
         "archive_tiers": _archive_tier_status(active_root),
         "sqlite_maintenance": _sqlite_maintenance_status(active_root),
         "ingest_workload": _ops_workload_status(active_root, now_ms=int(time.time() * 1000)),
+        "raw_replay_backlog": _raw_replay_backlog_status(active_root),
         "archive_readiness": archive_readiness,
         "archive_facade_routes": _archive_facade_route_status(),
         "archive_cli_routes": _archive_cli_route_status(),
@@ -1759,6 +1794,41 @@ def _render_ingest_workload(env: AppEnv, workload: dict[str, Any]) -> None:
         env.ui.console.print(f"    convergence debt: [yellow]{debt_total}[/yellow] ({detail})")
 
 
+def _render_raw_replay_backlog(env: AppEnv, backlog: dict[str, Any]) -> None:
+    """Render weighted raw materialization replay backlog."""
+    if not backlog.get("available"):
+        return
+    candidates = _safe_int(backlog.get("candidate_count"))
+    missing = _safe_int(backlog.get("missing_blob_count"))
+    if candidates <= 0 and missing <= 0:
+        return
+    total_bytes = _safe_int(backlog.get("total_blob_bytes"))
+    max_bytes = _safe_int(backlog.get("max_blob_bytes"))
+    oversized = _safe_int(backlog.get("oversized_count"))
+    line = f"  Raw replay backlog: [yellow]{candidates:,} raw row(s), {_fmt_bytes(total_bytes)} pending"
+    if max_bytes:
+        line += f"; largest {_fmt_bytes(max_bytes)}"
+    if missing:
+        line += f"; {missing:,} missing blob(s)"
+    if oversized:
+        line += f"; {oversized:,} oversized"
+    line += "[/yellow]"
+    env.ui.console.print(line)
+
+    origins = backlog.get("origin_summary")
+    if isinstance(origins, list) and origins:
+        parts: list[str] = []
+        for item in origins[:3]:
+            if not isinstance(item, dict):
+                continue
+            origin = item.get("origin") or "unknown"
+            raw_count = _safe_int(item.get("raw_count"))
+            blob_bytes = _safe_int(item.get("total_blob_bytes"))
+            parts.append(f"{origin}={raw_count:,}/{_fmt_bytes(blob_bytes)}")
+        if parts:
+            env.ui.console.print(f"    weighted by origin: {', '.join(parts)}")
+
+
 def _render_diagnostic(env: AppEnv, diag: Any) -> None:
     """Render a ``StatusDiagnostic`` with rich tags but no traceback."""
     color = "red" if diag.kind in {"schema_mismatch", "locked_db", "unknown_db_error"} else "yellow"
@@ -1885,6 +1955,7 @@ def _show_direct_status(
             if tier_detail:
                 env.ui.console.print(f"  Archive tier detail: {tier_detail}")
             _render_sqlite_maintenance(env, _sqlite_maintenance_status(active_root))
+            _render_raw_replay_backlog(env, _raw_replay_backlog_status(active_root))
             _render_archive_readiness(
                 env,
                 _direct_archive_readiness_status(

@@ -60,6 +60,7 @@ from polylogue.storage.archive_readiness import (
     raw_materialization_readiness_snapshot,
     raw_materialization_ready,
 )
+from polylogue.storage.repair import raw_materialization_replay_backlog
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -293,6 +294,7 @@ class DaemonStatus(BaseModel):
     insight_freshness: InsightFreshness = Field(default_factory=InsightFreshness)
     embedding_readiness: EmbeddingReadiness = Field(default_factory=EmbeddingReadiness)
     raw_materialization_readiness: RawMaterializationReadiness = Field(default_factory=RawMaterializationReadiness)
+    raw_replay_backlog: dict[str, object] = Field(default_factory=dict)
     archive_storage: ArchiveStorageStatus = Field(default_factory=ArchiveStorageStatus)
     component_readiness: dict[str, object] = Field(default_factory=dict)
     browser_capture_active: bool = False
@@ -874,6 +876,16 @@ def _safe_float(value: object, *, default: float = 0.0) -> float:
         except ValueError:
             return default
     return default
+
+
+def _fmt_bytes(value: int) -> str:
+    if value >= 1_000_000_000:
+        return f"{value / 1_000_000_000:.1f} GB"
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f} MB"
+    if value > 0:
+        return f"{value / 1_000:.0f} KB"
+    return "0 KB"
 
 
 def _failing_files_info() -> list[str]:
@@ -1830,6 +1842,28 @@ def _raw_materialization_readiness_info() -> RawMaterializationReadiness:
     return RawMaterializationReadiness.model_validate(payload)
 
 
+def _raw_replay_backlog_info() -> dict[str, object]:
+    """Return weighted raw source-to-index replay backlog for daemon status."""
+    try:
+        from polylogue.config import Config
+        from polylogue.paths import render_root
+
+        return raw_materialization_replay_backlog(
+            Config(archive_root=archive_root(), render_root=render_root(), sources=[]),
+            limit=5,
+        )
+    except Exception as exc:
+        return {
+            "available": False,
+            "reason": str(exc),
+            "candidate_count": 0,
+            "total_blob_bytes": 0,
+            "top_raw_rows": [],
+            "origin_summary": [],
+            "source_path_summary": [],
+        }
+
+
 def build_daemon_status(
     *,
     sources: tuple[WatchSource, ...] | None = None,
@@ -1854,6 +1888,7 @@ def build_daemon_status(
     fts = _fts_readiness_info()
     freshness = _insight_freshness_info()
     raw_materialization_readiness = _raw_materialization_readiness_info()
+    raw_replay_backlog = _raw_replay_backlog_info()
     materialization_ready = storage_info.archive_materialization_ready and raw_materialization_ready(
         raw_materialization_readiness
     )
@@ -1984,6 +2019,7 @@ def build_daemon_status(
         insight_freshness=insight_freshness,
         embedding_readiness=embedding_readiness,
         raw_materialization_readiness=raw_materialization_readiness,
+        raw_replay_backlog=raw_replay_backlog,
         archive_storage=storage_info,
         component_readiness=_daemon_component_readiness(
             component_state=component_state,
@@ -2066,6 +2102,7 @@ def daemon_status_payload(
             "last_ingestion_batch": last_ingestion,
             "fts_readiness": status.fts_readiness.model_dump(),
             "raw_materialization_readiness": status.raw_materialization_readiness.model_dump(),
+            "raw_replay_backlog": status.raw_replay_backlog,
             "embedding_readiness": status.embedding_readiness.model_dump(),
             "memory": {
                 "rss_current_mb": status.rss_current_mb,
@@ -2327,6 +2364,35 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
                     f"{_safe_int(materialization.get('warning'))} warning, "
                     f"{_safe_int(materialization.get('blocked'))} blocked"
                 )
+    backlog = payload.get("raw_replay_backlog")
+    if isinstance(backlog, dict) and backlog.get("available"):
+        candidates = _safe_int(backlog.get("candidate_count"))
+        missing = _safe_int(backlog.get("missing_blob_count"))
+        if candidates > 0 or missing > 0:
+            total_bytes = _safe_int(backlog.get("total_blob_bytes"))
+            max_bytes = _safe_int(backlog.get("max_blob_bytes"))
+            oversized = _safe_int(backlog.get("oversized_count"))
+            line = f"Raw replay backlog: {candidates:,} raw row(s), {_fmt_bytes(total_bytes)} pending"
+            if max_bytes:
+                line += f"; largest {_fmt_bytes(max_bytes)}"
+            if missing:
+                line += f"; {missing:,} missing blob(s)"
+            if oversized:
+                line += f"; {oversized:,} oversized"
+            lines.append(line)
+
+            origins = backlog.get("origin_summary")
+            if isinstance(origins, list) and origins:
+                parts: list[str] = []
+                for item in origins[:3]:
+                    if not isinstance(item, dict):
+                        continue
+                    origin = item.get("origin") or "unknown"
+                    raw_count = _safe_int(item.get("raw_count"))
+                    blob_bytes = _safe_int(item.get("total_blob_bytes"))
+                    parts.append(f"{origin}={raw_count:,}/{_fmt_bytes(blob_bytes)}")
+                if parts:
+                    lines.append(f"  weighted by origin: {', '.join(parts)}")
     # Health summary
     health = payload.get("health")
     if isinstance(health, dict):
