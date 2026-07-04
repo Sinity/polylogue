@@ -31,10 +31,24 @@ Every `docs/plans/*.yaml` manifest is enforced by a lint in `devtools verify`.
 
 ## Major Decisions
 
-### Schema versioning: fresh-first, no in-place upgrade chains
-- **Chosen**: `SCHEMA_VERSION` constant is the authority. Mismatch = rejected. Schema bumps define the new canonical DDL and document the re-ingest/rebuild expectation.
-- **Rejected**: Alembic/in-place upgrade chains — complexity, partial state risk, forward/reverse upgrade burden.
-- **Constraint**: Archive SQLite file set, WAL mode, operator owns the rebuild trigger when a tier is rejected.
+### Schema versioning: two regimes keyed by tier durability
+- **Chosen**: per-tier version constants are the authority; mismatch is rejected.
+  Two evolution regimes (see `docs/internals.md` § Schema Versioning Model):
+  - **Durable tiers** (`source.db`, `user.db`) use explicit *additive* numbered SQL
+    migrations under `storage/sqlite/migrations/{source,user}/NNN_*.sql`, advancing
+    `PRAGMA user_version` one step at a time behind a **verified backup manifest**.
+    Additive = `CREATE TABLE`/`CREATE INDEX`/`ADD COLUMN`/bounded backfill;
+    destructive durable changes need copy-forward + explicit operator consent.
+  - **Derived tiers** (`index.db`, `embeddings.db`) have no in-place chains — a
+    schema mismatch rebuilds/blue-green-replaces the tier from durable evidence.
+  - **Disposable tier** (`ops.db`) may keep narrow bootstrap `ALTER TABLE` helpers.
+- **Rejected**: a *single* fresh-first-only policy that forces re-ingest for any
+  durable-tier change (loses irreplaceable `user.db` assertions); and full
+  Alembic-style forward/reverse upgrade chains for derived tiers (unnecessary —
+  they rebuild). The `devtools lab policy schema-versioning` lint enforces the
+  boundary: numbered durable migrations allowed, derived-tier upgrade helpers forbidden.
+- **Constraint**: Archive SQLite file set, WAL mode. Durable-tier migration
+  requires a backup manifest; derived-tier rebuild is operator-triggered on reject.
 
 ### Content hash: idempotent by SHA-256 over NFC-normalized payload
 - **Chosen**: Hash over title, timestamps, messages, attachments, content blocks. Excludes user metadata (tags, summaries, notes).

@@ -739,10 +739,13 @@ Never delete:
 # Polylogue Architecture
 
 For the target shape, guardrails, and architectural decision log, see
-[Architecture Spine](architecture-spine.md). For current sequencing and active
-workstreams, see [Execution Plan](execution-plan.md). For the vocabulary split
-between provider-wire identity, public origin, source roots, capture mode,
-parser provenance, and refs, see `docs/provider-origin-identity.md`.
+[Architecture Spine](architecture-spine.md). Current sequencing and active
+workstreams live in the Beads backlog (`bd ready`, `bd list --status open`) —
+the durable directive substrate; the former `docs/execution-plan.md` is
+superseded (its GitHub-issue map was re-encoded as Beads issues) and slated for
+retirement (Ref polylogue-3tl.13). For the vocabulary split between
+provider-wire identity, public origin, source roots, capture mode, parser
+provenance, and refs, see `docs/provider-origin-identity.md`.
 
 Polylogue is a local archive for AI sessions. The system has four rings:
 
@@ -1405,19 +1408,29 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   storage schema) are still regenerated fresh via
   `devtools lab schema generate` and promoted via `devtools lab schema promote`.
 
-This design intentionally rejects in-place upgrade-chain complexity (no
-Alembic, no forward/reverse upgrade scripts, no partially-applied upgrade
-states, no `_apply_version_upgrade_plan` rollback windows). If the configured
-archive path is not the current schema, the operator moves it aside and
-re-ingests from source. Files that are not configured archive paths are not
-classified or handled by the archive runtime.
+For **derived tiers** (`index.db`, `embeddings.db`) this design intentionally
+rejects in-place upgrade-chain complexity (no Alembic, no forward/reverse
+upgrade scripts, no partially-applied upgrade states, no
+`_apply_version_upgrade_plan` rollback windows): a derived-tier schema mismatch
+rebuilds or blue-green-replaces the tier from durable source/user evidence.
+Files that are not configured archive paths are not classified or handled by
+the archive runtime.
 
-The only compatibility carve-out is `ops.db`: `archive_tiers/bootstrap.py` may
-use narrowly scoped `ALTER TABLE ... ADD COLUMN` helpers for disposable daemon
-telemetry, such as ingest-cursor runtime fields and cursor-lag rollups. That
-exception is not a migration pattern for `source.db`, `index.db`,
-`embeddings.db`, or `user.db`; durable tier changes still require a version
-bump and rebuild/reset path.
+For **durable tiers** (`source.db`, `user.db`) the boundary is different, because
+`user.db` holds irreplaceable human assertions that cannot be rebuilt from
+source. These tiers use explicit *additive* numbered SQL migrations under
+`storage/sqlite/migrations/{source,user}/NNN_*.sql`, applied one `PRAGMA
+user_version` step at a time by `migration_runner.py` behind a **verified backup
+manifest** for the affected tier. Additive means `CREATE TABLE`/`CREATE INDEX`/
+`ADD COLUMN`/bounded backfill; destructive durable-tier changes require a
+copy-forward design and explicit operator consent, never a routine migration.
+
+`ops.db` (disposable daemon telemetry) may additionally use narrowly scoped
+`ALTER TABLE ... ADD COLUMN` bootstrap helpers in `archive_tiers/bootstrap.py`
+(ingest-cursor runtime fields, cursor-lag rollups). The
+`devtools lab policy schema-versioning` lint enforces the whole boundary:
+numbered durable-tier migrations are allowed; derived-tier upgrade helpers are
+forbidden.
 
 ## Archive Activation
 

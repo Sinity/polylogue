@@ -1,10 +1,13 @@
 # Polylogue Architecture
 
 For the target shape, guardrails, and architectural decision log, see
-[Architecture Spine](architecture-spine.md). For current sequencing and active
-workstreams, see [Execution Plan](execution-plan.md). For the vocabulary split
-between provider-wire identity, public origin, source roots, capture mode,
-parser provenance, and refs, see `docs/provider-origin-identity.md`.
+[Architecture Spine](architecture-spine.md). Current sequencing and active
+workstreams live in the Beads backlog (`bd ready`, `bd list --status open`) —
+the durable directive substrate; the former `docs/execution-plan.md` is
+superseded (its GitHub-issue map was re-encoded as Beads issues) and slated for
+retirement (Ref polylogue-3tl.13). For the vocabulary split between
+provider-wire identity, public origin, source roots, capture mode, parser
+provenance, and refs, see `docs/provider-origin-identity.md`.
 
 Polylogue is a local archive for AI sessions. The system has four rings:
 
