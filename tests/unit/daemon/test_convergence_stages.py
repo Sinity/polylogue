@@ -209,7 +209,7 @@ def _seed_minimal_archive(db_path: Path, source_path: Path, *, session_id: str =
         conn.commit()
 
 
-def test_fts_stage_repairs_archive_when_db_anchor_exists(tmp_path: Path) -> None:
+def test_fts_stage_skips_archive_source_path_backlog_repair(tmp_path: Path) -> None:
     archive_db = tmp_path / "index.db"
     (tmp_path / "index.db").touch()
     source_path = tmp_path / "codex.jsonl"
@@ -217,20 +217,20 @@ def test_fts_stage_repairs_archive_when_db_anchor_exists(tmp_path: Path) -> None
 
     stage = make_fts_stage(tmp_path / "index.db")
 
-    assert stage.check(source_path) is True
+    assert stage.check(source_path) is False
     assert stage.execute(source_path) is True
     with sqlite3.connect(archive_db) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 0
 
 
-def test_fts_stage_uses_targeted_repair_not_full_rebuild(tmp_path: Path) -> None:
-    """#1851: an archive FTS batch repairs only the changed sessions.
+def test_fts_session_debt_uses_targeted_repair_not_full_rebuild(tmp_path: Path) -> None:
+    """Session-scoped FTS debt repairs only named sessions.
 
-    The convergence FTS stage previously called the full corpus rebuild
-    (delete-all + re-insert every message row) on every batch, so a single
-    small append re-indexed everything (~14 MiB regardless of payload). With a
-    known source-path → session mapping it must take the targeted delete+insert
-    path instead, while leaving ``messages_fts`` complete.
+    Foreground source-path convergence deliberately does not repair historical
+    FTS backlog: archive writes already repair newly changed session rows, and
+    old debt is handled by bounded session/debt convergence. When a concrete
+    session-id debt item is retried, it still takes the targeted delete+insert
+    path rather than rebuilding the whole FTS surface.
     """
     from unittest import mock
 
@@ -249,7 +249,8 @@ def test_fts_stage_uses_targeted_repair_not_full_rebuild(tmp_path: Path) -> None
         ) as targeted,
         mock.patch.object(fts_lc, "rebuild_fts_index_sync", wraps=fts_lc.rebuild_fts_index_sync) as full_rebuild,
     ):
-        assert stage.execute(source_path) is True
+        assert stage.execute_sessions is not None
+        assert stage.execute_sessions(["codex-session:s1"]) is True
 
     targeted.assert_called_once()
     full_rebuild.assert_not_called()

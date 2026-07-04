@@ -92,7 +92,6 @@ from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.sources.live.dedup import handle_schema_version_mismatch, handle_structural_database_error
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics, LiveFullIngestAggregate
-from polylogue.sources.live.session_convergence import converge_known_sessions
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
@@ -727,16 +726,6 @@ class LiveBatchProcessor:
 
         started = time.perf_counter()
         try:
-            session_result = converge_known_sessions(
-                cursor=self._cursor,
-                converger=self._converger,
-                paths=unique_paths,
-                started=started,
-                archive_root=Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent)),
-            )
-            if session_result is not None:
-                return session_result
-
             converge_batch = getattr(self._converger, "converge_batch", None)
             if callable(converge_batch):
                 states, timings = converge_batch(unique_paths)

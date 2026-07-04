@@ -5,7 +5,8 @@ Each stage has a ``check`` that inspects current archive state and an
 ingestion through daemon-side raw-record ingest; daemon convergence stages only
 repair and refresh post-ingest archive state.
 
-- fts: rebuild FTS if messages > indexed count
+- fts: retry explicit session/global FTS debt; source-path foreground checks
+  stay cheap because archive writes already repair newly changed rows
 - embed: optional vectorization for changed sessions
 - insights: refresh session profiles
 """
@@ -1000,72 +1001,26 @@ def _archive_repair_sessions_fts(conn: sqlite3.Connection, session_ids: Sequence
 
 
 def _archive_fts_check(db_path: Path, path: Path) -> bool:
-    try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
-        try:
-            session_ids = _schema_archive_session_ids_for_source_path(conn, path)
-            return bool(session_ids) and _archive_fts_needs_repair(conn, session_ids)
-        finally:
-            conn.close()
-    except Exception:
-        return False
+    del db_path, path
+    return False
 
 
 def _archive_fts_execute(db_path: Path, path: Path) -> bool:
-    try:
-        conn = sqlite3.connect(db_path, timeout=30.0)
-        try:
-            session_ids = _schema_archive_session_ids_for_source_path(conn, path)
-            if not session_ids:
-                logger.info("fts: archive skipped path repair with no resolved sessions path=%s", path)
-                return True
-            _archive_repair_sessions_fts(conn, session_ids)
-            conn.commit()
-            logger.info("fts: archive repaired messages_fts sessions=%d", len(session_ids))
-            return not _archive_fts_needs_repair(conn, session_ids)
-        finally:
-            conn.close()
-    except Exception:
-        logger.warning("fts: archive repair failed", exc_info=True)
-        return False
+    del db_path
+    logger.info("fts: archive source-path foreground repair skipped path=%s", path)
+    return True
 
 
 def _archive_fts_check_many(db_path: Path, paths: Sequence[Path]) -> set[Path]:
-    try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
-        try:
-            by_path = _schema_archive_session_ids_for_source_paths(conn, paths)
-            return {
-                path
-                for path, session_ids in by_path.items()
-                if session_ids and _archive_fts_needs_repair(conn, session_ids)
-            }
-        finally:
-            conn.close()
-    except Exception:
-        return set()
+    del db_path, paths
+    return set()
 
 
 def _archive_fts_execute_many(db_path: Path, paths: Sequence[Path]) -> bool:
-    if not paths:
-        return False
-    try:
-        conn = sqlite3.connect(db_path, timeout=30.0)
-        try:
-            by_path = _schema_archive_session_ids_for_source_paths(conn, paths)
-            session_ids = list(dict.fromkeys(session_id for ids in by_path.values() for session_id in ids))
-            if not session_ids:
-                logger.info("fts: archive skipped batch path repair with no resolved sessions paths=%d", len(paths))
-                return True
-            _archive_repair_sessions_fts(conn, session_ids)
-            conn.commit()
-            logger.info("fts: archive batch repaired messages_fts paths=%d sessions=%d", len(paths), len(session_ids))
-            return not _archive_fts_needs_repair(conn, session_ids)
-        finally:
-            conn.close()
-    except Exception:
-        logger.warning("fts: archive batch repair failed", exc_info=True)
-        return False
+    del db_path
+    if paths:
+        logger.info("fts: archive batch source-path foreground repair skipped paths=%d", len(paths))
+    return True
 
 
 def _archive_fts_check_sessions(db_path: Path, session_ids: Sequence[str]) -> set[str]:
