@@ -100,6 +100,12 @@ DEMO_CONSTRUCTS: tuple[DemoConstruct, ...] = (
         sql="SELECT COUNT(*) FROM sessions WHERE session_kind = 'temporary'",
     ),
     DemoConstruct(
+        construct_id="token_budget_web_constructs",
+        label="Token-budget web constructs",
+        description="At least one provider-native token-budget construct is preserved.",
+        sql="SELECT COUNT(*) FROM web_content_constructs WHERE construct_type = 'token_budget'",
+    ),
+    DemoConstruct(
         construct_id="session_link_rows",
         label="Session-link rows",
         description="At least one parser-declared parent relationship is persisted.",

@@ -208,7 +208,7 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
     temporary_family = DEMO_CORPUS_FAMILIES[2]
     assert temporary_family.synthetic is False
     assert temporary_family.source_paths == ("claude-ai/temporary-demo.json",)
-    assert temporary_family.construct_ids == ("temporary_session_rows",)
+    assert temporary_family.construct_ids == ("temporary_session_rows", "token_budget_web_constructs")
     assert DEMO_CORPUS_FAMILIES[-1].synthetic is False
     assert set(DEMO_CORPUS_FAMILIES[-1].construct_ids) == {
         "session_link_rows",

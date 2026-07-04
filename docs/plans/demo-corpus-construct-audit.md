@@ -36,6 +36,7 @@ The current deterministic archive is intentionally tiny:
 | Attachment rows | 1 |
 | Acquired attachment rows | 1 (`byte_count=53`, true blob hash present) |
 | Temporary sessions | 1 |
+| Token-budget web constructs | 1 |
 | Session-link rows | 2 |
 | Prefix-sharing lineage links | 1 |
 | Subagent links | 1 |
