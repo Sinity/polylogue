@@ -201,6 +201,7 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
         "chatgpt-dialogue",
         "claude-code-tools",
         "claude-ai-temporary",
+        "browser-capture-gap",
         "codex-tools",
         "gemini-attachments",
         "codex-lineage-subagent",
@@ -209,6 +210,10 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
     assert temporary_family.synthetic is False
     assert temporary_family.source_paths == ("claude-ai/temporary-demo.json",)
     assert temporary_family.construct_ids == ("temporary_session_rows", "token_budget_web_constructs")
+    capture_gap_family = DEMO_CORPUS_FAMILIES[3]
+    assert capture_gap_family.synthetic is False
+    assert capture_gap_family.source_paths == ("browser-capture/chatgpt-dom-fallback.json",)
+    assert capture_gap_family.construct_ids == ("capture_gap_events",)
     assert DEMO_CORPUS_FAMILIES[-1].synthetic is False
     assert set(DEMO_CORPUS_FAMILIES[-1].construct_ids) == {
         "session_link_rows",

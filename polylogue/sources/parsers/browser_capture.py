@@ -5,13 +5,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TypeGuard
 
+from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, TEMPORARY_CHAT_INGEST_FLAG
 from polylogue.browser_capture.identity import legacy_browser_capture_native_id
 from polylogue.browser_capture.models import BrowserCaptureEnvelope, looks_like_browser_capture
 from polylogue.core.enums import Provider, SessionKind
 from polylogue.sources.parsers.base_models import ParsedAttachment, ParsedMessage, ParsedSession
-
-TEMPORARY_CHAT_INGEST_FLAG = "capture:temporary-chat"
-DOM_FALLBACK_INGEST_FLAG = "capture:dom-fallback"
 
 
 def _legacy_native_id(provider: Provider, provider_session_id: str | None) -> str | None:

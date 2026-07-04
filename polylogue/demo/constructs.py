@@ -106,6 +106,12 @@ DEMO_CONSTRUCTS: tuple[DemoConstruct, ...] = (
         sql="SELECT COUNT(*) FROM web_content_constructs WHERE construct_type = 'token_budget'",
     ),
     DemoConstruct(
+        construct_id="capture_gap_events",
+        label="Capture-gap events",
+        description="At least one lower-precedence browser capture is recorded as a gap event.",
+        sql="SELECT COUNT(*) FROM session_events WHERE event_type = 'capture_gap'",
+    ),
+    DemoConstruct(
         construct_id="session_link_rows",
         label="Session-link rows",
         description="At least one parser-declared parent relationship is persisted.",

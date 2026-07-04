@@ -14,7 +14,7 @@ to exercise the thing being claimed.
 - P1 matching issues: `17`.
 - Current seed command:
   `polylogue demo seed --root /realm/tmp/polylogue-uhl-demo-current/archive --force --with-overlays --format json`.
-- Current seed wall time on this workstation: `4.602s`.
+- Current seed wall time on this workstation: `4.838s`.
 - Current verifier:
   `polylogue demo verify --root /realm/tmp/polylogue-uhl-demo-current/archive --require-overlays --format json`.
 
@@ -32,11 +32,12 @@ The current deterministic archive is intentionally tiny:
 | Tool-use blocks | 19 |
 | Tool-result blocks | 21 |
 | Failed tool results | 4 |
-| Messages with provider usage lanes | 7 |
+| Messages with injected cost/token lanes | 7 |
 | Attachment rows | 1 |
 | Acquired attachment rows | 1 (`byte_count=53`, true blob hash present) |
 | Temporary sessions | 1 |
 | Token-budget web constructs | 1 |
+| Capture-gap session events | 1 |
 | Session-link rows | 2 |
 | Prefix-sharing lineage links | 1 |
 | Subagent links | 1 |
@@ -53,10 +54,14 @@ The demo source families are also declared in `polylogue.scenarios.corpus` as
 `DEMO_CORPUS_FAMILIES`, so each source family names the construct IDs it exists
 to exercise. The temporary-session family writes a Claude.ai export payload
 (`claude-ai/temporary-demo.json`) with source-level `is_temporary: true`; the
+browser-capture gap family writes a lower-precedence ChatGPT DOM fallback for
+the same native ChatGPT session (`browser-capture/chatgpt-dom-fallback.json`);
+and the direct archive ingest path records a `capture_gap` event whether the
+DOM fallback or the richer native export is parsed first. The
 lineage/subagent family writes explicit Codex source files
 (`codex/lineage-parent.jsonl`, `codex/lineage-fork.jsonl`,
-`codex/lineage-subagent.jsonl`). Both go through the normal parser/storage path;
-they are not DB-side row patches.
+`codex/lineage-subagent.jsonl`). These families go through the normal
+parser/storage path; they are not DB-side row patches.
 
 ## Requirements Buckets From Beads
 
@@ -84,14 +89,14 @@ claim them:
 | --- | --- | --- |
 | Richer lineage matrix | one prefix-sharing fork only; no resume/compaction/sidechain variants | `polylogue-4ts`, `polylogue-4ts.1`, `polylogue-37t.11` |
 | Abandoned / censored sessions | temporary-session coverage exists; no abandoned/censored variants yet | `polylogue-cfk`, temporal-analysis beads |
-| Browser-capture gap and convergence cases | no capture-gap scenario in the demo seed | `polylogue-b5l`, capture-completeness work |
+| Browser-capture convergence cases | capture-gap event coverage exists; no multi-capture convergence/debt scenario yet | `polylogue-b5l`, capture-completeness work |
 | Embedding-lane prose | no synthetic embedding coverage in the demo seed | embedding/status beads |
 | Subagent run projection collision | parent subagent run currently collides with child main `run_ref`; tracked as `polylogue-85z0` | `polylogue-37t.11`, `polylogue-4ts.1` |
 
 ## Next Implementation Order
 
 1. Add resume/compaction/sidechain variants to the lineage family.
-2. Add abandoned/censored and capture-gap families.
+2. Add abandoned/censored and richer browser-capture convergence families.
 3. Add embedding-lane prose or synthetic local embedding coverage.
 4. Render this audit into a generated datasheet from the family registry,
    so the docs stop being hand-maintained.

@@ -81,6 +81,36 @@ manual transitions fail before they rewrite local state. Use `--force` only when
 a rare edge or continuity break is genuinely correct and the trigger/decision
 explains why it should not be routed through the normal state machine.
 
+## Greedy Batch / PR Cadence
+
+Default development unit: one complete bead, or one coherent phase that can
+honestly satisfy a named bead acceptance-criteria subset with a clear residual
+matrix. Do not open or publish a PR for every small projection, helper,
+construct declaration, or proof artifact merely because it is locally green.
+
+Prefer a single branch/PR phase when the work:
+
+- belongs to one bead and one capability claim;
+- touches the same shared acquisition/query/projection/rendering substrate;
+- can be verified by one focused test family plus one live/demo artifact;
+- would otherwise force reviewers and future agents to reconstruct intent
+  across several thin PRs.
+
+Split only when there is a real boundary:
+
+- the bead is too large to review safely as one phase;
+- independent parts have different risk, owners, or deployment timing;
+- one part is a prerequisite unblocking other active work;
+- verification cost or failure isolation would become materially worse;
+- a partial PR can close a named bead or named acceptance-criteria phase, not
+  just land a convenient substep.
+
+Before publishing, audit the bead acceptance criteria. If the PR does not close
+the bead, the body and bead notes must say exactly which criteria are satisfied,
+which are deferred, and which follow-up bead owns the remainder. This is a
+velocity rule: fewer, more complete integration boundaries beat a chain of
+locally-correct but strategically thin slices.
+
 ## One-Loop Protocol
 
 1. **Direction**

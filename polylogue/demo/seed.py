@@ -12,7 +12,12 @@ from pathlib import Path
 
 from polylogue.config import Source
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
-from polylogue.scenarios import DEMO_CLAUDE_CODE_SESSION_ID, build_demo_corpus_specs, seed_demo_user_overlays
+from polylogue.scenarios import (
+    DEMO_CHATGPT_SESSION_ID,
+    DEMO_CLAUDE_CODE_SESSION_ID,
+    build_demo_corpus_specs,
+    seed_demo_user_overlays,
+)
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 
@@ -48,6 +53,7 @@ def materialize_demo_source(root: Path, *, force: bool = False) -> Path:
         index_width=2,
     )
     _write_demo_temporary_sources(source_root)
+    _write_demo_browser_capture_gap_sources(source_root)
     _write_demo_lineage_sources(source_root)
     return source_root
 
@@ -60,6 +66,11 @@ def _write_jsonl(path: Path, records: tuple[dict[str, object], ...]) -> None:
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _demo_archive_count(archive_root: Path, table: str) -> int:
+    with sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True) as conn:
+        return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
 
 
 def _write_demo_temporary_sources(source_root: Path) -> None:
@@ -105,6 +116,42 @@ def _write_demo_temporary_sources(source_root: Path) -> None:
                     ],
                 },
             ],
+        },
+    )
+
+
+def _write_demo_browser_capture_gap_sources(source_root: Path) -> None:
+    """Write a lower-precedence DOM fallback for capture-gap demos."""
+
+    native_id = DEMO_CHATGPT_SESSION_ID.split(":", maxsplit=1)[1]
+    _write_json(
+        source_root / "browser-capture" / "chatgpt-dom-fallback.json",
+        {
+            "polylogue_capture_kind": "browser_llm_session",
+            "schema_version": 1,
+            "capture_id": f"chatgpt:{native_id}:dom-fallback",
+            "provenance": {
+                "source_url": f"https://chatgpt.com/c/{native_id}",
+                "page_title": "ChatGPT - Debugging flaky async pipeline tests",
+                "captured_at": "2026-07-04T09:55:00Z",
+                "adapter_name": "chatgpt-dom-v1",
+                "capture_mode": "snapshot",
+            },
+            "session": {
+                "provider": "chatgpt",
+                "provider_session_id": native_id,
+                "title": "Debugging flaky async pipeline tests",
+                "updated_at": "2026-07-04T09:55:00Z",
+                "model": "gpt-5-demo",
+                "turns": [
+                    {
+                        "provider_turn_id": "dom-gap-u0",
+                        "role": "user",
+                        "text": "DOM fallback saw only this first turn.",
+                        "ordinal": 0,
+                    }
+                ],
+            },
         },
     )
 
@@ -336,6 +383,7 @@ def demo_source_specs(source_root: Path) -> list[Source]:
         Source(name="claude-code", path=Path("claude-code")),
         Source(name="codex", path=Path("codex")),
         Source(name="gemini", path=Path("gemini")),
+        Source(name="browser-capture", path=Path("browser-capture")),
     ]
 
 
@@ -361,8 +409,8 @@ async def seed_demo_archive(
     return DemoSeedResult(
         archive_root=archive_root,
         source_root=source_root,
-        session_count=int(result.counts["sessions"]),
-        message_count=int(result.counts["messages"]),
+        session_count=_demo_archive_count(archive_root, "sessions"),
+        message_count=_demo_archive_count(archive_root, "messages"),
         session_ids=tuple(sorted(result.processed_ids)),
         overlays_seeded=overlay is not None,
         assertion_count=len(overlay.assertion_ids) if overlay else 0,

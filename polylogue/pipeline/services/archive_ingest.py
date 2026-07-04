@@ -121,7 +121,7 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
             source_path = _archive_raw_source_path(raw_data, source)
             source_index = _archive_raw_source_index(raw_data)
             try:
-                _raw_id, session_id = archive.write_raw_and_parsed(
+                write_result = archive.write_raw_and_parsed_result(
                     session,
                     payload=payload,
                     source_path=source_path,
@@ -138,18 +138,18 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
                     archive.rollback()
                 raise
             counters["raw_rows"] += 1
-            counters["index_rows"] += 1
+            index_changed = (
+                write_result.counts.get("sessions", 0)
+                + write_result.counts.get("messages", 0)
+                + write_result.counts.get("attachments", 0)
+                + write_result.counts.get("session_events", 0)
+                + write_result.counts.get("raw_links", 0)
+            ) > 0
+            counters["index_rows"] += int(index_changed)
             await result.merge_result(
-                session_id,
-                {
-                    "sessions": 1,
-                    "messages": len(session.messages),
-                    "attachments": len(session.attachments),
-                    "skipped_sessions": 0,
-                    "skipped_messages": 0,
-                    "skipped_attachments": 0,
-                },
-                content_changed=True,
+                write_result.session_id,
+                write_result.counts,
+                content_changed=write_result.content_changed,
             )
             if batched:
                 counters["pending_messages"] += len(session.messages)

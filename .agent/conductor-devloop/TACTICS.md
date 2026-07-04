@@ -18,6 +18,34 @@ slice, narrow audit prompt, proof command, or process-health check. Avoid starti
 heavy command against the same checkout/archive while the current proof is
 pending.
 
+## Greedy Batch Default
+
+Batch toward bead closure by default. The normal loop is:
+
+1. audit the bead acceptance criteria;
+2. gather evidence for all remaining criteria;
+3. edit the coherent shared substrate in one batch;
+4. run focused proof once for the batch;
+5. generate one live/demo artifact that exercises the whole claim;
+6. publish one PR for the complete bead or coherent phase.
+
+Avoid turning each small helper, renderer field, construct declaration, or
+artifact refresh into its own PR. A small PR is appropriate only when it closes
+a named bead or phase, unblocks other active work, isolates genuine risk, or
+keeps a truly large bead reviewable. Otherwise, keep working on the same branch
+until the acceptance matrix is meaningful.
+
+When tempted to publish a partial slice, ask:
+
+- Would this PR let the bead close, or would it just make the next agent read
+  another PR to understand the same feature?
+- Can the remaining acceptance criteria be implemented and verified with the
+  same test/live-artifact pass?
+- Is the split about risk/reviewability, or just because the current diff is
+  already green?
+
+If the answer is "already green," keep batching.
+
 ## If Convergence Is Slow
 
 Check, in order:

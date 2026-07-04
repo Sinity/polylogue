@@ -38,11 +38,16 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
     with sqlite3.connect(archive_root / "index.db") as conn:
         links = conn.execute("SELECT link_type, inheritance FROM session_links ORDER BY src_session_id").fetchall()
         temporary_sessions = conn.execute("SELECT session_id FROM sessions WHERE session_kind = 'temporary'").fetchall()
+        capture_gap_events = conn.execute(
+            "SELECT session_id, summary FROM session_events WHERE event_type = 'capture_gap'"
+        ).fetchall()
         subagent_snapshots = conn.execute(
             "SELECT COUNT(*) FROM session_context_snapshots WHERE boundary = 'subagent_start'"
         ).fetchone()[0]
 
     assert temporary_sessions == [(DEMO_CLAUDE_AI_TEMPORARY_SESSION_ID,)]
+    assert len(capture_gap_events) == 1
+    assert "DOM browser-capture fallback" in capture_gap_events[0][1]
     assert ("branch", "prefix-sharing") in links
     assert ("subagent", "spawned-fresh") in links
     assert subagent_snapshots >= 1

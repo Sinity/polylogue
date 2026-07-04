@@ -24,7 +24,7 @@ from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.scenarios import build_default_corpus_specs
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveRawParsedWriteResult, ArchiveStore
 from polylogue.storage.sqlite.maintenance import SqliteOptimizeObservation
 from polylogue.storage.sqlite.wal_checkpoint import WalCheckpointObservation
 
@@ -134,10 +134,10 @@ def test_failed_write_rolls_back_uncommitted_batch(
     sources = _build_sources(tmp_path, count=4, seed=23)
     assert len(sources) >= 2
 
-    original_write = ArchiveStore.write_raw_and_parsed
+    original_write = ArchiveStore.write_raw_and_parsed_result
     calls = {"n": 0}
 
-    def failing_write(self: ArchiveStore, *args: object, **kwargs: object) -> tuple[str, str]:
+    def failing_write(self: ArchiveStore, *args: object, **kwargs: object) -> ArchiveRawParsedWriteResult:
         calls["n"] += 1
         if calls["n"] == 2:
             raise RuntimeError("simulated mid-batch write failure")
@@ -150,7 +150,7 @@ def test_failed_write_rolls_back_uncommitted_batch(
         rollbacks["n"] += 1
         original_rollback(self)
 
-    monkeypatch.setattr(ArchiveStore, "write_raw_and_parsed", failing_write)
+    monkeypatch.setattr(ArchiveStore, "write_raw_and_parsed_result", failing_write)
     monkeypatch.setattr(ArchiveStore, "rollback", spy_rollback)
 
     with pytest.raises(RuntimeError, match="simulated mid-batch write failure"):

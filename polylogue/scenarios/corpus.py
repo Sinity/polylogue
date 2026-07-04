@@ -163,6 +163,15 @@ DEMO_CORPUS_FAMILIES: tuple[DemoCorpusFamily, ...] = (
         synthetic=False,
     ),
     DemoCorpusFamily(
+        family_id="browser-capture-gap",
+        label="Browser-capture gap",
+        provider="browser-capture",
+        construct_ids=("capture_gap_events",),
+        description="Lower-precedence DOM fallback for an existing native ChatGPT session.",
+        source_paths=("browser-capture/chatgpt-dom-fallback.json",),
+        synthetic=False,
+    ),
+    DemoCorpusFamily(
         family_id="codex-tools",
         label="Codex tool outcomes",
         provider="codex",

@@ -193,6 +193,10 @@ files:
     target: polylogue/archive/filter/types.py
     owner: archive-filter
     reason: archive-domain filter semantics
+  - path: polylogue/archive/ingest_flags.py
+    loc: 8
+    target: polylogue/archive/ingest_flags.py
+    owner: stable
   - path: polylogue/archive/message/__init__.py
     loc: 0
     target: polylogue/archive/message/__init__.py
@@ -1428,7 +1432,7 @@ files:
     target: polylogue/demo/__init__.py
     owner: stable
   - path: polylogue/demo/constructs.py
-    loc: 155
+    loc: 197
     target: polylogue/demo/constructs.py
     owner: stable
   - path: polylogue/demo/models.py
@@ -1440,11 +1444,11 @@ files:
     target: polylogue/demo/script.py
     owner: stable
   - path: polylogue/demo/seed.py
-    loc: 184
+    loc: 421
     target: polylogue/demo/seed.py
     owner: stable
   - path: polylogue/demo/verify.py
-    loc: 132
+    loc: 133
     target: polylogue/demo/verify.py
     owner: stable
   - path: polylogue/demo/workspace.py
@@ -1811,7 +1815,7 @@ files:
     target: polylogue/pipeline/services/ingest_batch/__init__.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_core.py
-    loc: 1539
+    loc: 1482
     target: polylogue/pipeline/services/ingest_batch/_core.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_memory.py
@@ -1840,7 +1844,7 @@ files:
     target: polylogue/pipeline/services/parsing.py
     owner: stable
   - path: polylogue/pipeline/services/parsing_models.py
-    loc: 163
+    loc: 175
     target: polylogue/pipeline/services/parsing_models.py
     owner: stable
     cross_cut: { lifecycle: model }
@@ -1967,7 +1971,7 @@ files:
     target: polylogue/rendering/renderers/html_template.py
     owner: stable
   - path: polylogue/scenarios/__init__.py
-    loc: 153
+    loc: 163
     target: polylogue/scenarios/__init__.py
     owner: stable
   - path: polylogue/scenarios/assertions.py
@@ -1979,7 +1983,7 @@ files:
     target: polylogue/scenarios/cli_surfaces.py
     owner: stable
   - path: polylogue/scenarios/corpus.py
-    loc: 977
+    loc: 1086
     target: polylogue/scenarios/corpus.py
     owner: stable
   - path: polylogue/scenarios/executable.py
@@ -2573,7 +2577,7 @@ files:
     target: polylogue/sources/parsers/base_support.py
     owner: stable
   - path: polylogue/sources/parsers/browser_capture.py
-    loc: 166
+    loc: 164
     target: polylogue/sources/parsers/browser_capture.py
     owner: stable
   - path: polylogue/sources/parsers/chatgpt.py
@@ -3195,7 +3199,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 8865
+    loc: 9050
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py
@@ -3225,6 +3229,10 @@ files:
   - path: polylogue/storage/sqlite/archive_tiers/index.py
     loc: 1027
     target: polylogue/storage/sqlite/archive_tiers/index.py
+    owner: stable
+  - path: polylogue/storage/sqlite/archive_tiers/ingest_precedence.py
+    loc: 70
+    target: polylogue/storage/sqlite/archive_tiers/ingest_precedence.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/ops.py
     loc: 160

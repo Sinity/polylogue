@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.expression import parse_unit_source_expression
@@ -200,6 +201,119 @@ def test_archive_tiers_archive_facade_links_raw_and_parsed_rows(tmp_path: Path) 
         assert source_conn.execute("PRAGMA foreign_key_check").fetchall() == []
     finally:
         source_conn.close()
+
+
+def test_archive_tiers_archive_facade_skips_lower_precedence_dom_fallback(tmp_path: Path) -> None:
+    native = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="chatgpt-capture-gap",
+        messages=[
+            ParsedMessage(provider_message_id="m1", role=Role.USER, text="native user"),
+            ParsedMessage(provider_message_id="m2", role=Role.ASSISTANT, text="native assistant"),
+        ],
+    )
+    dom_fallback = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="chatgpt-capture-gap",
+        messages=[ParsedMessage(provider_message_id="dom-1", role=Role.USER, text="dom fallback")],
+        ingest_flags=[DOM_FALLBACK_INGEST_FLAG],
+    )
+    root = tmp_path / "archive"
+
+    with ArchiveStore(root) as facade:
+        first = facade.write_raw_and_parsed_result(
+            native,
+            payload=b'{"native": true}',
+            source_path="/tmp/native.json",
+            acquired_at_ms=1_767_000_000_000,
+        )
+        second = facade.write_raw_and_parsed_result(
+            dom_fallback,
+            payload=b'{"dom": true}',
+            source_path="/tmp/dom.json",
+            acquired_at_ms=1_767_000_000_001,
+        )
+
+    conn = sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        stored = conn.execute(
+            "SELECT raw_id, message_count FROM sessions WHERE session_id = ?",
+            (first.session_id,),
+        ).fetchone()
+        event = conn.execute(
+            "SELECT event_type, summary FROM session_events WHERE session_id = ?",
+            (first.session_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert first.counts["sessions"] == 1
+    assert second.content_changed is False
+    assert second.counts["sessions"] == 0
+    assert second.counts["session_events"] == 1
+    assert second.counts["skipped_sessions"] == 1
+    assert second.counts["skipped_messages"] == 1
+    assert stored["raw_id"] == first.raw_id
+    assert stored["message_count"] == 2
+    assert event["event_type"] == "capture_gap"
+    assert "DOM browser-capture fallback" in event["summary"]
+
+
+def test_archive_tiers_archive_facade_replaces_dom_fallback_with_native(tmp_path: Path) -> None:
+    dom_fallback = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="chatgpt-capture-gap-reverse",
+        updated_at="2026-07-04T09:55:00Z",
+        messages=[ParsedMessage(provider_message_id="dom-1", role=Role.USER, text="dom fallback")],
+        ingest_flags=[DOM_FALLBACK_INGEST_FLAG],
+    )
+    native = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="chatgpt-capture-gap-reverse",
+        updated_at="2026-07-04T09:00:00Z",
+        messages=[
+            ParsedMessage(provider_message_id="m1", role=Role.USER, text="native user"),
+            ParsedMessage(provider_message_id="m2", role=Role.ASSISTANT, text="native assistant"),
+        ],
+    )
+    root = tmp_path / "archive"
+
+    with ArchiveStore(root) as facade:
+        first = facade.write_raw_and_parsed_result(
+            dom_fallback,
+            payload=b'{"dom": true}',
+            source_path="/tmp/dom.json",
+            acquired_at_ms=1_767_000_000_000,
+        )
+        second = facade.write_raw_and_parsed_result(
+            native,
+            payload=b'{"native": true}',
+            source_path="/tmp/native.json",
+            acquired_at_ms=1_767_000_000_001,
+        )
+
+    conn = sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        stored = conn.execute(
+            "SELECT raw_id, message_count FROM sessions WHERE session_id = ?",
+            (first.session_id,),
+        ).fetchone()
+        event = conn.execute(
+            "SELECT event_type, summary FROM session_events WHERE session_id = ?",
+            (first.session_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert second.content_changed is True
+    assert second.counts["sessions"] == 1
+    assert second.counts["session_events"] == 1
+    assert stored["raw_id"] == second.raw_id
+    assert stored["message_count"] == 2
+    assert event["event_type"] == "capture_gap"
+    assert "DOM browser-capture fallback" in event["summary"]
 
 
 def test_archive_tiers_archive_facade_adds_user_tags(tmp_path: Path) -> None:
