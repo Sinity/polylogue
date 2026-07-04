@@ -686,7 +686,7 @@ def _archive_embedding_status_payload(
         newest_embedded_at: str | None = None
         model_counts: dict[str, int] = {}
         dimension_counts: dict[int, int] = {}
-        if has_meta:
+        if include_detail and has_meta:
             model_rows = _rows_with_timeout(
                 conn,
                 f"""
