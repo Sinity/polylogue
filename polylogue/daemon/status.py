@@ -1646,6 +1646,7 @@ def _component_from_fts_readiness(readiness: FTSReadiness) -> ComponentReadiness
             "message_indexed_count": readiness.message_indexed_count,
             "message_indexable_count": readiness.message_indexable_count,
             "coverage_pct": readiness.coverage_pct,
+            "coverage_exact": readiness.coverage_exact,
         },
         repair_hint=None if readiness.messages_ready else "polylogued run",
     )
@@ -1914,9 +1915,14 @@ def build_daemon_status(
         session_work_events_ready=bool(fts.get("session_work_events_ready", False)),
         threads_ready=bool(fts.get("threads_ready", False)),
         invariant_ready=bool(fts.get("invariant_ready", False)),
-        message_indexed_count=_safe_int(fts.get("message_indexed_count", 0)),
-        message_indexable_count=_safe_int(fts.get("message_indexable_count", 0)),
-        coverage_pct=_safe_float(fts.get("coverage_pct")),
+        message_indexed_count=None
+        if fts.get("message_indexed_count") is None
+        else _safe_int(fts.get("message_indexed_count", 0)),
+        message_indexable_count=None
+        if fts.get("message_indexable_count") is None
+        else _safe_int(fts.get("message_indexable_count", 0)),
+        coverage_pct=None if fts.get("coverage_pct") is None else _safe_float(fts.get("coverage_pct")),
+        coverage_exact=bool(fts.get("coverage_exact", True)),
         surfaces=cast(dict[str, dict[str, int | bool | str | None]], fts.get("surfaces", {})),
     )
     embedding_readiness = EmbeddingReadiness(

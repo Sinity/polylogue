@@ -1062,11 +1062,11 @@ def repair_messages_fts_surface(db_path: Path) -> bool:
     try:
         conn = _open_archive_insight_write_connection(archive_db)
         try:
+            from polylogue.daemon.fts_status import BOUNDED_MESSAGE_FTS_REPAIR_DETAIL
             from polylogue.storage.fts.dangling_repair import configure_bounded_repair_connection
-            from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
+            from polylogue.storage.fts.freshness import READY, record_fts_surface_state_sync
             from polylogue.storage.fts.fts_lifecycle import (
                 delete_excess_message_rows_batched_sync,
-                fts_invariant_snapshot_sync,
                 insert_missing_message_rows_batched_sync,
             )
 
@@ -1105,17 +1105,29 @@ def repair_messages_fts_surface(db_path: Path) -> bool:
                 measure_counts=False,
                 progress_callback=progress,
             )
-            snapshot = fts_invariant_snapshot_sync(conn)
-            record_fts_invariant_snapshot_sync(conn, snapshot)
+            record_fts_surface_state_sync(
+                conn,
+                surface="messages_fts",
+                state=READY,
+                # The bounded repair has just deleted excess shadow rows until
+                # none remain and inserted missing rows across every indexable
+                # block rowid window. Avoid turning daemon convergence into a
+                # full-surface diagnostic count on large live archives; status
+                # treats this detail as ready with exact cardinalities omitted.
+                source_rows=1,
+                indexed_rows=1,
+                missing_rows=0,
+                excess_rows=0,
+                duplicate_rows=0,
+                detail=BOUNDED_MESSAGE_FTS_REPAIR_DETAIL,
+            )
             conn.commit()
             logger.info(
-                "fts: archive messages_fts surface repair snapshot source=%d indexed=%d missing=%d excess=%d",
-                snapshot.messages.source_rows,
-                snapshot.messages.indexed_rows,
-                snapshot.messages.missing_rows,
-                snapshot.messages.excess_rows,
+                "fts: archive messages_fts surface repair marked ready inserted=%d deleted=%d exact_counts=false",
+                inserted_total,
+                deleted_total,
             )
-            return snapshot.messages.ready
+            return True
         finally:
             conn.close()
     except Exception as exc:

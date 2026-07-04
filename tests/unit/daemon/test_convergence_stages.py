@@ -325,6 +325,35 @@ def test_archive_fts_global_repair_inserts_missing_rows_without_reset(tmp_path: 
         assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
 
 
+def test_archive_fts_global_repair_does_not_run_full_exact_snapshot(tmp_path: Path) -> None:
+    """Daemon global FTS convergence should not end with a full exact scan."""
+    from unittest import mock
+
+    import polylogue.storage.fts.fts_lifecycle as fts_lc
+
+    archive_db = tmp_path / "index.db"
+    archive_db.touch()
+    source_path = tmp_path / "codex.jsonl"
+    _seed_minimal_archive(archive_db, source_path)
+
+    with mock.patch.object(
+        fts_lc,
+        "fts_invariant_snapshot_sync",
+        side_effect=AssertionError("full exact FTS snapshot should stay out of daemon convergence"),
+    ):
+        assert stages.repair_messages_fts_surface(archive_db) is True
+
+    with sqlite3.connect(archive_db) as conn:
+        row = conn.execute(
+            """
+            SELECT state, source_rows, indexed_rows, missing_rows, excess_rows
+            FROM fts_freshness_state
+            WHERE surface = 'messages_fts'
+            """
+        ).fetchone()
+        assert row == ("ready", 1, 1, 0, 0)
+
+
 def test_archive_fts_global_repair_deletes_excess_rows_without_reset(tmp_path: Path) -> None:
     """Global surface debt should remove excess rows without a full rebuild."""
     from unittest import mock

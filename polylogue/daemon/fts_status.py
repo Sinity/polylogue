@@ -33,6 +33,7 @@ _FTS_SURFACES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
 )
 
 _ARCHIVE_BLOCKS_FTS_TRIGGERS = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
+BOUNDED_MESSAGE_FTS_REPAIR_DETAIL = "bounded global messages_fts repair completed; exact counts skipped"
 
 
 class FTSReadiness(BaseModel):
@@ -41,9 +42,10 @@ class FTSReadiness(BaseModel):
     session_work_events_ready: bool = False
     threads_ready: bool = False
     invariant_ready: bool = False
-    message_indexed_count: int = 0
-    message_indexable_count: int = 0
-    coverage_pct: float = 0.0
+    message_indexed_count: int | None = 0
+    message_indexable_count: int | None = 0
+    coverage_pct: float | None = 0.0
+    coverage_exact: bool = True
     surfaces: dict[str, dict[str, int | bool | str | None]] = Field(default_factory=dict)
 
 
@@ -277,6 +279,7 @@ def _archive_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | bool | 
     if recorded_state == "ready" and not freshness_ready:
         freshness_state = UNKNOWN if source_rows == 0 and indexed_rows == 0 and source_has_rows is not False else STALE
     ready = (exists and triggers_present and freshness_ready) if source_exists else not exists
+    counts_available = None if freshness is None else freshness.get("detail") != BOUNDED_MESSAGE_FTS_REPAIR_DETAIL
     return {
         "source_exists": source_exists,
         "exists": exists,
@@ -293,6 +296,7 @@ def _archive_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | bool | 
         "freshness_recorded_state": recorded_state,
         "freshness_trusted": freshness_ready,
         "freshness_detail": None if freshness is None else freshness.get("detail"),
+        "counts_available": counts_available,
     }
 
 
@@ -320,19 +324,22 @@ def _archive_readiness_payload(conn: sqlite3.Connection, *, exact: bool) -> dict
     block_source_rows = _payload_int(blocks, "source_rows")
     block_indexed_rows = _payload_int(blocks, "indexed_rows")
     invariant_ready = bool(blocks["ready"])
+    counts_available = bool(blocks.get("counts_available", True))
     return {
         "indexed_surface": "messages_fts",
         "messages_ready": invariant_ready,
         "session_work_events_ready": True,
         "threads_ready": True,
         "invariant_ready": invariant_ready,
-        "message_indexed_count": block_indexed_rows,
-        "message_indexable_count": block_source_rows,
+        "message_indexed_count": block_indexed_rows if counts_available else None,
+        "message_indexable_count": block_source_rows if counts_available else None,
         "coverage_pct": (
             round((block_indexed_rows / block_source_rows) * 100, 1)
             if block_source_rows > 0
             else (100.0 if invariant_ready else 0.0)
-        ),
+        )
+        if counts_available
+        else None,
         "coverage_exact": effective_exact,
         "surfaces": {"messages_fts": blocks},
     }
