@@ -46,14 +46,12 @@ repeated imports coalesce instead of duplicating your history.
 
 ## Try it without private data
 
-No real data and no API key required. This seeds a throwaway, deterministic
-demo archive and verifies the same semantic facts used by CI:
+No real data and no API key required. This runs a one-command tour against a
+throwaway deterministic archive, prints the first result, and writes a report,
+transcript, and recording tape:
 
 ```bash
-export POLYLOGUE_ARCHIVE_ROOT="$(mktemp -d)/archive"
-polylogue demo seed --root "$POLYLOGUE_ARCHIVE_ROOT" --force --with-overlays --format json
-polylogue demo verify --root "$POLYLOGUE_ARCHIVE_ROOT" --require-overlays --format json
-polylogue analyze --facets
+polylogue demo tour
 ```
 
 The current demo corpus has 11 sessions, 43 indexed messages, five origins,
@@ -62,9 +60,11 @@ subagent runs, terminal-state examples, synthetic embeddings, and user overlays.
 The generated construct datasheet is tracked at
 [docs/plans/demo-corpus-construct-audit.md](docs/plans/demo-corpus-construct-audit.md).
 
-From the same throwaway archive:
+The tour seeds and verifies the same semantic facts used by CI. It then runs
+the canonical query/read path:
 
 ```bash
+polylogue analyze --facets
 polylogue find "pytest" then read --view messages
 polylogue find "pytest" then analyze --facets
 ```
@@ -318,6 +318,7 @@ For source-only or CI/cloud verification without a daemon, use the direct demo
 fixture commands:
 
 ```bash
+polylogue demo tour --out-dir polylogue-demo-tour --force
 polylogue demo seed --root "$POLYLOGUE_ARCHIVE_ROOT" --force --with-overlays --format json
 polylogue demo verify --root "$POLYLOGUE_ARCHIVE_ROOT" --require-overlays --format json
 polylogue demo script --shell bash

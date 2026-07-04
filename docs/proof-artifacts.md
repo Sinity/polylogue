@@ -66,6 +66,7 @@ Reproduce the method without private data:
 
 ```bash
 export POLYLOGUE_ARCHIVE_ROOT=/realm/tmp/polylogue-claim-vs-evidence-demo
+polylogue demo tour --out-dir /realm/tmp/polylogue-demo-tour --force
 polylogue demo seed --root "$POLYLOGUE_ARCHIVE_ROOT" --force --with-overlays --format json
 polylogue demo verify --root "$POLYLOGUE_ARCHIVE_ROOT" --require-overlays --format json
 devtools workspace claim-vs-evidence \
@@ -74,6 +75,11 @@ devtools workspace claim-vs-evidence \
   --out-dir /realm/tmp/polylogue-claim-vs-evidence-repro \
   --json
 ```
+
+The current one-command tour packet is committed under
+[`docs/examples/demo-tour/`](examples/demo-tour/): `report.md`,
+`transcript.txt`, command outputs, `recording.tape`, `demo-tour.gif`, and the
+`uvx --from <repo>` install-path timing note.
 
 ## Agent Affordance Usage
 

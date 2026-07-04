@@ -66,4 +66,66 @@ class DemoVerifyResult:
         }
 
 
-__all__ = ["DemoSeedResult", "DemoVerifyResult"]
+@dataclass(frozen=True, slots=True)
+class DemoTourStep:
+    """One command executed by the one-command demo tour."""
+
+    name: str
+    command: tuple[str, ...]
+    exit_code: int
+    duration_s: float
+    output_path: Path
+    bytes_written: int
+
+    def to_payload(self) -> dict[str, object]:
+        """Serialize a tour step for report JSON."""
+
+        return {
+            "name": self.name,
+            "command": list(self.command),
+            "exit_code": self.exit_code,
+            "duration_s": round(self.duration_s, 3),
+            "output_path": str(self.output_path),
+            "bytes_written": self.bytes_written,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class DemoTourResult:
+    """Result of the one-command public demo tour."""
+
+    archive_root: Path
+    output_dir: Path
+    ok: bool
+    first_result_s: float
+    total_duration_s: float
+    report_json_path: Path
+    report_markdown_path: Path
+    transcript_path: Path
+    recording_tape_path: Path
+    seed: DemoSeedResult
+    verify: DemoVerifyResult
+    steps: tuple[DemoTourStep, ...]
+    problems: tuple[str, ...] = ()
+
+    def to_payload(self) -> dict[str, object]:
+        """Serialize the tour result for CLI JSON output and artifacts."""
+
+        return {
+            "archive_root": str(self.archive_root),
+            "output_dir": str(self.output_dir),
+            "ok": self.ok,
+            "first_result_s": round(self.first_result_s, 3),
+            "total_duration_s": round(self.total_duration_s, 3),
+            "report_json_path": str(self.report_json_path),
+            "report_markdown_path": str(self.report_markdown_path),
+            "transcript_path": str(self.transcript_path),
+            "recording_tape_path": str(self.recording_tape_path),
+            "seed": self.seed.to_payload(),
+            "verify": self.verify.to_payload(),
+            "steps": [step.to_payload() for step in self.steps],
+            "problems": list(self.problems),
+        }
+
+
+__all__ = ["DemoSeedResult", "DemoTourResult", "DemoTourStep", "DemoVerifyResult"]

@@ -751,7 +751,7 @@ files:
     target: polylogue/cli/commands/debt.py
     owner: stable
   - path: polylogue/cli/commands/demo.py
-    loc: 129
+    loc: 184
     target: polylogue/cli/commands/demo.py
     owner: stable
   - path: polylogue/cli/commands/diagnostics.py
@@ -1428,24 +1428,28 @@ files:
     target: polylogue/daemon/workspace_routes.py
     owner: stable
   - path: polylogue/demo/__init__.py
-    loc: 22
+    loc: 26
     target: polylogue/demo/__init__.py
     owner: stable
   - path: polylogue/demo/constructs.py
-    loc: 306
+    loc: 324
     target: polylogue/demo/constructs.py
     owner: stable
   - path: polylogue/demo/models.py
-    loc: 69
+    loc: 131
     target: polylogue/demo/models.py
     owner: stable
   - path: polylogue/demo/script.py
-    loc: 30
+    loc: 31
     target: polylogue/demo/script.py
     owner: stable
   - path: polylogue/demo/seed.py
-    loc: 665
+    loc: 709
     target: polylogue/demo/seed.py
+    owner: stable
+  - path: polylogue/demo/tour.py
+    loc: 308
+    target: polylogue/demo/tour.py
     owner: stable
   - path: polylogue/demo/verify.py
     loc: 133
@@ -1554,7 +1558,7 @@ files:
     target: polylogue/insights/rigor.py
     owner: stable
   - path: polylogue/insights/run_projection.py
-    loc: 457
+    loc: 462
     target: polylogue/insights/run_projection.py
     owner: stable
   - path: polylogue/insights/session_commit.py
@@ -1971,7 +1975,7 @@ files:
     target: polylogue/rendering/renderers/html_template.py
     owner: stable
   - path: polylogue/scenarios/__init__.py
-    loc: 169
+    loc: 171
     target: polylogue/scenarios/__init__.py
     owner: stable
   - path: polylogue/scenarios/assertions.py
@@ -1983,7 +1987,7 @@ files:
     target: polylogue/scenarios/cli_surfaces.py
     owner: stable
   - path: polylogue/scenarios/corpus.py
-    loc: 1125
+    loc: 1134
     target: polylogue/scenarios/corpus.py
     owner: stable
   - path: polylogue/scenarios/executable.py

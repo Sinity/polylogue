@@ -9,7 +9,7 @@ from pathlib import Path
 import click
 
 from polylogue.cli.shared.types import AppEnv
-from polylogue.demo import render_demo_script, seed_demo_archive, verify_demo_archive
+from polylogue.demo import render_demo_script, run_demo_tour, seed_demo_archive, verify_demo_archive
 from polylogue.paths import archive_root
 
 
@@ -108,6 +108,61 @@ def verify_command(
             env.ui.console.print(f"  - {problem}")
     if not result.ok:
         raise click.ClickException("demo archive verification failed")
+
+
+@demo_command.command("tour")
+@click.option(
+    "--out-dir",
+    type=click.Path(path_type=Path),
+    default=Path("polylogue-demo-tour"),
+    show_default=True,
+    help="Directory where the tour archive, transcript, report, and recording tape are written.",
+)
+@click.option(
+    "--root",
+    "root",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Archive root to seed. Defaults to <out-dir>/archive.",
+)
+@click.option("--force/--no-force", default=True, show_default=True, help="Replace the output directory first.")
+@click.option(
+    "--format",
+    "-f",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+)
+@click.pass_obj
+def tour_command(
+    env: AppEnv,
+    out_dir: Path,
+    root: Path | None,
+    force: bool,
+    output_format: str,
+) -> None:
+    """Run a one-command public demo tour and write shareable artifacts."""
+
+    result = run_demo_tour(output_dir=out_dir, archive_root=root, force=force)
+    payload = result.to_payload()
+    if output_format == "json":
+        click.echo(json.dumps(payload, sort_keys=True))
+    else:
+        status = "[bold green]passed[/bold green]" if result.ok else "[bold red]failed[/bold red]"
+        env.ui.console.print(
+            f"Polylogue demo tour: {status}\n"
+            f"  First result: {result.first_result_s:.3f}s\n"
+            f"  Full tour:    {result.total_duration_s:.3f}s\n"
+            f"  Archive root: {result.archive_root}\n"
+            f"  Report:       {result.report_markdown_path}\n"
+            f"  Transcript:   {result.transcript_path}\n"
+            f"  Recording:    {result.recording_tape_path}"
+        )
+        for problem in result.problems:
+            env.ui.console.print(f"  - {problem}")
+    if not result.ok:
+        raise click.ClickException("demo tour failed")
 
 
 @demo_command.command("script")
