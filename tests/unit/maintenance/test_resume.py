@@ -70,7 +70,7 @@ def patched_dispatch() -> Iterator[dict[str, list[str]]]:
     calls: dict[str, list[str]] = {
         "session_insights": [],
         "message_type_backfill": [],
-        "wal_checkpoint": [],
+        "orphaned_messages": [],
     }
 
     def stub(name: str):  # type: ignore[no-untyped-def]
@@ -92,7 +92,7 @@ def test_clean_run_persists_done_and_clears_state(tmp_path: Path, patched_dispat
     config = _make_config(tmp_path)
     op = execute_replay(
         config,
-        targets=("session_insights", "wal_checkpoint"),
+        targets=("session_insights", "message_type_backfill"),
         operation_id="op-clean",
     )
 
@@ -101,7 +101,7 @@ def test_clean_run_persists_done_and_clears_state(tmp_path: Path, patched_dispat
     # State file is removed after successful completion.
     assert not state_path_for(config, "op-clean").exists()
     assert patched_dispatch["session_insights"] == ["live"]
-    assert patched_dispatch["wal_checkpoint"] == ["live"]
+    assert patched_dispatch["message_type_backfill"] == ["live"]
 
 
 def test_kill_mid_run_resumes_from_persisted_cursor(tmp_path: Path, patched_dispatch: dict[str, list[str]]) -> None:
@@ -120,19 +120,19 @@ def test_kill_mid_run_resumes_from_persisted_cursor(tmp_path: Path, patched_disp
     fake_dispatch = {
         "session_insights": patched_dispatch_callable(patched_dispatch, "session_insights"),
         "message_type_backfill": boom,
-        "wal_checkpoint": patched_dispatch_callable(patched_dispatch, "wal_checkpoint"),
+        "orphaned_messages": patched_dispatch_callable(patched_dispatch, "orphaned_messages"),
     }
 
     with patch("polylogue.maintenance.replay._REPLAY_DISPATCH", fake_dispatch):
         first = execute_replay(
             config,
-            targets=("session_insights", "message_type_backfill", "wal_checkpoint"),
+            targets=("session_insights", "message_type_backfill", "orphaned_messages"),
             operation_id="op-resume",
         )
 
     assert first.status is BackfillStatus.FAILED
     assert patched_dispatch["session_insights"] == ["live"]
-    assert patched_dispatch["wal_checkpoint"] == ["live"]
+    assert patched_dispatch["orphaned_messages"] == ["live"]
     assert len(boom_calls) == 1
     # State persists because run did not converge cleanly.
     assert state_path_for(config, "op-resume").exists()
@@ -150,7 +150,7 @@ def test_kill_mid_run_resumes_from_persisted_cursor(tmp_path: Path, patched_disp
     with patch("polylogue.maintenance.replay._REPLAY_DISPATCH", patched_dispatch_table(patched_dispatch)):
         second = execute_replay(
             config,
-            targets=("session_insights", "message_type_backfill", "wal_checkpoint"),
+            targets=("session_insights", "message_type_backfill", "orphaned_messages"),
             operation_id="op-resume",
         )
 
@@ -160,7 +160,7 @@ def test_kill_mid_run_resumes_from_persisted_cursor(tmp_path: Path, patched_disp
     assert patched_dispatch["session_insights"] == ["live"]
     # The remaining two targets were executed exactly once on resume.
     assert patched_dispatch["message_type_backfill"] == ["live"]
-    assert patched_dispatch["wal_checkpoint"] == ["live", "live"]
+    assert patched_dispatch["orphaned_messages"] == ["live", "live"]
     # State cleared after successful resume.
     assert not state_path_for(config, "op-resume").exists()
 
@@ -175,7 +175,7 @@ def test_explicit_resume_cursor_overrides_persisted_state(
 
     op = execute_replay(
         config,
-        targets=("session_insights", "wal_checkpoint"),
+        targets=("session_insights", "message_type_backfill"),
         operation_id="op-explicit",
         resume_cursor="target:1",
     )
@@ -183,7 +183,7 @@ def test_explicit_resume_cursor_overrides_persisted_state(
     assert op.status is BackfillStatus.COMPLETED
     # Only the second target was executed (skipped session_insights).
     assert patched_dispatch["session_insights"] == []
-    assert patched_dispatch["wal_checkpoint"] == ["live"]
+    assert patched_dispatch["message_type_backfill"] == ["live"]
 
 
 def test_progress_callback_fires_per_target(tmp_path: Path, patched_dispatch: dict[str, list[str]]) -> None:
@@ -192,13 +192,13 @@ def test_progress_callback_fires_per_target(tmp_path: Path, patched_dispatch: di
 
     op = execute_replay(
         config,
-        targets=("session_insights", "wal_checkpoint"),
+        targets=("session_insights", "message_type_backfill"),
         operation_id="op-progress",
         progress_callback=snapshots.append,
     )
 
     assert op.status is BackfillStatus.COMPLETED
-    assert [s.target for s in snapshots] == ["session_insights", "wal_checkpoint"]
+    assert [s.target for s in snapshots] == ["session_insights", "message_type_backfill"]
     assert snapshots[0].processed == 1 and snapshots[0].total == 2
     assert snapshots[-1].cursor == CURSOR_DONE
     assert snapshots[-1].in_flight_failures == 0
@@ -260,33 +260,33 @@ def test_replay_operation_metrics_include_result_metrics(
         _dry_run: bool,
     ) -> RepairResult:
         return _ok_result(
-            "wal_checkpoint",
+            "session_insights",
             repaired=2,
             metrics={
-                "checkpoint_frames": 100.0,
-                "checkpoint_max_wal_bytes": 1_609_582_167.0,
+                "rebuilt_profiles": 100.0,
+                "source_sessions": 1_609_582_167.0,
             },
         )
 
     monkeypatch.setitem(
         replay_module._REPLAY_DISPATCH,
-        "wal_checkpoint",
+        "session_insights",
         repair_with_metrics,
     )
 
     op = execute_replay(
         config,
-        targets=("wal_checkpoint",),
+        targets=("session_insights",),
         operation_id="op-metrics",
     )
 
     assert op.status is BackfillStatus.COMPLETED
     assert op.metrics["repaired_count"] == 2.0
-    assert op.metrics["checkpoint_frames"] == 100.0
-    assert op.metrics["checkpoint_max_wal_bytes"] == 1_609_582_167.0
+    assert op.metrics["rebuilt_profiles"] == 100.0
+    assert op.metrics["source_sessions"] == 1_609_582_167.0
     assert op.results[0]["metrics"] == {
-        "checkpoint_frames": 100.0,
-        "checkpoint_max_wal_bytes": 1_609_582_167.0,
+        "rebuilt_profiles": 100.0,
+        "source_sessions": 1_609_582_167.0,
     }
 
 

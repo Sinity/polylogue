@@ -71,7 +71,6 @@ from polylogue.storage.repair import (
     repair_orphaned_blobs,
     repair_orphaned_messages,
     repair_session_insights,
-    repair_wal_checkpoint,
 )
 
 logger = get_logger(__name__)
@@ -101,10 +100,9 @@ _RepairFn = Callable[[Config, bool], RepairResult]
 
 #: Concrete repair dispatch table. Targets listed here are the ones the
 #: PR #1147 AC names explicitly: messages FTS and session insights.
-#: ``message_type_backfill`` and ``wal_checkpoint`` are
-#: included because the underlying repair functions are already
-#: idempotent and the executor would otherwise refuse perfectly valid
-#: target names that the catalog advertises.
+#: ``message_type_backfill`` is included because the underlying repair function
+#: is already idempotent and the executor would otherwise refuse a perfectly
+#: valid target name that the catalog advertises.
 #:
 #: Targets that are not yet wired into this dispatch raise
 #: :class:`UnsupportedReplayTargetError` when requested — the planner will
@@ -115,7 +113,6 @@ _REPLAY_DISPATCH: Final[dict[str, _RepairFn]] = {
     "session_insights": repair_session_insights,
     "message_type_backfill": repair_message_type_backfill,
     "message_embeddings": repair_message_embeddings,
-    "wal_checkpoint": repair_wal_checkpoint,
     "orphaned_messages": repair_orphaned_messages,
     "empty_sessions": repair_empty_sessions,
     "orphaned_attachments": repair_orphaned_attachments,

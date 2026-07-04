@@ -15,9 +15,7 @@ RUN_ALL_REPAIRS_EXPECTED = {
     "session_insights",
     "orphaned_messages",
     "empty_sessions",
-    "dangling_fts",
     "orphaned_attachments",
-    "wal_checkpoint",
 }
 
 
@@ -626,13 +624,11 @@ class TestMaintenanceSelection:
         assert isinstance(results, list)
         assert {r.name for r in results} == {
             "session_insights",
-            "dangling_fts",
-            "wal_checkpoint",
             "message_type_backfill",
             "message_embeddings",
         }
         assert all(r.destructive is False for r in results)
-        assert all(r.category.value in {"derived_repair", "database_maintenance"} for r in results)
+        assert all(r.category.value == "derived_repair" for r in results)
 
     def test_run_archive_cleanup_returns_destructive_results(self, cli_workspace: CliWorkspace) -> None:
         """run_archive_cleanup should return only destructive cleanup functions."""

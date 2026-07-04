@@ -191,13 +191,6 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         invalidation_keys=("message_embeddings", "message_embeddings_meta", "embedding_status"),
     ),
     MaintenanceTargetSpec(
-        name="wal_checkpoint",
-        mode=MaintenanceTargetMode.REPAIR,
-        category=MaintenanceCategory.DATABASE_MAINTENANCE,
-        destructive=False,
-        description="Run a SQLite WAL checkpoint/truncate maintenance pass.",
-    ),
-    MaintenanceTargetSpec(
         name="orphaned_messages",
         mode=MaintenanceTargetMode.CLEANUP,
         category=MaintenanceCategory.ARCHIVE_CLEANUP,

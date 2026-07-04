@@ -424,7 +424,7 @@ output.
 ### Health Checks
 
 - `polylogue ops doctor` validates config, archive root, DB reachability, index status, and Drive credential/token presence.
-- `polylogue ops doctor --repair` runs safe derived-data and database maintenance.
+- `polylogue ops doctor --repair` runs safe derived-data maintenance.
 - `polylogue ops doctor --cleanup` runs destructive archive cleanup; preview it first.
 - `polylogue ops doctor --repair --vacuum` compacts the database after maintenance.
 - Workstation-specific policy such as cgroup slice placement and hard caps belongs in the host environment, not in the product CLI.

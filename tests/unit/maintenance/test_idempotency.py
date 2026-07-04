@@ -72,7 +72,7 @@ def converging_dispatch() -> Iterator[dict[str, int]]:
     First call to each target reports ``repaired_count=N`` (initial
     rebuild). Subsequent calls return ``repaired_count=0`` because the
     target is already converged. This matches the real repair-function
-    contract: re-running ``repair_wal_checkpoint`` on an already-consistent
+    contract: re-running ``repair_message_type_backfill`` on an already-consistent
     archive returns 0.
     """
 
@@ -89,7 +89,7 @@ def converging_dispatch() -> Iterator[dict[str, int]]:
 
     fake = {
         "session_insights": stub("session_insights", 7),
-        "wal_checkpoint": stub("wal_checkpoint", 5),
+        "message_type_backfill": stub("message_type_backfill", 5),
     }
     with patch("polylogue.maintenance.replay._REPLAY_DISPATCH", fake):
         yield converged
@@ -100,7 +100,7 @@ def test_second_run_makes_no_further_changes(tmp_path: Path, converging_dispatch
 
     first = execute_replay(
         config,
-        targets=("session_insights", "wal_checkpoint"),
+        targets=("session_insights", "message_type_backfill"),
         operation_id="op-first",
     )
     assert first.status is BackfillStatus.COMPLETED
@@ -110,14 +110,14 @@ def test_second_run_makes_no_further_changes(tmp_path: Path, converging_dispatch
     # zero further row changes — convergence holds across operations.
     second = execute_replay(
         config,
-        targets=("session_insights", "wal_checkpoint"),
+        targets=("session_insights", "message_type_backfill"),
         operation_id="op-second",
     )
     assert second.status is BackfillStatus.COMPLETED
     assert second.affected_rows == 0
     # Each target was called exactly twice (once per op), not more.
     assert converging_dispatch["session_insights"] == 2
-    assert converging_dispatch["wal_checkpoint"] == 2
+    assert converging_dispatch["message_type_backfill"] == 2
 
 
 def test_single_target_failure_does_not_abort_others(tmp_path: Path) -> None:
@@ -133,29 +133,29 @@ def test_single_target_failure_does_not_abort_others(tmp_path: Path) -> None:
         return _run
 
     def bad(_config: Config, _dry_run: bool) -> RepairResult:
-        calls.append("wal_checkpoint")
+        calls.append("message_type_backfill")
         raise RuntimeError("simulated row-level failure")
 
     fake = {
         "session_insights": good("session_insights"),
-        "wal_checkpoint": bad,
-        "message_type_backfill": good("message_type_backfill"),
+        "message_type_backfill": bad,
+        "orphaned_messages": good("orphaned_messages"),
     }
     with patch("polylogue.maintenance.replay._REPLAY_DISPATCH", fake):
         op = execute_replay(
             config,
-            targets=("session_insights", "wal_checkpoint", "message_type_backfill"),
+            targets=("session_insights", "message_type_backfill", "orphaned_messages"),
             operation_id="op-mixed",
         )
 
     # The bad target failed but the surrounding targets still ran.
-    assert calls == ["session_insights", "wal_checkpoint", "message_type_backfill"]
+    assert calls == ["session_insights", "message_type_backfill", "orphaned_messages"]
     assert op.status is BackfillStatus.FAILED
     assert op.affected_rows == 6  # only the two good targets contributed
     assert len(op.failure_samples.samples) == 1
     failure = op.failure_samples.samples[0]
     assert failure.kind == "RuntimeError"
-    assert failure.locator == "target:wal_checkpoint"
+    assert failure.locator == "target:message_type_backfill"
 
 
 def test_repair_reported_failure_surfaces_as_failure_sample(tmp_path: Path) -> None:
@@ -163,7 +163,7 @@ def test_repair_reported_failure_surfaces_as_failure_sample(tmp_path: Path) -> N
 
     def reports_failure(_config: Config, _dry_run: bool) -> RepairResult:
         return RepairResult(
-            name="wal_checkpoint",
+            name="message_type_backfill",
             category=MaintenanceCategory.DERIVED_REPAIR,
             destructive=False,
             repaired_count=0,
@@ -173,11 +173,11 @@ def test_repair_reported_failure_surfaces_as_failure_sample(tmp_path: Path) -> N
 
     with patch(
         "polylogue.maintenance.replay._REPLAY_DISPATCH",
-        {"wal_checkpoint": reports_failure},
+        {"message_type_backfill": reports_failure},
     ):
         op = execute_replay(
             config,
-            targets=("wal_checkpoint",),
+            targets=("message_type_backfill",),
             operation_id="op-soft-fail",
         )
 
@@ -256,7 +256,6 @@ def test_supported_targets_cover_ac_required_set() -> None:
         "session_insights",
         "message_embeddings",
         "message_type_backfill",
-        "wal_checkpoint",
         "orphaned_blobs",
     }
     assert required.issubset(supported)

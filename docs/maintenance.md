@@ -27,30 +27,33 @@ the archive depends on but does not own as primary data:
   classifier existed);
 - archive-cleanup scopes (orphaned messages, orphaned content blocks,
   empty sessions, orphaned attachments, orphaned blobs);
-- SQLite housekeeping (WAL checkpoint).
+A WAL checkpoint is not a maintenance operation. Ingest runs bounded passive
+checkpoints after commits, the daemon runs periodic truncate checkpoints, and
+status/metrics report WAL pressure. If WAL stays large after those automatic
+paths have had a chance to run, treat that as a daemon/storage bug rather than a
+user-facing repair verb.
 
 A maintenance operation is distinguished from three adjacent things:
 
 | Surface | What it does | When you reach for it |
 | --- | --- | --- |
 | **Import** (`polylogued`, `polylogue import PATH`) | Daemon acquires source payloads, parses provider records, writes archive rows, and advances derived models *for the new rows*. `polylogue import PATH` asks the running daemon to schedule an explicit file or directory. | You have new exports/sessions to import. |
-| **Daemon convergence** (`polylogued` inline loops) | Performs the same operations as ingest plus the lightweight maintenance loop (WAL checkpoint every 5 min, FTS convergence every 10 min, heartbeat, health checks). | The daemon is running. You do nothing. |
+| **Daemon convergence** (`polylogued` inline loops) | Performs the same operations as ingest plus automatic WAL checkpointing, FTS convergence, heartbeat, health checks, and embedding/profile catch-up. | The daemon is running. You do nothing. |
 | **Maintenance** (`polylogue ops maintenance ...`) | Rebuilds derived state and prunes archive debt over already-ingested rows. Read-only by default; mutations are explicit. | A derived model is stale or missing for old rows that the daemon's small inline windows will not pick up. |
 | **Reset** (`polylogue ops reset`) | Deletes data: the SQLite database, the blob store, attachments, cache, OAuth tokens, or named sessions (soft-delete via tombstones). | The data itself is wrong or unwanted, not just a derived projection of it. |
 
 The order of preference is: **do nothing → daemon → maintenance →
 reset**. Reset is the only one that destroys primary data.
 
-## The four typed scopes
+## Typed scopes
 
 Maintenance targets are grouped into four scopes:
 
 | Scope | Mode | Destructive | Targets |
 | --- | --- | --- | --- |
 | `derived` (derived_repair) | repair | no | `session_insights`, `message_type_backfill`, `message_embeddings` |
-| `retrieval` (database_maintenance) | repair | no | `wal_checkpoint` |
 | `archive_cleanup` | cleanup | **yes** | `orphaned_messages`, `orphaned_content_blocks`, `empty_sessions`, `orphaned_attachments`, `orphaned_blobs` |
-| `backfill` | repair | no | column/row backfills surfaced by the planner (currently subsumed by `derived`). Re-acquiring raw artifacts from source and repairing FTS coherence are daemon convergence responsibilities, not maintenance targets. |
+| `backfill` | repair | no | column/row backfills surfaced by the planner (currently subsumed by `derived`). Re-acquiring raw artifacts from source, WAL checkpointing, and repairing FTS coherence are daemon/ingest convergence responsibilities, not maintenance targets. |
 
 The canonical target list is enforced by
 `polylogue/maintenance/targets.py`. The CLI `--target` option's
@@ -153,7 +156,6 @@ execution-path code, or pass `--operation-id <uuid>` together with
 
 ```bash
 polylogue ops maintenance run --dry-run
-polylogue ops maintenance run --target wal_checkpoint
 polylogue ops maintenance run --target session_insights --output-format json
 ```
 

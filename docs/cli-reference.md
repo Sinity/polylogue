@@ -545,17 +545,15 @@ Usage: polylogue ops doctor [OPTIONS]
 Options:
   -f, --format [json]             Output format
   -v, --verbose                   Show breakdown by provider
-  --repair                        Run safe derived-data and database
-                                  maintenance repairs
+  --repair                        Run safe derived-data maintenance repairs
   --cleanup                       Run destructive archive cleanup for orphaned
                                   or empty persisted data
-  --target [session_insights|message_type_backfill|message_embeddings|wal_checkpoint|orphaned_messages|empty_sessions|orphaned_attachments|orphaned_blobs|superseded_raw_snapshots]
+  --target [session_insights|message_type_backfill|message_embeddings|orphaned_messages|empty_sessions|orphaned_attachments|orphaned_blobs|superseded_raw_snapshots]
                                   Limit maintenance to named targets such as
                                   session_insights, message_type_backfill,
-                                  message_embeddings, wal_checkpoint,
-                                  orphaned_messages, empty_sessions,
-                                  orphaned_attachments, orphaned_blobs, or
-                                  superseded_raw_snapshots
+                                  message_embeddings, orphaned_messages,
+                                  empty_sessions, orphaned_attachments,
+                                  orphaned_blobs, or superseded_raw_snapshots
   --preview                       Preview maintenance without executing
                                   (requires --repair or --cleanup)
   --vacuum                        Reclaim unused space after maintenance

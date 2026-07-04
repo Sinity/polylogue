@@ -15,7 +15,7 @@ CheckCommandDecorator = Callable[[Callable[..., object]], Callable[..., object]]
 CHECK_COMMAND_OPTION_DECORATORS: tuple[CheckCommandDecorator, ...] = (
     click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None, help="Output format"),
     click.option("--verbose", "-v", is_flag=True, help="Show breakdown by provider"),
-    click.option("--repair", is_flag=True, help="Run safe derived-data and database maintenance repairs"),
+    click.option("--repair", is_flag=True, help="Run safe derived-data maintenance repairs"),
     click.option(
         "--cleanup", is_flag=True, help="Run destructive archive cleanup for orphaned or empty persisted data"
     ),

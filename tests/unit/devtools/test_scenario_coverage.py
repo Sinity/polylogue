@@ -87,6 +87,5 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
         "orphaned_attachments",
         "orphaned_messages",
         "superseded_raw_snapshots",
-        "wal_checkpoint",
     )
     assert coverage.uncovered_declared_operations == coverage.uncovered_operations

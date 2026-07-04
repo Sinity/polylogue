@@ -1683,7 +1683,6 @@ _REPAIR_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "session_insights": repair_session_insights,
     "message_type_backfill": repair_message_type_backfill,
     "message_embeddings": repair_message_embeddings,
-    "wal_checkpoint": repair_wal_checkpoint,
     "orphaned_messages": repair_orphaned_messages,
     "empty_sessions": repair_empty_sessions,
     "orphaned_attachments": repair_orphaned_attachments,
